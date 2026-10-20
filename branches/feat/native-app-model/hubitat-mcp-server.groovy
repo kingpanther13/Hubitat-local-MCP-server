@@ -23714,7 +23714,7 @@ private boolean _rmLooksLikeStateChangeToken(Object raw) {
 private String _rmTriggerCapabilityFamily(String cap) {
     if (!cap) return null
     def wanted = cap.trim()
-    def match = (_rmTriggerSchemaForDiscover()?.capabilities ?: []).find { c ->
+    def match = _rmTriggerFamilies().find { c ->
         (c?.name?.toString()?.equalsIgnoreCase(wanted)) ||
         (c?.aliases instanceof List && (c.aliases as List).any { it?.toString()?.equalsIgnoreCase(wanted) })
     }
@@ -23724,7 +23724,7 @@ private String _rmSuggestTriggerCapability(String cap, Collection liveOptions = 
     def want = cap?.trim()?.toLowerCase()
     if (!want) return null
     def live = (liveOptions ?: []).collect { it?.toString() }.findAll { it }
-    def schemaNames = (_rmTriggerSchemaForDiscover()?.capabilities ?: []).collectMany { c ->
+    def schemaNames = _rmTriggerFamilies().collectMany { c ->
         def out = []
         if (c?.name != null) out << c.name.toString()
         if (c?.aliases instanceof List) (c.aliases as List).each { if (it != null) out << it.toString() }
@@ -23791,11 +23791,11 @@ private void _rmValidateRoundZeroTriggerSpec(Map triggerSpec) {
     def offendingField = triggerSpec.state != null ? "state" : "value"
     if (triggerSpec.comparator == null && _rmLooksLikeStateChangeToken(effState) &&
             _rmStateChangeGuardApplies(cap)) {
-        throw new IllegalArgumentException("${offendingField}:'${effState}' is not a valid state value -- for a state-change trigger use comparator:'*changed*' (or '*became*'/'*increased*'/'*decreased*'), not ${offendingField}. Pass {discover:true} for this capability's field schema. RM is not touched.")
+        throw new IllegalArgumentException("${offendingField}:'${effState}' is not a valid state value -- for a state-change trigger use comparator:'*changed*' (or '*became*'/'*increased*'/'*decreased*'), not ${offendingField}. Use hub_call_app_form for this capability's field schema. RM is not touched.")
     }
     if (cap.equalsIgnoreCase("Certain Time (and optional date)") && triggerSpec.time != null &&
             !(triggerSpec.time?.toString() in ["A specific time", "Sunrise", "Sunset"])) {
-        throw new IllegalArgumentException("addTrigger.time must be one of ['A specific time', 'Sunrise', 'Sunset']; got '${triggerSpec.time}'. Put the clock time in atTime (e.g. time:'A specific time', atTime:'17:30'). Pass {discover: true} for the full trigger schema. RM is not touched.")
+        throw new IllegalArgumentException("addTrigger.time must be one of ['A specific time', 'Sunrise', 'Sunset']; got '${triggerSpec.time}'. Put the clock time in atTime (e.g. time:'A specific time', atTime:'17:30'). Use hub_call_app_form to inspect native fields and choices. RM is not touched.")
     }
     if (cap.equalsIgnoreCase("Periodic Schedule") && !(triggerSpec.periodic instanceof Map)) {
         def strayKeys = triggerSpec.keySet().findAll {
@@ -23809,7 +23809,7 @@ private void _rmValidateRoundZeroTriggerSpec(Map triggerSpec) {
         } else {
             detail = ""
         }
-        throw new IllegalArgumentException("Periodic Schedule trigger requires periodic:{frequency:'Seconds'|'Minutes'|'Hourly'|'Daily'|'Weekly'|'Monthly'|'Yearly'|'Cron String', everyN:<n>, ...}.${detail} Pass {discover:true} for the full periodic field schema. RM is not touched.")
+        throw new IllegalArgumentException("Periodic Schedule trigger requires periodic:{frequency:'Seconds'|'Minutes'|'Hourly'|'Daily'|'Weekly'|'Monthly'|'Yearly'|'Cron String', everyN:<n>, ...}.${detail} Use hub_call_app_form for the full periodic field schema. RM is not touched.")
     }
 }
 private void _rmValidateRoundZeroPeriodicSpec(Map triggerSpec) {
@@ -23819,14 +23819,14 @@ private void _rmValidateRoundZeroPeriodicSpec(Map triggerSpec) {
         def periodic = triggerSpec.periodic as Map
         def frequency = periodic.frequency?.toString()
         if (!frequency) {
-            throw new IllegalArgumentException("Periodic Schedule trigger requires periodic.frequency (one of: Seconds, Minutes, Hourly, Daily, Weekly, Monthly, Yearly, 'Cron String'). Pass {discover:true} for the full periodic field schema. RM is not touched.")
+            throw new IllegalArgumentException("Periodic Schedule trigger requires periodic.frequency (one of: Seconds, Minutes, Hourly, Daily, Weekly, Monthly, Yearly, 'Cron String'). Use hub_call_app_form for the full periodic field schema. RM is not touched.")
         }
         def periodicKeys = ["frequency", "everyN", "startingTime", "weekdaysOnly", "selectedHours", "selectedMinutes",
                             "selectedDaysOfMonth", "daysOfWeek", "dayOfWeek", "dayOfMonth", "everyNMonths", "months",
                             "weekOfMonth", "minutesOffset", "cronString", "rawSettings"]
         def unknownKeys = periodic.keySet().collect { it?.toString() }.findAll { !(it in periodicKeys) }
         if (unknownKeys) {
-            throw new IllegalArgumentException("Periodic Schedule: unknown periodic key(s) ${unknownKeys}; accepted keys are ${periodicKeys}. Pass {discover:true} for the full periodic field schema. RM is not touched.")
+            throw new IllegalArgumentException("Periodic Schedule: unknown periodic key(s) ${unknownKeys}; accepted keys are ${periodicKeys}. Use hub_call_app_form for the full periodic field schema. RM is not touched.")
         }
         if ((frequency == "Seconds" || frequency == "Minutes") && periodic.everyN != null) {
             def allowedCounts = [1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30]
@@ -23843,7 +23843,7 @@ private void _rmValidateRoundZeroPeriodicSpec(Map triggerSpec) {
         }
         def shapeErr = _rmPeriodicShapeError(frequency, periodic)
         if (shapeErr) {
-            throw new IllegalArgumentException("${shapeErr} Pass {discover:true} for the full periodic field schema. RM is not touched.")
+            throw new IllegalArgumentException("${shapeErr} Use hub_call_app_form for the full periodic field schema. RM is not touched.")
         }
     }
 }
@@ -23856,23 +23856,23 @@ private void _rmValidateRoundZeroActionSpec(Map actionSpec) {
     def expressionBearingCaps = ["ifthen", "elseif", "repeatwhile", "waitexpression"]
     if (capLc in expressionBearingCaps && actionSpec.conditions != null &&
             !(actionSpec.expression instanceof Map)) {
-        throw new IllegalArgumentException("${cap} action takes expression:{conditions:[...], operator|operators}, not a top-level conditions array. Wrap them: expression:{conditions:[...], operator:'AND'}. Pass {discover:true} for the expression shape. RM is not touched.")
+        throw new IllegalArgumentException("${cap} action takes expression:{conditions:[...], operator|operators}, not a top-level conditions array. Wrap them: expression:{conditions:[...], operator:'AND'}. Use hub_call_app_form for the expression shape. RM is not touched.")
     }
     def action = actionSpec.action?.toString()?.trim()
     if (action == null && actionSpec.state != null &&
             _rmActionCapUsesActionVerb(cap)) {
-        throw new IllegalArgumentException("${cap} action uses action: (not state:) to select the operation -- e.g. addAction(capability:'${cap}', action:'${actionSpec.state}', ...). Pass {discover:true} for this capability's action list. RM is not touched.")
+        throw new IllegalArgumentException("${cap} action uses action: (not state:) to select the operation -- e.g. addAction(capability:'${cap}', action:'${actionSpec.state}', ...). Use hub_call_app_form for this capability's action list. RM is not touched.")
     }
 }
 private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
     def _impl = {
     if (!(triggerSpec instanceof Map)) throw new IllegalArgumentException("addTrigger requires a Map spec. RM is not touched.")
     if (triggerSpec.discover == true) {
-        return _rmTriggerSchemaForDiscover()
+        throw new IllegalArgumentException('RM discovery catalogs are retired; use hub_call_app_form for native field and option discovery')
     }
     _rmValidateRoundZeroTriggerSpec(triggerSpec)
     def cap = triggerSpec.capability?.toString()?.trim()
-    if (!cap) throw new IllegalArgumentException("addTrigger.capability is required. Common values: Switch, Motion, Contact, Time, Periodic Schedule, Mode, Custom Attribute. Pass {discover: true} to get the full structured schema. RM is not touched.")
+    if (!cap) throw new IllegalArgumentException("addTrigger.capability is required. Common values: Switch, Motion, Contact, Time, Periodic Schedule, Mode, Custom Attribute. Use hub_call_app_form to inspect native fields and choices. RM is not touched.")
     _rmValidateDeviceIdsExist("addTrigger.deviceIds", triggerSpec.deviceIds)
     if (triggerSpec.condition instanceof Map) {
         def cm = triggerSpec.condition as Map
@@ -23927,7 +23927,7 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
     if (!capCanonical) {
         def suggestion = _rmSuggestTriggerCapability(cap, capOptions)
         def didYouMean = suggestion ? " Did you mean '${suggestion}'?" : ""
-        throw new IllegalArgumentException("addTrigger.capability '${cap}' not in Hubitat's trigger capability list.${didYouMean} Valid options: ${capOptions.collect { it.toString() }.sort().join(', ')}. Pass {discover: true} to get the per-capability field schema for each of these.")
+        throw new IllegalArgumentException("addTrigger.capability '${cap}' not in Hubitat's trigger capability list.${didYouMean} Valid options: ${capOptions.collect { it.toString() }.sort().join(', ')}. Use hub_call_app_form to inspect native fields and choices.")
     }
     _rmWriteSettingOnPage(appId, "selectTriggers", "tCapab${idx}", capCanonical, applied, null, skipped)
     def writeIfPresent = { String name, Object value, String typeHint = null ->
@@ -24370,922 +24370,30 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
     }
     return _impl()
 }
-private Map _rmTriggerSchemaForDiscover() {
-    return [
-        discriminator: "capability",
-        note: "Pass the chosen capability name (case-insensitive) as addTrigger.capability in the real call.",
-        conditionFields: [
-            [name: "not", type: "Boolean", description: "Applies inside a CONDITION list only (addTrigger.condition, addRequiredExpression.conditions[], addAction expression conditions[]) -- NOT the trigger row itself. not:true negates the condition (e.g. Time NOT between, mode is NOT Night, does-not-contain via not:true + comparator:'*contains*')."]
-        ],
-        capabilities: [
-            [
-                name: "Switch",
-                family: "device-state",
-                requiredFields: [
-                    [name: "deviceIds", type: "List<Integer>", description: "Switch device IDs"],
-                    [name: "state", type: "enum", values: ["on", "off"], description: "Trigger condition"]
-                ],
-                optionalFields: [
-                    [name: "allOfThese", type: "Boolean", description: "Require ALL selected devices to match (vs. any one)"],
-                    [name: "andStays", type: "Map", description: "{hours?, minutes?, seconds?} -- only fire after state has held this long"],
-                    [name: "conditional", type: "Boolean", description: "Make this a conditional trigger (sets isCondTrig)"],
-                    [name: "condition", type: "Map", description: "Inline conditional-trigger gate -- same per-condition shape as addRequiredExpression conditions[]"],
-                    [name: "rawSettings", type: "Map", description: "Escape hatch for fields not yet mapped"]
-                ]
-            ],
-            [
-                name: "Motion",
-                family: "device-state",
-                requiredFields: [
-                    [name: "deviceIds", type: "List<Integer>", description: "Motion sensor device IDs"],
-                    [name: "state", type: "enum", values: ["active", "inactive"], description: "Trigger condition"]
-                ],
-                optionalFields: [
-                    [name: "allOfThese", type: "Boolean", description: "Require ALL selected devices to match"],
-                    [name: "andStays", type: "Map", description: "{hours?, minutes?, seconds?}"],
-                    [name: "conditional", type: "Boolean"],
-                    [name: "condition", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "Contact",
-                family: "device-state",
-                requiredFields: [
-                    [name: "deviceIds", type: "List<Integer>", description: "Contact sensor device IDs"],
-                    [name: "state", type: "enum", values: ["open", "closed"], description: "Trigger condition"]
-                ],
-                optionalFields: [
-                    [name: "allOfThese", type: "Boolean"],
-                    [name: "andStays", type: "Map", description: "{hours?, minutes?, seconds?}"],
-                    [name: "conditional", type: "Boolean"],
-                    [name: "condition", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "Lock",
-                family: "device-state",
-                requiredFields: [
-                    [name: "deviceIds", type: "List<Integer>", description: "Lock device IDs"],
-                    [name: "state", type: "enum", values: ["locked", "unlocked"], description: "Trigger condition"]
-                ],
-                optionalFields: [
-                    [name: "allOfThese", type: "Boolean"],
-                    [name: "andStays", type: "Map", description: "{hours?, minutes?, seconds?}"],
-                    [name: "conditional", type: "Boolean"],
-                    [name: "condition", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "Presence",
-                family: "device-state",
-                requiredFields: [
-                    [name: "deviceIds", type: "List<Integer>", description: "Presence sensor device IDs"],
-                    [name: "state", type: "enum", values: ["present", "not present"], description: "Trigger condition"]
-                ],
-                optionalFields: [
-                    [name: "allOfThese", type: "Boolean"],
-                    [name: "andStays", type: "Map", description: "{hours?, minutes?, seconds?}"],
-                    [name: "conditional", type: "Boolean"],
-                    [name: "condition", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "Garage",
-                family: "device-state",
-                aliases: ["Door", "Valve", "Window Shade"],
-                notes: "Also covers Door, Valve, Window Shade -- pass any of these names as capability; use appropriate state values for each device type.",
-                requiredFields: [
-                    [name: "deviceIds", type: "List<Integer>"],
-                    [name: "state", type: "enum", values: ["open", "closed"], description: "Trigger condition"]
-                ],
-                optionalFields: [
-                    [name: "allOfThese", type: "Boolean"],
-                    [name: "andStays", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "Power source",
-                family: "device-state",
-                requiredFields: [
-                    [name: "deviceIds", type: "List<Integer>"],
-                    [name: "state", type: "enum", values: ["battery", "dc", "mains", "unknown"], description: "Trigger condition"]
-                ],
-                optionalFields: [
-                    [name: "allOfThese", type: "Boolean"],
-                    [name: "andStays", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "Temperature",
-                family: "numeric",
-                requiredFields: [
-                    [name: "deviceIds", type: "List<Integer>"],
-                    [name: "comparator", type: "enum", values: ["=", "<", ">", "<=", ">=", "*changed*"]],
-                    [name: "value", type: "Number", description: "Temperature threshold (omit for *changed*)"]
-                ],
-                optionalFields: [
-                    [name: "andStays", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "Humidity",
-                family: "numeric",
-                requiredFields: [
-                    [name: "deviceIds", type: "List<Integer>"],
-                    [name: "comparator", type: "enum", values: ["=", "<", ">", "<=", ">=", "*changed*"]],
-                    [name: "value", type: "Number"]
-                ],
-                optionalFields: [
-                    [name: "andStays", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "Battery",
-                family: "numeric",
-                requiredFields: [
-                    [name: "deviceIds", type: "List<Integer>"],
-                    [name: "comparator", type: "enum", values: ["=", "<", ">", "<=", ">=", "*changed*"]],
-                    [name: "value", type: "Number"]
-                ],
-                optionalFields: [
-                    [name: "andStays", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "Illuminance",
-                family: "numeric",
-                requiredFields: [
-                    [name: "deviceIds", type: "List<Integer>"],
-                    [name: "comparator", type: "enum", values: ["=", "<", ">", "<=", ">=", "*changed*"]],
-                    [name: "value", type: "Number"]
-                ],
-                optionalFields: [
-                    [name: "andStays", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "Power",
-                family: "numeric",
-                notes: "Also covers Energy, CO2, Dimmer level, Thermostat setpoints.",
-                requiredFields: [
-                    [name: "deviceIds", type: "List<Integer>"],
-                    [name: "comparator", type: "enum", values: ["=", "<", ">", "<=", ">=", "*changed*"]],
-                    [name: "value", type: "Number"]
-                ],
-                optionalFields: [
-                    [name: "andStays", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "Button",
-                family: "button",
-                requiredFields: [
-                    [name: "deviceIds", type: "List<Integer>", description: "Button-capable device IDs"],
-                    [name: "buttonNumber", type: "Integer"],
-                    [name: "state", type: "enum", values: ["pushed", "held", "doubleTapped", "released"]]
-                ],
-                optionalFields: [
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "Custom Attribute",
-                family: "custom-attribute",
-                requiredFields: [
-                    [name: "deviceIds", type: "List<Integer>"],
-                    [name: "attribute", type: "String", description: "The attribute name on the device"],
-                    [name: "comparator", type: "enum", values: ["=", "≠ (or !=)", "<", ">", "<=", ">=", "*changed*", "*contains*"], description: "Numeric attributes use =/</>/etc.; a free-valued (String) attribute also offers '*contains*' (substring match, written verbatim -- keep the asterisks). There is NO 'does not contain': express negation with not:true + '*contains*'."],
-                    [name: "value", type: "String or Number", description: "Comparison value (the substring for '*contains*'; omit for '*changed*')."]
-                ],
-                optionalFields: [
-                    [name: "not", type: "Boolean", description: "Negate the condition (e.g. not:true + comparator:'*contains*' == does-not-contain)."],
-                    [name: "andStays", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "Certain Time (and optional date)",
-                family: "time",
-                requiredFields: [
-                    [name: "time", type: "enum", values: ["A specific time", "Sunrise", "Sunset"]]
-                ],
-                optionalFields: [
-                    [name: "atTime", type: "String", description: "ISO 8601 datetime (e.g. '2026-04-28T08:00:00') -- required when time='A specific time'; omit for Sunrise/Sunset. Simple forms without timezone use hub local tz."],
-                    [name: "offset", type: "Integer", description: "Minutes offset for Sunrise/Sunset -- omit when time='A specific time'"]
-                ],
-                notes: "atTime is conditionally required: only when time='A specific time'. offset is only applicable for Sunrise/Sunset."
-            ],
-            [
-                name: "Periodic Schedule",
-                family: "time",
-                requiredFields: [
-                    [name: "periodic", type: "Map", description: "{frequency, everyN?, startingTime?, weekdaysOnly?, selectedHours?, selectedMinutes?, selectedDaysOfMonth?, daysOfWeek?, dayOfWeek?, dayOfMonth?, everyNMonths?, months?, weekOfMonth?, minutesOffset?, cronString?, rawSettings?}"]
-                ],
-                notes: "frequency values: 'Seconds', 'Minutes', 'Hourly', 'Daily', 'Weekly', 'Monthly', 'Yearly', 'Cron String'. everyN is REQUIRED even when =1 for Daily's 'every N days' mode -- omitting it renders 'null'; Hourly accepts everyN OR selectedHours. For Seconds and Minutes, everyN is a restricted enum -- one of [1,2,3,4,5,6,10,12,15,20,30] and must be a whole number (firmware-imposed; Hourly/Daily accept any positive integer. Fractional values truncate, e.g. 5.5 -> 5; anything outside the set fails). Seconds exposes ONLY the count enum -- no toggle and no startingTime. For Hourly-everyN, pass startingTime too -- omitting it renders a cosmetic trailing 'starting at ' blank. Monthly has TWO mutually-exclusive modes: by-day (dayOfMonth + everyNMonths) and nth-weekday (weekOfMonth + dayOfWeek + everyNMonths) -- passing both dayOfMonth and weekOfMonth is rejected. Monthly by-day needs BOTH dayOfMonth AND everyNMonths or it renders 'null'. Monthly 'specific months' ('on day N of selected months') is NOT yet supported (an order-sensitive third sub-mode) -- use rawSettings if needed. Yearly is ALWAYS nth-weekday: weekOfMonth + dayOfWeek + months (single month) -- because RM 5.1 exposes no by-day calendar-day field for Yearly, only the nth-weekday picker; the month alone never completes. A Periodic Schedule spec with no periodic map is rejected up front (success=false, naming the stray keys) rather than committing a phantom '?' row. The helper walks the periodic sub-page automatically.",
-                periodicShape: [
-                    frequency: "Seconds | Minutes | Hourly | Daily | Weekly | Monthly | Yearly | Cron String",
-                    everyN: "Integer -- 'every N <unit>' mode (Seconds/Minutes/Hourly/Daily). REQUIRED even when =1 for Daily's 'every N days' mode (omitting renders null); Hourly accepts everyN OR selectedHours. For Seconds/Minutes restricted to a whole number in [1,2,3,4,5,6,10,12,15,20,30] (firmware-imposed; Hourly/Daily accept any positive integer. Fractional values truncate, e.g. 5.5 -> 5).",
-                    startingTime: "HH:mm -- start time (Hourly/Daily/Weekly/Monthly/Yearly; Seconds has none). For Hourly-everyN, pass it -- omitting renders a cosmetic trailing 'starting at ' blank.",
-                    weekdaysOnly: "Boolean -- Daily only",
-                    selectedHours: "List<Integer> -- Hourly only, alternative to everyN",
-                    selectedMinutes: "List<Integer> -- Minutes only, 'at specific minutes' mode, alternative to everyN",
-                    selectedDaysOfMonth: "List<Integer> -- Daily only, alternative to everyN/weekdays",
-                    daysOfWeek: "List<String> -- Weekly only, MULTI day-of-week (e.g. ['Monday','Friday'])",
-                    dayOfWeek: "String -- Monthly/Yearly nth-weekday mode, SINGLE day-of-week (e.g. 'Monday'). Distinct from Weekly's daysOfWeek (multi).",
-                    dayOfMonth: "Integer -- Monthly by-day 'on day number' (pair with everyNMonths; mutually exclusive with weekOfMonth)",
-                    everyNMonths: "Integer -- 'of every N months' (Monthly, both modes; free integer)",
-                    months: "String -- Yearly only; the single nth-weekday month (e.g. 'December'). Yearly exposes a single-month picker. (Monthly does NOT take months -- its specific-months sub-mode is unsupported.)",
-                    weekOfMonth: "String -- Monthly/Yearly nth-weekday 'in the week of month' (First | Second | Third | Fourth | Last). Its presence selects nth-weekday mode.",
-                    minutesOffset: "Integer -- Hourly only, when not using everyN",
-                    cronString: "String -- Cron String mode (e.g. '0 * * * *')",
-                    rawSettings: "Map -- escape hatch for periodic-page fields not yet mapped"
-                ]
-            ],
-            [
-                name: "Mode",
-                family: "hub-state",
-                requiredFields: [
-                    [name: "state", type: "String or List<String>", description: "Mode name(s) that trigger the rule (e.g. 'Night' or ['Away', 'Night']). Names are resolved to IDs via location.modes -- must match existing hub modes (case-insensitive). Use hub_list_modes to list available modes and their IDs. Required unless modeIds is provided."]
-                ],
-                optionalFields: [
-                    [name: "modeIds", type: "List<String or Integer>", description: "Mode IDs directly (alternative to state). Use when you already have the ID from hub_list_modes. E.g. ['3'] or ['3', '5']. When provided, state is not required."]
-                ],
-                notes: "No deviceIds required. Triggers when hub mode becomes any of the listed modes. IMPORTANT: internally writes modesX<N> (not tstate<N>) -- passing only rawSettings with tstate will produce a broken trigger."
-            ],
-            [
-                name: "Variable",
-                family: "variable",
-                requiredFields: [
-                    [name: "variable", type: "String", description: "Hub variable name. Use hub_list_variables to discover."]
-                ],
-                optionalFields: [
-                    [name: "comparator", type: "enum", values: ["=", "!= (or ≠)", "<", ">", "<=", ">=", "in", "*contains*", "*changed*", "*increased*", "*decreased*", "*increased by over*", "*decreased by over*"], description: "Default: *changed*. ASCII '!=' / '<>' map to Unicode '≠'. '*contains*' (substring match, written verbatim -- keep the asterisks) is for a free-valued (String) variable; a numeric variable uses =/</>/etc. instead."],
-                    [name: "value", type: "Number or String", description: "Comparison value (the substring for '*contains*'; omit for the *changed* family)"],
-                    [name: "conditional", type: "Boolean"],
-                    [name: "condition", type: "Map", description: "Inline conditional gate. For 'Variable A changed ONLY IF A != B': {capability: 'Variable', variable: 'A', comparator: '!=', compareToVariable: 'B'}. condition fields: capability, variable, comparator, value | compareToVariable, not?, rawSettings?."],
-                    [name: "rawSettings", type: "Map", description: "Escape hatch -- '@N' token in field names is replaced with the trigger index (e.g. {'xVar@N': 'myVar'})."]
-                ],
-                notes: "No deviceIds. Fires on hub-variable change. Conditional Variable triggers use condition.compareToVariable for 'A vs B' comparisons."
-            ]
-        ]
+private List _rmTriggerFamilies() {
+    [
+        [name: "Switch", family: "device-state"],
+        [name: "Motion", family: "device-state"],
+        [name: "Contact", family: "device-state"],
+        [name: "Lock", family: "device-state"],
+        [name: "Presence", family: "device-state"],
+        [name: "Garage", family: "device-state", aliases: ["Door", "Valve", "Window Shade"]],
+        [name: "Power source", family: "device-state"],
+        [name: "Temperature", family: "numeric"],
+        [name: "Humidity", family: "numeric"],
+        [name: "Battery", family: "numeric"],
+        [name: "Illuminance", family: "numeric"],
+        [name: "Power", family: "numeric"],
+        [name: "Button", family: "button"],
+        [name: "Custom Attribute", family: "custom-attribute"],
+        [name: "Certain Time (and optional date)", family: "time"],
+        [name: "Periodic Schedule", family: "time"],
+        [name: "Mode", family: "hub-state"],
+        [name: "Variable", family: "variable"]
     ]
 }
-private Map _rmActionSchemaForDiscover() {
-    return [
-        discriminator: "capability",
-        note: "Pass the chosen capability name (case-insensitive) as addAction.capability in the real call. 'action' is required for multi-variant capabilities (switch, dimmer, etc.); optional or absent for single-variant ones (log, mode, delay, etc.).",
-        conditionFields: [
-            [name: "not", type: "Boolean", description: "Applies inside an expression CONDITION list (addAction expression conditions[] for ifThen/elseIf/repeatWhile/waitExpression, and addRequiredExpression.conditions[]). not:true negates the condition (e.g. Time NOT between, mode is NOT Night, does-not-contain via not:true + comparator:'*contains*')."]
-        ],
-        capabilities: [
-            [
-                name: "switch",
-                family: "device",
-                actions: ["on", "off", "toggle", "flash", "setPerMode", "choosePerMode"],
-                requiredFields: [
-                    [name: "action", type: "enum", values: ["on", "off", "toggle", "flash", "setPerMode", "choosePerMode"]],
-                    [name: "deviceIds", type: "List<Integer>", description: "Required for on/off/toggle/flash/setPerMode/choosePerMode"]
-                ],
-                optionalFields: [
-                    [name: "perMode", type: "Map", description: "For setPerMode: {modeIdOrName: 'on'|'off', ...}. For choosePerMode: {modeIdOrName: {on: [devIds], off: [devIds]}, ...}"],
-                    [name: "onlyOn", type: "Boolean", description: "For on/off: RM's 'command only switches that are on?' toggle -- writes optSwitch. When true, the command is sent ONLY to switches currently ON: action='off' turns off just the on switches (skips already-off ones); action='on' re-sends on only to already-on switches (a no-op refresh)."],
-                    [name: "delay", type: "Map", description: "{hours?, minutes?, seconds?, cancelable?}"],
-                    [name: "rawSettings", type: "Map"]
-                ],
-                notes: "flash starts a flash schedule; use capability='runCommand' with command='flashOff' to stop it. onlyOn applies to on/off only.",
-                conditionalRequired: [
-                    setPerMode: "perMode",
-                    choosePerMode: "perMode"
-                ]
-            ],
-            [
-                name: "dimmer",
-                family: "device",
-                actions: ["setLevel", "toggle", "adjust", "fade", "stopFade", "startRaiseLower", "stopChanging", "setLevelPerMode"],
-                requiredFields: [
-                    [name: "action", type: "enum", values: ["setLevel", "toggle", "adjust", "fade", "stopFade", "startRaiseLower", "stopChanging", "setLevelPerMode"]],
-                    [name: "deviceIds", type: "List<Integer>"]
-                ],
-                optionalFields: [
-                    [name: "level", type: "Integer", description: "0-100, required for setLevel/toggle"],
-                    [name: "adjustBy", type: "Integer", description: "-100..100, required for adjust"],
-                    [name: "fadeSeconds", type: "Integer", description: "Optional for setLevel/toggle/adjust"],
-                    [name: "targetLevel", type: "Integer", description: "Required for fade"],
-                    [name: "minutes", type: "Integer", description: "Required for fade"],
-                    [name: "direction", type: "enum", values: ["raise", "lower"], description: "Optional for fade and startRaiseLower -- defaults to lower (verified live: the action bakes without it)"],
-                    [name: "intervalSeconds", type: "Integer", description: "Optional for fade"],
-                    [name: "perMode", type: "Map", description: "For setLevelPerMode: {modeIdOrName: level, ...}"],
-                    [name: "levelVariable", type: "String", description: "Hub variable name -- use instead of level for variable-sourced setLevel"],
-                    [name: "delay", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ],
-                conditionalRequired: [
-                    setLevel: "level (or levelVariable for a variable-sourced level)",
-                    toggle: "level (the on-level used when toggling from off)",
-                    adjust: "adjustBy",
-                    fade: "targetLevel + minutes",
-                    setLevelPerMode: "perMode"
-                ]
-            ],
-            [
-                name: "color",
-                family: "device",
-                notes: "RGBW bulbs.",
-                actions: ["setColor", "toggleColor", "setColorPerMode"],
-                requiredFields: [
-                    [name: "action", type: "enum", values: ["setColor", "toggleColor", "setColorPerMode"]],
-                    [name: "deviceIds", type: "List<Integer>"]
-                ],
-                optionalFields: [
-                    [name: "colorName", type: "String", description: "Color name (e.g. 'Red') -- required for setColor (or supply a custom HSV color via rawSettings) and for toggleColor"],
-                    [name: "level", type: "Integer", description: "0-100, required for toggleColor"],
-                    [name: "perMode", type: "Map", description: "For setColorPerMode: {modeIdOrName: {color: 'Red', level: 70}, ...}"],
-                    [name: "delay", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ],
-                conditionalRequired: [
-                    setColor: "colorName (or a custom HSV color via rawSettings)",
-                    toggleColor: "colorName + level",
-                    setColorPerMode: "perMode"
-                ]
-            ],
-            [
-                name: "colorTemp",
-                family: "device",
-                actions: ["setColorTemp", "toggleColorTemp", "fadeColorTemp", "stopColorTempFade", "setColorTempPerMode"],
-                requiredFields: [
-                    [name: "action", type: "enum", values: ["setColorTemp", "toggleColorTemp", "fadeColorTemp", "stopColorTempFade", "setColorTempPerMode"]],
-                    [name: "deviceIds", type: "List<Integer>"]
-                ],
-                optionalFields: [
-                    [name: "kelvin", type: "Integer", description: "Color temperature in Kelvin -- required for setColorTemp and toggleColorTemp"],
-                    [name: "targetKelvin", type: "Integer", description: "Target color temperature in Kelvin -- required for fadeColorTemp (NOT 'kelvin')"],
-                    [name: "level", type: "Integer"],
-                    [name: "minutes", type: "Integer", description: "Required for fadeColorTemp"],
-                    [name: "direction", type: "enum", values: ["raise", "lower"], description: "Optional for fadeColorTemp -- defaults to lower"],
-                    [name: "perMode", type: "Map", description: "For setColorTempPerMode: {modeIdOrName: {kelvin: 2700, level: 70}, ...}"],
-                    [name: "delay", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ],
-                conditionalRequired: [
-                    setColorTemp: "kelvin",
-                    toggleColorTemp: "kelvin",
-                    fadeColorTemp: "targetKelvin + minutes",
-                    setColorTempPerMode: "perMode"
-                ]
-            ],
-            [
-                name: "lock",
-                family: "device",
-                actions: ["lock", "unlock"],
-                requiredFields: [
-                    [name: "action", type: "enum", values: ["lock", "unlock"]],
-                    [name: "deviceIds", type: "List<Integer>"]
-                ],
-                optionalFields: [
-                    [name: "delay", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "hsm",
-                family: "hub",
-                notes: "Hubitat Safety Monitor arm/disarm/alert-cancel. No deviceIds. getSetHSM appears only when HSM is installed on the hub. There is no 'armAll' -- use 'armRules'.",
-                requiredFields: [
-                    [name: "command", type: "enum", values: _rmHsmCommands(), description: "HSM command. Labels: Arm Away / Arm Home / Arm Night / Disarm / Re-Arm Water-Smoke-Gas-CO / Disarm All / Arm All HSM Rules / Cancel All Alerts."]
-                ],
-                optionalFields: [
-                    [name: "delay", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "thermostat",
-                family: "device",
-                requiredFields: [
-                    [name: "deviceIds", type: "List<Integer>"]
-                ],
-                optionalFields: [
-                    [name: "action", type: "String"],
-                    [name: "mode", type: "String"],
-                    [name: "fanMode", type: "String"],
-                    [name: "heatingSetpoint", type: "Number"],
-                    [name: "coolingSetpoint", type: "Number"],
-                    [name: "adjustHeating", type: "Number"],
-                    [name: "adjustCooling", type: "Number"],
-                    [name: "delay", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ],
-                notes: "Requires at least one setting (mode / fanMode / heatingSetpoint / adjustHeating / coolingSetpoint / adjustCooling) -- a thermostat action with deviceIds but no setting does not bake."
-            ],
-            [
-                name: "shade",
-                family: "device",
-                actions: ["open", "close", "stop", "setPosition"],
-                requiredFields: [
-                    [name: "action", type: "enum", values: ["open", "close", "stop", "setPosition"]],
-                    [name: "deviceIds", type: "List<Integer>"]
-                ],
-                optionalFields: [
-                    [name: "position", type: "Integer", description: "0-100, required for setPosition"],
-                    [name: "delay", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ],
-                conditionalRequired: [
-                    setPosition: "position"
-                ]
-            ],
-            [
-                name: "fan",
-                family: "device",
-                actions: ["setSpeed", "cycle"],
-                requiredFields: [
-                    [name: "action", type: "enum", values: ["setSpeed", "cycle"]],
-                    [name: "deviceIds", type: "List<Integer>"]
-                ],
-                optionalFields: [
-                    [name: "speed", type: "String", description: "low/med/high/auto/etc., required for setSpeed"],
-                    [name: "delay", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ],
-                conditionalRequired: [
-                    setSpeed: "speed"
-                ]
-            ],
-            [
-                name: "button",
-                family: "device",
-                actions: ["push", "pushPerMode", "choosePerMode"],
-                requiredFields: [
-                    [name: "action", type: "enum", values: ["push", "pushPerMode", "choosePerMode"]],
-                    [name: "deviceIds", type: "List<Integer>"]
-                ],
-                optionalFields: [
-                    [name: "buttonNumber", type: "Integer", description: "Required for push and choosePerMode (pushPerMode carries the per-mode button numbers inside perMode)"],
-                    [name: "perMode", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ],
-                conditionalRequired: [
-                    push: "buttonNumber",
-                    pushPerMode: "perMode",
-                    choosePerMode: "perMode + buttonNumber"
-                ]
-            ],
-            [
-                name: "runCommand",
-                family: "device",
-                notes: "Calls any device-driver command not exposed by higher-level capability mappings (e.g. flashOff, custom verbs).",
-                requiredFields: [
-                    [name: "command", type: "String", description: "Driver command name (e.g. 'flashOff', 'refresh', 'setLevel')"],
-                    [name: "deviceIds", type: "List<Integer>"]
-                ],
-                optionalFields: [
-                    [name: "capabilityFilter", type: "String", description: "Default 'Switch'"],
-                    [name: "parameters", type: "List", description: "Parameter list. Each entry is {type, value} for a literal (e.g. {type: 'number', value: 75}) or {type, variable} for a hub-variable-sourced value (e.g. {type: 'number', variable: 'myVar'}). Type is lowercase: 'number', 'decimal', or 'string'. Variable-sourced params wire via uVar<P>/xVar<P> -- see docs/rm_wire_format.md for the wire sequence. Fails loud if the hub does not reveal the xVar<P> enum after enabling variable mode (returns success=false with a descriptive error)."],
-                    [name: "useLastEventDevice", type: "Boolean"],
-                    [name: "delay", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "mode",
-                family: "hub",
-                requiredFields: [],
-                optionalFields: [
-                    [name: "modeId", type: "Integer", description: "Mode ID -- provide this OR modeName (not both). When modeName is given, it is resolved to its ID before submission; unknown names fail fast with the valid mode list. Degenerate: if location.modes is empty, the error lists '(none -- hub returned no modes; verify hub state via hub_list_modes)'."],
-                    [name: "modeName", type: "String", description: "Mode name (case-insensitive) -- provide this OR modeId (not both). Resolved to mode ID automatically. Use hub_list_modes to confirm available names."]
-                ],
-                notes: "Exactly one of modeId or modeName is required at call time."
-            ],
-            [
-                name: "setVariable",
-                family: "hub",
-                notes: "Set a hub variable to a constant, copy it from another hub variable, read it from a device attribute, or compute it with structured variable math. Also accepted as capability='variable'. Exactly ONE source mode (value | sourceVariable | fromDevice | math) per action.",
-                requiredFields: [
-                    [name: "variable", type: "String", description: "Hub variable name to write (the target). Must be an existing hub variable name -- an unknown name is rejected before the hub write to prevent silent broken-action state."]
-                ],
-                optionalFields: [
-                    [name: "value", type: "Number", description: "Numeric constant to assign -- provide exactly one of value, sourceVariable, fromDevice, or math. Requires a Number or Decimal target variable (rejected with success=false before the write otherwise -- RM renders numOp/valNumber only for numeric targets). String, boolean, and datetime targets are not supported via 'value'; copy a String target with 'sourceVariable', or set Boolean/DateTime via rawSettings."],
-                    [name: "numOp", type: "String", description: "Only with 'value': 'number' (default) sets the variable to value; 'add number' adds value to its current value. Any other numOp, or numOp without 'value', is rejected before the write."],
-                    [name: "sourceVariable", type: "String", description: "Hub variable name to read from (the source) -- provide exactly one of value, sourceVariable, fromDevice, or math. Must be an existing hub variable name -- an unknown name is rejected before the hub write to prevent silent broken-action state. Works for Number, Decimal and String targets (a String target uses RM's valStringOp='Copy variable' picker instead of numOp=variable); a Boolean or DateTime target is refused before any write. Schema-gated: the source-variable field is only revealed by RM after that selector is written; fails loud (success=false) if the hub does not reveal it. See docs/rm_wire_format.md for the wire sequence."],
-                    [name: "fromDevice", type: "Map", description: "Read the value from a device attribute: {deviceId: <Integer>, attribute: '<name>'} -- provide exactly one of value, sourceVariable, fromDevice, or math. Requires a Number or Decimal target variable. Maps to numOp='device attribute'.[[FLAT_TRIM]] RM does not offer the device-attribute source for String/Boolean/DateTime variables (rejected with success=false before the hub write). deviceId may be ANY hub device (RM's device picker spans all hub devices, not just the MCP-selected set); it is validated only as a positive integer id, not against the MCP device set. The device picker and the attribute enum are schema-gated and revealed in sequence (deviceId reveals an attribute enum FILTERED to that device's live attributes); fails loud (success=false) if the device picker is not revealed. An attribute not in the device's filtered enum is rejected with success=false and the device's available-attribute list. See docs/rm_wire_format.md for the wire sequence.[[/FLAT_TRIM]]"],
-                    [name: "math", type: "Map", description: "Compute the value with structured variable math: {left: <varName|Number>, op: '<operator>', right: <varName|Number>} -- provide exactly one of value, sourceVariable, fromDevice, or math. Requires a Number or Decimal target variable -- RM does not offer the variable-math source for String/Boolean/DateTime variables (rejected with success=false before the hub write). Maps to numOp='variable math'. A Number operand becomes a constant; a String operand is treated as a hub variable name. Binary operators (+ - * / %) require 'right'; unary operators (negate absolute round random sqrt sin cos tan asin acos atan log toRadians toDegrees) reject 'right'. Operand fields are schema-gated and revealed in sequence; fails loud (success=false) if a required field is not revealed. See docs/rm_wire_format.md for the wire sequence."],
-                    [name: "delay", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "setLocalVariable",
-                family: "hub",
-                notes: "Set a rule-LOCAL variable (distinct from setVariable, which targets hub globals). Same source modes and wire path as setVariable; the only difference is that the target name is validated against the rule's local variables (state.allLocalVars). Use this -- not setVariable -- when a local and a hub variable share a name and you mean the local. Exactly ONE source mode (value | sourceVariable | fromDevice | math) per action.",
-                requiredFields: [
-                    [name: "variable", type: "String", description: "Local variable name to write (the target). Must be an existing local variable on this rule (create one first via hub_set_rule addLocalVariable) -- an unknown name is rejected before the hub write to prevent silent broken-action state."]
-                ],
-                optionalFields: [
-                    [name: "value", type: "Number", description: "Numeric constant to assign -- provide exactly one of value, sourceVariable, fromDevice, or math. String, boolean, and datetime local-variable targets are not supported via 'value'; copy a String target with 'sourceVariable', or set Boolean/DateTime via rawSettings."],
-                    [name: "numOp", type: "String", description: "Only with 'value': 'number' (default) sets the variable to value; 'add number' adds value to its current value. Same rules as setVariable's numOp."],
-                    [name: "sourceVariable", type: "String", description: "Variable name to read from (the source) -- provide exactly one of value, sourceVariable, fromDevice, or math. RM's source picker spans BOTH local and hub variables, so the source may be either; validated against the live revealed enum (fails loud, success=false, if the hub does not reveal it). Number, Decimal and String targets are supported; Boolean and DateTime targets are refused before any action row is written. See docs/rm_wire_format.md for the wire sequence."],
-                    [name: "fromDevice", type: "Map", description: "Read the value from a device attribute: {deviceId: <Integer>, attribute: '<name>'} -- provide exactly one of value, sourceVariable, fromDevice, or math. Requires a Number or Decimal target variable (rejected with success=false before the hub write otherwise). Same wire and validation as setVariable's fromDevice."],
-                    [name: "math", type: "Map", description: "Compute the value with structured variable math: {left: <varName|Number>, op: '<operator>', right: <varName|Number>} -- provide exactly one of value, sourceVariable, fromDevice, or math. Requires a Number or Decimal target variable (rejected with success=false before the hub write otherwise). Same operator set and wire as setVariable's math; operand variables may be local or hub (validated against the live revealed enum)."],
-                    [name: "delay", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "log",
-                family: "messaging",
-                requiredFields: [
-                    [name: "message", type: "String"]
-                ],
-                optionalFields: [
-                    [name: "delay", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "notification",
-                family: "messaging",
-                requiredFields: [
-                    [name: "deviceIds", type: "List<Integer>", description: "Notification device IDs"],
-                    [name: "message", type: "String"]
-                ],
-                optionalFields: [
-                    [name: "delay", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "httpGet",
-                family: "messaging",
-                requiredFields: [
-                    [name: "url", type: "String"]
-                ],
-                optionalFields: [
-                    [name: "delay", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "httpPost",
-                family: "messaging",
-                requiredFields: [
-                    [name: "url", type: "String"],
-                    [name: "body", type: "String"]
-                ],
-                optionalFields: [
-                    [name: "contentType", type: "String"],
-                    [name: "delay", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "ping",
-                family: "messaging",
-                requiredFields: [
-                    [name: "ip", type: "String"]
-                ],
-                optionalFields: [
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "volume",
-                family: "media",
-                requiredFields: [
-                    [name: "deviceIds", type: "List<Integer>"],
-                    [name: "level", type: "Integer", description: "Volume level 0-100"]
-                ],
-                optionalFields: [
-                    [name: "delay", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "mute",
-                family: "media",
-                actions: ["mute", "unmute"],
-                requiredFields: [
-                    [name: "action", type: "enum", values: ["mute", "unmute"]],
-                    [name: "deviceIds", type: "List<Integer>"]
-                ],
-                optionalFields: [
-                    [name: "delay", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "chime",
-                family: "media",
-                requiredFields: [
-                    [name: "deviceIds", type: "List<Integer>"]
-                ],
-                optionalFields: [
-                    [name: "playStop", type: "String"],
-                    [name: "soundNumber", type: "Integer"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "siren",
-                family: "media",
-                requiredFields: [
-                    [name: "deviceIds", type: "List<Integer>"]
-                ],
-                optionalFields: [
-                    [name: "sirenAction", type: "String"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "privateBoolean",
-                family: "rules",
-                requiredFields: [
-                    [name: "ruleIds", type: "List<Integer | \"*\">", description: "\"*\" is RM's this-rule target and may stand alone or sit beside numeric rule ids"],
-                    [name: "value", type: "Boolean"]
-                ],
-                optionalFields: [
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "runRule",
-                family: "rules",
-                requiredFields: [
-                    [name: "ruleIds", type: "List<Integer>"]
-                ],
-                optionalFields: [
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "cancelTimers",
-                family: "rules",
-                requiredFields: [
-                    [name: "ruleIds", type: "List<Integer>"]
-                ],
-                optionalFields: [
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "pauseRule",
-                family: "rules",
-                actions: ["pause", "resume"],
-                requiredFields: [
-                    [name: "action", type: "enum", values: ["pause", "resume"]],
-                    [name: "ruleIds", type: "List<Integer>"]
-                ],
-                optionalFields: [
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "capture",
-                family: "device-control",
-                requiredFields: [
-                    [name: "deviceIds", type: "List<Integer>"]
-                ],
-                optionalFields: [
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "restore",
-                family: "device-control",
-                notes: "No fields required -- restores previously captured device state.",
-                requiredFields: [],
-                optionalFields: [
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "refresh",
-                family: "device-control",
-                requiredFields: [
-                    [name: "deviceIds", type: "List<Integer>"]
-                ],
-                optionalFields: [
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "poll",
-                family: "device-control",
-                requiredFields: [
-                    [name: "deviceIds", type: "List<Integer>"]
-                ],
-                optionalFields: [
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "disableDevice",
-                family: "device-control",
-                actions: ["disable", "enable"],
-                requiredFields: [
-                    [name: "action", type: "enum", values: ["disable", "enable"]],
-                    [name: "deviceIds", type: "List<Integer>"]
-                ],
-                optionalFields: [
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "delay",
-                family: "flow",
-                notes: "Pause execution for a fixed or variable duration.",
-                requiredFields: [],
-                optionalFields: [
-                    [name: "hours", type: "Integer"],
-                    [name: "minutes", type: "Integer"],
-                    [name: "seconds", type: "Integer"],
-                    [name: "cancelable", type: "Boolean"],
-                    [name: "random", type: "Boolean"],
-                    [name: "variable", type: "String", description: "Hub variable name -- use instead of hours/minutes/seconds for variable-sourced delay"]
-                ]
-            ],
-            [
-                name: "delayPerMode",
-                family: "flow",
-                requiredFields: [
-                    [name: "perMode", type: "Map", description: "{modeIdOrName: {hours?, minutes?, seconds?}, ...}"]
-                ],
-                optionalFields: [
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "cancelDelay",
-                family: "flow",
-                notes: "No fields required.",
-                requiredFields: [],
-                optionalFields: []
-            ],
-            [
-                name: "exitRule",
-                family: "flow",
-                notes: "No fields required.",
-                requiredFields: [],
-                optionalFields: []
-            ],
-            [
-                name: "comment",
-                family: "flow",
-                requiredFields: [
-                    [name: "text", type: "String"]
-                ],
-                optionalFields: []
-            ],
-            [
-                name: "repeat",
-                family: "flow",
-                requiredFields: [
-                    [name: "hours", type: "Integer", description: "At least one of hours/minutes/seconds required"],
-                    [name: "minutes", type: "Integer"],
-                    [name: "seconds", type: "Integer"]
-                ],
-                optionalFields: [
-                    [name: "times", type: "Integer"],
-                    [name: "stoppable", type: "Boolean"]
-                ]
-            ],
-            [
-                name: "stopRepeat",
-                family: "flow",
-                notes: "No fields required.",
-                requiredFields: [],
-                optionalFields: []
-            ],
-            [
-                name: "repeatWhile",
-                family: "flow",
-                requiredFields: [
-                    [name: "expression", type: "Map", description: "{conditions: [...], operator?: 'AND'|'OR'|'XOR', operators?: [...]}"]
-                ],
-                optionalFields: [
-                    [name: "hours", type: "Integer"],
-                    [name: "minutes", type: "Integer"],
-                    [name: "seconds", type: "Integer"],
-                    [name: "times", type: "Integer"],
-                    [name: "stoppable", type: "Boolean"]
-                ]
-            ],
-            [
-                name: "waitExpression",
-                family: "flow",
-                requiredFields: [
-                    [name: "expression", type: "Map", description: "{conditions: [...], operator?, operators?}"]
-                ],
-                optionalFields: [
-                    [name: "delay", type: "Map", description: "{hours?, minutes?, seconds?}"],
-                    [name: "useDuration", type: "Boolean"]
-                ]
-            ],
-            [
-                name: "waitEvents",
-                family: "flow",
-                requiredFields: [
-                    [name: "events", type: "List<Map>", description: "Each: {capability, deviceIds, state, andStays?}. andStays is either true (wait until the state has held, zero extra duration; an empty map {} is equivalent) OR {hours?, minutes?, seconds?} to require it hold that long (writes SHours-/SMins-/SSecs-<N>). Mode event: {capability:'Mode', state:<mode name or list of names>} or {capability:'Mode', modeIds:[...]} -- deviceIds is rejected on a Mode event; the mode value is written to the mode picker, not tstate."]
-                ],
-                optionalFields: [
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "ifThen",
-                family: "flow",
-                notes: "Opens an IF block. Close with capability='endIf'. Use 'elseIf'/'else' for branches.",
-                requiredFields: [
-                    [name: "expression", type: "Map", description: "{conditions: [...], operator?, operators?}"]
-                ],
-                optionalFields: [
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "elseIf",
-                family: "flow",
-                notes: "Continues an IF block. Needs a preceding ifThen.",
-                requiredFields: [
-                    [name: "expression", type: "Map"]
-                ],
-                optionalFields: [
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "else",
-                family: "flow",
-                notes: "No fields required. Needs a preceding ifThen or elseIf.",
-                requiredFields: [],
-                optionalFields: []
-            ],
-            [
-                name: "endIf",
-                family: "flow",
-                notes: "No fields required. Closes the IF block.",
-                requiredFields: [],
-                optionalFields: []
-            ],
-            [
-                name: "fileWrite",
-                family: "file",
-                requiredFields: [
-                    [name: "fileName", type: "String"],
-                    [name: "content", type: "String"]
-                ],
-                optionalFields: [
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "fileAppend",
-                family: "file",
-                notes: "File must already exist.",
-                requiredFields: [
-                    [name: "fileName", type: "String"],
-                    [name: "content", type: "String"]
-                ],
-                optionalFields: [
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "fileDelete",
-                family: "file",
-                requiredFields: [
-                    [name: "fileName", type: "String"]
-                ],
-                optionalFields: [
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "zwavePoll",
-                family: "device-control",
-                actions: ["start", "stop"],
-                requiredFields: [
-                    [name: "action", type: "enum", values: ["start", "stop"]]
-                ],
-                optionalFields: [
-                    [name: "deviceIds", type: "List<Integer>", description: "Z-Wave switches/dimmers to poll -- omit to poll all eligible devices"],
-                    [name: "target", type: "enum", values: ["switches", "dimmers"], description: "Defaults to 'switches' when omitted"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ]
-        ]
-    ]
+private List _rmActionVerbCapabilities() {
+    ["switch", "dimmer", "color", "colortemp", "lock", "shade", "fan", "button", "mute", "pauserule", "disabledevice", "zwavepoll"]
 }
 private List _rmCollectTriggerIndices(Integer appId) {
     def status = _rmFetchStatusJson(appId)
@@ -26216,9 +25324,7 @@ private void _rmInitSelectActionsPage(Integer appId) {
 private boolean _rmActionCapUsesActionVerb(String capRaw) {
     def want = capRaw?.trim()?.toLowerCase()
     if (!want) return false
-    def actionEnumCaps = (_rmActionSchemaForDiscover()?.capabilities ?: []).findAll { c ->
-        (c?.requiredFields instanceof List) && (c.requiredFields as List).any { it?.name == "action" && it?.type == "enum" }
-    }.collect { it.name.toString().toLowerCase() }
+    def actionEnumCaps = _rmActionVerbCapabilities()
     def resolved = (want == "window shade" || want == "windowshade") ? "shade" : want
     return resolved in actionEnumCaps
 }
@@ -26363,7 +25469,7 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
         actType = "dimmerActs"
         switch (action) {
             case "setColor":
-                if (actionSpec.colorName == null && !(actionSpec.rawSettings instanceof Map)) throw new IllegalArgumentException("color.setColor requires 'colorName' (e.g. 'Red'), OR a custom HSV color supplied via rawSettings (colorH.<N>). Without a color source the action registers but never bakes. See hub_get_tool_guide(section='set_rule_create_reference').")
+                if (actionSpec.colorName == null && !(actionSpec.rawSettings instanceof Map)) throw new IllegalArgumentException("color.setColor requires 'colorName' (e.g. 'Red'), OR a custom HSV color supplied via rawSettings (colorH.<N>). Without a color source the action registers but never bakes. See hub_get_tool_guide(section='native_app_forms').")
                 actSubType = "getSetColor"
                 fields = ["bulbs.@N": deviceIds]
                 if (actionSpec.colorName != null) fields["color.@N"] = actionSpec.colorName
@@ -26397,19 +25503,19 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
         actType = "dimmerActs"
         switch (action) {
             case "setColorTemp":
-                if (actionSpec.kelvin == null) throw new IllegalArgumentException("colorTemp.setColorTemp requires 'kelvin' (color temperature in K, e.g. 2700). Without it the action registers but never bakes. See hub_get_tool_guide(section='set_rule_create_reference').")
+                if (actionSpec.kelvin == null) throw new IllegalArgumentException("colorTemp.setColorTemp requires 'kelvin' (color temperature in K, e.g. 2700). Without it the action registers but never bakes. See hub_get_tool_guide(section='native_app_forms').")
                 actSubType = "getSetColorTemp"
                 fields = ["ct.@N": deviceIds, "ctL.@N": actionSpec.kelvin]
                 if (actionSpec.level != null) fields["ctLevel.@N"] = actionSpec.level
                 break
             case "toggleColorTemp":
-                if (actionSpec.kelvin == null) throw new IllegalArgumentException("colorTemp.toggleColorTemp requires 'kelvin' (color temperature in K, e.g. 2700). Without it the action registers but never bakes. See hub_get_tool_guide(section='set_rule_create_reference').")
+                if (actionSpec.kelvin == null) throw new IllegalArgumentException("colorTemp.toggleColorTemp requires 'kelvin' (color temperature in K, e.g. 2700). Without it the action registers but never bakes. See hub_get_tool_guide(section='native_app_forms').")
                 actSubType = "getToggleColorTemp"
                 fields = ["ctTog.@N": deviceIds, "ctLTog.@N": actionSpec.kelvin]
                 if (actionSpec.level != null) fields["ctTogLevel.@N"] = actionSpec.level
                 break
             case "fadeColorTemp":
-                if (actionSpec.targetKelvin == null || actionSpec.minutes == null) throw new IllegalArgumentException("colorTemp.fadeColorTemp requires 'targetKelvin' (target color temp in K) and 'minutes' (fade duration). Without them the action registers but never bakes. Optional 'direction' (raise/lower) defaults to lower. See hub_get_tool_guide(section='set_rule_create_reference').")
+                if (actionSpec.targetKelvin == null || actionSpec.minutes == null) throw new IllegalArgumentException("colorTemp.fadeColorTemp requires 'targetKelvin' (target color temp in K) and 'minutes' (fade duration). Without them the action registers but never bakes. Optional 'direction' (raise/lower) defaults to lower. See hub_get_tool_guide(section='native_app_forms').")
                 actSubType = "getFadeCT"
                 fields = ["ctFade.@N": deviceIds, "ctFadeUp.@N": (actionSpec.direction == "raise"), "ctFadeTarget.@N": actionSpec.targetKelvin, "ctFadeTime.@N": actionSpec.minutes]
                 if (actionSpec.intervalSeconds != null) fields["ctFadeInterval.@N"] = actionSpec.intervalSeconds
@@ -26448,7 +25554,7 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
     } else if (cap == "thermostat") {
         if (actionSpec.mode == null && actionSpec.fanMode == null && actionSpec.heatingSetpoint == null &&
             actionSpec.adjustHeating == null && actionSpec.coolingSetpoint == null && actionSpec.adjustCooling == null) {
-            throw new IllegalArgumentException("thermostat action requires at least one setting: 'mode', 'fanMode', 'heatingSetpoint', 'adjustHeating', 'coolingSetpoint', or 'adjustCooling'. Without any, the action registers but never bakes. See hub_get_tool_guide(section='set_rule_create_reference').")
+            throw new IllegalArgumentException("thermostat action requires at least one setting: 'mode', 'fanMode', 'heatingSetpoint', 'adjustHeating', 'coolingSetpoint', or 'adjustCooling'. Without any, the action registers but never bakes. See hub_get_tool_guide(section='native_app_forms').")
         }
         actType = "lockActs"
         actSubType = "getSetThermostat"
@@ -26473,7 +25579,7 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
             case "open":  actSubType = "getRLShade"; fields = ["shadeRL.@N": false, "shadeOpenClose.@N": deviceIds]; break
             case "close": actSubType = "getRLShade"; fields = ["shadeRL.@N": true,  "shadeOpenClose.@N": deviceIds]; break
             case "setPosition":
-                if (actionSpec.position == null) throw new IllegalArgumentException("shade.setPosition requires 'position' (0-100). Without it the action registers but never bakes. See hub_get_tool_guide(section='set_rule_create_reference').")
+                if (actionSpec.position == null) throw new IllegalArgumentException("shade.setPosition requires 'position' (0-100). Without it the action registers but never bakes. See hub_get_tool_guide(section='native_app_forms').")
                 actSubType = "getShadePosition"
                 fields = ["shadePosition.@N": deviceIds, "shadeLevel.@N": actionSpec.position]
                 break
@@ -26484,7 +25590,7 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
         actType = "sceneActs"
         switch (action) {
             case "setSpeed":
-                if (actionSpec.speed == null) throw new IllegalArgumentException("fan.setSpeed requires 'speed' (e.g. low / medium-low / medium / medium-high / high / on / auto / off). Without it the action registers but never bakes. See hub_get_tool_guide(section='set_rule_create_reference').")
+                if (actionSpec.speed == null) throw new IllegalArgumentException("fan.setSpeed requires 'speed' (e.g. low / medium-low / medium / medium-high / high / on / auto / off). Without it the action registers but never bakes. See hub_get_tool_guide(section='native_app_forms').")
                 actSubType = "getFanSpeed"
                 fields = ["fanDevice.@N": deviceIds, "fanSpeed.@N": actionSpec.speed]
                 break
@@ -26891,7 +25997,7 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
         fields = ["disEn.@N": (action != "disable"), "devDisable.@N": deviceIds]
     } else if (cap == "delay") {
         if (actionSpec.variable == null && actionSpec.hours == null && actionSpec.minutes == null && actionSpec.seconds == null) {
-            throw new IllegalArgumentException("delay action requires a duration: 'hours', 'minutes', and/or 'seconds' (or 'variable' for a variable-sourced delay). Without any, the action registers but never bakes. See hub_get_tool_guide(section='set_rule_create_reference').")
+            throw new IllegalArgumentException("delay action requires a duration: 'hours', 'minutes', and/or 'seconds' (or 'variable' for a variable-sourced delay). Without any, the action registers but never bakes. See hub_get_tool_guide(section='native_app_forms').")
         }
         actType = "delayActs"
         actSubType = "getDelay"
@@ -26940,7 +26046,7 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
         fields = ["comment.@N": actionSpec.text.toString()]
     } else if (cap == "repeat") {
         if (actionSpec.hours == null && actionSpec.minutes == null && actionSpec.seconds == null) {
-            throw new IllegalArgumentException("repeat action requires an interval: 'hours', 'minutes', and/or 'seconds' (how often to repeat). 'times' alone does not bake. Without an interval the action registers but never bakes. See hub_get_tool_guide(section='set_rule_create_reference').")
+            throw new IllegalArgumentException("repeat action requires an interval: 'hours', 'minutes', and/or 'seconds' (how often to repeat). 'times' alone does not bake. Without an interval the action registers but never bakes. See hub_get_tool_guide(section='native_app_forms').")
         }
         actType = "repeatActs"
         actSubType = "getRepeat"
@@ -27088,7 +26194,7 @@ private void _rmPrevalidateTriggerSpecList(List specs, String label) {
         try {
             _rmValidateRoundZeroTriggerSpec(sm)
             if (!sm.capability?.toString()?.trim()) {
-                throw new IllegalArgumentException("addTrigger.capability is required. Pass {discover: true} to get the full structured schema. RM is not touched.")
+                throw new IllegalArgumentException("addTrigger.capability is required. Use hub_call_app_form to inspect native fields and choices. RM is not touched.")
             }
             _rmValidateDeviceIdsExist("addTrigger.deviceIds", sm.deviceIds)
             if (sm.condition instanceof Map) {
@@ -27166,11 +26272,11 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
     Long reqT0 = (actionSpec.__reqT0 instanceof Number && ((Number) actionSpec.__reqT0).longValue() > 0) ?
             ((Number) actionSpec.__reqT0).longValue() : null
     if (actionSpec.discover == true) {
-        return _rmActionSchemaForDiscover()
+        throw new IllegalArgumentException('RM discovery catalogs are retired; use hub_call_app_form for native field and option discovery')
     }
     def cap = actionSpec.capability?.toString()?.trim()
     def action = actionSpec.action?.toString()?.trim()
-    if (!cap) throw new IllegalArgumentException("addAction.capability is required (e.g. 'switch'). Common values: switch, dimmer, color, log, notification, mode, setVariable, runCommand, delay, repeat, ifThen. Pass {discover: true} to get the full structured schema.")
+    if (!cap) throw new IllegalArgumentException("addAction.capability is required (e.g. 'switch'). Common values: switch, dimmer, color, log, notification, mode, setVariable, runCommand, delay, repeat, ifThen. Use hub_call_app_form to inspect native fields and choices.")
     _rmValidateRoundZeroActionSpec(actionSpec)
     if (!intraBatch) _rmRejectDisabledAppEdit(appId, "addAction")
     def preflightCap = _rmStructuralPairForCapability(cap)
@@ -28438,7 +27544,7 @@ private Map _rmBackupBeforeEditLocked(Integer ruleId, String reason) {
             try { vrbFallback = _vrbDetect(ruleId) } catch (Exception ignored) { }
             if (vrbFallback == null) {
                 if (e.message?.contains("404")) {
-                    throw new IllegalArgumentException("No rule/app with id ${ruleId} exists on this hub (configure/json returned 404). Nothing was changed. Use hub_list_rules for valid ids. See hub_get_tool_guide(section='set_rule_reference').")
+                    throw new IllegalArgumentException("No rule/app with id ${ruleId} exists on this hub (configure/json returned 404). Nothing was changed. Use hub_list_rules for valid ids. See hub_get_tool_guide(section='native_rule_documents').")
                 }
                 mcpLog("warn", "rm-native", "Could not read rule ${ruleId} before reusing backup '${recent.key}' (${e.message ?: e}); continuing without the internal brokenBefore diagnostic")
             }
@@ -28467,7 +27573,7 @@ private Map _rmBuildRuleSnapshot(Integer ruleId, String reason) {
         try { vrbFallback = _vrbDetect(ruleId) } catch (Exception ignored) { }
         if (vrbFallback == null) {
             if (e.message?.contains("404")) {
-                throw new IllegalArgumentException("No rule/app with id ${ruleId} exists on this hub (configure/json returned 404). Nothing was changed. Use hub_list_rules for valid ids. See hub_get_tool_guide(section='set_rule_reference').")
+                throw new IllegalArgumentException("No rule/app with id ${ruleId} exists on this hub (configure/json returned 404). Nothing was changed. Use hub_list_rules for valid ids. See hub_get_tool_guide(section='native_rule_documents').")
             }
             throw new IllegalArgumentException("Cannot back up rule ${ruleId}: configure/json failed -- ${e.message}")
         }
@@ -28608,123 +27714,14 @@ private Map _rmSoftDeleteApp(Integer appId) {
 }
 def _setRuleCreateHonored() { ['addTrigger', 'addTriggers', 'addAction', 'addActions', 'addRequiredExpression'] }
 def _setRuleEditOnly() { ['replaceRequiredExpression', 'addLocalVariable', 'removeLocalVariable', 'patches', 'replaceActions', 'removeAction', 'clearActions', 'moveAction', 'removeTrigger', 'modifyTrigger', 'modifyAction', 'walkStep', 'settings', 'button'] }
-def _setRuleOperations() { (['create'] + _setRuleCreateHonored() + _setRuleEditOnly() + ['buttonRule', 'guide', 'discover']).unique() }
-def _isSetRuleSchemaOnlyCall(args) {
-    if (!(args instanceof Map)) return false
-    if (args.operation != null) {
-        def op = args.operation.toString()
-        return (op == 'guide' || op == 'discover' || args.confirm != true)
-    }
-    if (args.buttonRule != null) return false
-    if (args.guide == true) return true
-    if (args.addTrigger instanceof Map && args.addTrigger.discover == true) return true
-    if (args.addAction instanceof Map && args.addAction.discover == true) return true
-    return false
-}
+def _setRuleOperations() { (['create'] + _setRuleCreateHonored() + _setRuleEditOnly() + ['buttonRule', 'guide']).unique() }
 def _isNativeAppSchemaOnlyCall(args) {
     if (!(args instanceof Map)) return false
     if (args.appId == null || args.buttonRule != null) return false
     if (args.guide == true) return true
-    if (args.addTrigger instanceof Map && args.addTrigger.discover == true) return true
-    if (args.addAction instanceof Map && args.addAction.discover == true) return true
     return false
 }
-Map _setRuleFromEnvelope(Map env) {
-    String op = env.operation?.toString()?.trim()
-    if (!_setRuleOperations().contains(op)) {
-        throw new IllegalArgumentException("hub_set_rule: unknown operation '${op}'. Valid: ${_setRuleOperations().sort().join(', ')}.")
-    }
-    def payload = env.args
-    if (payload instanceof String) {
-        def s = (payload as String).trim()
-        if (s.startsWith('{') || s.startsWith('[')) {
-            try {
-                payload = new groovy.json.JsonSlurper().parseText(s)
-            } catch (Exception pe) {
-                throw new IllegalArgumentException("hub_set_rule operation='${op}': args looks like JSON but is not valid JSON (${pe.message}). Pass args as an object, not a malformed JSON string.")
-            }
-        }
-    }
-    if (op == 'guide') return [args: [guide: true]]
-    if (op == 'discover') {
-        def kind = (payload instanceof Map && payload.kind != null) ? payload.kind.toString().toLowerCase() : 'action'
-        if (kind != 'trigger' && kind != 'action') {
-            throw new IllegalArgumentException("hub_set_rule operation='discover': args.kind must be 'trigger' or 'action' (got '${kind}').")
-        }
-        def kn = (kind == 'trigger') ? 'addTrigger' : 'addAction'
-        return [args: [(kn): [discover: true]]]
-    }
-    if (env.confirm != true) {
-        return [_schema: _setRuleOperationSchema(op)]
-    }
-    if (op == 'create') {
-        if (env.appId != null) {
-            throw new IllegalArgumentException("hub_set_rule operation='create' must OMIT appId (it makes a NEW rule). To edit rule ${env.appId}, call the matching edit operation with that appId.")
-        }
-        if (!(payload instanceof Map)) {
-            throw new IllegalArgumentException("hub_set_rule operation='create': args must be an object of {name, addTriggers, addActions, addRequiredExpression, ...}.")
-        }
-        def allowed = (['name'] + _setRuleCreateHonored())
-        def extraneous = (payload as Map).keySet().findAll { !allowed.contains(it) }
-        if (extraneous) {
-            throw new IllegalArgumentException("hub_set_rule operation='create' accepts only ${allowed.join(', ')} in args; ${extraneous.sort().join(', ')} require an existing rule -- create first, then call that operation with the returned appId.")
-        }
-        def legacyCreate = [confirm: true]
-        allowed.each { k -> if ((payload as Map).containsKey(k)) legacyCreate.put(k, payload.get(k)) }
-        return [args: legacyCreate]
-    }
-    def legacy = [:]
-    if (env.appId != null) legacy.appId = env.appId
-    legacy.confirm = true
-    if (op == 'buttonRule') {
-        legacy.buttonRule = payload
-    } else if (op == 'clearActions') {
-        legacy.clearActions = true
-    } else {
-        def val = payload
-        if (op != 'settings' && val instanceof Map && val.size() == 1 && val.containsKey(op)) val = val.get(op)
-        if (op in ['addTriggers', 'addActions', 'replaceActions', 'patches']) {
-            if (op != 'patches' && val instanceof Map && val.size() == 1 && val.values()[0] instanceof List) val = val.values()[0]
-            if (!(val instanceof List)) {
-                def got = (val == null) ? 'nothing' : (val instanceof Map ? 'an object' : 'a non-array value')
-                throw new IllegalArgumentException("hub_set_rule operation='${op}': args must be a bare array, e.g. args:[{...},...] (got ${got}). Call without confirm to see the schema.")
-            }
-        }
-        legacy.put(op, val)
-    }
-    return [args: legacy]
-}
-Map _setRuleOperationSchema(String op) {
-    def fat = getAllToolDefinitions().find { it.name == 'hub_set_rule' }
-    def props = (fat?.inputSchema?.properties ?: [:]) as Map
-    def argsSchema
-    if (op == 'create') {
-        argsSchema = [:]
-        (['name'] + _setRuleCreateHonored()).each { k -> if (props.get(k) != null) argsSchema.put(k, props.get(k)) }
-    } else {
-        argsSchema = props.get(op)
-    }
-    def clean = new groovy.json.JsonSlurper().parseText(stripFlatTrim(groovy.json.JsonOutput.toJson(argsSchema ?: [:]), false))
-    def usage
-    if (op == 'create') {
-        usage = "To apply: call hub_set_rule again with operation='create', omit appId, confirm:true, and args = {name + any addTriggers/addActions/addRequiredExpression matching argsSchema}."
-    } else if (op == 'clearActions') {
-        usage = "To apply: call hub_set_rule again with operation='clearActions', appId=<ruleId>, confirm:true (no args needed)."
-    } else if (op == 'buttonRule') {
-        usage = "To apply: call hub_set_rule again with operation='buttonRule', omit appId, confirm:true, and args = {controllerId, buttonNumber, event} matching argsSchema (the bare object — do NOT wrap it under 'buttonRule')."
-    } else {
-        usage = "To apply: call hub_set_rule again with operation='${op}', appId=<ruleId>, confirm:true, and args = a value matching argsSchema (the bare object/value — do NOT wrap it under '${op}')."
-    }
-    return [operation: op, argsSchema: clean, usage: usage, note: "Schema probe only — no rule was changed. Add confirm:true (and args) to apply."]
-}
 def toolSetRule(args) {
-    if (args instanceof Map && args.operation != null) {
-        def reqT0 = args.__reqT0
-        def rekeyed = _setRuleFromEnvelope(args)
-        if (rekeyed.containsKey('_schema')) return rekeyed._schema
-        args = rekeyed.args
-        if (reqT0 != null && args instanceof Map) args.__reqT0 = reqT0
-    }
     if (args instanceof Map && args.buttonRule != null) {
         return _createButtonRuleViaController(args)
     }
@@ -29003,7 +28000,7 @@ def _createNativeAppShell(args) {
         if (partialTriggers || partialActions || reFailed || rePartial) {
             repairHints << "Rule ${newId} was created BUT some pieces are incomplete -- see partialTriggers / partialActions arrays for indices${reFailed || rePartial ? ", and requiredExpression for the Required Expression outcome" : ""}. Each partial result has its own repairHints list with concrete next steps."
             repairHints << "Repair pattern: 1) hub_get_app_config(${newId}, includeSettings=true) to inspect current state. 2) For each partial trigger/action, follow its repairHints. 3) hub_set_rule(walkStep={...}) for incremental field writes; replaceActions(...) or removeAction(index) + addAction(...) for whole-action retries. 4) hub_set_rule(button='updateRule') after fixes to commit. 5) Re-run hub_get_rule_health to verify. Don't conclude failure until tool-only repair attempts are exhausted."
-            repairHints << "Full trigger/action field reference: call hub_set_rule(guide:true), or hub_get_tool_guide(section='set_rule_create_reference')."
+            repairHints << "Native field reference: use hub_call_app_form or hub_get_tool_guide(section='native_app_forms')."
         }
         def labelApplied = (appType == "rule_machine")
         if (!labelApplied && name) {
@@ -31797,11 +30794,9 @@ private void _rmRejectNonDeviceMapSettings(Integer appId, String pageName, Map s
 }
 def _applyNativeAppEdit(args) {
     def _impl = {
-    if (args?.addTrigger instanceof Map && args.addTrigger.discover == true) {
-        return _rmAddTrigger(0, args.addTrigger as Map)
-    }
-    if (args?.addAction instanceof Map && args.addAction.discover == true) {
-        return _rmAddAction(0, _rmWithClock(args.addAction as Map, args?.__reqT0 as Long))
+    if ((args?.addTrigger instanceof Map && args.addTrigger.discover == true) ||
+        (args?.addAction instanceof Map && args.addAction.discover == true)) {
+        throw new IllegalArgumentException('RM discovery catalogs are retired; use hub_call_app_form for native field and option discovery')
     }
     if (args?.guide == true) {
         return _rmWholeGuideSection('builtin_app_tools')
@@ -31868,7 +30863,7 @@ def _applyNativeAppEdit(args) {
         triggerOpNames == ["addTriggers"] && actionOpNames == ["addActions"])
     if ((editOpGroups.size() >= 2 && !allowedBulkPair) || triggerOpNames.size() > 1 || actionOpNames.size() > 1) {
         def opNames = editOpGroups.collectMany { it }
-        throw new IllegalArgumentException("hub_set_rule / hub_set_native_app received multiple operations in one call (${opNames.join(', ')}). Multi-op calls are refused: depending on the combination the extras would either be silently dropped or run in a fixed internal order you did not choose. Use patches:[...] for ordered edits (earlier writes remain if a later edit fails), or issue one call per operation. See hub_get_tool_guide(section='set_rule_reference').")
+        throw new IllegalArgumentException("hub_set_rule / hub_set_native_app received multiple operations in one call (${opNames.join(', ')}). Multi-op calls are refused: depending on the combination the extras would either be silently dropped or run in a fixed internal order you did not choose. Use patches:[...] for ordered edits (earlier writes remain if a later edit fails), or issue one call per operation. See hub_get_tool_guide(section='native_rule_documents').")
     }
     if (settingsMap) {
         def devKeyPattern = ~/^([tr]Dev[_-]?\d+|switch[A-Z]\w*|onOffSwitch\.\d+|lockLockUnlock\.\d+|shadeOpenClose\.\d+|fanRL\.\d+|tDev-\d+|deviceList|dimmerLevel\.\d+|ButtontDev_?\d+|pushButton\d+)$/
@@ -33280,7 +32275,7 @@ private Object _nmEntry(Map values, String id) {
 }
 private List _nmFields(List fields, String id) {
     if (fields == null) throw new IllegalArgumentException('Typed fields are required')
-    fields.collect { row ->
+    List result = fields.collect { row ->
         if (!(row instanceof Map) || !(row.name instanceof String) || !row.name.contains('#') || !(row.type instanceof String) || !row.containsKey('value') || row.keySet().any { !(it in ['name', 'type', 'value']) }) {
             throw new IllegalArgumentException('Fields require native name templates containing #, type and value')
         }
@@ -33297,6 +32292,8 @@ private List _nmFields(List fields, String id) {
         }
         [name: row.name.replace('#', id), type: row.type, value: row.value]
     }
+    if (result.collect { it.name }.unique().size() != result.size()) throw new IllegalArgumentException('Native inputs must not be repeated')
+    result
 }
 private void _nmCollectInputs(Object node, Map inputs) {
     if (node instanceof Map) {
@@ -33346,6 +32343,41 @@ Map _nmValidateInputs(Object page, List fields) {
         if (reason != null) errors << [field: row.name, error: "Native field '${row.name}': ${reason}".toString()]
     }
     [success: errors.isEmpty(), error: errors ? errors.get(0).error : null, fieldErrors: errors, verifiedFields: fields.findAll { row -> !errors.any { it.field == row.name } }.collect { it.name }]
+}
+private Map _nmWriteExposed(Long ruleId, List fields, List selectors, Object page, Closure render) {
+    if (fields.collect { it.name }.unique().size() != fields.size()) throw new IllegalArgumentException('Native inputs must not be repeated')
+    List pending = new ArrayList(fields)
+    while (pending) {
+        Map inputs = [:]
+        if (page instanceof Map) _nmCollectInputs(page, inputs)
+        List selectorRows = pending.findAll { it.name in selectors }
+        if (selectorRows) {
+            Map saved = _nrSettings(ruleId, selectorRows.collect { it.name })
+            for (Object row in selectorRows) {
+                if (!inputs.containsKey(row.name)) {
+                    def prior = saved.get(row.name)
+                    if (prior?.type == row.type && _nrComparableSetting(row.type, prior.value) == _nrComparableSetting(row.type, row.value)) pending.remove(row)
+                }
+            }
+            selectorRows = pending.findAll { it.name in selectors }
+        }
+        if (!pending) break
+        List batch = []
+        for (Object descriptor in inputs.values()) {
+            def row = pending.find { it.name == descriptor.name && (!selectorRows || it.name in selectors) }
+            if (row != null) {
+                batch << row
+                if (descriptor.submitOnChange == true || row.name in selectors) break
+            }
+        }
+        Map validation = _nmValidateInputs(page, batch ?: pending)
+        if (!batch || validation.success != true) return [success: false, partial: true, error: validation.error ?: 'Native inputs are not exposed; no authoring progress is possible', fieldErrors: validation.fieldErrors]
+        Map written = _nrWriteSettings(ruleId, batch)
+        if (written.success != true) return [success: false, partial: true, error: 'Native input persistence failed', settings: written]
+        pending.removeAll(batch)
+        page = render.call()
+    }
+    [success: true, page: page]
 }
 private void _nmTokens(List tokens, Map conditions) {
     if (!tokens) throw new IllegalArgumentException('An expression must contain an operand')
@@ -33473,14 +32505,12 @@ Map _nmUpsertCondition(Long ruleId, boolean trigger, Map row) {
     String selector = trigger ? "tCapab${id}".toString() : "rCapab_${id}".toString()
     if (fields.any { it.name == selector }) throw new IllegalArgumentException('Capability selector must not be repeated in fields')
     List settings = [[name: selector, type: 'enum', value: row.capability]] + fields
-    Map written = _nrWriteSettings(ruleId, settings)
-    if (written.success != true) return [success: false, id: id, partial: written.partial ?: false, settings: written]
     Map context = [hasAll: false]
     if (editing) context.editCond = id
     else { context.moreCond = true; context.ndx = id.toInteger() }
     _nrStatePatch(ruleId, context, editing ? ['moreCond'] : ['editCond'])
-    def page = trigger ? _nrHandle(ruleId).selectTriggers() : _nrHandle(ruleId).selectConditions([pred: false])
-    Map inputValidation = _nmValidateInputs(page, fields)
+    Closure render = { unused -> trigger ? _nrHandle(ruleId).selectTriggers() : _nrHandle(ruleId).selectConditions([pred: false]) }
+    Map inputValidation = _nmWriteExposed(ruleId, settings, [selector], render.call(), render)
     if (inputValidation.success != true) return [success: false, partial: true, id: id, error: inputValidation.error, fieldErrors: inputValidation.fieldErrors]
     _nrStatePatch(ruleId, [hasAll: true])
     if (trigger) _nrHandle(ruleId).selectTriggers()
@@ -33520,16 +32550,14 @@ Map _nmUpsertAction(Long ruleId, Map row) {
     List fields = _nmFields(row.get('fields') as List, id)
     if (fields.any { it.name in ["actType.${id}".toString(), "actSubType.${id}".toString()] }) throw new IllegalArgumentException('Action selectors must not be repeated')
     List settings = [[name: "actType.${id}".toString(), type: 'enum', value: row.type], [name: "actSubType.${id}".toString(), type: 'enum', value: row.subtype]] + fields
-    Map written = _nrWriteSettings(ruleId, settings)
-    if (written.success != true) return [success: false, id: id, partial: written.partial ?: false, settings: written]
     String editToken = 'N'
     if (editing) {
         boolean expressionAction = prior.method in ['getIfThen', 'getElseIfThen', 'getWhile', 'getUntil']
         editToken = "${id}.${prior.cond ?: 0}.${expressionAction}".toString()
     }
     _nrStatePatch(ruleId, [doActN: editToken])
-    def page = _nrHandle(ruleId).doActPage()
-    Map inputValidation = _nmValidateInputs(page, fields)
+    Closure render = { unused -> _nrHandle(ruleId).doActPage() }
+    Map inputValidation = _nmWriteExposed(ruleId, settings, settings.take(2).collect { it.name }, render.call(), render)
     if (inputValidation.success != true) return [success: false, partial: true, id: id, error: inputValidation.error, fieldErrors: inputValidation.fieldErrors]
     List waitIds = null
     if (waitEvents) {
@@ -33574,11 +32602,9 @@ private Map _nmCompileWait(Long ruleId, String actionId, List events, boolean ed
         eventIds << eventId
         Map event = events.get(position)
         List fields = [[name: "tCapab-${eventId}".toString(), type: 'enum', value: event.capability]] + _nmFields(event.get('fields') as List, "-${eventId}".toString())
-        Map written = _nrWriteSettings(ruleId, fields)
-        if (written.success != true) return [success: false, error: 'Wait event inputs did not persist', settings: written]
+        Closure render = { unused -> _nrHandle(ruleId).doActPage() }
+        Map inputValidation = _nmWriteExposed(ruleId, fields, [fields.get(0).name], render.call(), render)
         settings.addAll(fields)
-        def page = _nrHandle(ruleId).doActPage()
-        Map inputValidation = _nmValidateInputs(page, fields.findAll { it.name != "tCapab-${eventId}".toString() })
         if (inputValidation.success != true) return [success: false, error: inputValidation.error, fieldErrors: inputValidation.fieldErrors]
         if (!_nmWaitDuration(ruleId, eventId)) return [success: false, error: 'Native wait duration did not compile', eventId: eventId]
         if (!editing) {
