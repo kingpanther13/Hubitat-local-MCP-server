@@ -244,6 +244,7 @@ definition(
 // primitives stay in this file (used by other libraries).
 #include mcp.McpNativeRulesLib
 #include mcp.McpNativeRuntimeLib
+#include mcp.McpNativeModelLib
 
 preferences {
     page(name: "mainPage")
