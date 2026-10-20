@@ -25003,7 +25003,6 @@ private void _nrValidateInput(Map field, Object value, boolean allowClear = fals
     if (field.type in ['number', 'decimal'] && !(allowClear && value.toString() == '')) {
         if (!value.toString().isBigDecimal()) throw new IllegalArgumentException("Numeric value required for ${field.name}")
         BigDecimal number = value.toString().toBigDecimal()
-        if (field.type == 'number' && number.stripTrailingZeros().scale() > 0) throw new IllegalArgumentException("Integer required for ${field.name}")
         List range = field.range?.toString()?.split(/\.\./)?.toList() ?: []
         def minimum = field.min != null ? field.min : (range.size() == 2 ? range.get(0) : null)
         def maximum = field.max != null ? field.max : (range.size() == 2 ? range.get(1) : null)
@@ -25223,34 +25222,81 @@ Map _nmLocal(Long ruleId, String operation, String name = null, Object value = n
     boolean verified = allAfter instanceof Map && (operation == 'delete' ? after == null && !allAfter.containsKey(name) : after instanceof Map && inventoryRow instanceof Map && inventoryRow.type == after.type && inventoryRow.value == after.value && after.name == name && after.value == value && after.type == (operation == 'create' ? type : before.type))
     [success: verified, deleted: operation == 'delete' && verified, variable: after, verificationNeeded: true]
 }
+private Map _nmRejectCondition(Long ruleId, boolean trigger, boolean editing, String id, Map baseline, Map savedSettings, List fields, Closure render, Map failure) {
+    String collection = trigger ? 'capabstrue' : 'capabsfalse'
+    List keys = ([collection, 'ndx', 'hasAll', 'moreCond', 'editCond', 'capabDone', 'cancelCapab', 'updatingTrig', 'hasConditions', "hhmmss${id}".toString()] + fields.collect { it.name }).unique()
+    String cleanupError = null
+    boolean verified = false
+    try {
+        Map context = [hasAll: false]
+        if (editing) context.editCond = id
+        else { context.moreCond = true; context.ndx = id.toInteger() }
+        _nrStatePatch(ruleId, context, editing ? ['moreCond'] : ['editCond'])
+        _nrHandle(ruleId).appButtonHandler('cancelCapab')
+        render.call()
+        boolean consumed = _nrState(ruleId).cancelCapab != true
+        Map current = _nmSettingsInventory(ruleId)
+        current.keySet().findAll { !savedSettings.containsKey(it) }.each { name -> _nrHandle(ruleId).removeSetting(name) }
+        List restore = []
+        savedSettings.each { name, original ->
+            if (current.get(name) != original) {
+                if (current.get(name)?.type != original.type) _nrHandle(ruleId).removeSetting(name)
+                def value = original.value
+                if (original.type == 'capability' || original.type?.startsWith('capability.')) {
+                    List devices = original.deviceList instanceof Map ? original.deviceList.keySet().collect { it.toString() } : []
+                    value = original.multiple == true ? devices : (devices ? devices.get(0) : null)
+                } else if (original.multiple == true && value instanceof String) value = new groovy.json.JsonSlurper().parseText(value)
+                if (value == null) throw new IllegalStateException("Cannot restore empty native setting '${name}'")
+                restore << [name: name, type: original.type, value: value]
+            }
+        }
+        if (restore && _nrWriteSettings(ruleId, restore).success != true) throw new IllegalStateException('Native setting restoration failed')
+        Map values = baseline.findAll { key, value -> key in keys }
+        _nrStatePatch(ruleId, values, keys.findAll { !baseline.containsKey(it) })
+        Map fresh = _nrState(ruleId)
+        verified = consumed && _nmSettingsInventory(ruleId) == savedSettings && keys.every { key -> fresh.containsKey(key) == baseline.containsKey(key) && fresh.get(key) == baseline.get(key) }
+        if (!verified) cleanupError = 'Native row cancellation or restoration could not be verified'
+    } catch (Exception cleanupFailure) { cleanupError = cleanupFailure.message ?: 'Native row cleanup failed' }
+    [success: false, id: id, error: failure.error, fieldErrors: failure.fieldErrors ?: [], partial: !verified, rolledBack: verified,
+     cleanupError: cleanupError, verificationNeeded: !verified]
+}
 Map _nmUpsertCondition(Long ruleId, boolean trigger, Map row) {
     if (row == null || row.keySet().any { !(it in ['id', 'capability', 'fields']) } || !(row.capability instanceof String) || !row.capability.trim()) throw new IllegalArgumentException('A capability and typed fields are required')
     Map before = _nrState(ruleId)
     String collection = trigger ? 'capabstrue' : 'capabsfalse'
-    Map prior = before.get(collection) instanceof Map ? before.get(collection) : [:]
+    Map prior = before.get(collection) instanceof Map ? [:] + before.get(collection) : [:]
     boolean editing = row.containsKey('id')
     String id = _nmId(editing ? row.id : before.ndx)
     if (editing && !_nmEntry(prior, id)?.toString()?.trim()) throw new IllegalArgumentException('Native row does not exist')
+    if (!editing && prior.keySet().any { it.toString() == id }) throw new IllegalArgumentException('Native allocation slot is already occupied')
     List fields = _nmFields(row.get('fields') as List, id)
     String selector = trigger ? "tCapab${id}".toString() : "rCapab_${id}".toString()
     if (fields.any { it.name == selector }) throw new IllegalArgumentException('Capability selector must not be repeated in fields')
     List settings = [[name: selector, type: 'enum', value: row.capability]] + fields
-    Map context = [hasAll: false]
-    if (editing) context.editCond = id
-    else { context.moreCond = true; context.ndx = id.toInteger() }
-    _nrStatePatch(ruleId, context, editing ? ['moreCond'] : ['editCond'])
+    Map savedSettings = _nmSettingsInventory(ruleId)
+    Map baseline = [:] + before
+    if (before.containsKey(collection)) baseline.put(collection, prior)
     Closure render = { unused -> trigger ? _nrHandle(ruleId).selectTriggers() : _nrHandle(ruleId).selectConditions([pred: false]) }
-    Map inputValidation = _nmWriteExposed(ruleId, settings, [selector], render.call(), render)
-    if (inputValidation.success != true) return [success: false, partial: true, id: id, error: inputValidation.error, fieldErrors: inputValidation.fieldErrors]
-    _nrStatePatch(ruleId, [hasAll: true])
-    if (trigger) _nrHandle(ruleId).selectTriggers()
-    else _nrHandle(ruleId).selectConditions([pred: false])
-    Map after = _nrState(ruleId)
-    def label = _nmEntry(after.get(collection) instanceof Map ? after.get(collection) : [:], id)
-    Map echoed = _nrSettings(ruleId, settings.collect { it.name })
-    boolean persisted = settings.every { echoed.get(it.name)?.type?.toString() == it.type && _nrComparableSetting(it.type, echoed.get(it.name)?.value) == _nrComparableSetting(it.type, it.value) }
-    boolean compiled = label instanceof String && label.trim() && !label.contains('null') && !label.contains('BROKEN')
-    [success: compiled && persisted, id: id, label: label, partial: !(compiled && persisted), settingsVerified: persisted, error: compiled ? (persisted ? null : 'Native input persistence failed') : 'Native row did not compile a valid label']
+    try {
+        Map context = [hasAll: false]
+        if (editing) context.editCond = id
+        else { context.moreCond = true; context.ndx = id.toInteger() }
+        _nrStatePatch(ruleId, context, editing ? ['moreCond'] : ['editCond'])
+        Map inputValidation = _nmWriteExposed(ruleId, settings, [selector], render.call(), render)
+        if (inputValidation.success != true) return _nmRejectCondition(ruleId, trigger, editing, id, baseline, savedSettings, settings, render, inputValidation)
+        _nrStatePatch(ruleId, [hasAll: true])
+        render.call()
+        Map after = _nrState(ruleId)
+        def label = _nmEntry(after.get(collection) instanceof Map ? after.get(collection) : [:], id)
+        Map echoed = _nrSettings(ruleId, settings.collect { it.name })
+        boolean persisted = settings.every { echoed.get(it.name)?.type?.toString() == it.type && _nrComparableSetting(it.type, echoed.get(it.name)?.value) == _nrComparableSetting(it.type, it.value) }
+        boolean compiled = label instanceof String && label.trim() && !label.contains('null') && !label.contains('BROKEN')
+        if (!(compiled && persisted)) return _nmRejectCondition(ruleId, trigger, editing, id, baseline, savedSettings, settings, render,
+            [error: compiled ? 'Native input persistence failed' : 'Native row did not compile a valid label'])
+        [success: true, id: id, label: label, partial: false, settingsVerified: true]
+    } catch (Exception failure) {
+        _nmRejectCondition(ruleId, trigger, editing, id, baseline, savedSettings, settings, render, [error: failure.message ?: 'Native row authoring failed'])
+    }
 }
 Map _nmUpsertAction(Long ruleId, Map row) {
     if (row == null || row.keySet().any { !(it in ['id', 'type', 'subtype', 'fields', 'expression', 'events', 'condition']) } || !(row.type instanceof String) || !row.type.trim() || !(row.subtype instanceof String) || !row.subtype.trim()) throw new IllegalArgumentException('Action type, subtype and typed fields are required')
@@ -25614,8 +25660,8 @@ Map toolGetRuleDocument(Map args) {
     if ('settings' in sections) document.settings = _ndSettings(id)
     document
 }
-private List _ndChanges(Object changes) {
-    if (!(changes instanceof List) || !changes || changes.size() > 100) throw new IllegalArgumentException('changes must contain between 1 and 100 changes')
+private List _ndChanges(Object changes, boolean allowEmpty = false) {
+    if (!(changes instanceof List) || (!allowEmpty && changes.isEmpty()) || changes.size() > 100) throw new IllegalArgumentException(allowEmpty ? 'changes must contain between 0 and 100 changes' : 'changes must contain between 1 and 100 changes')
     changes.each { change ->
         if (!(change instanceof Map) || change.keySet().any { !(it in ['part', 'value']) } || !(change.value instanceof Map)) throw new IllegalArgumentException('Each change requires part and value')
         def value = change.value
@@ -25806,9 +25852,14 @@ private Map _ndApply(Long id, List changes, boolean created) {
         if (stopped && (jobs || subscriptions)) throw new IllegalStateException('Stopped native rule retained jobs or subscriptions')
         def persistedState = _nrState(id)
         def actualTriggers = persistedState.capabstrue instanceof Map ? persistedState.capabstrue.findAll { key, value -> key.toString().isInteger() && key.toString().toInteger() > 0 && value?.toString()?.trim() } : [:]
-        if (actualTriggers && !stopped && !paused && subscriptions.empty && jobs.empty) throw new IllegalStateException('Native triggers have no active subscriptions or scheduled jobs')
+        def requiredTokens = persistedState.eval instanceof Map ? _nmEntry(persistedState.eval, '0') : null
+        boolean suppressed = !stopped && !paused && _nrHandle(id).getSetting('useST') == true &&
+            persistedState.hasPredicate == true && requiredTokens instanceof List && !requiredTokens.isEmpty() &&
+            persistedState.stPrimed == false
+        if (actualTriggers && !stopped && !paused && !suppressed && subscriptions.empty && jobs.empty) throw new IllegalStateException('Native triggers have no active subscriptions or scheduled jobs')
         if (created && getAppByAppId(id)?.installed != true) throw new IllegalStateException('Native rule is not installed after Done')
-        [success: true, rule_id: id, created: created, results: outcomes, broken: false, stopped: stopped, paused: paused, eventSubscriptions: subscriptions, scheduledJobs: jobs, verification: 'Native persistence, compilation and activation checks passed; verify intended device behavior independently.', document: toolGetRuleDocument([rule_id: id, sections: ['actions', 'conditions', 'triggers', 'expressions', 'variables']])]
+        [success: true, rule_id: id, created: created, results: outcomes, broken: false, stopped: stopped, paused: paused, eventSubscriptions: subscriptions, scheduledJobs: jobs, verification: 'Native persistence, compilation and activation checks passed; verify intended device behavior independently.', document: toolGetRuleDocument([rule_id: id, sections: ['actions', 'conditions', 'triggers', 'expressions', 'variables']])] +
+            (suppressed ? [subscriptionSettle: 'SUPPRESSED: Required Expression is false'] : [:])
     } catch (Exception failure) {
         [success: false, partial: started, rule_id: id, created: created, results: outcomes, remaining: changes.drop(outcomes.size()), error: failure.message?.toString()]
     }
@@ -25829,7 +25880,7 @@ Map toolCreateRuleDocument(Map args) {
     def requestedName = args.get('name')
     if (!(requestedName instanceof String) || !requestedName.trim() || requestedName.size() > 200) throw new IllegalArgumentException('A rule name is required (maximum 200 characters)')
     String name = requestedName.trim()
-    List changes = _ndChanges(args.changes)
+    List changes = _ndChanges(args.changes, true)
     requireDestructiveConfirm(args.confirm)
     _requireUnprotectedAppMutation(parentId, 'create native rule child')
     def parent = getAppByAppId(parentId)
@@ -25861,7 +25912,7 @@ def _getAllToolDefinitions_partNativeDocuments() {
         [
             name: 'hub_update_rule_document', description: 'Update a native rule with ordered {part,value} changes.' + warning, inputSchema: [type: 'object', additionalProperties: false, properties: [rule_id: [type: 'integer', minimum: 1], changes: changes, confirm: [type: 'boolean']], required: ['rule_id', 'changes', 'confirm']]],
         [
-            name: 'hub_create_rule_document', description: 'Create/install a native rule with ordered {part,value} changes.' + warning, inputSchema: [type: 'object', additionalProperties: false, properties: [parent_id: [type: 'integer', minimum: 1], name: [type: 'string', minLength: 1, maxLength: 200], changes: changes, confirm: [type: 'boolean']], required: ['parent_id', 'name', 'changes', 'confirm']]]
+            name: 'hub_create_rule_document', description: 'Create/install a native rule with ordered {part,value} changes; [] creates an empty rule.' + warning, inputSchema: [type: 'object', additionalProperties: false, properties: [parent_id: [type: 'integer', minimum: 1], name: [type: 'string', minLength: 1, maxLength: 200], changes: changes + [minItems: 0], confirm: [type: 'boolean']], required: ['parent_id', 'name', 'changes', 'confirm']]]
     ]
 }
 def _readOnlyToolNames_partNativeDocuments() {
