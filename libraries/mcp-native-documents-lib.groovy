@@ -299,6 +299,7 @@ Map toolUpdateRuleDocument(Map args) {
     Long id = _ndId(args.rule_id)
     List changes = _ndChanges(args.changes)
     requireDestructiveConfirm(args.confirm)
+    _requireUnprotectedAppMutation(id, 'edit native rule document')
     _nrHandle(id)
     if (getAppByAppId(id)?.disabled == true) throw new IllegalArgumentException('Enable the native rule before editing its document')
     try { _ndPreflight(id, changes) }
@@ -313,6 +314,7 @@ Map toolCreateRuleDocument(Map args) {
     String name = requestedName.trim()
     List changes = _ndChanges(args.changes)
     requireDestructiveConfirm(args.confirm)
+    _requireUnprotectedAppMutation(parentId, 'create native rule child')
     def parent = getAppByAppId(parentId)
     if (parent?.appType?.namespace != 'hubitat' || parent?.appType?.name != 'Rule Machine') throw new IllegalArgumentException('parent_id must identify native Rule Machine')
     Long id = null

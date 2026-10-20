@@ -196,7 +196,7 @@ class NativeAppFormE2E(unittest.TestCase):
 
     def test_time_rule_schedules_stop_edit_and_restart_in_place(self):
         rule_id = self.create_rule([
-            documents.change("trigger", capability="Certain Time", fields=[
+            documents.change("trigger", capability="Certain Time (and optional date)", fields=[
                 documents.field("time#", "enum", "A specific time"),
                 documents.field("atTime#", "time", "2026-01-01T23:59:00.000+0000"),
             ]),
