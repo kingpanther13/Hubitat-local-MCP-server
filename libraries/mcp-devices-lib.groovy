@@ -336,6 +336,7 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
             pagedDevices = pagedDevices.subList(0, hydrated)
             endIndex = startIndex + hydrated
         }
+        if (onlyOn == true) pagedDevices = _stillOnAfterPageRead(pagedDevices)
         def attrNames = (attributeNames && !attributeNames.isEmpty()) ? attributeNames.collect { it.toString() } : _contextAttributeNames()
         def lines = pagedDevices.collect { d -> _contextDeviceLine(d, attrNames) }
         def header = _contextHeaderLines()
@@ -426,6 +427,13 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
         }
     }
 
+    int droppedNotOn = 0
+    if (onlyOn == true) {
+        def stillOn = _stillOnAfterPageRead(pagedDevices)
+        droppedNotOn = pagedDevices.size() - stillOn.size()
+        pagedDevices = stillOn
+    }
+
     def devices = pagedDevices.collect { device ->
         def deviceIdStr = device.id.toString()
 
@@ -480,7 +488,7 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
     def result = applyFilterEchoes([
         devices: devices,
         count: devices.size(),
-        total: totalCount
+        total: totalCount - droppedNotOn
     ])
     if (devices.any { it.metadataUnavailable }) result.partial = true
 
@@ -609,6 +617,12 @@ private List _contextHeaderLines() {
 // A device's states by attribute name. A native state list can carry an attribute twice; the
 // last entry with a value wins, as a JSON object with a repeated key parses, so every filter
 // and projection reads the same value.
+// onlyOn filters on the bulk read and the page is then read per device: a switch that turned off between
+// the two reads is dropped, so a listed device always reads on in the response.
+private List _stillOnAfterPageRead(List paged) {
+    paged.findAll { it._nativeLoaded != true || it._nativeReadError == true || _deviceStatesByName(it).get("switch")?.value?.toString() == "on" }
+}
+
 private Map _deviceStatesByName(device) {
     def states = [:]
     device?.currentStates?.each { st ->
