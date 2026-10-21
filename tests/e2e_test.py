@@ -3531,17 +3531,17 @@ class TestRunner:
 
     @test("native_apps")
     def test_set_native_app_guide_meta_call_via_gateway(self) -> None:
-        """Issue #319 latent-bug fix: hub_set_native_app's guide/discover meta-calls are
-        schema-only (static reference content, no mutation) and must clear the gateway
-        required-param pre-check WITHOUT confirm -- exactly like hub_set_rule's. Before
-        the fix the pre-check refused them for the missing confirm on the gateway path
-        while the identical flat call succeeded. The appId only shapes the call as an
-        edit; the guide short-circuit never dereferences it, so a bogus id is safe."""
+        """Static generic help clears gateway validation without confirmation or hub reads.
+
+        appId shapes an edit request but is never dereferenced for guide-only calls.
+        """
         result = self.client.call_tool("hub_manage_native_rules_and_apps", {
             "tool": "hub_set_native_app", "args": {"appId": 999999999, "guide": True}})
         blob = str(result)
-        assert "addTrigger" in blob and "walkStep" in blob, \
-            f"guide meta-call did not return the capability reference: {blob[:200]}"
+        assert result.get("success") is True and result.get("section") == "builtin_app_tools_crud", \
+            f"guide meta-call did not return the generic native guide: {blob[:200]}"
+        assert all(name in blob for name in ("settings", "walkStep", "buttonRule")), \
+            f"generic native guide is missing retained operations: {blob[:200]}"
 
     @test("native_apps")
     def test_set_app_disabled_roundtrip(self) -> None:
@@ -11392,8 +11392,12 @@ class TestRunner:
             else:
                 assert result.get("success") is False, "generic edit of protected self was accepted"
                 message = str(result.get("error") or result.get("message") or result)
-            assert "protected" in message.lower() and app_id in message, \
-                f"expected protected-app refusal, got: {message}"
+            if leaf == "hub_set_native_app":
+                assert "protected" in message.lower() and app_id in message, \
+                    f"expected protected-app refusal, got: {message}"
+            else:
+                assert "rule_id must identify native Rule-5.1, Button Rule-5.1 or Rule Machine" in message, \
+                    f"RM form must refuse the non-RM MCP app before accessing its editor: {message}"
             assert read_settings() == before, "refused generic edit changed persisted settings"
 
         # The allowlist must stay closed even with Developer Mode on and self protected.
