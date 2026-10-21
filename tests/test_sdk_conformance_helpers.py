@@ -785,3 +785,52 @@ def test_native_paged_readback_accepts_empty_sections_only_with_complete_metadat
         return {section: {} if section == "conditions" else [], "nextCursor": None, "page": {
             "offset": 0, "limit": limit, "total": 0, "revision": section}}
     assert asyncio.run(helpers.read_native_document_sections(fetch)) == {"conditions": {}, "actions": [], "settings": []}
+
+
+def test_sdk_parent_discovery_finds_renamed_childless_parent_on_later_inventory_pages():
+    calls = []
+    async def fetch(scope, cursor):
+        calls.append((scope, cursor))
+        if scope == "types":
+            if not cursor:
+                return {"apps": [{"id": 17, "name": "Other", "system": True}], "nextCursor": "more-types"}
+            assert cursor == "more-types"
+            return {"apps": [{"id": 18, "name": "Rule Machine", "system": True}]}
+        if not cursor:
+            return {"apps": [{"id": 27, "name": "Rule Machine", "appTypeId": 99, "parentId": None}],
+                    "nextCursor": "more-instances"}
+        assert cursor == "more-instances"
+        return {"apps": [{"id": 28, "name": "My renamed automations", "appTypeId": 18,
+                           "parentId": None, "hasChildren": False}]}
+    assert asyncio.run(helpers.discover_rule_machine_parent(fetch)) == 28
+    assert calls == [("types", ""), ("types", "more-types"), ("instances", ""), ("instances", "more-instances")]
+
+
+@pytest.mark.parametrize("parents", [
+    [], [{"id": 28, "name": "Rule Machine", "appTypeId": 99, "parentId": None}],
+    [{"id": 28, "name": "Rule Machine", "appTypeId": 18, "parentId": 5}],
+    [{"id": 28, "appTypeId": 18, "parentId": None}, {"id": 29, "appTypeId": 18, "parentId": None}],
+    [{"id": "not-decimal", "appTypeId": 18, "parentId": None}],
+])
+def test_sdk_parent_discovery_rejects_missing_wrong_nested_ambiguous_or_invalid_identity(parents):
+    async def fetch(scope, _cursor):
+        return {"apps": [{"id": 18, "name": "Rule Machine", "system": True}] if scope == "types" else parents}
+    with pytest.raises(AssertionError):
+        asyncio.run(helpers.discover_rule_machine_parent(fetch))
+
+
+def test_sdk_parent_discovery_reads_later_pages_before_rejecting_ambiguity():
+    async def fetch(scope, cursor):
+        if scope == "types":
+            return {"apps": [{"id": 18, "name": "Rule Machine", "system": True}]}
+        return {"apps": [{"id": 28 if not cursor else 29, "appTypeId": 18, "parentId": None}],
+                "nextCursor": "second" if not cursor else None}
+    with pytest.raises(AssertionError, match="Expected one Rule Machine parent"):
+        asyncio.run(helpers.discover_rule_machine_parent(fetch))
+
+
+def test_sdk_parent_discovery_rejects_repeated_inventory_cursor():
+    async def fetch(_scope, _cursor):
+        return {"apps": [], "nextCursor": "same"}
+    with pytest.raises(AssertionError, match="cursor repeated"):
+        asyncio.run(helpers.discover_rule_machine_parent(fetch))

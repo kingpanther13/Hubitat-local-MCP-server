@@ -74,6 +74,7 @@ from sdk_conformance_helpers import (  # noqa: E402  (import guard above supplie
     assert_mrtr_owner_rounds,
     build_capacity_recovery,
     cleanup_preserving_primary,
+    discover_rule_machine_parent,
     extract_bps_acknowledgment_key,
     find_exact_fixture_id_with_settle,
     native_mrtr_changes,
@@ -464,14 +465,13 @@ class ModernMrtrScenario:
         """Use explicit fixtures or the existing suite's exact permanent sensor label."""
         parent_id = os.environ.get("NATIVE_RULE_PARENT_ID")
         if not parent_id:
-            listed = await client.call_tool("hub_read_apps_code", {
-                "tool": "hub_list_apps", "args": {"scope": "instances", "filter": "parents"},
-            })
-            payload = _tool_payload(listed, "Rule Machine parent discovery")
-            rows = payload.get("apps", payload.get("installedApps", []))
-            parents = [row for row in rows if (row.get("appTypeName") or row.get("name")) == "Rule Machine"]
-            assert len(parents) == 1, f"Expected one Rule Machine parent: {parents}"
-            parent_id = str(parents[0]["id"])
+            async def inventory(scope: str, cursor: str) -> dict[str, Any]:
+                listed = await client.call_tool("hub_read_apps_code", {
+                    "tool": "hub_list_apps", "args": {"scope": scope, "cursor": cursor},
+                })
+                return _tool_payload(listed, f"Rule Machine {scope} discovery")
+
+            parent_id = str(await discover_rule_machine_parent(inventory))
         fixtures = json.loads(os.environ.get("NATIVE_RULE_FIXTURES", "{}"))
         temperature_id = str(fixtures.get("temperature") or "")
         if not temperature_id:

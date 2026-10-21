@@ -295,6 +295,37 @@ def assert_exact_native_actions(config: Any, document: Any, changes: list[dict[s
     assert actual == messages and len(set(actual)) == len(messages), "Persisted log messages differ or repeat"
 
 
+async def discover_rule_machine_parent(
+    fetch: Callable[[str, str], Awaitable[dict[str, Any]]],
+) -> int:
+    """Identify the built-in parent by app type, independently of label or child count."""
+    inventories = {}
+    for scope in ("types", "instances"):
+        cursor, seen, rows = "", set(), []
+        while True:
+            result = await fetch(scope, cursor)
+            assert isinstance(result, dict) and result.get("success") is not False, result
+            page = result.get("apps")
+            assert isinstance(page, list), "App inventory returned no app list"
+            rows.extend(page)
+            following = result.get("nextCursor")
+            if following is None:
+                break
+            assert isinstance(following, str) and following and following != cursor and following not in seen, "App inventory cursor repeated or invalid"
+            seen.add(following)
+            cursor = following
+        inventories[scope] = rows
+    types = [row for row in inventories["types"] if row.get("system") is True and row.get("name") == "Rule Machine"]
+    assert len(types) == 1, f"Expected one built-in Rule Machine app type: {types}"
+    type_id = str(types[0].get("id", ""))
+    assert type_id.isdecimal(), "Rule Machine app type ID is not decimal"
+    parents = [row for row in inventories["instances"] if str(row.get("appTypeId")) == type_id and row.get("parentId") is None]
+    assert len(parents) == 1, f"Expected one Rule Machine parent: {parents}"
+    parent_id = str(parents[0].get("id", ""))
+    assert parent_id.isdecimal(), "Rule Machine parent ID is not decimal"
+    return int(parent_id)
+
+
 async def read_native_document_sections(
     fetch: Callable[[str, str, int], Awaitable[dict[str, Any]]],
 ) -> dict[str, Any]:
