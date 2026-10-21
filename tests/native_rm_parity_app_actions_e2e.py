@@ -1,0 +1,270 @@
+"""App-backed RM actions authored through native document inputs.
+
+Only disposable, uniquely named native apps and labeled virtual devices are used.
+The shared ParityCase authorization and rule cleanup apply unchanged.
+"""
+
+import os
+import re
+import urllib.parse
+import unittest
+
+import requests
+
+import native_rule_document_e2e as documents
+from native_rm_parity_support import ParityCase, change, field
+
+documents.TOOLS.update({"hub_list_apps", "hub_list_devices", "hub_set_native_app"})
+
+
+class NativeRmParityAppActions(ParityCase):
+    def setUp(self):
+        super().setUp()
+        self.owned_apps = []
+        self.addCleanup(self._remove_owned_apps)
+
+    def _remove_owned_apps(self):
+        failures = []
+        for app in reversed(self.owned_apps):
+            try:
+                self._remove_app(*app)
+            except Exception as exc:
+                failures.append(str(exc))
+        self.assertFalse(failures, failures)
+
+    def _apps(self):
+        result = []
+
+        def visit(node):
+            if isinstance(node.get("data"), dict):
+                result.append(node["data"])
+            for child in node.get("children", []):
+                visit(child)
+        for node in self.client.native("/hub2/appsList").get("apps", []):
+            visit(node)
+        return result
+
+    def _type(self, name):
+        rows, cursor = [], ""
+        while cursor is not None:
+            page = self.call("hub_list_apps", scope="types", cursor=cursor)
+            self.assertIsNot(page.get("success"), False, page)
+            rows.extend(page.get("apps", []))
+            cursor = page.get("nextCursor")
+        matches = [row for row in rows if row.get("namespace") == "hubitat"
+                   and (row.get("name") == name or
+                        (name == "Scene" and re.fullmatch(r"Scene-[0-9.]+", row.get("name", ""))))]
+        self.assertEqual(len(matches), 1, {"native_app_type": name, "matches": matches})
+        return matches[0]
+
+    def _native_install(self, type_name, parent_id=None):
+        if parent_id is None:
+            type_row = self._type(type_name)
+            native_name = type_row["name"]
+        else:
+            selectors = []
+
+            def visit(node):
+                if isinstance(node, dict):
+                    if (node.get("element") == "app" and node.get("namespace") == "hubitat"
+                            and str(node.get("appId")) == str(parent_id)):
+                        selectors.append(node)
+                    for value in node.values():
+                        visit(value)
+                elif isinstance(node, list):
+                    for value in node:
+                        visit(value)
+            visit(self.client.native(f"/installedapp/configure/json/{parent_id}")["configPage"])
+            matches = [node for node in selectors if node.get("appName") == type_name or
+                       (type_name == "Scene" and re.fullmatch(r"Scene-[0-9.]+", node.get("appName", "")))]
+            self.assertEqual(len(matches), 1, {"requested_child": type_name, "selectors": selectors})
+            native_name = matches[0]["appName"]
+        before = {str(row["id"]) for row in self._apps()}
+        path = ("/installedapp/sysAppById/" + str(type_row["id"]) if parent_id is None else
+                "/installedapp/createchild/hubitat/" + urllib.parse.quote(native_name, safe="") +
+                "/parent/" + str(parent_id))
+        headers = {"Cookie": os.environ["HUB_UI_COOKIE"]} if os.environ.get("HUB_UI_COOKIE") else {}
+        self.client.calls["native_http"] += 1
+        response = requests.get(self.client.base + path, headers=headers, allow_redirects=False, timeout=180)
+        self.assertEqual(response.status_code, 302, {"native_type": native_name, "status": response.status_code})
+        location = urllib.parse.urlsplit(urllib.parse.urljoin(self.client.base + "/", response.headers.get("Location", "")))
+        base = urllib.parse.urlsplit(self.client.base)
+        self.assertEqual((location.scheme, location.netloc), (base.scheme, base.netloc))
+        self.assertRegex(location.path, r"^/installedapp/configure/[0-9]+$")
+        app_id = int(location.path.rsplit("/", 1)[1])
+        self.assertNotIn(str(app_id), before)
+        self.owned_apps.append((app_id, native_name, parent_id))
+        self.client.calls["native_http"] += 1
+        opened = requests.get(self.client.base + location.path, headers=headers, allow_redirects=False, timeout=180)
+        self.assertEqual(opened.status_code, 200)
+        installed = self.status(app_id)["installedApp"]
+        self.assertEqual(str(installed["id"]), str(app_id))
+        self.assertEqual(installed["appType"]["name"], native_name)
+        if parent_id is not None:
+            self.assertEqual(str(installed["parentAppId"]), str(parent_id))
+        return app_id
+
+    def _remove_app(self, app_id, native_name, parent_id):
+        installed = self.status(app_id, missing_ok=True).get("installedApp")
+        if not installed:
+            return
+        self.assertEqual(str(installed["id"]), str(app_id))
+        self.assertEqual(installed["appType"]["name"], native_name)
+        self.assertEqual(installed["appType"]["namespace"], "hubitat")
+        if parent_id is not None:
+            self.assertEqual(str(installed["parentAppId"]), str(parent_id))
+        self.client.native("/installedapp/update/json", "POST", form={"id": app_id, "_action_remove": "Remove"})
+        self.assertNotIn("installedApp", self.status(app_id, missing_ok=True))
+
+    def _parent(self, name):
+        rows = [row for row in self._apps() if row.get("type") == name and row.get("hidden") is not True]
+        self.assertLessEqual(len(rows), 1, rows)
+        return int(rows[0]["id"]) if rows else self._native_install(name)
+
+    def _walk(self, app_id, operation, **values):
+        config = self.client.native(f"/installedapp/configure/json/{app_id}")
+        page = config["configPage"]["name"]
+        result = self.call("hub_set_native_app", appId=int(app_id), confirm=True,
+                           walkStep={"page": page, "operation": operation, **values})
+        self.assertTrue(result.get("success"), result)
+        return result
+
+    def _configure(self, app_id, label, writes):
+        for values in writes:
+            self._walk(app_id, "write", write=values)
+        config = self.client.native(f"/installedapp/configure/json/{app_id}")
+        names = set()
+
+        def visit(node):
+            if isinstance(node, dict):
+                if isinstance(node.get("name"), str):
+                    names.add(node["name"])
+                for value in node.values():
+                    visit(value)
+            elif isinstance(node, list):
+                for value in node:
+                    visit(value)
+        visit(config["configPage"])
+        label_input = "origLabel" if "origLabel" in names else "name"
+        self.assertIn(label_input, names, "Native fixture exposes no label input")
+        self._walk(app_id, "write", write={label_input: label})
+        self._walk(app_id, "done")
+        self.assertEqual(self.settings(app_id)[label_input]["value"], label)
+
+    def _add(self, rule_id, category, subtype, inputs):
+        before = {str(row["id"]) for row in self.doc(rule_id)["actions"]}
+        result = self.update(rule_id, [change("action", type=category, subtype=subtype,
+                                             fields=[field(name + ".#", type_, value) for name, type_, value in inputs])])
+        self.assertTrue(result.get("success"), result)
+        self.assertFalse(result.get("partial"), result)
+        added = [row for row in self.doc(rule_id)["actions"] if str(row["id"]) not in before]
+        self.assertEqual(len(added), 1, added)
+        row = added[0]
+        self.assertEqual(row["value"]["method"], subtype)
+        typed = self.settings(rule_id)
+        for name, type_, value in inputs:
+            saved = typed[name + "." + str(row["id"])]
+            self.assertEqual(saved["type"], type_)
+            if type_.startswith("capability."):
+                self.assertEqual(sorted(map(str, saved["device_ids"])), sorted(map(str, value)))
+            elif isinstance(value, bool):
+                self.assertEqual(str(saved["value"]).lower(), str(value).lower())
+            elif isinstance(value, (int, float)):
+                self.assertEqual(float(saved["value"]), value)
+            elif isinstance(value, list):
+                self.assertEqual(list(map(str, saved["value"])), list(map(str, value)))
+            else:
+                self.assertEqual(str(saved["value"]), str(value))
+        self.healthy(rule_id)
+        return str(row["id"])
+
+    def _refuse(self, rule_id, category, subtype, inputs):
+        before = self.snapshot(rule_id)
+        result = self.update(rule_id, [change("action", type=category, subtype=subtype,
+                                             fields=[field(name + ".#", type_, value) for name, type_, value in inputs])])
+        self.assertIs(result.get("success"), False, result)
+        self.assertEqual(self.snapshot(rule_id), before)
+        self.healthy(rule_id)
+
+    def test_rm_action_room_lights(self):
+        rule_id = self.create([])
+        if not any(row.get("type") == "Room Lights" for row in self._apps()):
+            self._refuse(rule_id, "rulesActs", "getRLTurnOff", [("actOffRL", "enum", ["999999999"])])
+        name = self.prefix + "_RoomLights"
+        self._parent("Room Lighting")
+        created = self.call("hub_set_native_app", appType="room_lighting", name=name, confirm=True)
+        self.assertTrue(created.get("success"), created)
+        app_id = int(created["appId"])
+        parent_id = int(self.status(app_id)["installedApp"]["parentAppId"])
+        self.owned_apps.append((app_id, "Room Lights", parent_id))
+        self._add(rule_id, "rulesActs", "getRLActivate", [("actRL", "enum", str(app_id)), ("modeRL", "enum", "X")])
+        self._add(rule_id, "rulesActs", "getRLActivate", [("actRL", "enum", str(app_id)), ("modeRL", "enum", "X"), ("forceRL", "bool", True)])
+        self._add(rule_id, "rulesActs", "getRLTurnOff", [("actOffRL", "enum", [str(app_id)])])
+        self.assertIn(name, self.page_text(rule_id))
+        self._refuse(rule_id, "rulesActs", "getRLActivate", [("actRL", "enum", str(app_id)), ("modeRL", "enum", "999999999")])
+        self._refuse(rule_id, "rulesActs", "getRLTurnOff", [("actOffRL", "enum", [str(app_id), "999999999"])])
+
+    def test_rm_action_scene(self):
+        rule_id = self.create([])
+        if not any(str(row.get("type", "")).startswith("Scene-") for row in self._apps()):
+            self._refuse(rule_id, "sceneActs", "getActivateScene", [("sceneAct", "enum", ["999999999"])])
+        scene = self._native_install("Scene", self._parent("Groups and Scenes"))
+        label = self.prefix + "_Scene"
+        self._configure(scene, label, [{"switches": [int(self.fixtures["switch"])]}])
+        self._walk(scene, "click", click={"name": "captureBtn"})
+        devices = self.call("hub_list_devices", scope="all", labelFilter=label).get("devices", [])
+        matches = [row for row in devices if row.get("label") == label]
+        self.assertEqual(len(matches), 1, matches)
+        activator = str(matches[0]["id"])
+        self.assertEqual(str(self.client.native("/device/fullJson/" + activator)["device"]["parentAppId"]), str(scene))
+        self._add(rule_id, "sceneActs", "getActivateScene", [("sceneAct", "enum", [activator])])
+        mode = str(self.mode_id)
+        self._add(rule_id, "sceneActs", "getActivateScenePerMode", [("sceneModes", "enum", [mode]), ("scene" + mode, "enum", [activator])])
+        self.assertIn(label, self.page_text(rule_id))
+        self._refuse(rule_id, "sceneActs", "getActivateScene", [("sceneAct", "enum", [str(scene)])])
+
+    def test_rm_action_thermostat_apps(self):
+        variable = self.create_hub_variable("app_action_number", "Number", 7)
+        rule_id = self.create([])
+        existing = {row.get("type") for row in self._apps()}
+        if "Thermostat Controller 2.0" not in existing:
+            self._refuse(rule_id, "lockActs", "getSetThermController", [("thisApp", "enum", "999999999")])
+        if not existing.intersection({"Thermostat Scheduler 2.0", "Thermostat Scheduler Legacy"}):
+            self._refuse(rule_id, "lockActs", "getSetThermostatScheduler", [("thisTherm", "capability.thermostat", [str(self.fixtures["thermostat"])])])
+        controller = self._native_install("Thermostat Controller 2.0", self._parent("Thermostat Controllers"))
+        schedulers = self._parent("Thermostat Schedulers")
+        scheduler = self._native_install("Thermostat Scheduler 2.0", schedulers)
+        mode_scheduler = self._native_install("Thermostat Scheduler 2.0", schedulers)
+        thermostat = str(self.fixtures["thermostat"])
+        thermostat2 = str(self.fixtures["thermostat2"])
+        sensors = [str(self.fixtures[key]) for key in ("temperature", "temperature2")]
+        self._configure(controller, self.prefix + "_Controller", [{"therm": [int(thermostat)]}, {"tempSensors": [int(sensors[0])]}])
+        self._configure(scheduler, self.prefix + "_Scheduler", [{"therm": [int(thermostat)]}, {"schedTypeL": "Time Periods"}])
+        mode = str(self.mode_id)
+        self._walk(mode_scheduler, "write", write={"therm": [int(thermostat2)]})
+        self._walk(mode_scheduler, "write", write={"schedTypeL": "Hub Modes"})
+        self._walk(mode_scheduler, "click", click={"name": "addMode", "stateAttribute": "addMode"})
+        self._walk(mode_scheduler, "write", write={"perX": [mode]})
+        self._walk(mode_scheduler, "click", click={"name": "1", "stateAttribute": "tsH"})
+        self._walk(mode_scheduler, "write", write={"tempX": 68})
+        self._walk(mode_scheduler, "click", click={"name": "update"})
+        self._configure(mode_scheduler, self.prefix + "_ModeScheduler", [])
+        self._add(rule_id, "lockActs", "getSetThermController", [("thisApp", "enum", str(controller)), ("tcSensors", "capability.temperatureMeasurement", sensors)])
+        by_thermostat = self._add(rule_id, "lockActs", "getSetThermostatScheduler", [("thisTherm", "capability.thermostat", [thermostat]), ("thermSched", "enum", "setEcoMode"), ("ecoMode", "enum", "on")])
+        self.assertEqual(str(self.settings(rule_id)["thisApp." + by_thermostat]["value"]), str(scheduler))
+        by_scheduler = self._add(rule_id, "lockActs", "getSetThermostatScheduler", [("tMethod", "bool", True), ("thisApp", "enum", str(scheduler)), ("thermSched", "enum", "setEcoOffset"), ("ecoOffset", "decimal", 2.5)])
+        self.assertEqual(self.settings(rule_id)["thisTherm." + by_scheduler]["device_ids"], [thermostat])
+        self._add(rule_id, "lockActs", "getSetThermostatScheduler", [("thisTherm", "capability.thermostat", [thermostat]), ("thermSched", "enum", "setEcoOffset"), ("uVar", "bool", True), ("xVar", "enum", variable)])
+        self._add(rule_id, "lockActs", "getSetThermostatScheduler", [("tMethod", "bool", True), ("thisApp", "enum", str(scheduler)), ("thermSched", "enum", "setHold"), ("setHold", "enum", "off")])
+        for operation, extras in (("setSchedDay", [("dayN", "enum", "0")]), ("setThermSched", [])):
+            self._add(rule_id, "lockActs", "getSetThermostatScheduler", [("thisTherm", "capability.thermostat", [thermostat]), ("thermSched", "enum", operation), *extras])
+        self._add(rule_id, "lockActs", "getSetThermostatScheduler", [("thisTherm", "capability.thermostat", [thermostat]), ("thermSched", "enum", "setTimeAway"), ("timeAwayHeat", "decimal", 60), ("uVar3", "bool", True), ("xVar3", "enum", variable)])
+        self._add(rule_id, "lockActs", "getSetThermostatScheduler", [("thisTherm", "capability.thermostat", [thermostat2]), ("thermSched", "enum", "setSched4Mode"), ("modN", "enum", mode)])
+        self._refuse(rule_id, "lockActs", "getSetThermController", [("thisApp", "enum", "999999999"), ("tcSensors", "capability.temperatureMeasurement", sensors)])
+        self._refuse(rule_id, "lockActs", "getSetThermostatScheduler", [("tMethod", "bool", True), ("thisApp", "enum", "999999999"), ("thermSched", "enum", "setHold"), ("setHold", "enum", "off")])
+        self._refuse(rule_id, "lockActs", "getSetThermostatScheduler", [("thisTherm", "capability.thermostat", [thermostat2]), ("thermSched", "enum", "setSched4Mode"), ("modN", "enum", "999999999")])
+        self._refuse(rule_id, "lockActs", "getSetThermostatScheduler", [("tMethod", "bool", True), ("thisApp", "enum", str(mode_scheduler)), ("thermSched", "enum", "setTimeAway"), ("timeAwayHeat", "decimal", 60)])
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
