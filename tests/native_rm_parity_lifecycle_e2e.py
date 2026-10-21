@@ -310,6 +310,7 @@ class NativeRmParityLifecycleE2E(ParityCase):
             ("music literal and variable", "player", "soundActs", "getSetMusicPlayer", "player.#", "capability.musicPlayer", "playerLevel.#", [field("playerCommand.#", "enum", "set volume")]),
         ):
             with self.subTest(case=label):
+                self.fixture_metadata(fixture)
                 self.assertIn(fixture, self.fixtures)
                 target = self.create([change("variable", operation="create", name=variable, type="integer", value=40),
                                       log_action("exclusive baseline")])

@@ -79,6 +79,7 @@ class NativeRmBackupE2E(ParityCase):
         self.backups_enabled(False)
         gate = "switch2" if required else "switch"
         if required:
+            self.fixture_metadata(gate)
             self.assertIn(gate, self.fixtures, "Required-expression recovery needs an independent gate switch")
             self.assertNotEqual(str(self.fixtures[gate]), str(self.fixtures["switch"]))
         self.command(gate, "off")
