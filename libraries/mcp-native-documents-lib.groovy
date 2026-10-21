@@ -127,7 +127,7 @@ Map toolGetRuleDocument(Map args) {
         int start = Math.min(offset.toInteger(), total)
         int end = Math.min(start + limit.toInteger(), total)
         List selected = rows.subList(start, end)
-        document[section] = complete instanceof Map ? selected.collectEntries { entry -> [(entry.key): entry.value] } : selected
+        document.put(section, complete instanceof Map ? selected.collectEntries { entry -> [(entry.key): entry.value] } : selected)
         document.page = [offset: offset, limit: limit, total: total, next_offset: end < total ? end : null,
             revision: _mrtrSha256(groovy.json.JsonOutput.toJson(_mrtrCanonicalArgs(complete)))]
     }
