@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import base64
+import html
 import json
 import os
 import random
@@ -36,9 +37,6 @@ from zoneinfo import ZoneInfo
 
 import requests
 from device_configuration_helpers import assert_native_preferences
-from native_rule_document_e2e import change as native_change
-from native_rule_document_e2e import field as native_field
-from native_rule_document_e2e import log_action as native_log
 from sdk_conformance_helpers import (
     assert_exact_native_actions,
     assert_exact_native_conditions,
@@ -345,10 +343,22 @@ def _radio_unavailable_error(error: Any) -> bool:
     return isinstance(error, str) and ("503" in error or "unavailable" in error.lower())
 
 
-def _rule_patch_rows(result: dict) -> list:
-    """hub_set_rule patch rows. A continued call's patchResults already holds every slice and
-    patches mirrors it, so read one key, never both."""
-    return result.get("patchResults") or result.get("patches") or []
+def native_field(name: str, type_name: str, value: Any) -> dict:
+    """A typed native RM input for a hub_set_rule change; # stands for the row id RM allocates."""
+    return {"name": name, "type": type_name, "value": value}
+
+
+def native_change(part: str, **value: Any) -> dict:
+    return {"part": part, "value": value}
+
+
+def native_log(message: str, **extra: Any) -> dict:
+    return native_change("action", type="messageActs", subtype="getLogMsg",
+                         fields=[native_field("logmsg.#", "textarea", message)], **extra)
+
+
+def native_delete(part: str, row_id: Any) -> dict:
+    return {"part": "delete", "value": {"part": part, "id": str(row_id)}}
 
 
 def _decode_mcp1_envelope(raw_message: str) -> dict | None:
@@ -1743,7 +1753,58 @@ class TestRunner:
         "button":   ("E2E_PERM_Button",   "Virtual Button"),
         "motion":   ("E2E_PERM_Motion",   "Virtual Motion Sensor"),
         "omni":     ("E2E_PERM_Omni",     "Virtual Omni Sensor"),
+        "garage":   ("E2E_PERM_Garage",   "Virtual Garage Door Controller"),
+        "valve":    ("E2E_PERM_Valve",    "Virtual Valve"),
+        "blind":    ("E2E_PERM_Blind",    "Virtual Blind"),
+        "player":   ("E2E_PERM_Player",   "Virtual Player"),
+        "color":    ("E2E_PERM_Color",    "Virtual RGBW Light"),
+        "thermostat_a": ("E2E_PERM_Thermostat_A", "Virtual Thermostat"),
+        "thermostat_b": ("E2E_PERM_Thermostat_B", "Virtual Thermostat"),
+        "tone":     ("E2E_PERM_Tone",     "BAT_E2E_KEEP Virtual Tone"),
     }
+
+    # User drivers for the fixtures no built-in virtual driver covers (none has Tone): installed from
+    # tests/fixtures before their first device, never deleted (the purge reclaims only throwaway code).
+    PERM_FIXTURE_DRIVERS: ClassVar[dict[str, str]] = {
+        "BAT_E2E_KEEP Virtual Tone": "e2e-tone-driver.groovy",
+    }
+
+    # Built-in apps that RM's app-backed actions drive (label, app type name, hub_set_native_app
+    # appType). RM lists those actions only while an instance of the app type exists. Found by label,
+    # else created and configured on first use, never deleted.
+    BUILTIN_APP_FIXTURES: ClassVar[dict[str, tuple[str, str, str]]] = {
+        "room_lights": (f"{SCAFFOLD_PREFIX}RoomLights", "Room Lights", "room_lighting"),
+        "scene": (f"{SCAFFOLD_PREFIX}Scene", "Scene-1.2", "scene"),
+        "therm_ctl": (f"{SCAFFOLD_PREFIX}ThermCtl", "Thermostat Controller 2.0", "thermostat_controller"),
+        "sched_time": (f"{SCAFFOLD_PREFIX}ThermSched_Time", "Thermostat Scheduler 2.0", "thermostat_scheduler"),
+        "sched_modes": (f"{SCAFFOLD_PREFIX}ThermSched_Modes", "Thermostat Scheduler 2.0", "thermostat_scheduler"),
+    }
+
+    # Scenarios that assert on an edit's recovery point or restore from it run with pre-edit backups
+    # on; every other scenario runs without the snapshot a protected edit pays for.
+    BACKUP_PROVING_TESTS: ClassVar[frozenset[str]] = frozenset({
+        "test_set_rule_self_gateway_envelope_edit",
+        "test_set_native_app_basic_rule_lifecycle",
+        "test_rm_rule_restore_in_place_with_device_picker",
+        "test_rm_rule_restore_skips_a_deleted_device",
+        "test_rm_rule_restore_brings_back_a_removed_trigger",
+        "test_rm_rule_restore_of_a_deleted_rule_uses_the_exact_copy",
+        "test_rm_rule_restore_puts_actions_back_in_order",
+        "test_rm_rule_restore_expression_by_device_name",
+        "test_legacy_export_backup_restores_in_place",
+        "test_legacy_required_expression_backup_restores_in_place",
+        "test_complex_edit_recovers_deleted_rows_and_existing_payloads",
+        "test_stopped_time_rule_recovers_clock_and_schedule",
+        "test_form_workflow_has_one_pre_edit_snapshot",
+        "test_reads_and_disabled_backups_do_not_capture",
+    })
+
+    def _rule_edit_backups(self, on: bool) -> None:
+        """Set the pre-edit backup toggle and confirm the server now reads it that way."""
+        result = self.client.call_tool("hub_update_mcp_settings", {"settings": {"backupBeforeRuleEdits": on}, "confirm": True})
+        assert isinstance(result, dict) and result.get("success") is True \
+            and (result.get("updated") or {}).get("backupBeforeRuleEdits") is on, \
+            f"setting backupBeforeRuleEdits={on} did not take: {result}"
 
     # PERMANENT hub variables for tests that only need a variable to exist (create/delete is not their
     # subject). Created on a fresh hub, reset to their starting value per use, never deleted; the
@@ -1852,6 +1913,8 @@ class TestRunner:
         if key in self._perm_fixture_ids:
             return self._perm_fixture_ids[key]
 
+        if driver_name in self.PERM_FIXTURE_DRIVERS:
+            self._ensure_fixture_driver(driver_name)
         type_id = self._driver_type_id(driver_name)
         created = self.client.call_tool("hub_manage_devices", {
             "tool": "hub_create_device",
@@ -1870,6 +1933,22 @@ class TestRunner:
               "permanent, non-child; it will be reused by every later run")
         self._perm_fixture_ids[key] = str(dev_id)
         return self._perm_fixture_ids[key]
+
+    def _ensure_fixture_driver(self, name: str) -> None:
+        """Install a permanent fixture's user driver from tests/fixtures unless the hub already has it."""
+        listed = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_drivers", "args": {}})
+        # An unreadable list is not "absent": installing then would add a duplicate permanent driver.
+        assert isinstance(listed.get("drivers"), list), \
+            f"user driver list unreadable -- refusing to install '{name}' a second time: {listed}"
+        if any(d.get("name") == name and d.get("namespace") == "mcptest" for d in listed["drivers"]):
+            return
+        source = (Path(__file__).resolve().parent / "fixtures" / self.PERM_FIXTURE_DRIVERS[name]).read_text(encoding="utf-8")
+        created = self.client.call_tool("hub_manage_code", {"tool": "hub_create_driver", "args": {"source": source, "confirm": True}})
+        assert created.get("success") is True and created.get("driverId"), f"installing the '{name}' fixture driver failed: {created}"
+        # The type-id cache predates the driver; the next lookup reloads the catalog.
+        self._driver_type_ids.clear()
+        self._driver_buckets.clear()
+        print(f"    [PERM FIXTURE] installed driver '{name}' (id {created['driverId']}) -- reused by later runs")
 
     def _driver_type_id(self, driver_name: str) -> str:
         """Resolve a built-in driver's type id by name (hub-specific, so never hardcoded)."""
@@ -2420,9 +2499,6 @@ class TestRunner:
         return [str(settings.get(f"state_{slot}")).lower() for slot in slots]
 
 
-
-
-
     def _flush_deferred_variables(self) -> None:
         """Delete deferred fixture variables now, so a re-run can recreate its fixed names."""
         deferred = getattr(self, "deferred_variable_names", [])
@@ -2882,13 +2958,6 @@ class TestRunner:
         assert data.get("status") == "ok", f"Health status != ok: {data.get('status')}"
         assert "version" in data, "Health response missing version"
 
-    @test("infrastructure")
-    def test_set_rule_guide_param(self) -> None:
-        self._run_native_rule_case("lifecycle", "test_set_rule_guide_param")
-
-    @test("infrastructure")
-    def test_set_rule_self_gateway_meta(self) -> None:
-        self._run_native_rule_case("lifecycle", "test_set_rule_self_gateway_meta")
 
     # -----------------------------------------------------------------------
     # GROUP 2: devices (4 tests)
@@ -5622,13 +5691,6 @@ class TestRunner:
     # SmartApp surface that appears in Hubitat's own UI.
     # -----------------------------------------------------------------------
 
-    @test("native_apps")
-    def test_set_rule_self_gateway_envelope_edit(self) -> None:
-        self._run_native_rule_case("lifecycle", "test_set_rule_self_gateway_envelope_edit")
-
-    @test("native_apps")
-    def test_set_rule_self_gateway_envelope_create(self) -> None:
-        self._run_native_rule_case("lifecycle", "test_set_rule_self_gateway_envelope_create")
 
     def _untrack_native_app(self, app_id) -> None:
         if str(app_id) in self.created_native_app_ids:
@@ -5729,13 +5791,6 @@ class TestRunner:
               f"over {time.monotonic() - started:.1f}s, last status {status}")
         return status
 
-    @test("native_apps")
-    def test_set_rule_native_lifecycle(self) -> None:
-        self._run_native_rule_case("lifecycle", "test_set_rule_native_lifecycle")
-
-    @test("native_apps")
-    def test_set_rule_failloud_wrong_trigger_shape(self) -> None:
-        self._run_native_rule_case("lifecycle", "test_set_rule_failloud_wrong_trigger_shape")
 
     @staticmethod
     def _normalize_ruleact_ids(value: Any) -> list[str] | None:
@@ -5756,19 +5811,6 @@ class TestRunner:
         reposition has NOT landed. Shared by the recovered504 and moveSoftFail probes."""
         return 0 <= page_json_text.find(sentinel_msg) < page_json_text.find("Run Actions:")
 
-
-
-    @test("native_apps")
-    def test_set_rule_modifyaction_retarget(self) -> None:
-        self._run_native_rule_case("actions", "test_set_rule_modifyaction_retarget")
-
-    @test("native_apps")
-    def test_clone_stage_disabled(self) -> None:
-        self._run_native_rule_case("lifecycle", "test_clone_stage_disabled")
-
-    @test("native_apps")
-    def test_set_rule_action_expression_reject_is_pre_write(self) -> None:
-        self._run_native_rule_case("actions", "test_set_rule_action_expression_reject_is_pre_write")
 
     @test("devices")
     def test_button_rule_command_provenance(self) -> None:
@@ -5826,13 +5868,6 @@ class TestRunner:
         finally:
             self._delete_native(app_id)
 
-    @test("native_apps")
-    def test_call_rule_multi_id_aggregates_per_rule(self) -> None:
-        self._run_native_rule_case("lifecycle", "test_call_rule_multi_id_aggregates_per_rule")
-
-    @test("native_apps")
-    def test_set_rule_waitevents_on_offset_action_slot(self) -> None:
-        self._run_native_rule_case("actions", "test_set_rule_waitevents_on_offset_action_slot")
 
     @test("native_apps")
     def test_set_native_app_lifecycle(self) -> None:
@@ -6196,10 +6231,9 @@ class TestRunner:
             # health should be clean (it renders -- not the broken orphan a bare
             # createchild produces).
             assert (br.get("health") or {}).get("ok") is not False, f"new button rule is unhealthy: {br}"
-            from native_rule_document_e2e import log_action
             acted = self._write_once("hub_manage_rule_machine", "hub_set_rule",
                 {"operation": "update", "rule_id": int(rule_id),
-                 "args": {"changes": [log_action("E2E button rule")]}, "confirm": True},
+                 "args": {"changes": [native_log("E2E button rule")]}, "confirm": True},
                 "button rule action")
             assert acted.get("success") is True and not acted.get("partial"), acted
             document = self._native_rule_document(rule_id)
@@ -6237,12 +6271,2202 @@ class TestRunner:
                 except (McpToolError, McpError, requests.HTTPError) as exc:
                     print(f"  [WARN] button-rule e2e cleanup: delete controller {controller_id} failed: {exc}")
 
+    # ---- native rule document helpers (hub_set_rule read/create/update/form) ----
+    #
+    # A successful create/update already returns the compiled document and has proven native
+    # health, structure and activation, so tests assert on that response and read typed
+    # settings once per check instead of re-reading after every row.
+
     def _native_rule_parent_id(self) -> int:
-        from e2e_native_rule_integration import native_context
-        return native_context(self)["parent_id"]
+        if getattr(self, "_rm_parent_id", None) is None:
+            self._rm_parent_id = _discover_native_rule_parent_id(
+                self.client, install_missing=self._bootstrap_rule_machine_parent)
+        return self._rm_parent_id
+
+    def _bootstrap_rule_machine_parent(self, _type_id: int) -> None:
+        # A hub without the Rule Machine parent gets it the way the UI does: by creating a first rule.
+        label = f"{PREFIX}RM_ParentBootstrap_{_run_artifact_suffix()}"
+        created = self.client.call_tool("hub_set_native_app", {
+            "appType": "rule_machine", "name": label, "confirm": True})
+        assert created.get("success") is True and created.get("appId"), created
+        self.created_native_app_ids.append(str(created["appId"]))
+        self._delete_native(created["appId"])
 
     def _native_rule_document(self, app_id: Any) -> dict:
-        return self.client.call_tool("hub_set_rule", {"operation": "read", "rule_id": int(app_id)})
+        doc = self.client.call_tool("hub_set_rule", {"operation": "read", "rule_id": int(app_id)})
+        assert str(doc.get("rule_id")) == str(app_id), doc
+        return doc
+
+    def _rm_rule(self, suffix: str, changes: list[dict] | None = None, **options: Any) -> tuple[int, dict]:
+        """Create a rule; returns its id and compiled document (read back after a relay-adopted create)."""
+        app_id, created = self._create_native_rule(suffix, changes, return_result=True, **options)
+        doc = created.get("document") if created else None
+        return int(app_id), doc or self._native_rule_document(app_id)
+
+    def _rm_update(self, app_id: Any, changes: list[dict]) -> dict:
+        result = self._set_rule(app_id, changes)
+        assert str(result.get("rule_id")) == str(app_id), result
+        return result
+
+    def _rm_ids(self, result: dict) -> list[str]:
+        """Native row ids of a write's changes, in request order."""
+        return [str((row.get("result") or {}).get("id")) for row in result.get("results", [])]
+
+    def _rm_settings(self, app_id: Any) -> dict[str, dict]:
+        doc = self._rm_call({"operation": "read", "rule_id": int(app_id),
+                                                     "args": {"sections": ["settings"]}})
+        assert str(doc.get("rule_id")) == str(app_id) and isinstance(doc.get("settings"), list), doc
+        return {row["name"]: row for row in doc["settings"]}
+
+    def _rm_values(self, app_id: Any) -> dict[str, Any]:
+        """Typed settings as plain values: device pickers as their sorted device ids."""
+        values = {}
+        for name, row in self._rm_settings(app_id).items():
+            value = row.get("value")
+            if str(row.get("type", "")).startswith("capability"):
+                value = row.get("device_ids") or []
+            elif row.get("multiple") and isinstance(value, str):
+                try:
+                    value = json.loads(value)
+                except ValueError:
+                    pass
+            values[name] = value
+        return values
+
+    def _rm_snapshot(self, app_id: Any) -> dict:
+        doc = self._native_rule_document(app_id)
+        return {"document": {key: doc.get(key) for key in ("actions", "conditions", "triggers", "expressions", "variables")},
+                "settings": self._rm_settings(app_id)}
+
+    def _rm_call(self, args: dict) -> dict:
+        """hub_set_rule, with a validation refusal (an isError result) returned as its payload."""
+        try:
+            return self.client.call_tool("hub_set_rule", args)
+        except McpToolError as exc:
+            try:
+                payload = json.loads(exc.content_text)
+            except (TypeError, ValueError):
+                payload = None
+            return dict(payload if isinstance(payload, dict) else {"error": exc.content_text}, success=False)
+
+    @staticmethod
+    def _rm_refused(result: dict) -> str:
+        assert result.get("success") is False, result
+        errors = [str(result.get("error") or "")] + [str((row.get("result") or {}).get("error") or "")
+                                                     for row in result.get("results", [])]
+        assert any(errors), f"a refused write carried no error: {result}"
+        return " ".join(errors)
+
+    def _rm_refuse(self, app_id: Any, changes: list[dict]) -> str:
+        return self._rm_refused(self._rm_call({
+            "operation": "update", "rule_id": int(app_id), "args": {"changes": changes}, "confirm": True}))
+
+    def _rm_refuse_all(self, app_id: Any, cases: list[list[dict]]) -> None:
+        """Each case is refused, and together they leave the rule exactly as it was."""
+        before = self._rm_snapshot(app_id)
+        for changes in cases:
+            self._rm_refuse(app_id, changes)
+        assert self._rm_snapshot(app_id) == before, "a refused edit changed the rule"
+
+    def _rm_form(self, app_id: Any, *steps: dict) -> dict:
+        result = self._rm_call({"operation": "form", "rule_id": int(app_id),
+                                                        "args": {"steps": list(steps)}, "confirm": True})
+        assert result.get("success") is True, result
+        return result
+
+    def _rm_open(self, app_id: Any, page: str | None = None) -> dict:
+        return self._rm_form(app_id, {"kind": "open", **({"page": page} if page else {})})
+
+    @staticmethod
+    def _rm_step(form: dict, fields: dict | None = None, control: dict | None = None) -> dict:
+        step = {"kind": "submit", "expect_page": form["page"]["name"]}
+        if fields is not None:
+            step["fields"] = fields
+        if control is not None:
+            step["activate"] = control["control_id"]
+        return step
+
+    def _rm_submit(self, app_id: Any, form: dict, fields: dict | None = None, control: dict | None = None) -> dict:
+        return self._rm_form(app_id, self._rm_step(form, fields, control))
+
+    @staticmethod
+    def _rm_control(form: dict, name: str | None = None, title: str | None = None, **match: Any) -> dict:
+        rows = [row for row in form["controls"]
+                if (name is None or row.get("name") == name) and (title is None or title in str(row.get("title", "")))
+                and all(row.get(key) == value for key, value in match.items())]
+        assert len(rows) == 1, {"name": name, "title": title, "match": match, "controls": form["controls"]}
+        return rows[0]
+
+    def _rm_new_action_editor(self, app_id: Any) -> tuple[dict, str]:
+        """Open a new action row in the native editor; returns the form and the row's allocated id."""
+        form = self._rm_open(app_id, "selectActions")
+        form = self._rm_submit(app_id, form, control=self._rm_control(form, kind="button", control_id="N||doAct"))
+        form = self._rm_submit(app_id, form, control=self._rm_control(form, kind="href", page="doActPage"))
+        names = [row["name"] for row in form["fields"] if row["name"].startswith("actType.")]
+        assert len(names) == 1, form
+        return form, names[0].split(".", 1)[1]
+
+    def _rm_new_trigger_editor(self, app_id: Any) -> tuple[dict, str]:
+        form = self._rm_open(app_id, "selectTriggers")
+        if not any(row["name"].startswith("tCapab") for row in form["fields"]):
+            form = self._rm_submit(app_id, form, control=self._rm_control(form, control_id="true||moreCond"))
+        names = [row["name"] for row in form["fields"] if row["name"].startswith("tCapab")]
+        assert len(names) == 1, form
+        return form, names[0].removeprefix("tCapab")
+
+    def _rm_health(self, app_id: Any, **extra: Any) -> dict:
+        health = self.client.call_tool("hub_get_rule_health", {"appId": int(app_id), **extra})
+        assert health.get("success") is not False, health
+        return health
+
+    def _rm_page(self, app_id: Any, page: str | None = None) -> str:
+        """The rule's rendered page as text, read without opening the editor."""
+        args = {"appId": str(app_id), **({"pageName": page} if page else {})}
+        cfg = self.client.call_tool("hub_get_app_config", args)
+        assert cfg.get("success") is True, cfg
+        # Only real tags: RM's own text carries comparators such as "< 80" and ">= 65".
+        return html.unescape(re.sub(r"</?[A-Za-z][^<>]*>", "", json.dumps(cfg.get("page") or {})))
+
+    def _rm_listed(self, app_id: Any) -> dict:
+        rows = self.client.call_tool("hub_list_rules", {}).get("rules", [])
+        return next(row for row in rows if str(row.get("id")) == str(app_id))
+
+    def _rm_wait(self, predicate, timeout: float = 10.0, what: str = "native state") -> None:
+        deadline = time.monotonic() + timeout
+        while not predicate():
+            assert time.monotonic() < deadline, f"{what} did not arrive within {timeout}s"
+            time.sleep(0.5)
+
+    @staticmethod
+    def _rm_switch_fields(device: Any, state: str = "on", trigger: bool = False, custom: bool = False) -> list[dict]:
+        prefix = "tDev" if trigger else "rDev_"
+        fields = [native_field(prefix + "#", "capability.*" if custom else "capability.switch",
+                               str(device) if custom else [str(device)])]
+        if custom:
+            fields.append(native_field("tCustomAttr#" if trigger else "rCustomAttr_#", "enum", "switch"))
+        fields.append(native_field("tstate#" if trigger else "state_#", "enum", state))
+        return fields
+
+    def _rm_switch_condition(self, device: Any, state: str = "on", **extra: Any) -> dict:
+        return native_change("condition", capability="Switch", fields=self._rm_switch_fields(device, state), **extra)
+
+    def _rm_switch_trigger(self, device: Any, state: str = "on", **extra: Any) -> dict:
+        return native_change("trigger", capability="Switch", fields=self._rm_switch_fields(device, state, trigger=True), **extra)
+
+    @staticmethod
+    def _rm_switch_action(device: Any, on: bool = True, **extra: Any) -> dict:
+        return native_change("action", type="switchActs", subtype="getOnOffSwitch", fields=[
+            native_field("onOffSwitch.#", "capability.switch", [str(device)]), native_field("onOff.#", "bool", on)], **extra)
+
+    @staticmethod
+    def _rm_action(type_name: str, subtype: str, fields: list[tuple], **extra: Any) -> dict:
+        return native_change("action", type=type_name, subtype=subtype, fields=[
+            native_field(name + ".#", type_, value) for name, type_, value in fields], **extra)
+
+    @staticmethod
+    def _rm_variable_action(name: str, operation: str, fields: list[dict]) -> dict:
+        return native_change("action", type="modeActs", subtype="getSetVariable", fields=[
+            native_field("xVarV.#", "enum", name), native_field("numOp.#", "enum", operation), *fields])
+
+    @staticmethod
+    def _rm_temperature_fields(device: Any, comparator: str, value: float, trigger: bool = False,
+                               relative_to: Any = None) -> list[dict]:
+        rows = [native_field("tDev#" if trigger else "rDev_#", "capability.temperatureMeasurement", [str(device)]),
+                native_field("ReltDev#" if trigger else "RelrDev_#", "enum", comparator)]
+        if relative_to is not None:
+            rows += [native_field("istDev#" if trigger else "isDev_#", "bool", True),
+                     native_field("reltDevice#" if trigger else "relDevice_#", "capability.temperatureMeasurement",
+                                  str(relative_to))]
+        return [*rows, native_field("tstate#" if trigger else "state_#", "decimal", value)]
+
+    @staticmethod
+    def _rm_equal(actual: Any, wanted: Any) -> bool:
+        if isinstance(wanted, bool):
+            return str(actual).lower() == str(wanted).lower()
+        if isinstance(wanted, (int, float)):
+            return float(actual) == float(wanted)
+        if isinstance(wanted, list):
+            return sorted(map(str, actual or [])) == sorted(map(str, wanted))
+        return str(actual) == str(wanted)
+
+    def _rm_assert_stored(self, values: dict, row_id: Any, expected: dict, sep: str = ".") -> None:
+        for name, wanted in expected.items():
+            key = f"{name}{sep}{row_id}"
+            assert key in values and self._rm_equal(values[key], wanted), \
+                f"{key} should be {wanted!r}, got {values.get(key)!r}"
+
+    def _rm_backup_keys(self, app_id: Any) -> set[str]:
+        keys, args = set(), {"scope": "source"}
+        while True:
+            result = self.client.call_tool("hub_list_backups", args)
+            assert result.get("success") is not False, result
+            keys.update(row["backupKey"] for row in result.get("backups", [])
+                        if str(row.get("ruleId", row.get("id"))) == str(app_id))
+            if not result.get("nextCursor"):
+                return keys
+            args["cursor"] = result["nextCursor"]
+
+    def _rm_restore(self, key: str, **options: Any) -> dict:
+        return self.client.call_tool("hub_restore_backup", {"scope": "source", "backupKey": key, "confirm": True, **options})
+
+    def _rm_read_file(self, file_name: str) -> str:
+        chunks, offset = [], 0
+        while True:
+            page = self.client.call_tool("hub_read_file", {"fileName": file_name, "offset": offset, "length": 60000})
+            assert page.get("success") is True and page.get("offset") == offset, page
+            chunks.append(page["content"])
+            if not page.get("hasMore"):
+                return "".join(chunks)
+            assert page["nextOffset"] > offset, page
+            offset = page["nextOffset"]
+
+    def _rm_disposable_switch(self, name: str) -> tuple[str, str, str]:
+        label = f"{PREFIX}{name}_{_run_artifact_suffix()}"
+        device_id = self._create_virtual_switch_device(label)
+        assert device_id, f"could not create the disposable switch {label}"
+        dni = self._last_created_dni or label
+        self.created_device_dnis.append(dni)
+        return device_id, dni, label
+
+    def _rm_delete_device(self, dni: str) -> None:
+        result = self.client.call_tool("hub_manage_virtual_device", {"action": "delete", "deviceNetworkId": dni, "confirm": True})
+        assert result.get("success") is True, result
+        if dni in self.created_device_dnis:
+            self.created_device_dnis.remove(dni)
+
+    def _rm_command(self, device_id: Any, command: str, *values: Any) -> None:
+        result = self.client.call_tool("hub_call_device_command", {
+            "deviceId": str(device_id), "command": command,
+            **({"parameters": [str(value) for value in values]} if values else {})})
+        assert result.get("success") is True, result
+
+    def _rm_attribute(self, device_id: Any, attribute: str) -> Any:
+        result = self.client.call_tool("hub_get_device_attribute", {"deviceId": str(device_id), "attribute": attribute})
+        assert "value" in result, result
+        return result["value"]
+
+    # ---- hub_set_rule surface: help, catalog, confirmation envelope ----
+
+    @test("infrastructure")
+    def test_set_rule_guide_param(self) -> None:
+        # hub_set_rule without an operation is its own help; the served guide section carries the
+        # part vocabulary. Neither touches a rule.
+        help_text = json.dumps(self.client.call_tool("hub_set_rule", {}))
+        assert "operation" in help_text and "read" in help_text and "form" in help_text, help_text[:400]
+        guide = json.dumps(self.client.call_tool("hub_get_tool_guide", {"section": "set_rule_reference"}))
+        for word in ("hub_set_rule", "condition", "trigger", "action", "fields"):
+            assert word in guide, f"set_rule_reference does not mention {word!r}"
+
+    @test("infrastructure")
+    def test_set_rule_self_gateway_meta(self) -> None:
+        # hub_set_rule is the one native RM authoring tool, behind hub_manage_rule_machine; the
+        # earlier per-operation document/form tools are gone from the catalog.
+        self.client._ensure_catalog_maps()
+        members = self.client._gateway_members
+        assert "hub_set_rule" in members.get("hub_manage_rule_machine", set()), members.get("hub_manage_rule_machine")
+        retired = {"hub_get_rule_document", "hub_create_rule_document", "hub_update_rule_document", "hub_call_app_form"}
+        listed = set().union(*members.values()) | set(members)
+        assert not retired & listed, f"retired rule tools are still listed: {sorted(retired & listed)}"
+
+    @test("native_apps")
+    def test_set_rule_self_gateway_envelope_edit(self) -> None:
+        # Through the gateway envelope: an unconfirmed write returns its schema and changes nothing;
+        # a confirmed update takes one pre-edit snapshot for the whole batch and lands every change.
+        app_id, _ = self._rm_rule("EnvEdit", [native_log("first")])
+        try:
+            probe = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": {
+                "operation": "update", "rule_id": app_id, "args": {"changes": [native_log("unconfirmed")]}}})
+            assert probe.get("confirm_required") is True, probe
+            result = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": {
+                "operation": "update", "rule_id": app_id, "confirm": True,
+                "args": {"changes": [native_log("via-envelope"), native_log("wrapped-list")]}}})
+            assert result.get("success") is True and not result.get("partial"), result
+            assert (result.get("backup") or {}).get("backupKey"), f"the update took no pre-edit snapshot: {result}"
+            assert len(result["document"]["actions"]) == 3, result["document"]
+            messages = [v for k, v in self._rm_values(app_id).items() if k.startswith("logmsg.")]
+            assert sorted(messages) == ["first", "via-envelope", "wrapped-list"], messages
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_self_gateway_envelope_create(self) -> None:
+        app_id, doc = self._rm_rule("EnvCreate", [native_log("envelope-create")])
+        try:
+            assert str(doc.get("rule_id")) == str(app_id), doc
+            assert [row["value"]["method"] for row in doc["actions"]] == ["getLogMsg"], doc
+            assert doc["validation"]["structuralIssues"] == [] and doc["nativeHealth"]["broken"] is False, doc
+        finally:
+            self._delete_native(app_id)
+
+    # ---- native lifecycle, runtime controls, deletion ----
+
+    @test("native_apps")
+    def test_set_rule_native_lifecycle(self) -> None:
+        clock = native_change("trigger", capability="Certain Time (and optional date)", fields=[
+            native_field("time#", "enum", "A specific time"),
+            native_field("atTime#", "time", "2026-01-01T17:00:00.000-0500")])
+        # A label that already ends in RM's own " (Paused)" decoration must not read as paused.
+        app_id, _ = self._rm_rule("Lifecycle", [clock, native_log("native lifecycle")], name_suffix=" (Paused)")
+        deleted_inline = False
+        try:
+            listed = self._rm_listed(app_id)
+            assert listed.get("status") == "active" and listed.get("paused") is False, listed
+            label = listed.get("name") or listed.get("label")
+            assert str(label).endswith(" (Paused)"), listed
+            for paused in (True, False):
+                result = self.client.call_tool("hub_set_rule_paused", {"ruleId": app_id, "paused": paused})
+                assert result.get("success") is not False, result
+                self._rm_wait(lambda paused=paused: self._rm_health(app_id).get("paused") is paused, what=f"paused={paused}")
+                assert self._rm_health(app_id).get("label") == label
+            result = self.client.call_tool("hub_call_rule", {"ruleId": app_id, "action": "stop"})
+            assert result.get("success") is not False, result
+            self._rm_wait(lambda: self._rm_health(app_id).get("stopped") is True, what="stopped")
+            assert self._rm_health(app_id)["eventSubscriptionCount"] == 0
+            # An edit keeps the rule stopped.
+            edited = self._rm_update(app_id, [native_log("edit while stopped")])
+            assert edited.get("stopped") is True and not edited["scheduledJobs"], edited
+            result = self.client.call_tool("hub_call_rule", {"ruleId": app_id, "action": "start"})
+            assert result.get("success") is not False, result
+            self._rm_wait(lambda: self._rm_health(app_id).get("stopped") is False, what="started")
+            assert self._rm_health(app_id)["scheduledJobCount"] >= 1, "the started time trigger has no schedule"
+            # A disabled rule refuses document and form edits until it is enabled again.
+            self.client.call_tool("hub_set_app_disabled", {"appId": app_id, "disabled": True})
+            try:
+                self._rm_wait(lambda: self._rm_listed(app_id).get("disabled") is True, what="disabled")
+                self._rm_refuse(app_id, [native_log("disabled must not land")])
+                self._rm_refused(self._rm_call({
+                    "operation": "form", "rule_id": app_id, "confirm": True, "args": {"steps": [{"kind": "open"}]}}))
+            finally:
+                self.client.call_tool("hub_set_app_disabled", {"appId": app_id, "disabled": False})
+            self._rm_wait(lambda: self._rm_listed(app_id).get("status") == "active", what="enabled")
+            mode = self._rm_update(app_id, [native_change("trigger", capability="Mode", fields=[
+                native_field("modesX#", "enum", [self._mode_ids("Day")[0]])])])
+            mode_id = self._rm_ids(mode)[0]
+            removed = self._rm_update(app_id, [native_delete("trigger", mode_id)])
+            assert mode_id not in removed["document"]["triggers"] and len(removed["document"]["triggers"]) == 1, removed
+            deleted = self.client.call_tool("hub_delete_native_app", {"appId": app_id, "confirm": True})
+            assert deleted.get("success") is True, deleted
+            deleted_inline = True
+            self._untrack_native_app(app_id)
+            rules = self.client.call_tool("hub_list_rules", {}).get("rules", [])
+            assert str(app_id) not in [str(row.get("id")) for row in rules], "the deleted rule is still listed"
+        finally:
+            if not deleted_inline:
+                self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_failloud_wrong_trigger_shape(self) -> None:
+        # Malformed or semantically wrong rows are refused and leave the rule exactly as it was. The
+        # baseline compiles one valid row of each kind the edits below target, so an edit refusal
+        # cannot pass merely because the row or its device was wrong to begin with. Every refusal is
+        # its own write; one snapshot before and after proves none of them landed.
+        switch = self._ensure_perm_fixture("switch_a")
+        blind, player, omni = (self._ensure_perm_fixture(key) for key in ("blind", "player", "omni"))
+        temperature = self.get_test_temperature_ids()[0]
+        text_var = self._ensure_perm_variables("sv_string")["sv_string"]
+        number_var = self._ensure_perm_variables("sv_number")["sv_number"]
+        day = self._mode_ids("Day")[0]
+        referenced, _ = self._rm_rule("FailLoudRef", [native_log("referenced rule")])
+        app_id = None
+        try:
+            app_id, _ = self._rm_rule("FailLoud", [native_log("fail-loud baseline")])
+            built = self._rm_update(app_id, [
+                native_change("trigger", capability="Location Event", fields=[native_field("tstate#", "enum", "systemStart")]),
+                native_change("trigger", capability="Variable", fields=[
+                    native_field("xVar#", "enum", text_var), native_field("ReltDev#", "enum", "*is empty*")]),
+                native_change("condition", capability="Days of week", fields=[native_field("days#", "enum", ["Monday"])]),
+                native_change("condition", capability="Water sensor", fields=[
+                    native_field("rDev_#", "capability.waterSensor", [str(omni)]), native_field("state_#", "enum", "wet")]),
+                native_change("condition", capability="Mode", fields=[native_field("modes#", "enum", [day])]),
+                native_change("condition", capability="Rule paused", fields=[native_field("rDev_#", "enum", [str(referenced)])]),
+                self._rm_action("rulesActs", "getRuleActions", [
+                    ("runRuleType", "enum", "Rule Machine"), ("ruleAct", "enum", [str(referenced)])]),
+                self._rm_action("modeActs", "getDefinedAction", [
+                    ("myCapab", "enum", "Switch"), ("devices", "capability.switch", [str(switch)]), ("cCmd", "enum", "off")]),
+                self._rm_action("sceneActs", "getBlindTilt", [
+                    ("blindTilt", "capability.windowBlind", [str(blind)]), ("tiltLevel", "number", 30)]),
+                self._rm_action("soundActs", "getSetMusicPlayer", [
+                    ("player", "capability.musicPlayer", [str(player)]), ("playerCommand", "enum", "set volume"),
+                    ("playerLevel", "number", 30)]),
+            ])
+            location, variable, days, water, mode, paused, run_rule, custom, tilt, music = self._rm_ids(built)
+            # The native inline-condition creator leaves Mode out, but an existing Mode condition is a
+            # legitimate Simple Conditional Action condition.
+            attached = self._rm_update(app_id, [native_change("required", tokens=[days, "AND", water]),
+                                                native_log("mode conditional action", condition=mode)])
+            conditional = attached["document"]["actions"][-1]["value"]
+            assert str(conditional.get("cond")) == mode, conditional
+            page = self._rm_page(app_id)
+            assert "off() on" in page and "mode conditional action" in page, page[:600]
+
+            missing_file = f"{PREFIX}no_such_file_{_run_artifact_suffix()}.txt"
+            sw = [str(switch)]
+            action = self._rm_action
+            cases = [
+                [native_change("trigger", capability="Periodic Schedule", minutes=1, fields=[])],
+                [native_change("trigger", capability="Certain Time (and optional date)",
+                               fields=[native_field("time#", "enum", "17:30")])],
+                [native_change("action", type="messageActs", subtype="notAnAction", fields=[])],
+                [action("lockActs", "getOCGarage", [("garageOpenClose", "capability.garageDoorControl", sw)])],
+                [action("lockActs", "getOCValve", [("valveOpenClose", "capability.valve", sw)])],
+                [action("soundActs", "getTone", [("toner", "capability.tone", sw)])],
+                [action("sceneActs", "getBlindTilt", [("tiltLevel", "number", "forty")])],
+                [action("sceneActs", "getBlindTilt", [])],
+                [action("soundActs", "getSetMusicPlayer", [("playerCommand", "enum", "noSuchMusicCommand")])],
+                [action("soundActs", "getSetMusicPlayer", [("playerLevel", "number", "loud")])],
+                [action("modeActs", "getDefinedAction", [("myCapab", "enum", "Initialize")])],
+                [action("modeActs", "getDefinedAction", [
+                    ("myCapab", "enum", "Switch"), ("devices", "capability.switch", sw), ("cCmd", "enum", "noSuchCommandE2E")])],
+                [action("modeActs", "getDefinedAction", [("useLastDev", "bool", True), ("cCmd", "enum", "off")])],
+                [action("modeActs", "getAppendLocalFile", [("localFile", "enum", missing_file), ("fileContents", "textarea", "x")])],
+                [action("modeActs", "getDeleteLocalFile", [("deleteFile", "enum", missing_file)])],
+                [action("lockActs", "getSetHSM", [("alarm", "enum", "armEverything")])],
+                [native_log("conditional must not land", condition=999999999)],
+                [native_change("action", type="condActs", subtype="getIfThen", fields=[], expression=["999999999"],
+                               condition=999999999)],
+                [native_change("required", tokens=["999999999"])],
+                [native_change("required", tokens=["AND"])],
+                [native_change("trigger", capability="Temperature", fields=[
+                    native_field("tDev#", "capability.temperatureMeasurement", [str(temperature)]),
+                    native_field("ReltDev#", "enum", "increased")])],
+                [self._rm_switch_trigger(switch, "purple")],
+                [native_change("trigger", capability="Switch", fields=[
+                    native_field("tDev#", "capability.switch", [-1]), native_field("tstate#", "enum", "on")])],
+                [native_change("trigger", capability="Switch", fields=[native_field("tstate#", "enum", {"state": "on"})])],
+                [native_change("condition", capability="Switch", fields=[
+                    native_field("rDev_#", "capability.switch", sw), native_field("RelrDev_#", "enum", "*changed*")])],
+                [native_change("condition", capability="Last Event Device", fields=[])],
+                [native_change("condition", capability="Lock codes", fields=[])],
+                # Edits of the compiled baseline rows.
+                [action("sceneActs", "getBlindTilt", [
+                    ("blindTilt", "capability.windowBlind", [str(blind)]), ("uVar", "bool", True),
+                    ("xVar", "enum", number_var), ("tiltLevel", "number", 30)], id=tilt)],
+                [action("soundActs", "getSetMusicPlayer", [
+                    ("player", "capability.musicPlayer", [str(player)]), ("playerCommand", "enum", "set volume"),
+                    ("uVar", "bool", True), ("xVar", "enum", number_var), ("playerLevel", "number", 30)], id=music)],
+                [native_change("trigger", id=location, capability="Location Event", fields=[native_field("tstate#", "enum", "")])],
+                [native_change("trigger", id=variable, capability="Variable", fields=[
+                    native_field("stays#", "bool", True), native_field("SMins#", "number", 5)])],
+                [native_change("condition", id=paused, capability="Rule paused",
+                               fields=[native_field("RelrDev_#", "enum", "*changed*")])],
+                *[[action("rulesActs", "getRuleActions", [("ruleAct", "enum", targets)], id=run_rule)]
+                  for targets in (["999999999"], ["*"], [])],
+                [native_change("condition", id=days, capability="Days of week", fields=[native_field("days#", "enum", [])])],
+                [native_change("condition", id=water, capability="Water sensor",
+                               fields=[native_field("RelrDev_#", "enum", "*changed*")])],
+                [action("modeActs", "getDefinedAction", [
+                    ("myCapab", "enum", "Initialize"), ("devices", "capability.switch", sw), ("cCmd", "enum", "off")], id=custom)],
+            ]
+            self._rm_refuse_all(app_id, cases)
+            health = self._rm_health(app_id)
+            assert health.get("ok") is not False and not health.get("orphanedActionRows"), health
+            assert missing_file not in self._rm_page(app_id), "a refused file action left a row naming the file"
+        finally:
+            if app_id:
+                self._delete_native(app_id)
+            self._delete_native(referenced)
+
+    @test("native_apps")
+    def test_clone_stage_disabled(self) -> None:
+        # Clone and import can stage the copy disabled; the source stays enabled.
+        source, _ = self._rm_rule("StageSrc", [native_log("stage source")])
+        copies = []
+        try:
+            clone = self.client.call_tool("hub_clone_native_app", {
+                "appId": source, "newName": f"{PREFIX}StagedClone_{_run_artifact_suffix()}", "stageDisabled": True, "confirm": True})
+            if clone.get("newAppId"):
+                copies.append(str(clone["newAppId"]))
+                self.created_native_app_ids.append(copies[-1])
+            assert clone.get("success") is True and copies[-1] in map(str, clone.get("stagedDisabled", [])), clone
+            exported = self.client.call_tool("hub_export_native_app", {"appId": source})
+            assert exported.get("success") is True and exported.get("jsonContent"), exported
+            imported = self.client.call_tool("hub_import_native_app", {
+                "parentHintAppId": source, "jsonContent": exported["jsonContent"],
+                "newName": f"{PREFIX}StagedImport_{_run_artifact_suffix()}", "stageDisabled": True, "confirm": True})
+            if imported.get("newAppId"):
+                copies.append(str(imported["newAppId"]))
+                self.created_native_app_ids.append(copies[-1])
+            assert imported.get("success") is True and copies[-1] in map(str, imported.get("stagedDisabled", [])), imported
+            def states() -> dict:
+                rows = self.client.call_tool("hub_list_rules", {}).get("rules", [])
+                return {str(row.get("id")): row.get("disabled") for row in rows}
+            self._rm_wait(lambda: all(states().get(c) is True for c in copies), what="staged copies disabled")
+            assert states().get(str(source)) is False, "staging a copy disabled its source"
+        finally:
+            for app in [source, *copies]:
+                self._delete_native(app)
+
+    @test("native_apps")
+    def test_call_rule_multi_id_aggregates_per_rule(self) -> None:
+        ids = [self._rm_rule("AggA", [native_log("aggregate A")])[0], self._rm_rule("AggB", [native_log("aggregate B")])[0]]
+        try:
+            result = self.client.call_tool("hub_call_rule", {"ruleId": ids, "action": "stop"})
+            rows = result.get("results")
+            assert isinstance(rows, list) and sorted(str(r.get("ruleId")) for r in rows) == sorted(map(str, ids)), result
+            assert sorted(map(str, result.get("ruleIds", []))) == sorted(map(str, ids)), result
+            failed = [r for r in rows if r.get("success") is not True]
+            assert result.get("success") is (not failed), result
+            assert sorted(str(r["ruleId"]) for r in failed) == sorted(map(str, result.get("failedRuleIds", []))), result
+            for app_id in ids:
+                self._rm_wait(lambda app_id=app_id: self._rm_health(app_id).get("stopped") is True, what=f"rule {app_id} stopped")
+        finally:
+            for app_id in ids:
+                self._delete_native(app_id)
+
+    # ---- native forms (the walker successor) ----
+
+    @test("native_apps")
+    def test_set_rule_walkstep_introspect(self) -> None:
+        # Pages open in one ordered batch; an unknown step kind refuses the whole batch before any step.
+        app_id, _ = self._rm_rule("FormIntrospect", [native_log("introspect")])
+        try:
+            opened = self._rm_form(app_id, {"kind": "open", "page": "selectTriggers"}, {"kind": "open", "page": "mainPage"})
+            assert [row["page"] for row in opened["completed"]] == ["selectTriggers", "mainPage"], opened
+            before = self._rm_settings(app_id)
+            bad = self._rm_call({"operation": "form", "rule_id": app_id, "confirm": True, "args": {
+                "steps": [{"kind": "open", "page": "mainPage"}, {"kind": "bogus_op"},
+                          {"kind": "submit", "fields": {"comments": "must-not-land"}}]}})
+            self._rm_refused(bad)
+            assert self._rm_settings(app_id) == before, "a refused form batch changed the rule"
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_discover_meta(self) -> None:
+        # Native selectors are the authoritative catalog: the trigger capability picker, then the
+        # device and comparator inputs it reveals for the chosen capability.
+        temperature = self.get_test_temperature_ids()[0]
+        app_id, _ = self._rm_rule("Discover", [native_log("discover")])
+        try:
+            form, slot = self._rm_new_trigger_editor(app_id)
+            capability = next(row for row in form["fields"] if row["name"] == "tCapab" + slot)
+            offered = {str(option["value"]) for option in capability.get("options", [])}
+            assert {"Temperature", "Switch"} <= offered, offered
+            form = self._rm_submit(app_id, form, fields={"tCapab" + slot: "Temperature"})
+            device = next(row for row in form["fields"] if row["name"] == "tDev" + slot)
+            form = self._rm_submit(app_id, form, fields={device["name"]: [str(temperature)] if device["multiple"] else str(temperature)})
+            comparators = [row for row in form["fields"] if row["name"].startswith("Rel")]
+            assert any("*changed*" in {str(o["value"]) for o in row.get("options", [])} for row in comparators), form
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_raw_settings_and_validation(self) -> None:
+        # Form submits write native settings with their native types; a value of the wrong shape is
+        # refused before the request.
+        app_id, _ = self._rm_rule("RawSettings", [native_log("raw settings")])
+        try:
+            form = self._rm_open(app_id, "mainPage")
+            form = self._rm_submit(app_id, form, fields={"comments": "BAT_E2E raw settings", "logging": ["Triggers", "Actions"]})
+            values = self._rm_values(app_id)
+            assert values.get("comments") == "BAT_E2E raw settings", values.get("comments")
+            assert sorted(values.get("logging") or []) == ["Actions", "Triggers"], values.get("logging")
+            refused = self._rm_call({"operation": "form", "rule_id": app_id, "confirm": True, "args": {
+                "steps": [self._rm_step(form, fields={"origLabel": {"a": "b"}})]}})
+            self._rm_refused(refused)
+            assert self._rm_values(app_id) == values, "a refused form submit changed the rule"
+        finally:
+            self._delete_native(app_id)
+
+    # ---- rule health ----
+
+    @test("native_apps")
+    def test_rule_health_prefers_rulebuilderjson(self) -> None:
+        app_id, _ = self._create_native_rule("RuleHealthSrc", [native_log("health source")], return_result=True)
+        try:
+            health = self._rm_health(app_id)
+            assert health.get("ok") is True and health.get("broken") is False and health.get("paused") is False, health
+            assert "ruleBuilderJson" in str(health.get("source")), health
+            listed = self.client.call_tool("hub_list_rules", {"labelFilter": f"{PREFIX}RuleHealthSrc".lower()}).get("rules", [])
+            row = next(r for r in listed if str(r.get("id")) == str(app_id))
+            assert row.get("type") == "Rule-5.1" and row.get("rmVersion") == "5.x", row
+            page = self._rm_health(app_id, source="configPage")
+            assert page.get("source") == "configPage" and page.get("broken") is None, page
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_rule_health_broken_true_on_dangling_trigger(self) -> None:
+        # Deleting a trigger's device leaves RM's compiled rule broken; health reports it from RM's own flag.
+        device_id, dni, _ = self._rm_disposable_switch("RHBrokenDev")
+        app_id, _ = self._rm_rule("RHBroken", [self._rm_switch_trigger(device_id), native_log("dangling trigger")])
+        try:
+            assert self._rm_health(app_id).get("broken") is False
+            self._rm_delete_device(dni)
+            self._rm_open(app_id, "mainPage")
+            health = self._rm_health(app_id)
+            assert health.get("broken") is True and health.get("ok") is False and health.get("ruleFormat") == "rm", health
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_rule_health_ui_shaped_else_endif_rows(self) -> None:
+        # Rules saved by the UI can carry ELSE/END-IF rows without an actType, and a stray action row
+        # the action list does not reference. Health reads those shapes without a false imbalance, and
+        # deleting the END-IF a block needs is refused.
+        app_id, doc = self._rm_rule("UiShape", [self._rm_switch_condition(self._ensure_perm_fixture("switch_a"))])
+        try:
+            condition = next(iter(doc["conditions"]))
+            self._rm_update(app_id, [native_change("action", type="condActs", subtype="getIfThen", fields=[], expression=[condition]),
+                                     native_log("then-branch"), native_change("terminator", subtype="else"),
+                                     native_log("else-branch"), native_change("terminator", subtype="endIf")])
+            values = self._rm_values(app_id)
+            branches = {k.split(".", 1)[1] for k, v in values.items() if k.startswith("actSubType.") and v in ("getElse", "getEndIf")}
+            assert len(branches) == 2, values
+            exported = self.client.call_tool("hub_export_native_app", {"sourceAppId": app_id})
+            assert exported.get("success") is True, exported
+            document = json.loads(exported["jsonContent"])
+            app_data = document["appData"][str(app_id)]
+            doomed = {"actType." + row for row in branches}
+            app_data["appSettings"] = [row for row in app_data["appSettings"] if row.get("name") not in doomed]
+            app_data["appSettings"].append({"name": "actSubType.99", "type": "enum", "multiple": False,
+                                            "deviceList": {}, "value": "getIfThen"})
+            imported = self.client.call_tool("hub_import_native_app", {
+                "parentHintAppId": app_id, "jsonContent": json.dumps(document),
+                "newName": f"{PREFIX}UIShapeImport_{_run_artifact_suffix()}", "confirm": True})
+            copy_id = imported.get("newAppId")
+            if copy_id:
+                self.created_native_app_ids.append(str(copy_id))
+            assert imported.get("success") is True and copy_id, imported
+            try:
+                health = self._rm_health(copy_id)
+                assert health.get("ok") is True and health.get("structuralIssues") == [] and not health.get("checkErrors"), health
+                assert any("action 99" in str(row) and "getIfThen" in str(row) for row in health.get("orphanedActionRows", [])), health
+                copied = self._rm_values(copy_id)
+                endif = next(k.split(".", 1)[1] for k, v in copied.items() if k.startswith("actSubType.") and v == "getEndIf")
+                self._rm_refuse_all(copy_id, [[native_delete("action", endif)]])
+            finally:
+                self._delete_native(copy_id)
+        finally:
+            self._delete_native(app_id)
+
+    # ---- trigger forms: periodic schedule ----
+
+    @test("native_apps")
+    def test_periodic_trigger_deletion_preserves_other_rows(self) -> None:
+        # A Periodic Schedule trigger built through the native form (no document contract exists for
+        # it): a frequency's time input disappears when another frequency is chosen and is refused if
+        # submitted anyway; the trigger schedules a job; deleting it keeps the other rows and leaves
+        # the Switch trigger subscribed.
+        switch = self._ensure_perm_fixture("switch_a")
+        app_id, before = self._rm_rule("Periodic", [self._rm_switch_trigger(switch), native_log("periodic deletion baseline")])
+        try:
+            form, slot = self._rm_new_trigger_editor(app_id)
+            form = self._rm_submit(app_id, form, fields={"tCapab" + slot: "Periodic Schedule"})
+            form = self._rm_submit(app_id, form, control=self._rm_control(form, kind="href", page="periodic"))
+            frequency = next(row for row in form["fields"] if row["name"].startswith("whichPeriod"))
+            assert {"Daily", "Hourly", "Cron String"} <= {row["value"] for row in frequency["options"]}, frequency
+            form = self._rm_submit(app_id, form, fields={frequency["name"]: "Daily"})
+            daily = next(row for row in form["fields"] if row["name"].startswith("startingDC") and row["type"] == "time")
+            form = self._rm_submit(app_id, form, fields={frequency["name"]: "Hourly"})
+            assert daily["name"] not in {row["name"] for row in form["fields"]}, form
+            stale = self._rm_call({"operation": "form", "rule_id": app_id, "confirm": True, "args": {
+                "steps": [self._rm_step(form, fields={daily["name"]: "2026-01-01T08:00:00.000-0500"})]}})
+            assert daily["name"] in self._rm_refused(stale) and not stale.get("partial"), stale
+            form = self._rm_submit(app_id, form, fields={frequency["name"]: "Cron String"})
+            cron = next(row for row in form["fields"] if row["name"].startswith("cronStr"))
+            form = self._rm_form(app_id, self._rm_step(form, fields={cron["name"]: "0 0/5 * * * ?"}))
+            form = self._rm_submit(app_id, form, control=self._rm_control(form, name="_action_previous"))
+            self._rm_submit(app_id, form, control=self._rm_control(form, name="hasAll"))
+            finalized = self._rm_update(app_id, [native_log("periodic deletion baseline", id=before["actions"][0]["id"])])
+            periodic = set(finalized["document"]["triggers"]) - set(before["triggers"])
+            assert len(periodic) == 1 and finalized["scheduledJobs"], finalized
+            deleted = self._rm_update(app_id, [native_delete("trigger", periodic.pop())])
+            assert deleted["document"]["triggers"] == before["triggers"] and deleted["document"]["actions"] == before["actions"], deleted
+            assert not deleted["scheduledJobs"] and deleted["eventSubscriptions"], deleted
+            assert cron["name"] not in self._rm_settings(app_id), "the deleted periodic trigger left its cron setting"
+        finally:
+            self._delete_native(app_id)
+
+    # ---- create: refusal before the child, stop on the first failed change ----
+
+    @test("native_apps")
+    def test_set_rule_create_refusal_and_fail_closed_stop(self) -> None:
+        # Shape errors are refused before any child rule exists. A native option failure stops the
+        # create at that change: earlier changes stay, later ones never run.
+        switch = self._ensure_perm_fixture("switch_a")
+        def rule_ids() -> set[str]:
+            return {str(r["id"]) for r in self.client.call_tool("hub_list_rules", {}).get("rules", [])}
+        before = rule_ids()
+        for bad in (native_change("trigger", capability="Temperature", value="increased", fields=[]),
+                    native_change("action", type="dimmerActs", subtype="getSetLevel", missingLevel=True, fields=[])):
+            result = self._rm_call({"operation": "create", "confirm": True, "args": {
+                "parent_id": self._native_rule_parent_id(), "name": f"{PREFIX}CreateRefused_{_run_artifact_suffix()}",
+                "changes": [native_log("first"), bad]}})
+            if result.get("rule_id"):
+                self.created_native_app_ids.append(str(result["rule_id"]))
+            self._rm_refused(result)
+        assert rule_ids() == before, "a refused create left a child rule"
+        result = self._rm_call({"operation": "create", "confirm": True, "args": {
+            "parent_id": self._native_rule_parent_id(), "name": f"{PREFIX}CreateStop_{_run_artifact_suffix()}",
+            "changes": [self._rm_switch_trigger(switch), self._rm_switch_trigger(switch, "purple"),
+                        self._rm_switch_condition(switch), native_change("required", tokens=["3"]),
+                        native_log("skipped action")]}})
+        app_id = result.get("rule_id")
+        if app_id:
+            self.created_native_app_ids.append(str(app_id))
+        try:
+            assert app_id and result.get("partial") is True, result
+            self._rm_refused(result)
+            completed = result.get("results", [])
+            assert completed[0]["result"].get("success") is True and completed[-1]["result"].get("success") is False, result
+            values = self._rm_values(app_id)
+            assert any(k.startswith("tstate") and v == "on" for k, v in values.items()), values
+            assert not any(k.startswith("rCapab_") for k in values) and "skipped action" not in values.values(), values
+            assert str(values.get("useST")).lower() != "true", values.get("useST")
+        finally:
+            if app_id:
+                self._delete_native(app_id)
+
+    # ---- actions: waits ----
+
+    @staticmethod
+    def _rm_wait_event(device: Any, state: str = "on", stays: tuple | None = None) -> dict:
+        fields = TestRunner._rm_switch_fields(device, state, trigger=True)
+        if stays is not None:
+            fields += [native_field("stays#", "bool", True),
+                       *[native_field(name + "#", "number", value) for name, value in zip(("SHours", "SMins", "SSecs"), stays, strict=True)]]
+        return {"capability": "Switch", "fields": fields}
+
+    @staticmethod
+    def _rm_wait_slots(doc: dict) -> tuple[dict, list[str]]:
+        rows = [row for row in doc["actions"] if row["value"]["method"] == "getWaitEvents"]
+        assert len(rows) == 1, rows
+        events = [str(value) for value in rows[0]["value"]["wait"]]
+        assert events and len(events) == len(set(events)), rows[0]
+        return rows[0], ["-" + value for value in events]
+
+    @test("native_apps")
+    def test_set_rule_waitevents_on_offset_action_slot(self) -> None:
+        # A Wait for Events added after a Required Expression and another action gets its own action
+        # slot and negative event slots; its "and stays" duration is stored on the event slot.
+        switch = self._ensure_perm_fixture("switch_a")
+        app_id, created = self._rm_rule("WaitOffset", [self._rm_switch_condition(switch)])
+        try:
+            condition = next(iter(created["conditions"]))
+            result = self._rm_update(app_id, [native_change("required", tokens=[condition]), native_log("offset base"),
+                                              native_change("action", type="delayActs", subtype="getWaitEvents", fields=[],
+                                                            events=[self._rm_wait_event(switch, stays=(0, 5, 0))])])
+            doc = result["document"]
+            assert doc["expressions"]["0"] == [condition], doc["expressions"]
+            wait, slots = self._rm_wait_slots(doc)
+            assert len(slots) == 1 and str(wait["id"]) != str(doc["actions"][0]["id"]), doc["actions"]
+            values = self._rm_values(app_id)
+            slot = slots[0]
+            assert values["tCapab" + slot] == "Switch" and values["tstate" + slot] == "on", values
+            assert values["tDev" + slot] == [str(switch)] and values["actSubType." + str(wait["id"])] == "getWaitEvents", values
+            assert [k for k, v in values.items() if re.fullmatch(r"tstate-\d+", k) and v == "on"] == ["tstate" + slot], values
+            assert str(values["stays" + slot]).lower() == "true", values
+            assert [int(values[name + slot]) for name in ("SHours", "SMins", "SSecs")] == [0, 5, 0], values
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_wait_events_mode_event(self) -> None:
+        # The native editor adds a Mode event to an existing Wait for Events in place: same action id,
+        # same order, the original Switch event kept.
+        switch = self._ensure_perm_fixture("switch_a")
+        day = self._mode_ids("Day")[0]
+        app_id, created = self._rm_rule("WaitMode", [native_change("action", type="delayActs", subtype="getWaitEvents",
+                                                                   fields=[], events=[self._rm_wait_event(switch)])])
+        try:
+            original, original_slots = self._rm_wait_slots(created)
+            action_id = str(original["id"])
+            form = self._rm_open(app_id, "selectActions")
+            edit = [row for row in form["controls"] if row.get("kind") == "button"
+                    and row.get("name", "").split(".")[0] == action_id and row.get("control_id", "").endswith("||doAct")]
+            assert len(edit) == 1, form
+            form = self._rm_submit(app_id, form, control=edit[0])
+            form = self._rm_submit(app_id, form, control=self._rm_control(form, kind="href", page="doActPage"))
+            form = self._rm_submit(app_id, form, control=self._rm_control(form, name="anotherWait"))
+            # anotherWait requests a same-page render to expose its new slot.
+            form = self._rm_open(app_id, "doActPage")
+            added = [row["name"] for row in form["fields"] if re.fullmatch(r"tCapab-\d+", row["name"])
+                     and row["name"].removeprefix("tCapab") not in original_slots]
+            assert len(added) == 1, form
+            slot = added[0].removeprefix("tCapab")
+            form = self._rm_submit(app_id, form, fields={added[0]: "Mode"})
+            form = self._rm_submit(app_id, form, fields={"modesX" + slot: [day]})
+            for name in ("hasAll", "doneWaits"):
+                if not any(row.get("name") == name for row in form["controls"]):
+                    form = self._rm_open(app_id, "doActPage")
+                form = self._rm_submit(app_id, form, control=self._rm_control(form, name=name))
+            # The native editor compiles the added event on a following doActPage render.
+            for _ in range(3):
+                doc = self._native_rule_document(app_id)
+                if len(self._rm_wait_slots(doc)[1]) == 2:
+                    break
+                self._rm_open(app_id, "doActPage")
+            self._rm_open(app_id, "selectActions")
+            doc = self._native_rule_document(app_id)
+            wait, slots = self._rm_wait_slots(doc)
+            assert str(wait["id"]) == action_id and [str(r["id"]) for r in doc["actions"]] == [action_id], doc["actions"]
+            assert slots == [*original_slots, slot], slots
+            settings = self._rm_settings(app_id)
+            assert settings["tCapab" + slot]["value"] == "Mode" and settings["modesX" + slot]["value"] in ([day], [int(day)], f'["{day}"]'), settings
+            assert "tstate" + slot not in settings and settings["tstate" + original_slots[0]]["value"] == "on", settings
+            assert doc["nativeHealth"]["broken"] is False and doc["validation"]["structuralIssues"] == [], doc
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_action_expression_reject_is_pre_write(self) -> None:
+        # IF, ELSE-IF, While and Wait for Expression refuse a missing condition or a malformed
+        # expression before any row is opened.
+        app_id, _ = self._rm_rule("ExprReject", [native_log("unchanged expression baseline")])
+        try:
+            self._rm_refuse_all(app_id, [
+                [native_change("action", type=type_name, subtype=subtype, fields=[], expression=tokens)]
+                for (type_name, subtype), tokens in zip(
+                    (("condActs", "getIfThen"), ("condActs", "getElseIf"), ("repeatActs", "getWhile"), ("delayActs", "getWaitRule")),
+                    (["999999"], ["("], ["AND", "999999"], ["999999"]), strict=True)])
+            assert "Broken Condition" not in self._rm_page(app_id)
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_enum_doactpage(self) -> None:
+        # A Custom Attribute condition (an enum attribute picked on the action editor page) drives an IF block.
+        switch = self._ensure_perm_fixture("switch_a")
+        app_id, created = self._rm_rule("EnumDoAct", [native_change("condition", capability="Custom Attribute",
+                                                                    fields=self._rm_switch_fields(switch, custom=True))])
+        try:
+            condition = next(iter(created["conditions"]))
+            doc = self._rm_update(app_id, [native_change("action", type="condActs", subtype="getIfThen", fields=[], expression=[condition]),
+                                           native_log("fired"), native_change("terminator", subtype="endIf")])["document"]
+            assert [row["value"]["method"] for row in doc["actions"]] == ["getIfThen", "getLogMsg", "getEndIf"], doc["actions"]
+            assert doc["expressions"][str(doc["actions"][0]["value"]["rule"])] == [condition], doc["expressions"]
+            values = self._rm_values(app_id)
+            self._rm_assert_stored(values, condition, {"rDev": [switch], "rCustomAttr": "switch", "state": "on"}, sep="_")
+            page = self._rm_page(app_id)
+            assert "fired" in page and "Broken Condition" not in page, page[:600]
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_move_action(self) -> None:
+        # order reorders native action ids without touching their settings; it must be an exact permutation.
+        app_id, created = self._rm_rule("MoveAct", [native_log(m) for m in ("a", "b", "c")])
+        try:
+            ids = [str(row["id"]) for row in created["actions"]]
+            before = self._rm_settings(app_id)
+            wanted = [ids[1], ids[0], ids[2]]
+            moved = self._rm_update(app_id, [native_change("order", ids=wanted)])
+            assert [str(row["id"]) for row in moved["document"]["actions"]] == wanted, moved["document"]["actions"]
+            assert self._rm_settings(app_id) == before, "reordering changed action settings"
+            self._rm_refuse(app_id, [native_change("order", ids=[ids[0], ids[0], ids[2]])])
+            assert [str(row["id"]) for row in self._native_rule_document(app_id)["actions"]] == wanted
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_trigger_mutations(self) -> None:
+        # Edit a trigger in place, refuse an unknown id, delete and re-add in one batch, stop a batch
+        # at its first invalid trigger, and bind a Conditional Trigger to a condition.
+        switch = self._ensure_perm_fixture("switch_a")
+        app_id, created = self._rm_rule("TrigMut", [self._rm_switch_trigger(switch), self._rm_switch_action(switch)])
+        try:
+            original = set(created["triggers"])
+            added = self._rm_update(app_id, [self._rm_switch_trigger(switch)])
+            trigger = self._rm_ids(added)[0]
+            self._rm_update(app_id, [self._rm_switch_trigger(switch, "off", id=trigger)])
+            assert self._rm_values(app_id)["tstate" + trigger] == "off"
+            self._rm_refuse(app_id, [self._rm_switch_trigger(switch, id="999999")])
+            swapped = self._rm_update(app_id, [native_delete("trigger", trigger), self._rm_switch_trigger(switch)])
+            assert [row["part"] for row in swapped["results"]] == ["delete", "trigger"] \
+                and swapped["results"][0]["result"].get("deleted"), swapped
+            replacement = self._rm_ids(swapped)[1]
+            removed = self._rm_update(app_id, [native_delete("trigger", replacement)])
+            assert set(removed["document"]["triggers"]) == original, removed["document"]["triggers"]
+            settings = self._rm_settings(app_id)
+            assert not any(prefix + replacement in settings for prefix in ("tCapab", "tDev", "tstate")), settings
+            states = [row["value"] for name, row in settings.items() if re.fullmatch(r"tstate\d+", name)]
+            stopped = self._rm_call({"operation": "update", "rule_id": app_id, "confirm": True, "args": {
+                "changes": [self._rm_switch_trigger(switch, "off"), self._rm_switch_trigger(switch, "purple"),
+                            self._rm_switch_trigger(switch), native_log("trigger-stop-skipped")]}})
+            assert "tstate" in self._rm_refused(stopped) and stopped.get("partial") is True, stopped
+            assert len(stopped["results"]) == 2 and len(stopped["remaining"]) == 2, stopped
+            after = self._rm_values(app_id)
+            now = [v for k, v in after.items() if re.fullmatch(r"tstate\d+", k)]
+            assert now.count("off") == states.count("off") + 1 and now.count("on") == states.count("on") and "purple" not in now, now
+            assert "trigger-stop-skipped" not in after.values()
+            bound = self._rm_ids(self._rm_update(app_id, [self._rm_switch_condition(switch, "off")]))[0]
+            conditional = self._rm_update(app_id, [native_change("trigger", capability="Switch", fields=[
+                *self._rm_switch_fields(switch, trigger=True), native_field("isCondTrig.#", "bool", True),
+                native_field("condTrig.#", "enum", bound)])])
+            assert str(self._rm_values(app_id)["condTrig." + self._rm_ids(conditional)[0]]) == bound
+        finally:
+            self._delete_native(app_id)
+
+    def _rm_stop(self, app_id: Any, changes: list[dict], kept: list[str], absent: list[str]) -> str:
+        """A batch stopped at a failed change: the prefix landed, the rest did not run."""
+        result = self._rm_call({"operation": "update", "rule_id": int(app_id), "confirm": True,
+                                                        "args": {"changes": changes}})
+        error = self._rm_refused(result)
+        rows = result.get("results", [])
+        assert result.get("partial") is True and rows[0]["result"].get("success") and rows[-1]["result"].get("success") is False \
+            and result.get("remaining"), result
+        messages = [v for k, v in self._rm_values(app_id).items() if k.startswith("logmsg.")]
+        assert all(m in messages for m in kept) and not any(m in messages for m in absent), messages
+        return error
+
+    @test("native_apps")
+    def test_set_rule_action_mutations(self) -> None:
+        # Add and delete actions, stop a batch at a native refusal, and refuse a malformed replacement
+        # before the deletes that precede it in the same batch.
+        switch = self._ensure_perm_fixture("switch_a")
+        app_id, created = self._rm_rule("ActMut", [native_log("remove-me-marker")])
+        try:
+            marker = str(created["actions"][0]["id"])
+            added = self._rm_update(app_id, [native_log("one"), native_log("two")])
+            assert len(added["document"]["actions"]) == 3, added["document"]["actions"]
+            removed = self._rm_update(app_id, [native_delete("action", marker)])
+            ids = [str(row["id"]) for row in removed["document"]["actions"]]
+            assert marker not in ids and "logmsg." + marker not in self._rm_settings(app_id)
+            cleared = self._rm_update(app_id, [native_delete("action", i) for i in ids] + [native_log("final")])
+            ids = [str(row["id"]) for row in cleared["document"]["actions"]]
+            assert len(ids) == 1, cleared["document"]["actions"]
+            bad_custom = self._rm_action("modeActs", "getDefinedAction", [
+                ("myCapab", "enum", "E2E Not A Capability"), ("devices", "capability.switch", [str(switch)]), ("cCmd", "enum", "on")])
+            error = self._rm_stop(app_id, [native_log("bulk-kept"), bad_custom, native_log("bulk-skipped")], ["bulk-kept", "final"], ["bulk-skipped"])
+            assert "myCapab" in error, error
+            ids = [str(row["id"]) for row in self._native_rule_document(app_id)["actions"]]
+            self._rm_refuse_all(app_id, [
+                [*[native_delete("action", i) for i in ids], native_log("preclear-must-not-land"), bad]
+                for bad in (native_change("action", type="switchActs", subtype="getOnOffSwitch", fields=[{"name": "onOff.#", "type": "bool"}]),
+                            native_change("action", type="switchActs", subtype="getOnOffSwitch", fields=[native_field("onOff.#", "bool", "blink")]))])
+            missing = self._rm_action("modeActs", "getDeleteLocalFile", [("deleteFile", "enum", f"{PREFIX}missing_file.txt")])
+            self._rm_stop(app_id, [*[native_delete("action", i) for i in ids], native_log("replace-kept"), missing,
+                                   native_log("replace-skipped")], ["replace-kept"], ["bulk-kept", "final", "replace-skipped"])
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_patches(self) -> None:
+        # An unknown field on an otherwise valid action, and an unknown capability, each stop the batch
+        # at that change; changes are one flat ordered list.
+        app_id, _ = self._rm_rule("Patches")
+        try:
+            result = self._rm_update(app_id, [native_log("p1"), native_log("p2")])
+            assert [row["part"] for row in result["results"]] == ["action", "action"], result
+            self._rm_stop(app_id, [native_log("patch-kept"), native_change("action", type="messageActs", subtype="getLogMsg", fields=[
+                native_field("logmsg.#", "textarea", "partial-marker"), native_field("noSuchField.#", "number", 1)]),
+                native_log("patch-skipped")], ["patch-kept"], ["patch-skipped"])
+            self._rm_stop(app_id, [native_log("inner-kept"), self._rm_action("modeActs", "getDefinedAction", [
+                ("myCapab", "enum", "E2E Not A Capability")]), native_log("inner-skipped"), native_log("later-skipped")],
+                ["inner-kept"], ["inner-skipped", "later-skipped"])
+            assert self._rm_health(app_id).get("ok") is not False
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_walkstep_drive(self) -> None:
+        # The native editor, driven step by step: a new action committed with actionDone, invalid
+        # field names, controls and option values refused without a change, and an open Repeat block
+        # reported until its END-REPEAT is added.
+        switch, switch2 = self._ensure_perm_fixture("switch_a"), self._ensure_perm_fixture("switch_b")
+        app_id, _ = self._rm_rule("FormDrive")
+        try:
+            form, index = self._rm_new_action_editor(app_id)
+            page = form["page"]["name"]
+            result = self._rm_form(app_id, *[{"kind": "submit", "expect_page": page, "fields": {name + index: value}}
+                                             for name, value in (("actType.", "messageActs"), ("actSubType.", "getLogMsg"),
+                                                                 ("logmsg.", "drive-complete"))])
+            assert len(result["completed"]) == 3, result
+            self._rm_submit(app_id, result, control=self._rm_control(result, name="actionDone"))
+            form, slot = self._rm_new_trigger_editor(app_id)
+            form = self._rm_submit(app_id, form, fields={"tCapab" + slot: "Switch"})
+            form = self._rm_submit(app_id, form, fields={"tDev" + slot: [str(switch)]})
+            before = self._rm_settings(app_id)
+            for step in (self._rm_step(form, fields={"tCapab999999": "Switch"}),
+                         {**self._rm_step(form, fields={}), "activate": "noSuchButtonE2E"},
+                         self._rm_step(form, fields={"tstate" + slot: "E2E Not A State"})):
+                self._rm_refused(self._rm_call({"operation": "form", "rule_id": app_id,
+                                                                        "confirm": True, "args": {"steps": [step]}}))
+            assert self._rm_settings(app_id) == before, "a refused form step changed the rule"
+            form = self._rm_open(app_id, "selectTriggers")
+            form = self._rm_submit(app_id, form, fields={"tDev" + slot: [str(switch2)]})
+            form = self._rm_submit(app_id, form, fields={"tstate" + slot: "on"})
+            self._rm_submit(app_id, form, control=self._rm_control(form, name="hasAll"))
+            values = self._rm_values(app_id)
+            assert values["logmsg." + index] == "drive-complete" and values["tDev" + slot] == [str(switch2)], values
+            form, repeat = self._rm_new_action_editor(app_id)
+            page = form["page"]["name"]
+            repeated = self._rm_form(app_id, *[{"kind": "submit", "expect_page": page, "fields": {name + repeat: value}}
+                                               for name, value in (("actType.", "repeatActs"), ("actSubType.", "getRepeat"),
+                                                                   ("repeatMinute.", 5))])
+            self._rm_submit(app_id, repeated, control=self._rm_control(repeated, name="actionDone"))
+            health = self._rm_health(app_id)
+            assert any("repeat" in str(issue).lower() for issue in health.get("structuralIssues", [])), health
+            # The write succeeds only once the block is balanced and the rule compiles.
+            self._rm_update(app_id, [native_change("terminator", subtype="endRep")])
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_walkstep_action_after_required_expression(self) -> None:
+        # An action added through the native editor after a Required Expression is an ordinary action:
+        # no condition or expression is attached to it.
+        switch = self._ensure_perm_fixture("switch_a")
+        app_id, created = self._rm_rule("FormAfterRE", [self._rm_switch_condition(switch)])
+        try:
+            condition = next(iter(created["conditions"]))
+            self._rm_update(app_id, [native_change("required", tokens=[condition])])
+            form, index = self._rm_new_action_editor(app_id)
+            for name, value in (("actType.", "messageActs"), ("actSubType.", "getLogMsg"), ("logmsg.", "walkstep-after-RE")):
+                form = self._rm_submit(app_id, form, fields={name + index: value})
+            self._rm_submit(app_id, form, control=self._rm_control(form, name="actionDone"))
+            row = next(r for r in self._native_rule_document(app_id)["actions"] if str(r["id"]) == index)
+            assert row["value"]["method"] == "getLogMsg" and not row["value"].get("cond") and not row["value"].get("rule"), row
+            page = self._rm_page(app_id)
+            assert "walkstep-after-RE" in page and "Broken Condition" not in page, page[:600]
+        finally:
+            self._delete_native(app_id)
+
+    # ---- actions: device and app-backed action rows ----
+
+    @test("native_apps")
+    def test_rm_action_device_catalog(self) -> None:
+        # Device actions RM offers only for a matching capability: each stores its native settings and
+        # renders as RM renders it. Literal and variable values are mutually exclusive inputs.
+        keys = ("garage", "valve", "blind", "tone", "player")
+        devices = {key: str(self._ensure_perm_fixture(key)) for key in keys}
+        labels = {key: self.PERM_FIXTURES[key][0] for key in keys}
+        variable = self._ensure_perm_variables("sv_number")["sv_number"]
+        track = "http://x/a.mp3"
+        action = self._rm_action
+        expected = []
+        for key, subtype, flag, picker, capability, verbs in (
+                ("garage", "getOCGarage", "garageRL", "garageOpenClose", "garageDoorControl", ("Close", "Open")),
+                ("valve", "getOCValve", "valveRL", "valveOpenClose", "valve", ("Open", "Close"))):
+            for verb in verbs:
+                expected.append((action("lockActs", subtype, [(flag, "bool", verb == "Close"), (picker, "capability." + capability, [devices[key]])]),
+                                 {flag: verb == "Close", picker: [devices[key]]}, f"{verb}: {labels[key]}"))
+        expected += [
+            (action("soundActs", "getTone", [("toner", "capability.tone", [devices["tone"]])]),
+             {"toner": [devices["tone"]]}, f"Beep: {labels['tone']}"),
+            (action("sceneActs", "getBlindTilt", [("blindTilt", "capability.windowBlind", [devices["blind"]]), ("tiltLevel", "number", 40)]),
+             {"blindTilt": [devices["blind"]], "tiltLevel": 40}, f"Tilt Blinds: {labels['blind']} to 40"),
+            (action("sceneActs", "getBlindTilt", [("blindTilt", "capability.windowBlind", [devices["blind"]]),
+                                                 ("uVar", "bool", True), ("xVar", "enum", variable)]),
+             {"uVar": True, "xVar": variable}, f"Tilt Blinds: {labels['blind']} to {variable}"),
+            *[(action("soundActs", "getSetMusicPlayer", [("player", "capability.musicPlayer", [devices["player"]]),
+                                                         ("playerCommand", "enum", command), (name, type_, value)]),
+               {"playerCommand": command, name: value}, labels["player"] + suffix)
+              for command, name, type_, value, suffix in (
+                  ("set volume", "playerLevel", "number", 30, " --> Set Level to 30"),
+                  ("play track", "playerTrack", "text", track, f": Play Track: '{track}'"),
+                  ("play text", "playerText", "text", "hello", ": Play Text: 'hello'"))],
+            (action("soundActs", "getSetMusicPlayer", [("player", "capability.musicPlayer", [devices["player"]]),
+                                                      ("playerCommand", "enum", "set volume"), ("uVar", "bool", True), ("xVar", "enum", variable)]),
+             {"playerCommand": "set volume", "uVar": True, "xVar": variable}, f"{labels['player']} --> Set Level to {variable}"),
+        ]
+        app_id, created = self._rm_rule("DeviceCatalog", [row[0] for row in expected])
+        try:
+            rows = created["actions"]
+            assert len(rows) == len(expected), rows
+            values = self._rm_values(app_id)
+            page = self._rm_page(app_id)
+            for row, (_, stored, text) in zip(rows, expected, strict=True):
+                self._rm_assert_stored(values, row["id"], stored)
+                assert text in page, f"RM does not render {text!r}: {page[:800]}"
+            assert str(values.get("uVar." + str(rows[5]["id"]))).lower() not in ("true", "on"), "a literal tilt is marked as a variable"
+            self._rm_refuse_all(app_id, [[action("soundActs", "getSetMusicPlayer", [
+                ("player", "capability.musicPlayer", [devices["player"]]), ("playerCommand", "enum", "play track and restore"),
+                ("playerTrack", "text", track)])]])
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_rm_action_return_value(self) -> None:
+        # Return values exist only on a function rule (isFunction): refused before, then each value
+        # type stores and renders; RM offers only number variables for an Integer return.
+        number, text = (self._ensure_perm_variables(key)[key] for key in ("sv_number", "sv_string"))
+        action = self._rm_action
+        app_id, _ = self._rm_rule("ReturnValue")
+        try:
+            self._rm_refuse(app_id, [action("modeActs", "getReturnValue", [("valType", "enum", "Integer"), ("valInt", "number", 5)])])
+            form = self._rm_open(app_id)
+            assert any(row["name"] == "isFunction" for row in form["fields"]), form
+            self._rm_submit(app_id, form, fields={"isFunction": True})
+            expected = [
+                ([("valType", "enum", "Integer"), ("valInt", "number", 5)], {"valType": "Integer", "valInt": 5}, "Return '5'"),
+                ([("valType", "enum", "String"), ("valString", "textarea", "done")], {"valType": "String", "valString": "done"}, "Return 'done'"),
+                ([("valType", "enum", "Decimal"), ("valDec", "decimal", 2.5)], {"valType": "Decimal", "valDec": 2.5}, None),
+                ([("valType", "enum", "Boolean"), ("valBool", "enum", "false")], {"valType": "Boolean", "valBool": "false"}, "Return 'false'"),
+                ([("valType", "enum", "Integer"), ("useVar", "bool", True), ("valVar", "enum", number)],
+                 {"useVar": True, "valVar": number}, f"Return '{number}'"),
+            ]
+            result = self._rm_update(app_id, [action("modeActs", "getReturnValue", fields) for fields, _, _ in expected])
+            values = self._rm_values(app_id)
+            page = self._rm_page(app_id)
+            for row, (_, stored, rendered) in zip(result["document"]["actions"], expected, strict=True):
+                self._rm_assert_stored(values, row["id"], stored)
+                assert rendered is None or rendered in page, f"RM does not render {rendered!r}"
+            form, index = self._rm_new_action_editor(app_id)
+            for name, value in (("actType.", "modeActs"), ("actSubType.", "getReturnValue"), ("valType.", "Integer"), ("useVar.", True)):
+                form = self._rm_submit(app_id, form, fields={name + index: value})
+            picker = next(row for row in form["fields"] if row["name"] == "valVar." + index)
+            offered = {row["value"] for row in picker["options"]}
+            assert number in offered and text not in offered, offered
+            form = self._rm_submit(app_id, form, fields={picker["name"]: number})
+            self._rm_submit(app_id, form, control=self._rm_control(form, name="actionDone"))
+            assert self._rm_values(app_id)["valVar." + index] == number
+            self._rm_update(app_id, [native_delete("action", index)])
+            self._rm_refuse_all(app_id, [
+                [action("modeActs", "getReturnValue", [("valType", "enum", "Integer"), ("useVar", "bool", True), ("valVar", "enum", text)])],
+                [action("modeActs", "getReturnValue", [("valType", "enum", "Boolean"), ("valBool", "enum", "maybe")])],
+                [action("modeActs", "getReturnValue", [("valType", "enum", "Integer"), ("valInt", "number", 0)])],
+                [action("modeActs", "getReturnValue", [("valType", "enum", "UnknownType")])],
+            ])
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_modifyaction_retarget(self) -> None:
+        # Edit actions in place by native id: retargets and value changes touch only that row's
+        # settings and keep the order; invalid edits leave the row as it was.
+        dimmer, button, blind, color = (self._ensure_perm_fixture(k) for k in ("dimmer", "button", "blind", "color"))
+        switch = self._ensure_perm_fixture("switch_a")
+        variable = self._ensure_perm_variables("sv_number")["sv_number"]
+        day = self._mode_ids("Day")[0]
+        action = self._rm_action
+        target_a, _ = self._rm_rule("RetargetA")
+        target_b, _ = self._rm_rule("RetargetB")
+        caller = None
+
+        def edit(app_id, row_id, type_name, subtype, fields, expected):
+            before = self._rm_settings(app_id)
+            result = self._rm_update(app_id, [action(type_name, subtype, fields, id=row_id)])
+            after = self._rm_settings(app_id)
+            changed = {n for n in set(before) | set(after) if before.get(n) != after.get(n)}
+            assert all(n.endswith("." + str(row_id)) for n in changed), changed
+            self._rm_assert_stored({n: r.get("device_ids") if str(r.get("type", "")).startswith("capability") else r.get("value")
+                                    for n, r in after.items()}, row_id, expected)
+            return result
+
+        try:
+            caller, created = self._rm_rule("RetargetCaller", [
+                action("rulesActs", "getRuleActions", [("runRuleType", "enum", "Rule Machine"), ("ruleAct", "enum", [str(target_a)])]),
+                native_log("order sentinel")])
+            order = [str(r["id"]) for r in created["actions"]]
+            moved = edit(caller, order[0], "rulesActs", "getRuleActions", [("ruleAct", "enum", [str(target_b)])], {"ruleAct": [str(target_b)]})
+            assert [str(r["id"]) for r in moved["document"]["actions"]] == order, moved["document"]["actions"]
+            private = self._rm_ids(self._rm_update(caller, [action("rulesActs", "getSetPrivateBoolean", [
+                ("pvRuleType", "enum", "Rule Machine"), ("pvTF", "bool", True), ("privateT", "enum", ["*"])])]))[0]
+            edit(caller, private, "rulesActs", "getSetPrivateBoolean", [("pvTF", "bool", False)], {"privateT": ["*"], "pvTF": False})
+            # Authoring only: no mode, button or bulb command runs.
+            rows = self._rm_ids(self._rm_update(target_b, [
+                action("modeActs", "getSetMode", [("mode", "enum", day)]),
+                action("modeActs", "getSetVariable", [("xVarV", "enum", variable), ("numOp", "enum", "number"), ("valNumber", "number", 1)]),
+                action("switchActs", "getPushButton", [("pushButton", "capability.pushableButton", str(button)),
+                                                       ("pushButNo", "number", 1), ("pushButOp", "enum", "hold")]),
+                action("sceneActs", "getBlindTilt", [("blindTilt", "capability.windowBlind", [str(blind)]), ("tiltLevel", "number", 40)]),
+                action("dimmerActs", "getSetDimmer", [("dimA", "capability.switchLevel", [str(dimmer)]), ("dimLA", "number", 50)]),
+                action("dimmerActs", "getSetColor", [("bulbs", "capability.colorControl", [str(color)]), ("color", "enum", "Red")])]))
+            mode, var, push, tilt, dim, bulb = rows
+            self._rm_refuse_all(target_b, [
+                [action("modeActs", "getSetMode", [("mode", "enum", "999999")], id=mode)],
+                [action("modeActs", "getSetVariable", [("xVarV", "enum", f"{PREFIX}missing_var")], id=var)],
+                [action("switchActs", "getPushButton", [("pushButton", "capability.pushableButton", str(switch))], id=push)],
+                [action("switchActs", "getPushButton", [("pushButOp", "enum", "squeeze")], id=push)]])
+            edit(target_b, push, "switchActs", "getPushButton", [("pushButOp", "enum", "push")], {"pushButOp": "push"})
+            for row_id, type_name, subtype, literal, value in ((tilt, "sceneActs", "getBlindTilt", "tiltLevel", 55),
+                                                               (dim, "dimmerActs", "getSetDimmer", "dimLA", 30)):
+                edit(target_b, row_id, type_name, subtype, [("uVar", "bool", True), ("xVar", "enum", variable)], {"uVar": True, "xVar": variable})
+                edit(target_b, row_id, type_name, subtype, [("uVar", "bool", False), (literal, "number", value)], {"uVar": False, literal: value})
+            edit(target_b, bulb, "dimmerActs", "getSetColor", [("color", "enum", "Custom HSB color"), ("colorHex", "number", 120),
+                                                             ("colorSat", "number", 80)], {"color": "Custom HSB color", "colorHex": 120, "colorSat": 80})
+            edit(target_b, bulb, "dimmerActs", "getSetColor", [("color", "enum", "Custom RGB color"), ("colorH", "text", "#00ff00")],
+                 {"color": "Custom RGB color", "colorH": "#00ff00"})
+            self._rm_refuse_all(target_b, [[action("dimmerActs", "getSetColor", [("colorLevel", "number", 40)], id=bulb)]])
+            paused = self.client.call_tool("hub_set_rule_paused", {"ruleId": [target_a, target_b], "paused": True})
+            if paused.get("success") is False:
+                # The hub's load limiter may refuse a batch outright; it then pauses neither rule.
+                assert "excessive hub load" in str(paused.get("error", "")), paused
+                return
+            assert sorted(map(str, paused.get("ruleIds", []))) == sorted(map(str, (target_a, target_b))), paused
+            self._rm_wait(lambda: all(self._rm_health(r).get("paused") is True for r in (target_a, target_b)), what="both rules paused")
+        finally:
+            for app_id in (caller, target_a, target_b):
+                if app_id:
+                    self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_switch_only_on_and_device_list_no_false_partial(self) -> None:
+        # "Command only switches that are off/on": with A on and B off, an on action commands only B
+        # and an off action only A; without it both are commanded. The rule's own command-<name> events
+        # (producedBy names the rule) show which switch RM commanded. A shade action built through the
+        # native editor, whose last input is its device picker, commits without a false partial.
+        a, b = self._ensure_perm_fixture("switch_a"), self._ensure_perm_fixture("switch_b")
+        def switch_action(on: bool, only: bool, **extra) -> dict:
+            return self._rm_action("switchActs", "getOnOffSwitch", [
+                ("onOffSwitch", "capability.switch", [str(a), str(b)]), ("onOff", "bool", on), ("optSwitch", "bool", only)], **extra)
+        app_id, created = self._rm_rule("OnlyIfChanged", [switch_action(True, True)])
+        shade_rule = None
+        try:
+            action_id = str(created["actions"][0]["id"])
+
+            def commands(device, cmd, since):
+                rows = self.client.call_tool("hub_list_device_events", {
+                    "deviceId": str(device), "attribute": f"command-{cmd}", "hoursBack": 1, "limit": 50}).get("events", [])
+                return sum(1 for r in rows if str((r.get("producedBy") or {}).get("appId")) == str(app_id)
+                           and r.get("date") and datetime.fromisoformat(str(r["date"])) >= since)
+
+            for index, (cmd, only) in enumerate((("on", True), ("on", False), ("off", True), ("off", False))):
+                if index:
+                    self._rm_update(app_id, [switch_action(cmd == "on", only, id=action_id)])
+                self._rm_command(a, "on")
+                self._rm_command(b, "off")
+                self._rm_wait(lambda: self._rm_attribute(a, "switch") == "on" and self._rm_attribute(b, "switch") == "off",
+                              what="switch baseline")
+                needing, already = (b, a) if cmd == "on" else (a, b)
+                since = datetime.now(UTC)
+                ran = self.client.call_tool("hub_call_rule", {"ruleId": app_id, "action": "actions"})
+                assert ran.get("success") is not False, ran
+                self._rm_wait(lambda needing=needing, cmd=cmd, since=since: commands(needing, cmd, since) > 0
+                              and self._rm_attribute(a, "switch") == cmd and self._rm_attribute(b, "switch") == cmd,
+                              timeout=15, what=f"{cmd} only_if_changed={only}")
+                assert (commands(already, cmd, since) > 0) is (not only), f"{cmd} only_if_changed={only} commanded the wrong switches"
+            shade = self.get_test_shade_id()
+            if not shade:
+                return
+            shade_rule, _ = self._rm_rule("ShadeDeviceList")
+            form, index = self._rm_new_action_editor(shade_rule)
+            category = next(row for row in form["fields"] if row["name"] == "actType." + index)
+            scene = [row["value"] for row in category.get("options", []) if "shades/blinds" in row.get("label", "").lower()]
+            assert scene == ["sceneActs"], category
+            form = self._rm_submit(shade_rule, form, fields={"actType." + index: "sceneActs"})
+            form = self._rm_submit(shade_rule, form, fields={"actSubType." + index: "getRLShade"})
+            form = self._rm_submit(shade_rule, form, fields={"shadeRL." + index: True})
+            form = self._rm_submit(shade_rule, form, fields={"shadeOpenClose." + index: [str(shade)]})
+            committed = self._rm_submit(shade_rule, form, control=self._rm_control(form, name="actionDone"))
+            assert not committed.get("partial"), committed
+            values = self._rm_values(shade_rule)
+            assert values["shadeOpenClose." + index] == [str(shade)] and str(values["shadeRL." + index]).lower() == "true", values
+        finally:
+            self._delete_native(app_id)
+            if shade_rule:
+                self._delete_native(shade_rule)
+
+    # ---- conditions, triggers, expressions, variables ----
+
+    @test("native_apps")
+    def test_set_rule_enum_custom_attribute(self) -> None:
+        # Custom Attribute rows over an enum attribute (switch): a trigger, a condition that also gates
+        # a Required Expression, and a Conditional Trigger bound to that condition.
+        switch = self._ensure_perm_fixture("switch_a")
+        # RM offers a Conditional Trigger only conditions outside the Required Expression.
+        app_id, created = self._rm_rule("EnumCustom", [
+            native_change("trigger", capability="Custom Attribute", fields=self._rm_switch_fields(switch, trigger=True, custom=True)),
+            native_change("condition", capability="Custom Attribute", fields=self._rm_switch_fields(switch, custom=True)),
+            native_change("condition", capability="Custom Attribute", fields=self._rm_switch_fields(switch, custom=True))])
+        try:
+            trigger = next(iter(created["triggers"]))
+            condition, gate = sorted(created["conditions"], key=int)
+            result = self._rm_update(app_id, [native_change("required", tokens=[gate]), native_change("trigger", capability="Switch", fields=[
+                *self._rm_switch_fields(switch, trigger=True), native_field("isCondTrig.#", "bool", True),
+                native_field("condTrig.#", "enum", condition)])])
+            conditional = self._rm_ids(result)[1]
+            assert result["document"]["expressions"]["0"] == [gate], result["document"]["expressions"]
+            values = self._rm_values(app_id)
+            self._rm_assert_stored(values, trigger, {"tCustomAttr": "switch", "tstate": "on", "tDev": [switch]}, sep="")
+            self._rm_assert_stored(values, condition, {"rCustomAttr": "switch", "state": "on", "rDev": [switch]}, sep="_")
+            assert str(values["condTrig." + conditional]) == condition and str(values.get("useST")).lower() == "true", values
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_trigger_state_change_comparator(self) -> None:
+        switch = self._ensure_perm_fixture("switch_a")
+        app_id, created = self._rm_rule("StateChange", [
+            self._rm_switch_trigger(switch, "*changed*"),
+            native_change("trigger", capability="Mode", fields=[native_field("modesX#", "enum", ["0"])])])
+        try:
+            switch_slot, mode_slot = sorted(created["triggers"], key=int)
+            values = self._rm_values(app_id)
+            self._rm_assert_stored(values, switch_slot, {"tstate": "*changed*", "tDev": [switch]}, sep="")
+            assert list(map(str, values["modesX" + mode_slot])) == ["0"], values
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_trigger_custom_attribute_enum_changed_routes(self) -> None:
+        # *changed* on an enum Custom Attribute is a trigger state, not a comparator; as a condition
+        # it has no native representation and is refused.
+        switch = self._ensure_perm_fixture("switch_a")
+        app_id, created = self._rm_rule("CustomChanged", [native_change("trigger", capability="Custom Attribute",
+                                                                        fields=self._rm_switch_fields(switch, "*changed*", trigger=True, custom=True))])
+        try:
+            trigger = next(iter(created["triggers"]))
+            values = self._rm_values(app_id)
+            self._rm_assert_stored(values, trigger, {"tCustomAttr": "switch", "tstate": "*changed*", "tDev": [switch]}, sep="")
+            assert "ReltDev" + trigger not in values, values
+            self._rm_refuse_all(app_id, [[native_change("condition", capability="Custom Attribute",
+                                                        fields=self._rm_switch_fields(switch, "*changed*", custom=True))]])
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_required_expression_and_local_var(self) -> None:
+        switch = self._ensure_perm_fixture("switch_a")
+        app_id, _ = self._rm_rule("LocalVars", [self._rm_switch_action(switch)])
+        try:
+            self._rm_refuse_all(app_id, [
+                [native_change("condition", fields=self._rm_switch_fields(switch))],
+                [native_change("required", tokens=["999999999"])],
+                [native_change("condition", capability="Switch", fields=[*self._rm_switch_fields(switch), native_field("RelrDev_#", "enum", ">")])]])
+            built = self._rm_update(app_id, [
+                native_change("variable", operation="create", name="fields", type="integer", value=0),
+                self._rm_variable_action("fields", "number", [native_field("valNumber.#", "number", 0)]),
+                self._rm_switch_condition(switch)])
+            _, action, condition = self._rm_ids(built)
+            required = self._rm_update(app_id, [native_change("required", tokens=[condition])])["document"]
+            assert required["expressions"]["0"] == [condition] and required["variables"]["fields"]["value"] == 0, required
+            values = self._rm_values(app_id)
+            assert values["xVarV." + action] == "fields" and float(values["valNumber." + action]) == 0, values
+            assert str(values.get("useST")).lower() == "true", values.get("useST")
+            timestamp = "2026-01-01T12:30:00.000-0500"
+            self._rm_refuse_all(app_id, [
+                [native_change("variable", operation="create", name="fields", type="integer", value=10)],
+                *[[native_change("variable", operation="create", name="badValue", type=t, value=v)]
+                  for t, v in (("integer", 1.5), ("integer", "abc"), ("bigdecimal", "1.2.3"), ("datetime", 1767270600000),
+                               ("datetime", "2026-02-30T12:30:00.000-0500"), ("datetime", "tomorrow"))]])
+            typed = self._rm_update(app_id, [
+                native_change("variable", operation="create", name="integerProof", type="integer", value=5),
+                native_change("variable", operation="create", name="decimalProof", type="bigdecimal", value=2.5),
+                native_change("variable", operation="create", name="seenAt", type="datetime", value=timestamp),
+                native_change("variable", operation="set", name="integerProof", value=7),
+                native_change("variable", operation="set", name="decimalProof", value=3.75)])["document"]["variables"]
+            assert (typed["integerProof"]["type"], float(typed["integerProof"]["value"])) == ("integer", 7), typed
+            assert (typed["decimalProof"]["type"], float(typed["decimalProof"]["value"])) == ("bigdecimal", 3.75), typed
+            assert (typed["seenAt"]["type"], typed["seenAt"]["value"]) == ("datetime", timestamp), typed
+            assert "seenAt" in self._rm_page(app_id)
+            removed = self._rm_update(app_id, [native_delete("action", action),
+                                               native_change("variable", operation="delete", name="fields")])
+            assert "fields" not in removed["document"]["variables"], removed["document"]["variables"]
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_contains_comparator(self) -> None:
+        # String *contains* and Boolean variable conditions, in a Required Expression and an IF.
+        names = self._ensure_perm_variables("contains_msg", "bool_flag")
+        variable = self._rm_variable_condition
+        app_id, created = self._rm_rule("Contains", [
+            variable(names["contains_msg"], "*contains*", "error"),
+            variable(names["bool_flag"], value="true", value_type="enum"),
+            variable(names["bool_flag"], value="false", value_type="enum")])
+        try:
+            contains, yes, no = sorted(created["conditions"], key=int)
+            self._rm_update(app_id, [native_change("required", tokens=[contains, "AND", yes]),
+                                     native_change("action", type="condActs", subtype="getIfThen", fields=[], expression=[no]),
+                                     native_log("boolean branch"), native_change("terminator", subtype="endIf")])
+            values = self._rm_values(app_id)
+            self._rm_assert_stored(values, contains, {"RelrDev": "*contains*", "state": "error"}, sep="_")
+            assert sorted(str(values["state_" + slot]).lower() for slot in (yes, no)) == ["false", "true"], values
+        finally:
+            self._delete_native(app_id)
+
+    @staticmethod
+    def _rm_variable_condition(name: str, comparator: str | None = None, value: Any = None, value_type: str = "text",
+                               rhs: str | None = None, **extra: Any) -> dict:
+        fields = [native_field("xVar_#", "enum", name)]
+        if comparator is not None:
+            fields.append(native_field("RelrDev_#", "enum", comparator))
+        if rhs is not None:
+            fields += [native_field("isVar_#", "bool", True), native_field("xVarR_#", "enum", rhs)]
+        if value is not None:
+            fields.append(native_field("state_#", value_type, value))
+        return native_change("condition", capability="Variable", fields=fields, **extra)
+
+    @test("native_apps")
+    def test_set_rule_variable_rhs_parity(self) -> None:
+        # A variable compared to another variable: the value slot is the offset, so a second literal
+        # right-hand side is refused rather than silently replacing it.
+        names = self._ensure_perm_variables("sv_number", "sv_num_src")
+        left, right = names["sv_number"], names["sv_num_src"]
+        app_id, created = self._rm_rule("VarRhs", [self._rm_variable_condition(left, ">", 0, "number", rhs=right)])
+        try:
+            condition = next(iter(created["conditions"]))
+            self._rm_update(app_id, [native_change("required", tokens=[condition])])
+            assert self._rm_values(app_id)["xVarR_" + condition] == right
+            self._rm_refuse_all(app_id, [[native_change("condition", id=condition, capability="Variable", fields=[
+                *self._rm_variable_condition(left, ">", 0, "number", rhs=right)["value"]["fields"],
+                native_field("state_#", "number", 0)])]])
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_remove_referenced_local_breaks_rule(self) -> None:
+        # Deleting a local variable an action still uses is applied (RM allows it) but reported as
+        # leaving the rule broken, and the editor shows it broken.
+        app_id, _ = self._rm_rule("RefLocal", [
+            native_change("variable", operation="create", name="refLocal", type="integer", value=0),
+            self._rm_variable_action("refLocal", "number", [native_field("valNumber.#", "number", 9)])])
+        try:
+            ran = self.client.call_tool("hub_call_rule", {"ruleId": app_id, "action": "actions"})
+            assert ran.get("success") is not False, ran
+            self._rm_wait(lambda: self._native_rule_document(app_id)["variables"]["refLocal"]["value"] == 9, what="refLocal=9")
+            result = self._rm_call({"operation": "update", "rule_id": app_id, "confirm": True, "args": {
+                "changes": [native_change("variable", operation="delete", name="refLocal")]}})
+            assert result.get("success") is False and result.get("partial") is True and "broken" in str(result).lower(), result
+            assert "refLocal" not in self._native_rule_document(app_id)["variables"]
+            assert "broken" in self._rm_page(app_id).lower()
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_replace_required_expression(self) -> None:
+        # Replacing the Required Expression; invalid condition edits and unknown modes leave it as it was.
+        switch = self._ensure_perm_fixture("switch_a")
+        text = self._ensure_perm_variables("sv_string")["sv_string"]
+        app_id, created = self._rm_rule("ReplaceRE", [self._rm_switch_condition(switch), self._rm_switch_condition(switch, "off")])
+        try:
+            on, off = sorted(created["conditions"], key=int)
+            self._rm_update(app_id, [native_change("required", tokens=[on])])
+            replaced = self._rm_update(app_id, [native_change("required", tokens=[off])])
+            assert replaced["document"]["expressions"]["0"] == [off], replaced["document"]["expressions"]
+            assert "is off" in self._rm_page(app_id).lower()
+            self._rm_refuse_all(app_id, [
+                [self._rm_switch_condition(switch, "definitely_not_a_valid_state", id=off)],
+                *[[native_change("condition", capability="Mode", fields=[native_field("modes#", "enum", [mode])])]
+                  for mode in ("NoSuchMode", "999999999")]])
+            changed = self._rm_ids(self._rm_update(app_id, [self._rm_variable_condition(text, "*changed*")]))[0]
+            final = self._rm_update(app_id, [native_change("required", tokens=[changed])])
+            assert final["document"]["expressions"]["0"] == [changed], final["document"]["expressions"]
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_setvariable_from_device_and_math(self) -> None:
+        # Set Variable from a device attribute, variable math, string copy and offsets; a numeric
+        # source cannot fill a String or Boolean target; running the actions computes the value.
+        temperature = self.get_test_temperature_ids()[0]
+        switch = self._ensure_perm_fixture("switch_a")
+        names = self._ensure_perm_variables("sv_number", "sv_num_src", "sv_string", "sv_str_src", "sv_bool")
+        target, source, text, text_source, flag = (names[k] for k in ("sv_number", "sv_num_src", "sv_string", "sv_str_src", "sv_bool"))
+        def math(operator, operand):
+            numeric = isinstance(operand, (int, float))
+            fields = [native_field("xVar3.#", "enum", target), native_field("valMathOp.#", "enum", operator)]
+            if operator != "absolute":
+                fields.append(native_field("xVar4.#", "enum", "(constant)" if numeric else operand))
+            if numeric:
+                fields.append(native_field("valConst2.#", "number", operand))
+            return self._rm_variable_action(target, "variable math", fields)
+        app_id, created = self._rm_rule("SetVarMath", [
+            self._rm_variable_action(target, "device attribute", [
+                native_field("customDev.#", "capability.*", str(temperature)), native_field("tCustomAttr.#", "enum", "temperature")]),
+            math("+", 10), math("-", target), math("+", 5.5), math("absolute", None),
+            native_change("action", type="modeActs", subtype="getSetVariable", fields=[
+                native_field("xVarV.#", "enum", text), native_field("valStringOp.#", "enum", "Copy variable"),
+                native_field("xVar3.#", "enum", text_source)])])
+        runner = None
+        try:
+            device, plus, minus, plus_dec, absolute, copied = [str(r["id"]) for r in created["actions"]]
+            values = self._rm_values(app_id)
+            self._rm_assert_stored(values, device, {"tCustomAttr": "temperature", "customDev": [temperature]})
+            self._rm_assert_stored(values, plus, {"xVar3": target, "valMathOp": "+", "valConst2": 10})
+            self._rm_assert_stored(values, minus, {"valMathOp": "-", "xVar4": target})
+            self._rm_assert_stored(values, plus_dec, {"valConst2": 5.5})
+            assert "xVar4." + absolute not in values and "valConst2." + absolute not in values, values
+            self._rm_assert_stored(values, copied, {"xVar3": text_source, "valStringOp": "Copy variable"})
+            assert "numOp." + copied not in values and "customDev." + copied not in values, values
+            self._rm_refuse_all(app_id, [[self._rm_variable_action(bad, "device attribute", [
+                native_field("customDev.#", "capability.*", str(switch)), native_field("tCustomAttr.#", "enum", "switch")])]
+                for bad in (text, flag)])
+            runner, _ = self._rm_rule("SetVarRun", [
+                self._rm_variable_action(target, "variable", [native_field("xVar3.#", "enum", source), native_field("valOffset.#", "number", 0)]),
+                self._rm_variable_action(target, "add number", [native_field("valNumber.#", "number", 3)])])
+            ran = self.client.call_tool("hub_call_rule", {"ruleId": runner, "action": "actions"})
+            assert ran.get("success") is not False, ran
+            self._rm_wait(lambda: float(self.client.call_tool("hub_get_variable", {"name": target})["value"]) == 10,
+                          timeout=15, what=f"{target}=10")
+        finally:
+            for rule in (app_id, runner):
+                if rule:
+                    self._delete_native(rule)
+
+    @test("native_apps")
+    def test_set_rule_walker_compare_to_device(self) -> None:
+        # Device-relative comparisons (one sensor against another, with an offset) as a condition, a
+        # trigger, and a Conditional Trigger; a second literal for the offset slot is refused.
+        temp_a, temp_b = self.get_test_temperature_ids()
+        fields = self._rm_temperature_fields
+        app_id, created = self._rm_rule("CompareDevice", [
+            native_change("condition", capability="Temperature", fields=fields(temp_a, ">", -2, relative_to=temp_b)),
+            native_change("condition", capability="Temperature", fields=fields(temp_a, "<", 1, relative_to=temp_b)),
+            native_change("trigger", capability="Temperature", fields=fields(temp_a, ">", 2, trigger=True, relative_to=temp_b))])
+        try:
+            condition, extra = sorted(created["conditions"], key=int)
+            trigger = next(iter(created["triggers"]))
+            conditional = self._rm_ids(self._rm_update(app_id, [native_change("required", tokens=[condition]),
+                native_change("trigger", capability="Temperature", fields=[*fields(temp_a, ">", 50, trigger=True),
+                    native_field("isCondTrig.#", "bool", True), native_field("condTrig.#", "enum", extra)])]))[1]
+            values = self._rm_values(app_id)
+            self._rm_assert_stored(values, condition, {"rDev": [temp_a], "relDevice": [temp_b], "state": -2}, sep="_")
+            self._rm_assert_stored(values, extra, {"RelrDev": "<"}, sep="_")
+            self._rm_assert_stored(values, trigger, {"reltDevice": [temp_b], "tstate": 2}, sep="")
+            assert str(values["condTrig." + conditional]) == extra, values
+            assert "temperature of" in self._rm_page(app_id).lower()
+            self._rm_refuse_all(app_id, [[native_change("condition", id=condition, capability="Temperature", fields=[
+                *fields(temp_a, ">", -2, relative_to=temp_b), native_field("state_#", "decimal", 70)])]])
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_required_expression_multi_condition(self) -> None:
+        # Flat AND and grouped (A OR B) AND C Required Expressions over three conditions render as RM renders them.
+        temp_a, temp_b = self.get_test_temperature_ids()
+        rows = [native_change("condition", capability="Temperature", fields=self._rm_temperature_fields(device, op, value))
+                for device, op, value in ((temp_a, ">", 70), (temp_b, "<", 80), (temp_a, ">=", 65))]
+        for grouped in (False, True):
+            app_id, created = self._rm_rule("MultiRE", rows)
+            try:
+                ids = sorted(created["conditions"], key=int)
+                tokens = ["(", ids[0], "OR", ids[1], ")", "AND", ids[2]] if grouped else [ids[0], "AND", ids[1], "AND", ids[2]]
+                result = self._rm_update(app_id, [native_change("required", tokens=tokens)])
+                assert result["document"]["expressions"]["0"] == tokens, result["document"]["expressions"]
+                page = self._rm_page(app_id)
+                assert page.lower().count("temperature of") >= 3 and ("OR" if grouped else "AND") in page and "< 80" in page, page[:800]
+            finally:
+                self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_action_after_required_expression(self) -> None:
+        # Actions added after a Required Expression carry no condition unless given one; a Simple
+        # Conditional Action uses an existing condition, and a refused conditional action leaves its
+        # separately created condition for the caller to delete.
+        switch = self._ensure_perm_fixture("switch_a")
+        app_id, created = self._rm_rule("ActAfterRE", [self._rm_switch_condition(switch), self._rm_switch_condition(switch)])
+        try:
+            required, condition = sorted(created["conditions"], key=int)
+            built = self._rm_update(app_id, [native_change("required", tokens=[required]), native_log("after-RE"),
+                                             self._rm_switch_action(switch, condition=condition)])
+            log_id, action = self._rm_ids(built)[1:]
+            rows = {str(r["id"]): r["value"] for r in built["document"]["actions"]}
+            assert not rows[log_id].get("cond") and not rows[log_id].get("rule"), rows[log_id]
+            edited = self._rm_update(app_id, [self._rm_switch_action(switch, False, id=action)])
+            assert str({str(r["id"]): r["value"] for r in edited["document"]["actions"]}[action]["cond"]) == condition
+            defined = native_log("defined condition")
+            defined["value"]["condition"] = condition
+            defined_id = self._rm_ids(self._rm_update(app_id, [defined]))[0]
+            values = self._rm_values(app_id)
+            assert str(values["onOff." + action]).lower() in ("false", "off"), values
+            assert str(values["useCondNdx." + defined_id]) == condition and str(values["useCond." + defined_id]).lower() == "true", values
+            page = self._rm_page(app_id)
+            assert "IF (" in page and "Broken Condition" not in page, page[:600]
+            before = self._native_rule_document(app_id)
+            unused = self._rm_ids(self._rm_update(app_id, [self._rm_switch_condition(switch, "off")]))[0]
+            bad = lambda cond: self._rm_action("modeActs", "getDefinedAction", [  # noqa: E731
+                ("myCapab", "enum", "Switch"), ("devices", "capability.switch", [str(switch)]), ("cCmd", "enum", "noSuchCommandE2E")], condition=cond)
+            self._rm_refuse_all(app_id, [[bad(condition)], [bad(unused)]])
+            after = self._rm_update(app_id, [native_delete("condition", unused)])["document"]
+            for section in ("conditions", "actions", "expressions"):
+                assert after[section] == before[section], section
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_update_with_false_required_expression_is_suppressed(self) -> None:
+        # With the Required Expression false, RM removes the trigger subscriptions; an edit reports that
+        # as suppressed rather than as missing activation.
+        switch = self._ensure_perm_fixture("switch_a")
+        app_id, created = self._rm_rule("FalseRE", [self._rm_switch_trigger(switch), native_change(
+            "condition", capability="Private Boolean", fields=[native_field("state_#", "enum", "true")])])
+        try:
+            condition = next(iter(created["conditions"]))
+            self._rm_update(app_id, [native_change("required", tokens=[condition]), native_log("gated trigger")])
+            result = self.client.call_tool("hub_set_rule_private_boolean", {"ruleId": app_id, "value": False})
+            assert result.get("success") is not False, result
+            self._rm_wait(lambda: self._rm_health(app_id)["eventSubscriptionCount"] == 0, what="subscriptions removed")
+            edited = self._rm_update(app_id, [native_log("edit while required expression is false")])
+            assert "SUPPRESSED" in str(edited.get("subscriptionSettle", "")).upper(), edited
+            assert not edited["eventSubscriptions"] and not edited["scheduledJobs"], edited
+            assert edited["document"]["expressions"]["0"] == [condition]
+        finally:
+            self._delete_native(app_id)
+
+    # ---- actions backed by other built-in apps ----
+
+    def _installed_app_rows(self) -> list[dict]:
+        rows: list[dict] = []
+        cursor: str | None = ""
+        while cursor is not None:
+            page = self.client.call_tool("hub_list_apps", {"scope": "instances", "cursor": cursor})
+            assert isinstance(page.get("apps"), list), f"hub_list_apps(instances) failed: {page}"
+            rows += [a for a in page["apps"] if isinstance(a, dict)]
+            cursor = page.get("nextCursor")
+        return rows
+
+    @staticmethod
+    def _app_row_by_label(rows: list[dict], label: str) -> dict | None:
+        # The listing can append the app's status decoration, e.g. " (Paused)".
+        return next((r for r in rows if str(r.get("name") or "") == label
+                     or str(r.get("name") or "").startswith(f"{label} (")), None)
+
+    def _mode_ids(self, *names: str) -> list[str]:
+        modes = {str(m.get("name")): str(m.get("id")) for m in (self.client.call_tool("hub_list_modes", {}).get("modes") or [])}
+        missing = [n for n in names if n not in modes]
+        assert not missing, f"this hub has no {missing} mode: {modes}"
+        return [modes[n] for n in names]
+
+    def _ensure_builtin_app_fixture(self, rows: list[dict], key: str, configure: list[dict]) -> str:
+        """A BUILTIN_APP_FIXTURES app's id: found by label, else created by appType and configured with
+        `configure` (hub_set_native_app edits, in order). A half-built instance is deleted, not kept,
+        so the next run does not find a fixture missing part of its setup."""
+        label, _, app_type = self.BUILTIN_APP_FIXTURES[key]
+        found = self._app_row_by_label(rows, label)
+        if found is not None:
+            return str(found["id"])
+        created = self.client.call_tool("hub_set_native_app", {"appType": app_type, "name": label, "confirm": True})
+        app_id = created.get("appId")
+        # The thermostat apps take their name only once a thermostat is set, so their create reports
+        # the label unverified; configure ends by writing it.
+        assert app_id and created.get("appType") == app_type and created.get("parentAppId") is not None, created
+        try:
+            for step in configure:
+                done = self.client.call_tool("hub_set_native_app", {"appId": int(app_id), "confirm": True, **step})
+                assert done.get("success") is True, f"configuring the {label} fixture: {step} failed: {done}"
+        except BaseException:
+            try:
+                self.client.call_tool("hub_delete_native_app", {"appId": int(app_id), "force": True, "confirm": True})
+            except (McpError, McpToolError, requests.HTTPError) as exc:
+                print(f"    [WARN] could not delete the half-built {label} fixture (app {app_id}): {exc}")
+            raise
+        print(f"    [PERM FIXTURE] created '{label}' ({app_type}, app {app_id}) -- reused by later runs")
+        return str(app_id)
+
+    def _rm_app_actions(self, app_id: Any, actions: list[tuple[dict, dict, list[str]]]) -> dict:
+        """Add app-backed actions in one write; each stores its inputs and renders the given fragments."""
+        result = self._rm_update(app_id, [row[0] for row in actions])
+        ids = self._rm_ids(result)
+        values = self._rm_values(app_id)
+        page = " ".join(self._rm_page(app_id, "selectActions").split()).lower()
+        for row_id, (_, stored, rendered) in zip(ids, actions, strict=True):
+            self._rm_assert_stored(values, row_id, stored)
+            for fragment in rendered:
+                assert " ".join(fragment.split()).lower() in page, f"action {row_id} does not render {fragment!r}"
+        return dict(zip((str(i) for i in range(len(ids))), ids, strict=True))
+
+    @test("native_apps")
+    def test_rm_action_room_lights(self) -> None:
+        label = self.BUILTIN_APP_FIXTURES["room_lights"][0]
+        rows = self._installed_app_rows()
+        app_id, _ = self._rm_rule("RmActRoomLights")
+        try:
+            if not any(r.get("type") == "Room Lights" for r in rows):
+                # RM lists these actions only while a Room Lights instance exists.
+                self._rm_refuse(app_id, [self._rm_action("rulesActs", "getRLTurnOff", [("actOffRL", "enum", ["999999999"])])])
+            room = self._ensure_builtin_app_fixture(rows, "room_lights", [])
+            action = self._rm_action
+            self._rm_app_actions(app_id, [
+                (action("rulesActs", "getRLActivate", [("actRL", "enum", room), ("modeRL", "enum", "X")]),
+                 {"actRL": room, "modeRL": "X"}, ["Activate", label, "Force"]),
+                (action("rulesActs", "getRLActivate", [("actRL", "enum", room), ("modeRL", "enum", "X"), ("forceRL", "bool", True)]),
+                 {"actRL": room, "forceRL": True}, ["Conditions"]),
+                (action("rulesActs", "getRLTurnOff", [("actOffRL", "enum", [room])]), {"actOffRL": [room]}, ["Turn Off Room Lights"]),
+            ])
+            self._rm_refuse_all(app_id, [
+                [action("rulesActs", "getRLActivate", [("actRL", "enum", room), ("modeRL", "enum", "999999999")])],
+                [action("rulesActs", "getRLTurnOff", [("actOffRL", "enum", [room, "999999999"])])]])
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_rm_action_scene(self) -> None:
+        # Scene actions pick the scene's activator device, not the scene app.
+        label, app_type, _ = self.BUILTIN_APP_FIXTURES["scene"]
+        switch = self._ensure_perm_fixture("switch_a")
+        day, night = self._mode_ids("Day", "Night")
+        rows = self._installed_app_rows()
+        app_id, _ = self._rm_rule("RmActScene")
+        try:
+            if not any(r.get("type") == app_type for r in rows):
+                self._rm_refuse(app_id, [self._rm_action("sceneActs", "getActivateScene", [("sceneAct", "enum", ["999999999"])])])
+            scene_app = self._ensure_builtin_app_fixture(rows, "scene", [
+                {"settings": {"switches": [int(switch)]}}, {"button": "captureBtn"}])
+            listed = self.client.call_tool("hub_list_devices", {"scope": "all", "labelFilter": label})
+            activators = [str(d["id"]) for d in (listed.get("devices") or []) if d.get("label") == label]
+            assert len(activators) == 1, f"expected one activator device labelled {label}: {listed}"
+            scene = activators[0]
+            action = self._rm_action
+            self._rm_app_actions(app_id, [
+                (action("sceneActs", "getActivateScene", [("sceneAct", "enum", [scene])]), {"sceneAct": [scene]}, ["Activate scenes", label]),
+                (action("sceneActs", "getActivateScenePerMode", [("sceneModes", "enum", [day, night]), (f"scene{day}", "enum", [scene]),
+                                                                (f"scene{night}", "enum", [scene])]),
+                 {"sceneModes": [day, night]}, ["Scenes per mode", "Day", "Night", label]),
+            ])
+            self._rm_refuse_all(app_id, [[action("sceneActs", "getActivateScene", [("sceneAct", "enum", [scene_app])])]])
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_rm_action_thermostat_apps(self) -> None:
+        # Thermostat Controller and Thermostat Scheduler actions over permanent controller/scheduler
+        # fixtures. The scheduler is picked by its thermostat (RM fills the scheduler) or by the
+        # scheduler (RM fills the thermostat); a by-mode scheduler offers only the modes it has rows for.
+        t1, t2 = self._ensure_perm_fixture("thermostat_a"), self._ensure_perm_fixture("thermostat_b")
+        t1_name, t2_name = self.PERM_FIXTURES["thermostat_a"][0], self.PERM_FIXTURES["thermostat_b"][0]
+        temp_a, temp_b = self.get_test_temperature_ids()
+        var = self._ensure_perm_variables("sv_number")["sv_number"]
+        day, night = self._mode_ids("Day", "Night")
+        rows = self._installed_app_rows()
+        app_id, _ = self._rm_rule("RmActTherm")
+        try:
+            types = {r.get("type") for r in rows}
+            if "Thermostat Controller 2.0" not in types:
+                self._rm_refuse(app_id, [self._rm_action("lockActs", "getSetThermController", [("thisApp", "enum", "999999999")])])
+            if not types & {"Thermostat Scheduler 2.0", "Thermostat Scheduler Legacy"}:
+                self._rm_refuse(app_id, [self._rm_action("lockActs", "getSetThermostatScheduler", [
+                    ("thisTherm", "capability.thermostat", [str(t1)])])])
+            def label(key: str) -> dict:
+                return {"settings": {"origLabel": self.BUILTIN_APP_FIXTURES[key][0]}}
+            # The sensors are a separate write: written together with therm they are skipped.
+            controller = self._ensure_builtin_app_fixture(rows, "therm_ctl", [
+                {"settings": {"therm": [int(t1)]}}, {"settings": {"tempSensors": [int(temp_a)]}}, label("therm_ctl")])
+            scheduler = self._ensure_builtin_app_fixture(rows, "sched_time", [
+                {"settings": {"therm": [int(t1)]}}, {"settings": {"schedTypeL": "Time Periods"}}, label("sched_time")])
+            # A Day row through the scheduler's own table editor, as the UI fills it.
+            self._ensure_builtin_app_fixture(rows, "sched_modes", [
+                {"settings": {"therm": [int(t2)]}}, {"settings": {"schedTypeL": "Hub Modes"}},
+                {"button": "addMode", "stateAttribute": "addMode"}, {"settings": {"perX": [day]}},
+                {"button": day, "stateAttribute": "tsH"}, {"settings": {"tempX": 68}}, {"button": "update"}, label("sched_modes")])
+            on_t1 = ["Thermostat Scheduler for", t1_name]
+            ctl_name = self.BUILTIN_APP_FIXTURES["therm_ctl"][0]
+            sched = self._rm_action
+            th = ("thisTherm", "capability.thermostat", [str(t1)])
+            ids = self._rm_app_actions(app_id, [
+                (sched("lockActs", "getSetThermController", [("thisApp", "enum", controller),
+                                                             ("tcSensors", "capability.temperatureMeasurement", [str(temp_a), str(temp_b)])]),
+                 {"thisApp": controller, "tcSensors": [str(temp_a), str(temp_b)]}, ["Set Sensors for", ctl_name]),
+                (sched("lockActs", "getSetThermostatScheduler", [th, ("thermSched", "enum", "setEcoMode"), ("ecoMode", "enum", "on")]),
+                 {"thermSched": "setEcoMode", "thisApp": scheduler}, [*on_t1, "EcoMode on"]),
+                (sched("lockActs", "getSetThermostatScheduler", [("tMethod", "bool", True), ("thisApp", "enum", scheduler),
+                                                                 ("thermSched", "enum", "setEcoOffset"), ("ecoOffset", "decimal", 2.5)]),
+                 {"thisTherm": [str(t1)], "ecoOffset": 2.5}, [*on_t1, "EcoMode Offset 2.5"]),
+                (sched("lockActs", "getSetThermostatScheduler", [th, ("thermSched", "enum", "setEcoOffset"), ("uVar", "bool", True),
+                                                                 ("xVar", "enum", var)]), {"uVar": True, "xVar": var}, []),
+                (sched("lockActs", "getSetThermostatScheduler", [("tMethod", "bool", True), ("thisApp", "enum", scheduler),
+                                                                 ("thermSched", "enum", "setHold"), ("setHold", "enum", "off")]),
+                 {"setHold": "off"}, [*on_t1, "Set Hold off"]),
+                (sched("lockActs", "getSetThermostatScheduler", [th, ("thermSched", "enum", "setSchedDay"), ("dayN", "enum", "0")]),
+                 {"dayN": "0"}, [*on_t1, "Activate Scheduled Setpoints", "Monday"]),
+                (sched("lockActs", "getSetThermostatScheduler", [th, ("thermSched", "enum", "setTimeAway"), ("timeAwayHeat", "decimal", 60),
+                                                                 ("uVar3", "bool", True), ("xVar3", "enum", var)]),
+                 {"timeAwayHeat": 60, "xVar3": var}, [*on_t1, "Days/Times Away", "Heat 60"]),
+                (sched("lockActs", "getSetThermostatScheduler", [("thisTherm", "capability.thermostat", [str(t2)]),
+                                                                 ("thermSched", "enum", "setSched4Mode"), ("modN", "enum", day)]),
+                 {"modN": day}, ["Thermostat Scheduler for", t2_name, "Activate Scheduled Setpoints for", "Day"]),
+            ])
+            assert len(ids) == 8, ids
+            self._rm_refuse_all(app_id, [
+                [sched("lockActs", "getSetThermController", [("thisApp", "enum", "999999999"),
+                                                             ("tcSensors", "capability.temperatureMeasurement", [str(temp_a)])])],
+                [sched("lockActs", "getSetThermostatScheduler", [("tMethod", "bool", True), ("thisApp", "enum", "999999999"),
+                                                                 ("thermSched", "enum", "setHold"), ("setHold", "enum", "off")])],
+                # The by-mode scheduler has a Day row only, and no Days/Times Away setpoints.
+                [sched("lockActs", "getSetThermostatScheduler", [("thisTherm", "capability.thermostat", [str(t2)]),
+                                                                 ("thermSched", "enum", "setSched4Mode"), ("modN", "enum", night)])],
+            ])
+        finally:
+            self._delete_native(app_id)
+
+    # ---- pre-edit recovery points and restore ----
+    #
+    # These run with pre-edit backups on (BACKUP_PROVING_TESTS); every other test runs with them off.
+
+    @staticmethod
+    def _rm_edited_snapshot(source: str, old_id: Any, old_label: str, new_id: Any, new_label: str) -> str:
+        """Mechanically retarget one device in a native-rule-edit-v1 snapshot; the replacement is the caller's choice."""
+        snapshot = json.loads(source)
+        assert snapshot.get("captureFormat") == "native-rule-edit-v1", snapshot.get("captureFormat")
+        old_id, new_id = str(old_id), str(new_id)
+
+        def device_value(value):
+            if isinstance(value, dict):
+                return {new_id if str(k) == old_id else k: new_label if str(k) == old_id else device_value(v) for k, v in value.items()}
+            if isinstance(value, list):
+                return [device_value(v) for v in value]
+            if str(value) == old_id:
+                return int(new_id) if isinstance(value, int) else new_id
+            return value
+
+        def projections(value):
+            if isinstance(value, list):
+                return [projections(v) for v in value]
+            if isinstance(value, dict):
+                copied = {k: projections(v) for k, v in value.items()}
+                for key in ("deviceId", "deviceIds", "deviceList", "deviceIdsForDeviceList"):
+                    if key in copied:
+                        copied[key] = device_value(copied[key])
+                if str(copied.get("type", "")).startswith("capability") and "value" in copied:
+                    copied["value"] = device_value(copied["value"])
+                return copied
+            return value.replace(old_label, new_label) if isinstance(value, str) else value
+
+        payload = json.loads(snapshot["nativeExport"])
+        replacements = payload["deviceReplacements"]
+        assert old_id in replacements and new_id not in replacements, sorted(replacements)
+        replacement = projections(replacements.pop(old_id))
+        for key in ("id", "deviceId"):
+            if key in replacement and str(replacement[key]) == old_id:
+                replacement[key] = device_value(replacement[key])
+        replacement["deviceLabel"] = new_label
+        replacements[new_id] = replacement
+        payload = projections(payload)
+        snapshot = projections(snapshot)
+        for key, value in snapshot["configJson"]["settings"].items():
+            if isinstance(value, dict) and old_id in value:
+                snapshot["configJson"]["settings"][key] = device_value(value)
+        snapshot["nativeExport"] = json.dumps(payload, separators=(",", ":"))
+        return json.dumps(snapshot, separators=(",", ":"))
+
+    def _rm_recovery_file(self, key: str) -> tuple[str, str]:
+        meta = self.client.call_tool("hub_get_backup", {"backupKey": key})
+        assert "error" not in meta and meta.get("fileName"), meta
+        content = self._rm_read_file(meta["fileName"])
+        assert json.loads(content)["captureFormat"] == "native-rule-edit-v1"
+        return meta["fileName"], content
+
+    @test("native_apps")
+    def test_rm_rule_restore_in_place_with_device_picker(self) -> None:
+        # Restoring an edit's recovery point keeps the rule id and puts back its pre-edit actions,
+        # Required Expression state and device pickers.
+        switch = self._ensure_perm_fixture("switch_a")
+        app_id, created = self._rm_rule("RestorePicker", [self._rm_switch_action(switch), self._rm_switch_condition(switch)])
+        try:
+            added = self._rm_update(app_id, [native_log("post-snapshot marker")])
+            key = added["backup"]["backupKey"]
+            self._rm_update(app_id, [native_change("required", tokens=[next(iter(created["conditions"]))])])
+            restored = self._rm_restore(key, preserveRuleId=True)
+            assert restored.get("success") is True and str(restored["ruleId"]) == str(app_id) and not restored.get("recreated"), restored
+            doc = self._native_rule_document(app_id)
+            assert "post-snapshot marker" not in json.dumps(doc) and not doc["expressions"].get("0"), doc
+            values = self._rm_values(app_id)
+            assert str(values.get("useST", "false")).lower() != "true", values.get("useST")
+            pickers = [v for k, v in values.items() if k.startswith("onOffSwitch.")]
+            assert pickers == [[str(switch)]], pickers
+            assert doc["nativeHealth"]["broken"] is False
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_rm_rule_restore_skips_a_deleted_device(self) -> None:
+        # A recovery point that references a deleted device is refused before any change. The caller
+        # can copy the snapshot, point it at another device, and restore that edited copy in place.
+        gone, gone_dni, gone_label = self._rm_disposable_switch("RestoreGone")
+        replacement, _, replacement_label = self._rm_disposable_switch("RestoreReplacement")
+        labels = {gone: gone_label, replacement: replacement_label}
+        app_id, created = self._rm_rule("RestoreGoneRule", [self._rm_switch_action(gone), native_log("unrelated saved action"),
+                                                           native_change("variable", operation="create", name="Counter", type="integer", value=17)])
+        try:
+            key = self._rm_update(app_id, [native_log("post-snapshot marker")])["backup"]["backupKey"]
+            file_name, original = self._rm_recovery_file(key)
+            self._rm_delete_device(gone_dni)
+            before = self._rm_snapshot(app_id)
+            refused = self._rm_restore(key, preserveRuleId=True)
+            assert refused.get("success") is False and refused.get("partial") is False \
+                and refused.get("failedStep") == "devicePreflight" and str(gone) in map(str, refused.get("missingDeviceIds", [])), refused
+            assert self._rm_snapshot(app_id) == before, "a refused restore changed the rule"
+            edited = self._rm_edited_snapshot(original, gone, labels[gone], replacement, labels[replacement])
+            copy_name = f"{PREFIX}backup_edited_recovery_{_run_artifact_suffix()}.json"
+            written = self.client.call_tool("hub_write_file", {"fileName": copy_name, "content": edited, "confirm": True})
+            assert written.get("success") is True, written
+            try:
+                restored = self.client.call_tool("hub_restore_backup", {"scope": "source", "sourceFile": copy_name,
+                                                                        "preserveRuleId": True, "confirm": True})
+                assert restored.get("success") is True and not restored.get("partial") and str(restored["ruleId"]) == str(app_id) \
+                    and restored.get("restoredVia") == "nativeStateReplay", restored
+                assert self._rm_read_file(file_name) == original, "restoring an edited copy changed the original recovery file"
+            finally:
+                self.client.call_tool("hub_delete_file", {"fileName": copy_name, "confirm": True})
+            doc = self._native_rule_document(app_id)
+            assert [r["id"] for r in doc["actions"]] == [r["id"] for r in created["actions"]] and doc["variables"] == created["variables"], doc
+            values = self._rm_values(app_id)
+            assert [v for k, v in values.items() if k.startswith("logmsg.")] == ["unrelated saved action"], values
+            assert [v for k, v in values.items() if k.startswith("onOffSwitch.")] == [[str(replacement)]], values
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_rm_rule_restore_brings_back_a_removed_trigger(self) -> None:
+        # In place, a deleted trigger comes back; as a copy (preserveRuleId false) the backup builds a
+        # new rule; a repeated restore reports the copy it already made.
+        switch = self._ensure_perm_fixture("switch_a")
+        app_id, created = self._rm_rule("RestoreTrigger", [self._rm_switch_trigger(switch, "on"), self._rm_switch_trigger(switch, "off"),
+                                                          native_log("trigger recovery")])
+        copy_id = None
+        try:
+            removed = self._rm_update(app_id, [native_delete("trigger", max(created["triggers"], key=int))])
+            key = removed["backup"]["backupKey"]
+            restored = self._rm_restore(key, preserveRuleId=True)
+            assert restored.get("success") is True, restored
+            assert self._native_rule_document(app_id)["triggers"] == created["triggers"]
+            copied = self._rm_restore(key, preserveRuleId=False)
+            assert copied.get("success") is True and str(copied.get("ruleId")) != str(app_id), copied
+            copy_id = str(copied["ruleId"])
+            self.created_native_app_ids.append(copy_id)
+            assert len(self._native_rule_document(copy_id)["triggers"]) == 2
+            again = self._rm_restore(key)
+            assert again.get("alreadyRestored") is True and str(again.get("ruleId")) == copy_id, again
+        finally:
+            for rule in (app_id, copy_id):
+                if rule:
+                    self._delete_native(rule)
+
+    @test("native_apps")
+    def test_rm_rule_restore_of_a_deleted_rule_uses_the_exact_copy(self) -> None:
+        # Deleting a rule captures it; restoring that backup imports it as a new rule with its rows and settings.
+        switch = self._ensure_perm_fixture("switch_a")
+        app_id, _ = self._rm_rule("RestoreDeleted", [self._rm_switch_trigger(switch), native_log("deleted-rule marker")])
+        deleted = self.client.call_tool("hub_delete_native_app", {"appId": app_id, "force": True, "confirm": True})
+        assert deleted.get("success") is True, deleted
+        self._untrack_native_app(app_id)
+        restored = self._rm_restore(deleted["backup"]["backupKey"])
+        copy_id = restored.get("ruleId")
+        if copy_id:
+            self.created_native_app_ids.append(str(copy_id))
+        try:
+            assert restored.get("success") is True and restored.get("restoredVia") == "nativeImport" \
+                and str(copy_id) != str(app_id), restored
+            doc = self._native_rule_document(copy_id)
+            assert len(doc["triggers"]) == 1 and [r["value"]["method"] for r in doc["actions"]] == ["getLogMsg"], doc
+            assert self._rm_values(copy_id)["logmsg." + str(doc["actions"][0]["id"])] == "deleted-rule marker"
+            assert doc["nativeHealth"]["broken"] is False, doc
+        finally:
+            if copy_id:
+                self._delete_native(copy_id)
+
+    @test("native_apps")
+    def test_rm_rule_restore_puts_actions_back_in_order(self) -> None:
+        app_id, created = self._rm_rule("RestoreOrder", [native_log("order first"), native_log("order second")])
+        try:
+            before = [str(r["id"]) for r in created["actions"]]
+            moved = self._rm_update(app_id, [native_change("order", ids=list(reversed(before)))])
+            assert [str(r["id"]) for r in moved["document"]["actions"]] == list(reversed(before))
+            restored = self._rm_restore(moved["backup"]["backupKey"])
+            assert restored.get("success") is True, restored
+            assert [str(r["id"]) for r in self._native_rule_document(app_id)["actions"]] == before
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_rm_rule_restore_expression_by_device_name(self) -> None:
+        # With a recovery point per write, the chosen one restores its own Required Expression device;
+        # once that device is deleted the restore is refused until an edited copy names another.
+        switches = {name: self._rm_disposable_switch(f"Lamp_{name}") for name in ("Gone", "Kitchen", "Den")}
+        labels = {name: label for name, (_, _, label) in switches.items()}
+        self._rule_edit_backups(False)
+        app_id, created = self._rm_rule("RestoreExpr", [self._rm_switch_condition(switches["Gone"][0]), native_log("expression unrelated"),
+                                                       native_change("variable", operation="create", name="Counter", type="integer", value=23)])
+        try:
+            condition = next(iter(created["conditions"]))
+            self._rm_update(app_id, [native_change("required", tokens=[condition])])
+            self._rule_edit_backups(True)
+            self._mcp_settings({"backupEveryRuleWrite": True})
+            try:
+                keys = {name: self._rm_update(app_id, [self._rm_switch_condition(switches[name][0], id=condition)])["backup"]["backupKey"]
+                        for name in ("Kitchen", "Den")}
+            finally:
+                self._mcp_settings({"backupEveryRuleWrite": False})
+            assert self._rm_restore(keys["Den"]).get("success") is True
+            assert labels["Kitchen"] in json.dumps(self._native_rule_document(app_id)["conditions"])
+            _, original = self._rm_recovery_file(keys["Kitchen"])
+            self._rm_delete_device(switches["Gone"][1])
+            refused = self._rm_restore(keys["Kitchen"], preserveRuleId=True)
+            assert refused.get("success") is False and refused.get("failedStep") == "devicePreflight", refused
+            edited = self._rm_edited_snapshot(original, switches["Gone"][0], labels["Gone"], switches["Den"][0], labels["Den"])
+            copy_name = f"{PREFIX}backup_edited_expr_{_run_artifact_suffix()}.json"
+            assert self.client.call_tool("hub_write_file", {"fileName": copy_name, "content": edited, "confirm": True}).get("success") is True
+            try:
+                restored = self.client.call_tool("hub_restore_backup", {"scope": "source", "sourceFile": copy_name,
+                                                                        "preserveRuleId": True, "confirm": True})
+                assert restored.get("success") is True and str(restored["ruleId"]) == str(app_id), restored
+            finally:
+                self.client.call_tool("hub_delete_file", {"fileName": copy_name, "confirm": True})
+            doc = self._native_rule_document(app_id)
+            assert doc["expressions"]["0"] == [condition] and doc["variables"] == created["variables"], doc
+            assert self._rm_values(app_id)["rDev_" + condition] == [str(switches["Den"][0])]
+        finally:
+            self._delete_native(app_id)
+
+    def _mcp_settings(self, settings: dict) -> None:
+        result = self.client.call_tool("hub_update_mcp_settings", {"settings": settings, "confirm": True})
+        assert result.get("success") is True, result
+
+    @test("native_apps")
+    def test_complex_edit_recovers_deleted_rows_and_existing_payloads(self) -> None:
+        # One recovery point covers a whole edit batch: restoring it rebuilds deleted rows, the
+        # Required Expression, IF expressions and local variables, and the rule runs as before.
+        trigger_switch = self._ensure_perm_fixture("switch_a")
+        out, _, _ = self._rm_disposable_switch("RecoveryOut")
+        def output(on: bool) -> dict:
+            return self._rm_switch_action(out, on)
+        self._rule_edit_backups(False)
+        app_id, created = self._rm_rule("ComplexRecovery", [
+            self._rm_switch_condition(trigger_switch), self._rm_switch_condition(trigger_switch, "off"),
+            self._rm_switch_condition(trigger_switch), self._rm_switch_trigger(trigger_switch, "on"),
+            self._rm_switch_trigger(trigger_switch, "off"),
+            native_change("variable", operation="create", name="Counter", type="integer", value=7),
+            native_log("recovery original"), native_log("recover deleted action")])
+        try:
+            a, b, unused = sorted(created["conditions"], key=int)
+            built = self._rm_update(app_id, [
+                native_change("required", tokens=[a, "OR", b]),
+                native_change("action", type="condActs", subtype="getIfThen", fields=[], expression=[a, "OR", b]), output(True),
+                native_change("terminator", subtype="endIf"),
+                native_change("action", type="delayActs", subtype="getWaitEvents", fields=[],
+                              events=[self._rm_wait_event(trigger_switch, "off")]), output(False)])["document"]
+            ids = [str(r["id"]) for r in built["actions"]]
+            expression = str(next(r["value"]["rule"] for r in built["actions"] if r["value"]["method"] == "getIfThen"))
+            before = self._rm_snapshot(app_id)
+            self._rule_edit_backups(True)
+            keys = self._rm_backup_keys(app_id)
+            edited = self._rm_update(app_id, [
+                native_log("changed same ID", id=ids[0]), native_delete("action", ids[1]),
+                native_delete("trigger", next(iter(built["triggers"]))), native_delete("condition", unused),
+                self._rm_switch_condition(trigger_switch, "off", id=a), native_change("required", tokens=[b]),
+                native_change("expression", id=expression, tokens=[b]),
+                native_change("variable", operation="set", name="Counter", value=99),
+                native_change("variable", operation="create", name="Added", type="string", value="remove me"),
+                native_log("new action must disappear"), self._rm_switch_trigger(trigger_switch, "*changed*")])
+            key = edited["backup"]["backupKey"]
+            assert self._rm_backup_keys(app_id) - keys == {key}, "one batch took more than one recovery point"
+            restored = self._rm_restore(key)
+            assert restored.get("success") is True and str(restored["ruleId"]) == str(app_id) \
+                and restored.get("restoredVia") == "nativeStateReplay", restored
+            assert self._rm_snapshot(app_id) == before, "the restore did not recover the pre-edit rule"
+            self._rm_command(out, "off")
+            self._rm_command(trigger_switch, "off")
+            self._rm_command(trigger_switch, "on")
+            self._rm_wait(lambda: self._rm_attribute(out, "switch") == "on", what="the restored rule turning the output on")
+        finally:
+            self._rm_command(trigger_switch, "off")
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_stopped_time_rule_recovers_clock_and_schedule(self) -> None:
+        # Restoring a stopped time-triggered rule keeps it stopped with its original time; started
+        # again, it schedules its job.
+        def clock(value: str, **extra) -> dict:
+            return native_change("trigger", capability="Certain Time (and optional date)", fields=[
+                native_field("time#", "enum", "A specific time"), native_field("atTime#", "time", value)], **extra)
+        app_id, created = self._rm_rule("StoppedClock", [clock("2026-01-01T17:00:00.000-0500"), native_log("timed recovery")])
+        try:
+            self.client.call_tool("hub_call_rule", {"ruleId": app_id, "action": "stop"})
+            self._rm_wait(lambda: self._rm_health(app_id).get("stopped") is True, what="stopped")
+            before = self._rm_snapshot(app_id)
+            edited = self._rm_update(app_id, [clock("2026-01-01T18:00:00.000-0500", id=next(iter(created["triggers"]))),
+                                              native_log("remove timed edit")])
+            restored = self._rm_restore(edited["backup"]["backupKey"])
+            assert restored.get("success") is True and restored.get("restoredVia") == "nativeStateReplay", restored
+            assert self._rm_snapshot(app_id) == before and self._rm_health(app_id).get("stopped") is True
+            self.client.call_tool("hub_call_rule", {"ruleId": app_id, "action": "start"})
+            self._rm_wait(lambda: self._rm_health(app_id)["scheduledJobCount"] > 0, what="the restored schedule")
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_form_workflow_has_one_pre_edit_snapshot(self) -> None:
+        # A form workflow takes one recovery point before its first render and reuses it; after the
+        # restore, the workflow's context is gone and a stale submit is refused.
+        app_id, _ = self._rm_rule("FormSnapshot", [native_log("form recovery")])
+        try:
+            keys = self._rm_backup_keys(app_id)
+            page = self._rm_open(app_id)
+            key = page["backup"]["backupKey"]
+            for value in ("first form edit", "second form edit"):
+                page = self._rm_submit(app_id, page, fields={"comments": value})
+                assert page["backup"]["backupKey"] == key, page["backup"]
+            assert self._rm_backup_keys(app_id) - keys == {key}
+            assert self._rm_restore(key).get("success") is True
+            assert self._rm_values(app_id).get("comments") in (None, "")
+            self._rm_refused(self._rm_call({"operation": "form", "rule_id": app_id, "confirm": True, "args": {
+                "steps": [self._rm_step(page, fields={"comments": "stale edit must not apply"})]}}))
+            assert self._rm_values(app_id).get("comments") in (None, "")
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_reads_and_disabled_backups_do_not_capture(self) -> None:
+        # Reads, help and unconfirmed probes take no recovery point; with backups off an edit reports
+        # the skip; back on, it takes exactly one.
+        app_id, _ = self._rm_rule("CaptureControl", [native_log("capture control")])
+        try:
+            keys = self._rm_backup_keys(app_id)
+            self._native_rule_document(app_id)
+            self._rm_call({})
+            self._rm_call({"operation": "update", "rule_id": app_id})
+            assert self._rm_backup_keys(app_id) == keys, "a read took a recovery point"
+            self._rule_edit_backups(False)
+            try:
+                skipped = self._rm_update(app_id, [native_log("unprotected edit")])
+                assert skipped["backup"].get("skipped") is True, skipped["backup"]
+            finally:
+                self._rule_edit_backups(True)
+            assert self._rm_backup_keys(app_id) == keys
+            protected = self._rm_update(app_id, [native_log("protected edit")])
+            assert self._rm_backup_keys(app_id) - keys == {protected["backup"]["backupKey"]}
+        finally:
+            self._delete_native(app_id)
+
+    def _rm_legacy_in_place_recovery(self, required: bool) -> None:
+        # A recovery point taken by the generic native-app write path (the older snapshot format,
+        # without captureFormat) still restores a rule edited through hub_set_rule. With a Required
+        # Expression that format carries no native export, so the settings replay alone recovers it.
+        switch, gate = self._ensure_perm_fixture("switch_a"), self._ensure_perm_fixture("switch_b")
+        self._rule_edit_backups(False)
+        app_id, created = self._rm_rule("LegacyRestore", [
+            self._rm_switch_condition(gate), self._rm_switch_condition(gate, "off"), self._rm_switch_trigger(switch),
+            self._rm_switch_action(switch, False), native_log("legacy baseline")])
+        try:
+            conditions = sorted(created["conditions"], key=int)
+            if required:
+                self._rm_update(app_id, [native_change("required", tokens=[conditions[0]])])
+            before = self._rm_snapshot(app_id)
+            self._rule_edit_backups(True)
+            self._mcp_settings({"backupEveryRuleWrite": True})
+            try:
+                captured = self.client.call_tool("hub_set_native_app", {"appId": app_id, "confirm": True,
+                                                                        "settings": {"comments": "legacy capture compatibility"}})
+            finally:
+                self._mcp_settings({"backupEveryRuleWrite": False})
+            assert captured.get("success") is True and (captured.get("backup") or {}).get("backupKey"), captured
+            key = captured["backup"]["backupKey"]
+            meta = self.client.call_tool("hub_get_backup", {"backupKey": key})
+            snapshot = json.loads(self._rm_read_file(meta["fileName"]))
+            assert "captureFormat" not in snapshot and isinstance(snapshot.get("configJson"), dict), sorted(snapshot)
+            if required:
+                assert not snapshot.get("nativeExport") and "Required Expression" in snapshot.get("nativeExportSkipped", ""), sorted(snapshot)
+            else:
+                assert snapshot.get("nativeExport"), sorted(snapshot)
+            actions = [str(r["id"]) for r in created["actions"]]
+            edits = [self._rm_switch_condition(gate, "off", id=conditions[0]),
+                     self._rm_switch_trigger(switch, "off", id=next(iter(created["triggers"]))),
+                     self._rm_switch_action(switch, True, id=actions[0]), native_log("legacy changed", id=actions[1])]
+            edits += [native_change("required", tokens=[conditions[1]])] if required else \
+                [native_change("required", tokens=[conditions[0]]), native_log("legacy extra row must disappear")]
+            self._rule_edit_backups(False)
+            self._rm_update(app_id, edits)
+            restored = self._rm_restore(key, preserveRuleId=True)
+            assert restored.get("success") is True and str(restored["ruleId"]) == str(app_id) \
+                and restored.get("restoredVia") == "nativeStateReplay", restored
+            after = self._rm_snapshot(app_id)
+            after["settings"].pop("comments", None)
+            before["settings"].pop("comments", None)
+            assert after == before, "the legacy restore did not recover the pre-edit rule"
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_legacy_export_backup_restores_in_place(self) -> None:
+        self._rm_legacy_in_place_recovery(required=False)
+
+    @test("native_apps")
+    def test_legacy_required_expression_backup_restores_in_place(self) -> None:
+        self._rm_legacy_in_place_recovery(required=True)
+
 
     def _native_form_control(self, app_id: Any, page: str, name: str) -> dict:
         opened = self.client.call_tool("hub_set_rule", {"operation": "form", "rule_id": int(app_id),
@@ -6256,49 +8480,6 @@ class TestRunner:
         assert result.get("success") is True, result
         return result
 
-    def _run_native_rule_case(self, suite: str, method: str) -> None:
-        from e2e_native_rule_integration import run_native_rule_case
-        run_native_rule_case(self, suite, method)
-
-    @test("native_apps")
-    def test_legacy_export_backup_restores_in_place(self) -> None:
-        self._run_native_rule_case("backup", "test_legacy_export_backup_restores_in_place")
-
-    @test("native_apps")
-    def test_legacy_required_expression_backup_restores_in_place(self) -> None:
-        self._run_native_rule_case("backup", "test_legacy_required_expression_backup_restores_in_place")
-
-    @test("native_apps")
-    def test_complex_edit_recovers_deleted_rows_and_existing_payloads(self) -> None:
-        self._run_native_rule_case("backup", "test_complex_edit_recovers_deleted_rows_and_existing_payloads")
-
-    @test("native_apps")
-    def test_stopped_time_rule_recovers_clock_and_schedule(self) -> None:
-        self._run_native_rule_case("backup", "test_stopped_time_rule_recovers_clock_and_schedule")
-
-    @test("native_apps")
-    def test_form_workflow_has_one_pre_edit_snapshot(self) -> None:
-        self._run_native_rule_case("backup", "test_form_workflow_has_one_pre_edit_snapshot")
-
-    @test("native_apps")
-    def test_reads_and_disabled_backups_do_not_capture(self) -> None:
-        self._run_native_rule_case("backup", "test_reads_and_disabled_backups_do_not_capture")
-
-    @test("native_apps")
-    def test_rm_action_device_catalog(self) -> None:
-        self._run_native_rule_case("actions", "test_rm_action_device_catalog")
-
-    @test("native_apps")
-    def test_rm_action_return_value(self) -> None:
-        self._run_native_rule_case("actions", "test_rm_action_return_value")
-
-    @test("native_apps")
-    def test_set_rule_variable_rhs_parity(self) -> None:
-        self._run_native_rule_case("expressions", "test_set_rule_variable_rhs_parity")
-
-    @test("native_apps")
-    def test_periodic_trigger_deletion_preserves_other_rows(self) -> None:
-        self._run_native_rule_case("lifecycle", "test_periodic_trigger_deletion_preserves_other_rows")
 
     # ---- shared helpers for the native-authoring coverage below ----
 
@@ -6458,7 +8639,6 @@ class TestRunner:
         return json.dumps(self._get_persisted_rule_config(app_id).get("page") or {})
 
 
-
     def _write_once(self, gateway: str | None, tool: str, args: dict, label: str) -> Any:
         """Issue one logical write; call_tool handles any standard MRTR rounds."""
         args = dict(args)
@@ -6489,7 +8669,6 @@ class TestRunner:
                     raise
                 print("    [RECOVER-504] pre-flight refusal re-issued -- the refused call "
                       "committed nothing, so a re-send cannot double-apply")
-
 
 
     def _assert_rule_renders(self, app_id: Any) -> None:
@@ -6531,7 +8710,6 @@ class TestRunner:
             return
         h = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_get_rule_health", "args": {"appId": app_id}})
         assert h.get("ok") is not False, f"hub_get_rule_health reports the rule broken: {h}"
-
 
 
     def _delete_native(self, app_id: Any, gateway: str = "hub_manage_rule_machine") -> None:
@@ -6576,17 +8754,6 @@ class TestRunner:
     #      - The docstring knowledge from the former standalone tests is preserved in
     #        the comments -- those pin wire-format regressions; do not drop them.
 
-    @test("native_apps")
-    def test_set_rule_walkstep_introspect(self) -> None:
-        self._run_native_rule_case("lifecycle", "test_set_rule_walkstep_introspect")
-
-    @test("native_apps")
-    def test_set_rule_walkstep_drive(self) -> None:
-        self._run_native_rule_case("actions", "test_set_rule_walkstep_drive")
-
-    @test("native_apps")
-    def test_set_rule_walkstep_action_after_required_expression(self) -> None:
-        self._run_native_rule_case("expressions", "test_set_rule_walkstep_action_after_required_expression")
 
     @test("native_apps")
     def test_set_native_app_walkstep_button_controller(self) -> None:
@@ -6641,76 +8808,10 @@ class TestRunner:
             if controller_id:
                 self._delete_native(controller_id, gateway="hub_manage_native_rules_and_apps")
 
-    @test("native_apps")
-    def test_rule_health_prefers_rulebuilderjson(self) -> None:
-        self._run_native_rule_case("lifecycle", "test_rule_health_prefers_rulebuilderjson")
-
-    @test("native_apps")
-    def test_rule_health_broken_true_on_dangling_trigger(self) -> None:
-        self._run_native_rule_case("lifecycle", "test_rule_health_broken_true_on_dangling_trigger")
-
-    @test("native_apps")
-    def test_rm_rule_restore_in_place_with_device_picker(self) -> None:
-        self._run_native_rule_case("recovery", "test_rm_rule_restore_in_place_with_device_picker")
-
-    @test("native_apps")
-    def test_rm_rule_restore_skips_a_deleted_device(self) -> None:
-        self._run_native_rule_case("recovery", "test_rm_rule_restore_skips_a_deleted_device")
-
-    @test("native_apps")
-    def test_rm_rule_restore_brings_back_a_removed_trigger(self) -> None:
-        self._run_native_rule_case("recovery", "test_rm_rule_restore_brings_back_a_removed_trigger")
-
-    @test("native_apps")
-    def test_rm_rule_restore_of_a_deleted_rule_uses_the_exact_copy(self) -> None:
-        self._run_native_rule_case("recovery", "test_rm_rule_restore_of_a_deleted_rule_uses_the_exact_copy")
-
-    @test("native_apps")
-    def test_rm_rule_restore_puts_actions_back_in_order(self) -> None:
-        self._run_native_rule_case("recovery", "test_rm_rule_restore_puts_actions_back_in_order")
-
-    @test("native_apps")
-    def test_rm_rule_restore_expression_by_device_name(self) -> None:
-        self._run_native_rule_case("recovery", "test_rm_rule_restore_expression_by_device_name")
-
-    @test("native_apps")
-    def test_rule_health_ui_shaped_else_endif_rows(self) -> None:
-        self._run_native_rule_case("lifecycle", "test_rule_health_ui_shaped_else_endif_rows")
-
-    @test("native_apps")
-    def test_set_rule_trigger_mutations(self) -> None:
-        self._run_native_rule_case("actions", "test_set_rule_trigger_mutations")
-
-    @test("native_apps")
-    def test_set_rule_enum_custom_attribute(self) -> None:
-        self._run_native_rule_case("expressions", "test_set_rule_enum_custom_attribute")
-
-    @test("native_apps")
-    def test_set_rule_trigger_state_change_comparator(self) -> None:
-        self._run_native_rule_case("expressions", "test_set_rule_trigger_state_change_comparator")
-
-    @test("native_apps")
-    def test_set_rule_required_expression_and_local_var(self) -> None:
-        self._run_native_rule_case("expressions", "test_set_rule_required_expression_and_local_var")
-
-    @test("native_apps")
-    def test_set_rule_wait_events_mode_event(self) -> None:
-        self._run_native_rule_case("actions", "test_set_rule_wait_events_mode_event")
-
-    @test("native_apps")
-    def test_set_rule_switch_only_on_and_device_list_no_false_partial(self) -> None:
-        self._run_native_rule_case("picker", "test_set_rule_switch_only_on_and_device_list_no_false_partial")
-
-    @test("native_apps")
-    def test_set_rule_wait_events_and_stays_duration(self) -> None:
-        self._run_native_rule_case("actions", "test_set_rule_wait_events_and_stays_duration")
 
     @test("mrtr")
     def test_mrtr_rule_edit_uses_standard_continuation(self) -> None:
-        from e2e_native_rule_integration import native_context
-
-        context = native_context(self)
-        changes, messages = native_mrtr_changes("MRTR regular E2E proof", str(context["fixtures"]["temperature"]))
+        changes, messages = native_mrtr_changes("MRTR regular E2E proof", str(self.get_test_temperature_ids()[0]))
         app_id = self._create_native_rule("MrtrContinuation")
         try:
             args = {"operation": "update", "rule_id": int(app_id), "args": {"changes": changes}, "confirm": True}
@@ -6776,87 +8877,9 @@ class TestRunner:
         finally:
             self._delete_native(app_id)
 
-    @test("native_apps")
-    def test_rm_action_room_lights(self) -> None:
-        self._run_native_rule_case("app_actions", "test_rm_action_room_lights")
-
-    @test("native_apps")
-    def test_rm_action_scene(self) -> None:
-        self._run_native_rule_case("app_actions", "test_rm_action_scene")
-
-    @test("native_apps")
-    def test_rm_action_thermostat_apps(self) -> None:
-        self._run_native_rule_case("app_actions", "test_rm_action_thermostat_apps")
-
-    @test("native_apps")
-    def test_set_rule_contains_comparator(self) -> None:
-        self._run_native_rule_case("expressions", "test_set_rule_contains_comparator")
-
-    @test("native_apps")
-    def test_set_rule_remove_referenced_local_breaks_rule(self) -> None:
-        self._run_native_rule_case("expressions", "test_set_rule_remove_referenced_local_breaks_rule")
-
-    @test("native_apps")
-    def test_set_rule_trigger_custom_attribute_enum_changed_routes(self) -> None:
-        self._run_native_rule_case("expressions", "test_set_rule_trigger_custom_attribute_enum_changed_routes")
-
-    @test("native_apps")
-    def test_set_rule_re_custom_attribute_enum_changed_not_representable(self) -> None:
-        self._run_native_rule_case("expressions", "test_set_rule_re_custom_attribute_enum_changed_not_representable")
-
-    @test("native_apps")
-    def test_set_rule_replace_required_expression(self) -> None:
-        self._run_native_rule_case("expressions", "test_set_rule_replace_required_expression")
-
-    @test("native_apps")
-    def test_set_rule_setvariable_from_device_and_math(self) -> None:
-        self._run_native_rule_case("expressions", "test_set_rule_setvariable_from_device_and_math")
-
-    @test("native_apps")
-    def test_set_rule_walker_enum_required_expression(self) -> None:
-        self._run_native_rule_case("expressions", "test_set_rule_walker_enum_required_expression")
-
-    @test("native_apps")
-    def test_set_rule_walker_compare_to_device(self) -> None:
-        self._run_native_rule_case("expressions", "test_set_rule_walker_compare_to_device")
-
-    @test("native_apps")
-    def test_set_rule_required_expression_multi_condition(self) -> None:
-        self._run_native_rule_case("expressions", "test_set_rule_required_expression_multi_condition")
-
-    @test("native_apps")
-    def test_set_rule_action_after_required_expression(self) -> None:
-        self._run_native_rule_case("expressions", "test_set_rule_action_after_required_expression")
-
-    @test("native_apps")
-    def test_set_rule_action_mutations(self) -> None:
-        self._run_native_rule_case("actions", "test_set_rule_action_mutations")
-
-    @test("native_apps")
-    def test_set_rule_move_action(self) -> None:
-        self._run_native_rule_case("actions", "test_set_rule_move_action")
-
-    @test("native_apps")
-    def test_set_rule_patches(self) -> None:
-        self._run_native_rule_case("actions", "test_set_rule_patches")
-
-    @test("native_apps")
-    def test_set_rule_raw_settings_and_validation(self) -> None:
-        self._run_native_rule_case("lifecycle", "test_set_rule_raw_settings_and_validation")
-
-    @test("native_apps")
-    def test_set_rule_enum_doactpage(self) -> None:
-        self._run_native_rule_case("actions", "test_set_rule_enum_doactpage")
 
     # ---- tests that keep their OWN rule (create/delete/lifecycle contracts) ----
 
-    @test("native_apps")
-    def test_set_rule_create_refusal_and_fail_closed_stop(self) -> None:
-        self._run_native_rule_case("lifecycle", "test_set_rule_create_refusal_and_fail_closed_stop")
-
-    @test("native_apps")
-    def test_set_rule_discover_meta(self) -> None:
-        self._run_native_rule_case("lifecycle", "test_set_rule_discover_meta")
 
     @test("native_apps")
     def test_delete_native_app_from_native_gateway(self) -> None:
@@ -9311,9 +11334,6 @@ class TestRunner:
                 continue
             raise AssertionError(f"{label}: hub_create_device({args}) must be rejected, got: {detail}")
 
-    @test("native_apps")
-    def test_set_rule_update_with_false_required_expression_is_suppressed(self) -> None:
-        self._run_native_rule_case("expressions", "test_set_rule_update_with_false_required_expression_is_suppressed")
 
     # -----------------------------------------------------------------------
     # GROUP 5: trigger_types (1 batched test -- all trigger types in one rule)
@@ -14511,18 +16531,51 @@ class TestRunner:
         self._restore_permanent_configuration_fixtures("pre-run")
         # Rule-engine variables live in the MCP app's state, beyond the watchdog purge: a killed run's go here.
         self._sweep_rule_engine_variables()
+        unknown = sorted(n for n in self.BACKUP_PROVING_TESTS if not callable(getattr(self, n, None)))
+        assert not unknown, f"BACKUP_PROVING_TESTS names tests that do not exist: {unknown}"
+        # Pre-edit backups stay off except around the tests that prove them; the default (on) comes
+        # back at the end.
+        self._rule_edit_backups(False)
 
         # Group for display
         self._load_diagnostics = True
         current_group = None
-        for group, display_name, method_name in tests_to_run:
-            if group != current_group:
-                current_group = group
-                print(f"\n[{group}]")
-            self._run_one(group, display_name, method_name)
-
-        # Always clean up
-        self.cleanup()
+        abort_run = False
+        try:
+            for group, display_name, method_name in tests_to_run:
+                if abort_run:
+                    break
+                if group != current_group:
+                    current_group = group
+                    print(f"\n[{group}]")
+                proves_backups = method_name in self.BACKUP_PROVING_TESTS
+                try:
+                    if proves_backups:
+                        try:
+                            self._rule_edit_backups(True)
+                        except Exception as exc:
+                            self._record(display_name, group, "fail", message=f"could not turn pre-edit backups on: {exc}")
+                            continue
+                    self._run_one(group, display_name, method_name)
+                finally:
+                    if proves_backups:
+                        # Backups must be off again before the next test, or its timing and result
+                        # would be misattributed: one retry, then the run stops here.
+                        try:
+                            self._rule_edit_backups(False)
+                        except Exception as first:
+                            try:
+                                self._rule_edit_backups(False)
+                            except Exception as exc:
+                                self._record(f"{display_name} (pre-edit backups off again)", group, "fail",
+                                             message=f"could not turn pre-edit backups back off ({first}; retry: {exc})")
+                                abort_run = True
+        finally:
+            try:
+                self._rule_edit_backups(True)
+            finally:
+                # Always clean up
+                self.cleanup()
 
         # Print summary
         return self._print_summary()

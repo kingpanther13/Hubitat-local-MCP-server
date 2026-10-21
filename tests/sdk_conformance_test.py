@@ -475,7 +475,7 @@ class ModernMrtrScenario:
         fixtures = json.loads(os.environ.get("NATIVE_RULE_FIXTURES", "{}"))
         temperature_id = str(fixtures.get("temperature") or "")
         if not temperature_id:
-            for label in ("E2E_PERM_Native_temperature", "E2E_PERM_Omni"):
+            for label in ("E2E_PERM_Omni",):
                 listed = await client.call_tool("hub_read_devices", {
                     "tool": "hub_list_devices", "args": {
                         "scope": "all", "labelFilter": label, "capabilityFilter": "TemperatureMeasurement",

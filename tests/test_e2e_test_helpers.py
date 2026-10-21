@@ -1984,7 +1984,6 @@ def test_call_tool_paces_ten_same_state_contention_rounds_and_still_completes(mo
     assert all(call[1].get("requestState") == "state-busy" for call in calls[1:])
 
 
-
 def test_settle_before_504_retry_probes_without_a_fixed_minute(monkeypatch):
     sleeps = []
     probes = []
@@ -2118,8 +2117,6 @@ def test_create_native_rule_relay_lost_refuses_ambiguous_exact_label(monkeypatch
 
     with pytest.raises(AssertionError, match="ambiguous"):
         runner._create_native_rule("Ambiguous", return_result=True)
-
-
 
 
 def test_create_native_rule_relay_lost_waits_for_delayed_exact_match(monkeypatch):
@@ -2300,7 +2297,6 @@ def test_assert_switch_required_expression_rejects_shell_without_expression():
         runner._assert_switch_required_expression(43, 88, "on")
 
 
-
 @pytest.mark.parametrize("value,wanted,expected", [
     ({"88": "Switch"}, 88, True),
     ([{"id": 88}], 88, True),
@@ -2358,7 +2354,6 @@ def test_driver_lifecycle_uses_logical_write_helper_for_create():
     create_args = write_calls[0][2]
     assert create_args["confirm"] is True
     assert "DRIVER-LEG-MARKER-V1" in create_args["source"]
-
 
 
 def test_backup_gate_retries_when_an_async_state_write_replaces_the_fallback_stamp():
@@ -3182,230 +3177,6 @@ def test_accepted_skip_passes_only_documented_ephemeral_reasons(monkeypatch, lan
     assert et.accepted_skip(message) is expected
 
 
-@pytest.mark.parametrize("failure", ["assertion", "cleanup", "skip"])
-def test_shared_native_case_propagates_failure_cleanup_errors_and_unexpected_skips(monkeypatch, failure):
-    import unittest
-
-    import e2e_native_rule_integration as integration
-
-    ran = []
-
-    class SharedCase(unittest.TestCase):
-        def setUp(self):
-            self.addCleanup(ran.append, "cleaned")
-            if failure == "cleanup":
-                self.addCleanup(self.fail, "cleanup failed")
-
-        def test_goal(self):
-            ran.append("executed")
-            if failure == "assertion":
-                self.fail("goal failed")
-            if failure == "skip":
-                self.skipTest("must not become false coverage")
-
-    monkeypatch.setitem(integration.SUITES, "unit", ("unit_shared", "SharedCase"))
-    monkeypatch.setattr(integration.importlib, "import_module", lambda _name: SimpleNamespace(SharedCase=SharedCase))
-    monkeypatch.setattr(integration, "native_context", lambda _runner: {"explicit": True})
-    with pytest.raises(AssertionError):
-        integration.run_native_rule_case(object(), "unit", "test_goal")
-    assert ran == ["executed", "cleaned"]
-
-
-def test_shared_native_case_uses_regular_mcp_transport_and_operation_arguments(monkeypatch):
-    import e2e_native_rule_integration as integration
-    calls = []
-    client = SimpleNamespace(hub_url="http://hub.invalid", app_id="3", access_token="unused",
-                             endpoint="http://hub.invalid/apps/api/3/mcp",
-                             call_tool=lambda *args: calls.append(args) or {"success": True})
-    monkeypatch.delenv("HUB_URL", raising=False)
-    shared = integration.RegularNativeClient(SimpleNamespace(client=client))
-    shared.tool("hub_set_rule", operation="read", rule_id=42, args={"sections": ["actions"]})
-    assert calls == [("hub_set_rule", {"operation": "read", "rule_id": 42, "args": {"sections": ["actions"]}})]
-    assert shared.calls["hub_set_rule"] == 1
-
-
-def test_shared_native_case_preserves_structured_expected_refusals(monkeypatch):
-    import e2e_native_rule_integration as integration
-    def call_tool(*_args):
-        raise et.McpToolError("hub_set_rule", '{"error":"refused","partial":false}')
-    client = SimpleNamespace(hub_url="http://hub.invalid", app_id="3", access_token="unused",
-                             endpoint="http://hub.invalid/apps/api/3/mcp", call_tool=call_tool)
-    monkeypatch.delenv("HUB_URL", raising=False)
-    shared = integration.RegularNativeClient(SimpleNamespace(client=client))
-    assert shared.tool("hub_set_rule", operation="update", confirm=True) == {
-        "success": False, "error": "refused", "partial": False}
-
-
-@pytest.mark.parametrize("label, virtual, accepted", [
-    ("E2E_Authorized_Switch", True, True),
-    ("Other_Device", True, False),
-    ("E2E_Authorized_Switch", False, False),
-])
-def test_regular_native_context_validates_explicit_fixtures_before_caching(monkeypatch, label, virtual, accepted):
-    import e2e_native_rule_integration as integration
-
-    reads = []
-    def device_metadata(device_id):
-        reads.append(device_id)
-        return {"device": {"id": 7, "label": label, "virtual": virtual}}
-
-    monkeypatch.setenv("NATIVE_RULE_FIXTURES", '{"switch":7}')
-    monkeypatch.setenv("NATIVE_RULE_FIXTURE_LABEL_PREFIX", "E2E_Authorized_")
-    monkeypatch.setenv("NATIVE_RULE_PARENT_ID", "28")
-    monkeypatch.setenv("NATIVE_RULE_MODE_ID", "1")
-    monkeypatch.setenv("NATIVE_RULE_FIXTURE_DRIVERS", "{}")
-    monkeypatch.setattr(integration, "CloudMcpClient", lambda _runner: SimpleNamespace(device_metadata=device_metadata))
-    runner = SimpleNamespace()
-    if accepted:
-        context = integration.native_context(runner)
-        assert context["fixtures"] == {"switch": 7}
-        assert integration.native_context(runner) is context
-    else:
-        with pytest.raises(AssertionError, match=r"Fixture identity|Fixture label|Synthetic fixture"):
-            integration.native_context(runner)
-        assert not hasattr(runner, "_native_rule_context")
-    assert reads == ["7"]
-
-
-@pytest.mark.parametrize("value, expected", [(False, False), ("false", False), (True, True), ("true", True)])
-def test_native_boolean_accepts_only_native_boolean_representations(value, expected):
-    import e2e_native_rule_integration as integration
-
-    assert integration.native_boolean(value) is expected
-
-
-@pytest.mark.parametrize("value", [None, 0, 1, "False", "TRUE", "", [], {}])
-def test_native_boolean_rejects_unrecognized_values(value):
-    import e2e_native_rule_integration as integration
-
-    with pytest.raises(AssertionError):
-        integration.native_boolean(value)
-
-
-@pytest.mark.parametrize("label, virtual, accepted", [
-    ("E2E_PERM_Native_switch", True, True),
-    ("Other switch", True, False),
-    ("E2E_PERM_Native_switch", False, False),
-])
-def test_regular_native_fixture_adoption_validates_before_caching(label, virtual, accepted):
-    import e2e_native_rule_integration as integration
-
-    runner = SimpleNamespace(PERM_FIXTURES={}, _perm_fixture_ids={"native_switch": "7"},
-                             _ensure_perm_fixture=lambda _key: "7",
-                             _native_rule_context={"client": SimpleNamespace(device_metadata=lambda _device_id:
-                                 {"device": {"id": 7, "label": label, "virtual": virtual}})})
-    fixtures = integration.RunnerFixtures(runner)
-    if accepted:
-        assert fixtures["switch"] == "7"
-        assert runner._perm_fixture_ids == {"native_switch": "7"}
-    else:
-        with pytest.raises(AssertionError, match="Adopted native fixture"):
-            fixtures["switch"]
-        assert "switch" not in fixtures
-        assert "native_switch" not in runner._perm_fixture_ids
-
-
-@pytest.mark.parametrize("allowed_url, accepted", [
-    (None, False),
-    ("http://native.invalid/", True),
-    ("http://another.invalid/", False),
-])
-def test_different_native_url_requires_explicit_authorization(monkeypatch, allowed_url, accepted):
-    import e2e_native_rule_integration as integration
-
-    client = SimpleNamespace(hub_url="https://relay.invalid", app_id="3", access_token="unused",
-                             endpoint="https://relay.invalid/apps/api/3/mcp",
-                             call_tool=lambda *_args: pytest.fail("Endpoint selection must not depend on radio identity"))
-    monkeypatch.setenv("HUB_URL", "http://native.invalid")
-    if allowed_url:
-        monkeypatch.setenv("NATIVE_RULE_E2E_ALLOWED_HUB_URL", allowed_url)
-    else:
-        monkeypatch.delenv("NATIVE_RULE_E2E_ALLOWED_HUB_URL", raising=False)
-    monkeypatch.setattr(integration.HubClient, "tool", lambda *_args, **_kwargs:
-                        pytest.fail("Endpoint selection must not depend on radio identity"))
-    if accepted:
-        bound = integration.RegularNativeClient(SimpleNamespace(client=client))
-        assert bound.base == "http://native.invalid"
-        assert bound.mcp_url == client.endpoint + "?access_token=unused"
-    else:
-        with pytest.raises(AssertionError, match="authorization"):
-            integration.RegularNativeClient(SimpleNamespace(client=client))
-
-
-def test_same_normalized_native_url_needs_no_second_endpoint_probe(monkeypatch):
-    import e2e_native_rule_integration as integration
-
-    monkeypatch.setenv("HUB_URL", "http://HUB.invalid:80/")
-    client = SimpleNamespace(hub_url="http://hub.invalid", app_id="3", access_token="unused",
-                             endpoint="http://hub.invalid/apps/api/3/mcp",
-                             call_tool=lambda *_args: pytest.fail("same URL requires no identity round trip"))
-    bound = integration.RegularNativeClient(SimpleNamespace(client=client))
-    assert bound.runner.client is client
-
-
-def test_runner_native_url_is_used_for_ui_while_mcp_keeps_its_transport(monkeypatch):
-    import e2e_native_rule_integration as integration
-
-    monkeypatch.delenv("HUB_URL", raising=False)
-    monkeypatch.delenv("NATIVE_RULE_E2E_ALLOWED_HUB_URL", raising=False)
-    client = SimpleNamespace(hub_url="http://relay.invalid:8081", app_id="3", access_token="unused",
-                             endpoint="http://relay.invalid:8081/apps/api/3/mcp")
-    runner = SimpleNamespace(client=client, native_hub_url="http://native.invalid:8080")
-    bound = integration.RegularNativeClient(runner)
-    assert bound.base == runner.native_hub_url
-    assert bound.mcp_url == client.endpoint + "?access_token=unused"
-
-
-
-def test_runner_native_url_does_not_authorize_a_different_environment_override(monkeypatch):
-    import e2e_native_rule_integration as integration
-
-    monkeypatch.setenv("HUB_URL", "http://another.invalid")
-    monkeypatch.delenv("NATIVE_RULE_E2E_ALLOWED_HUB_URL", raising=False)
-    client = SimpleNamespace(hub_url="http://relay.invalid:8081", app_id="3", access_token="unused",
-                             endpoint="http://relay.invalid:8081/apps/api/3/mcp")
-    runner = SimpleNamespace(client=client, native_hub_url="http://native.invalid:8080")
-    with pytest.raises(AssertionError, match="authorization"):
-        integration.RegularNativeClient(runner)
-
-
-def test_edited_snapshot_copy_retargets_only_explicit_device_references_and_labels():
-    import e2e_native_rule_integration as integration
-
-    payload = {"deviceReplacements": {"7": {"deviceLabel": "Old fixture", "deviceId": "7"}},
-               "appReplacements": {"42": {"appLabel": "Rule"}},
-               "appData": {"42": {"appSettings": [
-                   {"name": "pick.7", "type": "capability.switch", "deviceList": {"7": "Old fixture"},
-                    "value": ["7"], "deviceIdsForDeviceList": ["7"]},
-                   {"name": "Counter", "type": "number", "value": 7}],
-                   "state": {"actions": {"7": {"method": "getOnOffSwitch"}}, "actionList": ["7"],
-                             "eval": {"0": ["7"]}, "capabsfalse": {"7": "Old fixture is on"},
-                             "deviceIdsForDeviceList": {"pick.7": ["7"]}},
-                   "subscriptions": [{"deviceId": 7}]}}}
-    snapshot = {"captureFormat": "native-rule-edit-v1", "ruleId": 42,
-                "nativeExport": json.dumps(payload),
-                "configJson": {"settings": {"pick.7": {"7": "Old fixture"}, "Counter": 7}},
-                "statusJson": {"appSettings": payload["appData"]["42"]["appSettings"]}}
-    original = json.dumps(snapshot, indent=2)
-    edited = json.loads(integration.edited_device_snapshot(original, 7, "Old fixture", 9, "New fixture"))
-    native = json.loads(edited["nativeExport"])
-    data = native["appData"]["42"]
-    assert data["appSettings"][0]["deviceList"] == {"9": "New fixture"}
-    assert data["appSettings"][0]["value"] == ["9"]
-    assert data["state"]["deviceIdsForDeviceList"] == {"pick.7": ["9"]}
-    assert data["subscriptions"] == [{"deviceId": 9}]
-    assert native["deviceReplacements"] == {"9": {"deviceLabel": "New fixture", "deviceId": "9"}}
-    assert data["state"]["capabsfalse"] == {"7": "New fixture is on"}
-    assert data["state"]["actions"] == payload["appData"]["42"]["state"]["actions"]
-    assert data["state"]["actionList"] == ["7"]
-    assert data["state"]["eval"] == {"0": ["7"]}
-    assert data["appSettings"][1]["value"] == 7
-    assert edited["configJson"]["settings"] == {"pick.7": {"9": "New fixture"}, "Counter": 7}
-    assert edited["statusJson"]["appSettings"][0]["deviceIdsForDeviceList"] == ["9"]
-    assert original == json.dumps(snapshot, indent=2)
-
-
-
 def _native_parent_client(pages, calls=None):
     inventory = iter(pages)
     def call_tool(name, arguments):
@@ -3498,129 +3269,37 @@ def test_native_parent_install_does_not_repeat_when_rediscovery_fails():
     assert installs == [18]
 
 
-@pytest.mark.parametrize("location", ["/installedapp/configure/28", "http://hub.invalid/installedapp/configure/28"])
-def test_native_parent_bootstrap_follows_only_exact_same_hub_editor(monkeypatch, location):
-    import e2e_native_rule_integration as integration
-
-    calls = []
-    replies = iter([SimpleNamespace(status_code=302, headers={"Location": location}),
-                    SimpleNamespace(status_code=200)])
-    def get(url, **kwargs):
-        calls.append((url, kwargs))
-        return next(replies)
-    monkeypatch.setattr(integration.requests, "get", get)
-    monkeypatch.setenv("HUB_UI_COOKIE", "test-cookie")
-    client = integration.RegularNativeClient.__new__(integration.RegularNativeClient)
-    client.base, client.calls = "http://hub.invalid", Counter()
-    client.install_rule_machine_parent(18)
-    assert calls == [("http://hub.invalid" + path, {
-        "headers": {"Cookie": "test-cookie"}, "allow_redirects": False, "timeout": 180,
-    }) for path in ("/installedapp/sysAppById/18", "/installedapp/configure/28")]
 
 
-@pytest.mark.parametrize("location", [
-    "http://other.invalid/installedapp/configure/28", "//other.invalid/installedapp/configure/28",
-    "/installedapp/delete/28", "/installedapp/configure/no-id", "/installedapp/configure/28?next=elsewhere",
-])
-def test_native_parent_bootstrap_refuses_wrong_editor_redirect_without_following(monkeypatch, location):
-    import e2e_native_rule_integration as integration
-
-    calls = []
-    def get(url, **kwargs):
-        calls.append(url)
-        return SimpleNamespace(status_code=302, headers={"Location": location})
-    monkeypatch.setattr(integration.requests, "get", get)
-    client = integration.RegularNativeClient.__new__(integration.RegularNativeClient)
-    client.base, client.calls = "http://hub.invalid", Counter()
-    with pytest.raises(AssertionError):
-        client.install_rule_machine_parent(18)
-    assert calls == ["http://hub.invalid/installedapp/sysAppById/18"]
-
-
-@pytest.mark.parametrize("statuses", [(200,), (302, 302), (302, 500)])
-def test_native_parent_bootstrap_requires_install_redirect_then_successful_editor(monkeypatch, statuses):
-    import e2e_native_rule_integration as integration
-
-    replies = iter(SimpleNamespace(status_code=status, headers={"Location": "/installedapp/configure/28"})
-                   for status in statuses)
-    monkeypatch.setattr(integration.requests, "get", lambda *_args, **_kwargs: next(replies))
-    client = integration.RegularNativeClient.__new__(integration.RegularNativeClient)
-    client.base, client.calls = "http://hub.invalid", Counter()
-    with pytest.raises(AssertionError):
-        client.install_rule_machine_parent(18)
-
-
-@pytest.mark.parametrize("owner_rounds", [1, 2])
-def test_regular_mrtr_selector_uses_normal_client_telemetry_and_independent_readback(monkeypatch, owner_rounds):
-    import e2e_native_rule_integration as integration
-
-    calls, deleted, verified, healthy = [], [], [], []
-    result = None
-    client = SimpleNamespace()
-    def call_tool(name, arguments):
-        nonlocal result
-        calls.append((name, arguments))
-        if name == "hub_manage_rule_machine":
-            assert arguments["tool"] == "hub_set_rule"
-            args = arguments["args"]
-            assert args["operation"] == "update" and args["rule_id"] == 42
-            assert len(args["args"]["changes"]) == 100
-            client._last_request_state = "completed-state"
-            client._last_continuation_rounds = 2
-            client._last_result_type = "complete"
-            client._last_logical_elapsed = 12.0
-            client._last_http_legs = [(4.0, 200, True)] * 3
-            result = {"success": True, "results": [{"part": row["part"], "result": {"success": True}}
-                      for row in args["args"]["changes"]], "mrtr": {"rounds": owner_rounds}}
-            return result
-        if name == "hub_get_info":
-            return {"recentWrites": [{"tool": "hub_set_rule", "rule_id": 42, "status": "finished", "success": True}]}
-        assert name == "hub_get_app_config" and arguments == {"appId": "42", "includeSettings": True}
-        return {"settings": {"independent": "read"}}
-
-    def raw_request(payload, headers):
-        args = payload["params"]["arguments"]["args"]
-        assert args["args"]["changes"][-1]["value"]["fields"][0]["value"] in (None, False, 0)
-        assert payload["params"]["requestState"] == "completed-state"
-        return SimpleNamespace(status_code=200, json=lambda: {
-            "error": {"code": -32602, "message": "Continuation requires original arguments"}})
-
-    def send(method, params=None):
-        if method == "ping":
-            return {"resultType": "complete"}
-        assert params["requestState"] == "completed-state"
-        assert params["arguments"]["args"]["args"]["changes"][-1]["value"]["fields"][0]["value"] is not None
-        return {"resultType": "complete", "structuredContent": result}
-
-    async def read_sections(_fetch):
-        return {"independent": "paged sections"}
-
-    def verify(config, document, changes, *messages):
-        assert config == {"settings": {"independent": "read"}}
-        assert document == {"independent": "paged sections"}
-        assert len(changes) == 100
-        verified.append(messages)
-
-    monkeypatch.setattr(integration, "native_context", lambda _runner: {"fixtures": {"temperature": "588"}})
-    monkeypatch.setattr(et, "read_native_document_sections", read_sections)
-    monkeypatch.setattr(et, "assert_exact_native_conditions", verify)
-    monkeypatch.setattr(et, "assert_exact_native_actions", verify)
-    monkeypatch.setenv("E2E_MRTR_ACTION_COUNT", "6")
-    client.call_tool, client.raw_request, client._send = call_tool, raw_request, send
-    runner = et.TestRunner.__new__(et.TestRunner)
-    runner.client = client
-    runner._create_native_rule = lambda _suffix: "42"
-    runner._delete_native = deleted.append
-    runner._assert_rule_healthy = healthy.append
-    runner._run_native_rule_case = lambda *_args: pytest.fail("regular selector bypassed its normal client")
-    if owner_rounds == 1:
-        runner.test_mrtr_rule_edit_uses_standard_continuation()
-        assert len(verified) == 2
-        assert healthy == ["42"]
-        assert [name for name, _args in calls] == ["hub_manage_rule_machine", "hub_get_info", "hub_get_app_config"]
-    else:
-        with pytest.raises(AssertionError, match="owner slices"):
-            runner.test_mrtr_rule_edit_uses_standard_continuation()
-        assert not verified
-        assert not healthy
-    assert deleted == ["42"]
+def test_edited_snapshot_copy_retargets_only_explicit_device_references_and_labels():
+    payload = {"deviceReplacements": {"7": {"deviceLabel": "Old fixture", "deviceId": "7"}},
+               "appReplacements": {"42": {"appLabel": "Rule"}},
+               "appData": {"42": {"appSettings": [
+                   {"name": "pick.7", "type": "capability.switch", "deviceList": {"7": "Old fixture"},
+                    "value": ["7"], "deviceIdsForDeviceList": ["7"]},
+                   {"name": "Counter", "type": "number", "value": 7}],
+                   "state": {"actions": {"7": {"method": "getOnOffSwitch"}}, "actionList": ["7"],
+                             "eval": {"0": ["7"]}, "capabsfalse": {"7": "Old fixture is on"},
+                             "deviceIdsForDeviceList": {"pick.7": ["7"]}},
+                   "subscriptions": [{"deviceId": 7}]}}}
+    snapshot = {"captureFormat": "native-rule-edit-v1", "ruleId": 42,
+                "nativeExport": json.dumps(payload),
+                "configJson": {"settings": {"pick.7": {"7": "Old fixture"}, "Counter": 7}},
+                "statusJson": {"appSettings": payload["appData"]["42"]["appSettings"]}}
+    original = json.dumps(snapshot, indent=2)
+    edited = json.loads(et.TestRunner._rm_edited_snapshot(original, 7, "Old fixture", 9, "New fixture"))
+    native = json.loads(edited["nativeExport"])
+    data = native["appData"]["42"]
+    assert data["appSettings"][0]["deviceList"] == {"9": "New fixture"}
+    assert data["appSettings"][0]["value"] == ["9"]
+    assert data["state"]["deviceIdsForDeviceList"] == {"pick.7": ["9"]}
+    assert data["subscriptions"] == [{"deviceId": 9}]
+    assert native["deviceReplacements"] == {"9": {"deviceLabel": "New fixture", "deviceId": "9"}}
+    assert data["state"]["capabsfalse"] == {"7": "New fixture is on"}
+    assert data["state"]["actions"] == payload["appData"]["42"]["state"]["actions"]
+    assert data["state"]["actionList"] == ["7"]
+    assert data["state"]["eval"] == {"0": ["7"]}
+    assert data["appSettings"][1]["value"] == 7
+    assert edited["configJson"]["settings"] == {"pick.7": {"9": "New fixture"}, "Counter": 7}
+    assert edited["statusJson"]["appSettings"][0]["deviceIdsForDeviceList"] == ["9"]
+    assert original == json.dumps(snapshot, indent=2)
