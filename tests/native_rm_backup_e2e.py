@@ -71,7 +71,7 @@ class NativeRmBackupE2E(ParityCase):
         return {"document": {key: doc.get(key) for key in (
             "actions", "conditions", "triggers", "expressions", "variables")},
             "settings": {name: {key: row.get(key) for key in (
-                "type", "multiple", "value", "deviceList")}
+                "type", "multiple", "value", "device_ids")}
                 for name, row in self.settings(rule_id).items()
                 if row.get("type") != "button"}}
 
@@ -149,17 +149,19 @@ class NativeRmBackupE2E(ParityCase):
         self.assertEqual(restored.get("restoredVia"), "nativeStateReplay", restored)
         self.healthy(rule_id)
         self.assertEqual(self.configuration(rule_id), before)
-        self.assertEqual(str(self.status(rule_id)["installedApp"]["id"]), str(rule_id))
+        self.assertEqual(str(self.installed_app(rule_id)["id"]), str(rule_id))
         self.command("out", "off")
         self.command("switch", "off")
         if required:
             self.command(gate, "on")
             # Native required-expression transitions arm trigger subscriptions;
             # the event that enables the expression does not itself fire actions.
-            self.wait_for(lambda: any(
-                str(row.get("typeId")) == str(self.fixtures["switch"])
-                and row.get("name") == "switch.on" and row.get("handler") == "allHandlerX"
-                for row in self.status(rule_id).get("eventSubscriptions", [])))
+            self.wait_for(lambda: self.health_status(rule_id)["eventSubscriptionCount"] > 0)
+            if self.native_diagnostics:
+                self.assertTrue(any(
+                    str(row.get("typeId")) == str(self.fixtures["switch"])
+                    and row.get("name") == "switch.on" and row.get("handler") == "allHandlerX"
+                    for row in self.status(rule_id).get("eventSubscriptions", [])))
         self.command("switch", "on")
         self.wait_for(lambda: self.attribute("out", "switch") == "on")
 
@@ -217,7 +219,7 @@ class NativeRmBackupE2E(ParityCase):
             "backup": edited["backup"]}), flush=True)
         self.recovery(rule_id, key)
         self.assertEqual(self.configuration(rule_id), before)
-        self.assertEqual(str(self.status(rule_id)["installedApp"]["id"]), str(rule_id))
+        self.assertEqual(str(self.installed_app(rule_id)["id"]), str(rule_id))
         self.command("out", "off")
         self.command("switch", "on")
         self.wait_for(lambda: self.attribute("out", "switch") == "on")
@@ -243,9 +245,9 @@ class NativeRmBackupE2E(ParityCase):
         self.assertNotEqual(self.configuration(rule_id), before)
         self.recovery(rule_id, edited["backup"]["backupKey"])
         self.assertEqual(self.configuration(rule_id), before)
-        self.assertTrue(self.state(rule_id).get("stopped"))
+        self.assertIs(self.health_status(rule_id).get("stopped"), True)
         self.call("hub_call_rule", ruleId=rule_id, action="start")
-        self.wait_for(lambda: bool(self.status(rule_id).get("scheduledJobs")))
+        self.wait_for(lambda: self.health_status(rule_id)["scheduledJobCount"] > 0)
 
     def test_form_workflow_has_one_pre_edit_snapshot(self):
         rule_id = self.create([log_action("form recovery")])

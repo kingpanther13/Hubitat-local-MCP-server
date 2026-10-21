@@ -72,8 +72,9 @@ class NativeRmParityActions(ParityCase):
         event_ids = [str(value) for value in action["value"]["wait"]]
         self.assertTrue(event_ids)
         self.assertEqual(len(event_ids), len(set(event_ids)))
-        self.assertEqual(event_ids, [str(value) for value in
-                         self.state(rule_id)["waitNdx"]["." + str(action["id"])]] )
+        if self.native_diagnostics:
+            self.assertEqual(event_ids, [str(value) for value in
+                             self.state(rule_id)["waitNdx"]["." + str(action["id"])]] )
         return action, ["-" + value for value in event_ids]
 
     def _assert_event(self, rule_id, slot, key="switch", state="on"):
@@ -176,11 +177,12 @@ class NativeRmParityActions(ParityCase):
         self.assertIn(self._value(rule_id, "stays" + slot), (True, "true"))
         self.assertEqual([int(self._value(rule_id, name + slot))
                           for name in ("SHours", "SMins", "SSecs")], [0, 5, 0])
-        native = self.state(rule_id)
-        self.assertEqual([int(native[name + slot]) for name in
-                          ("SHours", "SMins", "SSecs")], [0, 5, 0])
-        self.assertEqual([int(value) for value in native["hhmmss" + slot].split(":")],
-                         [0, 5, 0])
+        if self.native_diagnostics:
+            native = self.state(rule_id)
+            self.assertEqual([int(native[name + slot]) for name in
+                              ("SHours", "SMins", "SSecs")], [0, 5, 0])
+            self.assertEqual([int(value) for value in native["hhmmss" + slot].split(":")],
+                             [0, 5, 0])
         self.healthy(rule_id)
 
     def test_set_rule_action_expression_reject_is_pre_write(self):
@@ -225,7 +227,8 @@ class NativeRmParityActions(ParityCase):
         wanted = [ids[1], ids[0], ids[2]]
         self._ok(rule_id, [change("order", ids=wanted)])
         self.assertEqual(self._ids(rule_id), wanted)
-        self.assertEqual([str(value) for value in self.state(rule_id)["actionList"]], wanted)
+        if self.native_diagnostics:
+            self.assertEqual([str(value) for value in self.state(rule_id)["actionList"]], wanted)
         self.assertEqual(self._values(rule_id), before)
         self._refuse_unchanged(rule_id, [change("order", ids=[ids[0], ids[0], ids[2]])])
         self.healthy(rule_id)

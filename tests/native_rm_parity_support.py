@@ -30,6 +30,7 @@ documents.TOOLS.update({
 
 
 class ParityCase(documents.unittest.TestCase):
+    native_diagnostics = True
     status = documents.NativeRuleDocumentE2E.status
     state = documents.NativeRuleDocumentE2E.state
     report_timing = documents.NativeRuleDocumentE2E.report_timing
@@ -88,6 +89,16 @@ class ParityCase(documents.unittest.TestCase):
         return {row["name"]: dict(row, device_ids=[
             str(value) for value in (row.get("deviceList") or [])
         ]) for row in rows}
+
+    def health_status(self, rule_id):
+        result = self.call("hub_get_rule_health", appId=int(rule_id))
+        self.assertIsNot(result.get("success"), False, result)
+        for key in ("eventSubscriptionCount", "scheduledJobCount"):
+            self.assertIsInstance(result.get(key), int, result)
+        return result
+
+    def installed_app(self, rule_id, missing_ok=False):
+        return self.status(rule_id, missing_ok=missing_ok).get("installedApp", {})
 
     def healthy(self, rule):
         doc = rule if isinstance(rule, dict) else self.doc(rule)

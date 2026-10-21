@@ -58,9 +58,12 @@ class NativeRmParityExpressions(ParityCase):
     def _required(self, rule_id, tokens):
         self._ok(rule_id, [change("required", tokens=list(tokens))])
         self.assertEqual(self.doc(rule_id)["expressions"]["0"], list(tokens))
-        native = self.state(rule_id)
-        self.assertTrue(native["hasPredicate"], native)
-        self.assertEqual(native["eval"]["0"], list(tokens))
+        self.assertIn(str(self._value(rule_id, "useST")).lower(), ("true",),
+                      "Required Expression must be enabled in the saved settings")
+        if self.native_diagnostics:
+            native = self.state(rule_id)
+            self.assertTrue(native["hasPredicate"], native)
+            self.assertEqual(native["eval"]["0"], list(tokens))
 
     def _action(self, rule_id, action):
         before = {str(row["id"]) for row in self.doc(rule_id)["actions"]}
@@ -289,7 +292,7 @@ class NativeRmParityExpressions(ParityCase):
         self._required(rule_id, [on])
         off = self._switch_condition(rule_id, state="off")
         self._required(rule_id, [off])
-        self.assertEqual(str(self.status(rule_id)["installedApp"]["id"]), str(rule_id))
+        self.assertEqual(str(self.installed_app(rule_id)["id"]), str(rule_id))
         self.assertIn("is off", self.page_text(rule_id).lower())
         self._refuse_unchanged(rule_id, [change("condition", id=off, capability="Switch",
                                                fields=self._switch_fields(state="definitely_not_a_valid_state"))])
@@ -515,11 +518,11 @@ class NativeRmParityExpressions(ParityCase):
         self._action(rule_id, log_action("gated trigger"))
         result = self.call("hub_set_rule_private_boolean", ruleId=int(rule_id), value=False)
         self.assertIsNot(result.get("success"), False, result)
-        self.wait_for(lambda: not (self.status(rule_id).get("eventSubscriptions") or []))
+        self.wait_for(lambda: self.health_status(rule_id)["eventSubscriptionCount"] == 0)
         result = self._ok(rule_id, [log_action("edit while required expression is false")])
         self.assertEqual(self.doc(rule_id)["expressions"]["0"], [condition])
-        self.assertFalse(self.status(rule_id).get("eventSubscriptions"))
-        self.assertFalse(self.status(rule_id).get("scheduledJobs"))
+        self.assertEqual(self.health_status(rule_id)["eventSubscriptionCount"], 0)
+        self.assertEqual(self.health_status(rule_id)["scheduledJobCount"], 0)
         self.healthy(rule_id)
         self.assertIn("SUPPRESSED", str(result).upper(),
                       "A false Required Expression must be distinguished from missing activation")

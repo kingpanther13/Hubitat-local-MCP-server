@@ -84,7 +84,7 @@ class NativeRmParityLifecycleE2E(ParityCase):
         current = self.doc(target)
         periodic_ids = set(current["triggers"]) - set(before["triggers"])
         self.assertEqual(len(periodic_ids), 1, current)
-        self.assertTrue(self.status(target).get("scheduledJobs"))
+        self.assertGreater(self.health_status(target)["scheduledJobCount"], 0)
         self.assertIn(cron["name"], self.settings(target))
         deleted = self.update(target, [{"part": "delete", "value": {"part": "trigger", "id": periodic_ids.pop()}}])
         self.assertTrue(deleted.get("success"), deleted)
@@ -92,8 +92,8 @@ class NativeRmParityLifecycleE2E(ParityCase):
         self.assertEqual(after["triggers"], before["triggers"])
         self.assertEqual(after["actions"], before["actions"])
         self.assertNotIn(cron["name"], self.settings(target))
-        self.assertFalse(self.status(target).get("scheduledJobs"))
-        self.assertTrue(self.status(target).get("eventSubscriptions"))
+        self.assertEqual(self.health_status(target)["scheduledJobCount"], 0)
+        self.assertGreater(self.health_status(target)["eventSubscriptionCount"], 0)
 
     def _health(self, app_id, **extra):
         return self.call("hub_get_rule_health", appId=int(app_id), **extra)
@@ -687,7 +687,9 @@ class NativeRmParityLifecycleE2E(ParityCase):
         self.assertFalse(any(key.startswith("rCapab_") for key in values), values)
         self.assertNotIn("skipped action", list(values.values()))
         self.assertNotEqual("true", str(values.get("useST")).lower())
-        self.assertFalse(self.state(app_id).get("hasPredicate"))
+        self.assertFalse(self.doc(app_id)["expressions"].get("0"))
+        if self.native_diagnostics:
+            self.assertFalse(self.state(app_id).get("hasPredicate"))
         completed = result.get("results", [])
         self.assertTrue(completed, result)
         self.assertTrue(completed[0].get("result", {}).get("success"), result)
