@@ -682,6 +682,54 @@ class NativeModelSpec extends ToolSpecBase {
         nativeState.keep == [unknown: true]
     }
 
+    def 'deleting after a log edit accepts native derived quick on a surviving action'() {
+        given:
+        nativeState.actions = ['1': [method: 'getLogMsg', indent: ''], '2': [method: 'getLogMsg']]
+        nativeState.actionList = ['1', '2']
+        nativeRule.selectActions = { Map params ->
+            nativeState.actions.remove(nativeState.delAct)
+            nativeState.actionList.remove(nativeState.delAct)
+            nativeState.actions['1'].quick = true
+            nativeState.remove('delAct')
+        }
+        when:
+        def result = script._nmDeleteRow(42L, 'action', '2')
+        then:
+        result.success && result.rowsPreserved
+        nativeState.actions == ['1': [method: 'getLogMsg', indent: '', quick: true]]
+    }
+
+    def 'native deletion still rejects any changed surviving action payload beyond top level quick'() {
+        given:
+        nativeState.actions = ['1': [method: 'getLogMsg', cond: '1', rule: '7', wait: ['8'], delay: 5,
+            modes: ['Home'], label: 'Original', indent: '', unknown: [nested: [quick: true, value: 'original']]],
+            '2': [method: 'getLogMsg']]
+        nativeState.actionList = ['1', '2']
+        nativeRule.selectActions = { Map params ->
+            nativeState.actions.remove(nativeState.delAct)
+            nativeState.actionList.remove(nativeState.delAct)
+            nativeState.actions['1'].quick = true
+            if (field == 'unknown') nativeState.actions['1'].unknown.nested.quick = false
+            else nativeState.actions['1'][field] = replacement
+            nativeState.remove('delAct')
+        }
+        when:
+        def result = script._nmDeleteRow(42L, 'action', '2')
+        then:
+        result.deleted && result.partial && !result.success && !result.rowsPreserved
+        where:
+        field     | replacement
+        'method'  | 'getNotify'
+        'cond'    | '9'
+        'rule'    | '9'
+        'wait'    | ['9']
+        'delay'   | 10
+        'modes'   | ['Away']
+        'label'   | 'Changed'
+        'indent'  | '  '
+        'unknown' | null
+    }
+
     def 'native deletion leaving settings behind reports partial rather than clean success'() {
         given:
         nativeState.actions = ['1': [method: 'getLogMsg']]

@@ -628,7 +628,13 @@ Map _nmDeleteRow(Long ruleId, String part, Object rowId) {
     Map remaining = after.get(collection) instanceof Map ? after.get(collection) : [:]
     boolean deleted = !remaining.keySet().any { it.toString() == id }
     Map expectedRows = rows.findAll { key, value -> key.toString() != id }
-    boolean preserved = remaining.collectEntries { key, value -> [(key.toString()): value] } == expectedRows
+    Closure rowPayloads = { Map source ->
+        source.collectEntries { key, value ->
+            // Native rendering derives quick; all other action fields remain authoritative.
+            [(key.toString()): part == 'action' && value instanceof Map ? value.findAll { name, ignored -> name != 'quick' } : value]
+        }
+    }
+    boolean preserved = rowPayloads.call(remaining) == rowPayloads.call(expectedRows)
     List expectedOrder = part == 'action' ? oldOrder.findAll { it != id } : oldOrder
     boolean ordered = (after.actionList instanceof List ? after.actionList.collect { it.toString() } : []) == expectedOrder
     boolean cleaned = requiredRemoved.every { !settingsAfter.containsKey(it) }
