@@ -3356,6 +3356,14 @@ def test_runner_native_url_is_used_for_ui_while_mcp_keeps_its_transport(monkeypa
     assert bound.mcp_url == client.endpoint + "?access_token=unused"
 
 
+def test_runner_declares_optional_native_origin_without_changing_client():
+    client = SimpleNamespace(hub_url="http://relay.invalid:8081", app_id="3", access_token="unused",
+                             endpoint="http://relay.invalid:8081/apps/api/3/mcp")
+    runner = et.TestRunner(client)
+    assert runner.native_hub_url is None
+    assert runner.client is client
+
+
 def test_runner_native_url_does_not_authorize_a_different_environment_override(monkeypatch):
     import e2e_native_rule_integration as integration
 

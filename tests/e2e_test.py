@@ -1293,6 +1293,8 @@ def _discover_native_rule_parent_id(client, *, install_missing=None) -> int:
 class TestRunner:
     def __init__(self, client: HubitatMcpClient, verbose: bool = False):
         self.client = client
+        # Native UI verification may use a separate origin; MCP keeps the original client.
+        self.native_hub_url: str | None = None
         self.verbose = verbose
         self.results: list[dict] = []  # {name, group, status, message, duration}
         # (app_id, health) the last RM write returned, so _assert_rule_healthy can assert on it without
