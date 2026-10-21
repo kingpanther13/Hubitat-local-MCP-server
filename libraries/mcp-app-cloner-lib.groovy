@@ -1217,8 +1217,9 @@ private Map _rmLegacyNativeRecovery(Map snapshot) {
         _rmNativeComparable(status.appSubscriptions) != _rmNativeComparable(status.eventSubscriptions)))
         throw new IllegalArgumentException('Legacy recovery contains invalid native subscriptions')
     def originalLabel = config.settings instanceof Map ? config.settings.origLabel : null
+    if (app.label != null && !(app.label instanceof String)) throw new IllegalArgumentException('Legacy recovery contains an invalid installed label')
     Map identity = [appTypeNamespace: app.appType.namespace, appTypeName: app.appType.name,
-        parentAppInstalledAppId: app.parentAppId.toString(), appLabel: originalLabel instanceof String ? originalLabel : snapshot.appLabel]
+        parentAppInstalledAppId: app.parentAppId.toString(), appLabel: app.label instanceof String ? app.label : (originalLabel instanceof String ? originalLabel : snapshot.appLabel)]
     Map payload
     if (snapshot.nativeExport) {
         payload = _rmDecodeRuleExport(id.toString().toInteger(), snapshot.nativeExport)

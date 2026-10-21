@@ -47,8 +47,9 @@ class LegacyNativeRecoverySpec extends ToolSpecBase {
         child.backing = [actions: ['9': [method: 'getLogMsg']], actionList: ['9'], capabstrue: ['9': 'added trigger'],
             capabsfalse: ['9': 'added condition'], eval: ['0': ['9']], stopped: false, paused: false, lv_added: [type: 'string', value: 'extra']]
         child.typed = [comments: [type: 'text', value: 'added comments', multiple: false]]
-        child.rebuild = { events << 'rebuild' }
-        snapshot.statusJson.appSettings = [[name: 'enabled', type: 'bool', value: false]]
+        child.rebuild = { events << 'rebuild'; child.label = installedLabel }
+        snapshot.configJson.app.label = installedLabel
+        snapshot.statusJson.appSettings = [[name: 'enabled', type: 'bool', value: false], [name: 'origLabel', type: 'text', value: 'Original']]
         snapshot.appLabel = 'Original (Required Expression false)'
         script.metaClass.getAppByAppId = { Long id -> [id: id, parentAppId: 28L, appType: [namespace: 'hubitat', name: 'Rule-5.1']] }
         script.metaClass._nrHandle = { Long id -> child }
@@ -74,7 +75,10 @@ class LegacyNativeRecoverySpec extends ToolSpecBase {
         child.backing.lv_added == null
         child.backing.lv_counter.value == 7
         !child.typed.containsKey('comments')
-        child.label == 'Original'
+        child.label == installedLabel
+        child.typed.origLabel.value == 'Original'
+        where:
+        installedLabel << ['Original', "Original<span style='color:red'> (Required Expression false)</span>"]
     }
 
     def 'incomplete historical status keeps the legacy compatibility path'() {
