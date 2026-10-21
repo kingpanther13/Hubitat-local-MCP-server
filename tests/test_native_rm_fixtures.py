@@ -84,7 +84,7 @@ def test_existing_exact_tone_driver_and_device_are_reused_after_paged_lookup():
     assert hub.fixtures["tone"] == "9"
     assert not [call for call in hub.calls if call[0].startswith("hub_create_")]
     assert [args.get("cursor") for name, args in hub.calls
-            if name == "hub_list_drivers" and args.get("nameFilter")] == [None, "page2"]
+            if name == "hub_list_drivers" and args.get("nameFilter")] == ["", "page2"]
     assert hub.fixtures.metadata("tone")["device"]["id"] == "9"
 
 
