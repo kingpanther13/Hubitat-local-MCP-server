@@ -113,10 +113,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         third == "RelrDev_1"
     }
 
-    def "parent bootstrap uses the unique built-in catalog ID and verifies Done"() {
+    def "parent bootstrap uses native catalog entries without namespace and verifies Done"() {
         given:
         hubGet.register('/hub2/appsList') { params -> JsonOutput.toJson([apps: [], systemAppTypes: [
-            [id: 731, name: 'Thermostat Controllers', namespace: 'hubitat']]]) }
+            [id: 731, name: 'Thermostat Controllers', allowNewInstances: true]]]) }
         def rawCalls = []
         script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
             rawCalls << path
@@ -154,7 +154,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     @Unroll
     def "parent bootstrap refuses unusable built-in catalog #catalog"() {
         given:
-        hubGet.register('/hub2/appsList') { params -> JsonOutput.toJson([apps: [], systemAppTypes: catalog]) }
+        hubGet.register('/hub2/appsList') { params -> JsonOutput.toJson([apps: [], systemAppTypes: catalog,
+            userAppTypes: [[id: 999, name: 'Thermostat Controllers', namespace: 'hubitat']]]) }
         def rawCalls = []
         script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
             rawCalls << path
@@ -172,10 +173,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         !hubGet.calls.any { it.path.startsWith('/installedapp/sysAppByIdJson/') }
 
         where:
-        catalog << [[], [[id: 731, name: 'Thermostat Controllers', namespace: 'community']],
-                    [[id: 0, name: 'Thermostat Controllers', namespace: 'hubitat']],
-                    [[id: 731, name: 'Thermostat Controllers', namespace: 'hubitat'],
-                     [id: 732, name: 'Thermostat Controllers', namespace: 'hubitat']]]
+        catalog << [[], [[id: 731, name: 'Another App']],
+                    [[id: 0, name: 'Thermostat Controllers']],
+                    [[id: 731, name: 'Thermostat Controllers'],
+                     [id: 732, name: 'Thermostat Controllers']]]
     }
 
     @Unroll

@@ -9546,9 +9546,9 @@ private Integer _discoverParentAppId(String appType) {
     def parentNode = findParentNode()
     def commitUnverified = false
     if (parentNode?.id == null) {
-        // Use the built-in catalog and installation endpoint used by the Apps UI.
+        // systemAppTypes identifies built-ins; its entries do not carry a namespace.
         def matches = _appTypeEnrichment().builtIn.findAll {
-            it.namespace == "hubitat" && it.name == parentTypeName
+            it.name == parentTypeName
         }
         if (matches.size() != 1 || !(matches[0].id?.toString() ==~ /[1-9][0-9]*/)) {
             throw new IllegalArgumentException("Cannot bootstrap '${parentTypeName}': built-in catalog must contain one matching app type with a positive id (found ${matches.size()}).")
