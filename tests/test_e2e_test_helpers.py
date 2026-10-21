@@ -2157,9 +2157,10 @@ def test_assert_bulk_stop_rejects_a_broken_stop(override, tail, message):
 def test_patch_rule_rejects_a_refusal_without_the_stop_contract():
     class FakeClient:
         def call_tool(self, _name, _arguments):
+            # Refused at its first op (so not partial) yet a later op ran: not a stopped batch.
             return {
                 "success": False,
-                "partial": True,
+                "partial": False,
                 "patches": [{"op": "addAction", "success": False, "error": "refused"},
                             {"op": "addAction", "success": True}],
                 "health": {"ok": True},
@@ -3422,3 +3423,41 @@ def test_accepted_skip_passes_only_documented_ephemeral_reasons(monkeypatch, lan
     else:
         monkeypatch.delenv("E2E_LANE", raising=False)
     assert et.accepted_skip(message) is expected
+
+
+class _NotJson:
+    status_code = 504
+
+    def json(self):
+        raise ValueError("Expecting value: line 1 column 1 (char 0)")
+
+    def raise_for_status(self):
+        raise et.requests.HTTPError("504 Gateway Timeout")
+
+
+class _Json:
+    status_code = 200
+
+    def __init__(self, body):
+        self._body = body
+
+    def json(self):
+        return self._body
+
+    def raise_for_status(self):
+        return None
+
+
+@pytest.mark.parametrize("disabled_after, expected", [
+    pytest.param(True, True, id="lost-answer-but-the-disable-landed"),
+    pytest.param(False, False, id="lost-answer-and-the-disable-did-not-land"),
+])
+def test_bounce_leg_settles_a_lost_answer_from_the_flag_read_back(monkeypatch, disabled_after, expected):
+    listing = {"apps": [{"id": 38, "disabled": disabled_after}, {"id": 2, "disabled": False}]}
+    replies = iter([_NotJson(), _Json({"result": {"content": [{"text": json.dumps(listing)}]}})])
+    runner = object.__new__(et.TestRunner)
+    runner.watchdog_url = "https://watchdog.invalid/mcp"
+    runner.server_app_id = "38"
+    monkeypatch.setattr(et.requests, "post", lambda *args, **kwargs: next(replies))
+
+    assert runner._watchdog_set_app_disabled(True) is expected

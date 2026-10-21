@@ -19,8 +19,8 @@ class MrtrWorkerBudgetSpec extends ToolSpecBase {
         settingsMap.relayBudgetMs = 0
         settingsMap.lanBudgetMs = 0
         stateMap.lastBackupTimestamp = clock.get()
-        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason -> [key: 'baseline'] }
-        script.metaClass._rmCheckRuleHealth = { Integer id -> [ok: true] }
+        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason, String activePage = null -> [key: 'baseline'] }
+        script.metaClass._rmCheckRuleHealth = { Integer id, String src = "auto", String activePage = null -> [ok: true] }
         script.metaClass._rmAddAction = { Integer id, Map spec, boolean batch = false, Set validIds = null ->
             actions << new LinkedHashMap(spec)
             clock.addAndGet(itemElapsed.call(actions.size()) as Long)
@@ -201,7 +201,7 @@ class MrtrWorkerBudgetSpec extends ToolSpecBase {
         then:
         complete.result.resultType == 'complete'
         terminal.success == false
-        terminal.partial == true
+        terminal.partial == (outcome == 'partial')
         terminal.bulkStoppedAfter == 'patches[0].addActions[0]'
         terminal.finalisationNotAttempted == true
         terminal.error.startsWith("Stopped after patches[0].addActions[0] ${outcome == 'failed' ? 'failed' : 'reported partial'}")
@@ -223,7 +223,7 @@ class MrtrWorkerBudgetSpec extends ToolSpecBase {
         given:
         settingsMap.useGateways = false
         Long duringBackup = null
-        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason ->
+        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason, String activePage = null ->
             duringBackup = workerClock() as Long
             throw new IllegalStateException('backup storage unavailable')
         }
@@ -247,7 +247,7 @@ class MrtrWorkerBudgetSpec extends ToolSpecBase {
         settingsMap.useGateways = false
         settingsMap.backupEveryRuleWrite = true
         int backups = 0
-        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason ->
+        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason, String activePage = null ->
             backups++
             if (backups > 1) throw new IllegalStateException('backup storage unavailable')
             [key: 'baseline']
@@ -499,5 +499,55 @@ class MrtrWorkerBudgetSpec extends ToolSpecBase {
         shape     | remainingField
         'bulk'    | 'addActionsRemaining'
         'patches' | 'patchesRemaining'
+    }
+
+    def "a detached slice carries the request's view of the backup toggles"() {
+        given: "the request sees pre-edit backups off; the backup decision records what it read and what is stored"
+        settingsMap.backupBeforeRuleEdits = false
+        def decided = []
+        script.metaClass._rmBackupBeforeEdit = { Integer id, String reason, String page = null ->
+            decided << [off: script._rmPreEditBackupsOff(), stored: settingsMap.backupBeforeRuleEdits]
+            [skipped: "pre-edit backups are off in Advanced settings"]
+        }
+        RUN_IN_MILLIS_OVERRIDE.set({ List call -> runInMillisCalls << call })
+
+        when:
+        def paused = modernCall('hub_set_rule', [appId: 1, confirm: true, addActions: actionSpecs()])
+        String stateId = paused.result.requestState
+
+        then: "the queued work item holds the toggle as the request read it"
+        stateId != null
+        runInMillisCalls.size() == 1
+        script.MRTR_WORK_ITEMS.values().find { it.stateId == stateId }.requestSettings.backupBeforeRuleEdits == "false"
+
+        when: "the scheduled job reads the setting as it stood before the toggle"
+        settingsMap.backupBeforeRuleEdits = true
+        script.runMrtrSlice(new LinkedHashMap(runInMillisCalls[0][2].data as Map))
+
+        then: "the worker decided from the request's view while the stored setting said otherwise; the view ends with the slice"
+        decided == [[off: true, stored: true]]
+        script._requestSetting("backupBeforeRuleEdits") == null
+        !script._rmPreEditBackupsOff()
+    }
+
+    def "a toggle the request saw as never saved stays unsaved for the worker, whatever was stored since"() {
+        given: "the request's view carries both toggles as null; the stored ones were saved after it"
+        script._keepRequestSettings([backupBeforeRuleEdits: null, backupEveryRuleWrite: null])
+        settingsMap.backupBeforeRuleEdits = false
+        settingsMap.backupEveryRuleWrite = true
+
+        expect: "the defaults the request saw: backups on, strict off"
+        !script._rmPreEditBackupsOff()
+        !script._rmStrictBackupsOn()
+
+        when: "the view ends"
+        script._keepRequestSettings(null)
+
+        then: "the stored values decide again"
+        script._rmPreEditBackupsOff()
+        script._rmStrictBackupsOn()
+
+        cleanup:
+        script._keepRequestSettings(null)
     }
 }

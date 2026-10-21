@@ -3094,7 +3094,7 @@ Run on a dedicated test hub. Record the original Developer Mode, logging level a
 
 ```json
 {
-  "setup_prompt": "Enable the Write master and Developer Mode in the app UI, with a recent backup. Read the MCP server's installed-app ID and raw settings using hub_get_app_config(includeSettings=true). Confirm its own ID is selected in Protected apps; if the admin deliberately removed it, stop this scenario without changing their selection. Record mcpLogLevel and all raw settings. Create one disposable native Rule Machine rule named 'BAT Protected App' containing only a Log Message action and no triggers or device references, then select that fixture in Protected apps using the UI and click Done.",
+  "setup_prompt": "Precondition: the hub owner must select the fixture under Protected apps in the hub UI; if no one can, the scenario is blocked, not failed. Enable the Write master and Developer Mode in the app UI, with a recent backup. Read the MCP server's installed-app ID and raw settings using hub_get_app_config(includeSettings=true). Confirm its own ID is selected in Protected apps; if the admin deliberately removed it, stop this scenario without changing their selection. Record mcpLogLevel and all raw settings. Create one disposable native Rule Machine rule named 'BAT Protected App' containing only a Log Message action and no triggers or device references, then select that fixture in Protected apps using the UI and click Done.",
   "test_prompt": "Inspect the protected test rule. Try renaming, disabling and deleting it, then try changing it through the rule editor. Explain each refusal and leave its configuration intact. Using the generic app editor, also try saving the MCP server's current logging level unchanged. Then use its dedicated developer settings tool to change the logging level temporarily and restore it. Verify that the protected apps list cannot be changed through that developer tool.",
   "teardown_prompt": "Restore the original logging level and Protected apps selections through their authorized interfaces. Remove only the disposable BAT Protected App rule after unprotecting it in the UI and clicking Done; if a missing guard already deleted it, do not recreate or delete any other app. Restore the original Developer Mode value in the UI and verify the original MCP settings are unchanged."
 }
@@ -3173,9 +3173,9 @@ This scenario requires no room creation or device command.
 
 ```json
 {
-  "setup_prompt": "Developer Mode and the Write master are enabled, a recent hub backup exists, and backupEveryRuleWrite is false. Create a small Rule Machine rule named 'BAT Backup Reuse'.",
+  "setup_prompt": "Developer Mode and the Write master are enabled, a recent hub backup exists, backupBeforeRuleEdits is true (its default) and backupEveryRuleWrite is false. Create a small Rule Machine rule named 'BAT Backup Reuse'.",
   "test_prompt": "Append four uniquely messaged Log Message actions to that same rule one at a time as four separate edits, recording each returned backup key. After the first two, enable the setting that creates a fresh backup for every native-app edit; then perform the final two separate edits and compare all four keys.",
-  "teardown_prompt": "Always use hub_update_mcp_settings to set backupEveryRuleWrite back to false, even if an edit failed, then delete 'BAT Backup Reuse'."
+  "teardown_prompt": "Always use hub_update_mcp_settings to set backupEveryRuleWrite back to false and backupBeforeRuleEdits back to true, even if an edit failed, then delete 'BAT Backup Reuse'."
 }
 ```
 
@@ -3252,7 +3252,7 @@ This scenario requires no room creation or device command.
 
 ```json
 {
-  "setup_prompt": "Developer Mode is enabled, the Write master is enabled, recent backup exists, and bypassDeviceAllowlist is OFF (the default). List every hub device with hub_list_devices(scope='all') and pick one that is currently mcpAuthorized=false (NOT in the MCP scope). Confirm hub_get_device on that id returns 'Device not found'.",
+  "setup_prompt": "Precondition: the hub needs a device outside the MCP allowlist and bypassDeviceAllowlist off; without one, the scenario is blocked, not failed. Developer Mode is enabled, the Write master is enabled, recent backup exists, and bypassDeviceAllowlist is OFF (the default). List every hub device with hub_list_devices(scope='all') and pick one that is currently mcpAuthorized=false (NOT in the MCP scope). Confirm hub_get_device on that id returns 'Device not found'.",
   "test_prompt": "Turn on the MCP server app's device-allowlist bypass setting (bypassDeviceAllowlist), then read that same unauthorized device's details and report whether it is now reachable.",
   "teardown_prompt": "Turn the bypass back OFF with hub_update_mcp_settings({settings:{bypassDeviceAllowlist:false}}) and confirm hub_get_device on that id returns 'Device not found' again."
 }
@@ -3962,7 +3962,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: the walker's `IllegalArgumentException` is caught by `hub_set_rule`'s backup-and-catch wrapper and surfaces as a structured `success=false` map whose `error` names the missing `comparator` (the map also carries `backup`/`restoreHint`); it is NOT a JSON-RPC `-32602`. No condition fields are written -- the rule has no half-built Temperature condition afterward (inspect mainPage to confirm nothing was added).
+**Expected**: the argument check refuses the call before the pre-edit backup and surfaces as a structured `success=false` map whose `error` names the missing `comparator`, with no `backup` and a `restoreHint` saying the rule was not touched; it is NOT a JSON-RPC `-32602`. No condition fields are written -- the rule has no half-built Temperature condition afterward (inspect mainPage to confirm nothing was added).
 
 **Failure modes**: `success=true` / `partial=true` with a half-written condition (regression to the pre-fix path where rCapab/rDev landed but no comparator/RHS, rendering an incomplete or `*BROKEN*` condition). Any condition fields present in `settingsApplied` (the reject must fire before any hub write).
 
@@ -4109,7 +4109,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: the call returns a structured `success=false` map before any sub-page write. The `error` field names the allowed set `[1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30]` and the rejected value (7), and a `backup`/`restoreHint` accompanies it. No trigger row is committed. The up-front `IllegalArgumentException` is caught by the whole-tool backup-and-catch envelope and surfaced as `success=false` (NOT a thrown -32602) -- consistent with the sibling compareToDevice missing-comparator guard on this same addTrigger path. This is fail-loud: RM restricts the Seconds/Minutes count to a fixed enum, and 7 is not in it, so the tool surfaces a recoverable structured error instead of silently rendering "null".
+**Expected**: the call returns a structured `success=false` map before any sub-page write. The `error` field names the allowed set `[1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30]` and the rejected value (7), with no `backup` (the refusal comes before the pre-edit backup) and a `restoreHint` saying the rule was not touched. No trigger row is committed. The up-front `IllegalArgumentException` is surfaced as `success=false` (NOT a thrown -32602) -- consistent with the sibling compareToDevice missing-comparator guard on this same addTrigger path. This is fail-loud: RM restricts the Seconds/Minutes count to a fixed enum, and 7 is not in it, so the tool surfaces a recoverable structured error instead of silently rendering "null".
 
 **Failure modes**: the call returns `success=true` and the trigger renders "null"/"?" (validation was skipped and the out-of-enum count was silently rejected by the hub). The `error` omits the valid-options list (less actionable for the LLM).
 
@@ -4141,7 +4141,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: the call returns a structured `success=false` map before any sub-page write. The `error` field states the two modes are mutually exclusive and names both `dayOfMonth` and `weekOfMonth`, and a `backup`/`restoreHint` accompanies it. No trigger row is committed. The up-front `IllegalArgumentException` is caught by the whole-tool backup-and-catch envelope and surfaced as `success=false` (NOT a thrown -32602), consistent with the Seconds/Minutes everyN guard and the sibling compareToDevice guard. Monthly by-day (calendar day) and nth-weekday (Nth weekday) are distinct RM modes whose field sets hide each other; mixing them is unrenderable.
+**Expected**: the call returns a structured `success=false` map before any sub-page write. The `error` field states the two modes are mutually exclusive and names both `dayOfMonth` and `weekOfMonth`, with no `backup` (the refusal comes before the pre-edit backup) and a `restoreHint` saying the rule was not touched. No trigger row is committed. The up-front `IllegalArgumentException` is surfaced as `success=false` (NOT a thrown -32602), consistent with the Seconds/Minutes everyN guard and the sibling compareToDevice guard. Monthly by-day (calendar day) and nth-weekday (Nth weekday) are distinct RM modes whose field sets hide each other; mixing them is unrenderable.
 
 **Failure modes**: the call returns `success=true` and the trigger renders "null"/"?" (the guard was skipped and both field sets were written, leaving an ambiguous/incomplete sub-page). The `error` names only one of the two conflicting fields (less actionable).
 
@@ -4391,7 +4391,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 
 ```json
 {
-  "setup_prompt": "the Write master is enabled. Create an RM rule called 'BAT LocalVar Broken Test'; add a NUMERIC local variable 'refLocal' (type Number, value 0) to it, then add an action setLocalVariable={variable:'refLocal', value:9} that references it. Leave the referencing action in place.",
+  "setup_prompt": "the Write master is enabled and backupBeforeRuleEdits is true (its default). Create an RM rule called 'BAT LocalVar Broken Test'; add a NUMERIC local variable 'refLocal' (type Number, value 0) to it, then add an action setLocalVariable={variable:'refLocal', value:9} that references it. Leave the referencing action in place.",
   "test_prompt": "On 'BAT LocalVar Broken Test': remove the rule-local variable 'refLocal' WITHOUT first removing the action that references it. Report success, variable.deleted, error, health.ok, and any repairHints. Then list the rule's local variables and confirm 'refLocal' is gone.",
   "teardown_prompt": "Delete the 'BAT LocalVar Broken Test' rule."
 }
@@ -4553,7 +4553,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: both are rejected pre-write with a clear steer -- nothing is committed. (1) `Days of week` (a date/day-window capability) is unmodelled on every structured condition surface: `success=false`, `error` names it is not supported "via the structured condition shortcut on any surface" and points at `rawSettings`/`walkStep`. (2) A `*changed*`/`*became*` state-change comparator on a device-state condition is invalid because conditions are point-in-time: `success=false`, `error` says it is "not valid as a condition" and steers to a TRIGGER row (where device-state change events ARE supported). The same rejects fire identically on `addTrigger.condition` and `addAction` `ifThen` expressions.
+**Expected**: both are rejected pre-write with a clear steer -- nothing is committed. (1) `Days of week` is a condition the tool does not model: `success=false`, `error` says "'Days of week' is a Rule Machine condition this tool does not model; set it with rawSettings or walkStep". (2) A change comparator (`*changed*`, `*became*`, ...) on a device-state condition has no Rule Machine comparator: `success=false`, `error` says "Rule Machine has no comparator for a Switch condition; pass state." and adds the trigger-row steer "'*changed*' is a trigger-only comparator; add it as a trigger row (addTrigger) instead." The same rejects fire identically on `addTrigger.condition` and `addAction` `ifThen` expressions.
 
 **Failure modes**: either condition silently committing a broken/`null` condition row; the change-comparator condition being accepted and rendering meaninglessly; the date/day reject surfacing an opaque `IllegalStateException` mid-walk instead of the uniform steer.
 
@@ -4567,7 +4567,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: both are rejected pre-write with a clear steer -- nothing is committed (`predCapabs` stays empty, `wizardStuck=false`). (1) `Last Event Device` is not usable as a condition at all: it is an action-side reference to the device that fired the rule's trigger (used in ACTIONS, e.g. running a command on the triggering device), not a testable state, and not a trigger capability either. `success=false`, `error` says it is "not usable as a condition" and steers to actions. (2) `Lock codes` IS a real condition type but is not authorable via the structured path -- it needs a lock device plus a specific code name the condition path has no field for, and would otherwise commit a silently-incomplete "on null: null" condition the health guard does not catch. `success=false`, `error` names the lock-device + code-name requirement and steers to the Rule Machine UI. The same rejects fire identically on `addTrigger.condition` and `addAction` `ifThen` expressions.
+**Expected**: both are rejected pre-write -- nothing is committed (`predCapabs` stays empty, `wizardStuck=false`). `Last Event Device` and `Lock codes` are Rule Machine conditions the tool does not model; for each, `success=false` and `error` says "'<capability>' is a Rule Machine condition this tool does not model; set it with rawSettings or walkStep". The same rejects fire identically on `addTrigger.condition` and `addAction` `ifThen` expressions.
 
 **Failure modes**: `Last Event Device` committing a *BROKEN* condition (the pre-fix behavior); `Lock codes` committing a health-ok-but-incomplete "on null: null" condition the health guard does not catch (the pre-fix behavior); either reject surfacing an opaque exception mid-walk instead of the uniform steer; a leftover in-flight condition slot (`wizardStuck=true`) after the reject.
 

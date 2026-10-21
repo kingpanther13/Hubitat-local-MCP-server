@@ -212,7 +212,7 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
     // onlyOn keeps devices whose switch attribute currently reads "on" -- "what's on right
     // now" in one call. onlyOn=false is a no-op (not "only off"): absence of the filter.
     if (onlyOn == true) {
-        allDevices = allDevices.findAll { d -> d.currentStates?.find { it.name == "switch" }?.value?.toString() == "on" }
+        allDevices = allDevices.findAll { d -> _deviceStatesByName(d).get("switch")?.value?.toString() == "on" }
     }
 
     // changedSince keeps devices ACTIVE since the timestamp -- the inverse of filter=stale:N.
@@ -336,6 +336,7 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
             pagedDevices = pagedDevices.subList(0, hydrated)
             endIndex = startIndex + hydrated
         }
+        if (onlyOn == true) pagedDevices = _stillOnAfterPageRead(pagedDevices)
         def attrNames = (attributeNames && !attributeNames.isEmpty()) ? attributeNames.collect { it.toString() } : _contextAttributeNames()
         def lines = pagedDevices.collect { d -> _contextDeviceLine(d, attrNames) }
         def header = _contextHeaderLines()
@@ -426,6 +427,13 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
         }
     }
 
+    int droppedNotOn = 0
+    if (onlyOn == true) {
+        def stillOn = _stillOnAfterPageRead(pagedDevices)
+        droppedNotOn = pagedDevices.size() - stillOn.size()
+        pagedDevices = stillOn
+    }
+
     def devices = pagedDevices.collect { device ->
         def deviceIdStr = device.id.toString()
 
@@ -464,8 +472,9 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
             // Summary mode: populate currentStates only when requested (or when no projection active)
             if (fieldSet == null || fieldSet.contains("currentStates")) {
                 info.currentStates = [:]
+                def byName = _deviceStatesByName(device)
                 ["switch", "level", "motion", "contact", "temperature", "humidity", "battery"].each { attr ->
-                    def val = device.currentStates?.find { it.name == attr }?.value
+                    def val = byName.get(attr)?.value
                     if (val != null) info.currentStates[attr] = val
                 }
             }
@@ -479,7 +488,7 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
     def result = applyFilterEchoes([
         devices: devices,
         count: devices.size(),
-        total: totalCount
+        total: totalCount - droppedNotOn
     ])
     if (devices.any { it.metadataUnavailable }) result.partial = true
 
@@ -605,6 +614,23 @@ private List _contextHeaderLines() {
     return header
 }
 
+// A device's states by attribute name. A native state list can carry an attribute twice; the
+// last entry with a value wins, as a JSON object with a repeated key parses, so every filter
+// and projection reads the same value.
+// onlyOn filters on the bulk read and the page is then read per device: a switch that turned off between
+// the two reads is dropped, so a listed device always reads on in the response.
+private List _stillOnAfterPageRead(List paged) {
+    paged.findAll { it._nativeLoaded != true || it._nativeReadError == true || _deviceStatesByName(it).get("switch")?.value?.toString() == "on" }
+}
+
+private Map _deviceStatesByName(device) {
+    def states = [:]
+    device?.currentStates?.each { st ->
+        if (st?.name != null && st.value != null) states.put(st.name.toString(), st)
+    }
+    return states
+}
+
 // One context-summary line: "- Label (id, room) - Cap1, Cap2; attr=value<unit>, ...".
 // Projects the already-loaded native currentStates in caller order. Values carry the reported unit directly
 // appended (temperature=72.5°F) -- compact and unambiguous for a model reader.
@@ -612,9 +638,7 @@ private String _contextDeviceLine(device, List attrNames) {
     def states = [:]
     boolean stateReadFailed = device._nativeReadError == true || device._nativeUnavailableCollections?.contains('currentStates') == true
     try {
-        device.currentStates?.each { st ->
-            if (st?.name != null && st.value != null) states.put(st.name.toString(), st)
-        }
+        states = _deviceStatesByName(device)
     } catch (Exception e) {
         // Serve the line rather than failing the whole snapshot, but a failed read must
         // be VISIBLE in the payload itself -- byte-identical to "reports nothing" would
@@ -917,10 +941,8 @@ def _buildContextJson() {
         def attrs = [:]
         boolean stateReadFailed = d._nativeReadError == true || d._nativeUnavailableCollections?.contains('currentStates') == true
         try {
-            d.currentStates?.each { st ->
-                if (st?.name != null && st.value != null && contextAttrs.contains(st.name.toString())) {
-                    attrs.put(st.name.toString(), st.value.toString())
-                }
+            _deviceStatesByName(d).each { name, st ->
+                if (contextAttrs.contains(name)) attrs.put(name, st.value.toString())
             }
         } catch (Exception e) {
             // Mirror the text form: mark the record in-band, not just in the log.
@@ -5705,7 +5727,9 @@ private boolean _deviceSwapCleanup(Integer appId) {
 }
 
 def _getAllToolDefinitions_partDevices() {
-    return [
+    // The list builds in a closure so its strings live in the closure's own class: the app class is
+    // near the JVM 65,535 constant-pool limit.
+    def defs = { [
         // Device Tools
         [
             name: "hub_list_devices",
@@ -5967,7 +5991,8 @@ Pre-flight: backup <24h (hub_create_backup) + user OK.""",
                 ]
             ]
         ],
-    ]
+    ] }
+    return defs()
 }
 
 def _readOnlyToolNames_partDevices() {

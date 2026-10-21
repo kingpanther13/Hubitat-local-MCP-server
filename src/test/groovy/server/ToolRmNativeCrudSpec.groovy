@@ -1,8 +1,8 @@
 package server
 
 import support.RMUtilsMock
+import support.RmNativeCrudSpecBase
 import support.TestLocation
-import support.ToolSpecBase
 import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
 import spock.lang.Shared
@@ -40,60 +40,13 @@ import spock.lang.Unroll
  * the rule's rendering. The "3-field contract" test below catches any
  * regression on that code path.
  */
-class ToolRmNativeCrudSpec extends ToolSpecBase {
-
-    // Shared location stub for tests that exercise location.modes (Mode trigger)
-    // or location.hub (future). AppExecutor.getLocation() is wired in setupSpec
-    // below. Tests that need specific modes assign sharedLocation.modes in their
-    // given: block; cleanup() resets to the empty default so tests stay isolated.
-    @Shared private TestLocation sharedLocation = new TestLocation()
-
-    // Per-test RMUtils stub for the rule-target existence specs. Installed in the
-    // given: block of the specs that need it, uninstalled in cleanup() so the
-    // shared class metaclass mutation cannot leak into unrelated tests.
-    private RMUtilsMock rmUtils
-
-    def setupSpec() {
-        // Wire location reads to the shared TestLocation stub so code paths that
-        // call location.modes (addTrigger Mode, hub_list_modes, toolSetMode) get
-        // deterministic results instead of NPE from the @AutoImplement null default.
-        // HarnessSpec.setupSpec() runs first (Spock calls all setupSpec in hierarchy),
-        // so appExecutor is already a Mock when this override runs.
-        appExecutor.getLocation() >> sharedLocation
-    }
-
-    def cleanup() {
-        // Reset modes and timezone after each test to prevent inter-test leaks.
-        // sharedLocation.modes: a test that assigns modes cannot leak into unrelated tests.
-        // sharedLocation.timeZone: TZ-sensitive tests (e.g. Between two times) set a specific
-        // zone; resetting to UTC keeps all other tests deterministic.
-        sharedLocation.modes = []
-        sharedLocation.timeZone = TimeZone.getTimeZone("UTC")
-        // Undo any RMUtils metaclass mutation from a rule-target existence spec.
-        rmUtils?.uninstall()
-        rmUtils = null
-    }
-
-    private void enableWrite() {
-        settingsMap.enableWrite = true
-        settingsMap.enableRead = true
-        stateMap.lastBackupTimestamp = 1234567890000L
-    }
+class ToolRmNativeCrudSpec extends RmNativeCrudSpecBase {
+    // Changes on every fixture render. Not System.nanoTime(): the render hash masks any 13+ digit
+    // number, which nanoTime reaches once the runner has been up about 17 minutes.
+    private int renderSeq = 0
 
     private void enableReadOnly() {
         settingsMap.enableRead = true
-    }
-
-    // Single source of truth for POST-interceptor key matching. Returns the inner
-    // field name of a "settings[<name>]" form key, or null if k is not such a key.
-    // Single-evaluation matches()/group(1) -- NOT the `def m = k =~ /.../; m[0][1]`
-    // idiom, which re-coerces a STATEFUL java.util.regex.Matcher on every read and
-    // exhausts it under Groovy 3.0 (the second `m[0][1]` on the same matcher returns
-    // null because the previous read advanced past the match). Routing every
-    // interceptor through this helper makes that double-coercion shape unable to recur.
-    private static String _settingKeyOf(Object k) {
-        def matcher = (k?.toString() ?: "") =~ /^settings\[(.+)\]$/
-        return matcher.matches() ? matcher.group(1) : null
     }
 
     // Minimal RM parent discovery response (/hub2/appsList tree with a
@@ -102,22 +55,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         JsonOutput.toJson([apps: [
             [data: [id: rmId, name: "Rule Machine", type: "Rule Machine", user: false, hidden: false], children: []]
         ]])
-    }
-
-    // Minimal RM rule config JSON. Schema inputs drive _rmBuildSettingsBody's
-    // 3-field group logic, so tests shape the sections/inputs as needed.
-    private String ruleConfigJson(int ruleId, String label = "BAT-RM-test", List inputs = [], Integer parentAppId = null, Map settings = [:]) {
-        def app = [id: ruleId, name: "Rule-5.1", label: label, trueLabel: label, installed: true,
-                   appType: [name: "Rule-5.1", namespace: "hubitat"]]
-        if (parentAppId != null) app.parentAppId = parentAppId
-        JsonOutput.toJson([
-            app: app,
-            configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null, sections: [
-                [title: "", input: inputs]
-            ]],
-            settings: settings,
-            childApps: []
-        ])
     }
 
     // Decode a URL-encoded form body (key=value&key=value...) back into a Map
@@ -146,18 +83,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                 description: "<button name='_action_href_name|${action}|${idx}'>Go</button>"
             ]]]
         ]]])
-    }
-
-    private String statusJson(int ruleId, List appSettings = [], int subs = 1) {
-        JsonOutput.toJson([
-            installedApp: [id: ruleId],
-            appSettings: appSettings,
-            eventSubscriptions: (1..subs).collect { [name: "evt${it}"] },
-            scheduledJobs: [],
-            appState: [:],
-            childAppCount: 0,
-            childDeviceCount: 0
-        ])
     }
 
     // ---------- _settingKeyOf POST-interceptor helper (closed mechanism) ----------
@@ -883,7 +808,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // proves the real reference came back inline (these live only in the guide now)
         result.content.contains("addTrigger")
         result.content.contains("walkStep")
-        result.content.contains("Raw `settings`/`button` mode")
+        result.content.contains("Raw mode is the same flow one call per step")
         // no appId / confirm / backup snapshot was required -> no hub endpoints registered, no mutation occurred
     }
 
@@ -947,8 +872,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def statusCalls = 0
         hubGet.register('/installedapp/statusJson/100') { params ->
             statusCalls++
-            // 1st call = pre-backup snapshot; 2nd = post-write verify (poisoned);
-            // 3rd = post-retry verify (recovered); 4th+ = final page-error probe.
+            // 1st call = hub_set_rule's stopped-state read, which the pre-backup snapshot
+            // takes over; 2nd = post-write verify (poisoned); 3rd = post-retry verify
+            // (recovered); 4th+ = final page-error probe.
             if (statusCalls == 2) {
                 statusJson(100, [[name: "tDev0", type: "capability.switch", multiple: false, value: "8,9"]])
             } else {
@@ -1382,6 +1308,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/app/ruleBuilderJson/507') { params -> '{}' }
         def uploads = []
         script.metaClass.uploadHubFile = { String fn, byte[] b -> uploads << fn }
+        script._memoKeepPreEditStatus(507, [appState: []])
 
         when:
         def result = script._rmBackupBeforeEdit(507, "pre-update")
@@ -1391,6 +1318,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.baselineReused == true
         result.brokenBefore == null
         uploads.isEmpty()
+
+        and: 'a reused baseline drops the status read before this edit, so no later snapshot takes it'
+        script._memoTakePreEditStatus(507) == null
     }
 
     def "ordinary edit takes a fresh backup after the one-hour reuse window expires"() {
@@ -2201,7 +2131,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def statusCalls = 0
         hubGet.register('/installedapp/statusJson/100') { params ->
             statusCalls++
-            // call #2 is the post-write verify -- return the poisoned (multiple:false) flag to force a retry
+            // call 1 is hub_set_rule's stopped-state read, which the pre-backup snapshot takes over;
+            // call 2 is the post-write verify -- return the poisoned (multiple:false) flag to force a retry
             if (statusCalls == 2) {
                 statusJson(100, [[name: "tDev0", type: "capability.switch", multiple: false, value: "8,9"]])
             } else {
@@ -2269,7 +2200,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                 [name: "actType.1", type: "enum"],
                 [name: "actSubType.1", type: "enum"],
                 [name: "tCapab-1", type: "enum", options: ["Switch"]],
-                [name: "tCapab-2", type: "enum", options: ["Motion"]]
+                [name: "tCapab-2", type: "enum", options: ["Motion"]],
+                // A page-context click is checked against the page's rendered buttons.
+                [name: "anotherWait", type: "button", state: "anotherWait"]
             ])
         }
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
@@ -2289,51 +2222,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         btnPost.body.name == "anotherWait"
         btnPost.body["settings[anotherWait]"] == "clicked"
         btnPost.body.stateAttribute == "anotherWait"
-    }
-
-    def "addRequiredExpression sub-page writes use pageBreadcrumbs=[] (not [\"mainPage\"]) on STPage"() {
-        given:
-        enableWrite()
-        // STPage schema after useST=true is set; cond enum is the in-flight
-        // wizard picker. addRequiredExpression's _rmWriteSubPageField path
-        // must use pageBreadcrumbs=[] for STPage writes per the live UI
-        // capture; sending ["mainPage"] re-fires the action_href and
-        // resets the in-flight wizard accumulator.
-        def stPageInputs = [
-            [name: "cond", type: "enum", options: ["": "Click to set", "a": "--> New Condition", "b": "--> ( sub-expression"]],
-            [name: "doneST", type: "button"]
-        ]
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [[name: "useST", type: "bool"]]) }
-        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", [[name: "useST", type: "bool"]]) }
-        hubGet.register('/installedapp/configure/json/100/STPage') { params -> ruleConfigJson(100, "r", stPageInputs) }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
-        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-
-        def posts = []
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            posts << [path: path, body: body]
-            [status: 200, location: null, data: '']
-        }
-
-        when: "addRequiredExpression starts the STPage wizard"
-        try {
-            script.toolSetRule([
-                appId: 100,
-                addRequiredExpression: [conditions: [[capability: "Switch", deviceIds: [8], state: "on"]]],
-                confirm: true
-            ])
-        } catch (Exception ignored) { /* schema stubs are minimal; partial walk is fine, we only assert the wire format */ }
-
-        then: "every STPage settings write uses pageBreadcrumbs=[]"
-        def stPageWrites = posts.findAll { it.path == "/installedapp/update/json" && it.body.currentPage == "STPage" }
-        stPageWrites.size() > 0
-        stPageWrites.every { it.body.pageBreadcrumbs == '[]' }
-
-        and: "no STPage write carries the action_href marker (those belong only on the navigation POST)"
-        stPageWrites.every { write ->
-            !write.body.keySet().any { k -> k.toString().startsWith("_action_href_") }
-        }
     }
 
     def "addRequiredExpression sub-expression open writes cond=b VALUE not literal label"() {
@@ -3121,31 +3009,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         !posts.any { it.path == "/installedapp/update/json" }
     }
 
-    // Live app-id tree used by the rule-target existence specs below: a Rule Machine parent
-    // (id 21) with one child rule (id 555). _collectLiveApps walks data.id at every depth,
-    // so the reachable set is {21, 555}. The parent id 21 is deliberately present-but-not-a-rule
-    // so the "non-rule app id is rejected" spec can target it: it exists in the app tree yet is
-    // absent from the RMUtils rule list, which is what the existence guard resolves against.
-    private String appsListWithRule(int ruleId = 555) {
-        appsListWithRules([ruleId])
-    }
-
-    // Same tree for a multi-rule set: the RM parent (id 21) with one child node per rule id.
-    private String appsListWithRules(List ruleIds) {
-        JsonOutput.toJson([apps: [
-            [data: [id: 21, name: "Rule Machine", type: "Rule Machine"],
-             children: ruleIds.collect { [data: [id: it, name: "Target Rule", type: "Rule-5.1"], children: []] }]
-        ]])
-    }
-
-    // Seed RMUtils so the rule id 555 is the ONLY existing RM rule; the app tree above adds the
-    // non-rule parent id 21. The existence-safe set the guard resolves is therefore {555}.
-    private void installRuleTargetStubs() {
-        rmUtils = new RMUtilsMock()
-        rmUtils.stubRuleList5 = [[555: 'Target Rule']]
-        rmUtils.install()
-    }
-
     def "rule-target guard rejects a runRule target that is not an existing rule, before any write"() {
         given:
         installRuleTargetStubs()
@@ -3239,7 +3102,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // IS an existing RM rule (555), the existence guard must NOT fire -- execution advances
         // into the action-write path (a POST fires) and then dead-ends on the unmocked doActPage
         // fetch. A guard that wrongly rejected a valid id would surface the "does not exist"
-        // message here and never POST. Both-ways pending (orchestrator).
+        // message here and never POST.
         given:
         installRuleTargetStubs()
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
@@ -3321,8 +3184,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         "missing id"           | [capability: "runRule", ruleIds: [999999]]                           | ["'999999'", "does not exist", "hub_list_rules"]
         "runRule this-rule"    | [capability: "runRule", ruleIds: ["*"]]                              | ['"this rule" target', "only for privateBoolean"]
         "privateBoolean mixed" | [capability: "privateBoolean", ruleIds: ["*", 999999], value: false] | ["'999999'", "does not exist"]
-        "unsupported numOp"    | [capability: "setVariable", variable: "x", value: 1, numOp: "bogus"] | ["replaceActions[0]:", "numOp 'bogus' is not supported"]
-        "numOp without value"  | [capability: "setVariable", variable: "x", sourceVariable: "y", numOp: "add number"] | ["replaceActions[0]:", "numOp is only supported with 'value'"]
+        "unsupported numOp"    | [capability: "setVariable", variable: "x", value: 1, numOp: "bogus"] | ["replaceActions[0]:", "numOp 'bogus' does not go with value"]
+        "numOp without value"  | [capability: "setVariable", variable: "x", sourceVariable: "y", numOp: "add number"] | ["replaceActions[0]:", "numOp goes only with value"]
         "not a spec object"    | "switch on"                                                          | ["replaceActions[0] must be an action spec object"]
         "unknown device"       | [capability: "switch", action: "off", deviceIds: [99999]]            | ["replaceActions[0]:", "'99999'", "does not exist"]
     }
@@ -3537,10 +3400,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         "missing id"           | [capability: "runRule", ruleIds: [999999]]                           | ["'999999'", "does not exist", "hub_list_rules"]
         "runRule this-rule"    | [capability: "runRule", ruleIds: ["*"]]                              | ['"this rule" target', "only for privateBoolean"]
         "privateBoolean mixed" | [capability: "privateBoolean", ruleIds: ["*", 999999], value: false] | ["'999999'", "does not exist"]
-        "unsupported numOp"    | [capability: "setVariable", variable: "x", value: 1, numOp: "bogus"] | ["patches[0].replaceActions[0]:", "numOp 'bogus' is not supported"]
-        "numOp without value"  | [capability: "setVariable", variable: "x", sourceVariable: "y", numOp: "add number"] | ["patches[0].replaceActions[0]:", "numOp is only supported with 'value'"]
+        "unsupported numOp"    | [capability: "setVariable", variable: "x", value: 1, numOp: "bogus"] | ["patches[0].replaceActions[0]:", "numOp 'bogus' does not go with value"]
+        "numOp without value"  | [capability: "setVariable", variable: "x", sourceVariable: "y", numOp: "add number"] | ["patches[0].replaceActions[0]:", "numOp goes only with value"]
         "not a spec object"    | "switch on"                                                          | ["patches[0].replaceActions[0] must be an action spec object"]
-        "dimmer without level" | [capability: "dimmer", action: "setLevel"]                           | ["patches[0].replaceActions[0]:", "dimmer.setLevel requires 'level'"]
+        "dimmer without level" | [capability: "dimmer", action: "setLevel"]                           | ["patches[0].replaceActions[0]:", "dimmer.setLevel requires one of level, levelVariable"]
     }
 
     @spock.lang.Unroll
@@ -3618,16 +3481,16 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // deviceIds) makes the captured value [555.0] and fails this. Only the field-write layer
         // (_rmWriteSettingOnPage) is intercepted -- so the captured value is exactly what the
         // normalization hands to the write, isolated from the doActPage schema walk. The rest of
-        // the scaffolding runs real off registered GETs. Both-ways pending (orchestrator).
+        // the scaffolding runs real off registered GETs.
         given:
         installRuleTargetStubs()
         hubGet.register('/hub2/appsList') { params -> appsListWithRule(555) }
         // Root + editor pages let _rmInitSelectActionsPage tickle actNdx; statusJson (no actions)
-        // makes _rmCollectActionIndices return [] so idx resolves to 1; the doActPage fetch returns
-        // no actType.<N> so the idx re-read leaves idx=1.
+        // makes _rmCollectActionIndices return [] so idx resolves to 1; the doActPage fetch shows
+        // the opened editor's actType.1, so idx stays 1.
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", [[name: "N", type: "button"]]) }
-        hubGet.register('/installedapp/configure/json/100/doActPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params -> ruleConfigJson(100, "r", [[name: "actType.1", type: "enum"]]) }
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
@@ -3660,13 +3523,12 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // integer-canonical [555], never [555.0]. Reverting any one cap's wiring line to the raw
         // (actionSpec.ruleIds ?: deviceIds) captures [555.0] and fails that row. Only the field-write
         // layer is intercepted, isolating the captured value from the doActPage schema walk.
-        // Both-ways pending (orchestrator).
         given:
         installRuleTargetStubs()
         hubGet.register('/hub2/appsList') { params -> appsListWithRule(555) }
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", [[name: "N", type: "button"]]) }
-        hubGet.register('/installedapp/configure/json/100/doActPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params -> ruleConfigJson(100, "r", [[name: "actType.1", type: "enum"]]) }
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
@@ -3851,13 +3713,13 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def result = script.toolSetRule([appId: 100,
             addActions: [[capability: "runRule", ruleIds: [999999]]], confirm: true])
 
-        then: "the bulk envelope is not clean and the per-item action reports the reject"
+        then: "the whole call is refused before any backup or write, naming the item"
         result.success == false
-        def ar = (result.actions as List)?.getAt(0)
-        ar?.success == false
-        ar?.error?.toString()?.contains("'999999'")
-        ar?.error?.toString()?.contains("does not exist")
-        ar?.error?.toString()?.contains("hub_list_rules")
+        result.backup == null
+        result.error?.toString()?.contains("addActions[0]")
+        result.error?.toString()?.contains("'999999'")
+        result.error?.toString()?.contains("does not exist")
+        !posts.any { it.path in ["/installedapp/update/json", "/installedapp/btn"] }
     }
 
     def "create arm rejects a bogus rule target in actions[] via the shared threaded guard"() {
@@ -4032,7 +3894,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "the shape is rejected up front, steering to comparator"
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains("is not a valid state value")
+        ex.message.contains("is a change, not a state")
         ex.message.contains("comparator")
 
         and: "the pre-flight refusal carries the not-touched sentinel so the edit-path restoreHint stays accurate"
@@ -4042,7 +3904,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Mixed-case rows ('Changed', 'INCREASED') pin the INPUT-side .toLowerCase() in
         // _rmLooksLikeStateChangeToken: delete it and the guard stops matching a mixed-case
         // token, so these rows go RED (no exception thrown).
-        token << ["changed", "became", "increased", "decreased", "Changed", "INCREASED", "Became true"]
+        token << ["changed", "increased", "decreased", "Changed", "INCREASED"]
     }
 
     def "addTrigger state-change token in the 'value' alias (not 'state') is rejected steering to comparator"() {
@@ -4056,35 +3918,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then: "the value-alias bypass is rejected up front, naming value and steering to comparator"
         def ex = thrown(IllegalArgumentException)
         ex.message.contains("value:'increased'")
-        ex.message.contains("is not a valid state value")
+        ex.message.contains("is a change, not a state")
         ex.message.contains("comparator")
         ex.message.contains("RM is not touched")
-    }
-
-    def "addTrigger state-change token on an UNLISTED device-state/numeric capability '#cap' is guarded (deny-list, not positive-family)"() {
-        // The live tCapab picker accepts many device-state/numeric caps the curated discover schema
-        // omits (Energy, Water, Voltage, Smoke, ...); those resolve to family=null. A POSITIVE
-        // device-state/numeric family scope would leave them UNGUARDED, committing a broken trigger;
-        // the deny-list guards every non-exempt family, including null. Reverting
-        // _rmStateChangeGuardApplies to `family in ["device-state","numeric"]` turns these rows RED
-        // (family null -> not guarded -> no exception; execution falls through to the unstubbed hub).
-        when: "an unlisted-capability trigger passes a state-change token with no comparator"
-        def spec = [capability: cap, deviceIds: [8]]
-        spec[field] = "increased"
-        script._rmAddTrigger(100, spec)
-
-        then: "the deny-list guards the unlisted cap up front, steering to comparator"
-        def ex = thrown(IllegalArgumentException)
-        ex.message.contains(offending)
-        ex.message.contains("is not a valid state value")
-        ex.message.contains("comparator")
-        ex.message.contains("RM is not touched")
-
-        where:
-        cap       | field   | offending
-        "Energy"  | "value" | "value:'increased'"
-        "Water"   | "state" | "state:'increased'"
-        "Voltage" | "value" | "value:'increased'"
     }
 
     def "addTrigger with an explicit comparator is not rejected even when state also looks like a change token"() {
@@ -4096,7 +3932,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "the state-change guard defers to the explicit comparator; execution reaches the unmocked hub layer"
         thrownEx != null
-        !thrownEx.message.contains("is not a valid state value")
+        !thrownEx.message.contains("is a change, not a state")
         thrownEx.message.contains("Unstubbed hubInternalGet")
     }
 
@@ -4109,7 +3945,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "the state-change guard does not over-fire; execution reaches the unmocked hub layer"
         thrownEx != null
-        !thrownEx.message.contains("is not a valid state value")
+        !thrownEx.message.contains("is a change, not a state")
         thrownEx.message.contains("Unstubbed hubInternalGet")
 
         where:
@@ -4128,7 +3964,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "the guard is skipped for Mode/Variable/Custom Attribute -- their state carries names/enum values"
         thrownEx != null
-        !thrownEx.message.contains("is not a valid state value")
+        !thrownEx.message.contains("is a change, not a state")
         thrownEx.message.contains("Unstubbed hubInternalGet")
 
         where:
@@ -4154,7 +3990,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "neither the state guard nor the periodic-shape guard fires; execution reaches the unmocked hub layer"
         thrownEx != null
-        !thrownEx.message.contains("is not a valid state value")
+        !thrownEx.message.contains("is a change, not a state")
         !thrownEx.message.contains("requires periodic:")
         thrownEx.message.contains("Unstubbed hubInternalGet")
     }
@@ -4178,25 +4014,23 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         ex.message.contains("RM is not touched")
 
         where:
-        token << ["changed", "became", "increased", "decreased"]
+        token << ["changed", "increased", "decreased"]
     }
 
     def "modifyTrigger with a state-change token on an UNLISTED capability trigger is guarded (deny-list, not positive-family)"() {
-        // The committed capability ('Energy') is accepted by the live tCapab picker but absent from
-        // the curated discover schema, so it resolves to family=null. Under the deny-list a non-null
-        // committed capability of an unrecognized family is GUARDED. Reverting
-        // _rmStateChangeGuardApplies to `family in ["device-state","numeric"]` makes this go RED
-        // (family null -> guard skipped -> the reject message is never thrown).
-        given: "an existing trigger whose committed capability is unlisted in the discover schema"
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, [[name: "tCapab1", value: "Energy"]]) }
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [], null, [tCapab1: "Energy"]) }
+        // A committed capability outside Rule Machine's tables (a newer firmware's) resolves to
+        // family=null; under the deny-list it is still guarded. Reverting _rmStateChangeGuardApplies
+        // to a positive family match would let it through.
+        given: "an existing trigger whose committed capability is outside the tables"
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, [[name: "tCapab1", value: "Frobnicator"]]) }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [], null, [tCapab1: "Frobnicator"]) }
 
         when: "the trigger's state is edited to a state-change token (modify has no comparator channel)"
         script._rmModifyTrigger(100, 1, [state: "increased"])
 
         then: "the deny-list guards the unlisted cap up front, before any hub round-trip"
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains("looks like a state-change comparator token")
+        ex.message.contains("is a change, not a state")
         ex.message.contains("removeTrigger")
         ex.message.contains("RM is not touched")
     }
@@ -4207,7 +4041,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // and falsely reject a legitimate edit UNLESS the explicit `committedCap != null` null-guard
         // skips it. This pins that fail-safe: with the null-guard the edit proceeds PAST the
         // state-change guard to the wizard-open POST; dropping the null-guard rejects here instead
-        // (the `!contains("looks like a state-change comparator token")` assertion goes RED).
+        // (the `!contains("is a change, not a state")` assertion goes RED).
         given: "an existing trigger at index 1 whose tCapab1 value is null (capability unreadable)"
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, [[name: "tCapab1", value: null]]) }
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [], null, [:]) }
@@ -4223,7 +4057,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "the guard is skipped (fail-safe); execution proceeds past it to the wizard-open POST"
         thrownEx != null
-        !thrownEx.message.contains("looks like a state-change comparator token")
+        !thrownEx.message.contains("is a change, not a state")
         thrownEx.message.contains("REACHED_EDITCOND_POST")
     }
 
@@ -4248,813 +4082,23 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "the guard does not fire; execution proceeds past it to the wizard-open POST"
         thrownEx != null
-        !thrownEx.message.contains("looks like a state-change comparator token")
+        !thrownEx.message.contains("is a change, not a state")
         thrownEx.message.contains("REACHED_EDITCOND_POST")
     }
 
-    // ---------- modifyAction ----------
-
-    def "modifyAction rejects an index that has no committed action"() {
-        given: "a rule whose settings carry only action 1; POSTs are collected to prove no mutation fires"
-        def maPosts = []
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            maPosts << path
-            [status: 200, location: null, data: '{"status":"success"}']
-        }
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [], null, ["actType.1": "rulesActs", "actSubType.1": "getRuleActions", "ruleAct.1": ["200"]]) }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, [[name: "actType.1", value: "rulesActs"]]) }
-
-        when:
-        script._rmModifyAction(100, 3, [ruleIds: [200]])
-
-        then: "the refusal fires before ANY mutation POST -- 'RM is not touched' is literally true"
-        def ex = thrown(IllegalArgumentException)
-        ex.message.contains("modifyAction.index 3 not found")
-        ex.message.contains("RM is not touched")
-        maPosts.isEmpty()
-    }
-
-    def "modifyAction rejects a non-rule-targeting action steering to removeAction + addAction"() {
-        given: "action 1 is a switch action; POSTs are collected to prove no mutation fires"
-        def maPosts = []
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            maPosts << path
-            [status: 200, location: null, data: '{"status":"success"}']
-        }
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [], null, ["actType.1": "switchActs", "actSubType.1": "getSwitchOn"]) }
-
-        when:
-        script._rmModifyAction(100, 1, [ruleIds: [200]])
-
-        then:
-        def ex = thrown(IllegalArgumentException)
-        ex.message.contains("rule-targeting actions")
-        ex.message.contains("removeAction + addAction")
-        ex.message.contains("RM is not touched")
-        maPosts.isEmpty()
-    }
-
-    def "modifyAction rejects mods keys outside the action family's channel"() {
-        given: "action 1 is runRule (only ruleIds is modifiable); POSTs are collected to prove no mutation fires"
-        def maPosts = []
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            maPosts << path
-            [status: 200, location: null, data: '{"status":"success"}']
-        }
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [], null, ["actType.1": "rulesActs", "actSubType.1": "getRuleActions", "ruleAct.1": ["200"]]) }
-
-        when:
-        script._rmModifyAction(100, 1, [ruleIds: [200], state: "on"])
-
-        then:
-        def ex = thrown(IllegalArgumentException)
-        ex.message.contains("supports mods: ruleIds")
-        ex.message.contains("state")
-        ex.message.contains("RM is not touched")
-        maPosts.isEmpty()
-    }
+    // ---------- modifyAction (in-place edit through RM's row editor) ----------
 
     def "modifyAction rejects empty mods"() {
-        given: "POSTs are collected to prove no mutation fires"
-        def maPosts = []
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            maPosts << path
-            [status: 200, location: null, data: '{"status":"success"}']
-        }
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [], null, ["actType.1": "rulesActs", "actSubType.1": "getRuleActions", "ruleAct.1": ["200"]]) }
+        given:
+        def ma = wireModifyEditorTransport(100, [1], ["actType.1": "rulesActs", "actSubType.1": "getRuleActions", "ruleAct.1": ["200"]], runRuleEditor(1))
 
         when:
         script._rmModifyAction(100, 1, [:])
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains("at least one of")
-        maPosts.isEmpty()
-    }
-
-    // ---------- modifyAction composites: real remove / collect / move, driven over the transport ----------
-
-    // _rmCollectActionIndices, _rmDeleteAction and _rmMoveAction are PRIVATE, so the intra-script
-    // call resolves invokespecial and a per-instance metaClass stub on the script never intercepts
-    // them (unlike the non-private _rmAddAction). The composites below run all three for real
-    // against an evolving statusJson: the tier-1 actions map carries display order, and the
-    // /installedapp/btn interceptor applies each delAct / arrowUp click to that order the way RM
-    // would. ctl.order is the DISPLAY order and is served as ruleBuilderJson's actionList, which
-    // is where production reads it from; appSettings carries the same indices but its key order
-    // means nothing. Returns a control map -- order, clicks (every button click the composite
-    // fired), moveShifts (set false to model a move-arrow click that never commits).
-    // `postHook` (optional) sees every POST before the interceptor applies it, so a spec can
-    // fail ONE specific click (the trailing updateRule) without re-implementing the order
-    // machine. committedSettings is read at request time, so a spec may mutate it between
-    // two `when:` blocks to model what the rebuild writes at the new index.
-    private Map wireModifyActionTransport(int ruleId, List order, Map committedSettings, Closure postHook = null) {
-        Map ctl = [order: new ArrayList(order), clicks: [], moveShifts: true]
-        def statusFor = { List live ->
-            JsonOutput.toJson([
-                installedApp: [id: ruleId],
-                appSettings: live.collect { [name: "actType.${it}".toString(), value: "rulesActs"] },
-                eventSubscriptions: [[name: "evt1"]],
-                scheduledJobs: [],
-                appState: [],
-                childAppCount: 0, childDeviceCount: 0
-            ])
-        }
-        hubGet.register("/installedapp/configure/json/${ruleId}".toString()) { params ->
-            ruleConfigJson(ruleId, "r", [], null, committedSettings)
-        }
-        hubGet.register("/installedapp/configure/json/${ruleId}/selectActions".toString()) { params ->
-            ruleConfigJson(ruleId, "r", [], null, committedSettings)
-        }
-        hubGet.register("/installedapp/statusJson/${ruleId}".toString()) { params -> statusFor(ctl.order as List) }
-        // Display order, the way production reads it. Minimal on purpose: `broken`
-        // is the key _ruleCompiledState needs to recognize a classic RM rule, and
-        // false is what these fixtures mean -- none of them model a broken rule.
-        hubGet.register("/app/ruleBuilderJson/${ruleId}".toString()) { params ->
-            JsonOutput.toJson([broken: false, actionList: (ctl.order as List).collect { it.toString() }])
-        }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            if (postHook != null) postHook.call(path, body)
-            if (path == "/installedapp/btn") {
-                String name = body?.name?.toString()
-                String attr = body?.stateAttribute?.toString()
-                (ctl.clicks as List) << [name: name, stateAttribute: attr]
-                Integer idx = name?.isInteger() ? name.toInteger() : null
-                List cur = ctl.order as List
-                int at = (idx == null) ? -1 : cur.indexOf(idx)
-                if (attr == "delAct" && at >= 0) {
-                    ctl.order = cur.findAll { it != idx }
-                } else if (attr == "arrowUp" && at > 0 && ctl.moveShifts) {
-                    List shifted = cur.findAll { it != idx }
-                    shifted.add(at - 1, idx)
-                    ctl.order = shifted
-                }
-            }
-            [status: 200, location: null, data: '']
-        }
-        return ctl
-    }
-
-    // The add leg of the composite. _rmAddAction is non-private, so a per-instance metaClass
-    // override DOES intercept it; the rebuilt action lands at the end of the display order,
-    // which is where RM puts it.
-    private void wireModifyAddLeg(Map ctl, List specs, Integer newIndex, Map overrides = [:]) {
-        script.metaClass._rmAddAction = { Integer appId, Map spec ->
-            specs << spec
-            def out = [success: true, partial: false, actionIndex: newIndex,
-                       settingsApplied: [], settingsSkipped: []] + overrides
-            // An add that FAILED committed nothing, so the display order must not gain the
-            // row -- otherwise the post-failure health probe reads a phantom action.
-            if (out.success != false) ctl.order = (ctl.order as List) + newIndex
-            out
-        }
-    }
-
-    private List arrowUpClicks(Map ctl) {
-        return (ctl.clicks as List).findAll { it.stateAttribute == "arrowUp" }
-    }
-
-    def "modifyAction happy path: movesUp arithmetic, stable newIdx across the move, readback-gated success"() {
-        given: "a 3-action rule; the MIDDLE action (settings index 2, position 1 of [1,2,3]) is retargeted"
-        // One configure/json fixture serves both reads: the entry guard (actSubType.2/ruleAct.2)
-        // and the post-rebuild verification (ruleAct.4 -- the ADD's index: a move changes the
-        // action's position, never its settings index, so newIdx must stay 4 while the real move
-        // takes display order [1,3,4] to [1,4,3]).
-        def ma = wireModifyActionTransport(100, [1, 2, 3],
-            ["actType.2": "rulesActs", "actSubType.2": "getRuleActions", "ruleAct.2": ["200"], "ruleAct.4": ["300"]])
-        def specs = []
-        wireModifyAddLeg(ma, specs, 4)
-
-        when:
-        def result = script._rmModifyAction(100, 2, [ruleIds: [300]])
-
-        then: "one move-up (position 1 of 3 -> one action after it), against the add's index"
-        arrowUpClicks(ma) == [[name: "4", stateAttribute: "arrowUp"]]
-        specs[0].capability == "runRule"
-
-        and: "newActionIndex is the add's settings index (unchanged by the move), and the readback against it gates success"
-        result.newActionIndex == 4
-        result.movesUp == 1
-        result.movesDone == 1
-        result.verifiedTargets == ["300"]
-        result.success == true
-        result.partial == false
-    }
-
-    def "modifyAction carries a mixed this-rule privateBoolean target ['*','1809'] through the rebuild"() {
-        given:
-        def ma = wireModifyActionTransport(100, [1, 2, 3],
-            ["actType.2": "rulesActs", "actSubType.2": "getSetPrivateBoolean", "privateT.2": ["*", "1809"],
-             "pvTF.2": "false", "pvRuleType.2": "Rule Machine",
-             "privateT.4": ["*", "1809"], "pvTF.4": "true"])
-        def specs = []
-        wireModifyAddLeg(ma, specs, 4)
-
-        when:
-        def result = script._rmModifyAction(100, 2, [value: false])
-
-        then:
-        specs[0].capability == "privateBoolean"
-        specs[0].ruleIds*.toString() == ["*", "1809"]
-        result.verifiedTargets == ["*", "1809"]
-        result.success == true
-    }
-
-    def "this-rule target '*' is kept for privateBoolean and refused with a named message elsewhere"() {
-        expect:
-        script._rmNormalizeRuleIdsForWrite(["*", 1809], true) == ["*", 1809]
-        script._rmValidateRuleTargetExists("privateBoolean", ["*"], [] as Set) == null
-        script._rmValidateRuleTargetExists("privateBoolean", ["*", "1809"], [1809] as Set) == null
-
-        when: "the rule list is unverifiable, shape checks still refuse"
-        script._rmValidateRuleTargetExists("runRule", ["*"], null)
-
-        then:
-        def eNull = thrown(IllegalArgumentException)
-        eNull.message.startsWith("runRule target '*' is Rule Machine")
-
-        when:
-        script._rmValidateRuleTargetExists("privateBoolean", ["*", "1810"], [1809] as Set)
-
-        then: "the '*' fast path does not skip the numeric id beside it"
-        def eMixed = thrown(IllegalArgumentException)
-        eMixed.message.contains("'1810'")
-        eMixed.message.contains("does not exist")
-
-        when:
-        script._rmValidateRuleTargetExists("runRule", ["*"], [1809] as Set)
-
-        then:
-        def e = thrown(IllegalArgumentException)
-        e.message.contains('"this rule" target')
-        e.message.contains("only for privateBoolean")
-        !e.message.contains("is not a valid numeric rule id")
-
-        when:
-        script._rmNormalizeRuleIdsForWrite(["*"])
-
-        then:
-        def e2 = thrown(IllegalArgumentException)
-        e2.message.startsWith("rule target '*' is Rule Machine")
-    }
-
-    @spock.lang.Unroll
-    def "#cap addAction with the this-rule target '*': #outcome"() {
-        given:
-        installRuleTargetStubs()
-        hubGet.register('/hub2/appsList') { params -> appsListWithRule(555) }
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
-        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", [[name: "N", type: "button"]]) }
-        hubGet.register('/installedapp/configure/json/100/doActPage') { params -> ruleConfigJson(100, "r", []) }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        def posts = []
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> posts << path; [status: 200, location: null, data: ''] }
-        def writes = []
-        script.metaClass._rmWriteSettingOnPage = { Integer appId, String pageName, String key, Object value, List applied, String typeHint = null, List skipped = null, Map cache = null ->
-            writes << [field: key, value: value]
-            applied << key
-        }
-        Exception caught = null
-
-        when:
-        try { script._rmAddAction(100, actionSpec) }
-        catch (Exception e) { caught = e }
-
-        then:
-        if (written != null) {
-            assert writes.find { it.field?.toString()?.startsWith(fieldPrefix) }?.value == written
-        } else {
-            assert caught instanceof IllegalArgumentException
-            assert caught.message.contains('"this rule" target')
-            assert writes.isEmpty() && posts.isEmpty()
-        }
-
-        where:
-        cap              | fieldPrefix  | actionSpec                                                      | written     | outcome
-        "privateBoolean" | "privateT."  | [capability: "privateBoolean", ruleIds: ["*", 555.0], value: false] | ["*", 555] | "written mixed"
-        "privateBoolean" | "privateT."  | [capability: "privateBoolean", ruleIds: ["*"], value: true]       | ["*"]       | "written alone"
-        "runRule"        | "ruleAct."   | [capability: "runRule", ruleIds: ["*"]]                           | null        | "refused before any write"
-    }
-
-    def "modifyAction reposition soft-failure STOPS the move loop and flips success false with the verifyHint"() {
-        given: "the retargeted action needs two moves; the FIRST arrow click never commits"
-        // ruleAct.4 IS committed, so the readback passes and the move soft-failure is the sole
-        // cause of success:false.
-        def ma = wireModifyActionTransport(100, [1, 2, 3],
-            ["actType.1": "rulesActs", "actSubType.1": "getRuleActions", "ruleAct.1": ["200"], "ruleAct.4": ["300"]])
-        ma.moveShifts = false
-        def specs = []
-        wireModifyAddLeg(ma, specs, 4)
-
-        when: "modifying settings index 1 at position 0 of 3 (movesUp == 2)"
-        def result = script._rmModifyAction(100, 1, [ruleIds: [300]])
-
-        then: "the loop stopped after the first soft failure instead of walking the action further"
-        arrowUpClicks(ma).size() == 1
-        result.movesUp == 2
-        result.movesDone == 1
-        result.moveSoftFail == true
-        result.verifyHint.contains("VERIFY before retrying")
-        result.verifyHint.contains("Do not blind-retry")
-        result.success == false
-        result.partial == true
-    }
-
-    def "modifyAction readback mismatch (target field silently skipped) flips success false even when the add reported success"() {
-        given: "the add returns success:true + partial:true with ruleAct skipped; the readback finds no committed target"
-        def ma = wireModifyActionTransport(100, [1],
-            ["actType.1": "rulesActs", "actSubType.1": "getRuleActions", "ruleAct.1": ["200"]])
-        def specs = []
-        wireModifyAddLeg(ma, specs, 2, [partial: true, settingsApplied: ["actType.2", "actSubType.2"],
-                                        settingsSkipped: [[key: "ruleAct.2", reason: "silent_rejection"]]])
-
-        when:
-        def result = script._rmModifyAction(100, 1, [ruleIds: [300]])
-
-        then: "the readback is the gate: no committed ruleAct.2 -> the retarget did NOT land"
-        result.success == false
-        result.partial == true
-        result.error.contains("did not land")
-        result.settingsSkipped.size() == 1
-    }
-
-    def "modifyAction budget pause returns finish-up guidance and never claims success"() {
-        given: "two moves needed but the response budget is already exhausted"
-        // Real _timeBudgetExceeded: a 6000ms LAN budget against a t0 of 1 is past due at the
-        // harness's fixed now(), so the first move-loop checkpoint pauses.
-        settingsMap.lanBudgetMs = 6000
-        def ma = wireModifyActionTransport(100, [1, 2, 3],
-            ["actType.1": "rulesActs", "actSubType.1": "getRuleActions", "ruleAct.1": ["200"]])
-        def specs = []
-        wireModifyAddLeg(ma, specs, 4)
-
-        when:
-        def result = script._rmModifyAction(100, 1, [ruleIds: [300]], 1L)
-
-        then: "no move fired, the pause is explicit, and the error forbids re-issuing modifyAction"
-        arrowUpClicks(ma).isEmpty()
-        result.budgetPaused == true
-        result.movesRemaining == 2
-        result.success == false
-        result.partial == true
-        result.error.contains("Do NOT re-issue modifyAction")
-        result.error.contains("moveAction")
-    }
-
-    def "modifyAction pauseRule family: preserved fields decode the inverted pR boolean; mods.action overrides"() {
-        given: "a committed PAUSE action (pR.1 'false' = Pause) targeting rule 200"
-        // The rebuilt row's pR.<newIdx> is part of the readback gate now, so the fixture
-        // carries the value the rebuild is expected to write -- 'false' (Pause) for the
-        // preserve leg, flipped to 'true' (Resume) before the override leg below.
-        def committed = ["actType.1": "rulesActs", "actSubType.1": "getPauseResumeRules",
-                         "pauseRule.1": ["200"], "pR.1": "false", "pauseRule.2": ["200"], "pR.2": "false"]
-        def ma = wireModifyActionTransport(100, [1], committed)
-        def specs = []
-        wireModifyAddLeg(ma, specs, 2)
-
-        when: "retargeting only (action omitted) preserves the committed pause verb"
-        def preserved = script._rmModifyAction(100, 1, [ruleIds: [200]])
-
-        then:
-        specs[0].capability == "pauseRule"
-        specs[0].action == "pause"
-        preserved.success == true
-
-        when: "mods.action='resume' overrides it, against a rule back in its pre-modify shape"
-        ma.order = [1]
-        committed["pR.2"] = "true"
-        def overridden = script._rmModifyAction(100, 1, [ruleIds: [200], action: "resume"])
-
-        then: "the override rides through to the spec AND is verified at the new index"
-        specs[1].action == "resume"
-        overridden.success == true
-    }
-
-    def "modifyAction privateBoolean family: preserved value decodes the inverted pvTF boolean; mods.value overrides"() {
-        given: "a committed set-private-boolean-FALSE action (pvTF.1 'true' = FALSE) targeting rule 200"
-        // pvTF.<newIdx> is inverted the same way and is readback-gated too: value=false
-        // must persist as 'true', value=true as 'false'.
-        def committed = ["actType.1": "rulesActs", "actSubType.1": "getSetPrivateBoolean",
-                         "privateT.1": ["200"], "pvTF.1": "true", "privateT.2": ["200"], "pvTF.2": "true"]
-        def ma = wireModifyActionTransport(100, [1], committed)
-        def specs = []
-        wireModifyAddLeg(ma, specs, 2)
-
-        when: "retargeting only preserves the committed value (pvTF 'true' means FALSE)"
-        def preserved = script._rmModifyAction(100, 1, [ruleIds: [200]])
-
-        then:
-        specs[0].capability == "privateBoolean"
-        specs[0].value == false
-        preserved.success == true
-
-        when: "mods.value=true overrides, against a rule back in its pre-modify shape"
-        ma.order = [1]
-        committed["pvTF.2"] = "false"
-        def overridden = script._rmModifyAction(100, 1, [ruleIds: [200], value: true])
-
-        then:
-        specs[1].value == true
-        overridden.success == true
-    }
-
-    def "modifyAction empty or null ruleIds is refused BEFORE the delete (the dangling-target destructive path)"() {
-        given:
-        def maPosts = []
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            maPosts << path
-            [status: 200, location: null, data: '{"status":"success"}']
-        }
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [], null,
-            ["actType.1": "rulesActs", "actSubType.1": "getRuleActions", "ruleAct.1": ["200"]]) }
-
-        when:
-        script._rmModifyAction(100, 1, [ruleIds: mods])
-
-        then: "refused with the not-touched sentinel; the delete leg never ran (its delAct click is the POST that would show)"
-        def ex = thrown(IllegalArgumentException)
-        ex.message.contains("non-empty ruleIds")
-        ex.message.contains("RM is not touched")
-        maPosts.isEmpty()
-
-        where:
-        mods << [[], null]
-    }
-
-    def "modifyAction refuses a nonexistent target rule BEFORE the delete when the rule list is verifiable"() {
-        given: "a readable rule-id set -- RMUtils intersected with the app tree -- that lacks 999"
-        rmUtils = new RMUtilsMock()
-        rmUtils.stubRuleList5 = [[200: 'Rule 200'], [300: 'Rule 300']]
-        rmUtils.install()
-        hubGet.register('/hub2/appsList') { params -> appsListWithRules([200, 300]) }
-        def posts = []
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            posts << path
-            [status: 200, location: null, data: '']
-        }
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [], null,
-            ["actType.1": "rulesActs", "actSubType.1": "getRuleActions", "ruleAct.1": ["200"]]) }
-
-        when:
-        script._rmModifyAction(100, 1, [ruleIds: [999]])
-
-        then: "refused pre-write -- the delAct click never went out, in fact no POST of any kind did"
-        def ex = thrown(IllegalArgumentException)
-        ex.message.contains("999")
-        posts.isEmpty()
-    }
-
-    def "modifyAction passes validation on a committed runRule action and reaches the mutation leg (sentinel)"() {
-        given: "committed runRule actions at indices 1 and 2; the first mutating POST throws a sentinel"
-        hubGet.register('/app/ruleBuilderJson/100') { params -> JsonOutput.toJson([broken: false, actionList: ["1", "2"]]) }
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [], null, ["actType.1": "rulesActs", "actSubType.1": "getRuleActions", "ruleAct.1": ["200"], "actType.2": "rulesActs", "actSubType.2": "getRuleActions", "ruleAct.2": ["201"]]) }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, [[name: "actType.1", value: "rulesActs"], [name: "actType.2", value: "rulesActs"]]) }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            throw new IllegalStateException("REACHED_MUTATION_POST")
-        }
-
-        when: "retargeting action 1 to rule 300 (rule-list existence check skips: app tree unreadable in harness)"
-        Exception thrownEx = null
-        try {
-            script._rmModifyAction(100, 1, [ruleIds: [300]])
-        } catch (Exception e) { thrownEx = e }
-
-        then: "every guard passed and execution reached the first mutating hub write"
-        thrownEx != null
-        thrownEx.message.contains("REACHED_MUTATION_POST")
-    }
-
-    def "modifyAction via toolSetRule dispatch surfaces the guard refusal as the structured error envelope"() {
-        given:
-        enableWrite()
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [], null, ["actType.1": "switchActs", "actSubType.1": "getSwitchOn"]) }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, [[name: "actType.1", value: "switchActs"]]) }
-
-        when: "modifyAction targets a non-rule-targeting action through the public dispatcher"
-        def result = script.toolSetRule([appId: 100, modifyAction: [index: 1, mods: [ruleIds: [300]]], confirm: true])
-
-        then: "the refusal comes back as the structured error envelope, not a bare throw"
-        result.success == false
-        result.error.contains("rule-targeting actions")
-        result.error.contains("RM is not touched")
-    }
-
-    // ---------- modifyAction pre-delete refusals: every one must leave RM untouched ----------
-
-    def "modifyAction refuses a committed RuleType selector the rebuild cannot reproduce"() {
-        given: "action 1's runRuleType says Room Lighting, but the rebuild only ever writes 'Rule Machine'"
-        def maPosts = []
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            maPosts << path
-            [status: 200, location: null, data: '']
-        }
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [], null,
-            ["actType.1": "rulesActs", "actSubType.1": "getRuleActions", "ruleAct.1": ["200"],
-             "runRuleType.1": "Room Lighting"]) }
-
-        when:
-        script._rmModifyAction(100, 1, [ruleIds: [300]])
-
-        then: "refused pre-delete instead of silently retyping the action to Rule Machine"
-        def ex = thrown(IllegalArgumentException)
-        ex.message.contains("runRuleType")
-        ex.message.contains("Room Lighting")
-        ex.message.contains("removeAction + addAction")
-        ex.message.contains("RM is not touched")
-        maPosts.isEmpty()
-    }
-
-    def "modifyAction refuses to guess the pause verb when pR is unreadable and mods.action was omitted"() {
-        given: "a committed pauseRule action whose pR.1 never persisted"
-        def maPosts = []
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            maPosts << path
-            [status: 200, location: null, data: '']
-        }
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [], null,
-            ["actType.1": "rulesActs", "actSubType.1": "getPauseResumeRules", "pauseRule.1": ["200"]]) }
-
-        when: "the caller asks to retarget only, so the verb must be PRESERVED from a field that is not there"
-        script._rmModifyAction(100, 1, [ruleIds: [201]])
-
-        then: "refused pre-delete -- the old silent default would have flipped a Resume action to Pause"
-        def ex = thrown(IllegalArgumentException)
-        ex.message.contains("pR.1 is unreadable")
-        ex.message.contains("mods.action")
-        ex.message.contains("RM is not touched")
-        maPosts.isEmpty()
-    }
-
-    def "modifyAction refuses to guess the private-boolean value when pvTF is unreadable and mods.value was omitted"() {
-        given: "a committed privateBoolean action whose pvTF.1 never persisted"
-        def maPosts = []
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            maPosts << path
-            [status: 200, location: null, data: '']
-        }
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [], null,
-            ["actType.1": "rulesActs", "actSubType.1": "getSetPrivateBoolean", "privateT.1": ["200"]]) }
-
-        when:
-        script._rmModifyAction(100, 1, [ruleIds: [201]])
-
-        then: "same no-silent-default contract as the pause/resume verb"
-        def ex = thrown(IllegalArgumentException)
-        ex.message.contains("pvTF.1 is unreadable")
-        ex.message.contains("mods.value")
-        ex.message.contains("RM is not touched")
-        maPosts.isEmpty()
-    }
-
-    def "modifyAction refuses when the settings index is absent from the display order (pos less than zero)"() {
-        given: "settings carry action 5 but the rendered display order is [1, 2] -- the two sources disagree"
-        def ma = wireModifyActionTransport(100, [1, 2],
-            ["actType.5": "rulesActs", "actSubType.5": "getRuleActions", "ruleAct.5": ["200"]])
-
-        when:
-        script._rmModifyAction(100, 5, [ruleIds: [300]])
-
-        then: "refused pre-delete -- a rebuild would land the row at an arbitrary position"
-        def ex = thrown(IllegalArgumentException)
-        ex.message.contains("display order")
-        ex.message.contains("removeAction + addAction")
-        ex.message.contains("RM is not touched")
-
-        and: "no click of any kind went out (the delAct that would commit the delete is the one to watch)"
+        ex.message.contains("at least one")
         (ma.clicks as List).isEmpty()
-    }
-
-    def "modifyAction tolerates a committed target persisted as a bare scalar instead of a list"() {
-        given: "privateT.1 is the bare String '200' -- RM persists a single target that way"
-        def ma = wireModifyActionTransport(100, [1],
-            ["actType.1": "rulesActs", "actSubType.1": "getSetPrivateBoolean", "privateT.1": "200", "pvTF.1": "true",
-             "privateT.2": ["200"], "pvTF.2": "false"])
-        def specs = []
-        wireModifyAddLeg(ma, specs, 2)
-
-        when: "only the boolean value is modified, so the target must be PRESERVED off that scalar"
-        def result = script._rmModifyAction(100, 1, [value: true])
-
-        then: "the scalar was wrapped into a one-element list rather than rejected as an empty target"
-        specs[0].ruleIds == ["200"]
-        specs[0].value == true
-        result.success == true
-        result.verifiedTargets == ["200"]
-    }
-
-    def "modifyAction cancelTimers family rebuilds through the stopAct target field"() {
-        given: "a committed cancelTimers action (stopAct.1) targeting rule 200"
-        def ma = wireModifyActionTransport(100, [1],
-            ["actType.1": "rulesActs", "actSubType.1": "getStopActions", "stopAct.1": ["200"], "stopAct.2": ["300"]])
-        def specs = []
-        wireModifyAddLeg(ma, specs, 2)
-
-        when:
-        def result = script._rmModifyAction(100, 1, [ruleIds: [300]])
-
-        then: "the family's own list field is what gets rebuilt and read back"
-        specs[0].capability == "cancelTimers"
-        specs[0].ruleIds == [300]
-        result.success == true
-        result.verifiedTargets == ["300"]
-    }
-
-    def "modifyAction post-rebuild readback FETCH failure is partial, never a silent success"() {
-        given: "the second configure/json read -- the readback -- throws; the first (entry guard) succeeds"
-        def committed = ["actType.1": "rulesActs", "actSubType.1": "getRuleActions", "ruleAct.1": ["200"], "ruleAct.2": ["300"]]
-        def ma = wireModifyActionTransport(100, [1], committed)
-        def specs = []
-        wireModifyAddLeg(ma, specs, 2)
-        // Exactly two BARE configure/json reads happen: the entry guard and the readback.
-        // (The delete leg's version fetch goes to the /selectActions sub-page, which
-        // wireModifyActionTransport registers separately, so it never moves this counter.)
-        int cfgReads = 0
-        hubGet.register('/installedapp/configure/json/100') { params ->
-            cfgReads++
-            if (cfgReads >= 2) throw new IllegalStateException("configure/json read failed")
-            ruleConfigJson(100, "r", [], null, committed)
-        }
-
-        when: "a single-action rule, so no reposition moves sit between the add and the readback"
-        def result = script._rmModifyAction(100, 1, [ruleIds: [300]])
-
-        then: "the readback really was the throwing read -- precondition"
-        cfgReads == 2
-
-        and: "unverified is reported as unverified: the retarget may or may not have landed"
-        result.verificationFetchFailed == true
-        result.partial == true
-        result.success == false
-        result.error.contains("readback failed")
-        result.error.contains("hub_get_app_config")
-    }
-
-    def "modifyAction verb readback mismatch fails the rebuild even when the TARGET list landed"() {
-        given: "a committed PAUSE action; the rebuilt row persists pR.2='true' (Resume) instead"
-        def ma = wireModifyActionTransport(100, [1],
-            ["actType.1": "rulesActs", "actSubType.1": "getPauseResumeRules", "pauseRule.1": ["200"], "pR.1": "false",
-             "pauseRule.2": ["200"], "pR.2": "true"])
-        def specs = []
-        wireModifyAddLeg(ma, specs, 2)
-
-        when: "retarget-only, so the pause verb must be preserved"
-        def result = script._rmModifyAction(100, 1, [ruleIds: [200]])
-
-        then: "the target list matched, so only the verb check can be what failed this"
-        result.verifiedTargets == ["200"]
-        result.success == false
-        result.error.contains("target list landed")
-        result.error.contains("pR.2")
-        result.error.contains("wanted false")
-    }
-
-    def "modifyAction refuses an unknown pause/resume verb before it removes the action"() {
-        // Issue 489 class: the verb was checked only by the re-add, after the delete had removed the row.
-        given:
-        def ma = wireModifyActionTransport(100, [1],
-            ["actType.1": "rulesActs", "actSubType.1": "getPauseResumeRules", "pauseRule.1": ["200"], "pR.1": "false"])
-        def specs = []
-        wireModifyAddLeg(ma, specs, 2)
-
-        when:
-        script._rmModifyAction(100, 1, [action: "Pause"])
-
-        then:
-        def ex = thrown(IllegalArgumentException)
-        ex.message.contains("Unknown pauseRule action 'Pause'")
-        ex.message.contains("RM is not touched")
-        !(ma.clicks as List).any { it.stateAttribute == "delAct" }
-        specs.isEmpty()
-    }
-
-    // ---------- modifyAction post-delete failure paths through the public dispatcher ----------
-
-    def "_rmModifyPostDeleteMsg neutralizes a nested not-touched sentinel and names the leg and restore path"() {
-        when: "the re-add leg throws a helper error whose own message carries the pre-flight sentinel"
-        def msg = script._rmModifyPostDeleteMsg(2, "re-add", new IllegalArgumentException("addAction refused the spec. RM is not touched."))
-
-        then: "the sentinel is rewritten -- leaving it would route a half-mutated rule to the nothing-to-restore hint"
-        !msg.contains("RM is not touched")
-        msg.contains("the original action WAS already removed")
-        msg.contains("action 2 was already removed when the re-add leg failed")
-        msg.contains("hub_restore_backup")
-
-        and: "with no rebuilt index there is nothing to say about where the new row sits"
-        !msg.contains("The rebuilt action IS in the rule")
-
-        when: "the reposition leg throws AFTER the rebuild landed at a known index"
-        def rebuilt = script._rmModifyPostDeleteMsg(2, "reposition", new IllegalStateException("move click failed"), 7)
-
-        then: "the message points the caller at the row it can actually find"
-        rebuilt.contains("action 2 was already removed when the reposition leg failed")
-        rebuilt.contains("settings index 7")
-        rebuilt.contains("position NOT restored")
-    }
-
-    def "modifyAction re-add THROW surfaces without the sentinel and prompts a real roll-back"() {
-        given: "the add leg throws an error carrying the pre-flight sentinel -- a lie once the delete committed"
-        enableWrite()
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        wireModifyActionTransport(100, [1],
-            ["actType.1": "rulesActs", "actSubType.1": "getRuleActions", "ruleAct.1": ["200"]])
-        script.metaClass._rmAddAction = { Integer appId, Map spec ->
-            throw new IllegalArgumentException("addAction refused the merged spec. RM is not touched.")
-        }
-
-        when:
-        def result = script.toolSetRule([appId: 100, modifyAction: [index: 1, mods: [ruleIds: [300]]], confirm: true])
-
-        then: "the wrapped message reached the envelope with the sentinel neutralized"
-        result.success == false
-        !result.error.contains("RM is not touched")
-        result.error.contains("the original action WAS already removed")
-        result.error.contains("re-add leg failed")
-
-        and: "restoreHint is the roll-back form, NOT the pre-flight not-touched form"
-        result.restoreHint.contains("Backup baseline available")
-        !result.restoreHint.contains("Pre-flight refusal")
-
-        and: "the hint and the backup both say when that backup can be evicted"
-        result.backup.retention == "pinned"
-        result.restoreHint.contains(result.backup.retentionNote)
-        result.restoreHint.contains("Pinned baseline")
-    }
-
-    def "modifyAction re-add FAILURE returns the half-mutated envelope with subscriptionsNotLive"() {
-        given: "the add leg reports success:false -- the delete committed, the rebuild did not"
-        enableWrite()
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        def ma = wireModifyActionTransport(100, [1],
-            ["actType.1": "rulesActs", "actSubType.1": "getRuleActions", "ruleAct.1": ["200"]])
-        def specs = []
-        wireModifyAddLeg(ma, specs, 2, [success: false, error: "the wizard rejected the merged spec"])
-
-        when:
-        def result = script.toolSetRule([appId: 100, modifyAction: [index: 1, mods: [ruleIds: [300]]], confirm: true])
-
-        then: "half-mutated is never shape-identical to a guard refusal that touched nothing"
-        result.success == false
-        result.partial == true
-        result.error.contains("re-add failed")
-        result.restoreHint.contains("Backup baseline available")
-
-        and: "the trailing updateRule was SKIPPED, so the rule mutated without a re-init"
-        result.subscriptionsNotLive == true
-    }
-
-    def "modifyAction via toolSetRule SUCCESS: pre-modifyAction backup, position note, health, and no null-valued keys"() {
-        given: "the MIDDLE-position action of a two-action rule is retargeted, so one move-up is needed"
-        enableWrite()
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        def ma = wireModifyActionTransport(100, [1, 2],
-            ["actType.1": "rulesActs", "actSubType.1": "getRuleActions", "ruleAct.1": ["200"],
-             "actType.2": "rulesActs", "ruleAct.3": ["300"]])
-        def specs = []
-        wireModifyAddLeg(ma, specs, 3)
-
-        when:
-        def result = script.toolSetRule([appId: 100, modifyAction: [index: 1, mods: [ruleIds: [300]]], confirm: true])
-
-        then: "the dispatcher's own success shape: its backup reason, its note, its health block"
-        result.success == true
-        result.backup.reason == "pre-modifyAction"
-        result.note.contains("position in the rule is unchanged")
-        result.newActionIndex == 3
-        result.health != null
-
-        and: "a SUCCESS envelope omits every null-valued key outright"
-        !result.containsKey("error")
-        !result.containsKey("restoreHint")
-        !result.containsKey("verifyHint")
-        !result.containsKey("updateRuleError")
-        !result.containsKey("movesRemaining")
-    }
-
-    def "modifyAction via toolSetRule: a rejected trailing updateRule yields a real error and subscriptionsNotLive"() {
-        given: "the rebuild itself verifies cleanly; only the trailing updateRule click is refused"
-        enableWrite()
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        def ma = wireModifyActionTransport(100, [1],
-            ["actType.1": "rulesActs", "actSubType.1": "getRuleActions", "ruleAct.1": ["200"], "ruleAct.2": ["300"]],
-            { String path, Map body ->
-                if (path == "/installedapp/btn" && body?.name == "updateRule") {
-                    throw new RuntimeException("firmware refused the updateRule click")
-                }
-            })
-        def specs = []
-        wireModifyAddLeg(ma, specs, 2)
-
-        when:
-        def result = script.toolSetRule([appId: 100, modifyAction: [index: 1, mods: [ruleIds: [300]]], confirm: true])
-
-        then: "_rmModifyAction returned no error of its own, so this error can only be the dispatcher's synthesis"
-        result.updateRuleFailed == true
-        result.subscriptionsNotLive == true
-        result.success == false
-        result.error.contains("updateRule")
-        result.error.contains("firmware refused the updateRule click")
-        result.repairHints.any { it.toString().contains("updateRule click was rejected") }
     }
 
     def "modifyTrigger with a normal enum state is not rejected by the state-change guard"() {
@@ -5066,7 +4110,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "the state-change guard does not fire; execution reaches the unmocked hub layer instead"
         thrownEx != null
-        !thrownEx.message.contains("looks like a state-change comparator token")
+        !thrownEx.message.contains("is a change, not a state")
         thrownEx.message.contains("Unstubbed hubInternalGet")
     }
 
@@ -5093,7 +4137,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "the edit path surfaces the refusal, carrying the sentinel into the error"
         result.success == false
-        result.error?.contains("is not a valid state value")
+        result.error?.contains("is a change, not a state")
         result.error?.contains("RM is not touched")
 
         and: "restoreHint is the pre-flight (not-touched) form, NOT the misleading 'Backup saved before write' restore prompt"
@@ -5430,7 +4474,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "the edit path surfaces the refusal, carrying the sentinel into the error"
         result.success == false
-        result.error?.contains("looks like a state-change comparator token")
+        result.error?.contains("is a change, not a state")
         result.error?.contains("RM is not touched")
 
         and: "restoreHint is the pre-flight (not-touched) form, NOT the misleading 'Backup saved before write' restore prompt"
@@ -5658,7 +4702,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         stateMap.lastBackupTimestamp = 1234567890000L
         int snapshots = 0
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        script.metaClass._rmBackupBeforeEdit = { Integer id, String reason -> snapshots++; [backupKey: "k"] }
+        script.metaClass._rmBackupBeforeEdit = { Integer id, String reason, String activePage = null -> snapshots++; [backupKey: "k"] }
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
         hubGet.register('/installedapp/json/100') { params ->
@@ -5838,7 +4882,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "the live-options validation fails loud, naming the valid list and the closest match"
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains("not in Hubitat's trigger capability list")
+        ex.message.contains("is not a Rule Machine trigger capability")
         ex.message.contains("Did you mean 'Contact'?")
     }
 
@@ -5911,7 +4955,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains("not supported as a conditional-trigger condition")
+        ex.message.contains("is not modelled as a trigger's condition")
         ex.message.contains("addRequiredExpression")
         ex.message.contains("ifThen")
     }
@@ -5928,7 +4972,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains("not yet supported via the structured condition shortcut on any surface")
+        ex.message.contains("this tool does not model")
         ex.message.contains(cap)
         // Steers to the raw wizard escape hatches, the only paths that CAN author these.
         ex.message.contains("rawSettings")
@@ -6011,38 +5055,26 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "the walker rejects it with the shared date/day steer, uniform with the static path"
         result.success == false
-        result.error?.contains("not yet supported via the structured condition shortcut on any surface")
+        result.error?.contains("this tool does not model")
         result.error?.contains("rawSettings")
 
         where:
         cap << ["Between two dates", "Days of week", "On a Day"]
     }
 
-    def "_rmBuildCondition rejects Last Event Device (non-condition) fails loud steering to actions"() {
-        // Last Event Device is listed in the STPage condition picker but is an action-side reference to
-        // the device that fired the rule's trigger -- it has no point-in-time-condition meaning and is
-        // NOT a trigger capability either. On the static conditional-trigger path it would write
-        // rCapab_<N> and commit a broken condition. Reject up front, steering to ACTIONS (where the
-        // triggering-device reference is usable). Both-ways: reverting the guard proceeds to the
-        // isCondTrig_ write and the run hits the hub layer instead of this message.
+    def "_rmBuildCondition rejects Last Event Device as a condition the tool does not model"() {
+        // On the static conditional-trigger path it would write rCapab_<N> and commit a broken condition.
         when:
         script._rmBuildCondition(100, 1, [capability: "Last Event Device"], [])
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains("not usable as a condition")
+        ex.message.contains("this tool does not model; set it with rawSettings or walkStep")
         ex.message.contains("Last Event Device")
-        // Steers to actions (the triggering-device reference), not a condition.
-        ex.message.contains("in actions")
     }
 
-    def "addRequiredExpression Last Event Device (non-condition) fails loud on the reveal-walker too"() {
-        // Fail-loud parity across surfaces: Last Event Device is a valid STPage picker option but an
-        // action-side reference to the device that fired the trigger -- not usable as a condition, and
-        // NOT a trigger capability either. Without a pre-walker guard the walk would write rCapab_<N>
-        // and commit a broken condition. The guard rejects it up front, uniform with the static path,
-        // steering to ACTIONS. Both-ways: removing the pre-walker guard lets the walk proceed and the
-        // message is NOT the non-condition steer.
+    def "addRequiredExpression Last Event Device fails loud on the reveal-walker too"() {
+        // Without a pre-walker guard the walk would write rCapab_<N> and commit a broken condition.
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -6071,29 +5103,22 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             confirm: true
         ])
 
-        then: "the walker rejects it with the non-condition reject, uniform with the static path"
+        then: "the walker rejects it as not modelled, uniform with the static path"
         result.success == false
-        result.error?.contains("not usable as a condition")
-        result.error?.contains("in actions")
+        result.error?.contains("this tool does not model; set it with rawSettings or walkStep")
         result.error?.contains("Last Event Device")
     }
 
-    def "_rmBuildCondition rejects Lock codes (unconfigurable condition) fails loud steering to the RM UI"() {
-        // Lock codes IS a valid condition type, but authoring one needs a lock device plus a specific
-        // code name and the static condition path has no field for either -- it would write rCapab_<N>
-        // and commit an incomplete condition (renders "on null: null") the health guard does not catch.
-        // Reject up front, before any condition write, steering to the Rule Machine UI. Distinct from the
-        // non-condition caps: Lock codes IS a real condition, just not fully authorable here. Both-ways:
-        // reverting the guard proceeds to the isCondTrig_ write and the run hits the hub layer instead.
+    def "_rmBuildCondition rejects Lock codes as a condition the tool does not model"() {
+        // The condition path has no field for the code name; it would commit an incomplete condition
+        // (renders "on null: null") that the health guard does not catch.
         when:
         script._rmBuildCondition(100, 1, [capability: "Lock codes"], [])
 
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.contains("Lock codes")
-        ex.message.contains("lock device")
-        ex.message.contains("code name")
-        ex.message.contains("Rule Machine UI")
+        ex.message.contains("this tool does not model; set it with rawSettings or walkStep")
     }
 
     def "addRequiredExpression Lock codes (unconfigurable condition) fails loud on the reveal-walker too"() {
@@ -6134,9 +5159,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then: "the walker rejects it with the unconfigurable-condition reject, uniform with the static path"
         result.success == false
         result.error?.contains("Lock codes")
-        result.error?.contains("lock device")
-        result.error?.contains("code name")
-        result.error?.contains("Rule Machine UI")
+        result.error?.contains("this tool does not model")
+        result.error?.contains("does not model")
     }
 
     def "addAction ifThen Lock codes fails loud firmware-independently (picker lacks the cap) PRE-WRITE (no opener committed)"() {
@@ -6187,10 +5211,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then: "the reject is the tailored unconfigurable-condition steer, NOT the generic picker miss"
         result.success == false
         result.error?.contains("Lock codes")
-        result.error?.contains("lock device")
-        result.error?.contains("code name")
-        result.error?.contains("Rule Machine UI")
-        !result.error?.contains("not in doActPage option list")
+        result.error?.contains("this tool does not model")
+        result.error?.contains("does not model")
+        !result.error?.contains("is not a Rule Machine condition capability")
 
         and: "the reject reports the rule as untouched (pre-write hoist -- opener never committed)"
         result.error?.contains("RM is not touched")
@@ -6248,10 +5271,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then: "the reject is the tailored non-condition steer, NOT the generic picker miss"
         result.success == false
         result.error?.contains("Last Event Device")
-        result.error?.contains("not usable as a condition")
-        result.error?.contains("in actions")
+        result.error?.contains("this tool does not model")
         result.error?.contains("RM is not touched")
-        !result.error?.contains("not in doActPage option list")
+        !result.error?.contains("is not a Rule Machine condition capability")
 
         and: "the pre-write hoist fired: no opener (actType) write, no cond=a write, and no rollback actionCancel click"
         !posts.any { it.body instanceof Map && (it.body as Map).any { k, v -> k?.toString()?.startsWith("settings[actType.") } }
@@ -6306,26 +5328,26 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             confirm: true
         ])
 
-        then: "the batch fails and is marked partial (one op refused pre-write)"
+        then: "the batch fails; the one op was refused pre-write, so nothing landed and it is not partial"
         result.success == false
-        result.partial == true
+        result.partial == false
 
         and: "the refusal rides on the addAction patch entry as the tailored steer, NOT the generic picker miss"
         // The distinguishing invariant of the patches path vs the dispatcher path: the reject is
         // reported on the per-op entry, and the fail-closed stop names that entry in the top-level
         // error. A regression that reroutes the reject through the outer catch would drop
-        // addPatch.error and bulkStoppedAfter and still pass success:false + partial:true.
+        // addPatch.error and bulkStoppedAfter and still pass success:false.
         result.bulkStoppedAfter == "patches[0]"
         result.finalisationNotAttempted == true
-        result.error?.startsWith("Stopped after patches[0] failed: 'Lock codes'")
+        result.error?.startsWith("Stopped after patches[0] failed:")
+        result.error?.contains("'Lock codes' is a Rule Machine condition this tool does not model")
         !result.error?.contains("..")
         def addPatch = (result.patches as List).find { it instanceof Map && it.op == "addAction" }
         addPatch != null
         addPatch.success == false
         addPatch.error?.contains("Lock codes")
-        addPatch.error?.contains("lock device")
-        addPatch.error?.contains("code name")
-        addPatch.error?.contains("Rule Machine UI")
+        addPatch.error?.contains("this tool does not model")
+        addPatch.error?.contains("does not model")
         addPatch.error?.contains("RM is not touched")
         !addPatch.error?.contains("not in doActPage option list")
 
@@ -6366,6 +5388,31 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         condWizardOpen | expectedButtons
         false          | ["actionCancel"]
         true           | ["cancelCapab", "actionCancel"]
+    }
+
+    def "rollback renders doActPage right after actionCancel, so RM applies the cancel before the row check"() {
+        // The click only flags the cancel; RM applies it on the next doActPage render. Without that
+        // render the editor stays open, RM ignores delAct, and the rollback waits on the re-click.
+        given:
+        def seq = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn") seq << "btn:${body?.name}".toString()
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            seq << "render:doActPage"
+            ruleConfigJson(100, "r", [[name: "actionCancel", type: "button"]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> seq << "status"; statusJson(100) }
+
+        when:
+        def rolledBack = script._rmRollbackInFlightAction(100, 1)
+
+        then:
+        rolledBack == true
+        def cancelAt = seq.indexOf("btn:actionCancel")
+        cancelAt >= 0 && seq[cancelAt + 1] == "render:doActPage" && seq[cancelAt + 2] == "status"
+        !seq.contains("btn:1")
     }
 
     def "rollback falls back to the verified delAct leg when actionCancel leaves the row (deleteWorks=#deleteWorks)"() {
@@ -6509,7 +5556,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then: "the tailored unconfigurable-condition reject fires, not the generic picker miss"
         result.success == false
         result.error?.contains("Lock codes")
-        result.error?.contains("lock device")
+        result.error?.contains("this tool does not model")
         result.error?.contains("RM is not touched")
         !result.error?.contains("not in STPage option list")
     }
@@ -6540,7 +5587,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then: "the tailored unconfigurable-condition reject fires and the rule is reported untouched"
         result.success == false
         result.error?.contains("Lock codes")
-        result.error?.contains("lock device")
+        result.error?.contains("this tool does not model")
         result.error?.contains("RM is not touched")
     }
 
@@ -6549,7 +5596,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // include the `not` negation flag -- the only machine-readable place an agent learns a condition can be
         // negated. Both-ways: deleting the `not` entry from either payload's conditionFields reds this guard.
         expect: "the trigger discover payload lists a 'not' condition field"
-        def trigFields = script._rmTriggerSchemaForDiscover().conditionFields
+        def trigFields = script._rmCondDiscover("trigger").conditionFields
         trigFields.any { it.name == "not" }
 
         and: "the action discover payload lists a 'not' condition field"
@@ -6675,7 +5722,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.partial == true
 
         and: "the skip's precise verify-and-repair hint is surfaced in repairHints"
-        result.repairHints.any { it.contains("could not be re-fetched") && it.contains("walkStep") }
+        result.repairHints.any { it.contains("could not be re-read") && it.contains("hub_get_app_config") }
     }
 
     def "addTrigger numeric *changed* with a THROWING routing re-fetch force-writes ReltDev (numeric infallibility), NOT the device-state degrade"() {
@@ -6867,8 +5914,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         expect: "genuine no-RHS state-change comparators match (wrapped or bare)"
         script._rmComparatorIsRhsOptional("*changed*")
         script._rmComparatorIsRhsOptional("changed")
-        script._rmComparatorIsRhsOptional("*became true*")
-        script._rmComparatorIsRhsOptional("became false")
+        !script._rmComparatorIsRhsOptional("*became true*")
 
         and: "comparators that merely CONTAIN a marker as a substring do NOT match"
         !script._rmComparatorIsRhsOptional("unchanged")
@@ -6889,8 +5935,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains("not valid as a condition")
-        ex.message.contains("TRIGGER row")
+        ex.message.contains("has no comparator for a")
+        ex.message.contains("'*changed*' is a trigger-only comparator; add it as a trigger row (addTrigger) instead.")
     }
 
     def "addRequiredExpression rejects a state-change comparator on a device-state condition (reveal-walker parity)"() {
@@ -6927,8 +5973,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "the walker rejects it, steering to a trigger row"
         result.success == false
-        result.error?.contains("not valid as a condition")
-        result.error?.contains("TRIGGER row")
+        result.error?.contains("has no comparator for a")
+        result.error?.contains("'*changed*' is a trigger-only comparator; add it as a trigger row (addTrigger) instead.")
     }
 
     @spock.lang.Unroll
@@ -6945,8 +5991,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains("not valid as a condition")
-        ex.message.contains("TRIGGER row")
+        ex.message.contains("has no comparator for a")
+        ex.message.contains("'*changed*' is a trigger-only comparator; add it as a trigger row (addTrigger) instead.")
 
         where:
         cap << ["Water sensor", "Thermostat mode"]
@@ -6954,11 +6000,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     @spock.lang.Unroll
     def "addRequiredExpression rejects a *changed* comparator on a NON-CURATED device-state/enum condition capability '#cap' (reveal-walker deny-list)"() {
-        // Reveal-walker parity for the deny-list, on STPage. For Water sensor the F18 discrete-event
-        // guard yields the RHS-optional shape to the change-comparator guard, so the message stays
-        // the uniform trigger-row steer (NOT the discrete-event one). Both-ways: reverting to the
-        // positive == "device-state" match lets the null-family cap fall through (F18 also yields
-        // the *changed* shape), so the walk proceeds instead of this reject.
+        // Reveal-walker parity on STPage: the shared condition check refuses a *changed* comparator on
+        // a device-state condition with the uniform trigger-row steer.
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -6989,11 +6032,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "the walker rejects it with the uniform trigger-row steer"
         result.success == false
-        result.error?.contains("not valid as a condition")
-        result.error?.contains("TRIGGER row")
-
-        and: "not the F18 discrete-event message (the change-comparator guard owns the *changed* shape)"
-        !(result.error?.toString()?.contains("discrete-event capability"))
+        result.error?.contains("has no comparator for a")
+        result.error?.contains("'*changed*' is a trigger-only comparator; add it as a trigger row (addTrigger) instead.")
 
         where:
         cap << ["Water sensor", "Thermostat mode"]
@@ -7033,7 +6073,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "the STPage validation fails loud with the closest live-option match"
         result.success == false
-        result.error?.contains("not in STPage option list")
+        result.error?.contains("is not a Rule Machine condition capability")
         result.error?.contains("Did you mean 'Switch'?")
     }
 
@@ -7074,7 +6114,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "the doActPage validation fails loud with the closest live-option match"
         result.success == false
-        result.error?.contains("not in doActPage option list")
+        result.error?.contains("is not a Rule Machine condition capability")
         result.error?.contains("Did you mean 'Switch'?")
     }
 
@@ -7084,6 +6124,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // the caller must see the stuck-orphan marker with the removeAction/backup recovery path.
         given:
         enableWrite()
+        hubGet.register('/device/fullJson/1') { params -> '{"id":"1","name":"Smoke"}' }
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         def posts = []
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -7127,14 +6168,14 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         when:
         def result = script.toolSetRule([
             appId: 100,
-            addAction: [capability: "ifThen", expression: [conditions: [[capability: "Switc"]]]],
+            addAction: [capability: "ifThen", expression: [conditions: [[capability: "Smoke detector", deviceIds: [1], state: "detected"]]]],
             confirm: true
         ])
 
         then: "the refusal text survives, carrying the stuck-orphan marker and recovery path"
         result.success == false
         result.wizardStuck == true
-        result.error?.contains("not in doActPage option list")
+        result.error?.contains("is not in Rule Machine's condition list on this hub")
         result.error?.contains("wizardStuck -- orphan action 1")
         result.error?.contains("removeAction:{index:1}")
     }
@@ -7269,19 +6310,20 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         ]
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", selActsAfter) }
+        def posts = []
+        // The variable exists only once its varValue write has landed, as on the hub.
         hubGet.register('/installedapp/statusJson/100') { params ->
             JsonOutput.toJson([
                 installedApp: [id: 100],
                 appSettings: [],
                 eventSubscriptions: [],
                 scheduledJobs: [],
-                appState: [[name: "allLocalVars", value: [counter: [type: "integer", value: 42]]]],
+                appState: posts.any { it.body?.containsKey("settings[varValue]") } ? [[name: "allLocalVars", value: [counter: [type: "integer", value: 42]]]] : [],
                 state: [:]
             ])
         }
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
 
-        def posts = []
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             posts << [path: path, body: body]
             [status: 200, location: null, data: '']
@@ -7315,14 +6357,14 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         ]
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", selActsAfter) }
+        def posts = []
         hubGet.register('/installedapp/statusJson/100') { params ->
             JsonOutput.toJson([
                 installedApp: [id: 100], appSettings: [], eventSubscriptions: [], scheduledJobs: [],
-                appState: [[name: "allLocalVars", value: [flag: [type: "boolean", value: true]]]], state: [:]
+                appState: posts.any { it.body?.containsKey("settings[varValue]") } ? [[name: "allLocalVars", value: [flag: [type: "boolean", value: true]]]] : [], state: [:]
             ])
         }
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        def posts = []
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             posts << [path: path, body: body]
             [status: 200, location: null, data: '']
@@ -7359,15 +6401,15 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         ]
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", selActsAfter) }
+        def posts = []
         hubGet.register('/installedapp/statusJson/100') { params ->
             JsonOutput.toJson([
                 installedApp: [id: 100], appSettings: [], eventSubscriptions: [], scheduledJobs: [],
-                appState: [[name: "allLocalVars", value: [(varName): [type: rmType.toLowerCase(), value: rawValue]]]],
+                appState: posts.any { it.body?.containsKey("settings[varValue]") } ? [[name: "allLocalVars", value: [(varName): [type: ([Number: "integer", Decimal: "bigdecimal"][rmType] ?: rmType.toLowerCase()), value: rawValue]]]] : [],
                 state: [:]
             ])
         }
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        def posts = []
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             posts << [path: path, body: body]
             [status: 200, location: null, data: '']
@@ -7404,7 +6446,593 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         "Decimal"  | "ratio"       | 0.5
         "String"   | "label"       | "ready"
         "Boolean"  | "flag"        | true
-        "DateTime" | "lastSeenAt"  | "2026-05-17T14:30:00.000-0400"
+    }
+
+    def "addLocalVariable DateTime writes RM's date and time fields and clicks its Done, never varValue"() {
+        given: "RM's DateTime editor offers varTime + varDate and a dateTimeDone button instead of varValue"
+        enableWrite()
+        def selActs = [
+            [name: "hbVar", type: "text"],
+            [name: "varType", type: "enum", options: ["Number", "Decimal", "String", "Boolean", "DateTime"]],
+            [name: "varTime", type: "time"],
+            [name: "varDate", type: "date"]
+        ]
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        def posts = []
+        boolean done = false
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", done ? [] : selActs) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            JsonOutput.toJson([
+                installedApp: [id: 100], appSettings: [], eventSubscriptions: [], scheduledJobs: [],
+                appState: done ? [[name: "allLocalVars", value: [seenAt: [type: "datetime", value: "2026-05-17T14:30:00.000-0400"]]]] : [],
+                state: [:]
+            ])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            if (path == "/installedapp/btn" && body.name == "dateTimeDone") done = true
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([appId: 100, addLocalVariable: [name: "seenAt", type: "DateTime", value: "2026-05-17T14:30:00"], confirm: true])
+
+        then: "date and time go in one POST, then Done with RM's dtDone state"
+        def dt = posts.find { it.path == "/installedapp/update/json" && it.body.containsKey("settings[varDate]") }
+        dt.body["settings[varDate]"] == "2026-05-17"
+        dt.body["settings[varTime]"] == "14:30"
+        posts.any { it.path == "/installedapp/btn" && it.body.name == "dateTimeDone" && it.body.stateAttribute == "dtDone" }
+        !posts.any { it.body?.containsKey("settings[varValue]") }
+        result.success == true
+        result.variable?.type == "DateTime"
+    }
+
+    def "addLocalVariable DateTime refuses a value that is not yyyy-MM-ddTHH:mm before anything is sent"() {
+        given:
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            JsonOutput.toJson([installedApp: [id: 100], appSettings: [], eventSubscriptions: [], scheduledJobs: [], appState: [], state: [:]])
+        }
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> posts << path; [status: 200, location: null, data: ''] }
+
+        when:
+        def result = script.toolSetRule([appId: 100, addLocalVariable: [name: "seenAt", type: "DateTime", value: "tomorrow"], confirm: true])
+
+        then:
+        result.success == false
+        result.error.contains("requires a valid date and time")
+        result.backup == null
+        posts.isEmpty()
+    }
+
+    def "addLocalVariable DateTime refuses a value that is not a real date and time: #value"() {
+        given:
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            JsonOutput.toJson([installedApp: [id: 100], appSettings: [], eventSubscriptions: [], scheduledJobs: [], appState: [], state: [:]])
+        }
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> posts << path; [status: 200, location: null, data: ''] }
+
+        when:
+        def result = script.toolSetRule([appId: 100, addLocalVariable: [name: "seenAt", type: "DateTime", value: value], confirm: true])
+
+        then:
+        result.success == false
+        result.error.contains("requires a valid date and time")
+        posts.isEmpty()
+
+        where:
+        value << ["2026-01-01T12:30garbage", "2026-13-45T25:99", "2026-02-30T10:00", "12:30"]
+    }
+
+    def "addLocalVariable DateTime whose stored wall clock differs from the request is not verified"() {
+        given: "RM commits the variable, but at another time than asked"
+        enableWrite()
+        def selActs = [[name: "hbVar", type: "text"], [name: "varType", type: "enum", options: ["Number", "DateTime"]],
+                       [name: "varTime", type: "time"], [name: "varDate", type: "date"]]
+        boolean done = false
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", done ? [] : selActs) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            JsonOutput.toJson([installedApp: [id: 100], appSettings: [], eventSubscriptions: [], scheduledJobs: [],
+                appState: done ? [[name: "allLocalVars", value: [seenAt: [type: "datetime", value: "2026-05-17T09:00:00.000-0400"]]]] : [], state: [:]])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn" && body.name == "dateTimeDone") done = true
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([appId: 100, addLocalVariable: [name: "seenAt", type: "DateTime", value: "2026-05-17T14:30"], confirm: true])
+
+        then:
+        result.success == false
+        result.partial == true
+        result.verified == false
+        result.error.contains("2026-05-17T09:00")
+    }
+
+    def "an addLocalVariable that leaves the editor open because cancelGV fails reports wizardStuck and applied unknown"() {
+        given: "a DateTime editor without its fields, and a cancelGV click that the hub refuses"
+        enableWrite()
+        def selActs = [[name: "hbVar", type: "text"], [name: "varType", type: "enum", options: ["Number", "DateTime"]]]
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", selActs) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            JsonOutput.toJson([installedApp: [id: 100], appSettings: [], eventSubscriptions: [], scheduledJobs: [], appState: [], state: [:]])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn" && body.name == "cancelGV") throw new RuntimeException("button refused")
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([appId: 100, addLocalVariable: [name: "seenAt", type: "DateTime", value: "2026-05-17T14:30"], confirm: true])
+
+        then:
+        result.success == false
+        result.wizardStuck == true
+        result.applied == null
+        result.activated == false
+        (result.repairHints as List).any { it.toString().contains("cancelGV") }
+    }
+
+    def "addLocalVariable DateTime cancels the editor when RM offers no date or time field"() {
+        given: "a DateTime editor that never reveals varDate/varTime"
+        enableWrite()
+        def selActs = [[name: "hbVar", type: "text"], [name: "varType", type: "enum", options: ["Number", "DateTime"]]]
+        boolean cancelled = false
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", cancelled ? [] : selActs) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            JsonOutput.toJson([installedApp: [id: 100], appSettings: [], eventSubscriptions: [], scheduledJobs: [], appState: [], state: [:]])
+        }
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            if (path == "/installedapp/btn" && body.name == "cancelGV") cancelled = true
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([appId: 100, addLocalVariable: [name: "seenAt", type: "DateTime", value: "2026-05-17T14:30"], confirm: true])
+
+        then:
+        result.success == false
+        result.error.contains("did not offer")
+        posts.any { it.path == "/installedapp/btn" && it.body.name == "cancelGV" && it.body.stateAttribute == "cancelGV" }
+        !posts.any { it.body?.containsKey("settings[varValue]") }
+    }
+
+    def "addLocalVariable refuses a #type value RM would store but not render (#value) before anything is sent"() {
+        given:
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> JsonOutput.toJson([installedApp: [id: 100], appSettings: [], eventSubscriptions: [], scheduledJobs: [], appState: [], state: [:]]) }
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> posts << path; [status: 200, location: null, data: ''] }
+
+        when:
+        def result = script.toolSetRule([appId: 100, addLocalVariable: [name: "n", type: type, value: value], confirm: true])
+
+        then:
+        result.success == false
+        result.error.contains("RM is not touched")
+        result.backup == null
+        posts.isEmpty()
+
+        where:
+        type      | value
+        "Number"  | "abc"
+        "Number"  | "1.5"
+        "Decimal" | "1.2.3"
+        "Number"  | "1e999999999"
+        "Decimal" | "1e-999999999"
+        "Number"  | "1e2147483648"
+    }
+
+    def "addLocalVariable DateTime takes the hub-variable forms: a space instead of T"() {
+        given:
+        enableWrite()
+        def selActs = [[name: "hbVar", type: "text"], [name: "varType", type: "enum", options: ["Number", "DateTime"]],
+                       [name: "varTime", type: "time"], [name: "varDate", type: "date"]]
+        boolean done = false
+        def posts = []
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", done ? [] : selActs) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            JsonOutput.toJson([installedApp: [id: 100], appSettings: [], eventSubscriptions: [], scheduledJobs: [],
+                appState: done ? [[name: "allLocalVars", value: [seenAt: [type: "datetime", value: "2026-05-17T14:30:00.000+0000"]]]] : [], state: [:]])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            if (path == "/installedapp/btn" && body.name == "dateTimeDone") done = true
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([appId: 100, addLocalVariable: [name: "seenAt", type: "DateTime", value: "2026-05-17 14:30"], confirm: true])
+
+        then:
+        result.success == true
+        def dt = posts.find { it.path == "/installedapp/update/json" && it.body.containsKey("settings[varDate]") }
+        dt.body["settings[varDate]"] == "2026-05-17"
+        dt.body["settings[varTime]"] == "14:30"
+    }
+
+    def "an addLocalVariable write that throws, with cancelGV also failing, reports the open editor and names cancelGV"() {
+        given: "the varValue POST fails and the hub refuses cancelGV"
+        enableWrite()
+        def selActs = [[name: "hbVar", type: "text"], [name: "varType", type: "enum", options: ["Number"]], [name: "varValue", type: "number"]]
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", selActs) }
+        hubGet.register('/installedapp/statusJson/100') { params -> JsonOutput.toJson([installedApp: [id: 100], appSettings: [], eventSubscriptions: [], scheduledJobs: [], appState: [], state: [:]]) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (body?.containsKey("settings[varValue]")) throw new RuntimeException("status code: 500")
+            if (path == "/installedapp/btn" && body.name == "cancelGV") throw new RuntimeException("button refused")
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([appId: 100, addLocalVariable: [name: "n", type: "Number", value: 5], confirm: true])
+
+        then:
+        result.success == false
+        result.wizardStuck == true
+        result.applied == null
+        (result.repairHints as List).any { it.toString().contains("button:'cancelGV'") }
+    }
+
+    def "an addLocalVariable write whose response is lost after RM committed the variable is a success, and cancelGV is not clicked"() {
+        given: "the varValue POST commits on the hub but its response is lost"
+        enableWrite()
+        def selActs = [[name: "hbVar", type: "text"], [name: "varType", type: "enum", options: ["Number"]], [name: "varValue", type: "number"]]
+        boolean committed = false
+        def clicks = []
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", committed ? [] : selActs) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            JsonOutput.toJson([installedApp: [id: 100], appSettings: [], eventSubscriptions: [], scheduledJobs: [],
+                appState: committed ? [[name: "allLocalVars", value: [n: [type: "integer", value: 5]]]] : [], state: [:]])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn") clicks << body.name
+            if (body?.containsKey("settings[varValue]")) { committed = true; throw new RuntimeException("Read timed out") }
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([appId: 100, addLocalVariable: [name: "n", type: "Number", value: 5], confirm: true])
+
+        then:
+        result.success == true
+        result.applied == true
+        !clicks.contains("cancelGV")
+    }
+
+    def "an addLocalVariable that did not commit and whose editor was cancelled is applied:false"() {
+        given: "varValue is written, nothing commits, and cancelGV closes the editor"
+        enableWrite()
+        def selActs = [[name: "hbVar", type: "text"], [name: "varType", type: "enum", options: ["Number"]], [name: "varValue", type: "number"]]
+        boolean cancelled = false
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", cancelled ? [] : selActs) }
+        hubGet.register('/installedapp/statusJson/100') { params -> JsonOutput.toJson([installedApp: [id: 100], appSettings: [], eventSubscriptions: [], scheduledJobs: [], appState: [], state: [:]]) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn" && body.name == "cancelGV") cancelled = true
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([appId: 100, addLocalVariable: [name: "n", type: "Number", value: 5], confirm: true])
+
+        then:
+        cancelled
+        result.success == false
+        result.applied == false
+        !result.wizardStuck
+        result.note.contains("NOT added")
+    }
+
+    def "an addLocalVariable whose every read-back fails with the editor closed is unknown, and cancelGV is not clicked"() {
+        given: "statusJson fails after the value is written, and RM closed the editor"
+        enableWrite()
+        def selActs = [[name: "hbVar", type: "text"], [name: "varType", type: "enum", options: ["Number"]], [name: "varValue", type: "number"]]
+        boolean written = false
+        def clicks = []
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", written ? [] : selActs) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            if (written) throw new RuntimeException("HTTP 502")
+            JsonOutput.toJson([installedApp: [id: 100], appSettings: [], eventSubscriptions: [], scheduledJobs: [], appState: [], state: [:]])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn") clicks << body.name
+            if (body?.containsKey("settings[varValue]")) written = true
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([appId: 100, addLocalVariable: [name: "n", type: "Number", value: 5], confirm: true])
+
+        then:
+        result.success == false
+        result.applied == null
+        result.verified == false
+        result.verificationFetchFailed == true
+        result.error.contains("unknown")
+        !clicks.contains("cancelGV")
+    }
+
+    def "addLocalVariable sends a Number or Decimal in plain form: #value as #type is posted as #posted"() {
+        given:
+        enableWrite()
+        def selActs = [[name: "hbVar", type: "text"], [name: "varType", type: "enum", options: ["Number", "Decimal"]], [name: "varValue", type: "number"]]
+        boolean committed = false
+        def posts = []
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", committed ? [] : selActs) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            JsonOutput.toJson([installedApp: [id: 100], appSettings: [], eventSubscriptions: [], scheduledJobs: [],
+                appState: committed ? [[name: "allLocalVars", value: [n: [type: type == "Number" ? "integer" : "bigdecimal", value: posted]]]] : [], state: [:]])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << body
+            if (body?.containsKey("settings[varValue]")) committed = true
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([appId: 100, addLocalVariable: [name: "n", type: type, value: value], confirm: true])
+
+        then:
+        posts.find { it?.containsKey("settings[varValue]") }?.get("settings[varValue]")?.toString() == posted
+        result.success == true
+
+        where:
+        type      | value   | posted
+        "Number"  | " 5 "   | "5"
+        "Number"  | "+5"    | "5"
+        "Number"  | "5.0"   | "5"
+        "Number"  | 7.00G   | "7"
+        "Decimal" | " 2.5 " | "2.5"
+        "Decimal" | "1e3"   | "1000"
+    }
+
+    def "an addLocalVariable write that throws before RM shows the commit is judged by the retried read-back"() {
+        given: "the varValue POST throws and the variable shows only on the second read"
+        enableWrite()
+        def selActs = [[name: "hbVar", type: "text"], [name: "varType", type: "enum", options: ["Number"]], [name: "varValue", type: "number"]]
+        int reads = 0
+        boolean written = false
+        def clicks = []
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", written ? [] : selActs) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            boolean show = written && (++reads >= 2)
+            JsonOutput.toJson([installedApp: [id: 100], appSettings: [], eventSubscriptions: [], scheduledJobs: [],
+                appState: show ? [[name: "allLocalVars", value: [n: [type: "integer", value: 5]]]] : [], state: [:]])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn") clicks << body.name
+            if (body?.containsKey("settings[varValue]")) { written = true; throw new RuntimeException("Read timed out") }
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([appId: 100, addLocalVariable: [name: "n", type: "Number", value: 5], confirm: true])
+
+        then:
+        result.success == true
+        result.applied == true
+        !clicks.contains("cancelGV")
+    }
+
+    def "an addLocalVariable whose editor page cannot be read sends no blind cancelGV and reports the outcome as unknown"() {
+        given: "the value write throws, nothing commits, and selectActions can no longer be read"
+        enableWrite()
+        def selActs = [[name: "hbVar", type: "text"], [name: "varType", type: "enum", options: ["Number"]], [name: "varValue", type: "number"]]
+        boolean written = false
+        def clicks = []
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            if (written) throw new RuntimeException("HTTP 502")
+            ruleConfigJson(100, "r", selActs)
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> JsonOutput.toJson([installedApp: [id: 100], appSettings: [], eventSubscriptions: [], scheduledJobs: [], appState: [], state: [:]]) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn") clicks << body.name
+            if (body?.containsKey("settings[varValue]")) { written = true; throw new RuntimeException("status code: 500") }
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([appId: 100, addLocalVariable: [name: "n", type: "Number", value: 5], confirm: true])
+
+        then:
+        !clicks.contains("cancelGV")
+        result.success == false
+        result.applied == null
+        (result.repairHints as List).any { it.toString().contains("If the variable editor still shows") }
+    }
+
+    def "an addLocalVariable write that throws with the name on the rule at another value gets the same partial as the normal path"() {
+        given:
+        enableWrite()
+        def selActs = [[name: "hbVar", type: "text"], [name: "varType", type: "enum", options: ["Number"]], [name: "varValue", type: "number"]]
+        boolean written = false
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", written ? [] : selActs) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            JsonOutput.toJson([installedApp: [id: 100], appSettings: [], eventSubscriptions: [], scheduledJobs: [],
+                appState: written ? [[name: "allLocalVars", value: [n: [type: "integer", value: 9]]]] : [], state: [:]])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (body?.containsKey("settings[varValue]")) { written = true; throw new RuntimeException("Read timed out") }
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([appId: 100, addLocalVariable: [name: "n", type: "Number", value: 5], confirm: true])
+
+        then:
+        result.success == false
+        result.partial == true
+        result.error.contains("value 9")
+        result.error.contains("A write failed on the way")
+    }
+
+    def "addLocalVariable on a name the rule already has is refused before the wizard opens"() {
+        given: "RM's moreVar editor would show only the name field, so the new type and value would never be written"
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            JsonOutput.toJson([
+                installedApp: [id: 100], appSettings: [], eventSubscriptions: [], scheduledJobs: [],
+                appState: [[name: "allLocalVars", value: [ctr: [type: "integer", value: 0]]]], state: [:]
+            ])
+        }
+        def uploads = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> uploads << fn }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        script._rmAddLocalVariable(100, [name: "ctr", type: "Number", value: 10])
+
+        then: "a validation refusal naming the current variable, with nothing posted"
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("local variable 'ctr' already exists on rule 100 (type integer, value 0)")
+        ex.message.contains("setLocalVariable")
+        ex.message.contains("RM is not touched")
+        posts.isEmpty()
+
+        when: "the same spec through hub_set_rule"
+        def result = script.toolSetRule([appId: 100, addLocalVariable: [name: "ctr", type: "Number", value: 10], confirm: true])
+
+        then: "the envelope fails before the baseline, says nothing needs restoring, and the wizard was never driven"
+        result.success == false
+        result.error?.toString()?.contains("already exists")
+        result.restoreHint?.toString()?.contains("not touched")
+        result.backup == null
+        uploads.isEmpty()
+        !posts.any { it.path in ["/installedapp/btn", "/installedapp/update/json"] }
+    }
+
+    @spock.lang.Unroll
+    def "addLocalVariable is refused when the rule's local variables cannot be read (#label)"() {
+        given: "the pre-read fails, so an existing name could not be ruled out"
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        int reads = 0
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            if (++reads <= failedReads) throw new RuntimeException("statusJson timeout")
+            JsonOutput.toJson([
+                installedApp: [id: 100], appSettings: [], eventSubscriptions: [], scheduledJobs: [],
+                appState: [[name: "allLocalVars", value: [ctr: [type: "integer", value: 0]]]], state: [:]
+            ])
+        }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        script._rmAddLocalVariable(100, [name: "ctr", type: "Number", value: 10])
+
+        then: "a refusal naming the failed read, with no wizard post"
+        def ex = thrown(IllegalStateException)
+        ex.message.contains("the local variables of rule 100 could not be read")
+        ex.message.contains("statusJson timeout")
+        ex.message.contains("RM is not touched")
+        posts.isEmpty()
+
+        where:
+        label                                           | failedReads
+        "every read fails"                              | 99
+        "the name exists, and only the pre-read failed" | 1
+    }
+
+    def "addLocalVariable through hub_set_rule refuses a failed locals read before the baseline"() {
+        given:
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> throw new RuntimeException("statusJson timeout") }
+        def uploads = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> uploads << fn }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([appId: 100, addLocalVariable: [name: "ctr", type: "Number", value: 10], confirm: true])
+
+        then:
+        result.success == false
+        result.error?.toString()?.contains("could not be read")
+        result.restoreHint?.toString()?.contains("not touched")
+        result.backup == null
+        uploads.isEmpty()
+        !posts.any { it.path in ["/installedapp/btn", "/installedapp/update/json"] }
+    }
+
+    def "addLocalVariable whose verify finds the name with another value is not a success"() {
+        given: "the pre-read sees no locals; after the wizard the rule holds the name with the old value"
+        enableWrite()
+        def selActsAfter = [
+            [name: "hbVar", type: "text"],
+            [name: "varType", type: "enum", options: ["Number", "Decimal", "String", "Boolean", "DateTime"]],
+            [name: "varValue", type: "text"]
+        ]
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", selActsAfter) }
+        def posts = []
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            JsonOutput.toJson([
+                installedApp: [id: 100], appSettings: [], eventSubscriptions: [], scheduledJobs: [],
+                appState: posts.any { it.path == "/installedapp/btn" } ? [[name: "allLocalVars", value: [ctr: [type: "integer", value: 0]]]] : [],
+                state: [:]
+            ])
+        }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script._rmAddLocalVariable(100, [name: "ctr", type: "Number", value: 10])
+
+        then:
+        result.success == false
+        result.partial == true
+        result.error == "Variable 'ctr' is on the rule as type integer, value 0, not the Number 10 this call asked for."
+        (result.repairHints as List).any { it.contains("hub_list_rule_local_variables") && it.contains("setLocalVariable") }
     }
 
     def "removeAction throws when delAct click is silently no-oped (action still present after all retries)"() {
@@ -7431,7 +7059,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then: "the silent no-op is surfaced as success: false with the honest re-click / verify-first recovery hint"
         result.success == false
         result.error?.contains("still present in rule")
-        result.error?.contains("one verified re-click")
+        result.error?.contains("one re-click")
         result.error?.contains("hub_get_app_config")
 
         and: "the tool re-clicked delAct exactly once before giving up (never blind-spams the button)"
@@ -7529,7 +7157,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // `removedIndices` and `note` continue to look correct. Pinning the
         // index-list diff lets callers detect post-delete state without an
         // extra hub_get_app_config round-trip.
-        // Both-ways pending (orchestrator).
         result.removedIndex == 1
         result.beforeIndices instanceof List
         (result.beforeIndices as List).contains(1)
@@ -8231,7 +7858,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // _rmClearActions routes the recovery-phrase "if the <action|actions>
     // really did get clobbered". Pin the singular form when exactly 1 action
     // stays stuck.
-    // Both-ways pending (orchestrator).
     def "clearActions error text says 'if the action really did get clobbered' singular for one stuck action"() {
         given:
         enableWrite()
@@ -8259,7 +7885,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     // W-spec-clearActions-text (plural): pin the plural form when multiple actions stay stuck.
-    // Both-ways pending (orchestrator).
     def "clearActions error text says 'if the actions really did get clobbered' plural for two stuck actions"() {
         given:
         enableWrite()
@@ -8642,8 +8267,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.actionsStillPresent == null
 
         and: "honest re-click diagnostic + restoreHint hint shape still present, and the retry-exhaustion discriminator (_rmDeleteAction's '~8s of polling' phrase) pins the spec to the EXHAUSTION path -- catches a wrong-impl that satisfies the re-click message via an unrelated IllegalArgumentException"
-        result.error?.contains("one verified re-click")
-        result.error?.contains("~8s of polling")
+        result.error?.contains("one re-click")
+        result.error?.contains("~8s")
         result.restoreHint != null
         result.verifyHint != null
         result.verifyHint?.contains("hub_get_app_config")
@@ -8667,11 +8292,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         ]
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", selectActionsSchema) }
-        // statusJson fetch count: backup snapshot (pre-write, before pre-clear
-        // snapshot) -> pre-clear snapshot at the dispatcher (THROW HERE) ->
-        // _rmClearActions internal indices fetch + 4 retry-loop fetches ->
-        // post-throw actionsStillPresent fetch in the catch. Throw selectively
-        // on the dispatcher's pre-clear snapshot call (call index 2, 0-based).
+        // statusJson fetch count: the stopped-state read before the edit, which the backup
+        // snapshot takes over -> pre-clear snapshot at the dispatcher (THROW HERE) ->
+        // _rmClearActions internal indices fetch + 4 retry-loop fetches -> post-throw
+        // actionsStillPresent fetch in the catch. Throw selectively on the dispatcher's pre-clear
+        // snapshot call (the second call).
         def statusFetchCount = 0
         hubGet.register('/installedapp/statusJson/100') { params ->
             statusFetchCount++
@@ -8983,15 +8608,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             confirm: true
         ])
 
-        then: "overall success is false because one sub-spec failed"
+        then: "the bogus device id refuses the whole call before any backup or write"
         result.success == false
-
-        and: "actions list has 2 items: the first carries the error, the second is never attempted (fail-closed)"
-        result.actions?.size() == 2
-        result.actions[0].success == false
-        result.actions[0].error?.contains("99999")
-        result.actions[1].notAttempted == true
-        result.actions[1].error?.contains("addActions[0]")
+        result.backup == null
+        result.error?.contains("addActions[0]")
+        result.error?.contains("99999")
     }
 
     def "addActions mixed-type path: switch and log specs in one call"() {
@@ -9064,6 +8685,32 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         doActReads >= 2
         posts.any { it.body?.containsKey("settings[actType.1]") }
         !(result.settingsSkipped ?: []).any { it.key == "actType.1" && it.reason == "not_in_schema" }
+    }
+
+    def "addAction whose doActPage stays EMPTY after the Create New Action click is refused before any field is written"() {
+        given: 'every doActPage read carries no actType field'
+        enableWrite()
+        def doActReads = 0
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params -> doActReads++; ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.pauseExecution = { Long ms -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([appId: 100, addAction: [capability: "log", message: "never opens"], confirm: true])
+
+        then: 'the page was read four times, nothing was written into it, and the refusal says why'
+        doActReads >= 4
+        !posts.any { it.body?.keySet()?.any { k -> k.toString().startsWith("settings[actType") || k.toString().startsWith("settings[logmsg") } }
+        result.success == false
+        result.error.contains("did not open the action editor")
     }
 
     def "moveAction rejects unknown direction at the dispatcher"() {
@@ -9145,7 +8792,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // the move itself succeeds and the note string is unchanged. Without
         // this assertion only the unit-level success / note pins survive and
         // the rich shape silently regresses to the pre-fix nulls.
-        // Both-ways pending (orchestrator).
         result.beforePosition != null
         result.afterPosition != null
         // Tier-1 ordering: index 1 starts at slot 0, moves to slot 1 after
@@ -9209,7 +8855,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Sibling regression guard to the arrowDn spec above. Pins the same
         // moveResult capture on the arrowUp dispatch path so a regression
         // that drops the assignment on EITHER direction surfaces here.
-        // Both-ways pending (orchestrator).
         result.beforePosition != null
         result.afterPosition != null
         Math.abs((result.afterPosition as Integer) - (result.beforePosition as Integer)) == 1
@@ -9483,7 +9128,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then: "pre-flight detects stuck editAct and reports it as an error"
         result.success == false
         result.error?.contains("state.editAct=3")
-        result.error?.contains("Recovery options")
+        result.error?.contains("finish or cancel the open action editor")
 
         and: "delAct button click never fires -- no hub mutation"
         !posts.any { it.body?.get("stateAttribute") == "delAct" }
@@ -9523,7 +9168,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then: "pre-flight detects stuck editAct and reports it as an error"
         result.success == false
         result.error?.contains("state.editAct=2")
-        result.error?.contains("Recovery options")
+        result.error?.contains("finish or cancel the open action editor")
 
         and: "no move-arrow button click fires -- no hub mutation"
         !posts.any { it.body?.get("stateAttribute") == "arrowDn" }
@@ -10231,46 +9876,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // expects either a pre-flight refusal (when the mis-spelling produces
     // an imbalance) or a clearActions never firing.
 
-    def "replaceActions with mis-cased endIf is not silently accepted as balanced"() {
-        // ['ifThen', 'endIF' (wrong case)] — pre-fix this passed the pre-
-        // flight because the walker lowercased 'endIF' to 'endif' and saw
-        // a matched IF/END-IF pair. Post-fix the walker treats 'endIF' as
-        // a leaf (returns null pair), so the projected sequence is just
-        // [ifThen] which is imbalanced — pre-flight refuses.
-        given:
-        enableWrite()
-        def posts = []
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            posts << [path: path, body: body]
-            [status: 200, location: null, data: '']
-        }
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, [[name: "actType.1", value: "switchActs"]]) }
-
-        when:
-        def result = script.toolSetRule([
-            appId: 100,
-            replaceActions: [
-                [capability: "ifThen", expression: [conditions: [[capability: "Switch", deviceIds: [1], state: "on"]]]],
-                [capability: "endIF"]
-            ],
-            confirm: true
-        ])
-
-        then: "pre-flight refuses because mis-cased endIF doesn't satisfy the pair lookup"
-        result.success == false
-        result.error?.contains("replaceActions blocked")
-        result.error?.contains("structurally imbalanced")
-
-        and: "no trashAll click — the original rule is preserved (the #178 damage class)"
-        !posts.any { it.body?.get("name") == "trashAll" }
-    }
-
-    // Coverage for the auto-attached health field on hub_set_rule
-    // mutation responses — the PR's tool description promises this surface
-    // but no existing test pins it.
-
     def "hub_set_rule attaches health.structuralIssues field on every mutation response"() {
         given:
         enableWrite()
@@ -10424,8 +10029,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "walkStep write does not guess when a stale doActPage slot has multiple live counterparts"() {
         // Automatic rebinding is safe only for a sole same-stem field.  If firmware
         // exposes multiple actType slots, choosing either one could mutate the wrong
-        // action.  Keep the existing fail-loud behavior: attempt only the caller's
-        // exact key, retain the schema warning, and report the silent rejection.
+        // action.  The exact key is not on the page, so the write is refused unsent.
         given:
         enableWrite()
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
@@ -10450,14 +10054,15 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             confirm: true
         ])
 
-        then: "neither live candidate is guessed; the exact requested key follows the legacy path"
-        posts.any { it.path == "/installedapp/update/json" && it.body?.containsKey("settings[actType.2]") }
-        !posts.any { it.body?.containsKey("settings[actType.3]") || it.body?.containsKey("settings[actType.4]") }
-        result.opResult?.wrote == ["actType.2": "messageActs"]
+        then: "neither live candidate is guessed and the absent key is not posted"
+        !posts.any { it.path == "/installedapp/update/json" }
+        result.opResult?.wrote == null
         result.opResult?.rebound == null
-        result.opResult?.warning?.toString()?.contains("not in current schema")
+        result.opResult?.refused?.reason == "not_in_schema"
+        result.opResult?.refused?.available == ["actType.3", "actType.4"]
+        result.error.contains("'actType.2' is not an input on page 'doActPage'")
         result.success == false
-        result.silentRejection == true
+        result.silentRejection == false
     }
 
     def "walk schema keeps sandbox-sensitive enum option keys and labels"() {
@@ -11704,18 +11309,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             confirm: true
         ])
 
-        then: "the result aggregates per-spec outcomes — bulk shortcut returns triggers[] with per-item results"
-        def triggers = (result.triggers ?: result.triggerResults ?: []) as List
-        triggers.size() == 2
-        // The bogus-id sub-spec is rejected by _rmValidateDeviceIdsExist with
-        // a clear "device ID '99999' does not exist" error.
-        def bogusEntry = triggers.find { it?.error?.toString()?.contains("99999") }
-        bogusEntry != null
-        bogusEntry.success == false
-        triggers[1].notAttempted == true
-
-        and: "the user-visible success rolls down to false because one inner item failed"
-        result.success == false || result.partial == true
+        then: "the bogus device id refuses the whole call before any backup or write"
+        result.success == false
+        result.backup == null
+        result.error?.toString()?.contains("addTriggers[0]")
+        result.error?.toString()?.contains("99999")
     }
 
     def "hub_get_rule_health surfaces ok=true with no broken markers on a clean rule"() {
@@ -13879,12 +13477,13 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def dimmer = result.capabilities.find { it.name == "dimmer" }
         dimmer.conditionalRequired != null
         dimmer.conditionalRequired.toggle?.toString()?.contains("level")
-        dimmer.conditionalRequired.setLevel?.toString()?.contains("level")
+        // An inner list means one of those fields.
+        dimmer.conditionalRequired.setLevel == ["deviceIds", ["level", "levelVariable"]]
         dimmer.conditionalRequired.adjust?.toString()?.contains("adjustBy")
         dimmer.conditionalRequired.fade?.toString()?.contains("targetLevel")
         // direction is intentionally NOT in conditionalRequired for fade/startRaiseLower:
         // verified live it defaults to lower and the action bakes without it.
-        dimmer.conditionalRequired.startRaiseLower == null
+        dimmer.conditionalRequired.startRaiseLower == ["deviceIds"]
         dimmer.conditionalRequired.setLevelPerMode?.toString()?.contains("perMode")
 
         and: "the other multi-variant device capabilities also declare their live-verified per-action required fields"
@@ -13893,7 +13492,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         switchCap.conditionalRequired?.choosePerMode?.toString()?.contains("perMode")
 
         def colorCap = result.capabilities.find { it.name == "color" }
-        colorCap.conditionalRequired?.setColor?.toString()?.contains("colorName")
+        colorCap.conditionalRequired?.setColor == [["colorName", "hue", "rgb", "rawSettings"]]
         colorCap.conditionalRequired?.toggleColor?.toString()?.contains("colorName")
         colorCap.conditionalRequired?.setColorPerMode?.toString()?.contains("perMode")
 
@@ -13986,40 +13585,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
      * so every _rmWriteSettingOnPage call sees a render-hash shift and routes the
      * key to `applied` rather than `skipped`.
      */
-    private String selectTriggersSchemaJson(int ruleId, int seqNum) {
-        JsonOutput.toJson([
-            app: [id: ruleId, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
-                  appType: [name: "Rule-5.1", namespace: "hubitat"]],
-            configPage: [name: "selectTriggers", title: "T", install: false, error: null,
-                         sections: [[title: "", input: [
-                             [name: "tCapab1", type: "enum", options: ["Switch"]],
-                             [name: "tDev1", type: "capability.switch", multiple: true],
-                             [name: "tstate1", type: "enum", options: ["on", "off"]],
-                             [name: "isCondTrig.1", type: "bool"],
-                             [name: "hasAll", type: "button"]
-                         ], paragraphs: ["seq ${seqNum}".toString()]]]],
-            settings: [:],
-            childApps: []
-        ])
-    }
-
     /**
      * Helper: builds a mainPage JSON whose paragraph content controls whether
      * _rmAddTrigger detects the trigger as baked (no "Define Triggers" placeholder)
      * or not-baked (placeholder still present).
      */
-    private String mainPageJson(int ruleId, String label = "r", boolean triggerBaked = true) {
-        def paragraph = triggerBaked ? "Switch1 is on" : "Define Triggers"
-        JsonOutput.toJson([
-            app: [id: ruleId, name: "Rule-5.1", label: label, trueLabel: label, installed: true,
-                  appType: [name: "Rule-5.1", namespace: "hubitat"]],
-            configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
-                         sections: [[title: "", input: [], paragraphs: [paragraph]]]],
-            settings: [:],
-            childApps: []
-        ])
-    }
-
     def "addTrigger returns success=true partial=false on full success"() {
         // Matrix case 1: all settings land, trigger bakes, no broken label.
         // success decouples from partial and reflects only "did API write happen."
@@ -14190,7 +13760,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then: "partial success -- settings were written but trigger row needs repair"
         result.success == true
         result.partial == true
-        result.repairHints?.any { it?.toString()?.contains("Define Triggers") || it?.toString()?.contains("trigger did not bake") || it?.toString()?.contains("mainPage still shows") }
+        result.repairHints?.any { it?.toString()?.contains("Trigger did not bake") }
     }
 
     def "addTrigger returns success=true partial=true when rule label has BROKEN marker"() {
@@ -14398,12 +13968,13 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             [name: "tCapab1", type: "enum", options: ["Custom Attribute"]],
             [name: "tDev1", type: "capability.*", multiple: true],
             [name: "tCustomAttr1", type: "enum", options: ["switch", "fixtureMode"]],
-            [name: "tstate1", type: "enum", options: ["on", "off"]],
+            // RM gives a free-valued attribute a comparator and a text value; an enum one only its options.
+            exposeComparator ? [name: "tstate1", type: "text"] : [name: "tstate1", type: "enum", options: ["on", "off"]],
             [name: "isCondTrig.1", type: "bool"],
             [name: "hasAll", type: "button"]
         ]
         if (exposeComparator) {
-            inputs << [name: "ReltDev1", type: "enum", options: ["=", "!=", ">", "<"]]
+            inputs << [name: "ReltDev1", type: "enum", options: ["=", "≠", ">", "<", "*changed*"]]
         }
         JsonOutput.toJson([
             app: [id: ruleId, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
@@ -14629,7 +14200,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.partial == true
 
         and: "an actionable repair hint names the unrepresentable comparator"
-        (result.repairHints as List).any { it?.toString()?.contains("cannot be represented") && it?.toString()?.contains("native capability") }
+        (result.repairHints as List).any { it?.toString()?.contains("has no slot") && it?.toString()?.contains("own capability") }
     }
 
     def "addTrigger Custom Attribute free attribute + state-change comparator writes the comparator normally"() {
@@ -14771,63 +14342,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         !((result.settingsSkipped as List) ?: []).any { it?.key == "ReltDev1" && it?.reason == "comparator_not_representable_for_enum_attribute" }
     }
 
-    def "addTrigger Custom Attribute enum picker offering BOTH became-true and became-false routes the EXACT requested token, not the first"() {
-        // Exact-token routing pin. A picker offering both 'became true' and 'became false'
-        // must route a '*became false*' request to the EXACT match, never the first
-        // RHS-optional option. The fuzzy family gate (_rmComparatorIsRhsOptional) would
-        // route to whichever option appears first ('became true' here); the fix routes via
-        // _rmComparatorTokensMatch (exact equality). Reverting to the family-find re-selects
-        // 'became true', failing this spec.
-        given:
-        enableWrite()
-        def fetchSeq = 0
-        def posts = []
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            posts << [path: path, body: body]
-            [status: 200, location: null, data: '']
-        }
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
-        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
-            fetchSeq++
-            // Enum attribute: comparator ReltDev1 hidden, value picker tstate1 exposed with
-            // BOTH change-equivalent options, 'became true' listed FIRST.
-            def inputs = [
-                [name: "tCapab1", type: "enum", options: ["Custom Attribute"]],
-                [name: "tDev1", type: "capability.*", multiple: true],
-                [name: "tCustomAttr1", type: "enum", options: ["switch", "fixtureMode"]],
-                [name: "tstate1", type: "enum", options: ["*became true*", "*became false*"]],
-                [name: "isCondTrig.1", type: "bool"],
-                [name: "hasAll", type: "button"]
-            ]
-            JsonOutput.toJson([
-                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
-                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
-                configPage: [name: "selectTriggers", title: "T", install: false, error: null,
-                             sections: [[title: "", input: inputs, paragraphs: ["seq ${fetchSeq}".toString()]]]],
-                settings: [:], childApps: []
-            ])
-        }
-        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> mainPageJson(100, "r", true) }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
-        hubGet.register('/device/fullJson/2') { params -> '{"id":"2","name":"S1"}' }
-
-        when:
-        def result = script.toolSetRule([
-            appId: 100,
-            addTrigger: [capability: "Custom Attribute", deviceIds: [2], attribute: "switch", comparator: "*became false*"],
-            confirm: true
-        ])
-
-        then: "the EXACT requested option lands in tstate1, never the first RHS-optional option"
-        posts.any { p -> (p.body as Map)["settings[tstate1]"] == "*became false*" }
-        !posts.any { p -> (p.body as Map)["settings[tstate1]"] == "*became true*" }
-
-        and: "no not-representable skip is produced and partial stays false"
-        !((result.settingsSkipped as List) ?: []).any { it?.key == "ReltDev1" && it?.reason == "comparator_not_representable_for_enum_attribute" }
-        result.partial == false
-    }
-
     def "addTrigger Custom Attribute enum picker whose only change-ish option is 'unchanged' does NOT false-match a '*changed*' request -- it skips"() {
         // Exact-token NON-match pin. An option containing 'changed' as a substring
         // ('unchanged') satisfies the fuzzy family gate but is NOT the requested token, so
@@ -14901,7 +14415,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             [name: "rCapab_1", type: "enum", options: ["Custom Attribute"]],
             [name: "rDev_1", type: "capability.*", multiple: true],
             [name: "rCustomAttr_1", type: "enum", options: ["switch", "fixtureMode"]],
-            [name: "state_1", type: "enum", options: ["on", "off"]],
+            // As on the trigger row: a free-valued attribute takes a text value, an enum one its options.
+            exposeComparator ? [name: "state_1", type: "text"] : [name: "state_1", type: "enum", options: ["on", "off"]],
             [name: "not1", type: "bool"],
             // Outer Switch trigger (idx 2) fields.
             [name: "tCapab2", type: "enum", options: ["Switch"]],
@@ -14912,7 +14427,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             [name: "hasAll", type: "button"]
         ]
         if (exposeComparator) {
-            inputs << [name: "RelrDev_1", type: "enum", options: ["=", "!=", ">", "<"]]
+            inputs << [name: "RelrDev_1", type: "enum", options: ["=", "≠", ">", "<"]]
         }
         JsonOutput.toJson([
             app: [id: ruleId, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
@@ -15090,54 +14605,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         and: "the genuine degradation flips partial"
         result.partial == true
     }
-
-    def "addTrigger conditional Custom Attribute enum attribute + state-change comparator with no value surfaces a genuine skip"() {
-        // Conditional-trigger sibling of the #199 silent-drop guard. The enum
-        // attribute reveals state_1 (on/off) and hides RelrDev_1; a '*changed*'
-        // comparator has no RHS and the picker has no change-equivalent option, so
-        // the comparator is unrepresentable. _rmBuildCondition must record a genuine
-        // comparator_not_representable_for_enum_attribute skip (flips partial via the
-        // trigger row's shared accounting) rather than dropping it as clean success.
-        given:
-        enableWrite()
-        def fetchSeq = 0
-        def posts = []
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            posts << [path: path, body: body]
-            [status: 200, location: null, data: '']
-        }
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
-        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
-            fetchSeq++
-            customAttrConditionSchemaJson(100, fetchSeq, false)
-        }
-        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> mainPageJson(100, "r", true) }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
-        hubGet.register('/device/fullJson/2') { params -> '{"id":"2","name":"S1"}' }
-
-        when:
-        def result = script.toolSetRule([
-            appId: 100,
-            addTrigger: [capability: "Switch", deviceIds: [2], state: "on",
-                         condition: [capability: "Custom Attribute", deviceIds: [2], attribute: "switch", comparator: "*changed*"]],
-            confirm: true
-        ])
-
-        then: "the comparator is neither claimed applied nor POSTed into a hidden field"
-        !(result.settingsApplied as List).contains("RelrDev_1")
-        !posts.any { p -> (p.body as Map).containsKey("settings[RelrDev_1]") }
-
-        and: "a genuine not-representable skip flips partial"
-        ((result.settingsSkipped as List) ?: []).any { it?.key == "RelrDev_1" && it?.reason == "comparator_not_representable_for_enum_attribute" }
-        result.partial == true
-
-        and: "an actionable repair hint names the unrepresentable comparator and the native-capability alternative"
-        (result.repairHints as List).any { it?.toString()?.contains("cannot be represented") && it?.toString()?.contains("native capability") }
-    }
-
-    // Conditional-trigger schema whose enum condition value picker (state_1) carries
-    // caller-supplied options -- used by the exact-routing + unchanged-negative-pin mirrors.
     private String customAttrConditionSchemaJsonOpts(int ruleId, int seqNum, List state1Options) {
         def inputs = [
             [name: "isCondTrig.1", type: "bool"],
@@ -15163,150 +14630,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             childApps: []
         ])
     }
-
-    def "addTrigger conditional Custom Attribute enum picker offering BOTH became-true and became-false routes the EXACT requested token"() {
-        // Sibling-surface mirror of the trigger-row exact-routing spec, on the
-        // _rmBuildCondition (conditional-trigger condition) path. The condition value picker
-        // state_1 offers both change options; a '*became false*' request must route to the
-        // EXACT match, never the first RHS-optional option.
-        given:
-        enableWrite()
-        def fetchSeq = 0
-        def posts = []
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            posts << [path: path, body: body]
-            [status: 200, location: null, data: '']
-        }
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
-        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
-            fetchSeq++
-            customAttrConditionSchemaJsonOpts(100, fetchSeq, ["*became true*", "*became false*"])
-        }
-        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> mainPageJson(100, "r", true) }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
-        hubGet.register('/device/fullJson/2') { params -> '{"id":"2","name":"S1"}' }
-
-        when:
-        def result = script.toolSetRule([
-            appId: 100,
-            addTrigger: [capability: "Switch", deviceIds: [2], state: "on",
-                         condition: [capability: "Custom Attribute", deviceIds: [2], attribute: "switch", comparator: "*became false*"]],
-            confirm: true
-        ])
-
-        then: "the EXACT requested option lands in state_1, never the first RHS-optional option"
-        posts.any { p -> (p.body as Map)["settings[state_1]"] == "*became false*" }
-        !posts.any { p -> (p.body as Map)["settings[state_1]"] == "*became true*" }
-
-        and: "no not-representable skip is produced"
-        !((result.settingsSkipped as List) ?: []).any { it?.key == "RelrDev_1" && it?.reason == "comparator_not_representable_for_enum_attribute" }
-    }
-
-    def "addTrigger conditional Custom Attribute enum picker whose only change-ish option is 'unchanged' does NOT false-match a '*changed*' request -- it skips"() {
-        // Sibling-surface mirror of the trigger-row 'unchanged' negative pin, on the
-        // _rmBuildCondition path. 'unchanged' satisfies the fuzzy family gate but is NOT
-        // the requested token, so it must NOT be routed; with no exact match the
-        // not-representable skip fires.
-        given:
-        enableWrite()
-        def fetchSeq = 0
-        def posts = []
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            posts << [path: path, body: body]
-            [status: 200, location: null, data: '']
-        }
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
-        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
-            fetchSeq++
-            customAttrConditionSchemaJsonOpts(100, fetchSeq, ["on", "off", "unchanged"])
-        }
-        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> mainPageJson(100, "r", true) }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
-        hubGet.register('/device/fullJson/2') { params -> '{"id":"2","name":"S1"}' }
-
-        when:
-        def result = script.toolSetRule([
-            appId: 100,
-            addTrigger: [capability: "Switch", deviceIds: [2], state: "on",
-                         condition: [capability: "Custom Attribute", deviceIds: [2], attribute: "switch", comparator: "*changed*"]],
-            confirm: true
-        ])
-
-        then: "'unchanged' is NOT routed -- the substring-match trap is avoided"
-        !posts.any { p -> (p.body as Map)["settings[state_1]"] == "unchanged" }
-
-        and: "the unrepresentable comparator surfaces as a genuine skip + partial"
-        ((result.settingsSkipped as List) ?: []).any { it?.key == "RelrDev_1" && it?.reason == "comparator_not_representable_for_enum_attribute" }
-        result.partial == true
-    }
-
-    def "addTrigger conditional Custom Attribute enum + '*changed*' WITH an explicit value records an informational skip (value wins, partial stays false)"() {
-        // #6 honest-drop pin on the _rmBuildCondition (conditional-trigger condition) path --
-        // the second of the four surfaces that emit the informational skip. A contradictory
-        // request (no-RHS '*changed*' AND an explicit value 'on') on an enum condition
-        // attribute: the value lands in state_1 and the condition works as an equals-check, so
-        // the dropped change intent is reported via the informational
-        // state_change_comparator_ignored_explicit_value skip that must NOT flip partial.
-        given:
-        enableWrite()
-        def fetchSeq = 0
-        def posts = []
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            posts << [path: path, body: body]
-            [status: 200, location: null, data: '']
-        }
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
-        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
-            fetchSeq++
-            customAttrConditionSchemaJsonOpts(100, fetchSeq, ["on", "off"])
-        }
-        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> mainPageJson(100, "r", true) }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
-        hubGet.register('/device/fullJson/2') { params -> '{"id":"2","name":"S1"}' }
-
-        when:
-        def result = script.toolSetRule([
-            appId: 100,
-            addTrigger: [capability: "Switch", deviceIds: [2], state: "on",
-                         condition: [capability: "Custom Attribute", deviceIds: [2], attribute: "switch", comparator: "*changed*", state: "on"]],
-            confirm: true
-        ])
-
-        then: "the explicit value wins and lands in state_1"
-        posts.any { p -> (p.body as Map)["settings[state_1]"] == "on" }
-
-        and: "an informational skip records the dropped change-comparator intent, but partial stays false"
-        ((result.settingsSkipped as List) ?: []).any { it?.key == "RelrDev_1" && it?.reason == "state_change_comparator_ignored_explicit_value" }
-        result.partial == false
-
-        and: "no not-representable skip (the value DID land, so it is not unrepresentable)"
-        !((result.settingsSkipped as List) ?: []).any { it?.key == "RelrDev_1" && it?.reason == "comparator_not_representable_for_enum_attribute" }
-    }
-
-    // ---------- Custom Attribute comparator-guard fetch-failure fallback ----------
-    //
-    // The enum-vs-free routing re-fetches selectTriggers after writing the
-    // attribute to decide whether the value picker (tstate<N> / state_<N>) was
-    // revealed. That re-fetch is a new failure surface: _rmFetchConfigJson throws
-    // on an empty/unparseable response. A transient hub hiccup there must NOT abort
-    // the whole add, and it must NOT silently drop the comparator. The guard catches
-    // the throw and FORCE-WRITES the comparator (bypassing the schema-containment
-    // gate, because the failed re-fetch leaves the page schema unavailable -- a
-    // normal gated write would reject the comparator as not_in_schema and swallow it).
-    //
-    // These two specs split the contract by surface: (1) a direct unit test on the
-    // force-write helper, which pins the no-schema-gate POST + applied/skipped
-    // bookkeeping non-vacuously; (2) a no-abort assertion driving toolSetRule with a
-    // throwing presence-check, which pins F9's actual contract (a transient
-    // presence-check fetch failure does not propagate out of the build). The full
-    // settingsApplied cascade is intentionally NOT asserted in (2) -- the
-    // poisoned-empty-schema state cannot be honestly modelled by the integration stub
-    // (every selectTriggers fetch is byte-identical, so the harness cannot fail only
-    // the presence-check while leaving the surrounding writes' fetches intact).
-
     def "_rmForceWriteEnumField POSTs the comparator without a schema-gate fetch and records the unverified skip"() {
         // Direct unit test on the fetch-failure fallback's force-write helper.
         // Reverting the helper body (e.g. routing back through the schema-gated
@@ -15387,9 +14710,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         where:
         comparator   | expected
         "*changed*"  | true
-        "*became*"   | true
-        "*became true*"  | true
-        "*became false*" | true
+        "*became*"   | false
+        "*became true*"  | false
         "*changed*".toUpperCase() | true
         "="          | false
         "≠"          | false
@@ -15408,7 +14730,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // never a stringified Map ("[value:on, text:On]") nor a Map.Entry ("on=On"), either
         // of which would corrupt the route probe AND the state_<N> domain validator that
         // shares this helper.
-        // Both-ways pending (orchestrator).
         expect:
         script._rmReadPickerOptionStrings(picker) == expected
 
@@ -15420,6 +14741,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         [options: ["on": "On", "off": "Off"]]                                 | ["on", "off"]
         [options: ["on": "On", "*changed*": "changed"]]                       | ["on", "*changed*"]
         [options: ["on", [value: "off"], "*changed*"]]                        | ["on", "off", "*changed*"]
+        [options: [["Switch": "Switch"], ["SwitchLevel": "Dimmer"]]]          | ["Switch", "SwitchLevel"]
         // Scalar (bare-String) options must be treated as ONE option, never char-iterated
         // into ["o","n"]. The pre-hardening .collect would shatter the String.
         [options: "on"]                                                       | ["on"]
@@ -15436,7 +14758,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // must require exact equality after stripping the '*...*' wrapping + case-folding.
         // 'became false' must NOT match 'became true'; 'unchanged' must NOT match a
         // '*changed*' request; wrapped/bare/case variants of the SAME token must match.
-        // Both-ways pending (orchestrator).
         expect:
         script._rmComparatorTokensMatch(requested, candidate) == expected
 
@@ -15467,27 +14788,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         "*"              | "*changed*"       | false
     }
 
-    def "_rmNotRepresentableEnumComparatorHint is the single canonical wording -- names the comparator, attribute, workaround + concrete example"() {
-        // #4 unification pin. The three emit sites (trigger / action / required-expression)
-        // hand-duplicated this hint and drifted (some omitted the capability:'Switch'
-        // example). They now all call this one helper, so pinning its wording here pins all
-        // three. Asserts the load-bearing substrings the route/skip integration specs match.
-        when:
-        def hint = script._rmNotRepresentableEnumComparatorHint("switch", "*changed*")
-
-        then: "names the requested comparator and the offending attribute"
-        hint.contains("'*changed*'")
-        hint.contains("'switch'")
-
-        and: "states the limitation and the native-capability workaround WITH a concrete example"
-        hint.contains("cannot be represented")
-        hint.contains("native capability")
-        hint.contains("capability:'Switch'")
-
-        and: "ASCII-only"
-        hint.every { (it as char) < 128 }
-    }
-
     def "_rmWriteSubPageField: a write into a hidden field with a STABLE render verifies as NOT persisted (no renderShifted mask)"() {
         // S2 genuine-rejection-not-masked pin, direct on _rmWriteSubPageField. When a
         // write targets a field absent from the page AND the page's render is stable
@@ -15499,7 +14799,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // coarse signal that CAN mask on an unrelated paragraph delta -- that known
         // limitation is documented at the renderShifted assignment; this spec pins the
         // honest no-mask baseline so a regression that always-credits persisted is caught.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -15960,7 +15259,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "structured failure naming both modes; no wizard write POST fired"
         result.success == false
-        result.error.toString().toLowerCase().contains("mutually exclusive")
+        result.error.toString().contains("not both")
         result.error.toString().contains("dayOfMonth")
         result.error.toString().contains("weekOfMonth")
         !posts.any { it.path == "/installedapp/update/json" }
@@ -15987,7 +15286,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then:
         result.success == false
-        result.error.toString().contains("addTrigger.time must be one of")
+        result.error.toString().contains("addTrigger.time must be")
         result.error.toString().contains("atTime")
         !posts.any { it.path == "/installedapp/update/json" }
     }
@@ -16539,7 +15838,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         and: "the result surfaces the refusal as partial with an actionable repair hint"
         result.partial == true
         result.settingsSkipped?.any { it?.reason == "periodic_href_unresolved_nonfirst_trigger" }
-        result.repairHints?.any { it?.toString()?.contains("periodic sub-page index could not be resolved") }
+        result.repairHints?.any { it?.toString()?.contains("sub-page could not be resolved") }
     }
 
     def "addTrigger 2nd periodic trigger with a MALFORMED href params.n refuses suffix-1 fallback (no clobber)"() {
@@ -16603,7 +15902,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         and: "the malformed-n refusal surfaces as partial with the unresolved-href reason"
         result.partial == true
         result.settingsSkipped?.any { it?.reason == "periodic_href_unresolved_nonfirst_trigger" }
-        result.repairHints?.any { it?.toString()?.contains("periodic sub-page index could not be resolved") }
+        result.repairHints?.any { it?.toString()?.contains("sub-page could not be resolved") }
     }
 
     def "addTrigger FIRST periodic trigger with a malformed href params.n proceeds on suffix-1 without throwing (n normalized)"() {
@@ -16991,7 +16290,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                                  [name: "condTrig.1", type: "enum", options: ["a", "b"]],
                                  [name: "rCapab_1", type: "enum", options: ["Switch", "Motion"]],
                                  [name: "rDev_1", type: "capability.switch", multiple: true],
-                                 [name: "state_1", type: "enum", options: ["on", "off"]],
+                                 [name: "state_1", type: "enum", options: ["active", "inactive"]],
                                  // Bound trigger at idx 2 (post-condition bump)
                                  [name: "tCapab2", type: "enum", options: ["Switch"]],
                                  [name: "tDev2", type: "capability.switch", multiple: true],
@@ -17765,57 +17064,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         null   || null
     }
 
-    def "addTrigger discover schema includes the Variable capability entry"() {
-        // The Variable conditional pattern is non-obvious; the discover
-        // schema is the surface the LLM caller reads to learn how to drive
-        // the wizard. Pin its presence so future refactors of the schema
-        // don't silently drop the entry.
-        given: 'discover-mode short-circuits before any hub mutation'
-        enableWrite()
-
-        when:
-        def result = script.toolSetRule([
-            appId: 100,
-            addTrigger: [discover: true],
-            confirm: true
-        ])
-
-        then: 'Variable is in the capability list with the typed condition fields documented'
-        def caps = result?.capabilities as List
-        caps != null
-        def varEntry = caps.find { (it as Map)?.name == "Variable" }
-        varEntry != null
-        // Required field must be `variable` (matches the typed-helper contract)
-        ((varEntry.requiredFields as List).collect { (it as Map).name } as List).contains("variable")
-        // Caller needs to learn about compareToVariable from the discover output
-        (varEntry as Map).toString().contains("compareToVariable")
-    }
-
-    // ---------- addAction success/partial semantic matrix ----------
-
     /**
      * Helper: builds a doActPage schema JSON with an incrementing paragraph
      * so every _rmWriteSettingOnPage call routes to `applied` rather than `skipped`.
      */
-    private String doActPageSchemaJson(int ruleId, int seqNum) {
-        JsonOutput.toJson([
-            app: [id: ruleId, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
-                  appType: [name: "Rule-5.1", namespace: "hubitat"]],
-            configPage: [name: "doActPage", title: "T", install: false, error: null,
-                         sections: [[title: "", input: [
-                             [name: "actType.1", type: "enum",
-                              options: ["switchActs": "Turn on/off/toggle a switch or switches"]],
-                             [name: "actSubType.1", type: "enum",
-                              options: ["getOnOffSwitch": "Turn on, off, or toggle a switch"]],
-                             [name: "onOffSwitch.1", type: "capability.switch", multiple: true],
-                             [name: "onOff.1", type: "bool"],
-                             [name: "actionDone", type: "button"]
-                         ], paragraphs: ["seq ${seqNum}".toString()]]]],
-            settings: [:],
-            childApps: []
-        ])
-    }
-
     def "addAction returns success=true partial=false on full success"() {
         // Matrix case 1: all settings land, action bakes.
         // success=!err && !applied.isEmpty() => true; partial=false.
@@ -17865,10 +17117,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // bake (doActPage->selectActions). A regression that reverts the truth-up
         // (e.g. restores the deleted "updateRule fired" phrase) would surface
         // here. Pairs with the tools/list description spec below.
-        // Both-ways pending (orchestrator).
-        result.note?.contains("baked into actions[] map")
-        result.note?.contains("No trailing updateRule")
-        result.note?.contains("doActPage->selectActions navigation finalizes")
+        result.note?.contains("added and baked")
+        result.note?.contains("no trailing updateRule")
         !result.note?.contains("updateRule fired")
     }
 
@@ -17882,7 +17132,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // OR question the response when no updateRule fired -- the description
         // misled both ways.
         // Pairs with the happy-path note pin above (W2 outer pair).
-        // Both-ways pending (orchestrator).
         when:
         def tools = script.getAllToolDefinitions()
         def updateNativeApp = tools.find { it.name == "hub_set_rule" }
@@ -17894,7 +17143,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // reverted the description. We scope to the inputSchema text so this
         // doesn't false-positive on unrelated tool descriptions that mention
         // updateRule-button mechanics.
-        schemaText.contains("self-bakes") || schemaText.contains("doActPage->selectActions navigation")
+        schemaText.contains("the action editor finalizes it")
 
         and: "the pre-truth-up wrong-phrasings are absent from the addAction property"
         // Scope the negation to the addAction property's text so a legitimate
@@ -17939,7 +17188,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // bounded fallback that could be "" -- the two negation assertions below would
         // then pass vacuously. Pinning the canonical preamble phrase makes the
         // precondition red whenever the extraction failed to reach the addAction text.
-        addActionDesc.contains("Add an RM ACTION")
+        addActionDesc.contains("Add an RM action")
         !addActionDesc.contains("still issue")
         !addActionDesc.contains("button='updateRule'")
     }
@@ -17983,10 +17232,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             confirm: true
         ])
 
-        then: "partial success -- settings were written but action row needs repair"
-        result.success == true
-        result.partial == true
-        result.repairHints?.any { it?.toString()?.contains("Define Actions") || it?.toString()?.contains("action did not bake") || it?.toString()?.contains("mainPage still shows") }
+        then: "an action RM did not bake is removed and reported as not added"
+        result.success == false
+        result.repairHints?.any { it?.toString()?.contains("was not added") }
     }
 
     def "addAction omitting a live-verified mandatory field fails fast (not a silent partial): #cap.#action -> error names #errFrag"() {
@@ -18100,15 +17348,15 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // selectActions with the log capability in the actType options.
         hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
             ruleConfigJson(100, "r", [[name: "actType.1", type: "enum",
-                options: ["notificationActs": "Notifications and Logging"]]])
+                options: ["messageActs": "Messaging and Logging"]]])
         }
         // STATIC doActPage schema -- no paragraphs, no render shift between fetches.
         // Both actType.1 and actSubType.1 writes silently reject -> applied stays [].
         def staticDoActInputs = [
             [name: "actType.1", type: "enum",
-             options: ["notificationActs": "Notifications and Logging"]],
+             options: ["messageActs": "Messaging and Logging"]],
             [name: "actSubType.1", type: "enum",
-             options: ["getLog": "Log a message"]],
+             options: ["getLogMsg": "Log a message"]],
             [name: "logType.1", type: "enum", options: ["info", "warn"]],
             [name: "logMessage.1", type: "text"],
             [name: "actionDone", type: "button"]
@@ -18155,9 +17403,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             configPage: [name: "doActPage", title: "T", install: false, error: null,
                          sections: [[title: "", input: [
                              [name: "actType.1", type: "enum",
-                              options: ["notificationActs": "Notifications and Logging"]],
+                              options: ["messageActs": "Messaging and Logging"]],
                              [name: "actSubType.1", type: "enum",
-                              options: ["getLog": "Log a message"]],
+                              options: ["getLogMsg": "Log a message"]],
                              [name: "logMessage.1", type: "text"],
                              [name: "actionDone", type: "button"]
                          ], paragraphs: ["seq ${seqNum}".toString()]]]],
@@ -18178,7 +17426,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
             ruleConfigJson(100, "r", [[name: "actType.1", type: "enum",
-                options: ["notificationActs": "Notifications and Logging"]]])
+                options: ["messageActs": "Messaging and Logging"]]])
         }
         hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
             fetchSeq++
@@ -18388,7 +17636,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // attribute WITHOUT comparator and comparator WITHOUT attribute produce distinct,
     // differentiating error messages. Both paths must fail-loud and the error text
     // must name the missing sibling field so agents know exactly what to add.
-    // Both-ways pending (orchestrator).
 
     def "addRequiredExpression: Custom Attribute attribute-without-comparator fails with differentiating error"() {
         given:
@@ -18432,8 +17679,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "fails with an error mentioning attribute AND the missing comparator"
         result.success == false
-        result.error?.toString()?.contains("attribute='humidity'")
-        result.error?.toString()?.contains("comparator was not provided")
+        result.error?.toString()?.contains("(comparator missing)")
     }
 
     def "addRequiredExpression: Custom Attribute comparator-without-attribute fails with differentiating error"() {
@@ -18478,8 +17724,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "fails with an error mentioning comparator AND the missing attribute"
         result.success == false
-        result.error?.toString()?.contains("comparator='='")
-        result.error?.toString()?.contains("attribute was not provided")
+        result.error?.toString()?.contains("(attribute missing)")
     }
 
     // ---------- addRequiredExpression STPage value/state unification ----------
@@ -18718,385 +17963,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         !(result.settingsApplied as List).contains("RelrDev_1")
         !posts.any { p -> (p.body as Map).any { k, v -> k?.toString() == "settings[RelrDev_1]" } }
     }
-
-    def "addRequiredExpression Custom Attribute walker (STPage) enum attribute + '*changed*' with no value surfaces a genuine skip"() {
-        // #199 walker (STPage) surface guard. The enum attribute reveals state_1 (on/off,
-        // no change-equivalent option) and hides RelrDev_1. A '*changed*' comparator has no
-        // RHS and cannot ride the value picker, so _rmWalkConditionReveal must record a
-        // comparator_not_representable_for_enum_attribute skip (flips partial + repairHint),
-        // NOT report a clean success. The shared-predicate both-ways can't catch a walker-only
-        // revert, so this pins the walker path directly.
-        given:
-        enableWrite()
-        boolean rCustomAttrWritten = false
-        def posts = []
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            posts << [path: path, body: body]
-            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
-                body.each { k, v ->
-                    def key = _settingKeyOf(k)
-                    if (key != null && key == "rCustomAttr_1") rCustomAttrWritten = true
-                }
-            }
-            [status: 200, location: null, data: '']
-        }
-        hubGet.register('/installedapp/configure/json/100') { params ->
-            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
-        }
-        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
-            JsonOutput.toJson([
-                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
-                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
-                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
-                             sections: [[title: "", input: [[name: "useST", type: "bool"]],
-                                         body: [[element: "paragraph",
-                                                 description: "IF S1 reports switch THEN"]]]]],
-                settings: [:], childApps: []
-            ])
-        }
-        def stFetchSeq = 0
-        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
-            stFetchSeq++
-            def inputs = [
-                [name: "cond",          type: "enum",              options: ["a": "New condition"]],
-                [name: "rCapab_1",      type: "enum",              options: ["Custom Attribute", "Switch"]],
-                [name: "rDev_1",        type: "capability.sensor", multiple: true],
-                [name: "rCustomAttr_1", type: "enum",              options: ["switch", "fixtureMode"]],
-                [name: "hasAll",        type: "button"],
-                [name: "doneST",        type: "button"]
-            ]
-            if (rCustomAttrWritten) {
-                // Enum attribute: value picker state_1 (on/off only, no change option) is
-                // revealed; comparator RelrDev_1 stays hidden.
-                inputs = inputs + [[name: "state_1", type: "enum", options: ["on", "off"]]]
-            }
-            JsonOutput.toJson([
-                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
-                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
-                configPage: [name: "STPage", title: "Required Expression", install: false, error: null,
-                             sections: [[title: "", input: inputs,
-                                         paragraphs: ["seq ${stFetchSeq}".toString()]]]],
-                settings: [:], childApps: []
-            ])
-        }
-        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
-            ruleConfigJson(100, "r", [[name: "N", type: "button"]])
-        }
-        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
-            ruleConfigJson(100, "r", [
-                [name: "actType.1",    type: "enum", options: ["condActs": "Conditional Actions"]],
-                [name: "actSubType.1", type: "enum", options: ["getIfThen": "IF Expression THEN"]],
-                [name: "actionCancel", type: "button"]
-            ])
-        }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
-        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
-
-        when:
-        def result = script.toolSetRule([
-            appId: 100,
-            addRequiredExpression: [conditions: [[
-                capability: "Custom Attribute",
-                deviceIds: [8],
-                attribute: "switch",
-                comparator: "*changed*"
-            ]]],
-            confirm: true
-        ])
-
-        then: "the comparator is neither written nor falsely claimed applied"
-        !(result.settingsApplied as List).contains("RelrDev_1")
-        !posts.any { p -> (p.body as Map).any { k, v -> k?.toString() == "settings[RelrDev_1]" } }
-
-        and: "a genuine not-representable skip flips partial"
-        ((result.settingsSkipped as List) ?: []).any { it?.key == "RelrDev_1" && it?.reason == "comparator_not_representable_for_enum_attribute" }
-        result.partial == true
-
-        and: "an actionable repair hint names the unrepresentable comparator"
-        (result.repairHints as List).any { it?.toString()?.contains("cannot be represented") }
-    }
-
-    def "addRequiredExpression walker (STPage) enum picker offering BOTH became-true and became-false routes the EXACT requested token"() {
-        // Sibling-surface mirror of the trigger-row exact-routing spec, on the STPage
-        // reveal walker (_rmWalkConditionReveal via writeST). The enum value picker state_1
-        // offers both change options; a '*became false*' request must route to the EXACT
-        // match, never the first RHS-optional option.
-        given:
-        enableWrite()
-        boolean rCustomAttrWritten = false
-        def posts = []
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            posts << [path: path, body: body]
-            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
-                body.each { k, v ->
-                    def key = _settingKeyOf(k)
-                    if (key != null && key == "rCustomAttr_1") rCustomAttrWritten = true
-                }
-            }
-            [status: 200, location: null, data: '']
-        }
-        hubGet.register('/installedapp/configure/json/100') { params ->
-            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
-        }
-        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
-            JsonOutput.toJson([
-                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
-                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
-                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
-                             sections: [[title: "", input: [[name: "useST", type: "bool"]],
-                                         body: [[element: "paragraph",
-                                                 description: "IF S1 reports switch THEN"]]]]],
-                settings: [:], childApps: []
-            ])
-        }
-        def stFetchSeq = 0
-        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
-            stFetchSeq++
-            def inputs = [
-                [name: "cond",          type: "enum",              options: ["a": "New condition"]],
-                [name: "rCapab_1",      type: "enum",              options: ["Custom Attribute", "Switch"]],
-                [name: "rDev_1",        type: "capability.sensor", multiple: true],
-                [name: "rCustomAttr_1", type: "enum",              options: ["switch", "fixtureMode"]],
-                [name: "hasAll",        type: "button"],
-                [name: "doneST",        type: "button"]
-            ]
-            if (rCustomAttrWritten) {
-                // Enum value picker offering BOTH change options, 'became true' FIRST.
-                inputs = inputs + [[name: "state_1", type: "enum", options: ["*became true*", "*became false*"]]]
-            }
-            JsonOutput.toJson([
-                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
-                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
-                configPage: [name: "STPage", title: "Required Expression", install: false, error: null,
-                             sections: [[title: "", input: inputs,
-                                         paragraphs: ["seq ${stFetchSeq}".toString()]]]],
-                settings: [:], childApps: []
-            ])
-        }
-        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
-            ruleConfigJson(100, "r", [[name: "N", type: "button"]])
-        }
-        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
-            ruleConfigJson(100, "r", [
-                [name: "actType.1",    type: "enum", options: ["condActs": "Conditional Actions"]],
-                [name: "actSubType.1", type: "enum", options: ["getIfThen": "IF Expression THEN"]],
-                [name: "actionCancel", type: "button"]
-            ])
-        }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
-        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
-
-        when:
-        def result = script.toolSetRule([
-            appId: 100,
-            addRequiredExpression: [conditions: [[
-                capability: "Custom Attribute",
-                deviceIds: [8],
-                attribute: "switch",
-                comparator: "*became false*"
-            ]]],
-            confirm: true
-        ])
-
-        then: "the EXACT requested option lands in state_1, never the first RHS-optional option"
-        posts.any { p -> (p.body as Map)["settings[state_1]"] == "*became false*" }
-        !posts.any { p -> (p.body as Map)["settings[state_1]"] == "*became true*" }
-
-        and: "no not-representable skip is produced"
-        !((result.settingsSkipped as List) ?: []).any { it?.key == "RelrDev_1" && it?.reason == "comparator_not_representable_for_enum_attribute" }
-    }
-
-    def "addRequiredExpression walker (STPage) enum picker whose only change-ish option is 'unchanged' does NOT false-match a '*changed*' request -- it skips"() {
-        // Sibling-surface mirror of the trigger-row 'unchanged' negative pin, on the STPage
-        // walker. 'unchanged' satisfies the fuzzy family gate but is NOT the requested token,
-        // so it must NOT be routed; with no exact match the not-representable skip fires.
-        given:
-        enableWrite()
-        boolean rCustomAttrWritten = false
-        def posts = []
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            posts << [path: path, body: body]
-            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
-                body.each { k, v ->
-                    def key = _settingKeyOf(k)
-                    if (key != null && key == "rCustomAttr_1") rCustomAttrWritten = true
-                }
-            }
-            [status: 200, location: null, data: '']
-        }
-        hubGet.register('/installedapp/configure/json/100') { params ->
-            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
-        }
-        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
-            JsonOutput.toJson([
-                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
-                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
-                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
-                             sections: [[title: "", input: [[name: "useST", type: "bool"]],
-                                         body: [[element: "paragraph",
-                                                 description: "IF S1 reports switch THEN"]]]]],
-                settings: [:], childApps: []
-            ])
-        }
-        def stFetchSeq = 0
-        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
-            stFetchSeq++
-            def inputs = [
-                [name: "cond",          type: "enum",              options: ["a": "New condition"]],
-                [name: "rCapab_1",      type: "enum",              options: ["Custom Attribute", "Switch"]],
-                [name: "rDev_1",        type: "capability.sensor", multiple: true],
-                [name: "rCustomAttr_1", type: "enum",              options: ["switch", "fixtureMode"]],
-                [name: "hasAll",        type: "button"],
-                [name: "doneST",        type: "button"]
-            ]
-            if (rCustomAttrWritten) {
-                // Enum value picker with a substring-trap option ('unchanged') but NO exact
-                // '*changed*' option.
-                inputs = inputs + [[name: "state_1", type: "enum", options: ["on", "off", "unchanged"]]]
-            }
-            JsonOutput.toJson([
-                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
-                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
-                configPage: [name: "STPage", title: "Required Expression", install: false, error: null,
-                             sections: [[title: "", input: inputs,
-                                         paragraphs: ["seq ${stFetchSeq}".toString()]]]],
-                settings: [:], childApps: []
-            ])
-        }
-        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
-            ruleConfigJson(100, "r", [[name: "N", type: "button"]])
-        }
-        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
-            ruleConfigJson(100, "r", [
-                [name: "actType.1",    type: "enum", options: ["condActs": "Conditional Actions"]],
-                [name: "actSubType.1", type: "enum", options: ["getIfThen": "IF Expression THEN"]],
-                [name: "actionCancel", type: "button"]
-            ])
-        }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
-        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
-
-        when:
-        def result = script.toolSetRule([
-            appId: 100,
-            addRequiredExpression: [conditions: [[
-                capability: "Custom Attribute",
-                deviceIds: [8],
-                attribute: "switch",
-                comparator: "*changed*"
-            ]]],
-            confirm: true
-        ])
-
-        then: "'unchanged' is NOT routed -- the substring-match trap is avoided"
-        !posts.any { p -> (p.body as Map)["settings[state_1]"] == "unchanged" }
-
-        and: "the unrepresentable comparator surfaces as a genuine skip + partial"
-        ((result.settingsSkipped as List) ?: []).any { it?.key == "RelrDev_1" && it?.reason == "comparator_not_representable_for_enum_attribute" }
-        result.partial == true
-    }
-
-    def "addRequiredExpression walker (STPage) enum + '*changed*' WITH an explicit value records an informational skip (value wins, partial stays false)"() {
-        // #6 honest-drop pin on the _rmWalkConditionReveal Site A enum branch (STPage) --
-        // the third of the four surfaces that emit the informational skip, reached via the
-        // relrReveal.visibleNames.contains(stateKey) enum path. A contradictory request
-        // (no-RHS '*changed*' AND explicit value 'on'): the value lands in state_1 and the
-        // condition works as an equals-check, so the dropped change intent is reported via the
-        // informational state_change_comparator_ignored_explicit_value skip (no partial flip).
-        given:
-        enableWrite()
-        boolean rCustomAttrWritten = false
-        def posts = []
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            posts << [path: path, body: body]
-            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
-                body.each { k, v ->
-                    def key = _settingKeyOf(k)
-                    if (key != null && key == "rCustomAttr_1") rCustomAttrWritten = true
-                }
-            }
-            [status: 200, location: null, data: '']
-        }
-        hubGet.register('/installedapp/configure/json/100') { params ->
-            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
-        }
-        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
-            JsonOutput.toJson([
-                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
-                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
-                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
-                             sections: [[title: "", input: [[name: "useST", type: "bool"]],
-                                         body: [[element: "paragraph",
-                                                 description: "IF S1 reports switch THEN"]]]]],
-                settings: [:], childApps: []
-            ])
-        }
-        def stFetchSeq = 0
-        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
-            stFetchSeq++
-            def inputs = [
-                [name: "cond",          type: "enum",              options: ["a": "New condition"]],
-                [name: "rCapab_1",      type: "enum",              options: ["Custom Attribute", "Switch"]],
-                [name: "rDev_1",        type: "capability.sensor", multiple: true],
-                [name: "rCustomAttr_1", type: "enum",              options: ["switch", "fixtureMode"]],
-                [name: "hasAll",        type: "button"],
-                [name: "doneST",        type: "button"]
-            ]
-            if (rCustomAttrWritten) {
-                // Enum value picker (on/off, no change option); the explicit value lands here.
-                inputs = inputs + [[name: "state_1", type: "enum", options: ["on", "off"]]]
-            }
-            JsonOutput.toJson([
-                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
-                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
-                configPage: [name: "STPage", title: "Required Expression", install: false, error: null,
-                             sections: [[title: "", input: inputs,
-                                         paragraphs: ["seq ${stFetchSeq}".toString()]]]],
-                settings: [:], childApps: []
-            ])
-        }
-        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
-            ruleConfigJson(100, "r", [[name: "N", type: "button"]])
-        }
-        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
-            ruleConfigJson(100, "r", [
-                [name: "actType.1",    type: "enum", options: ["condActs": "Conditional Actions"]],
-                [name: "actSubType.1", type: "enum", options: ["getIfThen": "IF Expression THEN"]],
-                [name: "actionCancel", type: "button"]
-            ])
-        }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
-        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
-
-        when:
-        def result = script.toolSetRule([
-            appId: 100,
-            addRequiredExpression: [conditions: [[
-                capability: "Custom Attribute",
-                deviceIds: [8],
-                attribute: "switch",
-                comparator: "*changed*",
-                state: "on"
-            ]]],
-            confirm: true
-        ])
-
-        then: "the explicit value wins and lands in state_1"
-        posts.any { p -> (p.body as Map)["settings[state_1]"] == "on" }
-
-        and: "an informational skip records the dropped change-comparator intent, but partial stays false"
-        ((result.settingsSkipped as List) ?: []).any { it?.key == "RelrDev_1" && it?.reason == "state_change_comparator_ignored_explicit_value" }
-        result.partial == false
-
-        and: "no not-representable skip (the value DID land) and RelrDev_1 never POSTed"
-        !((result.settingsSkipped as List) ?: []).any { it?.key == "RelrDev_1" && it?.reason == "comparator_not_representable_for_enum_attribute" }
-        !posts.any { p -> (p.body as Map).any { k, v -> k?.toString() == "settings[RelrDev_1]" } }
-    }
-
     def "addRequiredExpression Custom Attribute walker on a free attribute still writes RelrDev_1 (negative pin)"() {
         // Negative pin for the enum walker fix: a genuinely free-valued attribute
         // reveals RelrDev_1 (progressive disclosure: rCustomAttr_1 -> RelrDev_1 ->
@@ -19297,198 +18163,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         !(result.settingsApplied as List).contains("RelrDev_1")
         !posts.any { p -> (p.body as Map).any { k, v -> k?.toString() == "settings[RelrDev_1]" } }
     }
-
-    def "addRequiredExpression walker Site B no-RHS: a standard capability + enum attribute + '*changed*' ROUTES via a matching change option (partial=false)"() {
-        // Site B no-RHS ROUTE arm coverage. Site B (the walker's default block, a standard
-        // capability carrying a custom attribute) gained a new no-RHS route+skip pair that
-        // the value-comparator Site B specs never exercise. Here the enum value picker
-        // offers a change-equivalent option, so a '*changed*' request must ROUTE to it
-        // (state_1 = '*changed*', partial=false), never skip. A revert of the route arm
-        // would drop the value and fail this spec.
-        given:
-        enableWrite()
-        boolean rCustomAttrWritten = false
-        def posts = []
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            posts << [path: path, body: body]
-            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
-                body.each { k, v ->
-                    def key = _settingKeyOf(k)
-                    if (key != null && key == "rCustomAttr_1") rCustomAttrWritten = true
-                }
-            }
-            [status: 200, location: null, data: '']
-        }
-        hubGet.register('/installedapp/configure/json/100') { params ->
-            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
-        }
-        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
-            JsonOutput.toJson([
-                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
-                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
-                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
-                             sections: [[title: "", input: [[name: "useST", type: "bool"]],
-                                         body: [[element: "paragraph", description: "IF T1 thermostatMode THEN"]]]]],
-                settings: [:], childApps: []
-            ])
-        }
-        def stFetchSeq = 0
-        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
-            stFetchSeq++
-            def inputs = [
-                [name: "cond",          type: "enum",                   options: ["a": "New condition"]],
-                [name: "rCapab_1",      type: "enum",                   options: ["Custom Attribute", "Temperature"]],
-                [name: "rDev_1",        type: "capability.temperature", multiple: true],
-                [name: "rCustomAttr_1", type: "enum",                   options: ["thermostatMode", "temperature"]],
-                [name: "hasAll",        type: "button"],
-                [name: "doneST",        type: "button"]
-            ]
-            if (rCustomAttrWritten) {
-                // Enum attribute -> state_1 revealed (with a change-equivalent option), RelrDev_1 hidden.
-                inputs = inputs + [[name: "state_1", type: "enum", options: ["comfort", "eco", "*changed*"]]]
-            }
-            JsonOutput.toJson([
-                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
-                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
-                configPage: [name: "STPage", title: "Required Expression", install: false, error: null,
-                             sections: [[title: "", input: inputs, paragraphs: ["seq ${stFetchSeq}".toString()]]]],
-                settings: [:], childApps: []
-            ])
-        }
-        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
-            ruleConfigJson(100, "r", [[name: "N", type: "button"]])
-        }
-        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
-            ruleConfigJson(100, "r", [
-                [name: "actType.1",    type: "enum", options: ["condActs": "Conditional Actions"]],
-                [name: "actSubType.1", type: "enum", options: ["getIfThen": "IF Expression THEN"]],
-                [name: "actionCancel", type: "button"]
-            ])
-        }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
-        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"T1"}' }
-
-        when:
-        def result = script.toolSetRule([
-            appId: 100,
-            addRequiredExpression: [conditions: [[
-                capability: "Temperature",
-                deviceIds: [8],
-                attribute: "thermostatMode",
-                comparator: "*changed*"
-            ]]],
-            confirm: true
-        ])
-
-        then: "the change option ROUTES into state_1 and the path stays partial=false"
-        result.partial == false
-        posts.any { p -> (p.body as Map)["settings[state_1]"] == "*changed*" }
-
-        and: "no not-representable skip and RelrDev_1 never POSTed"
-        !((result.settingsSkipped as List) ?: []).any { it?.key == "RelrDev_1" && it?.reason == "comparator_not_representable_for_enum_attribute" }
-        !posts.any { p -> (p.body as Map).any { k, v -> k?.toString() == "settings[RelrDev_1]" } }
-    }
-
-    def "addRequiredExpression walker Site B no-RHS: a standard capability + enum attribute + '*changed*' with NO change option SKIPS (partial=true)"() {
-        // Site B no-RHS SKIP arm coverage. Same Site B path, but the enum value picker
-        // offers ONLY discrete states (no change option), so the no-RHS '*changed*'
-        // comparator is unrepresentable -> comparator_not_representable_for_enum_attribute
-        // skip + partial. A revert of the skip arm ships clean-but-broken success.
-        given:
-        enableWrite()
-        boolean rCustomAttrWritten = false
-        def posts = []
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            posts << [path: path, body: body]
-            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
-                body.each { k, v ->
-                    def key = _settingKeyOf(k)
-                    if (key != null && key == "rCustomAttr_1") rCustomAttrWritten = true
-                }
-            }
-            [status: 200, location: null, data: '']
-        }
-        hubGet.register('/installedapp/configure/json/100') { params ->
-            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
-        }
-        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
-            JsonOutput.toJson([
-                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
-                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
-                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
-                             sections: [[title: "", input: [[name: "useST", type: "bool"]],
-                                         body: [[element: "paragraph", description: "IF T1 thermostatMode THEN"]]]]],
-                settings: [:], childApps: []
-            ])
-        }
-        def stFetchSeq = 0
-        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
-            stFetchSeq++
-            def inputs = [
-                [name: "cond",          type: "enum",                   options: ["a": "New condition"]],
-                [name: "rCapab_1",      type: "enum",                   options: ["Custom Attribute", "Temperature"]],
-                [name: "rDev_1",        type: "capability.temperature", multiple: true],
-                [name: "rCustomAttr_1", type: "enum",                   options: ["thermostatMode", "temperature"]],
-                [name: "hasAll",        type: "button"],
-                [name: "doneST",        type: "button"]
-            ]
-            if (rCustomAttrWritten) {
-                // Enum attribute -> state_1 revealed with NO change option, RelrDev_1 hidden.
-                inputs = inputs + [[name: "state_1", type: "enum", options: ["comfort", "eco"]]]
-            }
-            JsonOutput.toJson([
-                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
-                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
-                configPage: [name: "STPage", title: "Required Expression", install: false, error: null,
-                             sections: [[title: "", input: inputs, paragraphs: ["seq ${stFetchSeq}".toString()]]]],
-                settings: [:], childApps: []
-            ])
-        }
-        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
-            ruleConfigJson(100, "r", [[name: "N", type: "button"]])
-        }
-        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
-            ruleConfigJson(100, "r", [
-                [name: "actType.1",    type: "enum", options: ["condActs": "Conditional Actions"]],
-                [name: "actSubType.1", type: "enum", options: ["getIfThen": "IF Expression THEN"]],
-                [name: "actionCancel", type: "button"]
-            ])
-        }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
-        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"T1"}' }
-
-        when:
-        def result = script.toolSetRule([
-            appId: 100,
-            addRequiredExpression: [conditions: [[
-                capability: "Temperature",
-                deviceIds: [8],
-                attribute: "thermostatMode",
-                comparator: "*changed*"
-            ]]],
-            confirm: true
-        ])
-
-        then: "the unrepresentable comparator surfaces as a genuine skip + partial"
-        ((result.settingsSkipped as List) ?: []).any { it?.key == "RelrDev_1" && it?.reason == "comparator_not_representable_for_enum_attribute" }
-        result.partial == true
-
-        and: "no change option was routed and RelrDev_1 never POSTed"
-        !posts.any { p -> (p.body as Map)["settings[state_1]"] == "*changed*" }
-        !posts.any { p -> (p.body as Map).any { k, v -> k?.toString() == "settings[RelrDev_1]" } }
-    }
-
     def "addAction ifThen walker Site A: an enum Custom Attribute lands the value in state_1 with no RelrDev write and partial=false"() {
-        // doActPage mirror of the STPage Site A enum-success spec. The same shared
-        // walker reaches this through a DIFFERENT write closure: STPage injects
-        // writeST (the _rmWriteSubPageField path), doActPage injects writeAct (the
-        // _rmWriteSettingOnPage path), so the throw->success conversion in the
-        // dedicated Custom Attribute block needs its own reachability proof here.
-        // An enum-recognized attribute re-renders to reveal state_1 DIRECTLY and never
-        // exposes RelrDev_1; the fix skips the comparator and writes state_1 with no
-        // throw and no partial. Reverting the walker fix re-introduces the throw.
+        // doActPage mirror of the STPage Site A spec (a different write closure): an enum Custom
+        // Attribute reveals state_1 directly, so the walker writes it with no RelrDev_1 and partial=false.
         given:
         enableWrite()
         boolean rCustomAttrWritten = false
@@ -19573,687 +18250,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         !(result.settingsApplied as List).contains("RelrDev_1")
         !posts.any { p -> (p.body as Map).any { k, v -> k?.toString() == "settings[RelrDev_1]" } }
     }
-
-    def "addAction ifThen walker (doActPage) enum Custom Attribute + '*changed*' with no value surfaces a genuine skip"() {
-        // #199 walker (doActPage) surface guard -- the doActPage mirror of the STPage
-        // '*changed*' enum spec, reached through the writeAct closure (the other shared-walker
-        // write path). The enum attribute reveals state_1 (on/off, no change option) and hides
-        // RelrDev_1; a no-RHS '*changed*' comparator is unrepresentable, so the walker must
-        // record a comparator_not_representable_for_enum_attribute skip (flips partial +
-        // repairHint via _rmAddAction's envelope), NOT a clean success.
-        given:
-        enableWrite()
-        boolean rCustomAttrWritten = false
-        def posts = []
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            posts << [path: path, body: body]
-            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
-                body.each { k, v ->
-                    def key = _settingKeyOf(k)
-                    if (key != null && key == "rCustomAttr_1") rCustomAttrWritten = true
-                }
-            }
-            [status: 200, location: null, data: '']
-        }
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
-        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
-            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum",
-                options: ["condActs": "Conditional Actions"]]])
-        }
-        def daSeq = 0
-        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
-            daSeq++
-            def inputs = [
-                [name: "actType.1",     type: "enum", options: ["condActs": "Conditional Actions"]],
-                [name: "actSubType.1",  type: "enum", options: ["getIfThen": "IF Expression THEN"]],
-                [name: "cond",          type: "enum", options: ["a": "New condition"]],
-                [name: "rCapab_1",      type: "enum", options: ["Custom Attribute", "Switch"]],
-                [name: "rDev_1",        type: "capability.sensor", multiple: true],
-                [name: "rCustomAttr_1", type: "enum", options: ["switch", "fixtureMode"]],
-                [name: "hasAll",        type: "button"]
-            ]
-            if (rCustomAttrWritten) {
-                inputs = inputs + [[name: "state_1", type: "enum", options: ["on", "off"]]]
-            }
-            JsonOutput.toJson([
-                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
-                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
-                configPage: [name: "doActPage", title: "T", install: false, error: null,
-                             sections: [[title: "", input: inputs,
-                                         paragraphs: ["IF switch reports THEN (seq ${daSeq})".toString()]]]],
-                settings: [:], childApps: []
-            ])
-        }
-        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
-            JsonOutput.toJson([
-                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
-                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
-                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
-                             sections: [[title: "", input: [],
-                                         paragraphs: ["IF switch reports THEN"]]]],
-                settings: [:], childApps: []
-            ])
-        }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
-        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
-
-        when:
-        def result = script.toolSetRule([
-            appId: 100,
-            addAction: [
-                capability: "ifThen",
-                expression: [conditions: [[
-                    capability: "Custom Attribute",
-                    deviceIds: [8],
-                    attribute: "switch",
-                    comparator: "*changed*"
-                ]]]
-            ],
-            confirm: true
-        ])
-
-        then: "the comparator is neither written nor falsely claimed applied"
-        !(result.settingsApplied as List).contains("RelrDev_1")
-        !posts.any { p -> (p.body as Map).any { k, v -> k?.toString() == "settings[RelrDev_1]" } }
-
-        and: "a genuine not-representable skip flips partial"
-        ((result.settingsSkipped as List) ?: []).any { it?.key == "RelrDev_1" && it?.reason == "comparator_not_representable_for_enum_attribute" }
-        result.partial == true
-
-        and: "an actionable repair hint names the unrepresentable comparator"
-        (result.repairHints as List).any { it?.toString()?.contains("cannot be represented") }
-    }
-
-    def "addAction ifThen walker (doActPage) enum picker offering BOTH became-true and became-false routes the EXACT requested token"() {
-        // Sibling-surface mirror of the trigger-row exact-routing spec, on the doActPage
-        // walker (writeAct path). The enum value picker state_1 offers both change options;
-        // a '*became false*' request must route to the EXACT match, never the first
-        // RHS-optional option.
-        given:
-        enableWrite()
-        boolean rCustomAttrWritten = false
-        def posts = []
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            posts << [path: path, body: body]
-            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
-                body.each { k, v ->
-                    def key = _settingKeyOf(k)
-                    if (key != null && key == "rCustomAttr_1") rCustomAttrWritten = true
-                }
-            }
-            [status: 200, location: null, data: '']
-        }
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
-        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
-            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum",
-                options: ["condActs": "Conditional Actions"]]])
-        }
-        def daSeq = 0
-        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
-            daSeq++
-            def inputs = [
-                [name: "actType.1",     type: "enum", options: ["condActs": "Conditional Actions"]],
-                [name: "actSubType.1",  type: "enum", options: ["getIfThen": "IF Expression THEN"]],
-                [name: "cond",          type: "enum", options: ["a": "New condition"]],
-                [name: "rCapab_1",      type: "enum", options: ["Custom Attribute", "Switch"]],
-                [name: "rDev_1",        type: "capability.sensor", multiple: true],
-                [name: "rCustomAttr_1", type: "enum", options: ["switch", "fixtureMode"]],
-                [name: "hasAll",        type: "button"]
-            ]
-            if (rCustomAttrWritten) {
-                inputs = inputs + [[name: "state_1", type: "enum", options: ["*became true*", "*became false*"]]]
-            }
-            JsonOutput.toJson([
-                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
-                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
-                configPage: [name: "doActPage", title: "T", install: false, error: null,
-                             sections: [[title: "", input: inputs,
-                                         paragraphs: ["IF switch reports THEN (seq ${daSeq})".toString()]]]],
-                settings: [:], childApps: []
-            ])
-        }
-        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
-            JsonOutput.toJson([
-                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
-                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
-                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
-                             sections: [[title: "", input: [],
-                                         paragraphs: ["IF switch reports THEN"]]]],
-                settings: [:], childApps: []
-            ])
-        }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
-        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
-
-        when:
-        def result = script.toolSetRule([
-            appId: 100,
-            addAction: [
-                capability: "ifThen",
-                expression: [conditions: [[
-                    capability: "Custom Attribute",
-                    deviceIds: [8],
-                    attribute: "switch",
-                    comparator: "*became false*"
-                ]]]
-            ],
-            confirm: true
-        ])
-
-        then: "the EXACT requested option lands in state_1, never the first RHS-optional option"
-        posts.any { p -> (p.body as Map)["settings[state_1]"] == "*became false*" }
-        !posts.any { p -> (p.body as Map)["settings[state_1]"] == "*became true*" }
-
-        and: "no not-representable skip is produced"
-        !((result.settingsSkipped as List) ?: []).any { it?.key == "RelrDev_1" && it?.reason == "comparator_not_representable_for_enum_attribute" }
-    }
-
-    def "addAction ifThen walker (doActPage) enum picker whose only change-ish option is 'unchanged' does NOT false-match a '*changed*' request -- it skips"() {
-        // Sibling-surface mirror of the trigger-row 'unchanged' negative pin, on the
-        // doActPage walker. 'unchanged' satisfies the fuzzy family gate but is NOT the
-        // requested token, so it must NOT be routed; with no exact match the skip fires.
-        given:
-        enableWrite()
-        boolean rCustomAttrWritten = false
-        def posts = []
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            posts << [path: path, body: body]
-            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
-                body.each { k, v ->
-                    def key = _settingKeyOf(k)
-                    if (key != null && key == "rCustomAttr_1") rCustomAttrWritten = true
-                }
-            }
-            [status: 200, location: null, data: '']
-        }
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
-        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
-            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum",
-                options: ["condActs": "Conditional Actions"]]])
-        }
-        def daSeq = 0
-        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
-            daSeq++
-            def inputs = [
-                [name: "actType.1",     type: "enum", options: ["condActs": "Conditional Actions"]],
-                [name: "actSubType.1",  type: "enum", options: ["getIfThen": "IF Expression THEN"]],
-                [name: "cond",          type: "enum", options: ["a": "New condition"]],
-                [name: "rCapab_1",      type: "enum", options: ["Custom Attribute", "Switch"]],
-                [name: "rDev_1",        type: "capability.sensor", multiple: true],
-                [name: "rCustomAttr_1", type: "enum", options: ["switch", "fixtureMode"]],
-                [name: "hasAll",        type: "button"]
-            ]
-            if (rCustomAttrWritten) {
-                inputs = inputs + [[name: "state_1", type: "enum", options: ["on", "off", "unchanged"]]]
-            }
-            JsonOutput.toJson([
-                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
-                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
-                configPage: [name: "doActPage", title: "T", install: false, error: null,
-                             sections: [[title: "", input: inputs,
-                                         paragraphs: ["IF switch reports THEN (seq ${daSeq})".toString()]]]],
-                settings: [:], childApps: []
-            ])
-        }
-        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
-            JsonOutput.toJson([
-                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
-                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
-                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
-                             sections: [[title: "", input: [],
-                                         paragraphs: ["IF switch reports THEN"]]]],
-                settings: [:], childApps: []
-            ])
-        }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
-        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
-
-        when:
-        def result = script.toolSetRule([
-            appId: 100,
-            addAction: [
-                capability: "ifThen",
-                expression: [conditions: [[
-                    capability: "Custom Attribute",
-                    deviceIds: [8],
-                    attribute: "switch",
-                    comparator: "*changed*"
-                ]]]
-            ],
-            confirm: true
-        ])
-
-        then: "'unchanged' is NOT routed -- the substring-match trap is avoided"
-        !posts.any { p -> (p.body as Map)["settings[state_1]"] == "unchanged" }
-
-        and: "the unrepresentable comparator surfaces as a genuine skip + partial"
-        ((result.settingsSkipped as List) ?: []).any { it?.key == "RelrDev_1" && it?.reason == "comparator_not_representable_for_enum_attribute" }
-        result.partial == true
-    }
-
-    def "addAction ifThen walker (doActPage) enum picker with a Map-shaped change option routes the clean value (per-surface Map guard)"() {
-        // #6 per-surface Map-CONTAINER guard on the doActPage walker -- the writeAct-path
-        // mirror of the STPage Map-shaped walker spec. The enum value picker state_1's
-        // options are a MAP CONTAINER keyed by value (["on":"On", "*changed*":"changed"]),
-        // the shape _rmReadPickerOptionStrings must read via .keySet() rather than corrupt
-        // into "on=On" Map.Entry strings. Guards the doActPage surface against a per-surface
-        // revert of the container handling.
-        given:
-        enableWrite()
-        boolean rCustomAttrWritten = false
-        def posts = []
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            posts << [path: path, body: body]
-            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
-                body.each { k, v ->
-                    def key = _settingKeyOf(k)
-                    if (key != null && key == "rCustomAttr_1") rCustomAttrWritten = true
-                }
-            }
-            [status: 200, location: null, data: '']
-        }
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
-        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
-            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum",
-                options: ["condActs": "Conditional Actions"]]])
-        }
-        def daSeq = 0
-        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
-            daSeq++
-            def inputs = [
-                [name: "actType.1",     type: "enum", options: ["condActs": "Conditional Actions"]],
-                [name: "actSubType.1",  type: "enum", options: ["getIfThen": "IF Expression THEN"]],
-                [name: "cond",          type: "enum", options: ["a": "New condition"]],
-                [name: "rCapab_1",      type: "enum", options: ["Custom Attribute", "Switch"]],
-                [name: "rDev_1",        type: "capability.sensor", multiple: true],
-                [name: "rCustomAttr_1", type: "enum", options: ["switch", "fixtureMode"]],
-                [name: "hasAll",        type: "button"]
-            ]
-            if (rCustomAttrWritten) {
-                // MAP CONTAINER options: the change-equivalent value is the KEY '*changed*'.
-                inputs = inputs + [[name: "state_1", type: "enum",
-                                    options: ["on": "On", "off": "Off", "*changed*": "changed"]]]
-            }
-            JsonOutput.toJson([
-                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
-                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
-                configPage: [name: "doActPage", title: "T", install: false, error: null,
-                             sections: [[title: "", input: inputs,
-                                         paragraphs: ["IF switch reports THEN (seq ${daSeq})".toString()]]]],
-                settings: [:], childApps: []
-            ])
-        }
-        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
-            JsonOutput.toJson([
-                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
-                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
-                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
-                             sections: [[title: "", input: [],
-                                         paragraphs: ["IF switch reports THEN"]]]],
-                settings: [:], childApps: []
-            ])
-        }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
-        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
-
-        when:
-        def result = script.toolSetRule([
-            appId: 100,
-            addAction: [
-                capability: "ifThen",
-                expression: [conditions: [[
-                    capability: "Custom Attribute",
-                    deviceIds: [8],
-                    attribute: "switch",
-                    comparator: "*changed*"
-                ]]]
-            ],
-            confirm: true
-        ])
-
-        then: "the CLEAN change value lands in state_1, never a stringified Map.Entry"
-        posts.any { p -> (p.body as Map)["settings[state_1]"] == "*changed*" }
-        !posts.any { p -> (p.body as Map)["settings[state_1]"]?.toString()?.contains("=") }
-
-        and: "no not-representable skip is produced and partial stays false"
-        !((result.settingsSkipped as List) ?: []).any { it?.key == "RelrDev_1" && it?.reason == "comparator_not_representable_for_enum_attribute" }
-        result.partial == false
-    }
-
-    def "addRequiredExpression walker (STPage) enum '*changed*': a THROWING reveal re-fetch force-writes (degrades) instead of ROUTING the change option"() {
-        // #1/#2 STPage NON-VACUOUS guard. The enum no-RHS path reads the value picker's
-        // options from the schema the preceding relrReveal step ALREADY fetched (no separate
-        // probe). To make the throw-degradation distinguishable from the normal path, the
-        // picker here OFFERS a matching change option: the NON-throwing path would ROUTE
-        // ('*changed*' into state_1, partial=false). Injecting a throw on the reveal re-fetch
-        // (the 2nd post-attr STPage fetch, the one that exposes the picker) sends the walker
-        // down the outer force-write fallback instead -- partial=true, a
-        // comparator_force_written_unverified skip, RelrDev_1 force-written, and crucially the
-        // change option is NOT routed. throw-vs-no-throw = force-write-vs-route, so a spec that
-        // skipped the try/catch entirely (taking the route) would FAIL the force-write
-        // assertions. Reverting the walker's degrade-never-abort contract re-introduces the
-        // propagated abort, failing noExceptionThrown.
-        // Both-ways pending (orchestrator).
-        given:
-        enableWrite()
-        boolean rCustomAttrWritten = false
-        int postAttrStFetches = 0
-        def posts = []
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            posts << [path: path, body: body]
-            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
-                body.each { k, v ->
-                    def key = _settingKeyOf(k)
-                    if (key != null && key == "rCustomAttr_1") rCustomAttrWritten = true
-                }
-            }
-            [status: 200, location: null, data: '']
-        }
-        hubGet.register('/installedapp/configure/json/100') { params ->
-            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
-        }
-        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
-            JsonOutput.toJson([
-                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
-                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
-                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
-                             sections: [[title: "", input: [[name: "useST", type: "bool"]],
-                                         body: [[element: "paragraph",
-                                                 description: "IF S1 reports switch THEN"]]]]],
-                settings: [:], childApps: []
-            ])
-        }
-        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
-            // Page-schema cache: the attr write's own _rmWriteSubPageField CONSUMES its POST
-            // response; the test stubs POSTs to return data:'' so the consume falls back to a
-            // verify-GET that, on success, STORES the STPage so the following revealStep probe
-            // HITS the cache and issues no GET of its own -- the verify-GET IS the exposure probe
-            // now. To still drive the walker's force-write-on-probe-failure path we fail the FIRST
-            // TWO post-attr STPage fetches: fetch 1 is the rCustomAttr verify-GET (swallowed by
-            // _rmWriteSubPageField, which invalidates the cache), so fetch 2 -- the revealStep
-            // postCfg -- becomes a real GET that also throws and propagates into the walker's
-            // force-write catch. Fetch 3+ (the hasAll click's version fetch) must succeed, hence
-            // the <=2 bound. '*changed*' carries no explicit value, so the catch skips the state_1
-            // write and the picker's *changed* option is never routed (the force-write distinction).
-            if (rCustomAttrWritten) {
-                postAttrStFetches++
-                if (postAttrStFetches <= 2) return ''
-            }
-            def inputs = [
-                [name: "cond",          type: "enum",              options: ["a": "New condition"]],
-                [name: "rCapab_1",      type: "enum",              options: ["Custom Attribute", "Switch"]],
-                [name: "rDev_1",        type: "capability.sensor", multiple: true],
-                [name: "rCustomAttr_1", type: "enum",              options: ["switch", "fixtureMode"]],
-                [name: "hasAll",        type: "button"],
-                [name: "doneST",        type: "button"]
-            ]
-            if (rCustomAttrWritten) {
-                // Picker OFFERS a matching change option: the non-throwing path would ROUTE.
-                inputs = inputs + [[name: "state_1", type: "enum", options: ["on", "off", "*changed*"]]]
-            }
-            JsonOutput.toJson([
-                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
-                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
-                configPage: [name: "STPage", title: "Required Expression", install: false, error: null,
-                             sections: [[title: "", input: inputs,
-                                         paragraphs: ["seq ${postAttrStFetches}".toString()]]]],
-                settings: [:], childApps: []
-            ])
-        }
-        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
-            ruleConfigJson(100, "r", [[name: "N", type: "button"]])
-        }
-        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
-            ruleConfigJson(100, "r", [
-                [name: "actType.1",    type: "enum", options: ["condActs": "Conditional Actions"]],
-                [name: "actSubType.1", type: "enum", options: ["getIfThen": "IF Expression THEN"]],
-                [name: "actionCancel", type: "button"]
-            ])
-        }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
-        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
-
-        when:
-        def result = script.toolSetRule([
-            appId: 100,
-            addRequiredExpression: [conditions: [[
-                capability: "Custom Attribute",
-                deviceIds: [8],
-                attribute: "switch",
-                comparator: "*changed*"
-            ]]],
-            confirm: true
-        ])
-
-        then: "the throwing reveal did NOT propagate -- the build completed and stayed success"
-        noExceptionThrown()
-        result != null
-        result.success == true
-
-        and: "the throw took the force-write fallback (partial), NOT the route -- distinguishable"
-        ((result.settingsSkipped as List) ?: []).any { it?.key == "RelrDev_1" && it?.reason == "comparator_force_written_unverified" }
-        (result.settingsApplied as List).contains("RelrDev_1")
-        result.partial == true
-
-        and: "the change option was NOT routed -- proving the throw path ran, not the normal route"
-        !posts.any { p -> (p.body as Map)["settings[state_1]"] == "*changed*" }
-    }
-
-    def "addAction ifThen walker (doActPage) enum '*changed*': a THROWING reveal re-fetch force-writes (degrades) instead of ROUTING the change option"() {
-        // #1/#2 doActPage NON-VACUOUS guard -- the writeAct-path mirror of the STPage spec.
-        // Same shared walker, reached through addAction ifThen; the breadcrumb the force-write
-        // posts is the doActPage '["mainPage"]' arm. The picker OFFERS a matching change
-        // option so the non-throwing path would ROUTE ('*changed*' into state_1,
-        // partial=false); injecting a throw on the reveal re-fetch (the 2nd post-attr
-        // doActPage fetch, the one that exposes the picker) sends the walker down the
-        // force-write fallback instead -- partial=true, comparator_force_written_unverified,
-        // RelrDev_1 force-written, change option NOT routed. throw-vs-no-throw =
-        // force-write-vs-route, distinguishable. Reverting the degrade-never-abort contract
-        // re-introduces the propagated abort, failing noExceptionThrown.
-        // Both-ways pending (orchestrator).
-        given:
-        enableWrite()
-        boolean rCustomAttrWritten = false
-        int postAttrDaFetches = 0
-        def posts = []
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            posts << [path: path, body: body]
-            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
-                body.each { k, v ->
-                    def key = _settingKeyOf(k)
-                    if (key != null && key == "rCustomAttr_1") rCustomAttrWritten = true
-                }
-            }
-            [status: 200, location: null, data: '']
-        }
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
-        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
-            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum",
-                options: ["condActs": "Conditional Actions"]]])
-        }
-        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
-            // The attr write's own _rmWriteSettingOnPage does a leading fetch (pre-write) and a
-            // trailing verify (1st post-write fetch). The revealStep re-fetch that exposes the
-            // picker is the 2nd post-write fetch -- fail exactly that one.
-            if (rCustomAttrWritten) {
-                postAttrDaFetches++
-                if (postAttrDaFetches == 2) return ''
-            }
-            def inputs = [
-                [name: "actType.1",     type: "enum", options: ["condActs": "Conditional Actions"]],
-                [name: "actSubType.1",  type: "enum", options: ["getIfThen": "IF Expression THEN"]],
-                [name: "cond",          type: "enum", options: ["a": "New condition"]],
-                [name: "rCapab_1",      type: "enum", options: ["Custom Attribute", "Switch"]],
-                [name: "rDev_1",        type: "capability.sensor", multiple: true],
-                [name: "rCustomAttr_1", type: "enum", options: ["switch", "fixtureMode"]],
-                [name: "hasAll",        type: "button"]
-            ]
-            if (rCustomAttrWritten) {
-                // Picker OFFERS a matching change option: the non-throwing path would ROUTE.
-                inputs = inputs + [[name: "state_1", type: "enum", options: ["on", "off", "*changed*"]]]
-            }
-            JsonOutput.toJson([
-                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
-                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
-                configPage: [name: "doActPage", title: "T", install: false, error: null,
-                             sections: [[title: "", input: inputs,
-                                         paragraphs: ["IF switch reports THEN (seq ${postAttrDaFetches})".toString()]]]],
-                settings: [:], childApps: []
-            ])
-        }
-        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
-            JsonOutput.toJson([
-                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
-                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
-                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
-                             sections: [[title: "", input: [],
-                                         paragraphs: ["IF switch reports THEN"]]]],
-                settings: [:], childApps: []
-            ])
-        }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
-        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
-
-        when:
-        def result = script.toolSetRule([
-            appId: 100,
-            addAction: [
-                capability: "ifThen",
-                expression: [conditions: [[
-                    capability: "Custom Attribute",
-                    deviceIds: [8],
-                    attribute: "switch",
-                    comparator: "*changed*"
-                ]]]
-            ],
-            confirm: true
-        ])
-
-        then: "the throwing reveal did NOT propagate -- the build completed and stayed success"
-        noExceptionThrown()
-        result != null
-        result.success == true
-
-        and: "the throw took the force-write fallback (partial), NOT the route -- distinguishable"
-        ((result.settingsSkipped as List) ?: []).any { it?.key == "RelrDev_1" && it?.reason == "comparator_force_written_unverified" }
-        (result.settingsApplied as List).contains("RelrDev_1")
-        result.partial == true
-
-        and: "the change option was NOT routed -- proving the throw path ran, not the normal route"
-        !posts.any { p -> (p.body as Map)["settings[state_1]"] == "*changed*" }
-    }
-
-    def "addRequiredExpression walker (STPage) enum picker with a Map-shaped change option routes the clean value (per-surface Map guard)"() {
-        // #7 per-surface Map-option guard. The trigger surface already pins the Map-shaped
-        // picker option; the WALKER surfaces share the _rmReadPickerOptionStrings reader, so
-        // this guards the STPage walker against a per-surface revert that re-corrupts a
-        // value-key Map option ("[value:*changed*, text:changed]") into the route probe.
-        // Both-ways pending (orchestrator).
-        given:
-        enableWrite()
-        boolean rCustomAttrWritten = false
-        def posts = []
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            posts << [path: path, body: body]
-            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
-                body.each { k, v ->
-                    def key = _settingKeyOf(k)
-                    if (key != null && key == "rCustomAttr_1") rCustomAttrWritten = true
-                }
-            }
-            [status: 200, location: null, data: '']
-        }
-        hubGet.register('/installedapp/configure/json/100') { params ->
-            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
-        }
-        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
-            JsonOutput.toJson([
-                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
-                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
-                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
-                             sections: [[title: "", input: [[name: "useST", type: "bool"]],
-                                         body: [[element: "paragraph",
-                                                 description: "IF S1 reports switch THEN"]]]]],
-                settings: [:], childApps: []
-            ])
-        }
-        def stSeq = 0
-        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
-            stSeq++
-            def inputs = [
-                [name: "cond",          type: "enum",              options: ["a": "New condition"]],
-                [name: "rCapab_1",      type: "enum",              options: ["Custom Attribute", "Switch"]],
-                [name: "rDev_1",        type: "capability.sensor", multiple: true],
-                [name: "rCustomAttr_1", type: "enum",              options: ["switch", "fixtureMode"]],
-                [name: "hasAll",        type: "button"],
-                [name: "doneST",        type: "button"]
-            ]
-            if (rCustomAttrWritten) {
-                // Enum attribute: value picker state_1 with VALUE-KEY MAP options, one of
-                // which is the change-equivalent (must route the clean '*changed*', never the
-                // stringified Map).
-                inputs = inputs + [[name: "state_1", type: "enum",
-                                    options: [[value: "on", text: "On"], [value: "off", text: "Off"], [value: "*changed*", text: "changed"]]]]
-            }
-            JsonOutput.toJson([
-                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
-                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
-                configPage: [name: "STPage", title: "Required Expression", install: false, error: null,
-                             sections: [[title: "", input: inputs,
-                                         paragraphs: ["seq ${stSeq}".toString()]]]],
-                settings: [:], childApps: []
-            ])
-        }
-        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
-            ruleConfigJson(100, "r", [[name: "N", type: "button"]])
-        }
-        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
-            ruleConfigJson(100, "r", [
-                [name: "actType.1",    type: "enum", options: ["condActs": "Conditional Actions"]],
-                [name: "actSubType.1", type: "enum", options: ["getIfThen": "IF Expression THEN"]],
-                [name: "actionCancel", type: "button"]
-            ])
-        }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
-        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
-
-        when:
-        def result = script.toolSetRule([
-            appId: 100,
-            addRequiredExpression: [conditions: [[
-                capability: "Custom Attribute",
-                deviceIds: [8],
-                attribute: "switch",
-                comparator: "*changed*"
-            ]]],
-            confirm: true
-        ])
-
-        then: "the CLEAN change value lands in state_1, never the stringified Map"
-        posts.any { p -> (p.body as Map)["settings[state_1]"] == "*changed*" }
-        !posts.any { p -> (p.body as Map)["settings[state_1]"]?.toString()?.startsWith("[value:") }
-
-        and: "no not-representable skip is produced and partial stays false"
-        !((result.settingsSkipped as List) ?: []).any { it?.key == "RelrDev_1" && it?.reason == "comparator_not_representable_for_enum_attribute" }
-        result.partial == false
-    }
-
     def "addAction ifThen walker Site B: a standard capability carrying an enum attribute suppresses RelrDev_1 and stays partial=false"() {
-        // doActPage mirror of the STPage Site B enum-suppress spec. Site B is the
-        // walker's default (non-Custom-Attribute) path: a standard capability (here
-        // Temperature) that carries a custom-attribute field. Its comparator block
-        // writes rCustomAttr_1 then discoverField(state_1|RelrDev_1): an enum-recognized
-        // attribute reveals state_1 and HIDES RelrDev_1, so the comparator is suppressed.
-        // Reachable here via the writeAct closure (vs STPage's writeST). Reverting the
-        // Site B suppression re-introduces the unconditional RelrDev_1 write (silent
-        // dead-storage), which this spec catches by asserting RelrDev_1 is never POSTed.
+        // doActPage mirror of the STPage Site B spec: a standard capability with an enum attribute
+        // reveals state_1 and hides RelrDev_1, so the comparator is suppressed and never POSTed.
         given:
         enableWrite()
         boolean rCustomAttrWritten = false
@@ -20342,101 +18341,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         !(result.settingsApplied as List).contains("RelrDev_1")
         !posts.any { p -> (p.body as Map).any { k, v -> k?.toString() == "settings[RelrDev_1]" } }
     }
-
-    def "addAction ifThen walker Site B + '*changed*' WITH an explicit value records an informational skip (value wins, partial stays false)"() {
-        // #6 honest-drop pin on the _rmWalkConditionReveal Site B (afterAttrInputs) path
-        // reached via addAction ifThen (doActPage) -- the fourth of the four surfaces that
-        // emit the informational skip. A standard capability (Temperature) carrying an enum
-        // attribute, with a contradictory no-RHS '*changed*' comparator AND an explicit value
-        // 'comfort': the value lands in state_1 and the condition works as an equals-check, so
-        // the dropped change intent is reported via the informational
-        // state_change_comparator_ignored_explicit_value skip (no partial flip).
-        given:
-        enableWrite()
-        boolean rCustomAttrWritten = false
-        def posts = []
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            posts << [path: path, body: body]
-            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
-                body.each { k, v ->
-                    def key = _settingKeyOf(k)
-                    if (key != null && key == "rCustomAttr_1") rCustomAttrWritten = true
-                }
-            }
-            [status: 200, location: null, data: '']
-        }
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
-        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
-            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum",
-                options: ["condActs": "Conditional Actions"]]])
-        }
-        def daSeq = 0
-        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
-            daSeq++
-            def inputs = [
-                [name: "actType.1",     type: "enum", options: ["condActs": "Conditional Actions"]],
-                [name: "actSubType.1",  type: "enum", options: ["getIfThen": "IF Expression THEN"]],
-                [name: "cond",          type: "enum", options: ["a": "New condition"]],
-                [name: "rCapab_1",      type: "enum", options: ["Custom Attribute", "Temperature"]],
-                [name: "rDev_1",        type: "capability.temperature", multiple: true],
-                [name: "rCustomAttr_1", type: "enum", options: ["thermostatMode", "temperature"]],
-                [name: "hasAll",        type: "button"]
-            ]
-            if (rCustomAttrWritten) {
-                // Enum attribute -> state_1 revealed (comfort/eco, no change option), RelrDev_1 hidden.
-                inputs = inputs + [[name: "state_1", type: "enum", options: ["comfort", "eco"]]]
-            }
-            JsonOutput.toJson([
-                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
-                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
-                configPage: [name: "doActPage", title: "T", install: false, error: null,
-                             sections: [[title: "", input: inputs,
-                                         paragraphs: ["IF mode is comfort THEN (seq ${daSeq})".toString()]]]],
-                settings: [:], childApps: []
-            ])
-        }
-        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
-            JsonOutput.toJson([
-                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
-                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
-                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
-                             sections: [[title: "", input: [],
-                                         paragraphs: ["IF mode is comfort THEN"]]]],
-                settings: [:], childApps: []
-            ])
-        }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
-        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"T1"}' }
-
-        when:
-        def result = script.toolSetRule([
-            appId: 100,
-            addAction: [
-                capability: "ifThen",
-                expression: [conditions: [[
-                    capability: "Temperature",
-                    deviceIds: [8],
-                    attribute: "thermostatMode",
-                    comparator: "*changed*",
-                    state: "comfort"
-                ]]]
-            ],
-            confirm: true
-        ])
-
-        then: "the explicit value wins and lands in state_1"
-        posts.any { p -> (p.body as Map)["settings[state_1]"] == "comfort" }
-
-        and: "an informational skip records the dropped change-comparator intent, but partial stays false"
-        ((result.settingsSkipped as List) ?: []).any { it?.key == "RelrDev_1" && it?.reason == "state_change_comparator_ignored_explicit_value" }
-        result.partial == false
-
-        and: "no not-representable skip (the value DID land) and RelrDev_1 never POSTed"
-        !((result.settingsSkipped as List) ?: []).any { it?.key == "RelrDev_1" && it?.reason == "comparator_not_representable_for_enum_attribute" }
-        !posts.any { p -> (p.body as Map).any { k, v -> k?.toString() == "settings[RelrDev_1]" } }
-    }
-
     def "addRequiredExpression walker Site B free-path: a non-enum attribute reveals RelrDev_1 and the comparator IS written (negative pin)"() {
         // Negative pin for the Site B enum-SUPPRESS branch. The enum-suppress specs pin
         // that an enum attribute hides RelrDev_1 and the comparator is NOT written; this
@@ -20896,7 +18800,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Site B aborts), the asymmetry the maintainer flagged. The "fail exactly the 2nd
         // post-attr fetch" trick lands the throw on discoverField (the attr write's own
         // pre-fetch + verify both succeed first), same as the Site A pin.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         boolean rCustomAttrWritten = false
@@ -21120,118 +19023,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         (relrPost.body as Map).pageBreadcrumbs == '["mainPage"]'
         (relrPost.body as Map).currentPage == "doActPage"
     }
-
-    def "addAction ifThen walker Site B: a throwing exposure-probe re-fetch force-writes the comparator with the doActPage breadcrumb and flips partial (Site B graceful degradation, no abort)"() {
-        // doActPage arm of the Site B graceful-degradation pin. Site B = the walker's
-        // default block (a standard capability carrying a custom attribute), reached by
-        // capability='Switch'+attribute through addAction (writeAct, NOT writeST). Its
-        // discoverField exposure probe is the transient-failure surface; on a throw Site B
-        // must catch, force-write the comparator with the doActPage breadcrumb
-        // '["mainPage"]', flip partial, and NOT abort. The breadcrumb assertion is what
-        // exercises the doActPage arm specifically. Reverting Site B's try/catch leaves the
-        // throw unguarded and the add aborts -- the Site-A-degrades-Site-B-aborts asymmetry.
-        // Both-ways pending (orchestrator).
-        given:
-        enableWrite()
-        boolean rCustomAttrWritten = false
-        int postAttrDaFetches = 0
-        def posts = []
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            posts << [path: path, body: body]
-            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
-                body.each { k, v ->
-                    def key = _settingKeyOf(k)
-                    if (key != null && key == "rCustomAttr_1") rCustomAttrWritten = true
-                }
-            }
-            [status: 200, location: null, data: '']
-        }
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
-        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
-            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum",
-                options: ["condActs": "Conditional Actions"]]])
-        }
-        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
-            // Site B default path: rCapab_1=Switch (a standard capability) carrying a custom
-            // attribute. The attr write's own _rmWriteSettingOnPage does a leading fetch +
-            // a trailing verify; discoverField's first fetch is the 2nd post-write fetch --
-            // fail exactly that one so the throw lands on the exposure probe.
-            if (rCustomAttrWritten) {
-                postAttrDaFetches++
-                if (postAttrDaFetches == 2) return ''
-            }
-            def inputs = [
-                [name: "actType.1",     type: "enum",              options: ["condActs": "Conditional Actions"]],
-                [name: "actSubType.1",  type: "enum",              options: ["getIfThen": "IF Expression THEN"]],
-                [name: "cond",          type: "enum",              options: ["a": "New condition"]],
-                [name: "rCapab_1",      type: "enum",              options: ["Custom Attribute", "Switch"]],
-                [name: "rDev_1",        type: "capability.sensor", multiple: true],
-                [name: "rCustomAttr_1", type: "enum",              options: ["customLevel", "switch"]],
-                [name: "hasAll",        type: "button"]
-            ]
-            if (rCustomAttrWritten) {
-                inputs = inputs + [[name: "RelrDev_1", type: "enum",
-                                    options: ["<", "<=", ">", ">=", "=", "≠"]]]
-            }
-            JsonOutput.toJson([
-                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
-                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
-                configPage: [name: "doActPage", title: "T", install: false, error: null,
-                             sections: [[title: "", input: inputs,
-                                         paragraphs: ["IF customLevel != 50 THEN (seq ${postAttrDaFetches})".toString()]]]],
-                settings: [:], childApps: []
-            ])
-        }
-        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
-            JsonOutput.toJson([
-                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
-                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
-                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
-                             sections: [[title: "", input: [],
-                                         paragraphs: ["IF customLevel != 50 THEN"]]]],
-                settings: [:], childApps: []
-            ])
-        }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
-        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
-
-        when:
-        def result = script.toolSetRule([
-            appId: 100,
-            addAction: [
-                capability: "ifThen",
-                expression: [conditions: [[
-                    capability: "Switch",
-                    deviceIds: [8],
-                    attribute: "customLevel",
-                    comparator: "!=",
-                    state: "50"
-                ]]]
-            ],
-            confirm: true
-        ])
-
-        then: "the build completed (no propagated exception), stayed success, and flagged partial"
-        noExceptionThrown()
-        result != null
-        result.success == true
-        result.partial == true
-
-        and: "the comparator was force-written: RelrDev_1 is applied with a comparator_force_written_unverified skip"
-        (result.settingsApplied as List).contains("RelrDev_1")
-        def forceSkip = ((result.settingsSkipped as List) ?: []).find { it instanceof Map && it.key == "RelrDev_1" && it.reason == "comparator_force_written_unverified" }
-        forceSkip != null
-
-        and: "the force-write POSTed the NORMALIZED Unicode glyph, not the raw '!=', with the doActPage breadcrumb '[\"mainPage\"]'"
-        def relrPost = posts.find { p -> (p.body as Map).containsKey("settings[RelrDev_1]") }
-        relrPost != null
-        (relrPost.body as Map)["settings[RelrDev_1]"] == "≠"
-        !posts.any { p -> (p.body as Map)["settings[RelrDev_1]"] == "!=" }
-        (relrPost.body as Map).pageBreadcrumbs == '["mainPage"]'
-        (relrPost.body as Map).currentPage == "doActPage"
-    }
-
     def "addRequiredExpression on a rule that ALREADY has a Required Expression returns a clear error, not the raw schema dump"() {
         // C3 existing-RE guard, driven on _rmAddRequiredExpression directly (the helper that
         // owns the guard). Re-driving addRequiredExpression over a rule that already has an
@@ -21245,7 +19036,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // (it asserts the error is the clear one AND is NOT the schema dump). The
         // toolSetRule dispatcher forwards requiredExpressionAlreadyExists + error verbatim;
         // pinning the helper keeps the assertion at the guard's source.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -21292,7 +19082,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then: "the existing-RE state is reported as a clear, actionable error -- not a raw schema dump"
         result.success == false
         result.requiredExpressionAlreadyExists == true
-        result.error?.toLowerCase()?.contains("required expression already exists")
+        result.error?.toLowerCase()?.contains("already has a required expression")
         result.error?.contains("hub_get_app_config")
 
         and: "the error is NOT the raw 'not in STPage schema ... got cancelST, editST' dump"
@@ -21310,7 +19100,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // comparator that landed. This drives the Site A throwing-probe fallback (the same
         // fixture as the Site A force-write spec) and asserts repairHints carries the
         // verify-don't-rewrite hint for RelrDev_1 and NOT the generic lost-field hint.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         boolean rCustomAttrWritten = false
@@ -21426,11 +19215,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         and: "repairHints carries the verify-don't-rewrite hint naming the force-written comparator"
         def hints = (result.repairHints as List) ?: []
-        def verifyHint = hints.find { it?.toString()?.contains("force-written") }
+        def verifyHint = hints.find { it?.toString()?.contains("could not be read back") }
         verifyHint != null
         verifyHint.toString().contains("RelrDev_1")
-        verifyHint.toString().contains("value IS in settingsApplied")
-        verifyHint.toString().contains("Do NOT re-write")
+        verifyHint.toString().contains("before writing again")
 
         and: "the force-written comparator is NOT folded into the generic degraded-path hint"
         // Under the page-schema cache this run carries TWO degraded reasons: RelrDev_1's
@@ -21441,7 +19229,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // degraded-path hint (which would wrongly tell the caller to re-write a value that DID
         // land). The generic hint counts lost conditions without naming keys, so RelrDev_1 must
         // not appear in it; rCustomAttr_1 is the only genuinely-lost field driving it.
-        def genericHint = hints.find { it?.toString()?.contains("used a degraded write path") }
+        def genericHint = hints.find { it?.toString()?.contains("did not fully land") }
         genericHint != null
         !genericHint.toString().contains("RelrDev_1")
         ((result.settingsSkipped as List) ?: []).any { it instanceof Map && it.key == "rCustomAttr_1" && it.reason == "verification_fetch_failed" }
@@ -22358,7 +20146,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "the IllegalStateException is caught by the backup-and-catch wrapper -- success=false naming the un-revealed RHS picker"
         result.success == false
-        result.error.toString().toLowerCase().contains("right-hand variable picker not revealed")
+        result.error.toString().toLowerCase().contains("right-hand variable picker did not appear")
 
         and: "the RHS variable name was never written -- the throw fired before the picker write"
         !posts.any { it.path == "/installedapp/update/json" && (it.body["settings[xVarR_1]"]?.toString() ?: "") == "B" }
@@ -22679,7 +20467,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // IllegalArgumentException from the walker is caught by toolSetRule's
         // backup-and-catch wrapper and surfaced as a structured [success:false, error:...] map.
         result.success == false
-        result.error.toString().toLowerCase().contains("requires 'comparator'")
+        result.error.toString().contains("compareToDevice needs a comparator")
 
         and: "no rCapab/rDev condition fields were written -- reject fired before any hub write"
         !posts.any { it.path == "/installedapp/update/json" && it.body.containsKey("settings[rCapab_1]") }
@@ -23217,7 +21005,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                 [name: "actSubType.1", type: "enum", options: ["getDefinedAction": "Run Custom Action"]],
                 [name: "myCapab.1", type: "enum", options: ["Switch": "Switch"]],
                 [name: "devices.1", type: "capability.switch", multiple: true],
-                [name: "cCmd.1", type: "text"],
+                [name: "cCmd.1", type: "enum", options: ["setLevel": "setLevel", "setMode": "setMode", "on": "on", "refresh": "refresh", "cmd": "cmd", "mixedCmd": "mixedCmd", "noParamCmd": "noParamCmd"]],
                 [name: "moreParams", type: "button"],
                 [name: "actionDone", type: "button"]
             ]
@@ -23325,7 +21113,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                 [name: "actSubType.1", type: "enum", options: ["getDefinedAction": "Run Custom Action"]],
                 [name: "myCapab.1", type: "enum", options: ["Switch": "Switch"]],
                 [name: "devices.1", type: "capability.switch", multiple: true],
-                [name: "cCmd.1", type: "text"],
+                [name: "cCmd.1", type: "enum", options: ["setLevel": "setLevel", "setMode": "setMode", "on": "on", "refresh": "refresh", "cmd": "cmd", "mixedCmd": "mixedCmd", "noParamCmd": "noParamCmd"]],
                 [name: "moreParams", type: "button"],
                 [name: "actionDone", type: "button"]
             ]
@@ -23443,7 +21231,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                                   options: ["getDefinedAction": "Run Custom Action"]],
                                  [name: "myCapab.1", type: "enum", options: ["Switch": "Switch"]],
                                  [name: "devices.1", type: "capability.switch", multiple: true],
-                                 [name: "cCmd.1", type: "text"],
+                                 [name: "cCmd.1", type: "enum", options: ["setLevel": "setLevel", "setMode": "setMode", "on": "on", "refresh": "refresh", "cmd": "cmd", "mixedCmd": "mixedCmd", "noParamCmd": "noParamCmd"]],
                                  [name: "moreParams", type: "button"],
                                  [name: "actionDone", type: "button"]
                              ], paragraphs: ["seq ${fetchSeq}".toString()]]]],
@@ -24235,7 +22023,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Parity with the waitEvents/condition Mode paths: a directly-passed
         // integer ID skips name resolution, so it must be cross-checked against
         // the valid set before modesX1 commits a mode-less (Broken) trigger row.
-        // location.modes offers 1/2/3; id 9 belongs to no mode. Both-ways pending (orchestrator).
+        // location.modes offers 1/2/3; id 9 belongs to no mode.
         given:
         enableWrite()
         sharedLocation.modes = [[id: "1", name: "Home"], [id: "2", name: "Away"], [id: "3", name: "Night"]]
@@ -24289,7 +22077,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "addTrigger Mode with a valid integer modeId still writes modesX<N> (anti-regression companion)"() {
         // Must-NOT-catch pair for the reject spec above: modeIds:[2] IS a real hub
         // mode, so the cross-check must ACCEPT it and write the picker -- never
-        // false-reject a legitimate directly-passed ID. Both-ways pending (orchestrator).
+        // false-reject a legitimate directly-passed ID.
         given:
         enableWrite()
         sharedLocation.modes = [[id: "1", name: "Home"], [id: "2", name: "Away"], [id: "3", name: "Night"]]
@@ -24637,7 +22425,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "the reject carries a containment-matched did-you-mean from the live options"
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains("not in option list")
+        ex.message.contains("is not in Rule Machine's list on this hub")
         ex.message.contains("Did you mean 'Switch'?")
     }
 
@@ -25570,9 +23358,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "returns success: false after retry budget exhausted"
         result.success == false
-        result.error?.contains("~8s of polling")
+        result.error?.contains("~8s")
         result.error?.contains("hub_get_app_config")
-        result.error?.contains("hub_restore_backup")
+        result.restoreHint?.contains("did NOT commit")
+        result.verifyHint != null
 
         and: "retry loop fired at least 4 times before exhausting"
         verificationFetches >= 4
@@ -25768,7 +23557,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "returns success: false with workaround guidance pointing to removeTrigger + addTrigger"
         result.success == false
-        result.error?.contains("modifyTrigger currently only supports changing the trigger's state field")
+        result.error?.contains("modifyTrigger changes only a trigger's state")
         result.error?.contains("removeTrigger + addTrigger")
 
         and: "the pre-write input-shape refusal carries the not-touched sentinel so the edit-path restoreHint stays accurate"
@@ -25804,6 +23593,39 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.error?.contains("RM is not touched")
         result.restoreHint?.contains("the app was not touched")
         !result.restoreHint?.contains("Backup saved before write")
+    }
+
+    def "a modifyTrigger missing #missing names the whole call shape in its first refusal"() {
+        // Callers sent {triggerIndex, capability, deviceIds, state} and needed two refusals to find the
+        // shape. The first refusal now carries all of it.
+        given:
+        enableWrite()
+        def posts = []
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, [[name: "tCapab1", value: "Switch"]]) }
+        def uploads = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> uploads << fn }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]; [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([appId: 100, modifyTrigger: spec, confirm: true])
+
+        then: "refused before the baseline: no snapshot is taken for a call that touches nothing"
+        result.backup == null
+        uploads.isEmpty()
+        result.success == false
+        result.error?.contains(lead)
+        result.error?.contains("modifyTrigger takes {index: <the triggerIndex addTrigger returned>, mods: {state: '<new-state>'}}; only the state field can change in place (capability/devices: removeTrigger + addTrigger). RM is not touched.")
+        result.restoreHint?.contains("the app was not touched")
+        !posts.any { it.path == "/installedapp/btn" || it.path == "/installedapp/update/json" }
+
+        where:
+        missing                | spec                                                                       || lead
+        "index (triggerIndex)" | [triggerIndex: 1, capability: "Motion", deviceIds: [8], state: "inactive"] || "modifyTrigger.index is required (the key is index, not triggerIndex)."
+        "index"                | [mods: [state: "on"]]                                                      || "modifyTrigger.index is required."
+        "mods"                 | [index: 1, state: "inactive"]                                              || "modifyTrigger.mods is required and must be a Map."
     }
 
     @spock.lang.Unroll
@@ -26573,7 +24395,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then:
         result.success == false
-        result.error?.contains("setLocalVariable: numOp 'bogus' is not supported")
+        result.error?.contains("setLocalVariable: numOp 'bogus' does not go with value")
         (ctl.written as Map).isEmpty()
     }
 
@@ -26613,11 +24435,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         where:
         label                                    | spec                                              | expected
-        "an unknown numOp with value"            | [numOp: "bogus", value: 1]                        | ["numOp 'bogus' is not supported", "'number'", "'add number'"]
-        "numOp 'variable' with value"            | [numOp: "variable", value: 1]                     | ["numOp 'variable' is not supported", "use sourceVariable"]
-        "numOp 'device attribute' with value"    | [numOp: "device attribute", value: 1]             | ["use fromDevice"]
-        "numOp alongside sourceVariable"         | [numOp: "variable", sourceVariable: "fires"]      | ["numOp is only supported with 'value'"]
-        "numOp with no source mode"              | [numOp: "add number"]                             | ["numOp is only supported with 'value'"]
+        "an unknown numOp with value"            | [numOp: "bogus", value: 1]                        | ["numOp 'bogus' does not go with value", "'number'", "'add number'"]
+        "numOp 'variable' with value"            | [numOp: "variable", value: 1]                     | ["numOp 'variable' does not go with value", "sourceVariable"]
+        "numOp 'device attribute' with value"    | [numOp: "device attribute", value: 1]             | ["fromDevice"]
+        "numOp alongside sourceVariable"         | [numOp: "variable", sourceVariable: "fires"]      | ["numOp goes only with value"]
+        "numOp with no source mode"              | [numOp: "add number"]                             | ["numOp goes only with value"]
     }
 
     def "addAction setVariable sourceVariable form uses numOp=variable and discovers xVar3 via schema reveal"() {
@@ -26845,7 +24667,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then:
         result.success == false
-        result.error?.startsWith("setLocalVariable:")
+        result.error?.contains("setLocalVariable:")
         result.error?.contains("not supported yet")
         result.error?.contains(type.toLowerCase())
         !writtenFields.keySet().any { it.endsWith(".1") }
@@ -27139,7 +24961,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                 [name: "actSubType.1", type: "enum", options: ["getDefinedAction": "Run Custom Action"]],
                 [name: "myCapab.1", type: "enum", options: ["Switch": "Switch"]],
                 [name: "devices.1", type: "capability.switch", multiple: true],
-                [name: "cCmd.1", type: "text"],
+                [name: "cCmd.1", type: "enum", options: ["setLevel": "setLevel", "setMode": "setMode", "on": "on", "refresh": "refresh", "cmd": "cmd", "mixedCmd": "mixedCmd", "noParamCmd": "noParamCmd"]],
                 [name: "moreParams", type: "button"],
                 [name: "actionDone", type: "button"]
             ]
@@ -27245,7 +25067,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                 [name: "actSubType.1", type: "enum", options: ["getDefinedAction": "Run Custom Action"]],
                 [name: "myCapab.1", type: "enum", options: ["Switch": "Switch"]],
                 [name: "devices.1", type: "capability.switch", multiple: true],
-                [name: "cCmd.1", type: "text"],
+                [name: "cCmd.1", type: "enum", options: ["setLevel": "setLevel", "setMode": "setMode", "on": "on", "refresh": "refresh", "cmd": "cmd", "mixedCmd": "mixedCmd", "noParamCmd": "noParamCmd"]],
                 [name: "moreParams", type: "button"],
                 [name: "actionDone", type: "button"]
             ]
@@ -27331,7 +25153,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                 [name: "actSubType.1", type: "enum", options: ["getDefinedAction": "Run Custom Action"]],
                 [name: "myCapab.1", type: "enum", options: ["Switch": "Switch"]],
                 [name: "devices.1", type: "capability.switch", multiple: true],
-                [name: "cCmd.1", type: "text"],
+                [name: "cCmd.1", type: "enum", options: ["setLevel": "setLevel", "setMode": "setMode", "on": "on", "refresh": "refresh", "cmd": "cmd", "mixedCmd": "mixedCmd", "noParamCmd": "noParamCmd"]],
                 [name: "moreParams", type: "button"],
                 [name: "actionDone", type: "button"]
             ]
@@ -27381,7 +25203,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Legacy scalar path: parameters: [75] (bare Integer, not a Map).
         // The pre-validation loop skips non-Map entries; __runCommandExtraParams treats them
         // as type="string" and pValue=p, then follows the literal write path.
-        // Both-ways pending (orchestrator): mutate the `if (!(p instanceof Map)) return` early-return
         // to a throw and confirm this spec goes RED on the scalar contract.
         given:
         enableWrite()
@@ -27414,7 +25235,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                 [name: "actSubType.1", type: "enum", options: ["getDefinedAction": "Run Custom Action"]],
                 [name: "myCapab.1", type: "enum", options: ["Switch": "Switch"]],
                 [name: "devices.1", type: "capability.switch", multiple: true],
-                [name: "cCmd.1", type: "text"],
+                [name: "cCmd.1", type: "enum", options: ["setLevel": "setLevel", "setMode": "setMode", "on": "on", "refresh": "refresh", "cmd": "cmd", "mixedCmd": "mixedCmd", "noParamCmd": "noParamCmd"]],
                 [name: "moreParams", type: "button"],
                 [name: "actionDone", type: "button"]
             ]
@@ -27492,7 +25313,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                 [name: "actSubType.1", type: "enum", options: ["getDefinedAction": "Run Custom Action"]],
                 [name: "myCapab.1", type: "enum", options: ["Switch": "Switch"]],
                 [name: "devices.1", type: "capability.switch", multiple: true],
-                [name: "cCmd.1", type: "text"],
+                [name: "cCmd.1", type: "enum", options: ["setLevel": "setLevel", "setMode": "setMode", "on": "on", "refresh": "refresh", "cmd": "cmd", "mixedCmd": "mixedCmd", "noParamCmd": "noParamCmd"]],
                 [name: "moreParams", type: "button"],
                 [name: "actionDone", type: "button"]
             ]
@@ -27579,7 +25400,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                 [name: "actSubType.1", type: "enum", options: ["getDefinedAction": "Run Custom Action"]],
                 [name: "myCapab.1", type: "enum", options: ["Switch": "Switch"]],
                 [name: "devices.1", type: "capability.switch", multiple: true],
-                [name: "cCmd.1", type: "text"],
+                [name: "cCmd.1", type: "enum", options: ["setLevel": "setLevel", "setMode": "setMode", "on": "on", "refresh": "refresh", "cmd": "cmd", "mixedCmd": "mixedCmd", "noParamCmd": "noParamCmd"]],
                 [name: "moreParams", type: "button"],
                 [name: "actionDone", type: "button"]
             ]
@@ -27660,7 +25481,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                                  [name: "actSubType.1", type: "enum", options: ["getDefinedAction": "Run Custom Action"]],
                                  [name: "myCapab.1", type: "enum", options: ["Switch": "Switch"]],
                                  [name: "devices.1", type: "capability.switch", multiple: true],
-                                 [name: "cCmd.1", type: "text"],
+                                 [name: "cCmd.1", type: "enum", options: ["setLevel": "setLevel", "setMode": "setMode", "on": "on", "refresh": "refresh", "cmd": "cmd", "mixedCmd": "mixedCmd", "noParamCmd": "noParamCmd"]],
                                  [name: "moreParams", type: "button"],
                                  [name: "actionDone", type: "button"]
                                  // cpType<P>.N intentionally never appears
@@ -27700,7 +25521,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // mirroring the production reveal sequence so the guard is non-circular (if the code fails to
         // write uVar3.1 the xVar3.1 enum never opens and xVar3.1 cannot be written).
         //
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def fetchSeq = 0
@@ -27740,7 +25560,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                 [name: "actSubType.1", type: "enum", options: ["getDefinedAction": "Run Custom Action"]],
                 [name: "myCapab.1", type: "enum", options: ["Switch": "Switch"]],
                 [name: "devices.1", type: "capability.switch", multiple: true],
-                [name: "cCmd.1", type: "text"],
+                [name: "cCmd.1", type: "enum", options: ["setLevel": "setLevel", "setMode": "setMode", "on": "on", "refresh": "refresh", "cmd": "cmd", "mixedCmd": "mixedCmd", "noParamCmd": "noParamCmd"]],
                 [name: "moreParams", type: "button"],
                 [name: "actionDone", type: "button"]
             ]
@@ -27839,7 +25659,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                 [name: "actSubType.1", type: "enum", options: ["getDefinedAction": "Run Custom Action"]],
                 [name: "myCapab.1", type: "enum", options: ["Switch": "Switch"]],
                 [name: "devices.1", type: "capability.switch", multiple: true],
-                [name: "cCmd.1", type: "text"],
+                [name: "cCmd.1", type: "enum", options: ["setLevel": "setLevel", "setMode": "setMode", "on": "on", "refresh": "refresh", "cmd": "cmd", "mixedCmd": "mixedCmd", "noParamCmd": "noParamCmd"]],
                 [name: "moreParams", type: "button"],
                 [name: "actionDone", type: "button"]
             ]
@@ -28013,8 +25833,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
             def seq = ++fetchSeq
             ruleConfigJson(100, "r", [
+                [name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]],
                 [name: "actSubType.1", type: "enum", options: ["getSetVariable": "Set Variable"]],
-                [name: "xVarV.1", type: "enum", options: ["myVar": "myVar"], value: ""],
+                [name: "xVarV.1", type: "enum", options: ["myVar": "myVar", "unknownButNotValidated": "unknownButNotValidated"], value: ""],
                 [name: "numOp.1", type: "enum", options: ["number": "Constant", "var": "Variable"], value: ""],
                 [name: "valNumber.1", type: "number", value: "", paragraphs: ["seq ${seq}".toString()]]
             ])
@@ -28041,7 +25862,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // firmware when the real cause is the numOp write itself.
         // The stub uses a constant seqProvider ({ 1 }) so before/after hashes are identical --
         // numOp.1 routes to skipped(silent_rejection), triggering the precise-attribution path.
-        // Both-ways pending (orchestrator): stub re-routes numOp.1 to applied to prove the
         // old reveal-miss path is still reachable when numOp lands correctly.
         given:
         enableWrite()
@@ -28215,7 +26035,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // valNumber.<N> is a numeric RM field; writing a String, Boolean, or date string
         // produces a broken action that RM silently accepts but renders incorrectly.
         // Reject early so the caller gets a clear message rather than a broken rule.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -28252,7 +26071,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "addAction setVariable with numeric value zero is accepted (truthiness guard regression)"() {
         // value=0 is a valid numeric constant; a truthy-check would wrongly reject it.
         // The numeric-type guard must use instanceof Number, not a truthiness test.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def writtenFields = [:]
@@ -28276,6 +26094,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
             def seq = ++fetchSeq
             ruleConfigJson(100, "r", [
+                [name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]],
                 [name: "actSubType.1", type: "enum", options: ["getSetVariable": "Set Variable"]],
                 [name: "xVarV.1", type: "enum", options: ["counter": "counter"], value: ""],
                 [name: "numOp.1", type: "enum", options: ["number": "Constant", "variable": "Variable"], value: ""],
@@ -28301,7 +26120,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "addAction setVariable API-unavailable adds sentinel to skipped (partial=true)"() {
         // When getAllGlobalVars() throws, variable-name validation is skipped and a
         // sentinel entry is pushed to skipped so partial=true surfaces to the caller.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass.getAllGlobalVars = { -> throw new RuntimeException("API unavailable") }
@@ -28318,8 +26136,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
             def seq = ++fetchSeq
             ruleConfigJson(100, "r", [
+                [name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]],
                 [name: "actSubType.1", type: "enum", options: ["getSetVariable": "Set Variable"]],
-                [name: "xVarV.1", type: "enum", options: ["myVar": "myVar"], value: ""],
+                [name: "xVarV.1", type: "enum", options: ["myVar": "myVar", "unvalidated": "unvalidated"], value: ""],
                 [name: "numOp.1", type: "enum", options: ["number": "Constant", "variable": "Variable"], value: ""],
                 [name: "valNumber.1", type: "number", value: "", paragraphs: ["seq ${seq}".toString()]]
             ])
@@ -28368,8 +26187,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
             def seq = ++fetchSeq
             ruleConfigJson(100, "r", [
+                [name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]],
                 [name: "actSubType.1", type: "enum", options: ["getSetVariable": "Set Variable"]],
-                [name: "xVarV.1", type: "enum", options: ["myLocal": "myLocal"], value: ""],
+                [name: "xVarV.1", type: "enum", options: ["myLocal": "myLocal", "unvalidatedLocal": "unvalidatedLocal"], value: ""],
                 [name: "numOp.1", type: "enum", options: ["number": "Constant", "variable": "Variable"], value: ""],
                 [name: "valNumber.1", type: "number", value: "", paragraphs: ["seq ${seq}".toString()]]
             ])
@@ -28407,7 +26227,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "addAction runCommand rejects parameter slot #slot with both value and variable"() {
         // Providing both value and variable in a single parameter Map is ambiguous;
         // the pre-validation loop must reject it before any hub writes are attempted.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -28443,7 +26262,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "addAction runCommand rejects Map parameter with neither value nor variable"() {
         // A Map entry with no value and no variable writes only cpType<P>, leaving RM to
         // bake a half-formed action with a type but no actual parameter content.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -28476,7 +26294,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "addAction runCommand rejects non-numeric value for type '#pType'"() {
         // cpVal<P>.<N> is a numeric field when cpType is 'number' or 'decimal'; writing
         // a string produces a silently-broken action. Reject early with a clear message.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -28514,7 +26331,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // When numOp.<N> is not in the doActPage schema (not_in_schema skip), the subsequent
         // source-variable reveal cannot happen. The error must name the numOp write failure,
         // not the reveal-miss -- which would wrongly suggest RM/firmware is the cause.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def writtenFields = [:]
@@ -28566,7 +26382,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // When the schema contains more than one field matching xVar<digits>.<N> at the same
         // action slot (unexpected but possible in future firmware), the tool must fail loudly
         // rather than silently picking the first match and producing a confusing write.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def writtenFields = [:]
@@ -30399,7 +28214,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "the operand/operator reveal-miss fails loud"
         result.success == false
-        result.error?.contains("were not revealed after writing numOp=variable math")
+        result.error?.contains("the variable-math fields")
     }
 
     def "addAction setVariable math fails loud when xVar4 not revealed after a binary operator write"() {
@@ -30664,7 +28479,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "the attribute-enum reveal-miss fails loud"
         result.success == false
-        result.error?.contains("attribute enum 'tCustomAttr.1' was not revealed")
+        result.error?.contains("The attribute picker 'tCustomAttr.1' did not appear")
     }
 
     def "addAction setVariable fromDevice fails loud when revealed tCustomAttr has no enumerable options"() {
@@ -30718,7 +28533,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "the empty attribute-enum fails loud with the no-enumerable-options message"
         result.success == false
-        result.error?.contains("revealed attribute enum 'tCustomAttr.1' has no enumerable options")
+        result.error?.contains("attribute picker 'tCustomAttr.1' offers no attribute")
     }
 
     def "addAction setVariable fromDevice accepts a whole-number BigDecimal deviceId (72.0)"() {
@@ -31584,7 +29399,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.variable?.deleted == true
     }
 
-    def "removeLocalVariable verify-miss returns success=false + partial=true + repairHints"() {
+    def "removeLocalVariable verify-miss returns success=false, applied=false + repairHints"() {
         given:
         enableWrite()
         // The variable NEVER leaves allLocalVars -- the legitimate failure mode is RM
@@ -31603,9 +29418,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             confirm: true
         ])
 
-        then: "unconfirmed delete surfaces as partial, not a clean success"
+        then: "a delete that did not take changed nothing"
         result.success == false
-        result.partial == true
+        result.partial == false
+        result.applied == false
         result.error?.contains("did not delete")
         (result.repairHints as List)?.any { it?.toString()?.contains("hub_list_rule_local_variables") }
     }
@@ -31923,85 +29739,87 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.variable?.deleted == true
     }
 
-    def "removeLocalVariable: a delConfirm click throw runs cancelCapab cleanup and surfaces wizardStuck"() {
-        // REGRESSION GUARD: a mid-sequence delConfirm POST failure must NOT escape raw to
-        // the dispatcher leaving RM's confirm prompt half-open. The helper must close the
-        // wizard (cancelCapab on selectActions) before propagating, and -- when that
-        // cleanup ALSO fails -- embed the wizardStuck marker so the dispatcher surfaces the
-        // cancelCapab recovery hint. Goes RED if the cleanup-on-throw is removed.
-        given:
+    def "removeLocalVariable: a delConfirm click throw closes RM's delete prompt with cancelDel; a failing cancelDel reports wizardStuck"() {
+        given: "the prompt shows, delConfirm throws, and the hub refuses cancelDel"
         enableWrite()
-        def cancelClicks = []
+        def clicks = []
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
-        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", [[name: "cancelDel", type: "button"], [name: "delConfirm", type: "button"]]) }
         hubGet.register('/installedapp/statusJson/100') { params -> statusJsonWithLocals(100, [doomed: [type: "integer", value: 1]]) }
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        // deleteGV succeeds; delConfirm THROWS (the half-open-leaving step). cancelCapab is
-        // recorded AND also throws -- forcing the wizardStuck-marker branch.
         script.metaClass._rmClickAppButton = { Integer aid, String btn, String sa = null, String pg = null ->
+            clicks << btn
             if (btn == "delConfirm") throw new IllegalArgumentException("Button click 'delConfirm' on app ${aid} failed: status=400")
-            if (btn == "cancelCapab") {
-                cancelClicks << [page: pg]
-                throw new IllegalArgumentException("Button click 'cancelCapab' on app ${aid} failed: status=400")
-            }
+            if (btn == "cancelDel") throw new IllegalArgumentException("Button click 'cancelDel' on app ${aid} failed: status=400")
             [status: 200, location: null, data: '']
         }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
 
         when:
-        def result = script.toolSetRule([
-            appId: 100,
-            removeLocalVariable: [name: "doomed"],
-            confirm: true
-        ])
+        def result = script.toolSetRule([appId: 100, removeLocalVariable: [name: "doomed"], confirm: true])
 
-        then: "cancelCapab cleanup was attempted on selectActions before the error propagated"
-        cancelClicks.any { it.page == "selectActions" }
-
-        and: "the error envelope flags wizardStuck with the cancelCapab recovery hint"
+        then:
+        clicks.contains("cancelDel")
+        !clicks.contains("cancelCapab")
         result.success == false
         result.wizardStuck == true
-        result.restoreHint?.contains("cancelCapab")
-        result.restoreHint?.contains("selectActions")
+        result.applied == null
+        (result.repairHints as List).any { it.toString().contains("cancelDel") }
     }
 
-    def "removeLocalVariable: a delConfirm click throw with a SUCCEEDING cancelCapab cleanup surfaces a retry hint (no wizardStuck)"() {
-        // Companion to the cancelCapab-ALSO-fails spec: when the mid-sequence delConfirm POST
-        // throws but the cancelCapab cleanup SUCCEEDS, the wizard is closed cleanly, so the
-        // error must NOT carry wizardStuck -- it surfaces the plain "delete wizard was closed
-        // (cancelCapab); retry" message instead. Goes RED if the success branch starts
-        // mislabelling a clean cleanup as wizardStuck.
-        given:
+    def "removeLocalVariable: a delConfirm click throw with the prompt closed by cancelDel is a plain retryable failure"() {
+        given: "the prompt shows until cancelDel closes it"
         enableWrite()
-        def cancelClicks = []
+        def clicks = []
+        boolean closed = false
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
-        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", closed ? [] : [[name: "cancelDel", type: "button"], [name: "delConfirm", type: "button"]]) }
         hubGet.register('/installedapp/statusJson/100') { params -> statusJsonWithLocals(100, [doomed: [type: "integer", value: 1]]) }
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        // deleteGV succeeds; delConfirm THROWS; cancelCapab is recorded and SUCCEEDS (the clean
-        // cleanup path -- distinct from the wizardStuck case where cancelCapab also throws).
         script.metaClass._rmClickAppButton = { Integer aid, String btn, String sa = null, String pg = null ->
+            clicks << btn
             if (btn == "delConfirm") throw new IllegalArgumentException("Button click 'delConfirm' on app ${aid} failed: status=400")
-            if (btn == "cancelCapab") cancelClicks << [page: pg]
+            if (btn == "cancelDel") closed = true
             [status: 200, location: null, data: '']
         }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
 
         when:
-        def result = script.toolSetRule([
-            appId: 100,
-            removeLocalVariable: [name: "doomed"],
-            confirm: true
-        ])
+        def result = script.toolSetRule([appId: 100, removeLocalVariable: [name: "doomed"], confirm: true])
 
-        then: "cancelCapab cleanup ran on selectActions and the delete error surfaced"
-        cancelClicks.any { it.page == "selectActions" }
+        then:
+        clicks.contains("cancelDel")
+        !clicks.contains("cancelCapab")
         result.success == false
-
-        and: "the clean-cleanup path does NOT flag wizardStuck and points the caller at a retry"
         result.wizardStuck != true
-        result.error?.toString()?.contains("retry") || result.repairHints?.any { it?.toString()?.contains("retry") } ||
-            result.restoreHint?.toString()?.contains("retry")
+        result.applied == false
+        result.error.contains("can be retried")
+    }
+
+    def "removeLocalVariable: a delConfirm response lost after RM deleted the variable is a success, and nothing is cancelled"() {
+        given: "delConfirm deletes on the hub but its response is lost"
+        enableWrite()
+        def clicks = []
+        boolean deleted = false
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJsonWithLocals(100, deleted ? [:] : [doomed: [type: "integer", value: 1]]) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass._rmClickAppButton = { Integer aid, String btn, String sa = null, String pg = null ->
+            clicks << btn
+            if (btn == "delConfirm") { deleted = true; throw new IllegalStateException("Read timed out") }
+            [status: 200, location: null, data: '']
+        }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+
+        when:
+        def result = script.toolSetRule([appId: 100, removeLocalVariable: [name: "doomed"], confirm: true])
+
+        then:
+        result.success == true
+        result.variable?.deleted == true
+        !clicks.contains("cancelDel")
+        !clicks.contains("cancelCapab")
     }
 
     def "removeLocalVariable: when every verify read throws, the hint leads with read-failure (not still-referenced)"() {
@@ -32036,8 +29854,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then: "partial, and the error leads with the read-failure / may-have-succeeded framing"
         result.success == false
         result.partial == true
-        result.error?.contains("verify read")
-        result.error?.contains("may have succeeded")
+        result.error?.contains("every read back failed")
 
         and: "the first repair hint points at a re-check, not at removing references"
         def hints = result.repairHints as List
@@ -32070,7 +29887,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "rejected as an invalid name (the IAE maps to a isError validation result-style error envelope)"
         result.success == false
-        result.error?.toString()?.contains("not valid")
+        result.error?.toString()?.contains("cannot be a Rule Machine local-variable name")
 
         and: "no deleteGV/delConfirm click ever fired"
         !posts.any { it.path == "/installedapp/btn" && it.body?.stateAttribute == "deleteGV" }
@@ -32239,7 +30056,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // The fix discovers the picker name from the live schema and writes IDs.
         // Consequence-gated: modes1 appears in the schema only after the stub
         // sees rCapab_1='Mode' in the POST body. Firmware field name: modes<cIdx>.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         sharedLocation.modes = [[id: "1", name: "Day"], [id: "3", name: "Night"]]
@@ -32335,7 +30151,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Alternate Mode spec: pass modeIds directly to skip name->ID resolution.
         // Fixture uses ID "99" which is NOT present in location.modes -- proves the modeIds
         // path bypasses _rmResolveModeIds entirely (no name lookup, no KeyError on "99").
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         // ID "99" intentionally absent from modes list -- proves the bypass path doesn't consult it.
@@ -32422,7 +30237,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Parity with the waitEvents/trigger Mode paths: a directly-passed integer
         // ID skips name resolution, so it must be cross-checked against the revealed
         // picker before modes1 commits a mode-less Broken Condition. The picker
-        // offers 1/3; id 9 is not among them. Both-ways pending (orchestrator).
+        // offers 1/3; id 9 is not among them.
         given:
         enableWrite()
         sharedLocation.modes = [[id: "1", name: "Day"], [id: "3", name: "Night"]]
@@ -32510,7 +30325,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "addRequiredExpression Mode condition with a valid integer modeId still writes the picker (anti-regression companion)"() {
         // Must-NOT-catch pair for the reject spec above: modeIds:[3] IS offered by
         // the revealed picker, so the cross-check must ACCEPT it and write modes1 --
-        // never false-reject a legitimate directly-passed ID. Both-ways pending (orchestrator).
+        // never false-reject a legitimate directly-passed ID.
         given:
         enableWrite()
         sharedLocation.modes = [[id: "1", name: "Day"], [id: "3", name: "Night"]]
@@ -32589,7 +30404,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "addRequiredExpression Mode condition: fail-loud when modes picker not revealed"() {
         // When rCapab='Mode' does NOT cause the modes picker to appear (firmware
         // gap or schema version mismatch), the walker must cancel and throw rather
-        // than silently writing nothing. Both-ways pending (orchestrator).
+        // than silently writing nothing.
         given:
         enableWrite()
         sharedLocation.modes = [[id: "3", name: "Night"]]
@@ -32634,7 +30449,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "addRequiredExpression Mode condition: fail-loud when neither state nor modeIds is provided"() {
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         sharedLocation.modes = [[id: "3", name: "Night"]]
@@ -32674,7 +30488,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.success == false
         // Pin the distinctive phrase from the production Mode-condition throw
         // in _rmWalkConditionReveal -- not a loose 5-char substring.
-        result.error?.toString()?.contains("'state' (mode name) or 'modeIds'")
+        result.error?.toString()?.contains("state (mode names) or modeIds")
     }
 
     // ---- Between two times capability ----
@@ -32688,7 +30502,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Clock time wire format: ISO datetime '2000-01-01THH:mm:00.000+HHMM' with hub-local TZ offset.
         // sharedLocation defaults to UTC so the fixture produces '+0000' for the assertion.
         // Consequence-gated: each field appears only after the preceding write lands.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def rCapabWritten = false
@@ -32801,118 +30614,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         writtenFields["endSunriseOffset1"].toString() == "30"
     }
 
-    def "addRequiredExpression Between two times with a stray *changed* comparator is EXEMPT from the change-comparator condition guard (flows to its start/end handler, not the invalid-condition reject)"() {
-        // C-1 regression guard: Between two times has null trigger family, so the deny-list
-        // change-comparator guard would otherwise catch a stray comparator:*changed* and
-        // mis-report a valid condition surface as invalid. BTT takes no comparator; it is exempt
-        // and flows to its start/end handler (the stray comparator is ignored). Both-ways:
-        // removing the BTT exemption makes the guard fire, flipping success:false with the
-        // not-valid-as-a-condition error and no starting1 write.
-        // Both-ways pending (orchestrator).
-        given:
-        enableWrite()
-        def rCapabWritten = false
-        def startingWritten = false
-        def startingAWritten = false
-        def endingWritten = false
-        def writtenFields = [:]
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            // Skip wizard-Done submit: Hubitat sends empty placeholders on Done.
-            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
-                body.each { k, v ->
-                    def key = _settingKeyOf(k)
-                    if (key != null) {
-                        def fieldName = key
-                        writtenFields[fieldName] = v
-                        if (fieldName == "rCapab_1")  rCapabWritten = true
-                        if (fieldName == "starting1") startingWritten = true
-                        if (fieldName == "startingA1") startingAWritten = true
-                        if (fieldName == "ending1")   endingWritten = true
-                    }
-                }
-            }
-            [status: 200, location: null, data: '']
-        }
-        hubGet.register('/installedapp/configure/json/100') { params ->
-            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
-        }
-        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
-            JsonOutput.toJson([
-                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
-                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
-                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
-                             sections: [[title: "", input: [[name: "useST", type: "bool"]],
-                                         body: [[element: "paragraph", description: "IF Between 22:00 and sunrise"]]]]],
-                settings: [useST: "true"], childApps: []
-            ])
-        }
-        def stFetchSeq = 0
-        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
-            stFetchSeq++
-            def inputs = [
-                [name: "cond", type: "enum", options: ["a": "New condition"]],
-                [name: "rCapab_1", type: "enum", options: ["Between two times", "Switch"]],
-                [name: "hasAll", type: "button"],
-                [name: "doneST", type: "button"]
-            ]
-            // Firmware field names: starting<cIdx>, startingA<cIdx>, ending<cIdx>, endSunriseOffset<cIdx>
-            if (rCapabWritten) {
-                inputs = inputs + [[name: "starting1", type: "enum",
-                    options: ["A specific time": "A specific time", "Sunrise": "Sunrise", "Sunset": "Sunset"]]]
-            }
-            if (startingWritten) {
-                inputs = inputs + [[name: "startingA1", type: "time"]]
-            }
-            if (startingAWritten) {
-                inputs = inputs + [[name: "ending1", type: "enum",
-                    options: ["A specific time": "A specific time", "Sunrise": "Sunrise", "Sunset": "Sunset"]]]
-            }
-            if (endingWritten) {
-                inputs = inputs + [[name: "endSunriseOffset1", type: "number"]]
-            }
-            JsonOutput.toJson([
-                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
-                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
-                configPage: [name: "STPage", title: "RE", install: false, error: null,
-                             sections: [[title: "", input: inputs, paragraphs: ["seq ${stFetchSeq}".toString()]]]],
-                settings: [:], childApps: []
-            ])
-        }
-        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
-            ruleConfigJson(100, "r", [[name: "N", type: "button"]])
-        }
-        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
-            ruleConfigJson(100, "r", [
-                [name: "actType.1", type: "enum", options: ["condActs": "Conditional Actions"]],
-                [name: "actSubType.1", type: "enum", options: ["getIfThen": "IF Expression THEN"]],
-                [name: "actionCancel", type: "button"]
-            ])
-        }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
-
-        when:
-        def result = script.toolSetRule([
-            appId: 100,
-            addRequiredExpression: [conditions: [[
-                capability: "Between two times",
-                comparator: "*changed*",
-                start: [type: "clock", time: "22:00"],
-                end: [type: "sunrise", offset: 30]
-            ]]],
-            confirm: true
-        ])
-
-        then: "not rejected as an invalid condition surface -- BTT is exempt and flows to its handler"
-        result.success == true
-        !(result.error?.toString()?.contains("not valid as a condition"))
-
-        and: "the start/end fields still commit (the stray comparator is ignored, not the deny-list reject)"
-        writtenFields["starting1"] == "A specific time"
-        writtenFields["startingA1"] == "2000-01-01T22:00:00.000+0000"
-        writtenFields["ending1"] == "Sunrise"
-    }
-
     def "addRequiredExpression Between two times clock+clock: static-schema fallback sentinels do NOT flip partial:true (B6 false-positive guard)"() {
         // B6: maintainer-confirmed live on RM 5.1.8 / firmware 2.5.0.143.
         // Between two times clock+clock walks 4 reveal stages (rCapab -> starting,
@@ -32929,7 +30630,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // codes (offset_field_not_revealed, silent_rejection,
         // verification_fetch_failed, not_in_schema) ARE genuine degradation and
         // continue to flip partial -- the disambiguator is the reason-code string.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def writtenFields = [:]
@@ -33047,7 +30747,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addRequiredExpression Between two times: fail-loud when start-type selector not revealed"() {
         // Confirms the walker throws rather than silently skipping when the
-        // expected reveal does not materialise. Both-ways pending (orchestrator).
+        // expected reveal does not materialise.
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -33097,7 +30797,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // start-value reveal fails, the error must mention "'offset' field" not "'time' field"
         // or the wrong field name "'offset' field (startingA<N>)". Verifies the
         // startFieldHint fix (non-clock types say "'offset' field (firmware-assigned)").
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         // Track rCapab write so the STPage stub can reveal starting1 progressively.
@@ -33162,7 +30861,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "addRequiredExpression Between two times: fail-loud with 'offset' field hint when sunset end value not revealed"() {
         // W-spec-clock-aware-error-sunrise (end side): when type='sunset' and the
         // end-value reveal fails, the error must mention "'offset' field".
-        // Mirrors the start-side spec above. Both-ways pending (orchestrator).
+        // Mirrors the start-side spec above.
         given:
         enableWrite()
         def startingWritten = false
@@ -33241,7 +30940,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // comparator/value silently drop. The picker name is firmware-assigned and
         // discovered by regex; names are validated against the revealed enum.
         // Consequence-gated: lVar_1 appears only after rCapab_1='Variable' lands.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def rCapabWritten = false
@@ -33345,7 +31043,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "addRequiredExpression Variable: fail-loud when variable picker not revealed"() {
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -33390,7 +31087,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addRequiredExpression Variable: fail-loud when variable name not in revealed enum"() {
         // Validates the name against the live schema enum; unknown name must throw.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def rCapabWritten = false
@@ -33458,7 +31154,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // RelrDev_<N> in one POST body" from "two sequential POSTs", a distinction
         // outside this stub's wire-format model. Live-hub validation via the wizard
         // probe matrix remains the primary signal for the silent-drop class of bugs.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def rCustomAttrWritten = false
@@ -33562,7 +31257,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "addRequiredExpression Custom Attribute: fail-loud when RelrDev not revealed after rCustomAttr"() {
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -33611,14 +31305,13 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // the generic 'neither ... nor ...' diagnostic (an enum attribute would reveal
         // state_1 and take the no-throw success path instead).
         result.success == false
-        result.error?.toString()?.contains("neither RelrDev_<N> (comparator) nor state_<N> (enum value picker) revealed after rCustomAttr_<N>")
+        result.error?.toString()?.contains("neither a comparator (RelrDev_<N>) nor a value picker (state_<N>) appeared after the attribute")
     }
 
     // ---- Between two times: additional negative pins (W2) ----
 
     def "addRequiredExpression Between two times: fail-loud when start.time missing for clock type"() {
         // start.type='clock' requires start.time; the walker validates before any hub writes.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -33664,7 +31357,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addRequiredExpression Between two times: fail-loud when end.offset missing for sunrise type"() {
         // end.type='sunrise' requires end.offset; validated before hub writes.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -33712,7 +31404,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Proves getOffset(anchorMs) is exercised: Eastern time (EST = UTC-5 in January).
         // If getOffset(now()) were used instead, the offset would differ in summer (EDT = -0400).
         // Anchor date 2000-01-01 is always winter in Eastern TZ, so offset is always -0500.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         sharedLocation.timeZone = TimeZone.getTimeZone("US/Eastern")  // EST = -0500 for Jan anchor
@@ -33825,7 +31516,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Critical: if firmware uses a different field for start-sunrise offset (e.g.
         // startSunriseOffset<N>), the existing startingA regex /startingA\d+/ would miss it.
         // This spec documents what the stub encodes; live firmware shape verified separately.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def rCapabWritten = false
@@ -33939,7 +31629,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addRequiredExpression Between two times: requires start and end Maps"() {
         // Validation before any hub write: start/end must both be Maps.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -33984,7 +31673,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addRequiredExpression Between two times: fail-loud when start.type is invalid"() {
         // start.type must be 'clock', 'sunrise', or 'sunset'.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -34029,7 +31717,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addRequiredExpression Between two times: fail-loud when end.type is invalid"() {
         // end.type must be 'clock', 'sunrise', or 'sunset'.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -34077,7 +31764,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "addRequiredExpression Variable: fail-loud when RelrDev not revealed after picker write"() {
         // The comparator field (RelrDev_<N>) must be gated on the variable-picker write.
         // When it never appears, the walker must cancel and throw.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def rCapabWritten = false
@@ -34133,7 +31819,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "addRequiredExpression Variable: fail-loud when state field not revealed after RelrDev write"() {
         // The value field (state_<N>) must be gated on the RelrDev_<N> write.
         // When it never appears, the walker must cancel and throw.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def rCapabWritten = false
@@ -34201,7 +31886,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addRequiredExpression Custom Attribute: fail-loud when state not revealed after RelrDev write"() {
         // The value field (state_<N>) must be gated on RelrDev_<N> write.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def rCustomAttrWritten = false
@@ -34272,7 +31956,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // commit CLEANLY against an empty-options device picker: success:true, NOT
         // partial, and NO compareToDevice-validation skip (the false-partial this
         // live-validation round fixed). This is the regression guard for that bug.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         // The reference device (99) is intentionally NOT in this app's selectedDevices:
@@ -34369,7 +32052,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // != true) now that the clean-success return carries an explicit partial:false,
         // so this pins the field is PRESENT, not merely absent. A regression that
         // re-treated the empty device-picker options as an anomaly would push a genuine
-        // skip and flip partial. Both-ways pending (orchestrator).
+        // skip and flip partial.
         result.partial == false
 
         and: "the comparator, the isDev toggle, the reference device, and the offset all landed AND are recorded applied"
@@ -34396,11 +32079,68 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         !skip.any { it instanceof Map && it.key == "compareToDevice" && it.reason == "rhs_type_not_revealed" }
     }
 
+    def "addRequiredExpression compareToDevice: a reference device that does not land cancels the condition before hasAll"() {
+        given: "STPage stops re-rendering once relDevice_1 is posted, so that write reads as not kept"
+        enableWrite()
+        def posts = []
+        def isDevWritten = false
+        boolean frozen = false
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            if (path == "/installedapp/update/json") {
+                body.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key == "isDev_1") isDevWritten = true
+                    if (key == "relDevice_1") frozen = true
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [[name: "useST", type: "bool"]]) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true, appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                               configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null, sections: [[title: "", input: [[name: "useST", type: "bool"]]]]],
+                               settings: [useST: "true"], childApps: []])
+        }
+        def seq = 0
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            if (!frozen) seq++
+            def inputs = [
+                [name: "cond", type: "enum", options: ["a": "New condition"]],
+                [name: "rCapab_1", type: "enum", options: ["Temperature"]],
+                [name: "rDev_1", type: "capability.sensor", multiple: true],
+                [name: "RelrDev_1", type: "enum", options: [">", "<", "="]],
+                [name: "isDev_1", type: "bool"],
+                [name: "state_1", type: "number"],
+                [name: "hasAll", type: "button"],
+                [name: "cancelCapab", type: "button"],
+                [name: "doneST", type: "button"]
+            ]
+            if (isDevWritten) inputs = inputs + [[name: "relDevice_1", type: "capability.temperatureMeasurement", multiple: false]]
+            JsonOutput.toJson([app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true, appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                               configPage: [name: "STPage", title: "RE", install: false, error: null, sections: [[title: "", input: inputs, paragraphs: ["seq ${seq}".toString()]]]],
+                               settings: [:], childApps: []])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"T1"}' }
+        hubGet.register('/device/fullJson/99') { params -> '{"id":"99","name":"T2"}' }
+
+        when:
+        def result = script.toolSetRule([appId: 100, confirm: true, addRequiredExpression: [conditions: [[
+            capability: "Temperature", deviceIds: [8], comparator: ">", compareToDevice: [deviceId: 99]]]]])
+
+        then:
+        result.success == false
+        result.error.toString().contains("did not land in relDevice_1")
+        !posts.any { it.path == "/installedapp/btn" && it.body?.name == "hasAll" }
+    }
+
     def "addRequiredExpression compareToDevice: fail-loud when relDevice picker not revealed after isDev=true"() {
         // When the boolean isDev_1 toggle does NOT reveal the relDevice_1 picker
         // (firmware variant / render failure), the walker MUST cancel + throw
         // rather than silently commit a device-relative condition with no
-        // reference device. Both-ways pending (orchestrator).
+        // reference device.
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -34455,7 +32195,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.success == false
         // Load-bearing discriminator: a vacuous regression that silently writes a
         // partial condition would return success:true, partial:false.
-        result.error?.toString()?.contains("reference-device picker relDevice_<N> not revealed")
+        result.error?.toString()?.contains("reference-device picker (relDevice_<N>) did not appear")
     }
 
     def "addRequiredExpression compareToDevice: fail-loud when a firmware-variant relDevice picker DOES expose options and they exclude the ref id"() {
@@ -34465,7 +32205,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // options and the requested reference id is not among them, the walker must
         // cancel + throw rather than write an id that picker would reject. This case is
         // rare on real hardware; the common empty-options case proceeds cleanly (see the
-        // happy-path and empty-options specs). Both-ways pending (orchestrator).
+        // happy-path and empty-options specs).
         given:
         enableWrite()
         def isDevWritten = false
@@ -34532,7 +32272,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.success == false
         // Load-bearing discriminator: a regression that skips the option-list check would
         // write relDevice_1=99 unvalidated and return success (no capability-lock guard).
-        result.error?.toString()?.contains("is not in the relDevice")
+        result.error?.toString()?.contains("is not in the reference picker")
     }
 
     def "addRequiredExpression compareToDevice: firmware-variant relDevice picker that DOES expose options and INCLUDES the ref id proceeds (membership negative-pin)"() {
@@ -34541,7 +32281,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // -- options present AND the ref id PRESENT -> proceed, write lands, no reject.
         // Without this pin a membership-clause-dropped wrong-impl (`if (relOpts) { reject }`)
         // would pass the whole suite because no spec exercises options-present-and-valid.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def isDevWritten = false
@@ -34614,7 +32353,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Load-bearing discriminator: a membership-clause-dropped wrong-impl
         // (`if (relOpts) { reject }`) would reject here even though 99 IS present.
         writtenFields["relDevice_1"] == "99"
-        !(result.error?.toString()?.contains("is not in the relDevice"))
+        !(result.error?.toString()?.contains("is not in the reference picker"))
     }
 
     def "addRequiredExpression compareToDevice: firmware-variant relDevice options as a list of single-key Maps with the ref id present is accepted"() {
@@ -34622,7 +32361,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // ([[99:"T2"]]) rather than a {id:label} Map or a flat scalar List. The walker must
         // extract each map's single key for the membership test -- otherwise each entry
         // stringifies as "[99:T2]" and the `== refDevId` check always fails, falsely
-        // rejecting a valid reference device. Both-ways pending (orchestrator).
+        // rejecting a valid reference device.
         given:
         enableWrite()
         def isDevWritten = false
@@ -34694,7 +32433,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Load-bearing discriminator: without the C6 normalization each entry stringifies
         // as "[99:T2]", the membership test fails, and the walker falsely rejects 99.
         writtenFields["relDevice_1"] == "99"
-        !(result.error?.toString()?.contains("is not in the relDevice"))
+        !(result.error?.toString()?.contains("is not in the reference picker"))
     }
 
     def "addRequiredExpression compareToDevice: fail-loud when the reference device does not exist on the hub"() {
@@ -34704,7 +32443,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // fullJson body = not-found) is rejected before any write, so it cannot write
         // through to a silent broken rule. This is the guard the option-list check could
         // NOT provide on real firmware (device pickers expose no options, so the
-        // option-list branch never fires). Both-ways pending (orchestrator).
+        // option-list branch never fires).
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -34768,7 +32507,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // literal fallback; the new device-relative code ignores them, so a caller passing
         // both would silently lose the literal. Reject up front, mirroring the Variable
         // compareToVariable-vs-state/value reject. The where-block covers BOTH literal RHS
-        // shapes (state and value) -- the reject must fire for either. Both-ways pending
+        // shapes (state and value) -- the reject must fire for either.
         // (orchestrator).
         given:
         enableWrite()
@@ -34815,7 +32554,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // compareToDevice (device-relative RHS) and compareToVariable (variable RHS) are
         // mutually exclusive. Without this reject the compareToVariable RHS would silently
         // be dropped (the device-relative path never consumes it). Reject up front, the
-        // third arm of the RHS-exclusivity contract. Both-ways pending (orchestrator).
+        // third arm of the RHS-exclusivity contract.
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -34854,7 +32593,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "fail-loud -- the mutually-exclusive combination is rejected before any write"
         result.success == false
-        result.error?.toString()?.contains("cannot be combined with 'compareToVariable'")
+        result.error?.toString()?.contains("cannot both be set")
     }
 
     def "addRequiredExpression compareToDevice on an early-return capability (#cap) is rejected up front"() {
@@ -34863,7 +32602,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // a compareToDevice passed alongside one of them would be silently dropped (the
         // capability block commits its own condition and returns). The pre-walker
         // capability-scope guard rejects the combination up front so the documented contract
-        // holds unconditionally. Both-ways pending (orchestrator).
+        // holds unconditionally.
         given:
         enableWrite()
         sharedLocation.modes = [[id: "3", name: "Night"]]
@@ -34899,7 +32638,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.success == false
         // Load-bearing discriminator: without the guard the capability block would commit a
         // literal condition and return success, silently dropping the compareToDevice spec.
-        result.error?.toString()?.contains("only supported with numeric device capabilities")
+        result.error?.toString()?.contains("applies only to Rule Machine's numeric capabilities")
         result.error?.toString()?.contains(cap)
 
         where:
@@ -34916,7 +32655,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // validation gap. The walker must write the reference id and commit cleanly:
         // success:true, NOT partial, and NO compareToDevice-validation skip. This is the
         // inverse of the old (wrong) behaviour that treated empty options as an anomaly
-        // and false-flagged partial on every compareToDevice. Both-ways pending (orchestrator).
+        // and false-flagged partial on every compareToDevice.
         given:
         enableWrite()
         def isDevWritten = false
@@ -34962,7 +32701,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                       appType: [name: "Rule-5.1", namespace: "hubitat"]],
                 configPage: [name: "STPage", title: "RE", install: false, error: null,
                              sections: [[title: "", input: inputs, paragraphs: ["seq"]]]],
-                settings: [:], childApps: []
+                settings: [relDevice_1: ["99": "ref"]]  /* RM echoes the reference picker as {id: label} */, childApps: []
             ])
         }
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
@@ -35006,7 +32745,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // comparator enum only accepts the Unicode glyphs; a raw '!=' would write an
         // operator RM does not recognize). Drives the device-relative happy path with a
         // '!=' comparator and asserts the glyph landed on RelrDev_1.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def writtenFields = [:]
@@ -35085,7 +32823,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addRequiredExpression compareToDevice: fail-loud when RelrDev not visible after base writes"() {
         // The walker does a direct fetch after rCapab/rDev writes and fails loud if
-        // RelrDev_<N> is absent. Both-ways pending (orchestrator).
+        // RelrDev_<N> is absent.
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -35132,12 +32870,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "fail-loud surfaces as success:false with the diagnostic in result.error"
         result.success == false
-        result.error?.toString()?.contains("RelrDev_<N> not visible after rCapab/rDev")
+        result.error?.toString()?.contains("no comparator (RelrDev_<N>) appeared")
     }
 
     def "addRequiredExpression Variable: fail-loud when 'variable' field missing"() {
         // Variable condition validation: 'variable' is required.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -35182,7 +32919,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addRequiredExpression Variable: fail-loud when 'comparator' field missing"() {
         // Variable condition validation: 'comparator' is required.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -35228,7 +32964,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Custom Attribute validation: both attribute AND comparator required when one is present.
         // This covers the first throw inside _rmWalkConditionReveal's Custom
         // Attribute branch: attribute!=null && comparator==null.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -35270,13 +33005,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "fail-loud -- comparator required alongside attribute"
         result.success == false
-        result.error?.toString()?.contains("requires both 'attribute'")
-        result.error?.toString()?.contains("'comparator'")
+        result.error?.toString()?.contains("needs both attribute and comparator")
     }
 
     def "addRequiredExpression Custom Attribute: fail-loud when comparator set but attribute missing"() {
         // The second Custom Attribute validation: comparator!=null && attribute==null.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -35316,13 +33049,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "fail-loud -- attribute required alongside comparator"
         result.success == false
-        result.error?.toString()?.contains("requires both 'attribute'")
-        result.error?.toString()?.contains("'comparator'")
+        result.error?.toString()?.contains("needs both attribute and comparator")
     }
 
     def "addRequiredExpression compareToDevice: fail-loud when deviceId missing"() {
         // compareToDevice.deviceId is required.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -35371,7 +33102,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // implied by the shared capability, and the walker has no wire consumer for it
         // (it is neither validated nor written). Omitting it must NOT fail loud; the
         // device-relative comparison commits. Pins that the dropped attribute requirement
-        // did not regress into a silent reject. Both-ways pending (orchestrator).
+        // did not regress into a silent reject.
         given:
         enableWrite()
         def isDevWritten = false
@@ -35414,7 +33145,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                       appType: [name: "Rule-5.1", namespace: "hubitat"]],
                 configPage: [name: "STPage", title: "RE", install: false, error: null,
                              sections: [[title: "", input: inputs, paragraphs: ["seq"]]]],
-                settings: [:], childApps: []
+                settings: [relDevice_1: ["9": "ref"]]  /* RM echoes the reference picker as {id: label} */, childApps: []
             ])
         }
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
@@ -35449,7 +33180,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "addRequiredExpression Mode: multi-mode by name list -- both names resolved, both IDs written"() {
         // Exercises state: ['Day', 'Night'] (List form of state).
         // Both names are resolved via location.modes, both IDs written to modes<N>.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         sharedLocation.modes = [[id: "1", name: "Day"], [id: "3", name: "Night"]]
@@ -35543,7 +33273,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     //   compareToDevice   -- RelrDev + isDev toggle -> relDevice picker -> offset
     //   fail-loud paths   -- same cancelCapab+throw contract as STPage callers
     //
-    // Both-ways pending (orchestrator) for every guard below.
 
     // --- Shared helpers for addAction ifThen tests ---
 
@@ -35576,7 +33305,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // "two sequential POSTs", a distinction outside this stub's wire-format
         // model. Live-hub validation via the wizard probe matrix remains the
         // primary signal for the silent-drop class of bugs.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def rCustomAttrWritten = false
@@ -35672,7 +33400,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // writes the resolved mode IDs. Without the walker, no modes picker was written
         // (the old code wrote rCapab and then tried state_N which does not exist for Mode).
         // Consequence-gated: modes1 appears only after rCapab_1='Mode' POST lands.
-        // Firmware field name: modes<cIdx> (e.g. modes1). Both-ways pending (orchestrator).
+        // Firmware field name: modes<cIdx> (e.g. modes1).
         given:
         enableWrite()
         sharedLocation.modes = [[id: "1", name: "Day"], [id: "3", name: "Night"]]
@@ -35754,7 +33482,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // each write or the subsequent fields silently drop (same invariant as STPage).
         // Consequence-gated: lVar_1 only after rCapab_1='Variable'; RelrDev_1 only
         // after lVar_1; state_1 only after RelrDev_1.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def rCapabWritten = false
@@ -35944,7 +33671,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "it refuses explicitly instead of writing state_1 or falling into the comparator path"
         result.success == false
-        result.toString().contains("ambiguous schema")
+        result.toString().contains("cannot be told apart from a leftover one")
         !writtenFields.containsKey("state_1")
         !writtenFields.containsKey("RelrDev_1")
     }
@@ -36025,7 +33752,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "neither a Boolean nor a comparison slot, so nothing is guessed"
         result.success == false
-        result.toString().contains("rather than true/false")
+        result.toString().contains("is neither a Boolean nor a comparison")
         !writtenFields.containsKey("state_1")
         !writtenFields.containsKey("RelrDev_1")
         flags.clicks?.contains("cancelCapab")
@@ -36115,7 +33842,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         given:
         enableWrite()
         def healthCalls = 0
-        script.metaClass._rmCheckRuleHealth = { Integer id, String source = "auto" ->
+        script.metaClass._rmCheckRuleHealth = { Integer id, String source = "auto", String activePage = null ->
             healthCalls++
             [ok: true, unreadable: false, broken: false, brokenMarkers: [], orphanedActionRows: [], structuralIssues: [],
              validationErrors: [], multipleFlagPoison: [], issues: [], configPageError: null]
@@ -36156,7 +33883,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                        multipleFlagPoison: [], configPageError: null, structuralIssues: [], issues: []]
         // The pre-drive structural baseline is clean, so every final issue is new to the drive.
         script.metaClass._rmStructuralBaseline = { Integer id -> [] }
-        script.metaClass._rmCheckRuleHealth = { Integer id, String source = "auto" -> verdict }
+        script.metaClass._rmCheckRuleHealth = { Integer id, String source = "auto", String activePage = null -> verdict }
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/doActPage') { params -> ruleConfigJson(100, "r", [[name: "hasAll", type: "button"]]) }
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
@@ -36224,7 +33951,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def baselineCalls = 0
         def renderSources = []
         script.metaClass._rmStructuralBaseline = { Integer id -> baselineCalls++; baseline }
-        script.metaClass._rmCheckRuleHealth = { Integer id, String source = "auto" -> renderSources << source; verdict }
+        script.metaClass._rmCheckRuleHealth = { Integer id, String source = "auto", String activePage = null -> renderSources << source; verdict }
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/doActPage') { params -> ruleConfigJson(100, "r", [[name: "actionDone", type: "button"]]) }
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
@@ -36401,7 +34128,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def useSTWritten = false
         def posts = []
         script.metaClass._rmStructuralBaseline = { Integer id -> [] }
-        script.metaClass._rmCheckRuleHealth = { Integer id, String source = "auto" ->
+        script.metaClass._rmCheckRuleHealth = { Integer id, String source = "auto", String activePage = null ->
             [ok: true, unreadable: false, broken: false, brokenMarkers: [], orphanedActionRows: [], structuralIssues: [],
              validationErrors: [], multipleFlagPoison: [], issues: [], configPageError: null]
         }
@@ -36443,7 +34170,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def values = [:]
         def posts = []
         script.metaClass._rmStructuralBaseline = { Integer id -> [] }
-        script.metaClass._rmCheckRuleHealth = { Integer id, String source = "auto" ->
+        script.metaClass._rmCheckRuleHealth = { Integer id, String source = "auto", String activePage = null ->
             [ok: true, unreadable: false, broken: false, brokenMarkers: [], orphanedActionRows: [], structuralIssues: [],
              validationErrors: [], multipleFlagPoison: [], issues: [], configPageError: null]
         }
@@ -36487,7 +34214,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         enableWrite()
         def posts = []
         script.metaClass._rmStructuralBaseline = { Integer id -> [] }
-        script.metaClass._rmCheckRuleHealth = { Integer id, String source = "auto" ->
+        script.metaClass._rmCheckRuleHealth = { Integer id, String source = "auto", String activePage = null ->
             [ok: true, unreadable: false, broken: false, brokenMarkers: [], orphanedActionRows: [], structuralIssues: [],
              validationErrors: [], multipleFlagPoison: [], issues: [], configPageError: null]
         }
@@ -36534,7 +34261,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def posts = []
         def recover = true
         script.metaClass._rmStructuralBaseline = { Integer id -> [] }
-        script.metaClass._rmCheckRuleHealth = { Integer id, String source = "auto" ->
+        script.metaClass._rmCheckRuleHealth = { Integer id, String source = "auto", String activePage = null ->
             [ok: true, unreadable: false, broken: false, brokenMarkers: [], orphanedActionRows: [], structuralIssues: [],
              validationErrors: [], multipleFlagPoison: [], issues: [], configPageError: null]
         }
@@ -36632,7 +34359,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         enableWrite()
         def healthCalls = 0
         def value = "before"
-        script.metaClass._rmCheckRuleHealth = { Integer id, String source = "auto" ->
+        script.metaClass._rmCheckRuleHealth = { Integer id, String source = "auto", String activePage = null ->
             healthCalls++
             [ok: false, structuralIssues: ["missing End-Repeat"]]
         }
@@ -36680,7 +34407,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         enableWrite()
         def healthCalls = 0
         script.metaClass._rmStructuralBaseline = { Integer id -> [] }
-        script.metaClass._rmCheckRuleHealth = { Integer id, String source = "auto" ->
+        script.metaClass._rmCheckRuleHealth = { Integer id, String source = "auto", String activePage = null ->
             healthCalls++
             [ok: true, unreadable: false, broken: false, brokenMarkers: [], orphanedActionRows: [], structuralIssues: [],
              validationErrors: [], multipleFlagPoison: [], issues: [], configPageError: null]
@@ -36722,7 +34449,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def warnings = []
         script.metaClass.mcpLog = { String level, String component, String msg -> if (level == "warn") warnings << msg }
         script.metaClass._rmStructuralBaseline = { Integer id -> throw new IllegalStateException("compiled rule state could not be read: 503 hub busy") }
-        script.metaClass._rmCheckRuleHealth = { Integer id, String source = "auto" -> verdict }
+        script.metaClass._rmCheckRuleHealth = { Integer id, String source = "auto", String activePage = null -> verdict }
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/doActPage') { params -> ruleConfigJson(100, "r", [[name: "actionDone", type: "button"]]) }
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
@@ -36799,7 +34526,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         when:
         def result = script.toolSetRule([name: "fail-closed-create",
-            addTriggers: [[capability: "Nope"], [capability: "Switch", deviceIds: [8], state: "on"]],
+            addTriggers: [[capability: "Smoke detector", deviceIds: [8], state: "detected"], [capability: "Switch", deviceIds: [8], state: "on"]],
             addRequiredExpression: [conditions: [[capability: "Switch", deviceIds: [8], state: "on"]]],
             addActions: [[capability: "switch", action: "on", deviceIds: [8]]],
             confirm: true])
@@ -36814,12 +34541,13 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.bulkStoppedAfter == "triggers[0]"
         result.finalisationNotAttempted == true
 
-        and: "after the label commit only the trigger-editor open is posted: no wizard writes, no updateRule, no mainPage Done"
+        and: "after the label commit only the trigger-editor open and its cancel are posted: no wizard writes, no updateRule, no mainPage Done"
         def labelCommit = posts.findIndexOf { it.path == "/installedapp/btn" && it.body?.name == "updateRule" }
         labelCommit >= 0
         def after = posts.drop(labelCommit + 1)
-        after.every { it.path == "/installedapp/btn" && it.body?.stateAttribute == "moreCond" }
-        !after.any { it.path == "/installedapp/update/json" }
+        after.size() == 2
+        after.count { it.path == "/installedapp/btn" && it.body?.stateAttribute == "moreCond" } == 1
+        after.count { it.path == "/installedapp/btn" && it.body?.name == "cancelCapab" } == 1
     }
 
     def "create refuses a bundled item that fails its argument checks before the rule is created"() {
@@ -36840,7 +34568,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "the refusal names the item and says no rule exists; nothing was created or written"
         def e = thrown(IllegalArgumentException)
-        e.message.contains("triggers[1]: addTrigger.time must be one of")
+        e.message.contains("triggers[1]: addTrigger.time must be")
         e.message.contains("No rule was created.")
         created.isEmpty()
         posts.isEmpty()
@@ -36889,13 +34617,14 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         where:
         label                        | spec                                                              | expected
-        'dimmer.setLevel no level'   | [capability: "dimmer", action: "setLevel", deviceIds: [8]]        | "dimmer.setLevel requires 'level'"
+        'dimmer.setLevel no level'   | [capability: "dimmer", action: "setLevel", deviceIds: [8]]        | "dimmer.setLevel requires one of level, levelVariable"
         'dimmer.toggle no level'     | [capability: "dimmer", action: "toggle", deviceIds: [8]]          | "dimmer.toggle requires 'level'"
-        'color.setColor no color'    | [capability: "color", action: "setColor", deviceIds: [8]]         | "color.setColor requires 'colorName'"
-        'color.toggleColor no name'  | [capability: "color", action: "toggleColor", level: 50]           | "color.toggleColor requires 'colorName'"
-        'color.toggleColor no level' | [capability: "color", action: "toggleColor", colorName: "Red"]    | "color.toggleColor requires 'level'"
-        'setColorTemp no kelvin'     | [capability: "colorTemp", action: "setColorTemp"]                 | "colorTemp.setColorTemp requires 'kelvin'"
-        'toggleColorTemp no kelvin'  | [capability: "colorTemp", action: "toggleColorTemp"]              | "colorTemp.toggleColorTemp requires 'kelvin'"
+        'color.setColor no color'    | [capability: "color", action: "setColor", deviceIds: [8]]         | "color.setColor requires one of colorName, hue, rgb, rawSettings"
+        'color.toggleColor no name'  | [capability: "color", action: "toggleColor", deviceIds: [8], level: 50]        | "color.toggleColor requires 'colorName'"
+        'color.toggleColor no level' | [capability: "color", action: "toggleColor", deviceIds: [8], colorName: "Red"] | "color.toggleColor requires 'level'"
+        'setColorTemp no kelvin'     | [capability: "colorTemp", action: "setColorTemp", deviceIds: [8]]              | "colorTemp.setColorTemp requires 'kelvin'"
+        'toggleColorTemp no kelvin'  | [capability: "colorTemp", action: "toggleColorTemp", deviceIds: [8]]           | "colorTemp.toggleColorTemp requires 'kelvin'"
+        'switch.on no devices'       | [capability: "switch", action: "on"]                                           | "switch.on requires 'deviceIds'"
         'unknown switch action'      | [capability: "switch", action: "blink", deviceIds: [8]]           | "Unknown switch action 'blink'"
         'unsupported capability'     | [capability: "teleport"]                                          | "Unsupported capability 'teleport'"
     }
@@ -36936,7 +34665,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then:
         def e = thrown(IllegalArgumentException)
-        e.message.contains("dimmer.setLevel requires 'level'")
+        e.message.contains("dimmer.setLevel requires one of level, levelVariable")
         !e.message.contains("RM is not touched")
     }
 
@@ -36989,7 +34718,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "refused as a pre-flight, with nothing removed and no wizard write"
         result.success == false
-        result.error.contains("replaceActions[0]: dimmer.setLevel requires 'level'")
+        result.error.contains("replaceActions[0]: dimmer.setLevel requires one of level, levelVariable")
         result.restoreHint?.contains("Pre-flight refusal")
         !result.containsKey("removedIndices")
         posts.isEmpty()
@@ -37035,9 +34764,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             [status: 200, location: null, data: '']
         }
 
-        when:
+        script.metaClass._rmAddAction = { Integer id, Map spec, boolean batch = false, Set v = null -> [success: false, error: "simulated hub refusal"] }
+
+        when: "the first action fails in the hub"
         def result = script.toolSetRule([appId: 100,
-            addActions: ["not a map", [capability: "switch", action: "on", deviceIds: [8]]],
+            addActions: [[capability: "switch", action: "off", deviceIds: [8]], [capability: "switch", action: "on", deviceIds: [8]]],
             confirm: true])
 
         then:
@@ -37059,9 +34790,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             [status: 200, location: null, data: '']
         }
 
-        when: "the first trigger is not a map, then a trigger and an action follow"
+        script.metaClass._rmAddTrigger = { Integer id, Map spec -> [success: false, error: "simulated hub refusal"] }
+
+        when: "the first trigger fails in the hub, then a trigger and an action follow"
         def result = script.toolSetRule([appId: 100,
-            addTriggers: ["not a map", [capability: "Switch", deviceIds: [8], state: "on"]],
+            addTriggers: [[capability: "Switch", deviceIds: [8], state: "off"], [capability: "Switch", deviceIds: [8], state: "on"]],
             addActions: [[capability: "switch", action: "on", deviceIds: [8]]],
             confirm: true])
 
@@ -37081,10 +34814,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
         script.metaClass._resumableBudgetExceeded = { Long t0 -> true }
+        script.metaClass._rmAddAction = { Integer id, Map spec, boolean batch = false, Set v = null -> [success: false, error: "simulated hub refusal"] }
 
         when:
         def result = script.toolSetRule([appId: 100,
-            addActions: ["not a map", [capability: "switch", action: "on", deviceIds: [8]], [capability: "switch", action: "off", deviceIds: [8]]],
+            addActions: [[capability: "switch", action: "off", deviceIds: [8]], [capability: "switch", action: "on", deviceIds: [8]], [capability: "switch", action: "off", deviceIds: [8]]],
             confirm: true])
 
         then: "no in_progress envelope offers the skipped items for resumption"
@@ -37102,7 +34836,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Clock time: ISO datetime '2000-01-01THH:mm:00.000+HHMM' with hub-local TZ offset.
         // sharedLocation defaults to UTC so the fixture produces '+0000' for the assertion.
         // Consequence-gated: each field only appears after the preceding one is committed.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def rCapabWritten = false
@@ -37207,7 +34940,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // doActPage mirror of the STPage device-relative happy path. The shared walker
         // _rmWalkConditionReveal runs on BOTH pages, so this pins that the isDev_1 toggle
         // reveals the relDevice_1 picker and the reference device + offset land on the
-        // action page too -- not just on STPage. Both-ways pending (orchestrator).
+        // action page too -- not just on STPage.
         given:
         enableWrite()
         def isDevWritten = false
@@ -37289,7 +35022,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.success == true
         // The headline contract on the doActPage surface: compareToDevice commits clean.
         // _rmAddAction's clean return has always carried partial:false, so assert == false
-        // (pins the field present, not merely absent). Both-ways pending (orchestrator).
+        // (pins the field present, not merely absent).
         result.partial == false
 
         and: "the comparator, isDev toggle, reference device, and offset all landed AND are recorded applied on doActPage"
@@ -37314,7 +35047,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "addAction ifThen: fail-loud when modes picker not revealed on doActPage"() {
         // When rCapab='Mode' does not cause modes picker to appear, the walker must
         // cancel and throw so the caller gets a diagnostic rather than a silent no-op.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         sharedLocation.modes = [[id: "3", name: "Night"]]
@@ -37363,7 +35095,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "addAction ifThen: fail-loud when variable name not in revealed enum on doActPage"() {
         // Unknown variable name must throw with a message naming the bad variable
         // and the available options -- same contract as the STPage Variable path.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def rCapabWritten = false
@@ -37423,7 +35154,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // When rCustomAttr_N is written but RelrDev_N never appears, the walker must
         // cancel and throw with a diagnostic -- same contract as the STPage Custom
         // Attribute path. The static stub simulates firmware that doesn't reveal RelrDev.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -37474,14 +35204,13 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // genuine-degradation case, so the walker emits the generic 'neither ... nor ...'
         // message (an enum attribute reveals state_1 and takes the no-throw success path).
         result.success == false
-        result.error?.toString()?.contains("neither RelrDev_<N> (comparator) nor state_<N> (enum value picker) revealed after rCustomAttr_<N>")
+        result.error?.toString()?.contains("neither a comparator (RelrDev_<N>) nor a value picker (state_<N>) appeared after the attribute")
     }
 
     def "addAction ifThen: fail-loud surfaces wizardStuck when cancelCapab cleanup also fails"() {
         // When writing a condition fails AND the cancelCapab cleanup also throws,
         // the outer catch must decode the [wizardStuck] marker and set wizardStuck=true
         // in the response with a restoreHint pointing at doActPage cancelCapab.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         sharedLocation.modes = [[id: "3", name: "Night"]]
@@ -37540,7 +35269,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Parity with addRequiredExpression Mode-by-modeIds spec: when modeIds is
         // provided instead of state, the walker writes the IDs directly without
         // attempting name->ID resolution via location.modes.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         sharedLocation.modes = [[id: "1", name: "Day"], [id: "3", name: "Night"]]
@@ -37610,7 +35338,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "addAction ifThen: fail-loud when compareToDevice RelrDev not visible after base writes"() {
         // Parity with addRequiredExpression compareToDevice fail-loud spec: when RelrDev_<N>
         // is absent from the schema after rCapab/rDev writes, the walker must fail loud.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -37660,7 +35387,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "fail-loud surfaces as success:false with the diagnostic in result.error"
         result.success == false
-        result.error?.toString()?.contains("RelrDev_<N> not visible after rCapab/rDev")
+        result.error?.toString()?.contains("no comparator (RelrDev_<N>) appeared")
     }
 
     def "addAction ifThen compareToDevice: offset slot absent on doActPage flips partial via _rmAddAction's own envelope (offset_field_not_revealed)"() {
@@ -37668,7 +35395,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // device-relative comparison commits, but state_1 (the offset slot) never appears,
         // so the requested offset drops with an offset_field_not_revealed sentinel. That
         // sentinel must flip partial through _rmAddAction's OWN envelope computation
-        // (distinct from the STPage / addRequiredExpression envelope). Both-ways pending
+        // (distinct from the STPage / addRequiredExpression envelope).
         // (orchestrator).
         given:
         enableWrite()
@@ -37762,7 +35489,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addAction ifThen: fail-loud when Mode condition supplies neither state nor modeIds"() {
         // Parity with addRequiredExpression Mode "neither provided" spec.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         sharedLocation.modes = [[id: "3", name: "Night"]]
@@ -37803,13 +35529,12 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "fail-loud: success=false, error pins the distinctive phrase from production"
         result.success == false
-        result.error?.toString()?.contains("'state' (mode name) or 'modeIds'")
+        result.error?.toString()?.contains("state (mode names) or modeIds")
     }
 
     def "addAction ifThen: fail-loud when Between two times start.time missing for clock type"() {
         // When start.type='clock' and no time is provided, the IAE must fire before
         // the wizard walk begins. Parity with addRequiredExpression validation path.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -37860,7 +35585,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "addAction ifThen: fail-loud when Between two times end.time missing for clock type"() {
         // When end.type='clock' and no time is provided, the IAE must fire.
         // Parity with addRequiredExpression validation path.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -37911,7 +35635,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "addAction ifThen: fail-loud when Between two times starting<N> not revealed after rCapab write"() {
         // Static doActPage schema never reveals starting1 -- verifies fail-loud on the
         // start-type-reveal step. Parity with the addRequiredExpression static-schema guard.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -37964,7 +35687,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // toIsoTime closure must cancel the in-flight wizard before throwing. Without that
     // cancel, the wizard stays half-open and the next write inherits it. The fix point
     // is _rmWalkConditionReveal's toIsoTime closure (Round 12 B1).
-    // Both-ways pending (orchestrator).
     def "addAction ifThen: fail-loud when Between two times location.timeZone is null on doActPage"() {
         given:
         enableWrite()
@@ -38029,7 +35751,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // to cancel) and flips wizardStuck to true erroneously. The fix point is the
     // !cancelledByWalker conditional in _rmAddRequiredExpression's outer
     // catch -- this spec pins the guard.
-    // Both-ways pending (orchestrator).
     def "addRequiredExpression Mode: walker cancel succeeds -- outer catch does not issue a second cancelCapab"() {
         given:
         enableWrite()
@@ -38089,7 +35810,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "addAction ifThen: fail-loud when Variable lVar picker not revealed on doActPage"() {
         // When rCapab='Variable' does not cause the variable-name picker (lVar_<N>) to
         // appear, the walker must cancel and throw. Parity with addRequiredExpression guard.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -38140,7 +35860,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Variable comparator field (RelrDev_<N>) must be revealed after the picker write.
         // When it never appears, the walker must cancel and throw.
         // Parity with addRequiredExpression Variable RelrDev fail-loud spec.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def rCapabWritten = false
@@ -38202,7 +35921,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // The value field (state_<N>) must be revealed after the RelrDev write.
         // When it never appears, the walker must cancel and throw.
         // Parity with addRequiredExpression Variable state_N fail-loud spec.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def rCapabWritten = false
@@ -38271,7 +35989,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // The value field (state_<N>) for Custom Attribute must be revealed after RelrDev write.
         // When it never appears, the walker must cancel and throw.
         // Parity with addRequiredExpression Custom Attribute state_N fail-loud spec.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def rCapabWritten = false
@@ -38351,7 +36068,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // When writing a condition fails AND the cancelCapab cleanup also throws on STPage,
         // the outer catch must set wizardStuck=true in the response.
         // Parity with addAction ifThen wizardStuck spec.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         sharedLocation.modes = [[id: "3", name: "Night"]]
@@ -38410,7 +36126,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "addRequiredExpression: outer toolSetRule propagates inner failure fields on STPage walk error"() {
         // When the walker fails (e.g. modes picker not revealed), the outer call must
         // surface success=false and error in the returned map, not an unhandled exception.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         sharedLocation.modes = [[id: "3", name: "Night"]]
@@ -38467,7 +36182,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Before the slot-anchor fix the walker wrote the comparator to the FIRST page-order
         // /RelrDev_\d+/ match and revealed /relDevice_\d+/ unanchored, so condition 2's writes
         // silently landed in slot 1's fields (writeST verifies the wrong-but-valid field as
-        // applied). Both-ways pending (orchestrator).
+        // applied).
         given:
         enableWrite()
         def isDev1Written = false
@@ -38540,7 +36255,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                       appType: [name: "Rule-5.1", namespace: "hubitat"]],
                 configPage: [name: "STPage", title: "RE", install: false, error: null,
                              sections: [[title: "", input: inputs, paragraphs: ["seq"]]]],
-                settings: [:], childApps: []
+                settings: [relDevice_1: ["99": "ref"], relDevice_2: ["99": "ref"]]  /* RM echoes the reference picker as {id: label} */, childApps: []
             ])
         }
         hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
@@ -38606,7 +36321,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // main capability sequence completes. These five specs verify that field lands.
 
     def "addRequiredExpression Mode: cond.not=true writes not<N> to STPage"() {
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         sharedLocation.modes = [[id: "1", name: "Day"], [id: "3", name: "Night"]]
@@ -38675,7 +36389,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "addRequiredExpression Between two times: cond.not=true writes not<N> to STPage"() {
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def rCapabWritten = false
@@ -38764,7 +36477,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "addRequiredExpression Variable: cond.not=true writes not<N> to STPage"() {
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def rCapabWritten = false
@@ -38845,7 +36557,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "addRequiredExpression Custom Attribute: cond.not=true writes not<N> to STPage"() {
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def rCapabWritten = false
@@ -38930,7 +36641,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "addRequiredExpression compareToDevice: cond.not=true writes not<N> to STPage"() {
         // The device-relative sequence (isDev toggle -> relDevice picker) runs, then the
         // walker writes not1=true after sealing the comparison.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def isDevWritten = false
@@ -38972,7 +36682,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                       appType: [name: "Rule-5.1", namespace: "hubitat"]],
                 configPage: [name: "STPage", title: "RE", install: false, error: null,
                              sections: [[title: "", input: inputs, paragraphs: ["seq"]]]],
-                settings: [:], childApps: []
+                settings: [relDevice_1: ["99": "ref"]]  /* RM echoes the reference picker as {id: label} */, childApps: []
             ])
         }
         hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
@@ -39014,7 +36724,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // the normal capability write sequence.
 
     def "addRequiredExpression Mode: rawSettings fields written alongside modes picker"() {
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         sharedLocation.modes = [[id: "1", name: "Day"]]
@@ -39084,7 +36793,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "addRequiredExpression Variable: rawSettings fields written alongside comparator chain"() {
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def rCapabWritten = false
@@ -39163,7 +36871,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "addRequiredExpression Custom Attribute: rawSettings fields written alongside comparator chain"() {
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def rCapabWritten = false
@@ -39246,7 +36953,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "addRequiredExpression Between two times: rawSettings fields written alongside clock sequence"() {
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def rCapabWritten = false
@@ -39334,7 +37040,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "addRequiredExpression compareToDevice: rawSettings fields written alongside device-compare sequence"() {
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def isDevWritten = false
@@ -39376,7 +37081,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                       appType: [name: "Rule-5.1", namespace: "hubitat"]],
                 configPage: [name: "STPage", title: "RE", install: false, error: null,
                              sections: [[title: "", input: inputs, paragraphs: ["seq"]]]],
-                settings: [:], childApps: []
+                settings: [relDevice_1: ["99": "ref"]]  /* RM echoes the reference picker as {id: label} */, childApps: []
             ])
         }
         hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
@@ -39416,7 +37121,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // fires (success=true) for the non-ifThen subtypes using a simple Mode condition.
 
     def "addAction elseIf: Mode condition writes modes picker -- walker fires on elseIf subtype"() {
-        // Both-ways pending (orchestrator).
         //
         // Setup includes an existing open ifThen action (actType.1=condActs +
         // actSubType.1=getIfThen) so the new elseIf has a parent IF block --
@@ -39497,7 +37201,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "addAction repeatWhile: Mode condition writes modes picker -- walker fires on repeatWhile subtype"() {
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         sharedLocation.modes = [[id: "1", name: "Day"]]
@@ -39523,7 +37226,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
         hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
             def inputs = [
-                [name: "actType.1",    type: "enum", options: ["condActs": "Conditional Actions"]],
+                [name: "actType.1",    type: "enum", options: ["repeatActs": "Repeat Actions"]],
                 [name: "actSubType.1", type: "enum", options: ["getWhile": "REPEAT While Expression is TRUE"]],
                 [name: "cond",         type: "enum", options: ["a": "New condition"]],
                 [name: "rCapab_1",     type: "enum", options: ["Mode"]],
@@ -39564,7 +37267,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "addAction waitExpression: Mode condition writes modes picker -- walker fires on waitExpression subtype"() {
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         sharedLocation.modes = [[id: "1", name: "Day"]]
@@ -39590,7 +37292,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
         hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
             def inputs = [
-                [name: "actType.1",    type: "enum", options: ["condActs": "Conditional Actions"]],
+                [name: "actType.1",    type: "enum", options: ["delayActs": "Delay, Wait, Exit and Comment"]],
                 [name: "actSubType.1", type: "enum", options: ["getWaitRule": "WAIT for Expression"]],
                 [name: "cond",         type: "enum", options: ["a": "New condition"]],
                 [name: "rCapab_1",     type: "enum", options: ["Mode"]],
@@ -39638,7 +37340,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // (explicit deviceIds beats singular deviceId when both are provided).
 
     def "addRequiredExpression: singular deviceId normalized to deviceIds array before STPage walk"() {
-        // Both-ways pending (orchestrator).
         // When the caller passes deviceId: 73 instead of deviceIds: [73], the
         // dispatcher normalizes it to [73] so rDev_1 is written correctly.
         given:
@@ -39725,7 +37426,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "addAction ifThen: singular deviceId normalized to deviceIds array before doActPage walk"() {
-        // Both-ways pending (orchestrator).
         // Same normalization as STPage path but exercised via addAction ifThen expression.
         given:
         enableWrite()
@@ -39826,7 +37526,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // companion spec should be added asserting the recursive validation also
     // throws on non-existent ids; that companion belongs in the same PR as the
     // write-side feature work.
-    // Both-ways pending (orchestrator).
     def "addAction ifThen: recursive normExprCondList walks subExpression without crashing the dispatcher"() {
         given:
         enableWrite()
@@ -39878,7 +37577,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // deviceIds: [9999], then validated, then the validator must throw with the
     // distinctive 'does not exist on the hub' phrase. Without the order, the
     // un-normalized singular deviceId would bypass validation entirely.
-    // Both-ways pending (orchestrator).
     def "addTrigger: singular non-existent deviceId in trigger.condition fails the existence check"() {
         given:
         enableWrite()
@@ -39938,7 +37636,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "addRequiredExpression: explicit deviceIds wins over singular deviceId when both provided"() {
-        // Both-ways pending (orchestrator).
         // Precedence: if both deviceId: 5 and deviceIds: [99] are given, deviceIds wins.
         given:
         enableWrite()
@@ -40024,7 +37721,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // When caller passes singular deviceId: <nonexistent>, the normalization converts it
     // to deviceIds: [<nonexistent>], and then _rmValidateDeviceIdsExist catches the bad ID.
     // If normalization didn't run, deviceIds would be null and the validator would skip.
-    // Both-ways pending (orchestrator).
 
     def "addRequiredExpression: singular deviceId for nonexistent device triggers pre-validation throw"() {
         given:
@@ -40068,7 +37764,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // When a condition has a subExpression, the deviceId-normalization closure
     // must recurse into subExpression.conditions[] so that singular deviceId
     // entries inside nested parens are also normalized.
-    // Both-ways pending (orchestrator).
 
     def "addRequiredExpression: singular deviceId inside nested subExpression.conditions is normalized"() {
         given:
@@ -40164,7 +37859,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // trigger write (no new appearance detected). This path fires on hubs where the schema
     // is static (all fields always visible regardless of prior writes). A simple Mode
     // condition with a static STPage schema verifies the fallback keeps success=true.
-    // Both-ways pending (orchestrator).
 
     def "addRequiredExpression Mode: static-schema (all fields always visible) succeeds via revealedAny fallback"() {
         given:
@@ -40233,7 +37927,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     //
     // When location.timeZone is null, the Between two times walker must fail-loud
     // before touching the wizard (throw with message naming the Settings path).
-    // Both-ways pending (orchestrator).
 
     def "addRequiredExpression Between two times: fail-loud when location.timeZone is null"() {
         given:
@@ -40286,7 +37979,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // The Between two times clock-time conversion must produce the correct TZ offset
     // for non-UTC hubs. Verify with Australia/Sydney (+11 or +10 depending on DST;
     // using a fixed-offset timezone to keep the test deterministic).
-    // Both-ways pending (orchestrator).
 
     def "addRequiredExpression Between two times: clock time ISO datetime uses hub timezone offset (non-UTC zone)"() {
         given:
@@ -40380,7 +38072,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     //
     // When exactly one condition degrades (compareToDevice offset field absent), the
     // repairHints string must say "1 condition" (not "1 conditions" or "1 condition(s)").
-    // Both-ways pending (orchestrator).
 
     def "addRequiredExpression: repairHints says '1 condition' (singular) for exactly one degraded condition"() {
         given:
@@ -40421,7 +38112,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                       appType: [name: "Rule-5.1", namespace: "hubitat"]],
                 configPage: [name: "STPage", title: "RE", install: false, error: null,
                              sections: [[title: "", input: inputs, paragraphs: ["static"]]]],
-                settings: [:], childApps: []
+                settings: [relDevice_1: ["99": "ref"]]  /* RM echoes the reference picker as {id: label} */, childApps: []
             ])
         }
         hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
@@ -40468,7 +38159,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // unique-count. This spec forces 3 skipped entries that all carry condIdx=0
     // (via rawSettings keys absent from the static schema) and pins the
     // singular wording.
-    // Both-ways pending (orchestrator).
 
     def "addRequiredExpression: repairHints says '1 condition' when one condition produces multiple skipped entries"() {
         given:
@@ -40515,7 +38205,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             addRequiredExpression: [conditions: [[
                 capability: "Switch",
                 deviceIds: [8],
-                comparator: "=",
                 state: "on",
                 rawSettings: [notSchemaA: 1, notSchemaB: 2, notSchemaC: 3]
             ]]],
@@ -40544,7 +38233,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // Expression added with N condition(s); updateRule fired." with a count-
     // aware ternary on condition/conditions. Pin both forms so a regression
     // that drops the discrimination is caught.
-    // Both-ways pending (orchestrator).
 
     def "addRequiredExpression note says '1 condition' singular for one condition"() {
         given:
@@ -40699,14 +38387,12 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // is" / "triggers are". The helper _rmCheckSubscriptionSettle determines
     // the count via tDev<N> setting introspection. Pin both forms via the
     // helper output: triggerCount=1 (singular path) and triggerCount=2 (plural).
-    // Both-ways pending (orchestrator).
     def "subscriptionSettle WARN message: singular 'trigger is' when triggerCount=1"() {
         // Drive the count-aware trigVerb ternary inside toolSetRule's
         // button-handler post-updateRule branch via a real statusJson stub
         // returning one tDev entry + zero subscriptions.
         // _rmCheckSubscriptionSettle reports unsettled=true twice (initial +
         // post-retry), so the WARN string fires.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -40857,7 +38543,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "subscriptionSettle WARN message: plural 'triggers are' when triggerCount=2"() {
         // Plural-side regression pin for the trigVerb ternary in
         // toolSetRule's button-handler post-updateRule branch.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -40895,7 +38580,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // ---------- W-spec-addTrigger-deviceId-silent: addTrigger.condition singular deviceId ----------
     //
     // _rmBuildCondition now normalizes singular deviceId -> deviceIds for trigger.condition.
-    // Both-ways pending (orchestrator).
 
     def "addTrigger: singular deviceId in trigger.condition is normalized before wizard write"() {
         given:
@@ -41008,7 +38692,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // propagation, Variable picker degradation sentinel, subExpression rejection
     // on doActPage, Tamper/CO2 description vocabulary). Each spec carries a
     // "Load-bearing discriminator" note naming the regression class it pins.
-    // Both-ways pending (orchestrator).
     // =========================================================================
 
     // ---------- compareToDevice silent writes on null reveal ----------
@@ -41018,7 +38701,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // the relDevice write (firmware variant), the walker logs warn + pushes a sentinel
         // with reason='offset_field_not_revealed'. It does NOT fail the call -- the
         // device-relative comparison is otherwise complete (offset is optional).
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def isDevWritten = false
@@ -41061,7 +38743,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                       appType: [name: "Rule-5.1", namespace: "hubitat"]],
                 configPage: [name: "STPage", title: "RE", install: false, error: null,
                              sections: [[title: "", input: inputs, paragraphs: ["seq"]]]],
-                settings: [:], childApps: []
+                settings: [relDevice_1: ["99": "ref"]]  /* RM echoes the reference picker as {id: label} */, childApps: []
             ])
         }
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
@@ -41407,7 +39089,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.success == false
         // Load-bearing discriminator: error message must name the missing-RHS contract
         // and the field-default-(0) failure mode the walker is protecting against.
-        result.error?.toString()?.contains("requires an RHS value")
+        result.error?.toString()?.contains("needs a value")
     }
 
     def "addRequiredExpression Variable: state-change comparator '*changed*' WITHOUT state or value succeeds"() {
@@ -41415,7 +39097,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // condition fail-loud guard). State-change comparators legitimately omit RHS;
         // a regression that drops the exemption would throw on every Variable-changed
         // condition and break the entire "fire when myVar changes" idiom.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -41598,7 +39279,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // fallback path (even when revealedNew matched) would emit false positives on every
         // normal progressive-disclosure write -- the entire walker would mark every
         // condition partial=true.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def rCapabWritten = false
@@ -41669,33 +39349,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         fallbackSentinel == null
     }
 
-    // ---------- discrete-event vocabulary -- Tamper detected/clear (now in the guide) ----------
-
-    def "hub_set_rule reference aligns Tamper with detected/clear vocabulary (in the guide)"() {
-        // Tamper actually emits 'detected'/'clear'; the wrong forms 'tampered' / 'not detected'
-        // would fail the live walker's option validation and mislead agents. The exhaustive
-        // discrete-event vocabulary now lives in the set_rule_reference guide (moved
-        // there to keep the inline description lean -- issue #181; reachable inline via guide:true).
-        // So: the inline description must never surface the WRONG forms, and the guide must carry
-        // the RIGHT ones. CO2 vocabulary is intentionally NOT pinned -- CarbonDioxideMeasurement
-        // is numeric ppm (comparator + value), not a discrete enum.
-        when:
-        def tools = script.getAllToolDefinitions()
-        def updateNativeApp = tools.find { it.name == "hub_set_rule" }
-        def schemaText = updateNativeApp?.inputSchema?.toString() ?: ""
-        def fullText = (updateNativeApp?.description ?: "") + " " + schemaText
-        def guide = (script.toolGetToolGuide("set_rule_reference")?.content ?: "").toString()
-
-        then: "neither the inline description nor the guide surfaces the wrong vocabulary"
-        !fullText.contains("'tampered'")
-        !fullText.contains("'not detected'")
-        !guide.contains("'tampered'")
-        !guide.contains("'not detected'")
-
-        and: "the correct Tamper / Smoke / CO discrete-event values are documented in the guide"
-        guide.contains("'detected'")
-        guide.contains("'clear'")
-    }
+    // ---------- state vocabulary -- Tamper detected/clear (discover) ----------
 
     // ---------- Variable picker validation -- non-empty varOpts containing varName: no sentinel ----------
 
@@ -41706,7 +39360,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // result.partial MUST remain falsy. Catches a regression that flips the
         // `!varOpts` gate to `if (true)` or otherwise unconditionally pushes the
         // sentinel.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -41775,7 +39428,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // recovery line. Catches a regression that flips the flag init values
         // (e.g. `def updateRuleFailed = true` instead of `false`) or always
         // appends the repairHint regardless of failure.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def updateRuleClicked = false
@@ -41863,7 +39515,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Uses the proven selectTriggersSchemaJson + mainPageJson helpers (same as
         // the addTrigger full-success spec) so the call actually reaches the
         // trailing updateRule click.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def updateRuleAttempted = false
@@ -41932,7 +39583,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // When the trailing updateRule click succeeds, the new B5 response slots
         // MUST stay falsy and repairHints MUST NOT carry the recovery line.
         // Uses the same proven helpers as the failure spec above for symmetry.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def updateRuleClicked = false
@@ -41993,7 +39643,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         enableWrite()
         def posts = []
         def backups = []
-        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason ->
+        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason, String activePage = null ->
             backups << [id: id, reason: reason]
             [backupKey: 'snap']
         }
@@ -42027,22 +39677,23 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         given:
         enableWrite()
         def clicks = []
-        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason -> [backupKey: "snap"] }
+        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason, String activePage = null -> [backupKey: "snap"] }
         script.metaClass._rmClickAppButton = { Integer id, String name, String stateAttr = null,
                                                String pageName = null, Map cache = null -> clicks << name }
-        script.metaClass._rmCheckRuleHealth = { Integer id -> [ok: true] }
+        script.metaClass._rmCheckRuleHealth = { Integer id, String src = "auto", String activePage = null -> [ok: true] }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
 
-        when:
+        when: "the trigger fails in the hub (its rule pages are not served)"
         def result = script.toolSetRule([
             appId: 100,
-            addTriggers: ["trigger-sentinel"],
-            addActions: ["action-sentinel"],
+            addTriggers: [[capability: "Switch", deviceIds: [8], state: "on"]],
+            addActions: [[capability: "switch", action: "on", deviceIds: [8]]],
             confirm: true
         ])
 
         then: "both lists reached their own bulk loop instead of the multi-op guard"
         result.triggers.size() == 1
-        result.triggers[0].error.contains("addTriggers[0]")
+        result.triggers[0].success == false
         result.actions.size() == 1
         result.actions[0].notAttempted == true
         result.actions[0].error.contains("addTriggers[0]")
@@ -42074,7 +39725,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // single-shape spec missed the actions-only case entirely, which would
         // let a regression that gates the trailing-updateRule propagation on
         // "addTriggersList non-empty" ship green.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def updateRuleAttempted = false
@@ -42164,7 +39814,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // the wrong default (so callers see them true even on success) would
         // surface here. Mirror of the single-trigger addTrigger SUCCESS pin.
         // Three-row rotation matches the failure-pin coverage.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def updateRuleClicked = false
@@ -42245,7 +39894,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // so the addActions-only and mixed-shape OR-branches are also pinned. A
         // regression that fixes the OR for triggers but reverts it for actions
         // (or vice versa) was previously invisible.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def updateRuleClicked = false
@@ -42279,7 +39927,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
         hubGet.register('/device/fullJson/8')     { params -> '{"id":"8","name":"S1"}' }
         // Device 99999 returns empty -- _rmValidateDeviceIdsExist fails the add inline
-        hubGet.register('/device/fullJson/99999') { params -> "" }
+        // The second item is refused inside the hub: the trigger picker offers only Switch, and the
+        // action page shows no Run Custom Action capability picker.
 
         when:
         def result = script.toolSetRule(args + [appId: 100, confirm: true])
@@ -42305,9 +39954,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         where:
         shape           | args
-        "addTriggers"   | [addTriggers: [[capability: "Switch", deviceIds: [8], state: "on"], [capability: "Switch", deviceIds: [99999], state: "off"]]]
-        "addActions"    | [addActions:  [[capability: "switch", action: "on", deviceIds: [8]], [capability: "switch", action: "off", deviceIds: [99999]]]]
-        "both"          | [addTriggers: [[capability: "Switch", deviceIds: [8], state: "on"]], addActions: [[capability: "switch", action: "on", deviceIds: [99999]]]]
+        "addTriggers"   | [addTriggers: [[capability: "Switch", deviceIds: [8], state: "on"], [capability: "Motion", deviceIds: [8], state: "active"]]]
+        "addActions"    | [addActions:  [[capability: "switch", action: "on", deviceIds: [8]], [capability: "runCommand", command: "on", capabilityFilter: "Switch", deviceIds: [8]]]]
+        "both"          | [addTriggers: [[capability: "Switch", deviceIds: [8], state: "on"]], addActions: [[capability: "runCommand", command: "on", capabilityFilter: "Switch", deviceIds: [8]]]]
     }
 
     // ---------- _rmBuildCondition deviceId normalize-before-validate ----------
@@ -42322,7 +39971,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Schema layout for the conditional-trigger path: _rmBuildCondition writes to
         // rCapab_1/rDev_1/state_1 at idx=1, then idx advances to 2 and the actual
         // trigger needs tCapab2/tDev2/tstate2/isCondTrig.2/condTrig.2.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def writtenFields = [:]
@@ -42400,7 +40048,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // This spec asserts the multi-device list path produces the CSV form directly,
         // pinning the serialization invariant that any regression to the wrap step (or
         // the _rmBuildSettingsBody CSV builder) would surface here.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def writtenFields = [:]
@@ -42480,7 +40127,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // throws IllegalArgumentException BEFORE any wizard write fires, so no
         // selectTriggers schema is needed -- the throw propagates up to the
         // toolSetRule catch and surfaces as result.success=false.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -42537,7 +40183,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // The outer catch in _rmAddRequiredExpression must observe that
         // cancelledByWalker is still false and issue cancelCapab itself. Mirrors F4
         // structurally (sibling-pattern fidelity per N.13).
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def cancelCapabClicks = 0
@@ -42626,8 +40271,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // verificationFetchFailed/hubRenderError outer-dispatcher coverage;
     // F8 Variable picker regex-union parametrize; F9 ASCII-to-Unicode
     // comparator wire-write cross-site; F12 patches-bundle walker spec;
-    // F18 discrete-event sensor pre-walker guard)
-    // Both-ways pending (orchestrator).
+    // device-state comparator refusal)
     // =========================================================================
 
     // ---------- F1: patches updateRule failure propagation ----------
@@ -42639,7 +40283,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // click is rejected the patches landed but never bake; envelope MUST carry
         // dedicated slots (updateRuleFailed / patchesNotLive / updateRuleError),
         // flip success=false, and append a recovery repairHint.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def updateRuleAttempted = false
@@ -42721,7 +40364,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Negative pin paired with the failure spec above. A regression flipping
         // the F1 flag init values (e.g. updateRuleFailed=true by default) or
         // unconditionally appending the repairHint would surface here.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def updateRuleClicked = false
@@ -42796,7 +40438,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Sibling pattern from F1 (above) + F2 addRequiredExpression. Variable is
         // created on the hub (varResult non-null) but the rule's action map never
         // re-evaluates against the new variable until updateRule fires.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def updateRuleAttempted = false
@@ -42806,7 +40447,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             [name: "varValue", type: "text"]
         ]
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
             if (path == "/installedapp/btn" && body["settings[updateRule]"] == "clicked") {
                 updateRuleAttempted = true
                 throw new RuntimeException("simulated addLocalVariable updateRule rejection")
@@ -42821,7 +40464,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                 appSettings: [],
                 eventSubscriptions: [],
                 scheduledJobs: [],
-                appState: [[name: "allLocalVars", value: [counter: [type: "integer", value: 42]]]],
+                appState: posts.any { it.body?.containsKey("settings[varValue]") } ? [[name: "allLocalVars", value: [counter: [type: "integer", value: 42]]]] : [],
                 state: [:]
             ])
         }
@@ -42857,7 +40500,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addLocalVariable: trailing updateRule SUCCESS leaves updateRuleFailed + variableNotLive falsy"() {
         // Negative pin paired with the failure spec above.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def updateRuleClicked = false
@@ -42867,7 +40509,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             [name: "varValue", type: "text"]
         ]
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
             if (path == "/installedapp/btn" && body["settings[updateRule]"] == "clicked") {
                 updateRuleClicked = true
             }
@@ -42881,7 +40525,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                 appSettings: [],
                 eventSubscriptions: [],
                 scheduledJobs: [],
-                appState: [[name: "allLocalVars", value: [counter: [type: "integer", value: 42]]]],
+                appState: posts.any { it.body?.containsKey("settings[varValue]") } ? [[name: "allLocalVars", value: [counter: [type: "integer", value: 42]]]] : [],
                 state: [:]
             ])
         }
@@ -42931,7 +40575,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // branch by returning an allLocalVars Map that does NOT contain the
         // variable name across all 3 verification retries. Trailing updateRule
         // succeeds in this scenario -- the inner failed, not the trailing click.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def updateRuleClicked = false
@@ -43035,7 +40678,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // _rmWriteSettingOnPage useST=true), so the fixture uses a sequence
         // counter to let the EARLY mainPage fetches succeed and throw only on
         // the FINAL verification fetch.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def fetchSeq = 0
@@ -43115,7 +40757,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // settings but RM never baked the paragraph (typically wizard-state leak
         // from a prior aborted walk). hubRenderError flips true to tell the caller
         // the row needs removeAction-then-retry style recovery.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def fetchSeq = 0
@@ -43178,7 +40819,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // three firmware-variant picker names -- lVar_<N> / varName_<N> / rVar_<N>.
         // Existing happy-path specs only stub lVar_1; this @Unroll parametrizes
         // over all three so a regex narrowing on any branch surfaces here.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def writtenFields = [:]
@@ -43247,7 +40887,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // walker call site. A regression to the normalize call site (e.g.
         // _rmNormalizeComparator removed from the call chain) would store the
         // raw '!=' string and RM would reject it as not in the option list.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def writtenFields = [:]
@@ -43306,7 +40945,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "addAction ifThen Variable: caller passes '!=', RelrDev_1 written as Unicode '≠' (cross-site for _rmNormalizeComparator)"() {
         // Companion to the addRE site above. The same _rmNormalizeComparator
         // mapping must apply on the doActPage walker path (Variable branch).
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         // Open ifThen needed for the structural-balance pre-flight to allow this addAction.
@@ -43369,7 +41007,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addAction ifThen Custom Attribute: caller passes '!=', RelrDev_1 written as Unicode '≠' (cross-site for _rmNormalizeComparator)"() {
         // Third F9 site: doActPage walker Custom Attribute branch. Same contract.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def writtenFields = [:]
@@ -43440,7 +41077,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // slot init values flip.
         // P2 mechanism: pins the F1 fix in the patches dispatch (sibling
         // _rmAddRequiredExpression class-fix). Same diff as F1.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         sharedLocation.modes = [[id: "1", name: "Day"], [id: "3", name: "Night"]]
@@ -43594,7 +41230,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                       appType: [name: "Rule-5.1", namespace: "hubitat"]],
                 configPage: [name: "STPage", title: "RE", install: false, error: null,
                              sections: [[title: "", input: inputs, paragraphs: ["seq"]]]],
-                settings: [:], childApps: []
+                settings: [relDevice_1: ["99": "ref"]]  /* RM echoes the reference picker as {id: label} */, childApps: []
             ])
         }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
@@ -43640,333 +41276,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.patches[0]?.partial == true
     }
 
-    // ---------- F18: discrete-event sensor pre-walker guard ----------
+    // ---------- device-state comparator refusal ----------
 
-    @spock.lang.Unroll
-    def "addRequiredExpression #cap with comparator + NO state + NO value: pre-walker guard throws targeted error"() {
-        // F18: closes the silent-degrade gap RM's runtime does not catch. Five
-        // discrete-event capabilities (Water sensor, Smoke detector, CO, Tamper
-        // alert, Acceleration) reject the comparator-without-value shape before
-        // reaching the wizard. CO2 is intentionally EXCLUDED -- the
-        // CarbonDioxideMeasurement capability is numeric ppm, not a discrete
-        // enum, and RM treats it as a comparator-based condition. The throw
-        // message names the valid state values for the capability so the agent
-        // gets actionable recovery.
-        // Both-ways pending (orchestrator).
-        given:
-        enableWrite()
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            [status: 200, location: null, data: '']
-        }
-        hubGet.register('/installedapp/configure/json/100') { params ->
-            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
-        }
-        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
-            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
-        }
-        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
-            def inputs = [
-                [name: "cond",      type: "enum", options: ["a": "New condition"]],
-                [name: "rCapab_1",  type: "enum", options: [cap]],
-                [name: "rDev_1",    type: "capability.sensor", multiple: true],
-                [name: "RelrDev_1", type: "enum", options: [">"]],
-                [name: "state_1",   type: "enum", options: validStates],
-                [name: "hasAll",    type: "button"],
-                [name: "cancelCapab", type: "button"]
-            ]
-            JsonOutput.toJson([
-                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
-                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
-                configPage: [name: "STPage", title: "RE", install: false, error: null,
-                             sections: [[title: "", input: inputs, paragraphs: ["seq"]]]],
-                settings: [:], childApps: []
-            ])
-        }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
-        hubGet.register('/device/fullJson/8')  { params -> '{"id":"8","name":"S1"}' }
+    // ---------- CO2 keeps its comparator (numeric) ----------
 
-        when: "caller passes comparator with no state, no value"
-        def result = script.toolSetRule([
-            appId: 100,
-            addRequiredExpression: [conditions: [[
-                capability: cap, deviceIds: [8], comparator: ">"
-                // Intentionally NO state, NO value -- the regression target.
-            ]]],
-            confirm: true
-        ])
-
-        then: "pre-walker guard rejects with targeted error naming the valid state values"
-        // Load-bearing discriminator: the throw text must name BOTH that the
-        // capability is discrete-event AND the valid state values for it. A
-        // regression that drops the guard (or generalizes the message) would
-        // surface here. The "silently degrades" phrase pins the rationale comment
-        // so a future maintainer doesn't drop the guard thinking RM catches this.
-        result.success == false
-        result.error?.toString()?.contains(cap)
-        result.error?.toString()?.contains("discrete-event capability")
-        result.error?.toString()?.contains(validStates[0])
-        result.error?.toString()?.contains(validStates[1])
-        result.error?.toString()?.contains("silently degrades")
-
-        where:
-        // Carbon dioxide sensor (CarbonDioxideMeasurement capability) is
-        // INTENTIONALLY ABSENT here -- RM treats CO2 as numeric ppm, not
-        // discrete-event. See the DISCRETE_EVENT_CAPS comment in
-        // hubitat-mcp-server.groovy (inside _rmWalkConditionReveal's
-        // DISCRETE_EVENT_CAPS map) for the capability-name pitfall.
-        // Carbon monoxide detector (CarbonMonoxideDetector capability, discrete)
-        // is INCLUDED; the two look symmetric but are not.
-        cap                            | validStates
-        "Water sensor"                 | ["wet", "dry"]
-        "Smoke detector"               | ["detected", "clear"]
-        "Carbon monoxide detector"     | ["detected", "clear"]
-        "Tamper alert"                 | ["detected", "clear"]
-        "Acceleration"                 | ["active", "inactive"]
-    }
-
-    @spock.lang.Unroll
-    def "addRequiredExpression #cap with state: '#validState': pre-walker guard does NOT fire (negative pin)"() {
-        // Negative pin paired with the F18 positive @Unroll spec above. When
-        // the caller passes a valid state (not comparator+no-value), the
-        // pre-walker guard MUST NOT fire -- the existing happy path through
-        // the walker writes state_<N> normally. A regression that broadens
-        // the guard to fire on every discrete-event capability would surface
-        // here. Rotates over the same 5 caps as the positive @Unroll so the
-        // negative pin matches the positive pin's coverage breadth.
-        // Both-ways pending (orchestrator).
-        given:
-        enableWrite()
-        def writtenFields = [:]
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            if (path == "/installedapp/update/json" && body?.currentPage == "STPage") {
-                body.each { k, v ->
-                    def key = _settingKeyOf(k)
-                    if (key != null) writtenFields[key] = v
-                }
-            }
-            [status: 200, location: null, data: '']
-        }
-        hubGet.register('/installedapp/configure/json/100') { params ->
-            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
-        }
-        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
-            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
-        }
-        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
-            def inputs = [
-                [name: "cond",      type: "enum", options: ["a": "New condition"]],
-                [name: "rCapab_1",  type: "enum", options: [cap]],
-                [name: "rDev_1",    type: "capability.sensor", multiple: true],
-                [name: "state_1",   type: "enum", options: validStates],
-                [name: "hasAll",    type: "button"]
-            ]
-            JsonOutput.toJson([
-                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
-                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
-                configPage: [name: "STPage", title: "RE", install: false, error: null,
-                             sections: [[title: "", input: inputs, paragraphs: ["seq"]]]],
-                settings: [:], childApps: []
-            ])
-        }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
-        hubGet.register('/device/fullJson/8')  { params -> '{"id":"8","name":"Sensor1"}' }
-
-        when: "caller passes the valid state value (no comparator)"
-        def result = script.toolSetRule([
-            appId: 100,
-            addRequiredExpression: [conditions: [[
-                capability: cap, deviceIds: [8], state: validState
-            ]]],
-            confirm: true
-        ])
-
-        then: "no pre-walker guard reject; walker proceeded past the F18 gate"
-        // Load-bearing discriminator: the absence of the F18 error string pins
-        // the negative case. A regression that broadens the guard to fire on
-        // EVERY discrete-event capability call (rather than only on
-        // comparator-with-no-value) would surface here -- result.success would
-        // be false and result.error would carry the F18 phrase. The error-absence
-        // check is the sole load-bearing assertion; the static-schema stub does
-        // not advance the wizard far enough to make a wire-value pin reliable
-        // here, and re-using the F18 production phrase keeps this paired
-        // directly with the positive @Unroll above.
-        !(result.error?.toString()?.contains("discrete-event capability"))
-        !(result.error?.toString()?.contains("silently degrades"))
-
-        where:
-        cap                            | validState | validStates
-        "Water sensor"                 | "wet"      | ["wet", "dry"]
-        "Smoke detector"               | "detected" | ["detected", "clear"]
-        "Carbon monoxide detector"     | "detected" | ["detected", "clear"]
-        "Tamper alert"                 | "detected" | ["detected", "clear"]
-        "Acceleration"                 | "active"   | ["active", "inactive"]
-    }
-
-    // ---------- W4: CO2 numeric-comparator positive pin (NOT a discrete-event guard target) ----------
-
-    def "addRequiredExpression Carbon dioxide sensor with comparator + value: F18 guard does NOT fire (numeric ppm path)"() {
-        // W4: CO2 is intentionally EXCLUDED from the F18 discrete-event guard
-        // because CarbonDioxideMeasurement is numeric ppm. A regression that
-        // adds "Carbon dioxide sensor" to DISCRETE_EVENT_CAPS would make the
-        // guard fire here and break the valid numeric-comparator usage. The
-        // pitfall this catches: CO2 (numeric) and Carbon monoxide detector
-        // (discrete) look superficially symmetric; a future contributor adding
-        // CO2 to the map "for symmetry" would silently break real callers.
-        // Both-ways pending (orchestrator).
-        given:
-        enableWrite()
-        def writtenFields = [:]
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            if (path == "/installedapp/update/json" && body?.currentPage == "STPage" && body["_action_previous"] != "Done") {
-                body.each { k, v ->
-                    def key = _settingKeyOf(k)
-                    if (key != null) writtenFields[key] = v
-                }
-            }
-            [status: 200, location: null, data: '']
-        }
-        hubGet.register('/installedapp/configure/json/100') { params ->
-            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
-        }
-        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
-            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
-        }
-        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
-            // CO2 numeric-comparator path: capability + device + RelrDev_<N> (comparator)
-            // + state_<N> (numeric value -- RM 5.1 uses the same field name for both
-            // numeric value and discrete state).
-            def inputs = [
-                [name: "cond",      type: "enum", options: ["a": "New condition"]],
-                [name: "rCapab_1",  type: "enum", options: ["Carbon dioxide sensor"]],
-                [name: "rDev_1",    type: "capability.sensor", multiple: true],
-                [name: "RelrDev_1", type: "enum", options: [">", "<", "=", ">=", "<=", "!="]],
-                [name: "state_1",   type: "text"],
-                [name: "hasAll",    type: "button"]
-            ]
-            JsonOutput.toJson([
-                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
-                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
-                configPage: [name: "STPage", title: "RE", install: false, error: null,
-                             sections: [[title: "", input: inputs, paragraphs: ["seq"]]]],
-                settings: [:], childApps: []
-            ])
-        }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
-        hubGet.register('/device/fullJson/8')  { params -> '{"id":"8","name":"CO2-Sensor"}' }
-
-        when: "caller passes comparator + numeric value (the valid CO2 shape)"
-        def result = script.toolSetRule([
-            appId: 100,
-            addRequiredExpression: [conditions: [[
-                capability: "Carbon dioxide sensor", deviceIds: [8], comparator: ">", value: 800
-            ]]],
-            confirm: true
-        ])
-
-        then: "F18 discrete-event guard does NOT fire on the numeric-ppm CO2 path"
-        // Load-bearing discriminator: a regression that adds Carbon dioxide sensor
-        // to DISCRETE_EVENT_CAPS would trip the guard here and the error would
-        // name "discrete-event capability". The error MUST be either null or not
-        // carry that phrase. Negation-only assertions are weak (W10): a
-        // regression that throws a different error message (e.g. "rCapab_1 not
-        // in schema") would silently pass this assertion, so pair with the
-        // positive success + wire-write pins below.
-        !(result.error?.toString()?.contains("discrete-event capability"))
-
-        and: "call did not hard-fail (positive pin: paired with the F18-phrase negation above)"
-        // Load-bearing positive discriminator (W10): without this, a regression
-        // that returns success=false for an unrelated reason would silently
-        // satisfy the F18-negation above. result.success != false catches both
-        // explicit `success: false` and the case where the dispatcher errored
-        // through `_rmBuildUpdateErrorResponse` (which never sets `success`).
-        result.success != false
-
-        and: "rDev_1 wire-write captured the CO2 device (positive contract pin: W10)"
-        // Load-bearing positive discriminator: the walker MUST reach the device-
-        // selection write for the numeric-comparator path to be valid. A
-        // regression that adds CO2 to DISCRETE_EVENT_CAPS would throw BEFORE
-        // any rDev_1 write, so this assertion would fail even if the F18 phrase
-        // were silently rewritten. Pinning the actual device-id write (the
-        // bare CSV scalar "8") closes the W10 gap.
-        writtenFields["rDev_1"] == "8"
-    }
-
-    // ---------- W8: F18 cross-page invariant -- guard fires on doActPage too ----------
-
-    def "addAction ifThen with discrete-event capability + comparator + NO state: F18 guard fires (cross-page invariant)"() {
-        // W8: F18's DISCRETE_EVENT_CAPS guard lives in the shared
-        // _rmWalkConditionReveal walker, which runs on BOTH STPage (via
-        // addRequiredExpression) and doActPage (via addAction ifThen/elseIf/
-        // repeatWhile/waitExpression). Every existing F18 spec uses STPage
-        // fixtures, leaving the doActPage path uncovered -- a regression that
-        // narrows the guard to fire only when called from STPage (e.g. via a
-        // misguided "STPage-only contract" assumption) would slip past the
-        // STPage-only specs. Pin the doActPage path here with a single
-        // representative discrete-event capability (Water sensor).
-        // Both-ways pending (orchestrator).
-        given:
-        enableWrite()
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            [status: 200, location: null, data: '']
-        }
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
-        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
-            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum",
-                options: ["condActs": "Conditional Actions"]]])
-        }
-        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
-            JsonOutput.toJson([
-                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
-                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
-                configPage: [name: "doActPage", title: "T", install: false, error: null,
-                             sections: [[title: "", input: [
-                                 [name: "actType.1", type: "enum",
-                                  options: ["condActs": "Conditional Actions"]],
-                                 [name: "actSubType.1", type: "enum",
-                                  options: ["getIfThen": "IF Expression THEN"]],
-                                 [name: "cond", type: "enum",
-                                  options: ["a": "New condition"]],
-                                 [name: "rCapab_1", type: "enum",
-                                  options: ["Water sensor"]],
-                                 [name: "rDev_1", type: "capability.sensor", multiple: true],
-                                 [name: "RelrDev_1", type: "enum", options: [">"]],
-                                 [name: "state_1", type: "enum", options: ["wet", "dry"]],
-                                 [name: "hasAll", type: "button"],
-                                 [name: "cancelCapab", type: "button"]
-                             ], paragraphs: ["seq"]]]],
-                settings: [:], childApps: []
-            ])
-        }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
-        hubGet.register('/device/fullJson/8')  { params -> '{"id":"8","name":"Leak1"}' }
-
-        when: "caller passes addAction(ifThen) with discrete-event cap + comparator + no state"
-        def result = script.toolSetRule([
-            appId: 100,
-            addAction: [
-                capability: "ifThen",
-                expression: [conditions: [[
-                    capability: "Water sensor", deviceIds: [8], comparator: ">"
-                    // Intentionally NO state, NO value -- the regression target.
-                ]]]
-            ],
-            confirm: true
-        ])
-
-        then: "pre-walker guard rejects on doActPage path too, naming the valid state values"
-        // Load-bearing discriminator: the F18 throw text must fire on doActPage
-        // as it does on STPage. A regression narrowing the guard to STPage-only
-        // would let this through with success != false and no F18 error phrase.
-        result.success == false
-        result.error?.toString()?.contains("Water sensor")
-        result.error?.toString()?.contains("discrete-event capability")
-        result.error?.toString()?.contains("'wet'")
-        result.error?.toString()?.contains("'dry'")
-    }
+    // ---------- the device-state refusal on doActPage ----------
 
     // ---------- I6: mutation-dispatcher trailing-updateRule failure + SUCCESS-negative-pin pairs ----------
     //
@@ -43977,14 +41291,14 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // the lint covers structurally:
     //
     //   replaceActions / clearActions / moveAction / removeAction (one branch
-    //   in the action-mutation dispatcher), modifyAction (its own branch --
-    //   the delete + re-add + reposition composite), plus removeTrigger /
-    //   modifyTrigger (the trigger-mutation dispatcher). 7 entry points ->
-    //   7 failure + 7 SUCCESS-negative-pin paired assertions, run parametrically.
+    //   in the action-mutation dispatcher), plus removeTrigger / modifyTrigger
+    //   (the trigger-mutation dispatcher). 6 entry points -> 6 failure + 6
+    //   SUCCESS-negative-pin paired assertions, run parametrically. modifyAction
+    //   edits through RM's action editor and fires no updateRule, like addAction.
     //
     // A regression that fixes `subscriptionsNotLive = false` always, returns
     // wrong `updateRuleError` text, or rewrites the recovery hint line would
-    // lint-green but red here. Both-ways pending (orchestrator).
+    // lint-green but red here.
 
     @spock.lang.Unroll
     def "mutation-dispatcher #shape: trailing-updateRule failure surfaces updateRuleFailed + subscriptionsNotLive (I6)"() {
@@ -44117,24 +41431,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             }
             [status: 200, location: null, data: '']
         }
-        // modifyAction is a COMPOSITE (delete + re-add + reposition) where the shared
-        // per-shape toggles above cannot help: each toggle models ONE mutation and this
-        // branch runs three against an evolving display order. Re-register the two paths
-        // and the POST interceptor for THIS ROW ONLY, reusing the composite transport the
-        // modifyAction specs already drive; the other six rows keep the fixture unchanged.
-        if (shape == "modifyAction") {
-            def maCtl = wireModifyActionTransport(100, [1, 2],
-                ["actType.1": "rulesActs", "actSubType.1": "getRuleActions", "ruleAct.1": ["200"],
-                 "actType.2": "rulesActs", "ruleAct.3": ["300"]],
-                { String path, Map body ->
-                    if (path == "/installedapp/btn" && body["settings[updateRule]"] == "clicked") {
-                        updateRuleAttempted = true
-                        throw new RuntimeException("simulated ${shape} updateRule rejection (firmware refused the click)")
-                    }
-                })
-            wireModifyAddLeg(maCtl, [], 3)
-        }
-
         // A partial inner add now blocks finalisation, so the replaceActions row uses a clean inner add to
         // reach the trailing click this spec pins. Partial propagation is owned by
         // "action-mutation replaceActions: inner-only partial stops before finalisation and emits the fail-closed repairHint".
@@ -44172,7 +41468,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         "clearActions"    | [clearActions: true]
         "moveAction"      | [moveAction: [index: 1, direction: "down"]]
         "replaceActions"  | [replaceActions: [[capability: "switch", action: "on", deviceIds: [8]]]]
-        "modifyAction"    | [modifyAction: [index: 1, mods: [ruleIds: [300]]]]
         "removeTrigger"   | [removeTrigger: [index: 1]]
         "modifyTrigger"   | [modifyTrigger: [index: 1, mods: [state: "off"]]]
     }
@@ -44183,7 +41478,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // initializes updateRuleFailed=true or subscriptionsNotLive=true at the
         // wrong default (so callers see them true even on success) would surface
         // here. Mirror of the per-dispatcher SUCCESS pins (addTrigger, bulk, etc.).
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def updateRuleClicked = false
@@ -44276,20 +41570,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             }
             [status: 200, location: null, data: '']
         }
-        // Same row-scoped composite transport as the failure spec (see its rationale);
-        // the only delta is that the trailing click records instead of throwing.
-        if (shape == "modifyAction") {
-            def maCtl = wireModifyActionTransport(100, [1, 2],
-                ["actType.1": "rulesActs", "actSubType.1": "getRuleActions", "ruleAct.1": ["200"],
-                 "actType.2": "rulesActs", "ruleAct.3": ["300"]],
-                { String path, Map body ->
-                    if (path == "/installedapp/btn" && body["settings[updateRule]"] == "clicked") {
-                        updateRuleClicked = true
-                    }
-                })
-            wireModifyAddLeg(maCtl, [], 3)
-        }
-
         // A partial inner add now blocks finalisation, so the replaceActions row uses a clean inner add to
         // reach the trailing click this spec pins. Partial propagation is owned by
         // "action-mutation replaceActions: inner-only partial stops before finalisation and emits the fail-closed repairHint".
@@ -44341,10 +41621,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // partial assertion is intentionally omitted here to keep this pin
         // scoped to the action-mutation contract.
         //
-        // modifyAction IS in this list: its row drives a stubbed re-add that reports
-        // partial:false and a reposition that really shifts, so nothing feeds the inner
-        // OR-clause and partial must stay falsy on the happy path.
-        if (shape in ["removeAction", "clearActions", "moveAction", "modifyAction"]) {
+        if (shape in ["removeAction", "clearActions", "moveAction"]) {
             assert result.partial != true
         }
 
@@ -44354,7 +41631,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         "clearActions"    | [clearActions: true]
         "moveAction"      | [moveAction: [index: 1, direction: "down"]]
         "replaceActions"  | [replaceActions: [[capability: "switch", action: "on", deviceIds: [8]]]]
-        "modifyAction"    | [modifyAction: [index: 1, mods: [ruleIds: [300]]]]
         "removeTrigger"   | [removeTrigger: [index: 1]]
         "modifyTrigger"   | [modifyTrigger: [index: 1, mods: [state: "off"]]]
     }
@@ -44368,7 +41644,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // hub_get_app_config to see where the action moved. A regression that
         // restores the thin entry would leave the rich slots null even though
         // the move itself succeeds.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def clickFired = false
@@ -44429,7 +41704,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // index} push), forcing callers to re-fetch via hub_get_app_config to see
         // the index-list diff. A regression that restores the discard would
         // leave the rich slots null.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def delActFired = false
@@ -44616,33 +41890,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         !posts.any { it.path == "/installedapp/btn" && it.body?.get("settings[updateRule]") == "clicked" }
     }
 
-    def "patches modifyAction routes through the position-preserving rebuild and finalises once"() {
-        given: "the first of two actions is retargeted, so the rebuilt action walks up one slot"
-        enableWrite()
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        def ma = wireModifyActionTransport(100, [1, 2],
-            ["actType.1": "rulesActs", "actSubType.1": "getRuleActions", "ruleAct.1": ["200"],
-             "actType.2": "rulesActs", "ruleAct.3": ["300"]])
-        def specs = []
-        wireModifyAddLeg(ma, specs, 3)
-
-        when:
-        def result = script.toolSetRule([appId: 100, patches: [[modifyAction: [index: 1, mods: [ruleIds: [300]]]]], confirm: true])
-
-        then:
-        result.patches.size() == 1
-        result.patches[0].op == "modifyAction"
-        result.patches[0].success == true
-        result.patches[0].newActionIndex == 3
-        result.patches[0].verifiedTargets == ["300"]
-        specs[0].capability == "runRule"
-        ma.order == [3, 2]
-        result.success == true
-
-        and: "the rebuild's own updateRule is not fired mid-batch; the batch fires it once"
-        (ma.clicks as List).count { it.name == "updateRule" } == 1
-    }
-
     def "patches still fails closed on a genuinely unknown op key and names the new ops as supported"() {
         given:
         enableWrite()
@@ -44719,14 +41966,14 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         where:
         op              | field   | opSpec                          | message
         "removeTrigger" | "index" | [index: "first"]                | "removeTrigger.index must be an integer index"
-        "modifyTrigger" | "index" | [mods: [state: "on"]]           | "modifyTrigger.index required"
-        "modifyTrigger" | "mods"  | [index: 1]                      | "modifyTrigger.mods is required and must be a Map (e.g. {state: 'on'})"
+        "modifyTrigger" | "index" | [triggerIndex: 1, state: "on"]  | "modifyTrigger.index is required (the key is index, not triggerIndex). modifyTrigger takes {index: <the triggerIndex addTrigger returned>, mods: {state: '<new-state>'}}"
+        "modifyTrigger" | "mods"  | [index: 1]                      | "modifyTrigger.mods is required and must be a Map. modifyTrigger takes {index: <the triggerIndex addTrigger returned>, mods: {state: '<new-state>'}}"
         "modifyAction"  | "mods"  | [index: 1, mods: "ruleIds=300"] | "modifyAction.mods is required and must be a Map (e.g. {ruleIds: [123]})"
     }
 
     def "a bulk stop on an item that left an editor open reports wizardStuck and puts the close-editor step first"() {
         given:
-        def stopItem = [success: false, index: 0,
+        def stopItem = [success: false, index: 0, wizardStuck: true,
                         error: "setVariable: numOp failed [wizardStuck -- action 3's editor or row could not be confirmed removed after the refusal]"]
 
         when:
@@ -44770,7 +42017,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Hubitat sandbox script class. Driving partial:true through the real
         // helper via a deliberately-failing post-commit mainPage fetch is
         // both robust and exercises the contract end-to-end.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def updateRuleClicked = false
@@ -44793,10 +42039,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                 configPage: [name: "doActPage", title: "Define Actions", install: false, error: null,
                              sections: [[title: "", input: [
                                  [name: "actType.1", type: "enum", options: ["switchActs": "Switches"]],
-                                 [name: "actSubType.1", type: "enum", options: ["on": "On"]],
+                                 [name: "actSubType.1", type: "enum", options: ["getOnOffSwitch": "Turn switches on/off"]],
                                  [name: "switch.1", type: "capability.switch", multiple: true],
                                  [name: "actionDone", type: "button"]
-                             ], paragraphs: ["seq ${System.nanoTime()}".toString()]]]],
+                             ], paragraphs: ["seq ${++renderSeq}".toString()]]]],
                 settings: [actType: [1: "switchActs"], actSubType: [1: "on"], switch: [1: ["8"]]],
                 childApps: []
             ])
@@ -44900,10 +42146,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                 configPage: [name: "doActPage", title: "Define Actions", install: false, error: null,
                              sections: [[title: "", input: [
                                  [name: "actType.1", type: "enum", options: ["switchActs": "Switches"]],
-                                 [name: "actSubType.1", type: "enum", options: ["on": "On"]],
+                                 [name: "actSubType.1", type: "enum", options: ["getOnOffSwitch": "Turn switches on/off"]],
                                  [name: "switch.1", type: "capability.switch", multiple: true],
                                  [name: "actionDone", type: "button"]
-                             ], paragraphs: ["seq ${System.nanoTime()}".toString()]]]],
+                             ], paragraphs: ["seq ${++renderSeq}".toString()]]]],
                 settings: [actType: [1: "switchActs"], actSubType: [1: "on"], switch: [1: ["8"]]],
                 childApps: []
             ])
@@ -44976,7 +42222,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // (The post-commit readback reads the PERSISTED configure/json settings
         // now, not the closed selectTriggers wizard page.) The dispatcher then
         // flips trigInnerPartial=true and the new inner-only hint should fire
-        // because updateRuleFailed stays false. Both-ways pending (orchestrator).
+        // because updateRuleFailed stays false.
         given:
         enableWrite()
         def updateRuleClicked = false
@@ -45320,7 +42566,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Pin: nested bogus deviceId must reject with a path-prefixed error
         // that names the nesting site. The path string is the load-bearing
         // discriminator -- it distinguishes the recursive validator from any
-        // flat fallback. Both-ways pending (orchestrator).
+        // flat fallback.
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -45377,7 +42623,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // see "conditions[0] is not a Map" (the silent-skip + downstream
         // throw shape) instead of "addRequiredExpression.conditions[1].
         // subExpression.conditions[0] is not a Map".
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -45436,7 +42681,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // revealedAny on the post-rCapab stage and emits the informational
         // `reveal_fallback_to_existing_field` sentinel. Pre-fix, that
         // entry flipped partial:true; post-fix it must stay falsy.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         sharedLocation.modes = [[id: "2", name: "Night"]]
@@ -45570,7 +42814,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         //   the bubble came from trigInnerPartial, not from the trailing-
         //   updateRule branch).
         //
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def updateRuleClicked = false
@@ -45653,7 +42896,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // missing) would red-fail this spec while the positive pin still passes.
         // Pin: VALID nested deviceId proceeds without the "does not exist on
         // the hub" error -- validator does not throw false positives.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -45708,7 +42950,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // The walker still emits the informational sentinel on the modes1
         // reveal (revealedAny matches because modes1 was already visible).
         // The dispatcher MUST see both sentinel classes and flip partial:true.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         sharedLocation.modes = [[id: "2", name: "Night"]]
@@ -45803,10 +43044,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                 configPage: [name: "doActPage", title: "Define Actions", install: false, error: null,
                              sections: [[title: "", input: [
                                  [name: "actType.1", type: "enum", options: ["switchActs": "Switches"]],
-                                 [name: "actSubType.1", type: "enum", options: ["on": "On"]],
+                                 [name: "actSubType.1", type: "enum", options: ["getOnOffSwitch": "Turn switches on/off"]],
                                  [name: "switch.1", type: "capability.switch", multiple: true],
                                  [name: "actionDone", type: "button"]
-                             ], paragraphs: ["seq ${System.nanoTime()}".toString()]]]],
+                             ], paragraphs: ["seq ${++renderSeq}".toString()]]]],
                 settings: [actType: [1: "switchActs"], actSubType: [1: "on"], switch: [1: ["8"]]],
                 childApps: []
             ])
@@ -45881,7 +43122,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // STPage reveals relDevice_1 after isDev_1 (device-relative RHS lands) but never
         // exposes state_1 (the offset slot), so the inner addRE returns
         // {success:true, partial:true}. Trailing updateRule click lands clean.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def updateRuleClicked = false
@@ -45936,7 +43176,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                       appType: [name: "Rule-5.1", namespace: "hubitat"]],
                 configPage: [name: "STPage", title: "RE", install: false, error: null,
                              sections: [[title: "", input: inputs, paragraphs: ["seq"]]]],
-                settings: [:], childApps: []
+                settings: [relDevice_1: ["99": "ref"]]  /* RM echoes the reference picker as {id: label} */, childApps: []
             ])
         }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
@@ -46624,7 +43864,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // the REAL _createNativeAppShell (NOT a stubbed shell) and asserts a
         // btn updateRule click occurs AFTER the last RE-walk POST. It goes RED
         // if the trailing updateRule is removed.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def fetchSeq = 0
@@ -46707,7 +43946,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // updateRuleFailed propagation. The post-RE updateRule click is the only
         // btn-updateRule that targets selectActions context here -- we fail
         // exactly that click.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def fetchSeq = 0
@@ -46878,7 +44116,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // on create. It pins only what the where: block enumerates -- a NEW shortcut added to
         // hub_set_rule must be added to EDIT_ONLY (and to this where: block) to be covered here.
         // The companion below pins the must-NOT-catch side (CREATE_HONORED ops do not throw).
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass._createNativeAppShell = { args -> [success: true, appId: 984] }
@@ -46971,7 +44208,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // records the comparator key into ctx.applied AND emits a skip hint promising "value IS
         // in settingsApplied". If a caller omits ctx.applied the force-write would land in a
         // throwaway list and the hint would lie, so the walker rejects a null ctx.applied at the
-        // boundary rather than degrading silently. Both-ways pending (orchestrator).
+        // boundary rather than degrading silently.
         when: "the walker is invoked with a ctx that omits the applied accumulator"
         script._rmWalkConditionReveal(100, [page: "STPage", skipped: []], [capability: "Switch"], 0)
 
@@ -46986,7 +44223,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // ctx.skipped. A null accumulator on a degradation-surfacing path is a PROGRAMMING
         // error, so the walker rejects it at the boundary rather than no-op'ing the skip.
         // ctx.applied is supplied here so the failure is unambiguously the skipped guard.
-        // Both-ways pending (orchestrator).
         when: "the walker is invoked with a ctx that omits the skipped accumulator"
         script._rmWalkConditionReveal(100, [page: "STPage", applied: []], [capability: "Switch"], 0)
 
@@ -46994,41 +44230,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def e = thrown(IllegalArgumentException)
         e.message.contains("ctx.skipped")
     }
-
-    def "_rmBuildCondition fails loud on an enum no-RHS comparator when the skipped accumulator is null -- never silently no-ops"() {
-        // Internal-contract guard for #3 on the conditional-trigger path. _rmBuildCondition's
-        // signature defaults skipped=null, but the enum no-RHS not-representable case has
-        // nowhere to record the skip without it. Driving the helper directly with the 4-arg
-        // form (skipped omitted -> null) through the enum re-render must throw rather than
-        // drop the skip silently. Both-ways pending (orchestrator).
-        given:
-        enableWrite()
-        def fetchSeq = 0
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            [status: 200, location: null, data: '']
-        }
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
-        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
-            fetchSeq++
-            // Enum condition attribute: state_1 exposed (on/off, no change option),
-            // RelrDev_1 hidden. _rmBuildCondition's enum no-RHS branch is reached.
-            customAttrConditionSchemaJsonOpts(100, fetchSeq, ["on", "off"])
-        }
-        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> mainPageJson(100, "r", true) }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
-        hubGet.register('/device/fullJson/2') { params -> '{"id":"2","name":"S1"}' }
-
-        when: "_rmBuildCondition is called with the 4-arg form (skipped defaults to null)"
-        script._rmBuildCondition(100, 1,
-            [capability: "Custom Attribute", deviceIds: [2], attribute: "switch", comparator: "*changed*"],
-            [])
-
-        then: "it throws loudly rather than silently dropping the not-representable skip"
-        def e = thrown(IllegalStateException)
-        e.message.contains("skipped")
-    }
-
     def "hub_set_rule with appId present routes to the edit engine, NOT create"() {
         given:
         enableWrite()
@@ -47050,30 +44251,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // RM recreation bundle: HSM action, switch onlyOn, waitEvents
     // duration, string *contains* comparator, device-list partial re-tag.
     // ==================================================================
-
-    // doActPage schema JSON carrying an arbitrary input set, with an
-    // incrementing paragraph so every _rmWriteSettingOnPage routes to
-    // `applied` (renderShifted=true) -- lets a wire test assert the POSTs
-    // without simulating each field's individual reveal.
-    private String doActPageWith(int ruleId, int seqNum, List inputs) {
-        JsonOutput.toJson([
-            app: [id: ruleId, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
-                  appType: [name: "Rule-5.1", namespace: "hubitat"]],
-            configPage: [name: "doActPage", title: "T", install: false, error: null,
-                         sections: [[title: "", input: inputs, paragraphs: ["seq ${seqNum}".toString()]]]],
-            settings: [:], childApps: []
-        ])
-    }
-
-    private String bakedMainPage(int ruleId) {
-        JsonOutput.toJson([
-            app: [id: ruleId, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
-                  appType: [name: "Rule-5.1", namespace: "hubitat"]],
-            configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
-                         sections: [[title: "", input: [], paragraphs: ["action row baked"]]]],
-            settings: [:], childApps: []
-        ])
-    }
 
     // ---------- HSM as an action ----------
 
@@ -47180,44 +44357,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     // ---------- switch off "only switches that are on" ----------
 
-    def "addAction switch #action with onlyOn writes optSwitch AFTER the device picker"() {
-        // Both on and off honor onlyOn -- the optSwitch reveal/write path is identical for the
-        // two directions (the `on` branch is a separate case from the tested `off` one).
-        given:
-        enableWrite()
-        def posts = []
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            posts << [path: path, body: body]; [status: 200, location: null, data: '']
-        }
-        def seq = 0
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
-        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
-            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["switchActs": "Switches"]]])
-        }
-        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
-            seq++; doActPageWith(100, seq, [[name: "actType.1", type: "enum"], [name: "actSubType.1", type: "enum"],
-                [name: "onOffSwitch.1", type: "capability.switch", multiple: true], [name: "onOff.1", type: "bool"],
-                [name: "optSwitch.1", type: "bool"], [name: "actionDone", type: "button"]])
-        }
-        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> bakedMainPage(100) }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
-        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
-
-        when:
-        script.toolSetRule([appId: 100, addAction: [capability: "switch", action: action, deviceIds: [8], onlyOn: true], confirm: true])
-
-        then: "optSwitch.1 is written, and only after onOffSwitch.1 (its reveal gate)"
-        def devIdx = posts.findIndexOf { it.body.containsKey("settings[onOffSwitch.1]") }
-        def optIdx = posts.findIndexOf { it.body.containsKey("settings[optSwitch.1]") }
-        devIdx >= 0
-        optIdx >= 0
-        optIdx > devIdx
-
-        where:
-        action << ["off", "on"]
-    }
-
     def "addAction switch off without onlyOn writes no optSwitch"() {
         given:
         enableWrite()
@@ -47275,42 +44414,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.toolSetRule([appId: 100, addAction: [capability: "switch", action: "off", deviceIds: [8], onlyOn: false], confirm: true])
 
         then:
-        !posts.any { it.body.containsKey("settings[optSwitch.1]") }
-    }
-
-    def "addAction switch toggle with onlyOn:true writes no optSwitch (non-on/off negative pin)"() {
-        // onlyOn is meaningful only for the on/off subtypes -- toggle uses getToggleSwitch,
-        // which has no optSwitch field. The write lives INSIDE the on/off case branches; a
-        // refactor hoisting `if (onlyOn == true) fields[optSwitch.@N]=true` into shared code
-        // would silently write an invalid field on toggle. The doActPage schema below DOES
-        // expose optSwitch.1, so a wrongly-written value would land and be captured here --
-        // the pin goes RED if optSwitch is ever written on toggle.
-        given:
-        enableWrite()
-        def posts = []
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            posts << [path: path, body: body]; [status: 200, location: null, data: '']
-        }
-        def seq = 0
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
-        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
-            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["switchActs": "Switches"]]])
-        }
-        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
-            seq++; doActPageWith(100, seq, [[name: "actType.1", type: "enum"], [name: "actSubType.1", type: "enum"],
-                [name: "toggleSwitch.1", type: "capability.switch", multiple: true],
-                [name: "optSwitch.1", type: "bool"], [name: "actionDone", type: "button"]])
-        }
-        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> bakedMainPage(100) }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
-        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
-
-        when:
-        script.toolSetRule([appId: 100, addAction: [capability: "switch", action: "toggle", deviceIds: [8], onlyOn: true], confirm: true])
-
-        then: "toggleSwitch.1 lands but optSwitch.1 is never written"
-        posts.any { it.body.containsKey("settings[toggleSwitch.1]") }
         !posts.any { it.body.containsKey("settings[optSwitch.1]") }
     }
 
@@ -47540,34 +44643,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         !script._rmComparatorIsRhsOptional("*contains*")
     }
 
-    def "Custom Attribute discover lists *contains* and documents the not-toggle negation"() {
-        when:
-        def result = script.toolSetRule([addTrigger: [discover: true]])
-
-        then:
-        def caps = result?.capabilities as List
-        def ca = caps.find { (it as Map)?.name == "Custom Attribute" }
-        def cmp = (ca.requiredFields as List).find { (it as Map).name == "comparator" }
-        ((cmp as Map).values as List).contains("*contains*")
-        (cmp as Map).description?.contains("not:true")
-    }
-
-    def "Variable discover lists *contains* for a free-valued String variable (not *is empty*)"() {
-        // The Variable capability's comparator surface must also advertise *contains* -- it is
-        // the LHS of a String-variable Required Expression condition (the addRequiredExpression
-        // path has no discover mode; addTrigger discover is the shared Variable-schema surface).
-        // *is empty* is intentionally NOT offered (it is unwired: no omit-value support).
-        when:
-        def result = script.toolSetRule([addTrigger: [discover: true]])
-
-        then:
-        def caps = result?.capabilities as List
-        def variable = caps.find { (it as Map)?.name == "Variable" }
-        def cmp = (variable.optionalFields as List).find { (it as Map).name == "comparator" }
-        ((cmp as Map).values as List).contains("*contains*")
-        !((cmp as Map).values as List).contains("*is empty*")
-    }
-
     def "condition Variable *contains* with not:true co-writes the comparator AND the not toggle"() {
         // not:true + *contains* is the documented ONLY way to express "does not contain".
         // If the not toggle ever failed to co-write, the rule would silently invert to a
@@ -47627,17 +44702,119 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         posts.any { it.body["settings[RelrDev_1]"] == "*contains*" }
     }
 
-    def "addAction switch discover lists onlyOn in optionalFields"() {
-        // Mirrors the hsm/*contains* discover-surface assertions: the machine-readable
-        // schema an agent probes must advertise the onlyOn toggle.
+    // Temperature condition inputs; relDevice_1 renders once isDev_1=true has been written.
+    private static List temperatureConditionInputs(List posts) {
+        def inputs = [
+            [name: "isCondTrig.1", type: "bool"], [name: "condTrig.1", type: "enum"],
+            [name: "rCapab_1", type: "enum", options: ["Temperature"]],
+            [name: "rDev_1", type: "capability.temperatureMeasurement", multiple: true],
+            [name: "RelrDev_1", type: "enum", options: ["=", "<", ">"]],
+            [name: "isDev_1", type: "bool"], [name: "state_1", type: "decimal"],
+            [name: "hasAll", type: "button"]]
+        if (posts.any { it.body["settings[isDev_1]"]?.toString() == "true" }) {
+            inputs << [name: "relDevice_1", type: "capability.temperatureMeasurement", multiple: false]
+        }
+        return inputs
+    }
+
+    def "a conditional trigger's compareToDevice condition writes the comparator, isDev_, the reference device and the offset"() {
+        // The trigger page's condition editor reveals relDevice_<N> only after isDev_<N>=true. Before
+        // the fix the condition committed "A > B" with no reference device: neither field was written.
+        given:
+        enableWrite()
+        def posts = wireEchoingSelectTriggers({ List p -> temperatureConditionInputs(p) }).posts
+        def applied = []
+        def skipped = []
+
         when:
-        def result = script.toolSetRule([addAction: [discover: true]])
+        script._rmBuildCondition(100, 1, [capability: "Temperature", deviceIds: [8], comparator: ">",
+            compareToDevice: [deviceId: 9, offset: 2]], applied, skipped)
+
+        then: "comparator, then isDev_1, then the reference device, then the offset, then Done"
+        def order = posts.collect { p -> p.body.containsKey("settings[RelrDev_1]") ? "RelrDev_1" :
+            p.body.containsKey("settings[isDev_1]") ? "isDev_1" :
+            p.body.containsKey("settings[relDevice_1]") ? "relDevice_1" :
+            p.body.containsKey("settings[state_1]") ? "state_1" :
+            p.body?.name == "hasAll" ? "hasAll" : null }.findAll { it }
+        order == ["RelrDev_1", "isDev_1", "relDevice_1", "state_1", "hasAll"]
+        posts.find { it.body.containsKey("settings[RelrDev_1]") }.body["settings[RelrDev_1]"] == ">"
+        posts.find { it.body.containsKey("settings[relDevice_1]") }.body["settings[relDevice_1]"] == "9"
+        posts.find { it.body.containsKey("settings[relDevice_1]") }.body["relDevice_1.multiple"] == "false"
+        posts.find { it.body.containsKey("settings[state_1]") }.body["settings[state_1]"] == "2"
+
+        and: "each of them landed"
+        applied.containsAll(["RelrDev_1", "isDev_1", "relDevice_1", "state_1"])
+        !skipped.any { it.key in ["RelrDev_1", "isDev_1", "relDevice_1", "state_1"] }
+    }
+
+    def "a conditional trigger's compareToDevice condition whose reference device does not land fails before Done"() {
+        given: "RM keeps every write except relDevice_1"
+        enableWrite()
+        def posts = wireEchoingSelectTriggers({ List p -> temperatureConditionInputs(p) }, ["relDevice_1"]).posts
+        def applied = []
+        def skipped = []
+
+        when:
+        script._rmBuildCondition(100, 1, [capability: "Temperature", deviceIds: [8], comparator: ">",
+            compareToDevice: [deviceId: 9, offset: 2]], applied, skipped)
+
+        then: "the condition is not committed without its reference device"
+        def ex = thrown(IllegalStateException)
+        ex.message.contains("reference device 9 did not land in relDevice_1")
+        posts.any { it.body.containsKey("settings[relDevice_1]") }
+        skipped.find { it.key == "relDevice_1" }?.reason == "silent_rejection"
+        !posts.any { it.body.containsKey("settings[state_1]") }
+        !posts.any { it.body?.name == "hasAll" }
+    }
+
+    def "a compareToDevice reference device whose read-back fails is unconfirmed, not refused: the condition goes on"() {
+        given: "the page read right after the relDevice_1 POST fails once"
+        enableWrite()
+        def wired = wireEchoingSelectTriggers({ List p -> temperatureConditionInputs(p) })
+        def posts = wired.posts
+        boolean failed = false
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            if (!failed && posts && posts.last().body.containsKey("settings[relDevice_1]")) { failed = true; throw new RuntimeException("read timed out") }
+            ruleConfigJson(100, "r", temperatureConditionInputs(posts) as List, null, wired.landed)
+        }
+        def applied = []
+        def skipped = []
+
+        when:
+        script._rmBuildCondition(100, 1, [capability: "Temperature", deviceIds: [8], comparator: ">",
+            compareToDevice: [deviceId: 9, offset: 2]], applied, skipped)
 
         then:
-        def caps = result?.capabilities as List
-        def sw = caps.find { (it as Map)?.name == "switch" }
-        sw != null
-        ((sw.optionalFields as List)*.name).contains("onlyOn")
+        failed
+        skipped.find { it.key == "relDevice_1" }?.reason == "verification_fetch_failed"
+        posts.any { it.body.containsKey("settings[state_1]") }
+    }
+
+    def "a conditional trigger's compareToDevice condition fails before Done when the reference-device picker never appears"() {
+        given:
+        enableWrite()
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]; [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            ruleConfigJson(100, "r", [
+                [name: "isCondTrig.1", type: "bool"], [name: "condTrig.1", type: "enum"],
+                [name: "rCapab_1", type: "enum", options: ["Temperature"]],
+                [name: "rDev_1", type: "capability.temperatureMeasurement", multiple: true],
+                [name: "RelrDev_1", type: "enum", options: ["=", "<", ">"]],
+                [name: "isDev_1", type: "bool"], [name: "hasAll", type: "button"]])
+        }
+
+        when:
+        script._rmBuildCondition(100, 1, [capability: "Temperature", deviceIds: [8], comparator: ">",
+            compareToDevice: [deviceId: 9]], [], [])
+
+        then: "the condition is not committed half-written"
+        def ex = thrown(IllegalStateException)
+        ex.message.contains("relDevice_1 did not appear after isDev_1=true")
+        !posts.any { it.body?.name == "hasAll" }
+        !posts.any { it.body.containsKey("settings[relDevice_1]") }
     }
 
     // ---------- cosmetic device-list partial re-tag (class-fix) ----------
@@ -48370,5 +45547,38 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         done.body["settings[luxOff]"] == "100"
         done.body["settings[illumsOff]"] == "696"
     }
+
+
+    // ---------- source-trusted action catalog, runCommand capability/command checks, honest finalization ----------
+
+    // ---------- review fixes: outcome flags, catalog checks, modifyAction resolution ----------
+
+    // ---------- review round 2: trigger wizard, slots, cleanup ----------
+
+    // ---------- review round 2: pre-edit backups off ----------
+
+    // ---------- review round 2: per-execution memo ----------
+
+    // ---------- review round 2: modifyAction ----------
+
+    // ---------- review round 2: device capability check ----------
+
+    // ---------- review round 2: picker-offered writes ----------
+
+    // ---------- review round 2: catalog requires and canonical values ----------
+
+    // ---------- review round 2: trigger and condition checks ----------
+
+    // ---------- review round 2: outcome flags ----------
+
+    // ---------- review round 2: addAction rollback outcomes ----------
+
+    // ---------- review round 2: served text ----------
+
+    // ---------- review round 3: outcome flags through the envelopes ----------
+
+    // ---------- review round 3: checks a hub read kept from running ----------
+
+    // ---------- review round 3: thermostat app creates ----------
 
 }

@@ -50,7 +50,7 @@ Every test that creates or modifies a rule must assert, before tearing down. Ind
 
 1. **[INV-1]** `hub_read_apps_code.hub_get_app_config(appId=<ruleId>)` returns `configPage.error == null` (UI renders cleanly; guards the line-1958 `.size()` render-crash class from Phase 1).
 2. **[INV-2]** `statusJson.eventSubscriptions.length > 0` when the rule has at least one non-HTTP trigger. Exceptions where INV-2 does NOT apply: triggerless rules, HTTP-only triggered rules (Local/Cloud End Point), time-only triggered rules where `eventSubscriptions` may be empty but `scheduledJobs` is populated instead.
-3. **[INV-3]** For every multi-device capability setting touched (trigger-side OR action-side), `statusJson.appSettings[<name>].multiple == true`. This is the flag-poisoning regression guard — applies to `tDev<N>` trigger inputs, multi-device action inputs (`Capture Devices`, `Restore Devices`, `Refresh devices`, etc.), multi-device Wait-for-Events slots, and any other `multiple=true` capability input.
+3. **[INV-3]** For every multi-device capability setting touched (trigger-side OR action-side), `hub_manage_rule_machine.hub_get_rule_health(appId=<ruleId>).multipleFlagPoison == []`, and the device list reads back complete (every requested device ID is in that setting in `hub_get_app_config`). This is the flag-poisoning regression guard — applies to `tDev<N>` trigger inputs, multi-device action inputs (`Capture Devices`, `Restore Devices`, `Refresh devices`, etc.), multi-device Wait-for-Events slots, and any other `multiple=true` capability input. The config read does not expose `statusJson.appSettings[<name>].multiple`, so a scenario below that writes `appSettings[<name>].multiple == true` for [INV-3] is checked this way.
 4. **[INV-4]** No stale `state.editCond` (absent or null in appState).
 
 Tests refer to these via the `[INV-N]` shorthand to keep terminology consistent.
@@ -530,12 +530,12 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "No devices needed.",
-  "test_prompt": "Create 'BAT-RM-Periodic Variants' — actually create FIVE rules to avoid overlap: 'BAT-RM-Periodic-Hourly' (every hour at :15), 'BAT-RM-Periodic-Daily' (daily at 03:00), 'BAT-RM-Periodic-Weekly' (every Monday at 09:00), 'BAT-RM-Periodic-Monthly' (1st of each month at 12:00), 'BAT-RM-Periodic-Yearly' (every July 4 at 12:00). Verify each periodic variant preserves its cadence enum + time fields.",
+  "test_prompt": "Create 'BAT-RM-Periodic Variants' — actually create FIVE rules to avoid overlap: 'BAT-RM-Periodic-Hourly' (every hour at :15), 'BAT-RM-Periodic-Daily' (daily at 03:00), 'BAT-RM-Periodic-Weekly' (every Monday at 09:00), 'BAT-RM-Periodic-Monthly' (1st of each month at 12:00), 'BAT-RM-Periodic-Yearly' (the first Monday of July at 12:00). Verify each periodic variant preserves its cadence enum + time fields.",
   "teardown_prompt": "Delete all five BAT-RM-Periodic-* rules."
 }
 ```
 
-**Expected**: 5 rules, each with a Periodic trigger. Cadence field distinguishes hourly/daily/weekly/monthly/yearly. Specific times/days/months/dates round-trip. Each rule's `hub_get_app_config` returns the same cadence.
+**Expected**: 5 rules, each with a Periodic trigger. Cadence field distinguishes hourly/daily/weekly/monthly/yearly. Specific times/days/months/dates round-trip. Rule Machine's yearly cadence is nth-weekday only (weekOfMonth + dayOfWeek + month), so a fixed date such as July 4 cannot be expressed; the yearly rule round-trips as week 1, Monday, July, 12:00. Each rule's `hub_get_app_config` returns the same cadence.
 
 ### T339 — Between two times + Between two dates + On a day (condition-only capabilities)
 
@@ -819,7 +819,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 
 ```json
 {
-  "setup_prompt": "Create virtual devices: BAT-RM-Garage (driver: Virtual Garage Door Opener), BAT-RM-Lock (driver: Virtual Lock), BAT-RM-Valve (driver: Virtual Valve). Verify none of them are production devices.",
+  "setup_prompt": "Create virtual devices: BAT-RM-Garage (driver: Virtual Garage Door Controller), BAT-RM-Lock (driver: Virtual Lock), BAT-RM-Valve (driver: Virtual Valve). Verify none of them are production devices.",
   "test_prompt": "Create rule 'BAT-RM-GarageLockValve-DoNotRun' paused with a year-2099 Certain Time trigger (so actions never fire). Actions: (1) Open BAT-RM-Garage, (2) Close BAT-RM-Garage, (3) Lock BAT-RM-Lock, (4) Unlock BAT-RM-Lock, (5) Open BAT-RM-Valve, (6) Close BAT-RM-Valve. Verify all six round-trip by reading the rule back. Rule must stay paused; actions must NOT fire against the virtual devices.",
   "teardown_prompt": "Delete rule and all three virtual devices."
 }
@@ -1681,17 +1681,17 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 
 **Expected**: `hub_set_rule` (create) then `hub_set_rule(appId=ruleId)` (edit) flips the endpoint target. `hub_get_app_config` after update shows TargetB, not TargetA, in the supported endpoint target field. This HTTP-only rule may correctly have zero `eventSubscriptions`, so subscriptions are not used to grade rebinding. URL retrieval is not graded. [INV-1] `configPage.error == null` throughout. Clean teardown.
 
-### T442 — Orphan cleanup after failed create — must EXERCISE the cleanup path, not pre-validate
+### T442 — Create whose action cannot be configured keeps the rule shell and reports partial
 
 ```json
 {
-  "setup_prompt": "Record baseline: call hub_list_rules and note the count N. Also hub_get_app_config on the Rule Machine PARENT app and note its hasChildren count M. Also enable MCP debug logging (set_log_level=debug) so we can capture the tool's internal trace.",
-  "test_prompt": "Attempt to create a rule 'BAT-RM-T442-Orphan' with a trigger that will PASS pre-validation (e.g., valid Motion trigger on an existing BAT-created virtual motion sensor) BUT configure an action that can only be validated server-side by posting it (e.g., reference a scene/app/rule ID that doesn't exist, or a custom command that the target device doesn't support — something that `createchild` will accept but the subsequent action-configuration POST to `/installedapp/update/json` will reject). The create must reach the `createchild` step (so a child app IS allocated server-side) and then fail during action configuration. Verify via MCP debug logs that: (a) `/installedapp/createchild/hubitat/Rule-5.1/parent/<rmParentId>` returned a 302 with a NEW child app ID, (b) the subsequent update/json or btn POST returned an error, (c) the tool then issued `/installedapp/forcedelete/<newChildId>/quiet` to clean up. All three steps MUST appear in the trace. After the error, read the rules list and the RM parent app's config — count must still be N and M respectively. A tool that pre-validates client-side and never calls createchild would 'pass' the count check but FAIL this test — the trace evidence of the three-step cycle is what proves the cleanup path works.",
+  "setup_prompt": "Record baseline: call hub_list_rules and note the count N.",
+  "test_prompt": "Create a rule 'BAT-RM-T442-Orphan' with a trigger that passes pre-validation (a valid Motion trigger on an existing BAT-created virtual motion sensor) and one action that Rule Machine rejects only once it is posted (for example a custom command, runCommand, that the target BAT device does not have). Report the full result. Then call hub_list_rules again and report the count. Do not repair or delete the rule in this step.",
   "teardown_prompt": "If for any reason an orphan persists, list installed apps filtered by name prefix 'BAT-RM-T442' and force-delete anything found. Re-verify counts match baseline. Reset log level if changed."
 }
 ```
 
-**Expected**: `hub_set_rule` performs `/installedapp/createchild/...` → gets new child ID → attempts configuration → hits server-side rejection → performs `/installedapp/forcedelete/<newChildId>/quiet` → returns `{success: false, error: <msg>, orphanCleaned: true, childIdCreated: <newId>, childIdForceDeleted: <newId>}`. **Trace evidence mandatory**: MCP debug logs must show all three framework endpoints called in order. Post-test: `hub_list_rules` count unchanged, RM parent `hasChildren` unchanged, no stuck `editCond`. A client-side-only validator that never hits `createchild` FAILS this test because the trace will be missing — the whole point is exercising the cleanup branch, not just observing clean state.
+**Expected**: The create reaches the hub: the rule shell is KEPT and the result is `{success: false, partial: true, partialActions: [1], repairHints: [...], appId: <newId>}`, where the repair hints name the new rule and how to repair or delete it. There is no `forcedelete` and no `orphanCleaned` field. `hub_list_rules` goes from N to N+1 and stays there until the agent repairs the action or force-deletes the rule; teardown restores N. A tool that refuses the action before creating anything does not reach this contract and FAILS this test.
 
 ### T443 — Multi-device trigger preserves multiple=true flag (Phase 1 finding — multi-device `multiple=true` flag poisoning)
 
@@ -1916,7 +1916,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: `hub_set_rule(appId, addAction={capability:'switch', action:'off', deviceIds:[<id>], onlyOn:true})` commits; the wire writes `optSwitch.<N>=true` AFTER `onOffSwitch.<N>` (its reveal gate). `partial:false`. `hub_get_app_config` shows the off action with the "only switches that are on" qualifier. SAFETY: only BAT-prefixed devices/rules touched.
+**Expected**: `hub_set_rule(appId, addAction={capability:'switch', action:'off', deviceIds:[<id>], onlyIfChanged:true})` commits; the wire writes `optSwitch.<N>=true` AFTER `onOffSwitch.<N>` (its reveal gate). `partial:false`. `hub_get_app_config` shows the off action with the "only switches that are on" qualifier. SAFETY: only BAT-prefixed devices/rules touched.
 
 ### T462 — waitEvents per-event "and stays that way for" duration
 
@@ -1958,9 +1958,9 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 
 ```json
 {
-  "test_prompt": "Run only on an isolated, disposable test hub whose existing rollback files may be pruned; stop before creating anything if that condition is not confirmed. Backup retention is global, so this scenario can prune unrelated rollback files at the 20-entry limit. Create an inert, disabled native Rule Machine rule named BAT-RM-T465-Backup. Make two harmless log-action edits and check that they share the same recent rollback baseline. Delete only that temporary rule's baseline file, then make another harmless edit and verify it takes a fresh, readable backup. Restore that fresh backup and confirm the preceding edits remain while the last edit is undone. Check that the source-backup listing has no more than 20 entries. Do not edit or explicitly delete existing rules or their backup files.",
+  "test_prompt": "Run only on an isolated, disposable test hub whose existing rollback files may be pruned; stop before creating anything if that condition is not confirmed. Backup retention is one storage budget shared by every item's backups (10 MB by default, the Backup storage budget setting): past it, rolling steps and then pinned baselines of any item are evicted oldest first, so this scenario can prune unrelated rollback files. Create an inert, disabled native Rule Machine rule named BAT-RM-T465-Backup. Make two harmless log-action edits and check that they share the same recent rollback baseline. Delete only that temporary rule's baseline file, then make another harmless edit and verify it takes a fresh, readable backup. Restore that fresh backup and confirm the preceding edits remain while the last edit is undone. Check that the source-backup listing's total size stays within that shared budget. Do not edit or explicitly delete existing rules or their backup files.",
   "teardown_prompt": "Delete BAT-RM-T465-Backup and only the backup files created for it. Verify its rule and backup entries are gone."
 }
 ```
 
-**Expected**: Native-rule edits reuse a valid one-hour baseline, a deleted/pending baseline cannot authorize reuse, the replacement is readable and restorable, and file deletion removes its manifest handles. Fault-injection and concurrent-writer cases are covered by unit tests. Execution is pending authorization for a test hub; this scenario does not authorize personal-hub access.
+**Expected**: Native-rule edits reuse a valid one-hour baseline, a deleted/pending baseline cannot authorize reuse, the replacement is readable and restorable, and file deletion removes its manifest handles. Fault-injection and concurrent-writer cases are covered by unit tests.

@@ -192,7 +192,7 @@ class RelayBudgetSpec extends ToolSpecBase {
         script.metaClass._rmWalkStep = { Integer id, Map step ->
             walkCalls << new LinkedHashMap(step); [page: step.page, success: true]
         }
-        script.metaClass._rmCheckRuleHealth = { Integer id -> [ok: true] }
+        script.metaClass._rmCheckRuleHealth = { Integer id, String src = "auto", String activePage = null -> [ok: true] }
         script.metaClass._timeBudgetExceeded = { Long t0 -> pause }
         return walkCalls
     }
@@ -252,8 +252,8 @@ class RelayBudgetSpec extends ToolSpecBase {
     private void installPatchStubs(List addActionCalls, List clicks, boolean pause) {
         stateMap.lastBackupTimestamp = FIXED_NOW   // requireDestructiveConfirm: backup within 24h
         settingsMap.enableWrite = true
-        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason -> [key: 'snap'] }
-        script.metaClass._rmCheckRuleHealth = { Integer id -> [ok: true] }
+        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason, String activePage = null -> [key: 'snap'] }
+        script.metaClass._rmCheckRuleHealth = { Integer id, String src = "auto", String activePage = null -> [ok: true] }
         script.metaClass._rmAddAction = { Integer id, Map spec, boolean batch = false, Set validRuleIds = null ->
             addActionCalls << spec; [success: true]
         }
@@ -377,9 +377,9 @@ class RelayBudgetSpec extends ToolSpecBase {
         result.patches[1].op == 'addAction'
         result.patches[1].notAttempted == true
 
-        and: 'the stop is named and finalisation is skipped'
+        and: 'the stop is named and finalisation is skipped; nothing landed, so it is not partial'
         result.success == false
-        result.partial == true
+        result.partial == false
         result.bulkStoppedAfter == 'patches[0].addTriggers[0]'
         result.finalisationNotAttempted == true
         result.error?.startsWith('Stopped after patches[0].addTriggers[0] failed')
@@ -413,8 +413,8 @@ class RelayBudgetSpec extends ToolSpecBase {
     private void installBulkStubs(List triggerCalls, List actionCalls, List clicks, boolean pause) {
         stateMap.lastBackupTimestamp = FIXED_NOW   // requireDestructiveConfirm: backup within 24h
         settingsMap.enableWrite = true
-        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason -> [key: 'snap'] }
-        script.metaClass._rmCheckRuleHealth = { Integer id -> [ok: true] }
+        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason, String activePage = null -> [key: 'snap'] }
+        script.metaClass._rmCheckRuleHealth = { Integer id, String src = "auto", String activePage = null -> [ok: true] }
         script.metaClass._rmAddTrigger = { Integer id, Map spec -> triggerCalls << spec; [success: true] }
         script.metaClass._rmAddAction = { Integer id, Map spec, boolean batch = false, Set validRuleIds = null ->
             actionCalls << spec; [success: true]
@@ -460,9 +460,56 @@ class RelayBudgetSpec extends ToolSpecBase {
         !JsonOutput.toJson(result).contains('__reqT0')
     }
 
-    // Fail-closed bulk semantics: a non-Map trigger[0] is recorded inline as a failure and stops the
-    // batch before the budget checkpoint, so no trigger-loop pause occurs and the skipped tail is never
-    // offered for resumption. The clean-pause return shape is pinned separately on _bulkPauseResult below.
+    def "a non-Map addTriggers item is refused by name before the backup"() {
+        given:
+        def triggerCalls = []
+        def actionCalls = []
+        def clicks = []
+        installBulkStubs(triggerCalls, actionCalls, clicks, false)
+
+        when:
+        def result = script._applyNativeAppEdit([appId: 1, confirm: true, __reqT0: 2000L,
+            addTriggers: ['not-a-map', [capability: 'Switch', state: 'on', deviceIds: [8]]],
+            addActions: [[capability: 'switch', action: 'on', deviceIds: [11]]]])
+
+        then:
+        result.success == false
+        result.error.contains("addTriggers[0] must be a trigger spec object")
+        result.error.contains("RM is not touched")
+        result.backup == null
+        triggerCalls.isEmpty() && actionCalls.isEmpty()
+        !clicks.contains('updateRule')
+    }
+
+    def "a bulk item refused after its row was rolled back says so; one left with an open editor does not"() {
+        given:
+        def triggerCalls = []
+        def actionCalls = []
+        def clicks = []
+        installBulkStubs(triggerCalls, actionCalls, clicks, false)
+        int n = 0
+        script.metaClass._rmAddAction = { Integer id, Map spec, boolean batch = false, Set validRuleIds = null ->
+            n++
+            if (n == 1) throw script._rmFail(new IllegalArgumentException("runCommand: 'x' is not a command. The opened action row was rolled back."), [rolledBack: true])
+            throw script._rmFail(new IllegalStateException("runCommand: 'x' is not a command. [wizardStuck -- row 2 could not be confirmed removed]"), [wizardStuck: true])
+        }
+
+        when:
+        def first = script._applyNativeAppEdit([appId: 1, confirm: true, __reqT0: 2000L,
+            addActions: [[capability: 'runCommand', command: 'x', deviceIds: [11], capabilityFilter: 'Switch']]])
+        def second = script._applyNativeAppEdit([appId: 1, confirm: true, __reqT0: 2000L,
+            addActions: [[capability: 'runCommand', command: 'x', deviceIds: [11], capabilityFilter: 'Switch']]])
+
+        then:
+        first.actions[0].rolledBack == true
+        !second.actions[0].containsKey('rolledBack')
+        second.actions[0].wizardStuck == true
+        second.actions[0].error.contains('[wizardStuck')
+    }
+
+    // Fail-closed bulk semantics: a failed trigger[0] is recorded inline and stops the batch before the
+    // budget checkpoint, so no trigger-loop pause occurs and the skipped tail is never offered for
+    // resumption. The clean-pause return shape is pinned separately on _bulkPauseResult below.
     def "the trigger-loop checkpoint never offers a fail-closed tail for resumption"() {
         given:
         def triggerCalls = []
@@ -470,10 +517,10 @@ class RelayBudgetSpec extends ToolSpecBase {
         def clicks = []
         installBulkStubs(triggerCalls, actionCalls, clicks, true)
 
-        when: 'trigger[0] is a non-Map (recorded inline, no _rmAddTrigger call) while the budget reports exhausted'
+        when: 'trigger[0] fails in the hub (its rule pages are not served) while the budget reports exhausted'
         def result = script._applyNativeAppEdit([appId: 1, confirm: true, __reqT0: 2000L,
             addTriggers: [
-                'not-a-map',
+                [capability: 'Switch', state: 'on', deviceIds: [8]],
                 [capability: 'Switch', state: 'off', deviceIds: [9]],
                 [capability: 'Motion', state: 'active', deviceIds: [10]],
             ],
@@ -495,14 +542,14 @@ class RelayBudgetSpec extends ToolSpecBase {
         result.actions.size() == 2
         result.actions.every { it.notAttempted == true }
 
-        and: 'item 0 failed, so the result surfaces success:false + partial rather than masking it'
+        and: 'item 0 failed and nothing landed: success:false, not partial'
         result.success == false
-        result.partial == true
+        result.partial == false
 
         and: 'the stop is named and the trailing updateRule is not fired'
         result.bulkStoppedAfter == 'addTriggers[0]'
         result.finalisationNotAttempted == true
-        result.error?.startsWith('Stopped after addTriggers[0] failed: addTriggers[0] is not a Map')
+        result.error?.startsWith('Stopped after addTriggers[0] failed:')
         !clicks.contains('updateRule')
 
         and: 'no internal budget marker is echoed back'
@@ -511,14 +558,14 @@ class RelayBudgetSpec extends ToolSpecBase {
 
     // A failed item stops the batch (fail-closed) before the budget checkpoint can pause, so no further
     // hub work runs and no resumable tail is offered; the failure is surfaced, not masked.
-    def "a failed item ends the batch before any budget pause and surfaces success:false + partial"() {
+    def "a failed item ends the batch before any budget pause and surfaces success:false"() {
         given:
         def actionCalls = []
         def clicks = []
         stateMap.lastBackupTimestamp = FIXED_NOW
         settingsMap.enableWrite = true
-        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason -> [key: 'snap'] }
-        script.metaClass._rmCheckRuleHealth = { Integer id -> [ok: true] }
+        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason, String activePage = null -> [key: 'snap'] }
+        script.metaClass._rmCheckRuleHealth = { Integer id, String src = "auto", String activePage = null -> [ok: true] }
         script.metaClass._rmAddAction = { Integer id, Map spec, boolean batch = false, Set validRuleIds = null ->
             actionCalls << spec
             (actionCalls.size() == 1) ? [success: false, error: 'bad cap'] : [success: true]
@@ -539,9 +586,9 @@ class RelayBudgetSpec extends ToolSpecBase {
         !result.containsKey('addActionsRemaining')
         result.actions[1].notAttempted == true
 
-        and: 'the failure is bubbled up, NOT masked as a clean success'
+        and: 'the failure is bubbled up, NOT masked as a clean success; nothing landed, so not partial'
         result.success == false
-        result.partial == true
+        result.partial == false
         result.repairHints instanceof List && !result.repairHints.isEmpty()
 
         and: 'the stop is named and the trailing updateRule is not fired'
@@ -890,7 +937,7 @@ class RelayBudgetSpec extends ToolSpecBase {
     def "_rmWalkStepHealth sheds the probe once the budget is spent"() {
         given:
         def probes = 0
-        script.metaClass._rmCheckRuleHealth = { Integer id -> probes++; [ok: true] }
+        script.metaClass._rmCheckRuleHealth = { Integer id, String src = "auto", String activePage = null -> probes++; [ok: true] }
         script.metaClass._timeBudgetExceeded = { Long t0 -> true }
 
         when:
@@ -906,7 +953,7 @@ class RelayBudgetSpec extends ToolSpecBase {
     def "_rmWalkStepHealth probes normally within budget"() {
         given:
         def probes = 0
-        script.metaClass._rmCheckRuleHealth = { Integer id -> probes++; [ok: true] }
+        script.metaClass._rmCheckRuleHealth = { Integer id, String src = "auto", String activePage = null -> probes++; [ok: true] }
         script.metaClass._timeBudgetExceeded = { Long t0 -> false }
 
         expect:
@@ -920,7 +967,7 @@ class RelayBudgetSpec extends ToolSpecBase {
         script.metaClass._rmWalkStep = { Integer id, Map step ->
             walkCalls << new LinkedHashMap(step); [page: step.page, success: true]
         }
-        script.metaClass._rmCheckRuleHealth = { Integer id ->
+        script.metaClass._rmCheckRuleHealth = { Integer id, String src = "auto", String activePage = null ->
             [ok: false, unreadable: true, source: 'none', broken: null,
              issues: ['health check failed: status code: 404, reason phrase: Not Found']]
         }
@@ -942,7 +989,7 @@ class RelayBudgetSpec extends ToolSpecBase {
         given:
         def walkCalls = []
         installWalkerStubs(walkCalls, false)
-        script.metaClass._rmCheckRuleHealth = { Integer id ->
+        script.metaClass._rmCheckRuleHealth = { Integer id, String src = "auto", String activePage = null ->
             [ok: false, unreadable: false, broken: true, issues: ['ruleBuilderJson reports broken:true']]
         }
 
@@ -979,7 +1026,7 @@ class RelayBudgetSpec extends ToolSpecBase {
         given:
         settingsMap.enableRead = true
         seedWalkStepPage(100)
-        script.metaClass._rmCheckRuleHealth = { Integer id ->
+        script.metaClass._rmCheckRuleHealth = { Integer id, String src = "auto", String activePage = null ->
             [ok: false, unreadable: true, source: 'none', broken: null,
              issues: ['health check failed: status code: 404, reason phrase: Not Found']]
         }
@@ -997,7 +1044,7 @@ class RelayBudgetSpec extends ToolSpecBase {
         given:
         settingsMap.enableRead = true
         seedWalkStepPage(100)
-        script.metaClass._rmCheckRuleHealth = { Integer id ->
+        script.metaClass._rmCheckRuleHealth = { Integer id, String src = "auto", String activePage = null ->
             [ok: false, unreadable: false, broken: true, issues: ['ruleBuilderJson reports broken:true']]
         }
 
@@ -1013,7 +1060,7 @@ class RelayBudgetSpec extends ToolSpecBase {
         settingsMap.enableRead = true
         seedWalkStepPage(100)
         def probes = 0
-        script.metaClass._rmCheckRuleHealth = { Integer id -> probes++; [ok: true] }
+        script.metaClass._rmCheckRuleHealth = { Integer id, String src = "auto", String activePage = null -> probes++; [ok: true] }
         script.metaClass._timeBudgetExceeded = { Long t0 -> t0 != null }
 
         when: 'clock present -- probe shed'
@@ -1033,7 +1080,7 @@ class RelayBudgetSpec extends ToolSpecBase {
         given:
         stateMap.lastBackupTimestamp = FIXED_NOW
         settingsMap.enableWrite = true
-        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason -> [key: 'snap'] }
+        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason, String activePage = null -> [key: 'snap'] }
         def captured = [:]
         script.metaClass._rmWalkStep = { Integer id, Map spec -> captured.spec = spec; [page: spec.page, success: true, operation: spec.operation] }
 
@@ -1051,7 +1098,7 @@ class RelayBudgetSpec extends ToolSpecBase {
         script.metaClass._rmWalkStep = { Integer id, Map step ->
             walkCalls << new LinkedHashMap(step); [page: step.page, success: true]
         }
-        script.metaClass._rmCheckRuleHealth = { Integer id -> [ok: true] }
+        script.metaClass._rmCheckRuleHealth = { Integer id, String src = "auto", String activePage = null -> [ok: true] }
         script.metaClass._timeBudgetExceeded = { Long t0 -> false }
 
         when:
@@ -1069,8 +1116,8 @@ class RelayBudgetSpec extends ToolSpecBase {
         given: 'a walker that pauses after step 1 (a done op), plus a recorder on the finalizer'
         stateMap.lastBackupTimestamp = FIXED_NOW
         settingsMap.enableWrite = true
-        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason -> [key: 'snap'] }
-        script.metaClass._rmCheckRuleHealth = { Integer id -> [ok: true] }
+        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason, String activePage = null -> [key: 'snap'] }
+        script.metaClass._rmCheckRuleHealth = { Integer id, String src = "auto", String activePage = null -> [ok: true] }
         script.metaClass._rmWalkStep = { Integer id, Map spec ->
             spec.operation == 'drive' ? script._rmDriveWalkSteps(id, spec) : [page: spec.page, success: true]
         }
