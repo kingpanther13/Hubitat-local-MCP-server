@@ -8687,6 +8687,32 @@ class ToolRmNativeCrudSpec extends RmNativeCrudSpecBase {
         !(result.settingsSkipped ?: []).any { it.key == "actType.1" && it.reason == "not_in_schema" }
     }
 
+    def "addAction whose doActPage stays EMPTY after the Create New Action click is refused before any field is written"() {
+        given: 'every doActPage read carries no actType field'
+        enableWrite()
+        def doActReads = 0
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params -> doActReads++; ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.pauseExecution = { Long ms -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([appId: 100, addAction: [capability: "log", message: "never opens"], confirm: true])
+
+        then: 'the page was read four times, nothing was written into it, and the refusal says why'
+        doActReads >= 4
+        !posts.any { it.body?.keySet()?.any { k -> k.toString().startsWith("settings[actType") || k.toString().startsWith("settings[logmsg") } }
+        result.success == false
+        result.error.contains("did not open the action editor")
+    }
+
     def "moveAction rejects unknown direction at the dispatcher"() {
         given:
         enableWrite()

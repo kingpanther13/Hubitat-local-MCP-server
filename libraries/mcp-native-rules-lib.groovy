@@ -5919,19 +5919,6 @@ private void _rmValidateActionExpressionShape(String cap, Map exprSpec) {
     }
 }
 
-// The gateway stamps __reqT0 on the TOP-LEVEL argument map only, and every _rmAddAction caller
-// hands it a child action-spec map; this carries the request clock down on that map (a copy --
-// the caller's spec is not mutated) so the add's own budget checks see the real clock. The
-// signature of _rmAddAction stays as it is: the specs stub it by arity.
-private Map _rmWithClock(Map spec, Long reqT0) {
-    if (reqT0 == null || spec == null) return spec
-    // Only a positive Number is a clock. A client-supplied nested spec can carry anything under
-    // this internal key, and "x" or 0 would either blow up the cast downstream or read as a
-    // budget already spent -- so anything else is ignored and replaced by the real clock.
-    if (spec.__reqT0 instanceof Number && ((Number) spec.__reqT0).longValue() > 0) return spec
-    return spec + [__reqT0: reqT0]
-}
-
 // Extracted from _rmAddAction to keep that method under the JVM's 64KB per-method bytecode
 // limit: every check here refuses a bad spec BEFORE any wizard write, so RM is genuinely
 // untouched on a throw.
@@ -6073,22 +6060,23 @@ private String _rmSetVariableValueNumOp(Map actionSpec) {
 
 // Extracted from _rmAddAction for the same bytecode budget. Returns the action index RM
 // actually allocated (its high-water mark), falling back to the caller's computed idx.
-private Integer _rmResolveAllocatedActionIdx(Integer appId, Integer idx, Long reqT0) {
-    // RM allocates from its high-water mark (state.actNdx), so the opened slot is read back.
+// RM allocates from its high-water mark (state.actNdx), so the opened slot is read back. Under load RM
+// sometimes renders doActPage empty right after the Create New Action click (no error page) and fills it on a
+// later read. Writing into the empty page fails every field, so it is re-read up to three times whatever the
+// time budget says; editorOpen is false when the editor never showed.
+private Map _rmResolveAllocatedActionIdx(Integer appId, Integer idx) {
     def doActPageCfg = _rmFetchConfigJson(appId, "doActPage")
-    def doActSchema = _rmCollectInputSchema(doActPageCfg?.configPage)
-    def actTypeField = doActSchema?.keySet()?.find { it.toString() ==~ /^actType\.\d+$/ }
-    if (!actTypeField && doActPageCfg?.configPage?.error == null && !_timeBudgetExceeded(reqT0)) {
-        // Under load RM sometimes renders doActPage empty right after the click (no error
-        // page); one re-read after a pause, and a failed re-read keeps the original read.
-        mcpLog("warn", "rm-native", "addAction: doActPage rendered with no actType field for app ${appId} after the Create New Action click; re-reading it once")
+    def actTypeField = _rmCollectInputSchema(doActPageCfg?.configPage)?.keySet()?.find { it.toString() ==~ /^actType\.\d+$/ }
+    int reads = 1
+    while (!actTypeField && doActPageCfg?.configPage?.error == null && reads < 4) {
+        mcpLog("warn", "rm-native", "addAction: doActPage rendered with no actType field for app ${appId} after the Create New Action click; re-reading it (read ${reads + 1})")
         pauseExecution(_rmEmptyRenderPauseMs())
+        reads++
         try {
             doActPageCfg = _rmFetchConfigJson(appId, "doActPage")
-            doActSchema = _rmCollectInputSchema(doActPageCfg?.configPage)
-            actTypeField = doActSchema?.keySet()?.find { it.toString() ==~ /^actType\.\d+$/ }
+            actTypeField = _rmCollectInputSchema(doActPageCfg?.configPage)?.keySet()?.find { it.toString() ==~ /^actType\.\d+$/ }
         } catch (Exception rereadExc) {
-            mcpLog("debug", "rm-native", "addAction: doActPage re-read failed for app ${appId} (${rereadExc.message}); keeping the original read")
+            mcpLog("debug", "rm-native", "addAction: doActPage re-read failed for app ${appId} (${rereadExc.message}); keeping the earlier read")
         }
     }
     if (actTypeField) {
@@ -6101,7 +6089,7 @@ private Integer _rmResolveAllocatedActionIdx(Integer appId, Integer idx, Long re
             }
         }
     }
-    return idx
+    return [idx: idx, editorOpen: actTypeField != null, reads: reads, pageError: doActPageCfg?.configPage?.error]
 }
 
 // One sentence that matches what _rmAddAction's result says happened.
@@ -6118,9 +6106,6 @@ private String _rmAddActionNote(Map r) {
 // status: the rule's statusJson read with nothing written since (a single add's pre-flight); else read here.
 Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set validRuleIds = null, Map status = null) {
     if (!(actionSpec instanceof Map)) throw new IllegalArgumentException("addAction requires a Map spec")
-    // __reqT0 rides a client-supplied map: only a positive Number is a clock.
-    Long reqT0 = (actionSpec.__reqT0 instanceof Number && ((Number) actionSpec.__reqT0).longValue() > 0) ?
-            ((Number) actionSpec.__reqT0).longValue() : null
     if (_rmIsDiscoverSpec(actionSpec)) {
         return _rmActionDiscover(actionSpec.discover)
     }
@@ -6204,13 +6189,18 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
     // leaves state.doActN null and doActPage NPEs.
     _rmClickAppButton(appId, "N", "doActN", "selectActions")
 
-    idx = _rmResolveAllocatedActionIdx(appId, idx, reqT0)
+    Map opened = _rmResolveAllocatedActionIdx(appId, idx)
+    idx = opened.idx as Integer
 
     // From here to the rawSettings block the editor is open on this row: any refusal must
     // cancel it, or RM reopens the row with its stale fields on the next add.
     // The slot is known as soon as the condition is built, so a throw after it still names it.
     def simpleCond = [null]
     try {
+        if (opened.editorOpen != true) {
+            throw new IllegalStateException(("Rule Machine did not open the action editor: doActPage showed no fields after the Create New Action click " +
+                "(${opened.pageError ? 'page error: ' + opened.pageError : 'read ' + opened.reads + ' times'}), so the action was not added. Retry the add.").toString())
+        }
         if (actionSpec.condition instanceof Map) _rmWriteSimpleConditionalPreamble(appId, idx, cap, actionSpec.condition as Map, applied, skipped, simpleCond)
         _rmWriteSettingOnPage(appId, "doActPage", "actType.${idx}", actType, applied, null, skipped)
         _rmWriteSettingOnPage(appId, "doActPage", "actSubType.${idx}", actSubType, applied, null, skipped)
@@ -9099,7 +9089,7 @@ def _createNativeAppShell(args) {
                     actionResults << [success: false, error: "actions[${i}] is not a Map", spec: spec]
                 } else {
                     try {
-                        actionResults << _rmAddAction(newId, _rmWithClock(spec as Map, args?.__reqT0 as Long), true, actionsValidRuleIds)
+                        actionResults << _rmAddAction(newId, spec as Map, true, actionsValidRuleIds)
                     } catch (Exception ae) {
                         actionResults << (_rmAddRefusalResult(ae) + [specCapability: spec.capability, specAction: spec.action])
                         mcpLog("warn", "rm-native", "hub_set_rule: action ${i} (${spec.capability}/${spec.action}) failed -- ${ae.message}")
@@ -13224,7 +13214,7 @@ def _applyNativeAppEdit(args) {
         return _rmAddTrigger(0, args.addTrigger as Map)
     }
     if (args?.addAction instanceof Map && _rmIsDiscoverSpec(args.addAction)) {
-        return _rmAddAction(0, _rmWithClock(args.addAction as Map, args?.__reqT0 as Long))
+        return _rmAddAction(0, args.addAction as Map)
     }
     // guide:true returns the hub_set_rule reference inline with no hub call; hub_set_rule has no cursor,
     // so the whole section is returned.
@@ -13600,7 +13590,7 @@ def _applyNativeAppEdit(args) {
                 replaceActionsList.eachWithIndex { spec, i ->
                     // Fail closed: the first failed or partial item stops every later add and finalisation.
                     if (replaceStopAfter) { addedResults << _rmBulkNotAttempted(replaceStopAfter); return }
-                    try { addedResults << _rmAddAction(appId, _rmWithClock(spec as Map, args?.__reqT0 as Long), true, replaceValidRuleIds) }
+                    try { addedResults << _rmAddAction(appId, spec as Map, true, replaceValidRuleIds) }
                     catch (Exception ae) {
                         addedResults << (_rmAddRefusalResult(ae) + [specCapability: spec.capability, specAction: spec.action])
                         mcpLog("warn", "rm-native", "hub_set_rule: replaceActions[${i}] (${spec.capability}/${spec.action}) failed -- ${ae.message}")
@@ -13903,8 +13893,7 @@ def _applyNativeAppEdit(args) {
         // One-call action creation; actions bake through doActPage -> selectActions, no updateRule needed.
         def actResult
         try {
-            def clocked = _rmWithClock(addActionSpec, args?.__reqT0 as Long)
-            actResult = preActStatus != null ? _rmAddAction(appId, clocked, false, null, preActStatus) : _rmAddAction(appId, clocked)
+            actResult = preActStatus != null ? _rmAddAction(appId, addActionSpec, false, null, preActStatus) : _rmAddAction(appId, addActionSpec)
         } catch (Exception e) {
             mcpLogError("rm-native", "addAction failed for app ${appId}", e)
             return _rmBuildUpdateErrorResponse(appId, e.message, backup, "doActPage", e)
@@ -14101,7 +14090,7 @@ def _applyNativeAppEdit(args) {
                             return _patchesPauseResult(appId, backup, patchResults, patchesRemaining)
                         }
                     } else if (pm.containsKey("addAction")) {
-                        patchResults << ([op: "addAction"] + _rmAddAction(appId, _rmWithClock(pm.addAction as Map, args?.__reqT0 as Long), true, patchValidRuleIds))
+                        patchResults << ([op: "addAction"] + _rmAddAction(appId, pm.addAction as Map, true, patchValidRuleIds))
                     } else if (pm.containsKey("addActions")) {
                         // Same mid-op relay-budget checkpoint as the addTriggers inner loop above.
                         def innerList = (pm.addActions as List)
@@ -14115,7 +14104,7 @@ def _applyNativeAppEdit(args) {
                                 innerPaused = true
                                 break
                             }
-                            try { innerResults << _rmAddAction(appId, _rmWithClock(aspec as Map, args?.__reqT0 as Long), true, patchValidRuleIds) }
+                            try { innerResults << _rmAddAction(appId, aspec as Map, true, patchValidRuleIds) }
                             catch (Exception e) { innerResults << _rmAddRefusalResult(e) }
                             if (_rmBulkItemBlocks(innerResults.last())) {
                                 innerStopAfter = "patches[${pi}].addActions[${ii}]".toString()
@@ -14246,7 +14235,7 @@ def _applyNativeAppEdit(args) {
                         for (def aspec : (pm.replaceActions as List)) {
                             ri++
                             if (innerStopAfter) { innerResults << _rmBulkNotAttempted(innerStopAfter); continue }
-                            try { innerResults << _rmAddAction(appId, _rmWithClock(aspec as Map, args?.__reqT0 as Long), true, patchValidRuleIds) }
+                            try { innerResults << _rmAddAction(appId, aspec as Map, true, patchValidRuleIds) }
                             catch (Exception e) { innerResults << _rmAddRefusalResult(e) }
                             if (_rmBulkItemBlocks(innerResults.last())) {
                                 innerStopAfter = "patches[${pi}].replaceActions[${ri}]".toString()
@@ -14501,7 +14490,7 @@ def _applyNativeAppEdit(args) {
                 if (!(spec instanceof Map)) {
                     actionResults << [success: false, error: "addActions[${ai}] is not a Map", spec: spec]
                 } else {
-                    try { actionResults << _rmAddAction(appId, _rmWithClock(spec as Map, args?.__reqT0 as Long), true, addActionsValidRuleIds) }
+                    try { actionResults << _rmAddAction(appId, spec as Map, true, addActionsValidRuleIds) }
                     catch (Exception ae) {
                         actionResults << (_rmAddRefusalResult(ae) + [specCapability: spec.capability, specAction: spec.action])
                         mcpLog("warn", "rm-native", "hub_set_rule: addActions[${ai}] (${spec.capability}/${spec.action}) failed -- ${ae.message}")
