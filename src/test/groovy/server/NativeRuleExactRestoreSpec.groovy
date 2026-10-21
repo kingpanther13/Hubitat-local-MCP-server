@@ -255,6 +255,20 @@ class NativeRuleExactRestoreSpec extends ToolSpecBase {
         script._rmNativeCopyMismatch(42, snapshot).contains('local variables differ')
     }
 
+    def 'matching rendered local cache cannot hide a missing authoritative imported local'() {
+        given:
+        Map source = new JsonSlurper().parseText(snapshot.nativeExport).appData['42'].state as Map
+        source.allLocalVars.counter.value = 7
+        source.remove('lv_counter')
+        script.metaClass._rmReadRuleState = { Integer id -> source }
+        script.metaClass._nrHandle = { Long id -> throw new AssertionError('Imported disabled app must not execute') }
+        hubGet.register('/installedapp/settings/42') { q -> JsonOutput.toJson([settings: [
+            [name: 'count', type: 'number', value: '7'], [name: 'enabled', type: 'bool', value: false]]]) }
+        expect:
+        script._rmNativeCopyMismatch(42, snapshot).contains('local variables differ')
+        script._rmNativeLocalSignature([allLocalVars: [counter: [type: 'integer', value: 7]]]).isEmpty()
+    }
+
     def 'restoring invalidates old form descriptors while preserving other rule workflows'() {
         given:
         cacheForm()
