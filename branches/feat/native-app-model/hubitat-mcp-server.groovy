@@ -23195,7 +23195,7 @@ On MCP 2026-07-28, eligible slow writes continue automatically across bounded St
                 type: "object",
                 properties: [
                     appId: [type: "integer", description: "Installed-app id of an existing classic app (from hub_list_apps with scope='instances'). OMIT to CREATE a new app of `appType` (then `name` is required); PROVIDE to EDIT an existing app's settings/button."],
-                    appType: [type: "string", enum: ["rule_machine", "button_controller", "groups_scenes", "notifier", "basic_rule", "room_lighting"], description: "Native app class to CREATE (appId omitted). Default: rule_machine. Visual Rules: use hub_set_visual_rule (not this enum).[[FLAT_TRIM]] Other classic apps are edited by appId and can usually be created through their parent app's own page (e.g. the Room Lighting parent's newScene input creates Room Lights from a group or scene) -- see hub_get_tool_guide(section='builtin_app_tools_crud').[[/FLAT_TRIM]]"],
+                    appType: [type: "string", enum: ["rule_machine", "button_controller", "groups_scenes", "notifier", "basic_rule", "room_lighting", "scene", "thermostat_scheduler", "thermostat_controller"], description: "Native app class to CREATE (appId omitted). Default: rule_machine. Visual Rules: use hub_set_visual_rule (not this enum).[[FLAT_TRIM]] Other classic apps are edited by appId and can usually be created through their parent app's own page (e.g. the Room Lighting parent's newScene input creates Room Lights from a group or scene) -- see hub_get_tool_guide(section='builtin_app_tools_crud').[[/FLAT_TRIM]]"],
                     name: [type: "string", description: "Label for the new app. Required on CREATE (when appId is omitted); ignored when appId is provided."],
                     settings: [type: "object", description: "Map {inputName: value} to write to the app's current config page: scalars for bool/enum/text/number inputs; for device inputs (capability.* or driver-specific device.*) a List of device IDs or the {id: label} map hub_get_app_config returns. Discover input names via hub_get_app_config; inputs on a sub-page need pageName or walkStep."],
                     button: [type: "string", description: "Page-transition button name to click (discover via hub_get_app_config)."],
@@ -34910,7 +34910,10 @@ private Map _appTypeRegistry() {
         visual_rule: [namespace: "hubitat", appName: "Visual Rule Builder", parentTypeName: "Visual Rules Builder"],
         basic_rule: [namespace: "hubitat", appName: "Basic Rule-1.0", parentTypeName: "Basic Rules", commitButton: null],
         button_rule: [namespace: "hubitat", appName: "Button Rule-5.1", parentTypeName: "Button Controllers", commitButton: null],
-        room_lighting: [namespace: "hubitat", appName: "Room Lights", parentTypeName: "Room Lighting", commitButton: "update"]
+        room_lighting: [namespace: "hubitat", appName: "Room Lights", parentTypeName: "Room Lighting", commitButton: "update"],
+        scene: [namespace: "hubitat", appName: "Scene-1.2", parentTypeName: "Groups and Scenes", labelInput: "name", commitButton: "update"],
+        thermostat_scheduler: [namespace: "hubitat", appName: "Thermostat Scheduler 2.0", parentTypeName: "Thermostat Schedulers", commitButton: "update"],
+        thermostat_controller: [namespace: "hubitat", appName: "Thermostat Controller 2.0", parentTypeName: "Thermostat Controllers", commitButton: "update"]
     ]
 }
 private Integer _discoverParentAppId(String appType) {
