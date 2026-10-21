@@ -22106,7 +22106,7 @@ private Map _rmRestoreNativeEdit(Map snapshot, String sourceBackupKey) {
     Map data = payload.appData.find { key, value -> key.toString() == id.toString() }.value as Map
     def target = getAppByAppId(id)
     _requireUnprotectedAppMutation(id, 'restore native rule configuration')
-    if (target?.id?.toString() != id.toString() || target?.appType?.namespace != 'hubitat' || target?.appType?.name != 'Rule-5.1' ||
+    if (target?.id?.toString() != id.toString() || target?.appType?.namespace != 'hubitat' || target?.appType?.name != identity.appTypeName ||
         target.parentAppId?.toString() != identity.parentAppInstalledAppId?.toString()) throw new IllegalArgumentException('Recovery target must be the original native rule under its original parent')
     if (target.disabled == true) throw new IllegalArgumentException('Enable the native rule before restoring its configuration')
     Map expectedState = data.state as Map
@@ -24295,7 +24295,7 @@ private Map _rmDecodeRuleExport(Integer ruleId, Object raw) {
     def payload = new groovy.json.JsonSlurper().parseText(raw)
     def identity = payload instanceof Map && payload.appReplacements instanceof Map ? payload.appReplacements.find { key, value -> key.toString() == ruleId.toString() }?.value : null
     def data = payload instanceof Map && payload.appData instanceof Map ? payload.appData.find { key, value -> key.toString() == ruleId.toString() }?.value : null
-    if (!(identity instanceof Map) || identity.appTypeNamespace != 'hubitat' || identity.appTypeName != 'Rule-5.1' ||
+    if (!(identity instanceof Map) || identity.appTypeNamespace != 'hubitat' || !(identity.appTypeName in ['Rule-5.1', 'Button Rule-5.1']) ||
         !identity.parentAppInstalledAppId?.toString()?.isLong() || identity.parentAppInstalledAppId.toString().toLong() <= 0L ||
         !(payload.deviceReplacements instanceof Map) || !(data instanceof Map) || !(data.state instanceof Map) ||
         ['actions', 'capabstrue', 'capabsfalse', 'eval'].any { data.state.get(it) != null && !(data.state.get(it) instanceof Map) } ||
@@ -24305,7 +24305,7 @@ private Map _rmDecodeRuleExport(Integer ruleId, Object raw) {
         !(data.appSettings instanceof List) || !(data.subscriptions instanceof List) ||
         data.appSettings.any { !(it instanceof Map) || !(it.name instanceof String) || !it.name || !(it.type instanceof String) || !it.type } ||
         data.appSettings.collect { it.name }.unique().size() != data.appSettings.size()) {
-        throw new IllegalStateException('Native recovery export does not identify a complete Rule-5.1 configuration')
+        throw new IllegalStateException('Native recovery export does not identify a complete supported native rule configuration')
     }
     _rmNativeSettingPlan(data.appSettings)
     payload
@@ -24325,7 +24325,7 @@ private Map _rmBuildNativeEditSnapshot(Integer ruleId, String reason, String nat
     }
     Map config = [app: [id: ruleId, label: identity.appLabel, trueLabel: identity.appLabel,
         appType: [name: identity.appTypeName, namespace: identity.appTypeNamespace]], settings: savedSettings,
-        configPage: [name: 'mainPage', sections: [[input: settingRows.collect { row -> [element: 'input', name: row.name, type: row.type, multiple: row.multiple == true] }]]]]
+        configPage: [name: identity.appTypeName == 'Button Rule-5.1' ? 'selectActions' : 'mainPage', sections: [[input: settingRows.collect { row -> [element: 'input', name: row.name, type: row.type, multiple: row.multiple == true] }]]]]
     long capturedAt = now()
     Map snapshot = [schemaVersion: 1, captureFormat: 'native-rule-edit-v1', ruleId: ruleId, appId: ruleId, appType: 'rule_machine', reason: reason,
         timestamp: capturedAt, timestampIso: formatTimestamp(capturedAt), appLabel: stripAppConfigHtml(identity.appLabel),
@@ -26507,7 +26507,7 @@ Map toolSetRule(Map request) {
     if (operation == 'update') return toolUpdateRuleDocument(arguments + [rule_id: request.rule_id, confirm: true])
     Long id = _ndId(request.rule_id)
     def target = getAppByAppId(id)
-    if (target?.id?.toString() != id.toString() || target?.appType?.namespace != 'hubitat' || !(target?.appType?.name in ['Rule-5.1', 'Rule Machine'])) throw new IllegalArgumentException('rule_id must identify native Rule-5.1 or Rule Machine')
+    if (target?.id?.toString() != id.toString() || target?.appType?.namespace != 'hubitat' || !(target?.appType?.name in ['Rule-5.1', 'Button Rule-5.1', 'Rule Machine'])) throw new IllegalArgumentException('rule_id must identify native Rule-5.1, Button Rule-5.1 or Rule Machine')
     toolCallAppForm(arguments + [app_id: request.rule_id, confirm: true])
 }
 def _getAllToolDefinitions_partNativeDocuments() {
@@ -26545,7 +26545,7 @@ Example changes: [{part:"action",value:{type:"messageActs",subtype:"getLogMsg",f
 
 ## Native Rule Forms
 
-Use hub_set_rule(operation:"form",rule_id,args:{steps:[{kind:"open"}]},confirm:true) to operate an enabled Rule-5.1 rule or its Rule Machine parent. Select operation:"form" without confirmation to inspect the schema. Discover native action variants, input names and option values through the returned forms rather than guessing a static catalogue. Even open renders execute app code and can change state or cause side effects. Start with steps:[{kind:"open"}]; an optional page names a registered native page. Follow returned controls for page parameters and breadcrumbs. A create_child control creates the native child type exposed by its parent, returns created_app_id and closes the parent context. Open that child separately to configure it; creation alone does not prove configuration is complete. App removal uses the dedicated deletion tool.
+Use hub_set_rule(operation:"form",rule_id,args:{steps:[{kind:"open"}]},confirm:true) to operate an enabled Rule-5.1 or Button Rule-5.1 rule, or its Rule Machine parent. Select operation:"form" without confirmation to inspect the schema. Discover native action variants, input names and option values through the returned forms rather than guessing a static catalogue. Even open renders execute app code and can change state or cause side effects. Start with steps:[{kind:"open"}]; an optional page names a registered native page. Follow returned controls for page parameters and breadcrumbs. A create_child control creates the native child type exposed by its parent, returns created_app_id and closes the parent context. Open that child separately to configure it; creation alone does not prove configuration is complete. App removal uses the dedicated deletion tool.
 
 Submit with {kind:"submit",expect_page:"last returned page",fields:{"native field name":value},activate:"returned control_id"}. Omit activate to save the supplied fields and refresh the current page. Control IDs distinguish native buttons sharing a name, such as editing and deleting the same variable. Native enum keys, device IDs, booleans and single/multiple cardinality are checked before the request. Only supplied settings are posted; native page code can still change its own settings. Defaults are shown but are not automatically submitted; supply a required default explicitly before navigating. Use args.options_for:["device field name"] to expand device choices on the final returned page.
 
