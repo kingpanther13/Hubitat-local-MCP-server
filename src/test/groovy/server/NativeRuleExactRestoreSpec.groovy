@@ -136,6 +136,21 @@ class NativeRuleExactRestoreSpec extends ToolSpecBase {
         events.empty
     }
 
+    def 'malformed snapshot file contents cannot reach undo capture or rule mutation'() {
+        given:
+        script.metaClass.downloadHubFile = { String name -> contents.getBytes('UTF-8') }
+        when:
+        def result = script.toolRestoreItemBackup([sourceFile: 'invalid-rule.json', confirm: true])
+        then:
+        !result.success
+        result.partial == false
+        result.sourceFile == 'invalid-rule.json'
+        result.error
+        events.empty
+        where:
+        contents << ['{', '[]', '{"captureFormat":"native-rule-edit-v1"}']
+    }
+
     def 'indexed snapshot files are refused before retention can delete the input during undo publication'() {
         given:
         script.metaClass._itemBackupManifest = { -> ['rm-rule_42_saved': [fileName: 'saved.json', deletePending: pending]] }
