@@ -551,22 +551,24 @@ def test_exact_fixture_lookup_refuses_ambiguous_matches_without_sleeping() -> No
     assert sleeps == []
 
 
-@pytest.mark.parametrize("count", [6, 36, 59])
-def test_native_mrtr_batch_uses_direct_native_rows_and_preserves_each_log(count):
+@pytest.mark.parametrize(("count", "wait_count", "condition_count"), [
+    (6, 40, 54), (36, 40, 24), (48, 40, 12), (59, 40, 1), (72, 27, 1), (99, 0, 1),
+])
+def test_native_mrtr_batch_uses_direct_native_rows_and_preserves_each_log(count, wait_count, condition_count):
     changes, messages = helpers.native_mrtr_changes(
         "SDK proof", "588", {"E2E_MRTR_ACTION_COUNT": str(count)},
     )
     assert len(changes) == 100
-    conditions, waits, actions = changes[:60 - count], changes[60 - count:-count], changes[-count:]
-    assert len(waits) == 40
+    conditions, waits, actions = changes[:condition_count], changes[condition_count:-count], changes[-count:]
+    assert len(waits) == wait_count
     assert all(row["value"]["subtype"] == "getWaitEvents" for row in waits)
     assert all(len(row["value"]["events"]) == 4 for row in waits)
     thresholds = [event["fields"][2]["value"] for row in waits for event in row["value"]["events"]]
-    assert thresholds == list(range(1000, 1160))
-    assert len(conditions) == 60 - count
+    assert thresholds == list(range(1000, 1000 + wait_count * 4))
+    assert len(conditions) == condition_count
     assert all(row["part"] == "condition" for row in conditions)
     assert all(row["value"]["capability"] == "Temperature" for row in conditions)
-    assert [row["value"]["fields"][2]["value"] for row in conditions] == list(range(60, 120 - count))
+    assert [row["value"]["fields"][2]["value"] for row in conditions] == list(range(60, 60 + condition_count))
     assert all(row["value"]["fields"][0] == {
         "name": "rDev_#", "type": "capability.temperatureMeasurement", "value": ["588"],
     } for row in conditions)
@@ -583,7 +585,7 @@ def test_native_mrtr_batch_rejects_invalid_fixture_ids(device_id):
 
 
 def test_native_mrtr_batch_rejects_over_limit_instead_of_silently_truncating():
-    with pytest.raises(ValueError, match="at most 59"):
+    with pytest.raises(ValueError, match="at most 99"):
         helpers.native_mrtr_changes("SDK proof", "588", {"E2E_MRTR_ACTION_COUNT": "120"})
 
 

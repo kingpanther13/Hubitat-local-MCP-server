@@ -22,8 +22,8 @@ Configuration is shared with tests/e2e_test.py — `tests/e2e_config.json` (giti
 HUBITAT_HUB_URL / HUBITAT_APP_ID / HUBITAT_ACCESS_TOKEN.
 The MRTR scenario discovers the existing suite's permanent virtual temperature fixture,
 or accepts NATIVE_RULE_PARENT_ID and NATIVE_RULE_FIXTURES (a JSON object with temperature).
-E2E_MRTR_ACTION_COUNT selects 6..59 logs in a 100-change native batch (default six);
-40 Wait for Events actions each contain four distinct temperature events;
+E2E_MRTR_ACTION_COUNT selects 6..99 logs in a 100-change native batch (default six);
+Up to 40 Wait for Events actions each contain four distinct temperature events;
 the remaining changes are distinct temperature conditions. This is a continuation proof,
 not a speed comparison with the former log-only authoring API.
 

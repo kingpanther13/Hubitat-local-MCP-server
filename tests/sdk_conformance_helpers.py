@@ -54,14 +54,16 @@ def native_mrtr_changes(
     if not isinstance(temperature_id, str) or re.fullmatch(r"[0-9]+", temperature_id) is None:
         raise ValueError("The temperature fixture ID must be decimal")
     count = mrtr_action_count(environ)
-    if count > 59:
-        raise ValueError("Native MRTR proof supports at most 59 log actions alongside 40 wait actions in its 100-change batch")
+    if count > 99:
+        raise ValueError("Native MRTR proof supports at most 99 log actions in its 100-change batch")
+    wait_count = min(40, 99 - count)
+    condition_count = 100 - count - wait_count
     messages = [f"{prefix} {index}" for index in range(1, count + 1)]
     conditions = [{"part": "condition", "value": {"capability": "Temperature", "fields": [
         {"name": "rDev_#", "type": "capability.temperatureMeasurement", "value": [temperature_id]},
         {"name": "RelrDev_#", "type": "enum", "value": ">"},
         {"name": "state_#", "type": "decimal", "value": 60 + index},
-    ]}} for index in range(60 - count)]
+    ]}} for index in range(condition_count)]
     actions = [{"part": "action", "value": {"type": "messageActs", "subtype": "getLogMsg", "fields": [
         {"name": "logmsg.#", "type": "textarea", "value": message},
     ]}} for message in messages]
@@ -70,7 +72,7 @@ def native_mrtr_changes(
             {"name": "tDev#", "type": "capability.temperatureMeasurement", "value": [temperature_id]},
             {"name": "ReltDev#", "type": "enum", "value": ">"},
             {"name": "tstate#", "type": "decimal", "value": 1000 + index * 4 + event},
-        ]} for event in range(4)]}} for index in range(40)]
+        ]} for event in range(4)]}} for index in range(wait_count)]
     return [*conditions, *waits, *actions], messages
 
 
