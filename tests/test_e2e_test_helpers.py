@@ -3261,7 +3261,7 @@ def test_regular_native_context_validates_explicit_fixtures_before_caching(monke
         assert context["fixtures"] == {"switch": 7}
         assert integration.native_context(runner) is context
     else:
-        with pytest.raises(AssertionError, match="Fixture identity|neither virtual"):
+        with pytest.raises(AssertionError, match=r"Fixture identity|neither virtual"):
             integration.native_context(runner)
         assert not hasattr(runner, "_native_rule_context")
     assert reads == ["/device/fullJson/7"]
