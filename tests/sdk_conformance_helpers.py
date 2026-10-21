@@ -293,6 +293,62 @@ def assert_exact_native_actions(config: Any, document: Any, changes: list[dict[s
     assert actual == messages and len(set(actual)) == len(messages), "Persisted log messages differ or repeat"
 
 
+async def read_native_document_sections(
+    fetch: Callable[[str, int, int], Awaitable[dict[str, Any]]],
+) -> dict[str, Any]:
+    """Assemble independent bounded reads without accepting a torn or incomplete section."""
+    document = {}
+    for section in ("conditions", "actions", "settings"):
+        merged = {} if section == "conditions" else []
+        seen, offset, total, revision = set(), 0, None, None
+        last_identity = None
+        while True:
+            result = await fetch(section, offset, 50)
+            assert isinstance(result, dict), "Native section page is not an object"
+            page = result.get("page")
+            assert isinstance(page, dict), "Native section page metadata is missing"
+            assert type(page.get("offset")) is int and page["offset"] == offset, "Native page offset differs"
+            assert type(page.get("limit")) is int and page["limit"] == 50, "Native page limit differs"
+            page_total = page.get("total")
+            assert type(page_total) is int and page_total >= 0, "Native page total is invalid"
+            page_revision = page.get("revision")
+            assert isinstance(page_revision, str) and page_revision, "Native page revision is missing"
+            if total is None:
+                total, revision = page_total, page_revision
+            assert page_total == total and page_revision == revision, "Native section changed between pages"
+            rows = result.get(section)
+            if section == "conditions":
+                assert isinstance(rows, dict), "Native conditions page is not a map"
+                identities = list(map(str, rows))
+            else:
+                assert isinstance(rows, list) and all(isinstance(row, dict) for row in rows), "Native page rows are invalid"
+                key = "id" if section == "actions" else "name"
+                assert all(key in row and row[key] is not None for row in rows), "Native page row identity is missing"
+                identities = [str(row[key]) for row in rows]
+            assert all(identities) and len(set(identities)) == len(identities), "Native page contains duplicate row identities"
+            assert not seen.intersection(identities), "Native row identity repeats across pages"
+            seen.update(identities)
+            if section != "actions" and identities:
+                assert identities == sorted(identities), "Native section page order differs"
+                assert last_identity is None or last_identity < identities[0], "Native section page order regressed"
+                last_identity = identities[-1]
+            assert len(rows) <= 50 and offset + len(rows) <= total, "Native page exceeds declared bounds"
+            if section == "conditions":
+                merged.update(rows)
+            else:
+                merged.extend(rows)
+            assert "next_offset" in page, "Native page continuation metadata is missing"
+            following = page["next_offset"]
+            if following is None:
+                assert offset + len(rows) == total, "Native section ended before its declared total"
+                break
+            assert type(following) is int and following == offset + len(rows) and offset < following < total, "Native page cursor does not advance contiguously"
+            offset = following
+        assert len(merged) == total, "Native section row count differs from its declared total"
+        document[section] = merged
+    return document
+
+
 async def find_exact_fixture_id_with_settle(
     list_rules: Callable[[], Awaitable[list[dict[str, Any]]]],
     fixture_name: str,

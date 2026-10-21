@@ -76,6 +76,7 @@ from sdk_conformance_helpers import (  # noqa: E402  (import guard above supplie
     extract_bps_acknowledgment_key,
     find_exact_fixture_id_with_settle,
     native_mrtr_changes,
+    read_native_document_sections,
     summarize_modern_posts,
     summarize_mrtr_proof,
 )
@@ -577,12 +578,18 @@ class ModernMrtrScenario:
                 "args": {"appId": fixture_id, "includeSettings": True},
             })
             readback_payload = _tool_payload(readback, "slow fixture persisted-state readback")
-            document_result = await client.call_tool(self.GATEWAY, {
-                "tool": "hub_set_rule", "args": {
-                    "operation": "read", "rule_id": int(fixture_id), "args": {"sections": ["conditions", "actions", "settings"]},
-                },
-            })
-            document = _tool_payload(document_result, "independent persisted condition readback")
+            async def fetch_section(section: str, offset: int, limit: int) -> dict[str, Any]:
+                result = await client.call_tool(self.GATEWAY, {
+                    "tool": "hub_set_rule", "args": {
+                        "operation": "read", "rule_id": int(fixture_id),
+                        "args": {"sections": [section], "offset": offset, "limit": limit},
+                    },
+                })
+                page = _tool_payload(result, f"independent persisted {section} readback")
+                assert str(page.get("rule_id")) == fixture_id, "Native section read returned another rule"
+                return page
+
+            document = await read_native_document_sections(fetch_section)
             assert_exact_native_conditions(readback_payload, document, changes)
             assert_exact_native_actions(readback_payload, document, changes, messages)
         except BaseException as exc:
