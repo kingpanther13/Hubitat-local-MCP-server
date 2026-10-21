@@ -22217,7 +22217,7 @@ private Map _rmLegacyNativeRecovery(Map snapshot) {
         status.appState.each { row ->
             if (!(row instanceof Map) || !(row.name instanceof String) || !row.name || !row.containsKey('value') || savedState.containsKey(row.name))
                 throw new IllegalArgumentException('Legacy recovery contains invalid or duplicate native state records')
-            savedState[row.name] = row.value
+            savedState.put(row.name, row.value)
         }
     } else throw new IllegalArgumentException('Legacy recovery is missing complete native state')
     def subscriptions = status.containsKey('appSubscriptions') ? status.appSubscriptions : status.eventSubscriptions
