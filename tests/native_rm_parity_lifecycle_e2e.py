@@ -83,7 +83,7 @@ class NativeRmParityLifecycleE2E(ParityCase):
         self.assertEqual(len(periodic_ids), 1, current)
         self.assertTrue(self.status(target).get("scheduledJobs"))
         self.assertIn(cron["name"], self.settings(target))
-        deleted = self.update(target, [change("delete", part="trigger", id=periodic_ids.pop())])
+        deleted = self.update(target, [{"part": "delete", "value": {"part": "trigger", "id": periodic_ids.pop()}}])
         self.assertTrue(deleted.get("success"), deleted)
         after = self.healthy(target)
         self.assertEqual(after["triggers"], before["triggers"])
