@@ -655,6 +655,25 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         true  | 'error'
     }
 
+    def "successful child deletion leaves unrelated parent cache untouched"() {
+        given:
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/201') { params -> ruleConfigJson(201, "owned-child") }
+        hubGet.register('/installedapp/statusJson/201') { params -> statusJson(201) }
+        hubGet.register('/installedapp/delete/201') { params -> '{"success":true}' }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def parents = [scene: 202, thermostat_scheduler: '203']
+        atomicStateMap.parentAppIds = parents
+
+        when:
+        def result = script.toolDeleteNativeApp([appId: 201, confirm: true])
+
+        then:
+        result.success
+        atomicStateMap.parentAppIds.is(parents)
+        atomicStateMap.parentAppIds == [scene: 202, thermostat_scheduler: '203']
+    }
+
     def "strict snapshots retain a pinned baseline and a rolling next step"() {
         given:
         enableWrite()

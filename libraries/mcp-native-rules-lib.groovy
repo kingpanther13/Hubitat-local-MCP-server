@@ -3191,13 +3191,12 @@ Map _rmRestoreRequiredExpression(Integer appId, Map snapshot) {
     }
 }
 
-// The token sequence a replace spec builds, in order: [cond: Map, condIdx: Integer, path: String]
-// for each condition and [tok: String] for every operator and paren. Validates sub-expression operators.
 // Remove every cached alias for a deleted parent, preserving unrelated parents.
 private void _rmForgetDeletedParent(Integer appId) {
     def ids = atomicState.parentAppIds
     if (ids instanceof Map) {
-        atomicState.parentAppIds = ids.findAll { key, value -> value?.toString() != appId.toString() }
+        def remaining = ids.findAll { key, value -> value?.toString() != appId.toString() }
+        if (remaining.size() != ids.size()) atomicState.parentAppIds = remaining
     }
 }
 
