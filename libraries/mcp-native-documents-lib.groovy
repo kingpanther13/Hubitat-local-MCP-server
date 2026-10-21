@@ -359,7 +359,7 @@ Map toolUpdateRuleDocument(Map args) {
         attempted = true
         _ndApply(id, changes, false) + [backup: backup]
     } finally {
-        if (attempted) NATIVE_FORM_CONTEXTS.entrySet().findAll { entry -> entry.value.app_id?.toString() == id.toString() }.each { entry -> NATIVE_FORM_CONTEXTS.remove(entry.key) }
+        if (attempted) NATIVE_FORM_CONTEXTS.entrySet().findAll { entry -> entry.value.app_id?.toString() == id.toString() }.each { entry -> NATIVE_FORM_CONTEXTS.remove(entry.key, entry.value) }
         NATIVE_FORM_BUSY.remove(appKey)
     }
 }

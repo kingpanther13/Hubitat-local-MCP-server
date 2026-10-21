@@ -2,8 +2,14 @@ package server
 
 import groovy.json.JsonOutput
 import support.ToolSpecBase
+import support.TestChildApp
+import spock.lang.Shared
 
 class NativeDocumentsSpec extends ToolSpecBase {
+    @Shared TestChildApp serverApp = new TestChildApp(id: 7L, label: 'MCP')
+
+    void setupSpec() { appExecutor.getApp() >> serverApp }
+
     List events
     Map nativeState
     boolean failAction

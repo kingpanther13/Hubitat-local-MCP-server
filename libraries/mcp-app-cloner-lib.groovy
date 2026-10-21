@@ -1137,7 +1137,7 @@ private Map _rmRestoreNativeEdit(Map snapshot, String sourceBackupKey) {
     try {
         undo = _rmBackupRuleSnapshot(id.toString().toInteger(), 'pre-native-restore', true, sourceBackupKey)
         if (!(undo?.backupKey instanceof String) || !undo.backupKey) throw new IllegalStateException('Pre-restore recovery capture returned no handle')
-        NATIVE_FORM_CONTEXTS.entrySet().findAll { entry -> entry.value.app_id?.toString() == id.toString() }.each { entry -> NATIVE_FORM_CONTEXTS.remove(entry.key) }
+        NATIVE_FORM_CONTEXTS.entrySet().findAll { entry -> entry.value.app_id?.toString() == id.toString() }.each { entry -> NATIVE_FORM_CONTEXTS.remove(entry.key, entry.value) }
         attempted = true
         if (_nrState(id).stopped != true) _nrHandle(id).appButtonHandler('stopRule')
         def wantedNames = plan.collect { it.name }
