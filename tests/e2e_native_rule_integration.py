@@ -561,10 +561,13 @@ class NativePickerSelectors(NativeRmParityActions):
                 since = datetime.now(UTC)
                 ran = self.call("hub_call_rule", ruleId=rule_id, action="actions")
                 self.assertIsNot(ran.get("success"), False, ran)
-                self.wait_for(lambda: commands(needing, action, since) > 0
-                              and self.attribute("switch", "switch") == action
-                              and self.attribute("switch2", "switch") == action
-                              and (only or commands(already, action, since) > 0), timeout=15)
+                def executed(needing=needing, action=action, since=since, only=only, already=already):
+                    return (commands(needing, action, since) > 0
+                            and self.attribute("switch", "switch") == action
+                            and self.attribute("switch2", "switch") == action
+                            and (only or commands(already, action, since) > 0))
+
+                self.wait_for(executed, timeout=15)
                 self.assertGreater(commands(needing, action, since), 0)
                 self.assertIs(commands(already, action, since) > 0, not only)
 
