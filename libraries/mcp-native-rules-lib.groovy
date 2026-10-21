@@ -4364,7 +4364,7 @@ def _isNativeAppSchemaOnlyCall(args) {
 def toolSetNativeApp(args) {
     if (!(args instanceof Map)) throw new IllegalArgumentException('Native app arguments must be an object')
     List allowed = ['appId', 'appType', 'name', 'settings', 'button', 'pageName', 'stateAttribute', 'buttonRule', 'walkStep', 'guide', 'confirm', 'bestPracticeKey', '__reqT0']
-    List unsupported = args.keySet().findAll { !(it in allowed) }
+    Set unsupported = args.keySet().findAll { !(it in allowed) }
     if (unsupported) throw new IllegalArgumentException("hub_set_native_app does not support ${unsupported}. Use hub_set_rule for native Rule Machine actions, triggers, expressions and local variables.".toString())
     if (args.guide == true && !_isNativeAppSchemaOnlyCall(args)) throw new IllegalArgumentException('guide:true must be requested alone with an existing appId; settings, button and walkStep cannot be combined with it')
     if (args.settings != null && !(args.settings instanceof Map)) throw new IllegalArgumentException('settings must be an object')
