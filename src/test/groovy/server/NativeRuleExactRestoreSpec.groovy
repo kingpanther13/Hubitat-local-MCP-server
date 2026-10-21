@@ -211,6 +211,21 @@ class NativeRuleExactRestoreSpec extends ToolSpecBase {
         script._rmNativeCopyMismatch(42, snapshot).contains('configuration differs')
     }
 
+    def 'native imported copy verifies stored locals without executing its disabled app'() {
+        given:
+        Map source = new JsonSlurper().parseText(snapshot.nativeExport).appData['42'].state as Map
+        script.metaClass._rmReadRuleState = { Integer id -> source }
+        script.metaClass._nrHandle = { Long id -> throw new AssertionError('Imported disabled app must not execute') }
+        hubGet.register('/installedapp/settings/42') { q -> JsonOutput.toJson([settings: [
+            [name: 'count', type: 'number', value: '7'], [name: 'enabled', type: 'bool', value: false]]]) }
+        expect:
+        script._rmNativeCopyMismatch(42, snapshot) == null
+        when:
+        source.lv_counter.value = 999
+        then:
+        script._rmNativeCopyMismatch(42, snapshot).contains('local variables differ')
+    }
+
     def 'restoring invalidates old form descriptors while preserving other rule workflows'() {
         given:
         cacheForm()

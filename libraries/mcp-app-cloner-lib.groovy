@@ -1009,7 +1009,8 @@ String _rmNativeCopyMismatch(Integer copyId, Map snapshot) {
             def actual = _rmNativeModelSignature(copy).findAll { key, value -> expected.containsKey(key) }
             if (_rmNativeComparable(actual) != _rmNativeComparable(expected)) return 'the compiled native configuration differs from recovery'
             if (_rmNativeComparable(_rmNativeSettingsSignature(_rmNativeCurrentSettings(copyId.toLong()))) != _rmNativeComparable(_rmNativeSettingsSignature(data.appSettings))) return 'the native settings differ from recovery'
-            def locals = _nrHandle(copyId.toLong()).getAllLocalVars().collectEntries { name, row -> [(name.toString()): [type: row.type, value: row.value]] }
+            // Imported copies are staged disabled, so verify persisted locals without executing app code.
+            def locals = _rmNativeLocalSignature(copy)
             if (_rmNativeComparable(locals) != _rmNativeComparable(_rmNativeLocalSignature(data.state))) return 'the native local variables differ from recovery'
             return null
         } catch (Exception failure) { return "the native recovery configuration could not be verified: ${failure.message}".toString() }
