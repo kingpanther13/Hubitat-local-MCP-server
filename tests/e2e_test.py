@@ -1253,15 +1253,22 @@ def _is_stranded_button_controller(app: dict) -> bool:
 
 
 def _discover_native_rule_parent_id(client) -> int:
-    """Read every parent-inventory page before accepting one exact Rule Machine parent."""
+    """Resolve the built-in app type, then identify its root instance across all pages."""
+    catalog = client.call_tool("hub_list_apps", {"scope": "types"})
+    assert isinstance(catalog, dict) and catalog.get("success") is not False, catalog
+    types = [row for row in catalog.get("apps", []) if isinstance(row, dict)
+             and row.get("system") is True and row.get("name") == "Rule Machine"]
+    assert len(types) == 1, f"Expected one built-in Rule Machine app type, found {types}"
+    type_id = str(types[0].get("id", ""))
+    assert type_id.isdecimal(), f"Rule Machine app type ID is not decimal: {types[0]}"
     parents, cursor, seen = [], "", set()
     while True:
-        result = client.call_tool("hub_list_apps", {"scope": "instances", "filter": "parents", "cursor": cursor})
+        result = client.call_tool("hub_list_apps", {"scope": "instances", "cursor": cursor})
         assert isinstance(result, dict) and result.get("success") is not False, result
         rows = result.get("apps", result.get("installedApps", []))
         assert isinstance(rows, list), "Parent inventory returned no app list"
         parents.extend(row for row in rows if isinstance(row, dict)
-                       and (row.get("appTypeName") or row.get("name")) == "Rule Machine"
+                       and str(row.get("appTypeId")) == type_id
                        and row.get("parentId") is None)
         next_cursor = result.get("nextCursor")
         if not next_cursor:

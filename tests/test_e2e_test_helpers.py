@@ -3382,44 +3382,62 @@ def test_edited_snapshot_copy_retargets_only_explicit_device_references_and_labe
     assert original == json.dumps(snapshot, indent=2)
 
 
-def test_native_parent_discovery_requests_parent_filter_and_reads_all_pages():
-    calls = []
-    pages = iter([
-        {"apps": [{"id": 1, "name": "Other parent", "parentId": None}], "nextCursor": "page-two"},
-        {"apps": [{"id": 28, "name": "Rule Machine", "parentId": None}]},
-    ])
 
+def _native_parent_client(pages, calls=None):
+    inventory = iter(pages)
     def call_tool(name, arguments):
-        calls.append((name, arguments))
-        return next(pages)
+        if calls is not None:
+            calls.append((name, arguments))
+        if arguments["scope"] == "types":
+            return {"apps": [{"id": 18, "name": "Rule Machine", "system": True}]}
+        return next(inventory)
+    return SimpleNamespace(call_tool=call_tool)
 
-    assert et._discover_native_rule_parent_id(SimpleNamespace(call_tool=call_tool)) == 28
+
+def test_native_parent_discovery_matches_native_type_id_across_all_pages():
+    calls = []
+    client = _native_parent_client([
+        {"apps": [{"id": 1, "name": "Rule Machine", "appTypeId": 99, "parentId": None}], "nextCursor": "page-two"},
+        {"apps": [{"id": 28, "name": "My Automations", "appTypeId": 18, "parentId": None, "hasChildren": False}]},
+    ], calls)
+    assert et._discover_native_rule_parent_id(client) == 28
     assert calls == [
-        ("hub_list_apps", {"scope": "instances", "filter": "parents", "cursor": ""}),
-        ("hub_list_apps", {"scope": "instances", "filter": "parents", "cursor": "page-two"}),
+        ("hub_list_apps", {"scope": "types"}),
+        ("hub_list_apps", {"scope": "instances", "cursor": ""}),
+        ("hub_list_apps", {"scope": "instances", "cursor": "page-two"}),
     ]
 
 
-def test_native_parent_discovery_checks_later_pages_for_ambiguous_exact_matches():
-    pages = iter([
-        {"apps": [{"id": 28, "name": "Rule Machine", "parentId": None}], "nextCursor": "next"},
-        {"apps": [{"id": 29, "name": "Rule Machine", "parentId": None}]},
+def test_native_parent_discovery_checks_later_pages_for_ambiguous_exact_types():
+    client = _native_parent_client([
+        {"apps": [{"id": 28, "name": "First", "appTypeId": 18, "parentId": None}], "nextCursor": "next"},
+        {"apps": [{"id": 29, "name": "Second", "appTypeId": 18, "parentId": None}]},
     ])
     with pytest.raises(AssertionError, match="Expected one Rule Machine parent"):
-        et._discover_native_rule_parent_id(SimpleNamespace(call_tool=lambda *_args: next(pages)))
+        et._discover_native_rule_parent_id(client)
 
 
 @pytest.mark.parametrize("row", [
-    {"id": 28, "name": "Rule Machine clone", "parentId": None},
-    {"id": 28, "name": "Rule Machine", "parentId": 9},
-    {"id": "bad-id", "name": "Rule Machine", "parentId": None},
+    {"id": 28, "name": "Rule Machine", "appTypeId": 19, "parentId": None},
+    {"id": 28, "name": "Rule Machine", "appTypeId": 18, "parentId": 9},
+    {"id": "bad-id", "name": "Rule Machine", "appTypeId": 18, "parentId": None},
 ])
-def test_native_parent_discovery_rejects_wrong_identity_or_invalid_id(row):
+def test_native_parent_discovery_rejects_wrong_type_or_invalid_id(row):
     with pytest.raises(AssertionError):
-        et._discover_native_rule_parent_id(SimpleNamespace(call_tool=lambda *_args: {"apps": [row]}))
+        et._discover_native_rule_parent_id(_native_parent_client([{"apps": [row]}]))
 
 
 def test_native_parent_discovery_refuses_repeated_inventory_cursor():
-    client = SimpleNamespace(call_tool=lambda *_args: {"apps": [], "nextCursor": "same"})
+    client = _native_parent_client([{"apps": [], "nextCursor": "same"}] * 2)
     with pytest.raises(AssertionError, match="cursor repeated"):
+        et._discover_native_rule_parent_id(client)
+
+
+@pytest.mark.parametrize("types", [
+    [], [{"id": 18, "name": "Rule Machine", "system": False}],
+    [{"id": 18, "name": "Rule Machine", "system": True}] * 2,
+])
+def test_native_parent_discovery_requires_unique_builtin_type(types):
+    client = SimpleNamespace(call_tool=lambda *_args: {"apps": types})
+    with pytest.raises(AssertionError, match="built-in Rule Machine app type"):
         et._discover_native_rule_parent_id(client)
