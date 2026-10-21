@@ -19,8 +19,10 @@ class FixtureHub:
         self.source = TONE_SOURCE
         self.calls = []
         self.devices = {}
-        self.runner = et.TestRunner(SimpleNamespace(call_tool=self.call_tool))
-        self.runner._native_rule_context = {"client": SimpleNamespace(native=self.native), "custom_drivers": {}}
+        self.runner = et.TestRunner(SimpleNamespace(
+            call_tool=self.call_tool,
+            endpoint="https://cloud.hubitat.com/api/00000000-0000-0000-0000-000000000000/apps/7/mcp"))
+        self.runner._native_rule_context = {"client": integration.CloudMcpClient(self.runner), "custom_drivers": {}}
         self.fixtures = integration.RunnerFixtures(self.runner)
 
     def call_tool(self, name, args):
@@ -48,6 +50,15 @@ class FixtureHub:
         if name == "hub_get_source":
             assert args == {"type": "driver", "id": "41"}
             return {"success": True, "source": self.source, "hasMore": False}
+        if name == "hub_get_device":
+            assert args["mode"] == "details"
+            assert args["sections"] == ["identity", "attributes", "commands", "relationships", "integrations", "metadata"]
+            device = self.devices[args["deviceId"]]
+            identity = {key: device[key] for key in ("id", "label", "virtual", "network") if key in device}
+            connections = {key: device[key] for key in ("zigbee", "ZWave", "matter", "bluetooth", "linkedDevice") if key in device}
+            return {"id": args["deviceId"], "sections": {
+                "identity": identity, "attributes": {}, "commands": [], "relationships": {"device": {}},
+                "integrations": {"device": connections}, "metadata": {"deviceTypeId": device["deviceTypeId"]}}}
         if name == "hub_list_devices":
             assert args == {"scope": "all", "labelFilter": "E2E_PERM_"}
             return {"devices": list(self.devices.values())}
@@ -60,8 +71,7 @@ class FixtureHub:
         raise AssertionError(f"Unexpected tool {name}")
 
     def native(self, path):
-        assert path.startswith("/device/fullJson/")
-        return {"device": self.devices[path.rsplit("/", 1)[1]].copy()}
+        pytest.fail(f"Fixture validation bypassed public MCP metadata: {path}")
 
     def existing_tone(self, **changes):
         self.devices["9"] = {"id": "9", "label": "E2E_PERM_Native_tone", "deviceTypeId": "41",
@@ -77,6 +87,7 @@ def test_fresh_tone_installs_exact_source_and_preserves_other_driver_recipes():
     assert hub.fixtures["omni"] == "10"
     assert hub.devices["10"]["deviceTypeId"] == "2"
     assert len([call for call in hub.calls if call[0] == "hub_create_driver"]) == 1
+    assert {args["deviceId"] for name, args in hub.calls if name == "hub_get_device"} == {"9", "10"}
 
 
 def test_existing_exact_tone_driver_and_device_are_reused_after_paged_lookup():
