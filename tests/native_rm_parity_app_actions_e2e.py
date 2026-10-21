@@ -1,33 +1,52 @@
 """App-backed RM actions authored through native document inputs.
 
 Only disposable, uniquely named native apps and labeled virtual devices are used.
-The shared ParityCase authorization and rule cleanup apply unchanged.
+Run this acceptance class through the shared cloud MCP test runner.
 """
 
 import html
-import json
-import os
 import re
-import unittest
-import urllib.parse
 
 import native_rule_document_e2e as documents
-import requests
+from native_rm_cloud_support import CloudCaseMixin
 from native_rm_parity_support import ParityCase, change, field
 
 documents.TOOLS.update({"hub_list_apps", "hub_list_devices", "hub_set_native_app", "hub_get_app_config", "hub_list_modes"})
 
 
-def creatable_native_type(rows, name):
-    matches = [row for row in rows if row.get("name") == name
-               and row.get("system") is True and row.get("isBuiltIn") is True
-               and row.get("allowNewInstances") is True]
-    if len(matches) != 1:
-        raise AssertionError(f"Expected one creatable built-in type for {name}; found {len(matches)}")
-    return matches[0]
+def page_paragraphs(configuration):
+    paragraphs = []
+
+    def visit(node):
+        if isinstance(node, dict):
+            for text in node.get("paragraphs", []):
+                if isinstance(text, str):
+                    paragraphs.append(" ".join(html.unescape(re.sub(r"<[^>]*>", "", text)).split()))
+            for key, value in node.items():
+                if key != "paragraphs":
+                    visit(value)
+        elif isinstance(node, list):
+            for value in node:
+                visit(value)
+    visit(configuration.get("page", {}))
+    return paragraphs
 
 
-class NativeRmParityAppActions(ParityCase):
+def scheduler_mode_rows(configuration, mode_name):
+    mode = re.compile(r"(?<![\w])" + re.escape(mode_name) + r"(?![\w])")
+    return [text for text in page_paragraphs(configuration) if mode.search(text)]
+
+
+def native_fixture_identity(row, app_id, native_name, parent_id):
+    if (not isinstance(row, dict) or str(row.get("id")) != str(app_id)
+            or row.get("type") != native_name):
+        raise AssertionError("Created native fixture identity changed")
+    if str(row.get("parentId")) != str(parent_id):
+        raise AssertionError("Created native fixture parent changed")
+    return row
+
+
+class NativeRmParityAppActions(CloudCaseMixin, ParityCase):
     def setUp(self):
         super().setUp()
         self.owned_apps = []
@@ -43,103 +62,69 @@ class NativeRmParityAppActions(ParityCase):
         self.assertFalse(failures, failures)
 
     def _apps(self):
-        result = []
-
-        def visit(node):
-            if isinstance(node.get("data"), dict):
-                result.append(node["data"])
-            for child in node.get("children", []):
-                visit(child)
-        for node in self.client.native("/hub2/appsList").get("apps", []):
-            visit(node)
-        return result
-
-    def _type(self, name):
         rows, cursor = [], ""
         while cursor is not None:
-            page = self.call("hub_list_apps", scope="types", cursor=cursor)
-            self.assertIsNot(page.get("success"), False, page)
-            rows.extend(page.get("apps", []))
-            cursor = page.get("nextCursor")
-        return creatable_native_type(rows, name)
+            result = self.call("hub_list_apps", scope="instances", cursor=cursor)
+            self.assertIsNot(result.get("success"), False, result)
+            rows.extend(result.get("apps", []))
+            cursor = result.get("nextCursor")
+        return rows
 
-    def _native_install(self, type_name, parent_id=None):
-        if parent_id is None:
-            type_row = self._type(type_name)
-            native_name = type_row["name"]
-        else:
-            selectors = []
-
-            def visit(node):
-                if isinstance(node, dict):
-                    if (node.get("element") == "app" and node.get("namespace") == "hubitat"
-                            and str(node.get("appId")) == str(parent_id)):
-                        selectors.append(node)
-                    for value in node.values():
-                        visit(value)
-                elif isinstance(node, list):
-                    for value in node:
-                        visit(value)
-            visit(self.client.native(f"/installedapp/configure/json/{parent_id}")["configPage"])
-            matches = [node for node in selectors if node.get("appName") == type_name or
-                       (type_name == "Scene" and re.fullmatch(r"Scene-[0-9.]+", node.get("appName", "")))]
-            self.assertEqual(len(matches), 1, {"requested_child": type_name, "selectors": selectors})
-            native_name = matches[0]["appName"]
+    def _native_install(self, app_type, native_name, label):
         before = {str(row["id"]) for row in self._apps()}
-        path = ("/installedapp/sysAppById/" + str(type_row["id"]) if parent_id is None else
-                "/installedapp/createchild/hubitat/" + urllib.parse.quote(native_name, safe="") +
-                "/parent/" + str(parent_id))
-        headers = {"Cookie": os.environ["HUB_UI_COOKIE"]} if os.environ.get("HUB_UI_COOKIE") else {}
-        self.client.calls["native_http"] += 1
-        response = requests.get(self.client.base + path, headers=headers, allow_redirects=False, timeout=180)
-        self.assertEqual(response.status_code, 302, {"native_type": native_name, "status": response.status_code})
-        location = urllib.parse.urlsplit(urllib.parse.urljoin(self.client.base + "/", response.headers.get("Location", "")))
-        base = urllib.parse.urlsplit(self.client.base)
-        self.assertEqual((location.scheme, location.netloc), (base.scheme, base.netloc))
-        self.assertRegex(location.path, r"^/installedapp/configure/[0-9]+$")
-        app_id = int(location.path.rsplit("/", 1)[1])
-        self.assertNotIn(str(app_id), before)
-        self.owned_apps.append((app_id, native_name, parent_id))
-        self.client.calls["native_http"] += 1
-        opened = requests.get(self.client.base + location.path, headers=headers, allow_redirects=False, timeout=180)
-        self.assertEqual(opened.status_code, 200)
-        installed = self.status(app_id)["installedApp"]
-        self.assertEqual(str(installed["id"]), str(app_id))
-        self.assertEqual(installed["appType"]["name"], native_name)
-        self.assertEqual(installed["appType"]["namespace"], "hubitat")
-        if parent_id is not None:
-            self.assertEqual(str(installed["parentAppId"]), str(parent_id))
-        return app_id
+        created = self.call("hub_set_native_app", appType=app_type, name=label, confirm=True)
+        app_id = created.get("appId")
+        parent_id = created.get("parentAppId")
+        parent_types = {"scene": "Groups and Scenes", "room_lighting": "Room Lighting",
+                        "thermostat_controller": "Thermostat Controllers", "thermostat_scheduler": "Thermostat Schedulers"}
+        if parent_id is not None and str(parent_id) not in before:
+            native_fixture_identity(self.installed_app(parent_id), parent_id, parent_types[app_type], None)
+            self.owned_apps.append((int(parent_id), parent_types[app_type], None))
+        if app_id is not None:
+            self.assertNotIn(str(app_id), before, created)
+            self.owned_apps.append((int(app_id), native_name, parent_id))
+        self.assertTrue(app_id, created)
+        self.assertEqual(created.get("appType"), app_type, created)
+        self.assertIsNotNone(parent_id, created)
+        # A newly created thermostat app can defer its label until a thermostat is set.
+        if created.get("success") is not True:
+            self.assertIn(app_type, ("thermostat_controller", "thermostat_scheduler"), created)
+            self.assertIs(created.get("labelApplied"), False, created)
+            self.assertIn("could not be verified as the app's display label", str(created.get("note", "")))
+        native_fixture_identity(self.installed_app(app_id), app_id, native_name, parent_id)
+        return int(app_id)
 
     def _remove_app(self, app_id, native_name, parent_id):
-        installed = self.status(app_id, missing_ok=True).get("installedApp")
-        if not installed:
+        installed = self.installed_app(app_id, missing_ok=True)
+        if installed is None:
             return
-        self.assertEqual(str(installed["id"]), str(app_id))
-        self.assertEqual(installed["appType"]["name"], native_name)
-        self.assertEqual(installed["appType"]["namespace"], "hubitat")
-        if parent_id is not None:
-            self.assertEqual(str(installed["parentAppId"]), str(parent_id))
-        self.client.native("/installedapp/update/json", "POST", form={"id": app_id, "_action_remove": "Remove"})
-        self.assertNotIn("installedApp", self.status(app_id, missing_ok=True))
-
-    def _parent(self, name):
-        rows = [row for row in self._apps() if row.get("type") == name and row.get("hidden") is not True]
-        self.assertLessEqual(len(rows), 1, rows)
-        return int(rows[0]["id"]) if rows else self._native_install(name)
+        native_fixture_identity(installed, app_id, native_name, parent_id)
+        if parent_id is None:
+            self.assertFalse(any(str(row.get("parentId")) == str(app_id) for row in self._apps()),
+                             "A new parent still has children; refusing cascading cleanup")
+        removed = self.call("hub_delete_native_app", appId=app_id, confirm=True, force=parent_id is not None)
+        self.assertTrue(removed.get("success"), removed)
+        self.assertIsNone(self.installed_app(app_id, missing_ok=True))
 
     def _walk(self, app_id, operation, **values):
-        config = self.client.native(f"/installedapp/configure/json/{app_id}")
-        page = config["configPage"]["name"]
-        result = self.call("hub_set_native_app", appId=int(app_id), confirm=True,
-                           walkStep={"page": page, "operation": operation, **values})
+        arguments = {"appId": int(app_id), "confirm": True}
+        if operation == "write":
+            arguments["settings"] = values["write"]
+        elif operation == "click":
+            click = values["click"]
+            arguments["button"] = click["name"]
+            if "stateAttribute" in click:
+                arguments["stateAttribute"] = click["stateAttribute"]
+        else:
+            raise AssertionError("Unsupported fixture edit operation")
+        result = self.call("hub_set_native_app", **arguments)
         self.assertTrue(result.get("success"), result)
         return result
 
     def _configure(self, app_id, label, writes):
         for values in writes:
             self._walk(app_id, "write", write=values)
-        config = self.client.native(f"/installedapp/configure/json/{app_id}")
+        config = self.raw_configuration(app_id)
         names = set()
 
         def visit(node):
@@ -151,12 +136,11 @@ class NativeRmParityAppActions(ParityCase):
             elif isinstance(node, list):
                 for value in node:
                     visit(value)
-        visit(config["configPage"])
+        visit(config["page"])
         label_input = "origLabel" if "origLabel" in names else "name"
         self.assertIn(label_input, names, "Native fixture exposes no label input")
         self._walk(app_id, "write", write={label_input: label})
-        self._walk(app_id, "done")
-        self.assertEqual(self.settings(app_id)[label_input]["value"], label)
+        self.assertEqual(self.raw_configuration(app_id)["settings"][label_input], label)
 
     def _scheduler_input(self, app_id, name, type_, multiple):
         fields = []
@@ -170,37 +154,21 @@ class NativeRmParityAppActions(ParityCase):
             elif isinstance(node, list):
                 for value in node:
                     visit(value)
-        visit(self.client.native(f"/installedapp/configure/json/{app_id}")["configPage"])
+        visit(self.raw_configuration(app_id)["page"])
         self.assertTrue(fields, f"Native {name} input is missing")
         self.assertTrue(all(row == fields[0] for row in fields), f"Contradictory native {name} descriptors")
         self.assertEqual(fields[0]["type"], type_)
-        self.assertIs(fields[0]["multiple"], multiple)
+        self.assertIs(fields[0].get("multiple", False), multiple)
 
-    def _select_scheduler_mode(self, app_id, mode):
+    def _select_scheduler_mode(self, app_id, mode, mode_name):
         self._scheduler_input(app_id, "perX", "enum", True)
-        # This native selector is consumed into modeTable, so setting readback
-        # cannot verify it. Submit the UI form and verify the resulting row.
-        result = self.client.native("/installedapp/update/json", "POST", form={
-            "id": app_id, "settings[perX]": json.dumps([mode]),
-            "perX.type": "enum", "perX.multiple": "true",
-        })
-        self.assertIsNot(result.get("success"), False, result)
-        self.assertNotEqual(result.get("status"), "error", result)
-        self.assertFalse(result.get("error"), result)
-        self.assertIs(self.state(app_id).get("modeTable", {}).get(mode, {}).get("used"), True)
+        self._walk(app_id, "write", write={"perX": [mode]})
+        self.assertTrue(scheduler_mode_rows(self.raw_configuration(app_id), mode_name),
+                        "Selected mode has no independently rendered scheduler row")
 
     def _set_scheduler_heat(self, app_id, mode, value):
         self._scheduler_input(app_id, "tempX", "decimal", False)
-        result = self.client.native("/installedapp/update/json", "POST", form={
-            "id": app_id, "settings[tempX]": str(value),
-            "tempX.type": "decimal", "tempX.multiple": "false",
-        })
-        self.assertIsNot(result.get("success"), False, result)
-        self.assertNotEqual(result.get("status"), "error", result)
-        self.assertFalse(result.get("error"), result)
-        saved = self.state(app_id).get("modeTable", {}).get(mode, {})
-        self.assertIs(saved.get("used"), True)
-        self.assertEqual(float(saved["heat"]), value)
+        self._walk(app_id, "write", write={"tempX": value})
 
     def _add(self, rule_id, category, subtype, inputs, rendered):
         before = {str(row["id"]) for row in self.doc(rule_id)["actions"]}
@@ -259,13 +227,9 @@ class NativeRmParityAppActions(ParityCase):
         if not any(row.get("type") == "Room Lights" for row in self._apps()):
             self._refuse(rule_id, "rulesActs", "getRLTurnOff", [("actOffRL", "enum", ["999999999"])])
         name = self.prefix + "_RoomLights"
-        self._parent("Room Lighting")
-        created = self.call("hub_set_native_app", appType="room_lighting", name=name, confirm=True)
-        self.assertTrue(created.get("success"), created)
-        app_id = int(created["appId"])
-        parent_id = int(self.status(app_id)["installedApp"]["parentAppId"])
-        self.owned_apps.append((app_id, "Room Lights", parent_id))
-        self._add(rule_id, "rulesActs", "getRLActivate", [("actRL", "enum", str(app_id)), ("modeRL", "enum", "X")], ["Activate", name, "Force"])
+        app_id = self._native_install("room_lighting", "Room Lights", name)
+        forced = self._add(rule_id, "rulesActs", "getRLActivate", [("actRL", "enum", str(app_id)), ("modeRL", "enum", "X")], ["Activate", name, "Force"])
+        self.assertNotIn("forceRL." + forced, self.settings(rule_id))
         self._add(rule_id, "rulesActs", "getRLActivate", [("actRL", "enum", str(app_id)), ("modeRL", "enum", "X"), ("forceRL", "bool", True)], ["Activate", name, "Conditions"])
         self._add(rule_id, "rulesActs", "getRLTurnOff", [("actOffRL", "enum", [str(app_id)])], ["Turn Off Room Lights", name])
         self.assertIn(name, self.page_text(rule_id))
@@ -276,15 +240,16 @@ class NativeRmParityAppActions(ParityCase):
         rule_id = self.create([])
         if not any(str(row.get("type", "")).startswith("Scene-") for row in self._apps()):
             self._refuse(rule_id, "sceneActs", "getActivateScene", [("sceneAct", "enum", ["999999999"])])
-        scene = self._native_install("Scene", self._parent("Groups and Scenes"))
         label = self.prefix + "_Scene"
+        scene = self._native_install("scene", "Scene-1.2", label)
         self._configure(scene, label, [{"switches": [int(self.fixtures["switch"])]}])
         self._walk(scene, "click", click={"name": "captureBtn"})
         devices = self.call("hub_list_devices", scope="all", labelFilter=label).get("devices", [])
         matches = [row for row in devices if row.get("label") == label]
         self.assertEqual(len(matches), 1, matches)
         activator = str(matches[0]["id"])
-        self.assertEqual(str(self.client.native("/device/fullJson/" + activator)["device"]["parentAppId"]), str(scene))
+        activator_metadata = self.client.device_metadata(activator)
+        self.assertEqual(str(activator_metadata["device"].get("parentAppId")), str(scene))
         self._add(rule_id, "sceneActs", "getActivateScene", [("sceneAct", "enum", [activator])], ["Activate scenes", label])
         modes = self._two_modes()
         mode_ids = [str(row["id"]) for row in modes]
@@ -303,10 +268,9 @@ class NativeRmParityAppActions(ParityCase):
             self._refuse(rule_id, "lockActs", "getSetThermController", [("thisApp", "enum", "999999999")])
         if not existing.intersection({"Thermostat Scheduler 2.0", "Thermostat Scheduler Legacy"}):
             self._refuse(rule_id, "lockActs", "getSetThermostatScheduler", [("thisTherm", "capability.thermostat", [str(self.fixtures["thermostat"])])])
-        controller = self._native_install("Thermostat Controller 2.0", self._parent("Thermostat Controllers"))
-        schedulers = self._parent("Thermostat Schedulers")
-        scheduler = self._native_install("Thermostat Scheduler 2.0", schedulers)
-        mode_scheduler = self._native_install("Thermostat Scheduler 2.0", schedulers)
+        controller = self._native_install("thermostat_controller", "Thermostat Controller 2.0", self.prefix + "_Controller")
+        scheduler = self._native_install("thermostat_scheduler", "Thermostat Scheduler 2.0", self.prefix + "_Scheduler")
+        mode_scheduler = self._native_install("thermostat_scheduler", "Thermostat Scheduler 2.0", self.prefix + "_ModeScheduler")
         thermostat = str(self.fixtures["thermostat"])
         thermostat2 = str(self.fixtures["thermostat2"])
         sensors = [str(self.fixtures[key]) for key in ("temperature", "temperature2")]
@@ -316,11 +280,14 @@ class NativeRmParityAppActions(ParityCase):
         self._walk(mode_scheduler, "write", write={"therm": [int(thermostat2)]})
         self._walk(mode_scheduler, "write", write={"schedTypeL": "Hub Modes"})
         self._walk(mode_scheduler, "click", click={"name": "addMode", "stateAttribute": "addMode"})
-        self._select_scheduler_mode(mode_scheduler, mode)
+        configured_mode, other_mode = self._two_modes()
+        self._select_scheduler_mode(mode_scheduler, mode, configured_mode["name"])
         self._walk(mode_scheduler, "click", click={"name": mode, "stateAttribute": "tsH"})
         self._set_scheduler_heat(mode_scheduler, mode, 68)
         self._walk(mode_scheduler, "click", click={"name": "update"})
         self._configure(mode_scheduler, self.prefix + "_ModeScheduler", [])
+        rows = scheduler_mode_rows(self.raw_configuration(mode_scheduler), configured_mode["name"])
+        self.assertTrue(any(re.search(r"(?<![0-9])68(?:\.0+)?(?![0-9])", row) for row in rows), rows)
         thermostat_name = self.fixture_metadata("thermostat")["device"]["label"]
         thermostat2_name = self.fixture_metadata("thermostat2")["device"]["label"]
         sensor_names = [self.fixture_metadata(key)["device"]["label"] for key in ("temperature", "temperature2")]
@@ -341,10 +308,6 @@ class NativeRmParityAppActions(ParityCase):
         self._refuse(rule_id, "lockActs", "getSetThermController", [("thisApp", "enum", "999999999"), ("tcSensors", "capability.temperatureMeasurement", sensors)])
         self._refuse(rule_id, "lockActs", "getSetThermostatScheduler", [("tMethod", "bool", True), ("thisApp", "enum", "999999999"), ("thermSched", "enum", "setHold"), ("setHold", "enum", "off")])
         unconfigured_mode = str(other_mode["id"])
-        self.assertNotIn(unconfigured_mode, self.state(mode_scheduler).get("modeTable", {}))
+        self.assertFalse(scheduler_mode_rows(self.raw_configuration(mode_scheduler), other_mode["name"]))
         self._refuse(rule_id, "lockActs", "getSetThermostatScheduler", [("thisTherm", "capability.thermostat", [thermostat2]), ("thermSched", "enum", "setSched4Mode"), ("modN", "enum", unconfigured_mode)])
         self._refuse(rule_id, "lockActs", "getSetThermostatScheduler", [("tMethod", "bool", True), ("thisApp", "enum", str(mode_scheduler)), ("thermSched", "enum", "setTimeAway"), ("timeAwayHeat", "decimal", 60)])
-
-
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
