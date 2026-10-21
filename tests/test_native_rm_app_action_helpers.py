@@ -1,5 +1,7 @@
 """Pure public-response helper coverage for cloud app-action acceptance."""
 
+import json
+
 import native_rm_parity_app_actions_e2e as native_apps
 import pytest
 
@@ -22,19 +24,25 @@ def test_native_fixture_identity_refuses_another_parent_before_cleanup():
                                            42, "Scene-1.2", 28)
 
 
-def test_scheduler_mode_evidence_comes_from_rendered_paragraphs_not_options_or_settings():
-    configuration = {"settings": {"perX": ["Day"], "tempX": 68}, "page": {"sections": [
-        {"inputs": [{"name": "perX", "options": [{"Day": "Day"}]}],
-         "paragraphs": ["<b>Night</b> Heat 65 Cool 75"]}]}}
-    assert native_apps.scheduler_mode_rows(configuration, "Day") == []
-    assert native_apps.scheduler_mode_rows(configuration, "Night") == ["Night Heat 65 Cool 75"]
+def test_scheduler_modes_read_exact_owned_app_state_not_transient_settings():
+    table = {"1": {"heat": 68, "used": True}}
+    exported = {"success": True, "jsonContent": json.dumps({"appData": {
+        "42": {"state": {"modeTable": table}, "appSettings": [{"name": "perX", "value": ["3"]}]},
+        "99": {"state": {"modeTable": {"3": {"heat": 75, "used": True}}}},
+    }})}
+    assert native_apps.exported_scheduler_modes(exported, 42) == table
+    assert "3" not in native_apps.exported_scheduler_modes(exported, 42)
 
 
-def test_scheduler_rendered_mode_matching_preserves_names_without_substring_matches():
-    configuration = {"page": {"sections": [{"paragraphs": ["Daytime Heat 68", "<span>Day &amp; Away</span> Heat 68.0"]}]}}
-    assert native_apps.scheduler_mode_rows(configuration, "Day") == ["Day & Away Heat 68.0"]
-    assert native_apps.scheduler_mode_rows(configuration, "Day & Away") == ["Day & Away Heat 68.0"]
-    assert native_apps.page_paragraphs(configuration) == ["Daytime Heat 68", "Day & Away Heat 68.0"]
+@pytest.mark.parametrize("exported", [
+    {"success": False, "jsonContent": "{}"},
+    {"success": True, "jsonContent": '{"appData":{"99":{"state":{"modeTable":{}}}}}'},
+    {"success": True, "jsonContent": '{"appData":{"42":{"state":{}}}}'},
+    {"success": True, "jsonContent": '{"appData":{"42":{"state":{"modeTable":[]}}}}'},
+])
+def test_scheduler_export_rejects_failure_wrong_app_or_missing_table(exported):
+    with pytest.raises(AssertionError):
+        native_apps.exported_scheduler_modes(exported, 42)
 
 
 def test_owned_parent_identity_refuses_an_unexpected_parent_relationship():

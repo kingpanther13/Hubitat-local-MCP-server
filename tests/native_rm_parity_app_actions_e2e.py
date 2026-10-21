@@ -5,36 +5,24 @@ Run this acceptance class through the shared cloud MCP test runner.
 """
 
 import html
+import json
 import re
 
 import native_rule_document_e2e as documents
 from native_rm_cloud_support import CloudCaseMixin
 from native_rm_parity_support import ParityCase, change, field
 
-documents.TOOLS.update({"hub_list_apps", "hub_list_devices", "hub_set_native_app", "hub_get_app_config", "hub_list_modes"})
+documents.TOOLS.update({"hub_list_apps", "hub_list_devices", "hub_set_native_app", "hub_get_app_config", "hub_list_modes", "hub_export_native_app"})
 
 
-def page_paragraphs(configuration):
-    paragraphs = []
-
-    def visit(node):
-        if isinstance(node, dict):
-            for text in node.get("paragraphs", []):
-                if isinstance(text, str):
-                    paragraphs.append(" ".join(html.unescape(re.sub(r"<[^>]*>", "", text)).split()))
-            for key, value in node.items():
-                if key != "paragraphs":
-                    visit(value)
-        elif isinstance(node, list):
-            for value in node:
-                visit(value)
-    visit(configuration.get("page", {}))
-    return paragraphs
-
-
-def scheduler_mode_rows(configuration, mode_name):
-    mode = re.compile(r"(?<![\w])" + re.escape(mode_name) + r"(?![\w])")
-    return [text for text in page_paragraphs(configuration) if mode.search(text)]
+def exported_scheduler_modes(exported, app_id):
+    assert exported.get("success") is True, exported
+    document = json.loads(exported["jsonContent"])
+    app = document.get("appData", {}).get(str(app_id))
+    assert isinstance(app, dict), "Export does not contain the owned scheduler"
+    table = app.get("state", {}).get("modeTable")
+    assert isinstance(table, dict), "Export contains no scheduler mode table"
+    return table
 
 
 def native_fixture_identity(row, app_id, native_name, parent_id):
@@ -160,11 +148,16 @@ class NativeRmParityAppActions(CloudCaseMixin, ParityCase):
         self.assertEqual(fields[0]["type"], type_)
         self.assertIs(fields[0].get("multiple", False), multiple)
 
-    def _select_scheduler_mode(self, app_id, mode, mode_name):
+    def _select_scheduler_mode(self, app_id, mode):
         self._scheduler_input(app_id, "perX", "enum", True)
         self._walk(app_id, "write", write={"perX": [mode]})
-        self.assertTrue(scheduler_mode_rows(self.raw_configuration(app_id), mode_name),
-                        "Selected mode has no independently rendered scheduler row")
+        self.assertIn(str(mode), self._scheduler_modes(app_id),
+                      "Selected mode has no persisted scheduler row")
+
+    def _scheduler_modes(self, app_id):
+        self.assertTrue(any(str(owned[0]) == str(app_id) and owned[1] == "Thermostat Scheduler 2.0"
+                            for owned in self.owned_apps), "Export requires an owned scheduler fixture")
+        return exported_scheduler_modes(self.call("hub_export_native_app", sourceAppId=app_id), app_id)
 
     def _set_scheduler_heat(self, app_id, mode, value):
         self._scheduler_input(app_id, "tempX", "decimal", False)
@@ -281,13 +274,12 @@ class NativeRmParityAppActions(CloudCaseMixin, ParityCase):
         self._walk(mode_scheduler, "write", write={"schedTypeL": "Hub Modes"})
         self._walk(mode_scheduler, "click", click={"name": "addMode", "stateAttribute": "addMode"})
         configured_mode, other_mode = self._two_modes()
-        self._select_scheduler_mode(mode_scheduler, mode, configured_mode["name"])
+        self._select_scheduler_mode(mode_scheduler, mode)
         self._walk(mode_scheduler, "click", click={"name": mode, "stateAttribute": "tsH"})
         self._set_scheduler_heat(mode_scheduler, mode, 68)
         self._walk(mode_scheduler, "click", click={"name": "update"})
         self._configure(mode_scheduler, self.prefix + "_ModeScheduler", [])
-        rows = scheduler_mode_rows(self.raw_configuration(mode_scheduler), configured_mode["name"])
-        self.assertTrue(any(re.search(r"(?<![0-9])68(?:\.0+)?(?![0-9])", row) for row in rows), rows)
+        self.assertEqual(self._scheduler_modes(mode_scheduler), {mode: {"heat": 68, "used": True}})
         thermostat_name = self.fixture_metadata("thermostat")["device"]["label"]
         thermostat2_name = self.fixture_metadata("thermostat2")["device"]["label"]
         sensor_names = [self.fixture_metadata(key)["device"]["label"] for key in ("temperature", "temperature2")]
@@ -302,12 +294,11 @@ class NativeRmParityAppActions(CloudCaseMixin, ParityCase):
         for operation, extras in (("setSchedDay", [("dayN", "enum", "0")]), ("setThermSched", [])):
             self._add(rule_id, "lockActs", "getSetThermostatScheduler", [("thisTherm", "capability.thermostat", [thermostat]), ("thermSched", "enum", operation), *extras], [*on_thermostat, "Activate Scheduled Setpoints", *(["Monday"] if operation == "setSchedDay" else [])])
         self._add(rule_id, "lockActs", "getSetThermostatScheduler", [("thisTherm", "capability.thermostat", [thermostat]), ("thermSched", "enum", "setTimeAway"), ("timeAwayHeat", "decimal", 60), ("uVar3", "bool", True), ("xVar3", "enum", variable)], [*on_thermostat, "Days/Times Away", "Heat 60", "Cool", variable])
-        configured_mode, other_mode = self._two_modes()
         mode_name = configured_mode["name"]
         self._add(rule_id, "lockActs", "getSetThermostatScheduler", [("thisTherm", "capability.thermostat", [thermostat2]), ("thermSched", "enum", "setSched4Mode"), ("modN", "enum", mode)], ["Thermostat Scheduler for", thermostat2_name, "Activate Scheduled Setpoints for", mode_name])
         self._refuse(rule_id, "lockActs", "getSetThermController", [("thisApp", "enum", "999999999"), ("tcSensors", "capability.temperatureMeasurement", sensors)])
         self._refuse(rule_id, "lockActs", "getSetThermostatScheduler", [("tMethod", "bool", True), ("thisApp", "enum", "999999999"), ("thermSched", "enum", "setHold"), ("setHold", "enum", "off")])
         unconfigured_mode = str(other_mode["id"])
-        self.assertFalse(scheduler_mode_rows(self.raw_configuration(mode_scheduler), other_mode["name"]))
+        self.assertNotIn(unconfigured_mode, self._scheduler_modes(mode_scheduler))
         self._refuse(rule_id, "lockActs", "getSetThermostatScheduler", [("thisTherm", "capability.thermostat", [thermostat2]), ("thermSched", "enum", "setSched4Mode"), ("modN", "enum", unconfigured_mode)])
         self._refuse(rule_id, "lockActs", "getSetThermostatScheduler", [("tMethod", "bool", True), ("thisApp", "enum", str(mode_scheduler)), ("thermSched", "enum", "setTimeAway"), ("timeAwayHeat", "decimal", 60)])
