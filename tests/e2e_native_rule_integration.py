@@ -1,5 +1,6 @@
 """Run shared native Rule Machine assertions through the regular E2E transport."""
 
+import hashlib
 import importlib
 import json
 import os
@@ -9,6 +10,7 @@ import time
 import unittest
 import urllib.parse
 import uuid
+from pathlib import Path
 from typing import ClassVar
 
 import requests
@@ -107,15 +109,82 @@ class RunnerFixtures(dict):
         "dimmer": "Virtual Dimmer", "button": "Virtual Button",
         "color": "Virtual RGBW Light", "blind": "Virtual Blind", "shade": "Virtual Shade",
         "garage": "Virtual Garage Door Controller", "valve": "Virtual Valve",
-        "tone": "Virtual Tone", "player": "Virtual Music Player",
+        "tone": "BAT_E2E_KEEP Virtual Tone", "player": "Virtual Music Player",
         "motion": "Virtual Motion Sensor", "contact": "Virtual Contact Sensor",
         "water": "Virtual Water Sensor", "humidity": "Virtual Humidity Sensor",
         "illuminance": "Virtual Illuminance Sensor", "presence": "Virtual Presence",
+        "omni": "Virtual Omni Sensor",
     }
 
     def __init__(self, runner):
         super().__init__()
         self.runner = runner
+        self.tone_driver = None
+
+    def _verify_tone_source(self, driver_id):
+        source = (Path(__file__).parent / "fixtures" / "native-tone.groovy").read_text(encoding="utf-8")
+        stored = self.runner.client.call_tool("hub_read_apps_code", {
+            "tool": "hub_get_source", "args": {"type": "driver", "id": driver_id}})
+        if stored.get("success") is not True or stored.get("source") != source or stored.get("hasMore"):
+            raise AssertionError("Synthetic tone fixture driver source differs from authorization")
+        return hashlib.sha256(source.encode()).hexdigest()
+
+    def _ensure_tone_driver(self, context):
+        name = self.DRIVERS["tone"]
+        matches, seen = [], set()
+        args = {"include": "all", "nameFilter": name}
+        while True:
+            page = self.runner.client.call_tool("hub_read_apps_code", {"tool": "hub_list_drivers", "args": args})
+            if (page.get("success") is False or page.get("source") != "hub_api"
+                    or not isinstance(page.get("drivers"), list)):
+                raise AssertionError("Cannot verify the synthetic tone driver catalog")
+            matches.extend(row for row in page["drivers"] if row.get("name") == name)
+            cursor = page.get("nextCursor")
+            if not cursor:
+                break
+            if cursor in seen:
+                raise AssertionError("Synthetic tone driver catalog repeated a cursor")
+            seen.add(cursor)
+            args = dict(args, cursor=cursor)
+        if len(matches) > 1 or (matches and matches[0].get("bucket") != "user"):
+            raise AssertionError("Synthetic tone driver identity is ambiguous or not user installed")
+        if matches:
+            driver_id = str(matches[0].get("id", ""))
+        else:
+            source = (Path(__file__).parent / "fixtures" / "native-tone.groovy").read_text(encoding="utf-8")
+            created = self.runner.client.call_tool("hub_manage_code", {
+                "tool": "hub_create_driver", "args": {"source": source, "confirm": True}})
+            if created.get("success") is not True:
+                raise AssertionError("Synthetic tone fixture driver installation failed")
+            driver_id = str(created.get("driverId", ""))
+        if not driver_id.isdecimal():
+            raise AssertionError("Synthetic tone fixture driver has no numeric ID")
+        permitted = {"id": driver_id, "sha256": self._verify_tone_source(driver_id)}
+        # A nonempty cache tells the runner its full built-in catalog was already loaded.
+        if not self.runner._driver_type_ids:
+            self.runner._driver_type_id(self.DRIVERS["switch"])
+        self.runner._driver_type_ids[name] = driver_id
+        self.runner._driver_buckets[name] = "user"
+        context["custom_drivers"]["tone"] = permitted
+        self.tone_driver = permitted
+
+    def metadata(self, key, device_id=None):
+        device_id = str(self[key] if device_id is None else device_id)
+        metadata = self.runner._native_rule_context["client"].native(f"/device/fullJson/{device_id}")
+        device = metadata["device"]
+        if (str(device.get("id")) != device_id or device.get("label") != "E2E_PERM_Native_" + key):
+            raise AssertionError("Adopted native fixture identity differs")
+        if key == "tone":
+            permitted = self.tone_driver
+            if not permitted or str(device.get("deviceTypeId")) != permitted["id"]:
+                raise AssertionError("Synthetic tone fixture driver identity differs")
+            if any(device.get(flag) for flag in ("zigbee", "ZWave", "matter", "network", "bluetooth", "linkedDevice")):
+                raise AssertionError("Synthetic fixture has a physical or network connection")
+            if self._verify_tone_source(permitted["id"]) != permitted["sha256"]:
+                raise AssertionError("Synthetic tone fixture driver source differs from authorization")
+        elif device.get("virtual") is not True:
+            raise AssertionError("Adopted native fixture virtual-device status differs")
+        return metadata
 
     def __missing__(self, key):
         if key not in self.DRIVERS:
@@ -126,13 +195,11 @@ class RunnerFixtures(dict):
         context = getattr(self.runner, "_native_rule_context", None)
         if context is None:
             raise AssertionError("Native fixture validation requires a bound hub context")
+        if key == "tone":
+            self._ensure_tone_driver(context)
         device_id = self.runner._ensure_perm_fixture(fixture_key)
         self.runner._perm_fixture_ids.pop(fixture_key, None)
-        device = context["client"].native(f"/device/fullJson/{device_id}")["device"]
-        if (str(device.get("id")) != str(device_id) or device.get("label") != "E2E_PERM_Native_" + key
-                or device.get("virtual") is not True):
-            self.runner._perm_fixture_ids.pop(fixture_key, None)
-            raise AssertionError("Adopted native fixture identity or virtual-device status differs")
+        self.metadata(key, device_id)
         self.runner._perm_fixture_ids[fixture_key] = device_id
         self[key] = device_id
         return device_id
@@ -180,13 +247,7 @@ def run_native_rule_case(runner, suite, method):
     if not context["explicit"]:
         @classmethod
         def fixture_metadata(cls, key):
-            device_id = str(cls.fixtures[key])
-            metadata = cls.client.native(f"/device/fullJson/{device_id}")
-            device = metadata["device"]
-            if (str(device["id"]) != device_id or device.get("label") != "E2E_PERM_Native_" + key
-                    or device.get("virtual") is not True):
-                raise AssertionError("Native fixture identity or virtual-device status differs")
-            return metadata
+            return context["fixtures"].metadata(key, cls.fixtures[key])
         attrs["fixture_metadata"] = fixture_metadata
     case_type = type("Regular" + class_name, (base,), attrs)
     case = case_type(method)
