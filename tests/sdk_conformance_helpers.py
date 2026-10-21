@@ -71,8 +71,8 @@ def native_mrtr_changes(
         "events": [{"capability": "Temperature", "fields": [
             {"name": "tDev#", "type": "capability.temperatureMeasurement", "value": [temperature_id]},
             {"name": "ReltDev#", "type": "enum", "value": ">"},
-            {"name": "tstate#", "type": "decimal", "value": 1000 + index * 4 + event},
-        ]} for event in range(4)]}} for index in range(wait_count)]
+            {"name": "tstate#", "type": "decimal", "value": 1000 + index * 8 + event},
+        ]} for event in range(8)]}} for index in range(wait_count)]
     return [*conditions, *waits, *actions], messages
 
 
