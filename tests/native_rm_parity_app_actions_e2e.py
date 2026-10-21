@@ -18,6 +18,15 @@ from native_rm_parity_support import ParityCase, change, field
 documents.TOOLS.update({"hub_list_apps", "hub_list_devices", "hub_set_native_app", "hub_get_app_config", "hub_list_modes"})
 
 
+def creatable_native_type(rows, name):
+    matches = [row for row in rows if row.get("name") == name
+               and row.get("system") is True and row.get("isBuiltIn") is True
+               and row.get("allowNewInstances") is True]
+    if len(matches) != 1:
+        raise AssertionError(f"Expected one creatable built-in type for {name}; found {len(matches)}")
+    return matches[0]
+
+
 class NativeRmParityAppActions(ParityCase):
     def setUp(self):
         super().setUp()
@@ -52,11 +61,7 @@ class NativeRmParityAppActions(ParityCase):
             self.assertIsNot(page.get("success"), False, page)
             rows.extend(page.get("apps", []))
             cursor = page.get("nextCursor")
-        matches = [row for row in rows if row.get("namespace") == "hubitat"
-                   and (row.get("name") == name or
-                        (name == "Scene" and re.fullmatch(r"Scene-[0-9.]+", row.get("name", ""))))]
-        self.assertEqual(len(matches), 1, {"native_app_type": name, "matches": matches})
-        return matches[0]
+        return creatable_native_type(rows, name)
 
     def _native_install(self, type_name, parent_id=None):
         if parent_id is None:
@@ -101,6 +106,7 @@ class NativeRmParityAppActions(ParityCase):
         installed = self.status(app_id)["installedApp"]
         self.assertEqual(str(installed["id"]), str(app_id))
         self.assertEqual(installed["appType"]["name"], native_name)
+        self.assertEqual(installed["appType"]["namespace"], "hubitat")
         if parent_id is not None:
             self.assertEqual(str(installed["parentAppId"]), str(parent_id))
         return app_id
