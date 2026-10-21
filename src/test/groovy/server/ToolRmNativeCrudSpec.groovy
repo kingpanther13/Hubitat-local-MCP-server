@@ -3486,11 +3486,11 @@ class ToolRmNativeCrudSpec extends RmNativeCrudSpecBase {
         installRuleTargetStubs()
         hubGet.register('/hub2/appsList') { params -> appsListWithRule(555) }
         // Root + editor pages let _rmInitSelectActionsPage tickle actNdx; statusJson (no actions)
-        // makes _rmCollectActionIndices return [] so idx resolves to 1; the doActPage fetch returns
-        // no actType.<N> so the idx re-read leaves idx=1.
+        // makes _rmCollectActionIndices return [] so idx resolves to 1; the doActPage fetch shows
+        // the opened editor's actType.1, so idx stays 1.
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", [[name: "N", type: "button"]]) }
-        hubGet.register('/installedapp/configure/json/100/doActPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params -> ruleConfigJson(100, "r", [[name: "actType.1", type: "enum"]]) }
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
@@ -3528,7 +3528,7 @@ class ToolRmNativeCrudSpec extends RmNativeCrudSpecBase {
         hubGet.register('/hub2/appsList') { params -> appsListWithRule(555) }
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", [[name: "N", type: "button"]]) }
-        hubGet.register('/installedapp/configure/json/100/doActPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params -> ruleConfigJson(100, "r", [[name: "actType.1", type: "enum"]]) }
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
@@ -25833,6 +25833,7 @@ class ToolRmNativeCrudSpec extends RmNativeCrudSpecBase {
         hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
             def seq = ++fetchSeq
             ruleConfigJson(100, "r", [
+                [name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]],
                 [name: "actSubType.1", type: "enum", options: ["getSetVariable": "Set Variable"]],
                 [name: "xVarV.1", type: "enum", options: ["myVar": "myVar", "unknownButNotValidated": "unknownButNotValidated"], value: ""],
                 [name: "numOp.1", type: "enum", options: ["number": "Constant", "var": "Variable"], value: ""],
@@ -26093,6 +26094,7 @@ class ToolRmNativeCrudSpec extends RmNativeCrudSpecBase {
         hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
             def seq = ++fetchSeq
             ruleConfigJson(100, "r", [
+                [name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]],
                 [name: "actSubType.1", type: "enum", options: ["getSetVariable": "Set Variable"]],
                 [name: "xVarV.1", type: "enum", options: ["counter": "counter"], value: ""],
                 [name: "numOp.1", type: "enum", options: ["number": "Constant", "variable": "Variable"], value: ""],
@@ -26134,6 +26136,7 @@ class ToolRmNativeCrudSpec extends RmNativeCrudSpecBase {
         hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
             def seq = ++fetchSeq
             ruleConfigJson(100, "r", [
+                [name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]],
                 [name: "actSubType.1", type: "enum", options: ["getSetVariable": "Set Variable"]],
                 [name: "xVarV.1", type: "enum", options: ["myVar": "myVar", "unvalidated": "unvalidated"], value: ""],
                 [name: "numOp.1", type: "enum", options: ["number": "Constant", "variable": "Variable"], value: ""],
@@ -26184,6 +26187,7 @@ class ToolRmNativeCrudSpec extends RmNativeCrudSpecBase {
         hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
             def seq = ++fetchSeq
             ruleConfigJson(100, "r", [
+                [name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]],
                 [name: "actSubType.1", type: "enum", options: ["getSetVariable": "Set Variable"]],
                 [name: "xVarV.1", type: "enum", options: ["myLocal": "myLocal", "unvalidatedLocal": "unvalidatedLocal"], value: ""],
                 [name: "numOp.1", type: "enum", options: ["number": "Constant", "variable": "Variable"], value: ""],
