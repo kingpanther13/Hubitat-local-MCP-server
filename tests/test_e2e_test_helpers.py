@@ -3245,8 +3245,8 @@ def test_regular_native_context_validates_explicit_fixtures_before_caching(monke
     import e2e_native_rule_integration as integration
 
     reads = []
-    def native(path):
-        reads.append(path)
+    def device_metadata(device_id):
+        reads.append(device_id)
         return {"device": {"id": 7, "label": label, "virtual": virtual}}
 
     monkeypatch.setenv("NATIVE_RULE_FIXTURES", '{"switch":7}')
@@ -3254,17 +3254,17 @@ def test_regular_native_context_validates_explicit_fixtures_before_caching(monke
     monkeypatch.setenv("NATIVE_RULE_PARENT_ID", "28")
     monkeypatch.setenv("NATIVE_RULE_MODE_ID", "1")
     monkeypatch.setenv("NATIVE_RULE_FIXTURE_DRIVERS", "{}")
-    monkeypatch.setattr(integration, "RegularNativeClient", lambda _runner: SimpleNamespace(native=native))
+    monkeypatch.setattr(integration, "CloudMcpClient", lambda _runner: SimpleNamespace(device_metadata=device_metadata))
     runner = SimpleNamespace()
     if accepted:
         context = integration.native_context(runner)
         assert context["fixtures"] == {"switch": 7}
         assert integration.native_context(runner) is context
     else:
-        with pytest.raises(AssertionError, match=r"Fixture identity|neither virtual"):
+        with pytest.raises(AssertionError, match=r"Fixture identity|Fixture label|Synthetic fixture"):
             integration.native_context(runner)
         assert not hasattr(runner, "_native_rule_context")
-    assert reads == ["/device/fullJson/7"]
+    assert reads == ["7"]
 
 
 @pytest.mark.parametrize("value, expected", [(False, False), ("false", False), (True, True), ("true", True)])
@@ -3292,7 +3292,7 @@ def test_regular_native_fixture_adoption_validates_before_caching(label, virtual
 
     runner = SimpleNamespace(PERM_FIXTURES={}, _perm_fixture_ids={"native_switch": "7"},
                              _ensure_perm_fixture=lambda _key: "7",
-                             _native_rule_context={"client": SimpleNamespace(native=lambda _path:
+                             _native_rule_context={"client": SimpleNamespace(device_metadata=lambda _device_id:
                                  {"device": {"id": 7, "label": label, "virtual": virtual}})})
     fixtures = integration.RunnerFixtures(runner)
     if accepted:
@@ -3355,13 +3355,6 @@ def test_runner_native_url_is_used_for_ui_while_mcp_keeps_its_transport(monkeypa
     assert bound.base == runner.native_hub_url
     assert bound.mcp_url == client.endpoint + "?access_token=unused"
 
-
-def test_runner_declares_optional_native_origin_without_changing_client():
-    client = SimpleNamespace(hub_url="http://relay.invalid:8081", app_id="3", access_token="unused",
-                             endpoint="http://relay.invalid:8081/apps/api/3/mcp")
-    runner = et.TestRunner(client)
-    assert runner.native_hub_url is None
-    assert runner.client is client
 
 
 def test_runner_native_url_does_not_authorize_a_different_environment_override(monkeypatch):

@@ -16,6 +16,7 @@ from typing import ClassVar
 
 import requests
 from native_rm_backup_e2e import NativeRmBackupE2E
+from native_rm_cloud_support import CloudCaseMixin, CloudMcpClient
 from native_rm_parity_actions_e2e import NativeRmParityActions
 from native_rm_parity_support import ParityCase
 from native_rule_document_e2e import TOOLS, HubClient, change, field, log_action
@@ -175,7 +176,7 @@ class RunnerFixtures(dict):
 
     def metadata(self, key, device_id=None):
         device_id = str(self[key] if device_id is None else device_id)
-        metadata = self.runner._native_rule_context["client"].native(f"/device/fullJson/{device_id}")
+        metadata = self.runner._native_rule_context["client"].device_metadata(device_id)
         device = metadata["device"]
         if (str(device.get("id")) != device_id or device.get("label") != "E2E_PERM_Native_" + key):
             raise AssertionError("Adopted native fixture identity differs")
@@ -214,7 +215,7 @@ def native_context(runner):
     cached = getattr(runner, "_native_rule_context", None)
     if cached is not None:
         return cached
-    client = RegularNativeClient(runner)
+    client = CloudMcpClient(runner)
     explicit = os.environ.get("NATIVE_RULE_FIXTURES")
     fixtures = json.loads(explicit) if explicit else RunnerFixtures(runner)
     parent_id = os.environ.get("NATIVE_RULE_PARENT_ID")
@@ -235,7 +236,7 @@ def native_context(runner):
             raise AssertionError("NATIVE_RULE_FIXTURES must identify the authorized native fixtures")
         if not os.environ.get("NATIVE_RULE_FIXTURE_LABEL_PREFIX"):
             raise AssertionError("Explicit native fixtures require NATIVE_RULE_FIXTURE_LABEL_PREFIX")
-        validator = type("RegularNativeFixtureValidation", (ParityCase,), {
+        validator = type("RegularNativeFixtureValidation", (CloudCaseMixin, ParityCase), {
             key: value for key, value in cached.items() if key != "explicit"})
         for key in fixtures:
             validator.fixture_metadata(key)
@@ -254,7 +255,8 @@ def run_native_rule_case(runner, suite, method):
         def fixture_metadata(cls, key):
             return context["fixtures"].metadata(key, cls.fixtures[key])
         attrs["fixture_metadata"] = fixture_metadata
-    case_type = type("Regular" + class_name, (base,), attrs)
+    bases = (base,) if issubclass(base, CloudCaseMixin) else (CloudCaseMixin, base)
+    case_type = type("Regular" + class_name, bases, attrs)
     case = case_type(method)
     result = unittest.TestResult()
     case.run(result)
@@ -396,7 +398,8 @@ class NativeRecoverySelectors(NativeRmBackupE2E):
         self.assertEqual(str(restored["ruleId"]), str(rule_id))
         self.assertFalse(restored.get("recreated"), restored)
         self.assertNotIn("post-snapshot marker", str(self.doc(rule_id)))
-        self.assertFalse(self.state(rule_id).get("hasPredicate"))
+        self.assertFalse(self.doc(rule_id)["expressions"].get("0"))
+        self.assertFalse(native_boolean(self.raw_configuration(rule_id)["settings"].get("useST", False)))
         pickers = [row for name, row in self.settings(rule_id).items() if name.startswith("onOffSwitch.")]
         self.assertEqual(len(pickers), 1)
         self.assertEqual(set(pickers[0]["device_ids"]), {str(self.fixtures["switch"])})
@@ -404,9 +407,9 @@ class NativeRecoverySelectors(NativeRmBackupE2E):
 
     def test_rm_rule_restore_skips_a_deleted_device(self):
         device_id, dni = self.disposable_switch("RestoreGone")
-        old_label = self.client.native(f"/device/fullJson/{device_id}")["device"]["label"]
+        old_label = self.client.device_metadata(device_id)["device"]["label"]
         replacement_id, _ = self.disposable_switch("RestoreReplacement")
-        replacement_label = self.client.native(f"/device/fullJson/{replacement_id}")["device"]["label"]
+        replacement_label = self.client.device_metadata(replacement_id)["device"]["label"]
         rule_id = self.create([self.switch_action(device_id), log_action("unrelated saved action"),
             change("variable", operation="create", name="Counter", type="integer", value=17)])
         baseline = self.doc(rule_id)
@@ -446,7 +449,7 @@ class NativeRecoverySelectors(NativeRmBackupE2E):
         self.assertNotEqual(copy_id, rule_id)
         self.adopt(copy_id, label)
         self.assertEqual(len(self.doc(copy_id)["triggers"]), 2)
-        self.assertNotIn("installedApp", self.status(rule_id, missing_ok=True))
+        self.assertIsNone(self.installed_app(rule_id, missing_ok=True))
         again = self.restore(key)
         self.assertTrue(again.get("alreadyRestored"), again)
         self.assertEqual(str(again["ruleId"]), str(copy_id))
@@ -501,9 +504,9 @@ class NativeRecoverySelectors(NativeRmBackupE2E):
         key = keys["Kitchen"]
         original_file, original = self.readable_recovery(key)
         gone_id = switches["Gone"][0]
-        old_label = self.client.native(f"/device/fullJson/{gone_id}")["device"]["label"]
+        old_label = self.client.device_metadata(gone_id)["device"]["label"]
         replacement_id = switches["Den"][0]
-        replacement_label = self.client.native(f"/device/fullJson/{replacement_id}")["device"]["label"]
+        replacement_label = self.client.device_metadata(replacement_id)["device"]["label"]
         self.delete_device(switches["Gone"][1])
         self.assert_missing_device_refusal(rule_id, key, gone_id)
         self.assertIn("Lamp (Kitchen)", str(self.doc(rule_id)["conditions"]))
