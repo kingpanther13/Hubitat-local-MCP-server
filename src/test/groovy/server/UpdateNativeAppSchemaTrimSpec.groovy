@@ -167,8 +167,8 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         given:
         enableEveryToggle()
         expect:
-        !script.getAllToolDefinitions().any { it.name in ['hub_get_rule_document', 'hub_create_rule_document', 'hub_update_rule_document', 'hub_call_app_form', 'hub_set_native_app'] }
-        !script.getGatewayConfig().values().any { it.tools.any { name -> name in ['hub_get_rule_document', 'hub_create_rule_document', 'hub_update_rule_document', 'hub_call_app_form', 'hub_set_native_app'] } }
+        !script.getAllToolDefinitions().any { it.name in ['hub_get_rule_document', 'hub_create_rule_document', 'hub_update_rule_document', 'hub_call_app_form'] }
+        !script.getGatewayConfig().values().any { it.tools.any { name -> name in ['hub_get_rule_document', 'hub_create_rule_document', 'hub_update_rule_document', 'hub_call_app_form'] } }
     }
 
     def "native guides describe supported contracts without claiming full capability parity"() {
