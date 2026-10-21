@@ -22089,7 +22089,7 @@ private Map _rmNativeModelSignature(Map state) {
     result
 }
 private Map _rmNativeLocalSignature(Map state) {
-    Map locals = state.allLocalVars instanceof Map ? [:] + state.allLocalVars : [:]
+    Map locals = [:]
     state.each { key, value -> if (key.toString().startsWith('lv_') && value instanceof Map) locals.put(key.toString().substring(3), value) }
     locals.collectEntries { name, row -> [(name.toString()): [type: row.type, value: row.value]] }
 }
