@@ -13,7 +13,7 @@ import native_rule_document_e2e as documents
 from native_rm_parity_support import ParityCase, change, field, log_action
 
 documents.TOOLS.update({"hub_list_backups", "hub_get_backup", "hub_restore_backup",
-                        "hub_update_mcp_settings"})
+                        "hub_update_mcp_settings", "hub_read_file", "hub_write_file", "hub_delete_file"})
 
 
 class NativeRmBackupE2E(ParityCase):

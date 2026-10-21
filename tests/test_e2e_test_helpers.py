@@ -3344,3 +3344,39 @@ def test_same_normalized_native_url_needs_no_second_endpoint_probe(monkeypatch):
                              call_tool=lambda *_args: pytest.fail("same URL requires no identity round trip"))
     bound = integration.RegularNativeClient(SimpleNamespace(client=client))
     assert bound.runner.client is client
+
+
+def test_edited_snapshot_copy_retargets_only_explicit_device_references_and_labels():
+    import e2e_native_rule_integration as integration
+
+    payload = {"deviceReplacements": {"7": {"deviceLabel": "Old fixture", "deviceId": "7"}},
+               "appReplacements": {"42": {"appLabel": "Rule"}},
+               "appData": {"42": {"appSettings": [
+                   {"name": "pick.7", "type": "capability.switch", "deviceList": {"7": "Old fixture"},
+                    "value": ["7"], "deviceIdsForDeviceList": ["7"]},
+                   {"name": "Counter", "type": "number", "value": 7}],
+                   "state": {"actions": {"7": {"method": "getOnOffSwitch"}}, "actionList": ["7"],
+                             "eval": {"0": ["7"]}, "capabsfalse": {"7": "Old fixture is on"},
+                             "deviceIdsForDeviceList": {"pick.7": ["7"]}},
+                   "subscriptions": [{"deviceId": 7}]}}}
+    snapshot = {"captureFormat": "native-rule-edit-v1", "ruleId": 42,
+                "nativeExport": json.dumps(payload),
+                "configJson": {"settings": {"pick.7": {"7": "Old fixture"}, "Counter": 7}},
+                "statusJson": {"appSettings": payload["appData"]["42"]["appSettings"]}}
+    original = json.dumps(snapshot, indent=2)
+    edited = json.loads(integration.edited_device_snapshot(original, 7, "Old fixture", 9, "New fixture"))
+    native = json.loads(edited["nativeExport"])
+    data = native["appData"]["42"]
+    assert data["appSettings"][0]["deviceList"] == {"9": "New fixture"}
+    assert data["appSettings"][0]["value"] == ["9"]
+    assert data["state"]["deviceIdsForDeviceList"] == {"pick.7": ["9"]}
+    assert data["subscriptions"] == [{"deviceId": 9}]
+    assert native["deviceReplacements"] == {"9": {"deviceLabel": "New fixture", "deviceId": "9"}}
+    assert data["state"]["capabsfalse"] == {"7": "New fixture is on"}
+    assert data["state"]["actions"] == payload["appData"]["42"]["state"]["actions"]
+    assert data["state"]["actionList"] == ["7"]
+    assert data["state"]["eval"] == {"0": ["7"]}
+    assert data["appSettings"][1]["value"] == 7
+    assert edited["configJson"]["settings"] == {"pick.7": {"9": "New fixture"}, "Counter": 7}
+    assert edited["statusJson"]["appSettings"][0]["deviceIdsForDeviceList"] == ["9"]
+    assert original == json.dumps(snapshot, indent=2)

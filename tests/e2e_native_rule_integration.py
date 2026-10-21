@@ -211,9 +211,107 @@ def run_native_rule_case(runner, suite, method):
         raise AssertionError("Native rule case did not execute")
 
 
+def edited_device_snapshot(source, old_id, old_label, new_id, new_label):
+    """Mechanically copy a known fixture reference; the replacement is supplied by the test."""
+    snapshot = json.loads(source)
+    if snapshot.get("captureFormat") != "native-rule-edit-v1":
+        raise AssertionError("Expected the readable native edit snapshot format")
+    old_id, new_id = str(old_id), str(new_id)
+
+    def device_value(value):
+        if isinstance(value, dict):
+            return {new_id if str(key) == old_id else key:
+                    new_label if str(key) == old_id else device_value(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [device_value(item) for item in value]
+        if str(value) == old_id:
+            return int(new_id) if isinstance(value, int) else new_id
+        return value
+
+    def projections(value):
+        if isinstance(value, list):
+            return [projections(item) for item in value]
+        if isinstance(value, dict):
+            copied = {key: projections(item) for key, item in value.items()}
+            for key in ("deviceId", "deviceIds", "deviceList", "deviceIdsForDeviceList"):
+                if key in copied:
+                    copied[key] = device_value(copied[key])
+            if str(copied.get("type", "")).startswith("capability") and "value" in copied:
+                copied["value"] = device_value(copied["value"])
+            return copied
+        return value.replace(old_label, new_label) if isinstance(value, str) else value
+
+    payload = json.loads(snapshot["nativeExport"])
+    replacements = payload["deviceReplacements"]
+    if old_id not in replacements or new_id in replacements:
+        raise AssertionError("Expected one original device reference and a distinct chosen replacement")
+    replacement = projections(replacements.pop(old_id))
+    for key in ("id", "deviceId"):
+        if key in replacement and str(replacement[key]) == old_id:
+            replacement[key] = device_value(replacement[key])
+    replacement["deviceLabel"] = new_label
+    replacements[new_id] = replacement
+    payload = projections(payload)
+    snapshot = projections(snapshot)
+    settings = snapshot["configJson"]["settings"]
+    for key, value in settings.items():
+        if isinstance(value, dict) and old_id in value:
+            settings[key] = device_value(value)
+    snapshot["nativeExport"] = json.dumps(payload, separators=(",", ":"))
+    return json.dumps(snapshot, separators=(",", ":"))
+
+
 class NativeRecoverySelectors(NativeRmBackupE2E):
     def restore(self, key, **options):
         return self.call("hub_restore_backup", scope="source", backupKey=key, confirm=True, **options)
+
+    def read_recovery_file(self, file_name):
+        chunks, offset = [], 0
+        while True:
+            result = self.call("hub_read_file", fileName=file_name, offset=offset, length=60000)
+            self.assertTrue(result.get("success"), result)
+            self.assertEqual(result["offset"], offset)
+            chunks.append(result["content"])
+            if not result.get("hasMore"):
+                return "".join(chunks)
+            self.assertGreater(result["nextOffset"], offset)
+            offset = result["nextOffset"]
+
+    def readable_recovery(self, key):
+        result = self.call("hub_get_backup", backupKey=key)
+        self.assertNotIn("error", result)
+        content = self.read_recovery_file(result["fileName"])
+        self.assertEqual(json.loads(content)["captureFormat"], "native-rule-edit-v1")
+        if "source" in result:
+            self.assertEqual(result["source"].encode(), content.encode())
+        return result["fileName"], content
+
+    def assert_missing_device_refusal(self, rule_id, key, missing_id):
+        before = self.configuration(rule_id)
+        refused = self.restore(key, preserveRuleId=True)
+        self.assertIs(refused.get("success"), False, refused)
+        self.assertIs(refused.get("partial"), False, refused)
+        self.assertEqual(refused.get("failedStep"), "devicePreflight", refused)
+        self.assertIn(str(missing_id), list(map(str, refused.get("missingDeviceIds", []))), refused)
+        self.assertEqual(self.configuration(rule_id), before)
+        return refused
+
+    def restore_edited_device_copy(self, rule_id, original_file, original, old_id, old_label, new_id, new_label):
+        edited = edited_device_snapshot(original, old_id, old_label, new_id, new_label)
+        file_name = self.prefix + "_backup_edited_recovery.json"
+        written = self.call("hub_write_file", fileName=file_name, content=edited, confirm=True)
+        self.assertTrue(written.get("success"), written)
+        self.addCleanup(self.call, "hub_delete_file", fileName=file_name, confirm=True)
+        self.assertEqual(self.read_recovery_file(file_name).encode(), edited.encode())
+        restored = self.call("hub_restore_backup", scope="source", sourceFile=file_name,
+                             preserveRuleId=True, confirm=True)
+        self.assertTrue(restored.get("success"), restored)
+        self.assertFalse(restored.get("partial"), restored)
+        self.assertEqual(str(restored["ruleId"]), str(rule_id))
+        self.assertEqual(restored.get("restoredVia"), "nativeStateReplay", restored)
+        self.assertEqual(self.read_recovery_file(original_file).encode(), original.encode())
+        self.healthy(rule_id)
+        return restored
 
     def switch_action(self, device_id):
         return change("action", type="switchActs", subtype="getOnOffSwitch", fields=[
@@ -250,15 +348,29 @@ class NativeRecoverySelectors(NativeRmBackupE2E):
 
     def test_rm_rule_restore_skips_a_deleted_device(self):
         device_id, dni = self.disposable_switch("RestoreGone")
-        rule_id = self.create([self.switch_action(device_id)])
+        old_label = self.client.native(f"/device/fullJson/{device_id}")["device"]["label"]
+        replacement_id, _ = self.disposable_switch("RestoreReplacement")
+        replacement_label = self.client.native(f"/device/fullJson/{replacement_id}")["device"]["label"]
+        rule_id = self.create([self.switch_action(device_id), log_action("unrelated saved action"),
+            change("variable", operation="create", name="Counter", type="integer", value=17)])
+        baseline = self.doc(rule_id)
         added = self.update(rule_id, [log_action("post-snapshot marker")])
         self.assertTrue(added.get("success"), added)
+        key = added["backup"]["backupKey"]
+        original_file, original = self.readable_recovery(key)
         self.delete_device(dni)
-        restored = self.restore(added["backup"]["backupKey"], preserveRuleId=True)
-        self.assertTrue(restored.get("partial"), restored)
-        self.assertIsNone(restored.get("failedStep"), restored)
-        skipped = [row for row in restored.get("settingsSkipped", []) if "no longer exist" in str(row.get("reason"))]
-        self.assertTrue(any(str(device_id) in str(row.get("reason")) for row in skipped), restored)
+        self.assert_missing_device_refusal(rule_id, key, device_id)
+        self.assertEqual(self.read_recovery_file(original_file).encode(), original.encode())
+        self.restore_edited_device_copy(rule_id, original_file, original, device_id, old_label,
+                                        replacement_id, replacement_label)
+        restored = self.doc(rule_id)
+        self.assertEqual([row["id"] for row in restored["actions"]], [row["id"] for row in baseline["actions"]])
+        self.assertEqual(restored["variables"], baseline["variables"])
+        self.assertIn("unrelated saved action", str(restored))
+        self.assertNotIn("post-snapshot marker", str(restored))
+        pickers = [row for name, row in self.settings(rule_id).items() if name.startswith("onOffSwitch.")]
+        self.assertEqual(len(pickers), 1)
+        self.assertEqual(pickers[0]["device_ids"], [str(replacement_id)])
 
     def test_rm_rule_restore_brings_back_a_removed_trigger(self):
         rule_id = self.create([self.switch_trigger("on"), self.switch_trigger("off"), log_action("trigger recovery")])
@@ -313,7 +425,9 @@ class NativeRecoverySelectors(NativeRmBackupE2E):
     def test_rm_rule_restore_expression_by_device_name(self):
         switches = {name: self.disposable_switch("Lamp (" + name + ")") for name in ("Gone", "Kitchen", "Den")}
         self.backups_enabled(False)
-        rule_id = self.create([self.switch_condition(switches["Gone"][0])])
+        rule_id = self.create([self.switch_condition(switches["Gone"][0]), log_action("expression unrelated"),
+            change("variable", operation="create", name="Counter", type="integer", value=23)])
+        baseline = self.doc(rule_id)
         condition = next(iter(self.doc(rule_id)["conditions"]))
         self.assertTrue(self.update(rule_id, [change("required", tokens=[condition])]).get("success"))
         self.backups_enabled(True)
@@ -328,21 +442,25 @@ class NativeRecoverySelectors(NativeRmBackupE2E):
         self.assertTrue(restored.get("success"), restored)
         self.assertIn("Lamp (Kitchen)", str(self.doc(rule_id)["conditions"]))
         self.assertNotIn("Lamp (Den)", str(self.doc(rule_id)["conditions"]))
+        key = keys["Kitchen"]
+        original_file, original = self.readable_recovery(key)
+        gone_id = switches["Gone"][0]
+        old_label = self.client.native(f"/device/fullJson/{gone_id}")["device"]["label"]
+        replacement_id = switches["Den"][0]
+        replacement_label = self.client.native(f"/device/fullJson/{replacement_id}")["device"]["label"]
         self.delete_device(switches["Gone"][1])
-        before_tokens = list(self.doc(rule_id)["expressions"]["0"])
-        refused = self.restore(keys["Kitchen"], preserveRuleId=True)
-        self.assertIs(refused.get("success"), False, refused)
-        self.assertIs(refused.get("partial"), True, refused)
-        self.assertEqual(refused.get("restoredVia"), "settingsReplay", refused)
-        self.assertIs(refused.get("requiredExpressionRestored"), False, refused)
-        self.assertIs(refused.get("preRestoreExpressionKept"), True, refused)
-        error = str(refused.get("requiredExpressionError", ""))
-        self.assertIn(str(switches["Gone"][0]), error, refused)
-        self.assertIn("no longer exist", error, refused)
-        self.assertEqual(self.doc(rule_id)["expressions"]["0"], before_tokens)
-        self.assertEqual(self.settings(rule_id)["rDev_" + condition]["device_ids"], [str(switches["Kitchen"][0])])
-        self.healthy(rule_id)
-
+        self.assert_missing_device_refusal(rule_id, key, gone_id)
+        self.assertIn("Lamp (Kitchen)", str(self.doc(rule_id)["conditions"]))
+        self.assertEqual(self.read_recovery_file(original_file).encode(), original.encode())
+        self.restore_edited_device_copy(rule_id, original_file, original, gone_id, old_label,
+                                        replacement_id, replacement_label)
+        recovered = self.doc(rule_id)
+        self.assertEqual(recovered["expressions"]["0"], [condition])
+        self.assertEqual(recovered["variables"], baseline["variables"])
+        self.assertEqual(recovered["actions"], baseline["actions"])
+        self.assertIn("Lamp (Den)", str(recovered["conditions"]))
+        self.assertNotIn("Lamp (Kitchen)", str(recovered["conditions"]))
+        self.assertEqual(self.settings(rule_id)["rDev_" + condition]["device_ids"], [str(replacement_id)])
 
 SUITES["recovery"] = (__name__, "NativeRecoverySelectors")
 
