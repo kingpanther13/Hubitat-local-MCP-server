@@ -62,11 +62,11 @@ class NativeDocumentsSpec extends ToolSpecBase {
         def beforeState = [:] + stateMap
         when:
         def actionPages = (0..1).collect { offset -> script.toolSetRule([operation: 'read', rule_id: 42,
-            args: [sections: ['actions'], offset: offset, limit: 1]]) }
+            args: [sections: ['actions'], cursor: offset.toString(), limit: 1]]) }
         def conditionPages = (0..2).collect { offset -> script.toolSetRule([operation: 'read', rule_id: 42,
-            args: [sections: ['conditions'], offset: offset, limit: 1]]) }
+            args: [sections: ['conditions'], cursor: offset.toString(), limit: 1]]) }
         def settingPages = (0..1).collect { offset -> script.toolSetRule([operation: 'read', rule_id: 42,
-            args: [sections: ['settings'], offset: offset, limit: 1]]) }
+            args: [sections: ['settings'], cursor: offset.toString(), limit: 1]]) }
         then:
         actionPages.collectMany { it.actions }*.id == ['3', '1']
         conditionPages.collectMany { it.conditions.keySet().toList() } == ['10', '2', '9']
@@ -76,7 +76,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
         settingPages[1].settings[0].value == false
         [actionPages, conditionPages, settingPages].every { pages ->
             pages.collect { it.page.revision }.unique().size() == 1 && (pages[0].page.revision ==~ /[0-9a-f]{64}/) &&
-                pages[0].page.total == pages.size() && pages[0].page.next_offset == 1 && pages.last().page.next_offset == null
+                pages[0].page.total == pages.size() && pages[0].nextCursor == '1' && pages.last().nextCursor == null
         }
         atomicStateMap == beforeAtomic
         stateMap == beforeState
@@ -100,15 +100,19 @@ class NativeDocumentsSpec extends ToolSpecBase {
         !script.toolGetRuleDocument([rule_id: 42, sections: ['conditions']]).containsKey('page')
     }
 
-    def 'paging defaults are bounded and offsets past the end return an explicit final empty section'() {
+    def 'paging defaults return an explicit final cursor including an empty section'() {
+        given:
+        nativeState.actions = [:]
+        nativeState.actionList = []
         when:
-        def result = script.toolGetRuleDocument([rule_id: 42, sections: ['actions'], offset: 99])
+        def result = script.toolGetRuleDocument([rule_id: 42, sections: ['actions'], cursor: ''])
         then:
         result.actions == []
-        result.page.offset == 99
+        result.page.offset == 0
         result.page.limit == 50
-        result.page.total == 2
-        result.page.containsKey('next_offset') && result.page.next_offset == null
+        result.page.total == 0
+        result.containsKey('nextCursor') && result.nextCursor == null
+        !result.page.containsKey('next_offset')
     }
 
     def 'invalid document paging refuses before native rendering or reads'() {
@@ -119,11 +123,63 @@ class NativeDocumentsSpec extends ToolSpecBase {
         then:
         thrown(IllegalArgumentException)
         where:
-        args << [[limit: 1], [sections: [], limit: 1], [sections: ['actions', 'settings'], offset: 0],
-            [sections: ['actions'], offset: -1], [sections: ['actions'], offset: 1000001],
-            [sections: ['actions'], offset: true], [sections: ['actions'], offset: 0.5],
+        args << [[limit: 1], [sections: [], limit: 1], [sections: ['actions', 'settings'], cursor: ''],
+            [sections: ['actions'], cursor: '-1'], [sections: ['actions'], cursor: 'bad'],
+            [sections: ['actions'], cursor: true], [sections: ['actions'], cursor: 0.5],
+            [sections: ['actions'], offset: 0],
             [sections: ['actions'], limit: 0], [sections: ['actions'], limit: 101],
             [sections: ['actions'], limit: false], [sections: ['actions'], limit: 1.5]]
+    }
+
+    def 'cursor at or beyond section end refuses instead of returning a misleading empty page'() {
+        when:
+        script.toolSetRule([operation: 'read', rule_id: 42, args: [sections: ['actions'], cursor: cursor]])
+        then:
+        thrown(IllegalArgumentException)
+        where:
+        cursor << ['2', '99', '2147483648']
+    }
+
+    def 'byte bounded pages account for unicode and JSON text escaping without dropping rows'() {
+        given:
+        String text = ('\u263a"\\\n' * 90)
+        nativeState.capabsfalse = ['1': text, '2': text, '3': text]
+        def unpaged = script.toolGetRuleDocument([rule_id: 42, sections: ['conditions']])
+        script.metaClass._responseSizeLimitBytes = { -> 5000 }
+        List pages = []
+        String cursor = ''
+        when:
+        while (cursor != null) {
+            def result = script.toolSetRule([operation: 'read', rule_id: 42,
+                args: [sections: ['conditions'], cursor: cursor, limit: 3]])
+            pages << result
+            cursor = result.nextCursor
+        }
+        then:
+        JsonOutput.toJson(unpaged).getBytes('UTF-8').length < 5000 - 1024
+        JsonOutput.toJson(script.jsonRpcResult(0, [content: [[type: 'text', text: JsonOutput.toJson(unpaged)]]])).getBytes('UTF-8').length > 5000 - 1024
+        pages.size() > 1
+        pages.collectEntries { it.conditions } == nativeState.capabsfalse
+        pages.collectMany { it.conditions.keySet().toList() } == ['1', '2', '3']
+        pages.every { result ->
+            JsonOutput.toJson(script.jsonRpcResult(0, [content: [[type: 'text', text: JsonOutput.toJson(result)]]])).getBytes('UTF-8').length <= 5000 - 1024
+        }
+        pages[0].conditions.size() < pages[0].page.limit
+        pages.collect { it.page.revision }.unique().size() == 1
+    }
+
+    def 'one oversized native row refuses explicitly without mutation or truncation'() {
+        given:
+        nativeState.capabsfalse = ['1': '\u263a"\\' * 2000]
+        script.metaClass._responseSizeLimitBytes = { -> 5000 }
+        def before = JsonOutput.toJson(nativeState)
+        when:
+        script.toolSetRule([operation: 'read', rule_id: 42, args: [sections: ['conditions'], cursor: '', limit: 1]])
+        then:
+        def failure = thrown(IllegalArgumentException)
+        failure.message.contains('exceeds the response size limit')
+        JsonOutput.toJson(nativeState) == before
+        events.empty
     }
 
     def 'read document returns native stable order typed values and locals without rendering'() {
