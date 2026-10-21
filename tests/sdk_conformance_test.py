@@ -380,6 +380,9 @@ def _tool_payload(result: CallToolResult, operation: str) -> dict[str, Any]:
     assert text_blocks, f"{operation} returned no text content"
     payload = json.loads(text_blocks[0])
     assert isinstance(payload, dict), f"{operation} payload is {type(payload).__name__}, not object"
+    assert payload.get("response_too_large") is not True, (
+        f"{operation} exceeded the response-size guard: {json.dumps(payload, sort_keys=True)}"
+    )
     assert payload.get("success") is not False, (
         f"{operation} returned success=false: error={payload.get('error')!r}"
     )
