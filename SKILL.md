@@ -133,7 +133,7 @@ Manage gateways (`hub_manage_*`, contain at least one write):
 | `hub_manage_diagnostics` | 7 | Diagnostics, state capture/delete, radio details (zwave/zigbee), memory history, metrics, GC |
 | `hub_manage_files` | 4 | File Manager CRUD |
 | `hub_manage_radio` | 6 | Z-Wave/Zigbee/Matter radio admin — radio details, configure (`hub_set_zwave`/`hub_set_zigbee`), and radio ops incl. Z-Wave network repair (`hub_call_zwave`/`hub_call_zigbee`/`hub_call_matter`); destructive radio ops are in `hub_manage_destructive_ops` |
-| `hub_manage_native_rules_and_apps` | 12 | Rule Machine read/create/update/forms through `hub_set_rule`; generic classic-app authoring through `hub_set_native_app`; runtime control, disable/delete/clone/export/import and rule health. |
+| `hub_manage_native_rules_and_apps` | 12 | Rule Machine read/create/update/forms through `hub_set_rule`; generic native fields, buttons and page walking through `hub_set_native_app` (RM structural shortcuts use `hub_set_rule`); runtime control, disable/delete/clone/export/import and rule health. |
 | `hub_manage_rule_machine` | 11 | Native Rule Machine read/create/update/forms through `hub_set_rule` + RMUtils list/run/set-paused/boolean + rule health + native-app deletion + Visual Rules Builder get/set/delete. |
 | `hub_manage_mcp` | 1 | Developer Mode self-administration — update MCP rule app's own settings, including the device-access scope `selectedDevices` (allowlist-gated; requires `enableDeveloperMode`) |
 | `hub_manage_dashboards` | 6 | Dashboard CRUD for both Easy and legacy Hubitat® Dashboards — list/get + create/update/delete/clone touch-friendly device dashboards; Easy update replaces the config wholesale, legacy update edits the nested layout wholesale or via granular tile ops (write) |

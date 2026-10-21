@@ -633,7 +633,7 @@ Reads (`hub_list_rules`, `hub_get_rule_health`, `hub_get_visual_rule`) are gated
 | `hub_import_native_app` | Import previously-exported app JSON into a new instance (lands ACTIVE; `stageDisabled` lands it disabled). Returns the new `appId`. |
 | `hub_get_rule_health` | Read-only health check on any installed app — surfaces broken markers, multiple-flag poison, configPage errors. (also in `hub_read_rules`) |
 
-Reads are gated by the Read master; create/update/delete by the Write master (with `confirm=true` + a recent backup). Both masters are ON by default. Native editor operations use returned controls; unsupported app variants remain explicit capability gaps. The generic `hub_set_native_app` escape hatch remains available for classic-app settings, buttons and wizard navigation.
+Reads are gated by the Read master; create/update/delete by the Write master (with `confirm=true` + a recent backup). Both masters are ON by default. Native editor operations use returned controls; unsupported app variants remain explicit capability gaps. The generic `hub_set_native_app` escape hatch remains available for classic-app settings, buttons and wizard navigation. RM actions, triggers, expressions and local variables use `hub_set_rule` rather than generic shortcut fields.
 
 </details>
 

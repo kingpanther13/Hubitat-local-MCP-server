@@ -4346,88 +4346,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         ])
     }
 
-    // Live-verified: RM stored a missing file name, showed the picker empty and marked the rule broken.
-    @spock.lang.Unroll
-
-    def "walkStep mutating op on an action page fires the deferred predCapabs clear; reads + non-action pages do not"() {
-        // P2c. _rmWalkStep is a RAW action-authoring path that bypasses _rmAddAction (lib ~6843), so it
-        // carries its own copy of the just-in-time clear: a mutating op (write/click/navigate) on
-        // selectActions or doActPage (or a navigate whose targetPage is one of those) must fire the
-        // deferred ghost ifThen before the raw step lands, else an action authored here after an RE is
-        // wrapped in IF(**Broken Condition**). A read (introspect) lands no action -> no clear; a
-        // mutating op on a non-action page (e.g. selectTriggers) lands no ACTION -> no clear.
-        given:
-        enableWrite()
-        def fetchSeq = 0
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
-        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
-            ruleConfigJson(100, "r", [[name: "N", type: "button"]])
-        }
-        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
-            fetchSeq++
-            doActPageGhostAndLogSchemaJson(100, fetchSeq)
-        }
-        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
-            ruleConfigJson(100, "r", [[name: "tCapab1", type: "enum", options: ["Switch"]]])
-        }
-        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-
-        def posts = []
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            posts << [path: path, body: body]
-            [status: 200, location: null, data: '']
-        }
-
-        when: "POSITIVE: a write on doActPage (an action page) runs while the rule is flagged"
-        atomicStateMap.predClearPending = ["100": true]
-        // The walkStep tail (raw doActPage write against a minimal schema) may no-op or throw after the
-        // entry-clear has already fired; we only assert the clear ran + flag dropped, so swallow the tail.
-        try {
-            script._rmWalkStep(100, [page: "doActPage", operation: "write", write: ["actType.1": "x"]])
-        } catch (Exception ignored) { /* tail write is immaterial; the entry-clear is what's under test */ }
-
-        then: "the deferred ghost ifThen clear fired (its getIfThen write + actionCancel are observable)"
-        posts.any { it.path == "/installedapp/update/json" &&
-                    it.body?.any { k, v -> k?.toString()?.startsWith("settings[actSubType.") && v == "getIfThen" } }
-        posts.any { it.path == "/installedapp/btn" && it.body?.name == "actionCancel" }
-
-        and: "the predClearPending flag is dropped -- the clear fires at most once"
-        !atomicStateMap.predClearPending?.get("100")
-
-        when: "NEGATIVE (read): an introspect on doActPage runs while the rule is flagged"
-        posts.clear()
-        atomicStateMap.predClearPending = ["100": true]
-        try {
-            script._rmWalkStep(100, [page: "doActPage", operation: "introspect"])
-        } catch (Exception ignored) { }
-
-        then: "no ghost clear fired (a read lands no action) -- no getIfThen write, no actionCancel"
-        !posts.any { it.path == "/installedapp/update/json" &&
-                     it.body?.any { k, v -> k?.toString()?.startsWith("settings[actSubType.") && v == "getIfThen" } }
-        !posts.any { it.path == "/installedapp/btn" && it.body?.name == "actionCancel" }
-
-        and: "the flag is left intact -- a read must not consume the deferred clear"
-        atomicStateMap.predClearPending?.get("100") == true
-
-        when: "NEGATIVE (non-action page): a write on selectTriggers runs while the rule is flagged"
-        posts.clear()
-        atomicStateMap.predClearPending = ["100": true]
-        try {
-            script._rmWalkStep(100, [page: "selectTriggers", operation: "write", write: ["tCapab1": "Switch"]])
-        } catch (Exception ignored) { }
-
-        then: "no ghost clear fired (no action lands on a trigger page) -- no getIfThen write, no actionCancel"
-        !posts.any { it.path == "/installedapp/update/json" &&
-                     it.body?.any { k, v -> k?.toString()?.startsWith("settings[actSubType.") && v == "getIfThen" } }
-        !posts.any { it.path == "/installedapp/btn" && it.body?.name == "actionCancel" }
-
-        and: "the flag is left intact -- a non-action-page edit must not consume the deferred clear"
-        atomicStateMap.predClearPending?.get("100") == true
-    }
-
-
     private String appsListWithRule(int ruleId = 555) {
         appsListWithRules([ruleId])
     }
@@ -5104,13 +5022,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
 
-    def "hub_set_native_app ALLOWS walkStep (and RM-format authoring params) -- routes to the shared edit engine, no longer rejected (issue #185)"() {
+    def "hub_set_native_app retains the generic native page walker"() {
         given:
         enableWrite()
-        // walkStep is a generic classic-dynamicPage walker, and the RM-wire-format
-        // shortcuts genuinely apply to RM-format classic apps (Basic/Button Rules),
-        // so the native-app tool must NOT reject them -- it shares the same edit
-        // engine as hub_set_rule.
+        // Native page walking remains available independently of structured RM authoring.
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
             ruleConfigJson(100, "r", [
@@ -5372,12 +5287,12 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def props = def_.inputSchema.properties.keySet()
 
         then: "the generic upsert params, plus the generic classic-page walkStep walker and buttonRule create helper (issue #185)"
-        props == (['appId', 'appType', 'name', 'settings', 'button', 'pageName', 'stateAttribute', 'buttonRule', 'walkStep', 'confirm'] as Set)
+        props == (['appId', 'appType', 'name', 'settings', 'button', 'pageName', 'stateAttribute', 'buttonRule', 'walkStep', 'guide', 'confirm'] as Set)
 
         and: "the FAT RM trigger/action authoring shortcuts still stay OUT of the schema (use hub_set_rule)"
         ['addTrigger', 'addTriggers', 'addAction', 'addActions', 'addRequiredExpression',
          'patches', 'replaceActions', 'removeAction', 'clearActions', 'moveAction',
-         'removeTrigger', 'modifyTrigger', 'addLocalVariable', 'removeLocalVariable', 'guide'].every { !props.contains(it) }
+         'removeTrigger', 'modifyTrigger', 'addLocalVariable', 'removeLocalVariable'].every { !props.contains(it) }
     }
 
 
