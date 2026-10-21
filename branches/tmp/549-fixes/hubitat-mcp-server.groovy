@@ -29616,7 +29616,7 @@ private Map _rmPreflightAddLocalVariable(Integer appId, Map varSpec) {
     if (typeCanonical in ["Number", "Decimal"]) {
         BigDecimal num = null
         try { num = new BigDecimal(value.toString().trim()) } catch (NumberFormatException ignored) { }
-        if (num != null && (num.precision() > 64 || Math.abs(num.scale()) > 64)) num = null
+        if (num != null && (num.precision() > 64 || num.scale() > 64 || num.scale() < -64)) num = null
         if (num == null || (typeCanonical == "Number" && num.stripTrailingZeros().scale() > 0)) {
             throw new IllegalArgumentException("addLocalVariable.value for ${typeCanonical} must be ${typeCanonical == 'Number' ? 'a whole number' : 'a number'} (got '${value}'). RM is not touched.".toString())
         }
