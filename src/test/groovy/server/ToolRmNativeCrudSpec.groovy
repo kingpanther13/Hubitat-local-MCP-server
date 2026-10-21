@@ -6639,6 +6639,7 @@ class ToolRmNativeCrudSpec extends RmNativeCrudSpecBase {
         "Decimal" | "1.2.3"
         "Number"  | "1e999999999"
         "Decimal" | "1e-999999999"
+        "Number"  | "1e2147483648"
     }
 
     def "addLocalVariable DateTime takes the hub-variable forms: a space instead of T"() {
