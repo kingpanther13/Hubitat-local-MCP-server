@@ -1895,6 +1895,31 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         !result.containsKey('disabledActionsNote')
     }
 
+    def "embedded controls retain name pairing across exact and multiple CSS classes"() {
+        given:
+        settingsMap.enableRead = true
+        def html = "<div class='notsubmitOnChange'>Not a control</div>" +
+            "<input type='hidden' name='before.type' value='button'>" +
+            "<div class='submitOnChange' title='Before' data-stateAttribute='first'>First</div>" +
+            "<div class='form-group'><input type='hidden' name='928.type' value='button'></div>" +
+            "<div><div class='submitOnChange app-button-link' title='' onclick='buttonClick(this); return false;' " +
+            "data-stateAttribute='setManHeat' style='color:red;cursor:pointer;font-size:1em' " +
+            "title='Set Heating Setpoint'>68°</div></div><input type='hidden' name='settings[928]' value=''>" +
+            '<input type="hidden" name="after.type" value="button">' +
+            '<div class="app-button-link submitOnChange extra" title="After" data-stateAttribute="last">Last</div>' +
+            "<div class='submitOnChange-extra'>Also not a control</div>"
+        hubGet.register('/installedapp/configure/json/35/selectActions') { params -> rmActionsPageJson(html, 'selectActions') }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, pageName: 'selectActions'])
+
+        then:
+        result.page.sections[0].embeddedActions == [
+            [name: 'before', title: 'Before', stateAttribute: 'first', description: 'First'],
+            [name: '928', title: 'Set Heating Setpoint', stateAttribute: 'setManHeat', description: '68°'],
+            [name: 'after', title: 'After', stateAttribute: 'last', description: 'Last']]
+    }
+
     def "selectActions embeddedActions flag the disabled action row with disabled:true"() {
         given:
         settingsMap.enableRead = true
