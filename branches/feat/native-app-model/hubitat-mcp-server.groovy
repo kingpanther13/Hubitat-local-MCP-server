@@ -34965,78 +34965,33 @@ private Integer _discoverParentAppId(String appType) {
         return found
     }
     def parentNode = findParentNode()
-    def bootstrapDiag = null
     def commitUnverified = false
     if (parentNode?.id == null) {
-        def sysAppPath = "/installedapp/sysApp/" + parentTypeName
-        mcpLog("info", "rm-native", "'${parentTypeName}' parent not installed -- bootstrapping via GET ${sysAppPath}")
-        def created = null
+        def matches = _appTypeEnrichment().builtIn.findAll {
+            it.namespace == "hubitat" && it.name == parentTypeName
+        }
+        if (matches.size() != 1 || !(matches[0].id?.toString() ==~ /[1-9][0-9]*/)) {
+            throw new IllegalArgumentException("Cannot bootstrap '${parentTypeName}': built-in catalog must contain one matching app type with a positive id (found ${matches.size()}).")
+        }
+        def body = hubInternalGet("/installedapp/sysAppByIdJson/${matches[0].id}")
+        def installed = body ? new groovy.json.JsonSlurper().parseText(body) : null
+        if (!(installed instanceof Map) || installed.success != true ||
+                !(installed.appId?.toString() ==~ /[1-9][0-9]*/)) {
+            throw new IllegalArgumentException("Cannot bootstrap '${parentTypeName}': built-in app installation did not return a successful app id.")
+        }
+        def newId = installed.appId.toString().toInteger()
         try {
-            created = hubInternalGetRaw(sysAppPath)
-            def _body = created?.data?.toString() ?: ""
-            def _ai = _body.indexOf("appId")
-            def _ctx = _ai >= 0 ? _body.substring(_ai, Math.min(_ai + 36, _body.length())).replaceAll(/\s+/, ' ') : "noAppId"
-            bootstrapDiag = "dl=${_body.length()} ctx='${_ctx}' st=${created?.status} loc=${created?.location}"
-        } catch (Exception e) {
-            bootstrapDiag = "sysApp threw: ${e.message}"
-            mcpLog("warn", "rm-native", "sysApp bootstrap GET for '${parentTypeName}' threw (continuing to re-discover): ${e.message}")
+            def commit = _commitUserAppInstall(newId, null)
+            if (commit?.success == false) {
+                throw new IllegalArgumentException("'${parentTypeName}' parent was created (id=${newId}) but its install commit did not take (app.installed reads false). Open it in Apps, press Done, and retry.")
+            }
+        } catch (IllegalArgumentException iae) {
+            throw iae
+        } catch (Exception ce) {
+            commitUnverified = true
+            mcpLog("warn", "rm-native", "Parent ${parentTypeName} install commit threw: ${ce.message}")
         }
-        parentNode = findParentNode()
-        bootstrapDiag += " rediscovered=${parentNode?.id}"
-        if (parentNode?.id == null && created != null) {
-            def newId = null
-            def firstPage = null
-            if (created.location) {
-                def lm = (created.location.toString() =~ /\/installedapp\/configure\/(\d+)(?:\/([^\/?#]+))?/)
-                if (lm.find()) { newId = lm.group(1) as Integer; firstPage = lm.group(2) }
-            }
-            if (newId == null && created.data) {
-                def bs = created.data.toString()
-                def am = (bs =~ /appId\s*=\s*(\d+)/)
-                if (am.find()) newId = am.group(1) as Integer
-                else {
-                    def cm = (bs =~ /\/installedapp\/configure(?:\/json)?\/(\d+)/)
-                    if (cm.find()) newId = cm.group(1) as Integer
-                }
-            }
-            bootstrapDiag += " newId=${newId}"
-            if (newId != null) {
-                try {
-                    def commit = _commitUserAppInstall(newId, firstPage)
-                    bootstrapDiag += " committed=${commit?.success}"
-                    if (commit?.success == false) {
-                        throw new IllegalArgumentException(
-                            "[bootstrap ${bootstrapDiag}] '${parentTypeName}' parent was created (id=${newId}) but its install commit did not take (app.installed reads false). Open it once in the Hubitat UI (Apps > ${parentTypeName}, press Done) and retry.")
-                    }
-                } catch (IllegalArgumentException iae) {
-                    throw iae
-                } catch (Exception ce) {
-                    bootstrapDiag += " commitThrew=${ce.message}"
-                    commitUnverified = true
-                }
-                parentNode = [id: newId, installed: true]
-            }
-        } else if (parentNode?.id != null && parentNode.installed != true) {
-            try {
-                def commit = _commitUserAppInstall(parentNode.id.toString().toInteger(), null)
-                bootstrapDiag += " committed=${commit?.success}"
-                if (commit?.success == false) {
-                    throw new IllegalArgumentException(
-                        "[bootstrap ${bootstrapDiag}] '${parentTypeName}' parent (id=${parentNode.id}) is install-pending and its install commit did not take (app.installed reads false). Open it once in the Hubitat UI (Apps > ${parentTypeName}, press Done) and retry.")
-                }
-            } catch (IllegalArgumentException iae) {
-                throw iae
-            } catch (Exception ce) {
-                bootstrapDiag += " commitThrew=${ce.message}"
-                commitUnverified = true
-            }
-            parentNode = findParentNode()
-        }
-        mcpLog(commitUnverified ? "warn" : "info", "rm-native", "sysApp bootstrap for '${parentTypeName}': ${bootstrapDiag}")
-    }
-    if (parentNode?.id == null) {
-        throw new IllegalArgumentException(
-            "[bootstrap ${bootstrapDiag}] '${parentTypeName}' parent not surfaced by /installedapp/sysApp (appType=${appType}); install via Apps > Add Built-In App.")
+        parentNode = [id: newId]
     }
     def id = parentNode.id.toString().toInteger()
     if (commitUnverified) {
