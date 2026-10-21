@@ -3,12 +3,15 @@
 import importlib
 import json
 import os
+import re
 import sys
 import time
 import unittest
 import urllib.parse
 import uuid
 from typing import ClassVar
+
+import requests
 
 from native_rm_backup_e2e import NativeRmBackupE2E
 from native_rm_parity_actions_e2e import NativeRmParityActions
@@ -55,6 +58,22 @@ class RegularNativeClient(HubClient):
                 raise AssertionError("A different native URL requires explicit native URL authorization")
         self.mcp_url = runner.client.endpoint + "?" + urllib.parse.urlencode({
             "access_token": runner.client.access_token})
+
+    def install_rule_machine_parent(self, type_id):
+        headers = {"Cookie": os.environ["HUB_UI_COOKIE"]} if os.environ.get("HUB_UI_COOKIE") else {}
+        self.calls["native_http"] += 1
+        installed = requests.get(self.base + "/installedapp/sysAppById/" + str(type_id),
+                                 headers=headers, allow_redirects=False, timeout=180)
+        assert installed.status_code == 302, "Native Rule Machine install did not redirect to its editor"
+        location = installed.headers.get("Location")
+        assert isinstance(location, str) and location, "Native Rule Machine install returned no editor location"
+        editor_url = urllib.parse.urljoin(self.base + "/", location)
+        parsed = urllib.parse.urlsplit(editor_url)
+        assert normalized_hub_url(editor_url)[:3] == normalized_hub_url(self.base)[:3], "Native editor redirects to another origin"
+        assert re.fullmatch(r"/installedapp/configure/[0-9]+", parsed.path), "Native install redirected outside its editor"
+        self.calls["native_http"] += 1
+        editor = requests.get(editor_url, headers=headers, allow_redirects=False, timeout=180)
+        assert editor.status_code == 200, "Native Rule Machine editor did not open successfully"
 
     def tool(self, tool_name, **arguments):
         self.calls[tool_name] += 1
@@ -129,7 +148,7 @@ def native_context(runner):
     parent_id = os.environ.get("NATIVE_RULE_PARENT_ID")
     if not parent_id:
         from e2e_test import _discover_native_rule_parent_id
-        parent_id = _discover_native_rule_parent_id(runner.client)
+        parent_id = _discover_native_rule_parent_id(runner.client, install_missing=client.install_rule_machine_parent)
     mode_id = os.environ.get("NATIVE_RULE_MODE_ID")
     if not mode_id:
         modes = runner.client.call_tool("hub_list_modes", {}).get("modes", [])

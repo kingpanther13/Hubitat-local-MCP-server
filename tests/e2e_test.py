@@ -1252,7 +1252,7 @@ def _is_stranded_button_controller(app: dict) -> bool:
             and bool(str(app.get("id") or "")) and (PREFIX in name or "E2E_PERM_" in name))
 
 
-def _discover_native_rule_parent_id(client) -> int:
+def _discover_native_rule_parent_id(client, *, install_missing=None) -> int:
     """Resolve the built-in app type, then identify its root instance across all pages."""
     catalog = client.call_tool("hub_list_apps", {"scope": "types"})
     assert isinstance(catalog, dict) and catalog.get("success") is not False, catalog
@@ -1276,6 +1276,9 @@ def _discover_native_rule_parent_id(client) -> int:
         assert next_cursor not in seen and next_cursor != cursor, "Parent inventory cursor repeated"
         seen.add(next_cursor)
         cursor = next_cursor
+    if not parents and install_missing is not None:
+        install_missing(int(type_id))
+        return _discover_native_rule_parent_id(client)
     assert len(parents) == 1, f"Expected one Rule Machine parent, found {parents}"
     parent_id = str(parents[0].get("id", ""))
     assert parent_id.isdecimal(), f"Rule Machine parent ID is not decimal: {parents[0]}"

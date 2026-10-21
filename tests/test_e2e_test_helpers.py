@@ -3438,3 +3438,87 @@ def test_native_parent_discovery_requires_unique_builtin_type(types):
     client = SimpleNamespace(call_tool=lambda *_args: {"apps": types})
     with pytest.raises(AssertionError, match="built-in Rule Machine app type"):
         et._discover_native_rule_parent_id(client)
+
+
+def test_missing_native_parent_is_installed_once_then_independently_rediscovered():
+    installs = []
+    client = _native_parent_client([
+        {"apps": []},
+        {"apps": [{"id": 28, "appTypeId": 18, "parentId": None}]},
+    ])
+    assert et._discover_native_rule_parent_id(client, install_missing=installs.append) == 28
+    assert installs == [18]
+
+
+def test_existing_native_parent_never_installs_another():
+    client = _native_parent_client([{"apps": [{"id": 28, "appTypeId": 18, "parentId": None}]}])
+    assert et._discover_native_rule_parent_id(client, install_missing=lambda *_args: pytest.fail("unexpected install")) == 28
+
+
+def test_ambiguous_native_parent_does_not_install():
+    client = _native_parent_client([{"apps": [
+        {"id": 28, "appTypeId": 18, "parentId": None},
+        {"id": 29, "appTypeId": 18, "parentId": None},
+    ]}])
+    with pytest.raises(AssertionError, match="Expected one Rule Machine parent"):
+        et._discover_native_rule_parent_id(client, install_missing=lambda *_args: pytest.fail("unexpected install"))
+
+
+def test_native_parent_install_does_not_repeat_when_rediscovery_fails():
+    installs = []
+    client = _native_parent_client([{"apps": []}, {"apps": []}])
+    with pytest.raises(AssertionError, match="Expected one Rule Machine parent"):
+        et._discover_native_rule_parent_id(client, install_missing=installs.append)
+    assert installs == [18]
+
+
+@pytest.mark.parametrize("location", ["/installedapp/configure/28", "http://hub.invalid/installedapp/configure/28"])
+def test_native_parent_bootstrap_follows_only_exact_same_hub_editor(monkeypatch, location):
+    import e2e_native_rule_integration as integration
+
+    calls = []
+    replies = iter([SimpleNamespace(status_code=302, headers={"Location": location}),
+                    SimpleNamespace(status_code=200)])
+    def get(url, **kwargs):
+        calls.append((url, kwargs))
+        return next(replies)
+    monkeypatch.setattr(integration.requests, "get", get)
+    monkeypatch.setenv("HUB_UI_COOKIE", "test-cookie")
+    client = integration.RegularNativeClient.__new__(integration.RegularNativeClient)
+    client.base, client.calls = "http://hub.invalid", Counter()
+    client.install_rule_machine_parent(18)
+    assert calls == [("http://hub.invalid" + path, {
+        "headers": {"Cookie": "test-cookie"}, "allow_redirects": False, "timeout": 180,
+    }) for path in ("/installedapp/sysAppById/18", "/installedapp/configure/28")]
+
+
+@pytest.mark.parametrize("location", [
+    "http://other.invalid/installedapp/configure/28", "//other.invalid/installedapp/configure/28",
+    "/installedapp/delete/28", "/installedapp/configure/no-id", "/installedapp/configure/28?next=elsewhere",
+])
+def test_native_parent_bootstrap_refuses_wrong_editor_redirect_without_following(monkeypatch, location):
+    import e2e_native_rule_integration as integration
+
+    calls = []
+    def get(url, **kwargs):
+        calls.append(url)
+        return SimpleNamespace(status_code=302, headers={"Location": location})
+    monkeypatch.setattr(integration.requests, "get", get)
+    client = integration.RegularNativeClient.__new__(integration.RegularNativeClient)
+    client.base, client.calls = "http://hub.invalid", Counter()
+    with pytest.raises(AssertionError):
+        client.install_rule_machine_parent(18)
+    assert calls == ["http://hub.invalid/installedapp/sysAppById/18"]
+
+
+@pytest.mark.parametrize("statuses", [(200,), (302, 302), (302, 500)])
+def test_native_parent_bootstrap_requires_install_redirect_then_successful_editor(monkeypatch, statuses):
+    import e2e_native_rule_integration as integration
+
+    replies = iter(SimpleNamespace(status_code=status, headers={"Location": "/installedapp/configure/28"})
+                   for status in statuses)
+    monkeypatch.setattr(integration.requests, "get", lambda *_args, **_kwargs: next(replies))
+    client = integration.RegularNativeClient.__new__(integration.RegularNativeClient)
+    client.base, client.calls = "http://hub.invalid", Counter()
+    with pytest.raises(AssertionError):
+        client.install_rule_machine_parent(18)
