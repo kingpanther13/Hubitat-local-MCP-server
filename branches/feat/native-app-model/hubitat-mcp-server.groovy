@@ -27357,12 +27357,13 @@ Map toolGetRuleDocument(Map args) {
     def allowed = ['actions', 'conditions', 'triggers', 'expressions', 'variables', 'settings']
     def sections = args.sections == null ? allowed : args.sections
     if (!(sections instanceof List) || sections.any { !(it in allowed) }) throw new IllegalArgumentException('Unknown document section')
-    boolean paged = args.containsKey('offset') || args.containsKey('limit')
+    boolean paged = args.containsKey('cursor') || args.containsKey('limit')
     if (paged && sections.size() != 1) throw new IllegalArgumentException('Paged reads require exactly one section')
-    def offset = args.containsKey('offset') ? args.offset : 0
+    def cursor = args.containsKey('cursor') ? args.cursor : ''
     def limit = args.containsKey('limit') ? args.limit : 50
-    if (paged && (!(offset instanceof Number) || !offset.toString().isLong() || offset < 0 || offset > 1000000 ||
-        !(limit instanceof Number) || !limit.toString().isLong() || limit < 1 || limit > 100)) throw new IllegalArgumentException('Read offset must be an integer from 0 to 1000000 and limit from 1 to 100')
+    if (paged && (!(cursor instanceof String) || !(limit instanceof Number) || !limit.toString().isLong() || limit < 1 || limit > 100))
+        throw new IllegalArgumentException('Read cursor must be a string and limit an integer from 1 to 100')
+    if (paged) _parseListCursor(cursor, Integer.MAX_VALUE, 'hub_set_rule')
     boolean requiredEnabled = _nrHandle(id).getSetting('useST') == true
     Map nativeState = _nrState(id)
     def structuralIssues = _ndStructuralIssues(nativeState, requiredEnabled)
@@ -27386,12 +27387,20 @@ Map toolGetRuleDocument(Map args) {
         List rows = complete instanceof Map ? complete.entrySet().toList().sort { a, b -> a.key.toString() <=> b.key.toString() } :
             (section == 'settings' ? complete.sort { a, b -> a.name <=> b.name } : complete)
         int total = rows.size()
-        int start = Math.min(offset.toInteger(), total)
+        int start = _parseListCursor(cursor, total, 'hub_set_rule')
         int end = Math.min(start + limit.toInteger(), total)
-        List selected = rows.subList(start, end)
-        document.put(section, complete instanceof Map ? selected.collectEntries { entry -> [(entry.key): entry.value] } : selected)
-        document.page = [offset: offset, limit: limit, total: total, next_offset: end < total ? end : null,
+        document.page = [offset: start, limit: limit, total: total,
             revision: _mrtrSha256(groovy.json.JsonOutput.toJson(_mrtrCanonicalArgs(complete)))]
+        int budget = _responseSizeLimitBytes() - 1024
+        while (true) {
+            List selected = rows.subList(start, end)
+            document.put(section, complete instanceof Map ? selected.collectEntries { entry -> [(entry.key): entry.value] } : selected)
+            document.nextCursor = end < total ? end.toString() : null
+            def envelope = jsonRpcResult(0, [content: [[type: 'text', text: groovy.json.JsonOutput.toJson(document)]]])
+            if (groovy.json.JsonOutput.toJson(envelope).getBytes('UTF-8').length <= budget) break
+            if (end - start <= 1) throw new IllegalArgumentException('A native document row or its validation metadata exceeds the response size limit; it cannot be returned without truncation')
+            end = start + (end - start).intdiv(2)
+        }
     }
     document
 }
@@ -27683,7 +27692,7 @@ private Map _ndOperationSchema(String operation) {
     List required = []
     if (operation == 'read') {
         properties.sections = [type: 'array', items: [type: 'string', enum: ['actions', 'conditions', 'triggers', 'expressions', 'variables', 'settings']]]
-        properties.offset = [type: 'integer', minimum: 0, maximum: 1000000]
+        properties.cursor = [type: 'string']
         properties.limit = [type: 'integer', minimum: 1, maximum: 100]
     } else if (operation == 'create') {
         properties = [parent_id: [type: 'integer', minimum: 1], name: [type: 'string', minLength: 1, maxLength: 200], changes: changes]
@@ -27763,7 +27772,7 @@ Call hub_set_rule without operation for help, or choose a write operation withou
 
 Read hub_set_rule(operation:"read",rule_id,args:{sections:[...]}) before editing an existing native rule. Reads use native state and typed settings without rendering its editor. Sections: actions, conditions, triggers, expressions, variables, settings. Action IDs and order are native IDs, preserved for in-place edits; omitted parts and unknown settings remain native-owned.
 
-For large rules, read one section with args:{sections:["settings"],offset:0,limit:50}. Paging requires exactly one section; offset is 0..1000000 and limit is 1..100 (defaults: 0 and 50). The section keeps its usual map or list shape. page returns offset, limit, total, next_offset (null at the end) and revision, a hash of the complete section. Follow next_offset until null; restart if revision changes between pages. Actions retain native order, settings sort by name, and map sections sort by string key. Omit offset and limit for an unpaged read.
+For large rules, read one section with args:{sections:["settings"],cursor:"",limit:50}. Paging requires exactly one section; limit is 1..100 (default 50). The section keeps its usual map or list shape. Pass the returned top-level nextCursor into args.cursor until nextCursor is null. page returns offset, limit, total and revision, a hash of the complete section; restart if revision changes. Pages may contain fewer than limit rows to fit the response size cap; an individual oversized row is refused explicitly without truncation. Actions retain native order, settings sort by name, and map sections sort by string key. Omit cursor and limit for an unpaged read.
 
 Writes require confirm=true and a recent hub backup. Automatic pre-edit recovery is enabled by default: an update captures one recovery point for its whole changes batch, and a rule form captures one before its first render and reuses it through that workflow. Recovery metadata is returned as backup, including after partial failure; capture failure stops the requested edit. Rule Machine parent creation/navigation has no existing child configuration to recover; opening the child starts its own protected workflow. hub_set_rule(operation:"update",rule_id,args:{changes:[...]},confirm:true) applies changes in order. hub_set_rule(operation:"create",args:{parent_id,name,changes:[...]},confirm:true) creates a Rule-5.1 child under native Rule Machine. A failed creation can leave a native child: inspect returned rule_id and parent before retrying. A partial update can leave preceding changes committed; inspect before resubmitting.
 
