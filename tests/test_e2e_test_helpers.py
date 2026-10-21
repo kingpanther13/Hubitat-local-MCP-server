@@ -3330,7 +3330,7 @@ def test_different_native_url_requires_authorization_and_same_authenticated_hub_
         bound = integration.RegularNativeClient(SimpleNamespace(client=client))
         assert bound.base == "http://native.invalid"
     else:
-        with pytest.raises(AssertionError, match="authorization|identity"):
+        with pytest.raises(AssertionError, match=r"authorization|identity"):
             integration.RegularNativeClient(SimpleNamespace(client=client))
     assert calls == ([("regular", ("hub_get_info", {})), ("local", "hub_get_info")] if allowed else [])
 
