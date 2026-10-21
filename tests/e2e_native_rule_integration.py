@@ -23,6 +23,7 @@ SUITES = {
     "lifecycle": ("native_rm_parity_lifecycle_e2e", "NativeRmParityLifecycleE2E"),
     "expressions": ("native_rm_parity_expressions_e2e", "NativeRmParityExpressions"),
     "actions": ("native_rm_parity_actions_e2e", "NativeRmParityActions"),
+    "app_actions": ("native_rm_parity_app_actions_e2e", "NativeRmParityAppActions"),
     "backup": ("native_rm_backup_e2e", "NativeRmBackupE2E"),
 }
 
@@ -114,6 +115,7 @@ class RunnerFixtures(dict):
         "water": "Virtual Water Sensor", "humidity": "Virtual Humidity Sensor",
         "illuminance": "Virtual Illuminance Sensor", "presence": "Virtual Presence",
         "omni": "Virtual Omni Sensor",
+        "thermostat": "Virtual Thermostat", "thermostat2": "Virtual Thermostat",
     }
 
     def __init__(self, runner):

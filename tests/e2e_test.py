@@ -6777,6 +6777,18 @@ class TestRunner:
             self._delete_native(app_id)
 
     @test("native_apps")
+    def test_rm_action_room_lights(self) -> None:
+        self._run_native_rule_case("app_actions", "test_rm_action_room_lights")
+
+    @test("native_apps")
+    def test_rm_action_scene(self) -> None:
+        self._run_native_rule_case("app_actions", "test_rm_action_scene")
+
+    @test("native_apps")
+    def test_rm_action_thermostat_apps(self) -> None:
+        self._run_native_rule_case("app_actions", "test_rm_action_thermostat_apps")
+
+    @test("native_apps")
     def test_set_rule_contains_comparator(self) -> None:
         self._run_native_rule_case("expressions", "test_set_rule_contains_comparator")
 
