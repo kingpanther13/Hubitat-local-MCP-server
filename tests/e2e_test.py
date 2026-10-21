@@ -6158,17 +6158,19 @@ class TestRunner:
             # health should be clean (it renders -- not the broken orphan a bare
             # createchild produces).
             assert (br.get("health") or {}).get("ok") is not False, f"new button rule is unhealthy: {br}"
+            from native_rule_document_e2e import log_action
             acted = self._write_once("hub_manage_rule_machine", "hub_set_rule",
-                {"appId": rule_id, "addAction": {"capability": "log", "message": "E2E button rule"}, "confirm": True},
+                {"operation": "update", "rule_id": int(rule_id),
+                 "args": {"changes": [log_action("E2E button rule")]}, "confirm": True},
                 "button rule action")
-            assert acted.get("success") is not False, f"authoring the button rule's action failed: {acted}"
-            # The trailing main-page Done commit must target the Button Rule's real commit page
-            # (selectActions), not a hardcoded 'mainPage' -- a 404 there sets mainPageDoneFailed/Error
-            # (the page-graph fix). With the hardcode bug this fails; after the fix these hold.
-            assert acted.get("mainPageDoneFailed") is not True, \
-                f"button rule Done commit hit a missing page (mainPage hardcode regression): {acted}"
-            assert not acted.get("mainPageDoneError"), \
-                f"button rule Done commit errored: {acted.get('mainPageDoneError')}"
+            assert acted.get("success") is True and not acted.get("partial"), acted
+            document = self._native_rule_document(rule_id)
+            assert len(document["actions"]) == 1 and "E2E button rule" in json.dumps(document["actions"]), document
+            assert document["nativeHealth"]["available"] and not document["nativeHealth"]["broken"], document
+            # Reading the actual Button Rule page also detects a wrong mainPage commit.
+            page = self.client.call_tool("hub_get_app_config", {
+                "appId": rule_id, "pageName": "selectActions"})
+            assert page.get("success") is True and "E2E button rule" in json.dumps(page), page
         except (McpError, McpToolError, requests.HTTPError) as exc:
             if "504" not in str(exc):
                 raise
