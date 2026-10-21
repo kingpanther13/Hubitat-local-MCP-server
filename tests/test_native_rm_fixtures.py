@@ -38,6 +38,7 @@ class FixtureHub:
             return {"source": "hub_api", "drivers": [
                 {"id": "1", "name": "Virtual Switch", "bucket": "virtual"},
                 {"id": "2", "name": "Virtual Omni Sensor", "bucket": "virtual"},
+                {"id": "3", "name": "Virtual Player", "bucket": "virtual"},
             ]}
         if name == "hub_create_driver":
             assert not self.installed
@@ -86,6 +87,13 @@ def test_existing_exact_tone_driver_and_device_are_reused_after_paged_lookup():
     assert [args.get("cursor") for name, args in hub.calls
             if name == "hub_list_drivers" and args.get("nameFilter")] == ["", "page2"]
     assert hub.fixtures.metadata("tone")["device"]["id"] == "9"
+
+
+def test_player_fixture_uses_the_builtin_driver_catalog_name():
+    hub = FixtureHub()
+    assert hub.fixtures["player"] == "9"
+    assert hub.devices["9"]["deviceTypeId"] == "3"
+    assert hub.fixtures.metadata("player")["device"]["virtual"] is True
 
 
 def test_existing_tone_name_with_different_source_is_not_adopted_or_overwritten():

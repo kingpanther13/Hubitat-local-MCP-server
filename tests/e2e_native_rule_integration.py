@@ -109,7 +109,7 @@ class RunnerFixtures(dict):
         "dimmer": "Virtual Dimmer", "button": "Virtual Button",
         "color": "Virtual RGBW Light", "blind": "Virtual Blind", "shade": "Virtual Shade",
         "garage": "Virtual Garage Door Controller", "valve": "Virtual Valve",
-        "tone": "BAT_E2E_KEEP Virtual Tone", "player": "Virtual Music Player",
+        "tone": "BAT_E2E_KEEP Virtual Tone", "player": "Virtual Player",
         "motion": "Virtual Motion Sensor", "contact": "Virtual Contact Sensor",
         "water": "Virtual Water Sensor", "humidity": "Virtual Humidity Sensor",
         "illuminance": "Virtual Illuminance Sensor", "presence": "Virtual Presence",
