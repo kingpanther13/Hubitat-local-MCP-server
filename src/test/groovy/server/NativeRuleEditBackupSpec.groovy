@@ -62,7 +62,22 @@ class NativeRuleEditBackupSpec extends ToolSpecBase {
         }
     }
 
-    void cleanup() { script.callerClient = null }
+    void cleanup() {
+        script.callerClient = null
+        sharedMap('NATIVE_FORM_CONTEXTS').clear()
+        sharedMap('NATIVE_FORM_BUSY').clear()
+    }
+
+    private Map sharedMap(String name) {
+        def field = script.class.getDeclaredField(name)
+        field.accessible = true
+        field.get(null) as Map
+    }
+
+    private void cacheForms() {
+        sharedMap('NATIVE_FORM_CONTEXTS').putAll([
+            target: [app_id: 42L], anotherCaller: [app_id: 42L], otherRule: [app_id: 43L]])
+    }
 
     private static Map form() {
         [app: [id: 42, version: 1], configPage: [name: 'mainPage', sections: []], settings: [:]]
@@ -123,6 +138,84 @@ class NativeRuleEditBackupSpec extends ToolSpecBase {
         then:
         !result.success && !result.partial
         events == ['preflight']
+    }
+
+    def 'document contention refuses before preflight backup or mutation and preserves the owner lock'() {
+        given:
+        def key = script._nfKey(42L)
+        sharedMap('NATIVE_FORM_BUSY')[key] = true
+        cacheForms()
+        when:
+        script.toolUpdateRuleDocument(update())
+        then:
+        thrown(IllegalStateException)
+        events.empty
+        sharedMap('NATIVE_FORM_BUSY')[key]
+        sharedMap('NATIVE_FORM_CONTEXTS').size() == 3
+    }
+
+    def 'document lock covers backup and apply while unrelated rules remain independent'() {
+        given:
+        def key = script._nfKey(42L)
+        def other = script._nfKey(43L)
+        sharedMap('NATIVE_FORM_BUSY')[other] = true
+        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason, boolean strict ->
+            assert sharedMap('NATIVE_FORM_BUSY')[key]
+            [backupKey: 'fixture']
+        }
+        script.metaClass._nmUpsertAction = { Long id, Map value ->
+            assert sharedMap('NATIVE_FORM_BUSY')[key]
+            [success: true]
+        }
+        cacheForms()
+        when:
+        def result = script.toolUpdateRuleDocument(update())
+        then:
+        result.success
+        !sharedMap('NATIVE_FORM_BUSY').containsKey(key)
+        sharedMap('NATIVE_FORM_BUSY')[other]
+        sharedMap('NATIVE_FORM_CONTEXTS').keySet() == ['otherRule'] as Set
+    }
+
+    def 'unexpected preflight exception releases document lock without invalidating form contexts'() {
+        given:
+        cacheForms()
+        script.metaClass._nrState = { Long id -> throw new IllegalStateException('read unavailable') }
+        when:
+        script.toolUpdateRuleDocument(update())
+        then:
+        thrown(IllegalStateException)
+        sharedMap('NATIVE_FORM_BUSY').isEmpty()
+        sharedMap('NATIVE_FORM_CONTEXTS').size() == 3
+        events.empty
+    }
+
+    def 'failed preflight or backup releases lock and preserves existing form contexts'() {
+        given:
+        cacheForms()
+        backupFails = !preflightFailure
+        def args = update()
+        if (preflightFailure) args.changes = [[part: 'required', value: [tokens: ['999']]]]
+        when:
+        def result = script.toolUpdateRuleDocument(args)
+        then:
+        !result.success && !result.partial
+        sharedMap('NATIVE_FORM_BUSY').isEmpty()
+        sharedMap('NATIVE_FORM_CONTEXTS').size() == 3
+        where:
+        preflightFailure << [true, false]
+    }
+
+    def 'failed mutation invalidates target form contexts and releases document lock'() {
+        given:
+        cacheForms()
+        applyFails = true
+        when:
+        def result = script.toolUpdateRuleDocument(update())
+        then:
+        !result.success && result.partial
+        sharedMap('NATIVE_FORM_BUSY').isEmpty()
+        sharedMap('NATIVE_FORM_CONTEXTS').keySet() == ['otherRule'] as Set
     }
 
     def 'a form workflow snapshots before rendering and reuses its recovery handle through submissions'() {

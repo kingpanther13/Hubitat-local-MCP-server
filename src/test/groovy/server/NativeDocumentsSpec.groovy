@@ -176,6 +176,39 @@ class NativeDocumentsSpec extends ToolSpecBase {
         events == ['variable']
     }
 
+    def 'native Done error bodies cannot pass using previously healthy installed rule state'() {
+        given:
+        script.metaClass.hubInternalPostFormRaw = { String path, String body, int timeout = 420, boolean retry = false ->
+            events << [path: path, body: body]
+            [status: 200, data: JsonOutput.toJson(response)]
+        }
+        when:
+        def result = script.toolUpdateRuleDocument([rule_id: 42, confirm: true, changes: [logChange()]])
+        then:
+        !result.success && result.partial
+        result.error.contains('Native form')
+        events.any { it instanceof Map && it.body.contains('_action_update=Done') }
+        where:
+        response << [[status: 'error'], [error: 'Save refused'], [errorMessage: 'Save refused'],
+            [configPage: [error: 'Save refused']]]
+    }
+
+    def 'native Done allows success and redirect responses before health verification'() {
+        given:
+        script.metaClass.hubInternalPostFormRaw = { String path, String body, int timeout = 420, boolean retry = false ->
+            [status: status, data: response]
+        }
+        when:
+        def result = script.toolUpdateRuleDocument([rule_id: 42, confirm: true, changes: [logChange()]])
+        then:
+        result.success
+        where:
+        status | response
+        200    | [status: 'success']
+        200    | '{"redirect":"/installedapp/list"}'
+        302    | null
+    }
+
     def 'successful update keeps ID then checks native health and subscriptions after Done'() {
         when:
         def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [[part: 'action', value: [type: 'messageActs', subtype: 'getLogMsg', fields: []]]], confirm: true])

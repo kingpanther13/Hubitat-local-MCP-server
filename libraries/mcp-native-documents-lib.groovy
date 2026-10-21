@@ -298,6 +298,8 @@ private Map _ndApply(Long id, List changes, boolean created) {
         def done = hubInternalPostFormRaw('/installedapp/update/json', 'id=' + id.toString() + '&_action_update=Done&_cancellable=true')
         def doneStatus = done instanceof Map ? done.get('status') : null
         if (doneStatus != null && doneStatus.toString().isInteger() && doneStatus.toInteger() >= 400) throw new IllegalStateException('Native Done was rejected')
+        def doneBody = done instanceof Map ? done.get('data') : null
+        if (doneBody instanceof Map || (doneBody != null && doneBody.toString().trim())) _nfJson(doneBody)
         def finalHealth = _ndJson(hubInternalGet("/app/ruleBuilderJson/${id}"))
         if (!(finalHealth instanceof Map) || finalHealth.broken != false) throw new IllegalStateException('Native rule health failed after Done')
         boolean stopped = finalHealth.stopped == true
@@ -343,14 +345,23 @@ Map toolUpdateRuleDocument(Map args) {
     List changes = _ndChanges(args.changes)
     requireDestructiveConfirm(args.confirm)
     _requireUnprotectedAppMutation(id, 'edit native rule document')
-    _nrHandle(id)
-    if (getAppByAppId(id)?.disabled == true) throw new IllegalArgumentException('Enable the native rule before editing its document')
-    try { _ndPreflight(id, changes) }
-    catch (IllegalArgumentException failure) { return [success: false, partial: false, rule_id: id, error: failure.message?.toString()] }
-    Map backup
-    try { backup = _ndEditBackup(id, 'pre-document-update') }
-    catch (Exception failure) { return [success: false, partial: false, rule_id: id, error: "Pre-edit backup failed; no document changes were applied: ${failure.message}".toString()] }
-    _ndApply(id, changes, false) + [backup: backup]
+    String appKey = _nfKey(id)
+    if (NATIVE_FORM_BUSY.putIfAbsent(appKey, true) != null) throw new IllegalStateException('This rule already has an active native editing operation')
+    boolean attempted = false
+    try {
+        _nrHandle(id)
+        if (getAppByAppId(id)?.disabled == true) throw new IllegalArgumentException('Enable the native rule before editing its document')
+        try { _ndPreflight(id, changes) }
+        catch (IllegalArgumentException failure) { return [success: false, partial: false, rule_id: id, error: failure.message?.toString()] }
+        Map backup
+        try { backup = _ndEditBackup(id, 'pre-document-update') }
+        catch (Exception failure) { return [success: false, partial: false, rule_id: id, error: "Pre-edit backup failed; no document changes were applied: ${failure.message}".toString()] }
+        attempted = true
+        _ndApply(id, changes, false) + [backup: backup]
+    } finally {
+        if (attempted) NATIVE_FORM_CONTEXTS.entrySet().findAll { entry -> entry.value.app_id?.toString() == id.toString() }.each { entry -> NATIVE_FORM_CONTEXTS.remove(entry.key) }
+        NATIVE_FORM_BUSY.remove(appKey)
+    }
 }
 
 private Map _ndEditBackup(Long id, String reason) {
