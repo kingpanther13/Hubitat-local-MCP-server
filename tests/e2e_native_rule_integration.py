@@ -8,8 +8,12 @@ import time
 import unittest
 import urllib.parse
 import uuid
+from typing import ClassVar
 
-from native_rule_document_e2e import HubClient
+from native_rm_backup_e2e import NativeRmBackupE2E
+from native_rm_parity_actions_e2e import NativeRmParityActions
+from native_rm_parity_support import ParityCase
+from native_rule_document_e2e import HubClient, change, field, log_action
 
 SUITES = {
     "lifecycle": ("native_rm_parity_lifecycle_e2e", "NativeRmParityLifecycleE2E"),
@@ -56,7 +60,7 @@ class RegularNativeClient(HubClient):
 
 
 class RunnerFixtures(dict):
-    DRIVERS = {
+    DRIVERS: ClassVar[dict[str, str]] = {
         "switch": "Virtual Switch", "switch2": "Virtual Switch", "out": "Virtual Switch",
         "temperature": "Virtual Temperature Sensor", "temperature2": "Virtual Temperature Sensor",
         "dimmer": "Virtual Dimmer", "button": "Virtual Button",
@@ -103,9 +107,18 @@ def native_context(runner):
         if not modes:
             raise AssertionError("Native rule E2E requires a hub mode")
         mode_id = modes[0]["id"]
-    cached = dict(client=client, parent_id=int(parent_id), mode_id=str(mode_id), fixtures=fixtures,
-                  custom_drivers=json.loads(os.environ.get("NATIVE_RULE_FIXTURE_DRIVERS", "{}")),
-                  explicit=bool(explicit))
+    cached = {"client": client, "parent_id": int(parent_id), "mode_id": str(mode_id), "fixtures": fixtures,
+              "custom_drivers": json.loads(os.environ.get("NATIVE_RULE_FIXTURE_DRIVERS", "{}")),
+              "explicit": bool(explicit)}
+    if explicit:
+        if not isinstance(fixtures, dict) or not fixtures:
+            raise AssertionError("NATIVE_RULE_FIXTURES must identify the authorized native fixtures")
+        if not os.environ.get("NATIVE_RULE_FIXTURE_LABEL_PREFIX"):
+            raise AssertionError("Explicit native fixtures require NATIVE_RULE_FIXTURE_LABEL_PREFIX")
+        validator = type("RegularNativeFixtureValidation", (ParityCase,), {
+            key: value for key, value in cached.items() if key != "explicit"})
+        for key in fixtures:
+            validator.fixture_metadata(key)
     runner._native_rule_context = cached
     return cached
 
@@ -138,10 +151,6 @@ def run_native_rule_case(runner, suite, method):
         raise AssertionError(f"Native rule coverage unexpectedly skipped: {result.skipped}")
     if result.testsRun != 1:
         raise AssertionError("Native rule case did not execute")
-
-
-from native_rm_backup_e2e import NativeRmBackupE2E
-from native_rule_document_e2e import change, field, log_action
 
 
 class NativeRecoverySelectors(NativeRmBackupE2E):
@@ -268,9 +277,6 @@ class NativeRecoverySelectors(NativeRmBackupE2E):
 
 
 SUITES["recovery"] = (__name__, "NativeRecoverySelectors")
-
-
-from native_rm_parity_actions_e2e import NativeRmParityActions
 
 
 class NativePickerSelectors(NativeRmParityActions):

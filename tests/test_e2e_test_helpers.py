@@ -3185,6 +3185,7 @@ def test_accepted_skip_passes_only_documented_ephemeral_reasons(monkeypatch, lan
 @pytest.mark.parametrize("failure", ["assertion", "cleanup", "skip"])
 def test_shared_native_case_propagates_failure_cleanup_errors_and_unexpected_skips(monkeypatch, failure):
     import unittest
+
     import e2e_native_rule_integration as integration
 
     ran = []
@@ -3233,3 +3234,34 @@ def test_shared_native_case_preserves_structured_expected_refusals(monkeypatch):
     shared = integration.RegularNativeClient(SimpleNamespace(client=client))
     assert shared.tool("hub_set_rule", operation="update", confirm=True) == {
         "success": False, "error": "refused", "partial": False}
+
+
+@pytest.mark.parametrize("label, virtual, accepted", [
+    ("E2E_Authorized_Switch", True, True),
+    ("Other_Device", True, False),
+    ("E2E_Authorized_Switch", False, False),
+])
+def test_regular_native_context_validates_explicit_fixtures_before_caching(monkeypatch, label, virtual, accepted):
+    import e2e_native_rule_integration as integration
+
+    reads = []
+    def native(path):
+        reads.append(path)
+        return {"device": {"id": 7, "label": label, "virtual": virtual}}
+
+    monkeypatch.setenv("NATIVE_RULE_FIXTURES", '{"switch":7}')
+    monkeypatch.setenv("NATIVE_RULE_FIXTURE_LABEL_PREFIX", "E2E_Authorized_")
+    monkeypatch.setenv("NATIVE_RULE_PARENT_ID", "28")
+    monkeypatch.setenv("NATIVE_RULE_MODE_ID", "1")
+    monkeypatch.setenv("NATIVE_RULE_FIXTURE_DRIVERS", "{}")
+    monkeypatch.setattr(integration, "RegularNativeClient", lambda _runner: SimpleNamespace(native=native))
+    runner = SimpleNamespace()
+    if accepted:
+        context = integration.native_context(runner)
+        assert context["fixtures"] == {"switch": 7}
+        assert integration.native_context(runner) is context
+    else:
+        with pytest.raises(AssertionError, match="Fixture identity|neither virtual"):
+            integration.native_context(runner)
+        assert not hasattr(runner, "_native_rule_context")
+    assert reads == ["/device/fullJson/7"]

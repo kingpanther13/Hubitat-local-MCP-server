@@ -35,10 +35,10 @@ from zoneinfo import ZoneInfo
 
 import requests
 from device_configuration_helpers import assert_native_preferences
-from native_rule_document_e2e import change as native_change, field as native_field, log_action as native_log
+from native_rule_document_e2e import change as native_change
+from native_rule_document_e2e import field as native_field
+from native_rule_document_e2e import log_action as native_log
 from sdk_conformance_helpers import (
-    assert_exact_rule_log_messages,
-    mrtr_log_actions,
     write_cap_holder_retry_blocker,
     write_cap_variable_items,
 )
