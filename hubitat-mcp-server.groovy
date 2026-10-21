@@ -9473,7 +9473,10 @@ private Map _appTypeRegistry() {
         // the clicked "updateRule" is a silent no-op, so written settings never reached the running
         // instance. The page's own "Update" button (btn name=update) re-initializes subscriptions,
         // exactly as the UI does (verified live, fw 2.5.1.181).
-        room_lighting: [namespace: "hubitat", appName: "Room Lights", parentTypeName: "Room Lighting", commitButton: "update"]
+        room_lighting: [namespace: "hubitat", appName: "Room Lights", parentTypeName: "Room Lighting", commitButton: "update"],
+        scene: [namespace: "hubitat", appName: "Scene-1.2", parentTypeName: "Groups and Scenes", labelInput: "name", commitButton: "update"],
+        thermostat_scheduler: [namespace: "hubitat", appName: "Thermostat Scheduler 2.0", parentTypeName: "Thermostat Schedulers", commitButton: "update"],
+        thermostat_controller: [namespace: "hubitat", appName: "Thermostat Controller 2.0", parentTypeName: "Thermostat Controllers", commitButton: "update"]
         // button_controller, groups_scenes, notifier and room_lighting child appName values were
         // verified on the live hub.
     ]

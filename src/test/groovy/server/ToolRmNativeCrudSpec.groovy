@@ -5344,18 +5344,19 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // ---------- HSM as an action ----------
 
 
-    def "creating a room_lighting app uses createchild under the Room Lighting parent and commits with the update button"() {
+    @Unroll
+    def "creating #appType uses its native parent, label input, and update button"() {
         given:
         enableWrite()
         hubGet.register('/hub2/appsList') { params ->
-            JsonOutput.toJson([apps: [[data: [id: 51, name: "Room Lighting", type: "Room Lighting", user: false, hidden: false], children: []]]])
+            JsonOutput.toJson([apps: [[data: [id: 51, name: parentName, type: parentName, user: false, hidden: false], children: []]]])
         }
         hubGet.register('/installedapp/configure/json/780') { params ->
-            JsonOutput.toJson([app: [id: 780, name: "Room Lights", label: "Kitchen", installed: true, appType: [name: "Room Lights", namespace: "hubitat"]],
-                configPage: [name: "mainPage", error: null, sections: [[title: "", input: [[name: "origLabel", type: "text"], [name: "update", type: "button"]]]]],
-                settings: [origLabel: "Kitchen"], childApps: []])
+            JsonOutput.toJson([app: [id: 780, name: childName, label: "Kitchen", installed: true, appType: [name: childName, namespace: "hubitat"]],
+                configPage: [name: "mainPage", error: null, sections: [[title: "", input: [[name: labelInput, type: "text"], [name: "update", type: "button"]]]]],
+                settings: [(labelInput): "Kitchen"], childApps: []])
         }
-        hubGet.register('/installedapp/statusJson/780') { params -> statusJson(780, [[name: "origLabel", type: "text", value: "Kitchen"]]) }
+        hubGet.register('/installedapp/statusJson/780') { params -> statusJson(780, [[name: labelInput, type: "text", value: "Kitchen"]]) }
         def createCalls = []
         script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
             createCalls << path; [status: 302, location: "/installedapp/configure/780", data: ""]
@@ -5367,14 +5368,21 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolSetNativeApp([appType: "room_lighting", name: "Kitchen", confirm: true])
+        def result = script.toolSetNativeApp([appType: appType, name: "Kitchen", confirm: true])
 
         then:
-        createCalls.any { it == "/installedapp/createchild/hubitat/Room Lights/parent/51" }
+        createCalls.any { it == "/installedapp/createchild/hubitat/${childName}/parent/51".toString() }
         result.appId == 780
-        posts.any { it.path == "/installedapp/update/json" && it.body["settings[origLabel]"] == "Kitchen" }
+        posts.any { it.path == "/installedapp/update/json" && it.body["settings[${labelInput}]".toString()] == "Kitchen" }
         posts.any { it.path == "/installedapp/btn" && it.body?.name == "update" }
         !posts.any { it.path == "/installedapp/btn" && it.body?.name == "updateRule" }
+
+        where:
+        appType                 | childName                    | parentName               | labelInput
+        "room_lighting"         | "Room Lights"                | "Room Lighting"          | "origLabel"
+        "scene"                 | "Scene-1.2"                  | "Groups and Scenes"      | "name"
+        "thermostat_scheduler"  | "Thermostat Scheduler 2.0"   | "Thermostat Schedulers"  | "origLabel"
+        "thermostat_controller" | "Thermostat Controller 2.0"  | "Thermostat Controllers" | "origLabel"
     }
 
 
