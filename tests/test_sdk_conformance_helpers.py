@@ -589,12 +589,18 @@ def test_native_mrtr_batch_rejects_over_limit_instead_of_silently_truncating():
 
 def _native_condition_readback():
     changes, _ = helpers.native_mrtr_changes("SDK proof", "588", {})
-    settings = {}
+    settings, typed = {}, []
     for index, row in enumerate(changes[:54], 1):
-        settings[f"rCapab_{index}"] = row["value"]["capability"]
-        for field in row["value"]["fields"]:
-            settings[field["name"].replace("#", str(index))] = field["value"]
-    return {"settings": settings}, {"conditions": {str(i): "native condition" for i in range(1, 55)}}, changes
+        fields = [{"name": "rCapab_#", "type": "enum", "value": row["value"]["capability"]},
+                  *row["value"]["fields"]]
+        for field in fields:
+            name = field["name"].replace("#", str(index))
+            device = field["type"].startswith("capability.")
+            settings[name] = {device_id: "Temperature fixture" for device_id in field["value"]} if device else field["value"]
+            typed.append({"name": name, "type": field["type"], "value": field["value"],
+                          "device_ids": field["value"] if device else None})
+    return {"settings": settings}, {"conditions": {str(i): "native condition" for i in range(1, 55)},
+                                     "settings": typed}, changes
 
 
 def test_native_condition_readback_verifies_every_persisted_row():
@@ -613,7 +619,7 @@ def test_native_condition_readback_rejects_lost_replayed_or_changed_rows(corrupt
             settings[prefix + "55"] = settings[prefix + "54"]
         document["conditions"]["55"] = "replayed condition"
     elif corruption == "device":
-        settings["rDev_54"] = ["589"]
+        settings["rDev_54"] = {"589": "Wrong device"}
     elif corruption == "comparator":
         settings["RelrDev_54"] = "<"
     elif corruption == "threshold":
@@ -645,7 +651,8 @@ def _native_action_readback():
                 fields = [{"name": "tCapab#", "type": "enum", "value": "Temperature"}, *event["fields"]]
                 for field in fields:
                     name = field["name"].replace("#", "-" + str(event_index))
-                    settings[name] = field["value"]
+                    settings[name] = ({device_id: "Temperature fixture" for device_id in field["value"]}
+                                      if field["type"].startswith("capability.") else field["value"])
                     typed.append({"name": name, "type": field["type"], "value": field["value"],
                                   "device_ids": field["value"] if field["type"].startswith("capability.") else None})
         else:
@@ -672,7 +679,7 @@ def test_native_action_readback_rejects_lost_replayed_or_corrupted_work(corrupti
     elif corruption == "type":
         document["settings"][0]["type"] = "text"
     elif corruption == "device":
-        config["settings"]["tDev-160"] = ["589"]
+        config["settings"]["tDev-160"] = {"589": "Wrong device"}
     elif corruption == "comparator":
         config["settings"]["ReltDev-160"] = "<"
     elif corruption == "threshold":
@@ -682,4 +689,25 @@ def test_native_action_readback_rejects_lost_replayed_or_corrupted_work(corrupti
     else:
         config["settings"]["logmsg.46"] = config["settings"]["logmsg.45"]
     with pytest.raises(AssertionError):
+        helpers.assert_exact_native_actions(config, document, changes, messages)
+
+
+@pytest.mark.parametrize("corruption", ["typed_device", "typed_type", "raw_list"])
+def test_native_condition_readback_requires_native_map_and_typed_identity(corruption):
+    config, document, changes = _native_condition_readback()
+    device = next(row for row in document["settings"] if row["name"] == "rDev_54")
+    if corruption == "typed_device":
+        device["device_ids"] = ["589"]
+    elif corruption == "typed_type":
+        device["type"] = "enum"
+    else:
+        config["settings"]["rDev_54"] = ["588"]
+    with pytest.raises(AssertionError):
+        helpers.assert_exact_native_conditions(config, document, changes)
+
+
+def test_native_action_readback_requires_native_device_map():
+    config, document, changes, messages = _native_action_readback()
+    config["settings"]["tDev-160"] = ["588"]
+    with pytest.raises(AssertionError, match="Raw wait device differs"):
         helpers.assert_exact_native_actions(config, document, changes, messages)

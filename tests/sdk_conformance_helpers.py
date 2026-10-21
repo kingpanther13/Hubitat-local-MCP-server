@@ -218,12 +218,25 @@ def assert_exact_native_conditions(config: Any, document: Any, changes: list[dic
     conditions = document.get("conditions")
     assert isinstance(conditions, dict), "Independent document read returned no conditions map"
     assert {str(index) for index in indices} == set(map(str, conditions)), "Condition document IDs differ"
+    typed_rows = document.get("settings")
+    assert isinstance(typed_rows, list), "Condition verification requires typed native settings"
+    typed = {row["name"]: row for row in typed_rows}
+    assert len(typed) == len(typed_rows), "Typed condition setting names repeat"
     for index, requested in zip(sorted(indices), expected, strict=True):
         fields = {row["name"]: row["value"] for row in requested["fields"]}
         assert columns["rCapab_"][index] == requested["capability"], "Condition capability differs"
         actual_devices = columns["rDev_"][index]
-        assert isinstance(actual_devices, list), "Persisted condition device selector is not a list"
-        assert list(map(str, actual_devices)) == fields["rDev_#"], "Condition device selection differs"
+        assert isinstance(actual_devices, dict), "Persisted condition device selector is not a native map"
+        assert sorted(map(str, actual_devices)) == sorted(fields["rDev_#"]), "Condition device selection differs"
+        for field in [{"name": "rCapab_#", "type": "enum", "value": requested["capability"]}, *requested["fields"]]:
+            saved = typed.get(field["name"].replace("#", str(index)))
+            assert saved is not None and saved["type"] == field["type"], "Condition input type differs"
+            if field["type"].startswith("capability."):
+                assert sorted(map(str, saved.get("device_ids") or [])) == sorted(field["value"]), "Typed condition device differs"
+            elif field["type"] == "decimal":
+                assert float(saved["value"]) == float(field["value"]), "Typed condition threshold differs"
+            else:
+                assert saved["value"] == field["value"], "Typed condition selector differs"
         assert columns["RelrDev_"][index] == fields["RelrDev_#"], "Condition comparator differs"
         assert float(columns["state_"][index]) == float(fields["state_#"]), "Condition threshold/order differs"
 
@@ -264,7 +277,7 @@ def assert_exact_native_actions(config: Any, document: Any, changes: list[dict[s
                 value = field["value"]
                 if field["type"].startswith("capability."):
                     assert sorted(map(str, saved.get("device_ids") or [])) == sorted(map(str, value)), "Wait device differs"
-                    assert isinstance(settings.get(name), list) and list(map(str, settings[name])) == value, "Raw wait device differs"
+                    assert isinstance(settings.get(name), dict) and sorted(map(str, settings[name])) == sorted(value), "Raw wait device differs"
                 elif field["type"] == "decimal":
                     assert float(saved["value"]) == float(value) == float(settings[name]), "Wait threshold/order differs"
                 else:
