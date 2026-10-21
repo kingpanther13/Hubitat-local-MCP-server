@@ -549,3 +549,34 @@ def test_exact_fixture_lookup_refuses_ambiguous_matches_without_sleeping() -> No
         ))
 
     assert sleeps == []
+
+
+@pytest.mark.parametrize("count", [6, 36, 99])
+def test_native_mrtr_batch_uses_direct_native_rows_and_preserves_each_log(count):
+    changes, messages = helpers.native_mrtr_changes(
+        "SDK proof", "588", {"E2E_MRTR_ACTION_COUNT": str(count)},
+    )
+    assert len(changes) == 100
+    conditions, actions = changes[:-count], changes[-count:]
+    assert len(conditions) == 100 - count
+    assert all(row["part"] == "condition" for row in conditions)
+    assert all(row["value"]["capability"] == "Temperature" for row in conditions)
+    assert [row["value"]["fields"][2]["value"] for row in conditions] == list(range(60, 160 - count))
+    assert all(row["value"]["fields"][0] == {
+        "name": "rDev_#", "type": "capability.temperatureMeasurement", "value": ["588"],
+    } for row in conditions)
+    assert messages == [f"SDK proof {index}" for index in range(1, count + 1)]
+    assert all(row["part"] == "action" and row["value"]["type"] == "messageActs"
+               and row["value"]["subtype"] == "getLogMsg" for row in actions)
+    assert [row["value"]["fields"][0]["value"] for row in actions] == messages
+
+
+@pytest.mark.parametrize("device_id", ["", "-1", "588x", None, 588])
+def test_native_mrtr_batch_rejects_invalid_fixture_ids(device_id):
+    with pytest.raises(ValueError, match="fixture ID must be decimal"):
+        helpers.native_mrtr_changes("SDK proof", device_id, {})
+
+
+def test_native_mrtr_batch_rejects_over_limit_instead_of_silently_truncating():
+    with pytest.raises(ValueError, match="at most 99"):
+        helpers.native_mrtr_changes("SDK proof", "588", {"E2E_MRTR_ACTION_COUNT": "120"})

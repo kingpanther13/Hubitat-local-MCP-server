@@ -47,6 +47,27 @@ def mrtr_log_actions(prefix: str, environ: Mapping[str, str] | None = None) -> l
             for index in range(1, mrtr_action_count(environ) + 1)]
 
 
+def native_mrtr_changes(
+    prefix: str, temperature_id: str, environ: Mapping[str, str] | None = None,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Build a full native mutation batch; every condition and log persists real work."""
+    if not isinstance(temperature_id, str) or re.fullmatch(r"[0-9]+", temperature_id) is None:
+        raise ValueError("The temperature fixture ID must be decimal")
+    count = mrtr_action_count(environ)
+    if count > 99:
+        raise ValueError("Native MRTR proof supports at most 99 log actions in its 100-change batch")
+    messages = [f"{prefix} {index}" for index in range(1, count + 1)]
+    conditions = [{"part": "condition", "value": {"capability": "Temperature", "fields": [
+        {"name": "rDev_#", "type": "capability.temperatureMeasurement", "value": [temperature_id]},
+        {"name": "RelrDev_#", "type": "enum", "value": ">"},
+        {"name": "state_#", "type": "decimal", "value": 60 + index},
+    ]}} for index in range(100 - count)]
+    actions = [{"part": "action", "value": {"type": "messageActs", "subtype": "getLogMsg", "fields": [
+        {"name": "logmsg.#", "type": "textarea", "value": message},
+    ]}} for message in messages]
+    return [*conditions, *actions], messages
+
+
 def write_cap_variable_count(environ: Mapping[str, str] | None = None) -> int:
     """Select a bounded real bulk-create workload for the concurrent write proof."""
     settings = os.environ if environ is None else environ
