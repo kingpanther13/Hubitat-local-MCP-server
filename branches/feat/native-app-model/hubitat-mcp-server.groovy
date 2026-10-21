@@ -25167,6 +25167,13 @@ Map _rmRestoreRequiredExpression(Integer appId, Map snapshot) {
         return out
     }
 }
+private void _rmForgetDeletedParent(Integer appId) {
+    def ids = atomicState.parentAppIds
+    if (ids instanceof Map) {
+        def remaining = ids.findAll { key, value -> value?.toString() != appId.toString() }
+        if (remaining.size() != ids.size()) atomicState.parentAppIds = remaining
+    }
+}
 def toolDeleteNativeApp(args) {
     requireDestructiveConfirm(args?.confirm as Boolean)
     if (args?.appId == null) throw new IllegalArgumentException("appId is required")
@@ -25184,6 +25191,7 @@ def toolDeleteNativeApp(args) {
         if (force) {
             _rmForceDeleteApp(appId)
             _rmDropPredClearPending(appId)
+            _rmForgetDeletedParent(appId)
             return [
                 success: true,
                 appId: appId,
@@ -25204,6 +25212,7 @@ def toolDeleteNativeApp(args) {
                 ]
             }
             _rmDropPredClearPending(appId)
+            _rmForgetDeletedParent(appId)
             return [
                 success: true,
                 appId: appId,
