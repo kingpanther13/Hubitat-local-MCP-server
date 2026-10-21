@@ -34968,7 +34968,7 @@ private Integer _discoverParentAppId(String appType) {
     def commitUnverified = false
     if (parentNode?.id == null) {
         def matches = _appTypeEnrichment().builtIn.findAll {
-            it.namespace == "hubitat" && it.name == parentTypeName
+            it.name == parentTypeName
         }
         if (matches.size() != 1 || !(matches[0].id?.toString() ==~ /[1-9][0-9]*/)) {
             throw new IllegalArgumentException("Cannot bootstrap '${parentTypeName}': built-in catalog must contain one matching app type with a positive id (found ${matches.size()}).")
