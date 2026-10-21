@@ -199,6 +199,29 @@ def assert_exact_rule_log_messages(
     return actual
 
 
+def assert_exact_native_conditions(config: Any, document: Any, changes: list[dict[str, Any]]) -> None:
+    """Check independent persisted state for every condition, including replay duplicates."""
+    settings = config.get("settings")
+    assert isinstance(settings, dict), "Condition verification requires raw persisted settings"
+    expected = [row["value"] for row in changes if row["part"] == "condition"]
+    columns = {prefix: _indexed_settings(settings, prefix)
+               for prefix in ("rCapab_", "rDev_", "RelrDev_", "state_")}
+    indices = set(columns["rCapab_"])
+    assert len(indices) == len(expected), "Persisted condition count differs from the requested batch"
+    assert all(set(column) == indices for column in columns.values()), "Condition field indices differ"
+    conditions = document.get("conditions")
+    assert isinstance(conditions, dict), "Independent document read returned no conditions map"
+    assert {str(index) for index in indices} == set(map(str, conditions)), "Condition document IDs differ"
+    for index, requested in zip(sorted(indices), expected, strict=True):
+        fields = {row["name"]: row["value"] for row in requested["fields"]}
+        assert columns["rCapab_"][index] == requested["capability"], "Condition capability differs"
+        actual_devices = columns["rDev_"][index]
+        assert isinstance(actual_devices, list), "Persisted condition device selector is not a list"
+        assert list(map(str, actual_devices)) == fields["rDev_#"], "Condition device selection differs"
+        assert columns["RelrDev_"][index] == fields["RelrDev_#"], "Condition comparator differs"
+        assert float(columns["state_"][index]) == float(fields["state_#"]), "Condition threshold/order differs"
+
+
 async def find_exact_fixture_id_with_settle(
     list_rules: Callable[[], Awaitable[list[dict[str, Any]]]],
     fixture_name: str,

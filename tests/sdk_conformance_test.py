@@ -67,6 +67,7 @@ from sdk_conformance_helpers import (  # noqa: E402  (import guard above supplie
     DEFAULT_SDK_INPUT_REQUIRED_MAX_ROUNDS,
     MODERN_PROTOCOL_VERSION,
     RequestTrace,
+    assert_exact_native_conditions,
     assert_exact_rule_log_messages,
     assert_mrtr_owner_rounds,
     build_capacity_recovery,
@@ -471,7 +472,7 @@ class ModernMrtrScenario:
             for label in ("E2E_PERM_Native_temperature", "E2E_PERM_Omni"):
                 listed = await client.call_tool("hub_read_devices", {
                     "tool": "hub_list_devices", "args": {
-                        "labelFilter": label, "filter": "virtual", "capabilityFilter": "TemperatureMeasurement",
+                        "scope": "all", "labelFilter": label, "capabilityFilter": "TemperatureMeasurement",
                     },
                 })
                 rows = _tool_payload(listed, "temperature fixture discovery").get("devices", [])
@@ -479,6 +480,16 @@ class ModernMrtrScenario:
                 assert len(matches) <= 1, f"Ambiguous permanent fixture label: {label}"
                 if matches:
                     temperature_id = str(matches[0]["id"])
+                    details = await client.call_tool("hub_read_devices", {
+                        "tool": "hub_get_device", "args": {
+                            "deviceId": temperature_id, "mode": "details", "sections": ["identity"],
+                        },
+                    })
+                    identity = _tool_payload(details, "permanent fixture identity")["sections"]["identity"]
+                    expected_driver = "Virtual Omni Sensor" if label == "E2E_PERM_Omni" else "Virtual Temperature Sensor"
+                    assert str(identity.get("id")) == temperature_id and identity.get("label") == label, identity
+                    assert identity.get("virtual") is True or identity.get("virtual") == "true", identity
+                    assert identity.get("driver", {}).get("name") == expected_driver, identity
                     break
         assert str(parent_id).isdecimal(), "Native MRTR proof requires a decimal Rule Machine parent ID"
         assert temperature_id.isdecimal(), (
@@ -562,6 +573,13 @@ class ModernMrtrScenario:
                 "args": {"appId": fixture_id, "includeSettings": True},
             })
             readback_payload = _tool_payload(readback, "slow fixture persisted-state readback")
+            document_result = await client.call_tool(self.GATEWAY, {
+                "tool": "hub_set_rule", "args": {
+                    "operation": "read", "rule_id": int(fixture_id), "args": {"sections": ["conditions"]},
+                },
+            })
+            document = _tool_payload(document_result, "independent persisted condition readback")
+            assert_exact_native_conditions(readback_payload, document, changes)
             assert_exact_rule_log_messages(
                 readback_payload,
                 messages,

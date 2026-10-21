@@ -580,3 +580,44 @@ def test_native_mrtr_batch_rejects_invalid_fixture_ids(device_id):
 def test_native_mrtr_batch_rejects_over_limit_instead_of_silently_truncating():
     with pytest.raises(ValueError, match="at most 99"):
         helpers.native_mrtr_changes("SDK proof", "588", {"E2E_MRTR_ACTION_COUNT": "120"})
+
+
+def _native_condition_readback():
+    changes, _ = helpers.native_mrtr_changes("SDK proof", "588", {})
+    settings = {}
+    for index, row in enumerate(changes[:94], 1):
+        settings[f"rCapab_{index}"] = row["value"]["capability"]
+        for field in row["value"]["fields"]:
+            settings[field["name"].replace("#", str(index))] = field["value"]
+    return {"settings": settings}, {"conditions": {str(i): "native condition" for i in range(1, 95)}}, changes
+
+
+def test_native_condition_readback_verifies_every_persisted_row():
+    config, document, changes = _native_condition_readback()
+    helpers.assert_exact_native_conditions(config, document, changes)
+
+
+@pytest.mark.parametrize("corruption", ["missing", "duplicate", "device", "comparator", "threshold", "order", "type", "document"])
+def test_native_condition_readback_rejects_lost_replayed_or_changed_rows(corruption):
+    config, document, changes = _native_condition_readback()
+    settings = config["settings"]
+    if corruption == "missing":
+        del settings["rDev_94"]
+    elif corruption == "duplicate":
+        for prefix in ("rCapab_", "rDev_", "RelrDev_", "state_"):
+            settings[prefix + "95"] = settings[prefix + "94"]
+        document["conditions"]["95"] = "replayed condition"
+    elif corruption == "device":
+        settings["rDev_94"] = ["589"]
+    elif corruption == "comparator":
+        settings["RelrDev_94"] = "<"
+    elif corruption == "threshold":
+        settings["state_94"] = 60
+    elif corruption == "order":
+        settings["state_1"], settings["state_2"] = settings["state_2"], settings["state_1"]
+    elif corruption == "type":
+        settings["rCapab_94"] = "Humidity"
+    else:
+        del document["conditions"]["94"]
+    with pytest.raises(AssertionError):
+        helpers.assert_exact_native_conditions(config, document, changes)
