@@ -425,9 +425,12 @@ class NativeRecoverySelectors(NativeRmBackupE2E):
         restored = self.doc(rule_id)
         self.assertEqual([row["id"] for row in restored["actions"]], [row["id"] for row in baseline["actions"]])
         self.assertEqual(restored["variables"], baseline["variables"])
-        self.assertIn("unrelated saved action", str(restored))
-        self.assertNotIn("post-snapshot marker", str(restored))
-        pickers = [row for name, row in self.settings(rule_id).items() if name.startswith("onOffSwitch.")]
+        saved = self.settings(rule_id)
+        saved_log_id = next(str(row["id"]) for row in baseline["actions"] if row["value"]["method"] == "getLogMsg")
+        self.assertEqual(saved["logmsg." + saved_log_id]["value"], "unrelated saved action")
+        self.assertEqual([row["value"] for name, row in saved.items() if name.startswith("logmsg.")],
+                         ["unrelated saved action"])
+        pickers = [row for name, row in saved.items() if name.startswith("onOffSwitch.")]
         self.assertEqual(len(pickers), 1)
         self.assertEqual(pickers[0]["device_ids"], [str(replacement_id)])
 
@@ -467,7 +470,10 @@ class NativeRecoverySelectors(NativeRmBackupE2E):
         self.adopt(copy_id, label)
         document = self.doc(copy_id)
         self.assertEqual(len(document["triggers"]), 1)
-        self.assertIn("deleted-rule marker", str(document))
+        self.assertEqual(len(document["actions"]), 1)
+        action = document["actions"][0]
+        self.assertEqual(action["value"]["method"], "getLogMsg")
+        self.assertEqual(self.settings(copy_id)["logmsg." + str(action["id"])]["value"], "deleted-rule marker")
         self.healthy(copy_id)
 
     def test_rm_rule_restore_puts_actions_back_in_order(self):
