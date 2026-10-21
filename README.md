@@ -1,6 +1,6 @@
 # Hubitat MCP Server
 
-A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub. Instead of running a separate Node.js server on another machine, this runs natively on the hub itself — with a built-in rule engine and 117 MCP tools (36 on `tools/list` via category gateways).
+A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub. Instead of running a separate Node.js server on another machine, this runs natively on the hub itself — with a built-in rule engine and 118 MCP tools (36 on `tools/list` via category gateways).
 
 > **BETA SOFTWARE**: This project is ~99% AI-generated ("vibe coded") using Claude. It's a work in progress — contributions and [bug reports](https://github.com/kingpanther13/Hubitat-local-MCP-server/issues) are welcome!
 
@@ -24,7 +24,7 @@ This app lets AI assistants like Claude control your Hubitat smart home through 
 
 > "What's the hub's health status?"
 
-Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub. The server exposes 117 tools total — 13 core tools are always visible, while the rest are organized behind 23 domain-named gateways to keep the tool list manageable. If your client handles long tool lists well, you can disable the gateways via the **Consolidate tools behind category gateways** setting and every tool is exposed individually instead. (Counts here describe the shipped catalog; the runtime count on `tools/list` varies based on enabled settings.)
+Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub. The server exposes 118 tools total — 13 core tools are always visible, while the rest are organized behind 23 domain-named gateways to keep the tool list manageable. If your client handles long tool lists well, you can disable the gateways via the **Consolidate tools behind category gateways** setting and every tool is exposed individually instead. (Counts here describe the shipped catalog; the runtime count on `tools/list` varies based on enabled settings.)
 
 ## Requirements
 
@@ -255,9 +255,9 @@ For free remote access without a Hubitat Cloud subscription:
 
 ## Features
 
-### MCP Tools (117 total — 36 on tools/list)
+### MCP Tools (118 total — 36 on tools/list)
 
-The server has 117 tools total. To keep the MCP `tools/list` manageable, **13 core tools** are always visible and the remaining tools are organized behind **23 domain-named gateways** (8 read-only `hub_read_*` gateways + 15 write-bearing `hub_manage_*` gateways). The AI sees 36 items on `tools/list` (13 + 23 gateways). A tool may appear under more than one gateway — read tools inside a mixed `hub_manage_*` gateway are also surfaced in a pure-read `hub_read_*` gateway. Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
+The server has 118 tools total. To keep the MCP `tools/list` manageable, **13 core tools** are always visible and the remaining tools are organized behind **23 domain-named gateways** (8 read-only `hub_read_*` gateways + 15 write-bearing `hub_manage_*` gateways). The AI sees 36 items on `tools/list` (13 + 23 gateways). A tool may appear under more than one gateway — read tools inside a mixed `hub_manage_*` gateway are also surfaced in a pure-read `hub_read_*` gateway. Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
 
 #### Core Tools (13) — Always visible on tools/list
 
@@ -616,7 +616,7 @@ Reads (`hub_list_rules`, `hub_get_rule_health`, `hub_get_visual_rule`) are gated
 </details>
 
 <details>
-<summary><b>hub_manage_native_rules_and_apps</b> (11) — Rule Machine interop (RMUtils) + native CRUD on any classic SmartApp (RM, Room Lighting, Button Controllers, Basic Rules, Notifier, etc.)</summary>
+<summary><b>hub_manage_native_rules_and_apps</b> (12) — Rule Machine interop (RMUtils) + native CRUD on any classic SmartApp (RM, Room Lighting, Button Controllers, Basic Rules, Notifier, etc.)</summary>
 
 | Tool | Description |
 |------|-------------|
@@ -625,13 +625,15 @@ Reads (`hub_list_rules`, `hub_get_rule_health`, `hub_get_visual_rule`) are gated
 | `hub_set_rule_paused` | Pause or resume one or more RM rules (`paused=true` pauses, `paused=false` resumes; `ruleId` takes an id or an array; reversible) |
 | `hub_set_rule_private_boolean` | Set the private boolean of one or more RM rules (`ruleId` takes an id or an array) |
 | `hub_set_rule` | Read, create, update or use native RM editor forms. Omit operation for help; unconfirmed writes return argument schemas. |
+| `hub_set_native_app` | Generic native-app create/edit escape hatch: appType + name to create; appId with settings, buttons or walkStep to edit. |
+| `hub_set_app_disabled` | Enable or disable an installed app without deleting it. |
 | `hub_delete_native_app` | Delete a classic native app (auto-snapshot to File Manager before deleting). |
 | `hub_clone_native_app` | Clone an existing classic SmartApp via Hubitat's `appCloner` endpoint (deep: child apps + pause state copy; `stageDisabled` lands it disabled). Returns the new `appId`. |
 | `hub_export_native_app` | Export a classic SmartApp to JSON and persist it to File Manager (round-trippable with `hub_import_native_app`). |
 | `hub_import_native_app` | Import previously-exported app JSON into a new instance (lands ACTIVE; `stageDisabled` lands it disabled). Returns the new `appId`. |
 | `hub_get_rule_health` | Read-only health check on any installed app — surfaces broken markers, multiple-flag poison, configPage errors. (also in `hub_read_rules`) |
 
-Reads are gated by the Read master; create/update/delete by the Write master (with `confirm=true` + a recent backup). Both masters are ON by default. Native editor operations use returned controls; unsupported app variants remain explicit capability gaps. The retired legacy upsert is not exposed.
+Reads are gated by the Read master; create/update/delete by the Write master (with `confirm=true` + a recent backup). Both masters are ON by default. Native editor operations use returned controls; unsupported app variants remain explicit capability gaps. The generic `hub_set_native_app` escape hatch remains available for classic-app settings, buttons and wizard navigation.
 
 </details>
 
