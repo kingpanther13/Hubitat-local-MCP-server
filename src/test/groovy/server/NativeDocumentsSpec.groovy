@@ -58,6 +58,8 @@ class NativeDocumentsSpec extends ToolSpecBase {
     def 'paged native reads concatenate complete ordered actions maps and typed settings without persistence'() {
         given:
         nativeState.capabsfalse = ['9': 'nine', '2': 'two', '10': 'ten']
+        // The mapped transport probes header support before dispatching a tool.
+        script.jsonRpcResult(0, [:])
         def beforeAtomic = [:] + atomicStateMap
         def beforeState = [:] + stateMap
         when:
