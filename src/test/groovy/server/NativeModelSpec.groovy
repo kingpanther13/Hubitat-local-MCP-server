@@ -240,6 +240,7 @@ class NativeModelSpec extends ToolSpecBase {
         def removed = script._nmLocal(42L, 'delete', 'value')
         then:
         created.success && read.success && listed.success && removed.success
+        !created.partial && !removed.partial
         read.variable.value == value
         listed.localVariables.value.type == type
         removed.deleted
@@ -294,6 +295,31 @@ class NativeModelSpec extends ToolSpecBase {
         !result.success
         result.variable == [name: 'Counter', type: 'integer', value: 1]
         locals.Counter.value == 1
+    }
+
+    def 'failed local write readback reports partial after create set or delete mutates native storage'() {
+        given:
+        if (operation != 'create') locals.Counter = [name: 'Counter', type: 'integer', value: 7]
+        boolean mutated = false
+        nativeRule.createLocalVar = { String name, Object value, String type ->
+            locals[name] = [name: name, type: type, value: value]; mutated = true
+        }
+        nativeRule.setLocalVar = { String name, Object value -> locals[name].value = value; mutated = true }
+        nativeRule.deleteLocalVar = { String name -> locals.remove(name); mutated = true }
+        nativeRule.getAllLocalVars = { ->
+            if (mutated) return operation == 'delete' ? [Counter: [type: 'integer', value: 7]] : [Counter: [type: 'integer', value: 99]]
+            locals.collectEntries { localName, variable -> [(localName): [type: variable.type, value: variable.value]] }
+        }
+        when:
+        def result = script._nmLocal(42L, operation, 'Counter', 9, 'integer')
+        then:
+        mutated
+        !result.success && result.partial && result.verificationNeeded
+        !result.deleted
+        if (operation == 'delete') assert !locals.containsKey('Counter')
+        else assert locals.Counter.value == 9
+        where:
+        operation << ['create', 'set', 'delete']
     }
 
     def 'condition compile uses native selector and placeholder fields preserves unrelated state'() {

@@ -235,7 +235,7 @@ Map _nmLocal(Long ruleId, String operation, String name = null, Object value = n
     def allAfter = _nrHandle(ruleId).getAllLocalVars()
     def inventoryRow = allAfter instanceof Map ? allAfter.get(name) : null
     boolean verified = allAfter instanceof Map && (operation == 'delete' ? after == null && !allAfter.containsKey(name) : after instanceof Map && inventoryRow instanceof Map && inventoryRow.type == after.type && inventoryRow.value == after.value && after.name == name && after.value == value && after.type == (operation == 'create' ? type : before.type))
-    [success: verified, deleted: operation == 'delete' && verified, variable: after, verificationNeeded: true]
+    [success: verified, partial: !verified, deleted: operation == 'delete' && verified, variable: after, verificationNeeded: true]
 }
 
 private void _nmRestoreSettings(Long ruleId, Map savedSettings) {

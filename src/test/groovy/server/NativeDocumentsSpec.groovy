@@ -156,6 +156,26 @@ class NativeDocumentsSpec extends ToolSpecBase {
         events == ['action']
     }
 
+    def 'an unverified first variable write reports partial and stops the document batch'() {
+        given:
+        script.metaClass._nmLocal = { Long id, String operation, String name = null, Object value = null, String type = null ->
+            events << 'variable'
+            nativeState.allLocalVars[name].value = value
+            [success: false, partial: true, verificationNeeded: true]
+        }
+        when:
+        def result = script.toolUpdateRuleDocument([rule_id: 42, confirm: true, changes: [
+            [part: 'variable', value: [operation: 'set', name: 'counter', value: 7]], logChange()]])
+        then:
+        !result.success && result.partial
+        result.results.size() == 1
+        result.results[0].part == 'variable'
+        result.results[0].result.verificationNeeded
+        result.remaining == [logChange()]
+        nativeState.allLocalVars.counter.value == 7
+        events == ['variable']
+    }
+
     def 'successful update keeps ID then checks native health and subscriptions after Done'() {
         when:
         def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [[part: 'action', value: [type: 'messageActs', subtype: 'getLogMsg', fields: []]]], confirm: true])
