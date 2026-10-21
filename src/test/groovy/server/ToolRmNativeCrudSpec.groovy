@@ -113,119 +113,105 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         third == "RelrDev_1"
     }
 
-    def "_discoverParentAppId bootstraps a missing built-in parent via sysApp, then re-discovers it by type -- primary path, no commit needed (issue #185)"() {
+    def "parent bootstrap uses the unique built-in catalog ID and verifies Done"() {
         given:
-        // Verified live: the sysApp GET creates the parent server-side and it appears in
-        // /hub2/appsList right away (installed). The redirect is absolute so the client
-        // may follow it and return 200/no-location -- the code re-discovers by type rather
-        // than parsing the response shape.
-        boolean created = false
-        hubGet.register('/hub2/appsList') { params ->
-            created
-                ? JsonOutput.toJson([apps: [[data: [id: 88, name: "Button Controllers", type: "Button Controllers", user: false, installed: true, hidden: false], children: []]]])
-                : JsonOutput.toJson([apps: []])
-        }
+        hubGet.register('/hub2/appsList') { params -> JsonOutput.toJson([apps: [], systemAppTypes: [
+            [id: 731, name: 'Thermostat Controllers', namespace: 'hubitat']]]) }
         def rawCalls = []
         script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
             rawCalls << path
-            if (path.startsWith("/installedapp/sysApp/")) created = true   // the GET creates the parent
-            [status: 200, location: null, data: "<html>configure page</html>"]   // client followed the absolute redirect
+            [status: 200, location: null, data: '<html>not installed</html>']
         }
-
-        when:
-        def id = script._discoverParentAppId("button_controller")
-
-        then: "the sysApp endpoint was hit with the LITERAL-SPACE parent name (the HTTP layer encodes; pre-encoding double-encodes to %2520)"
-        rawCalls.any { it == "/installedapp/sysApp/Button Controllers" }
-
-        and: "the parent is re-discovered by type and returned -- no commit needed (already installed)"
-        id == 88
-    }
-
-    def "_discoverParentAppId commits a freshly-bootstrapped parent that surfaces PENDING (installed != true)"() {
-        given:
-        // The sysApp GET surfaces the parent but uninstalled -- it must be committed via
-        // Done. The real _commitUserAppInstall runs (private, so its I/O is stubbed).
-        boolean created = false
-        hubGet.register('/hub2/appsList') { params ->
-            created
-                ? JsonOutput.toJson([apps: [[data: [id: 88, name: "Button Controllers", type: "Button Controllers", user: false, installed: null, hidden: false], children: []]]])
-                : JsonOutput.toJson([apps: []])
+        def catalogInstalls = []
+        hubGet.register('/installedapp/sysAppByIdJson/731') { params ->
+            catalogInstalls << 731
+            '{"success":true,"appId":88}'
         }
         hubGet.register('/installedapp/configure/json/88') { params ->
-            JsonOutput.toJson([app: [id: 88, installed: true, version: 1], configPage: [name: "mainPage", sections: []], settings: [:]])
+            JsonOutput.toJson([app: [id: 88, installed: true, version: 1],
+                              configPage: [name: 'mainPage', sections: []], settings: [:]])
         }
         hubGet.register('/installedapp/configure/json/88/mainPage') { params ->
-            JsonOutput.toJson([app: [id: 88, installed: true, version: 1], configPage: [name: "mainPage", sections: []], settings: [:]])
+            JsonOutput.toJson([app: [id: 88, installed: true, version: 1],
+                              configPage: [name: 'mainPage', sections: []], settings: [:]])
         }
         hubGet.register('/installedapp/statusJson/88') { params -> statusJson(88) }
-        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
-            if (path.startsWith("/installedapp/sysApp/")) created = true
-            [status: 200, location: null, data: ""]
-        }
         def posts = []
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             posts << [path: path, body: body]
             [status: 200, location: null, data: '{"status":"success"}']
         }
 
-        when:
-        def id = script._discoverParentAppId("button_controller")
-
-        then: "the pending parent was committed via Done"
-        posts.any { it.path == "/installedapp/update/json" && it.body._action_update == "Done" }
-
-        and: "the parent id is returned"
-        id == 88
+        expect:
+        script._discoverParentAppId('thermostat_controller') == 88
+        script._discoverParentAppId('thermostat_controller') == 88
+        catalogInstalls == [731]
+        rawCalls.isEmpty()
+        posts.any { it.path == '/installedapp/update/json' && it.body._action_update == 'Done' }
+        atomicStateMap.parentAppIds.thermostat_controller == 88
     }
 
-    def "_discoverParentAppId throws a clear, diagnostic error when sysApp does not surface the parent"() {
+    @Unroll
+    def "parent bootstrap refuses unusable built-in catalog #catalog"() {
         given:
-        // The GET neither surfaces the parent in appsList nor yields a parseable id --
-        // the caller must get a clear error carrying the bootstrap diagnostics.
-        hubGet.register('/hub2/appsList') { params -> JsonOutput.toJson([apps: []]) }
+        hubGet.register('/hub2/appsList') { params -> JsonOutput.toJson([apps: [], systemAppTypes: catalog]) }
+        def rawCalls = []
         script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
-            [status: 200, location: null, data: ""]
+            rawCalls << path
+            [status: 200, location: null, data: '']
         }
 
         when:
-        script._discoverParentAppId("button_controller")
+        script._discoverParentAppId('thermostat_controller')
 
         then:
-        def ex = thrown(IllegalArgumentException)
-        ex.message.contains("Button Controllers")
-        ex.message.contains("sysApp")
+        def error = thrown(IllegalArgumentException)
+        error.message.contains('built-in catalog')
+        rawCalls.isEmpty()
+        !atomicStateMap.parentAppIds?.containsKey('thermostat_controller')
+        !hubGet.calls.any { it.path.startsWith('/installedapp/sysAppByIdJson/') }
+
+        where:
+        catalog << [[], [[id: 731, name: 'Thermostat Controllers', namespace: 'community']],
+                    [[id: 0, name: 'Thermostat Controllers', namespace: 'hubitat']],
+                    [[id: 731, name: 'Thermostat Controllers', namespace: 'hubitat'],
+                     [id: 732, name: 'Thermostat Controllers', namespace: 'hubitat']]]
     }
 
-    def "_discoverParentAppId extracts the new id from the followed configure-page body when appsList lags (the absolute-redirect 200 case)"() {
+    @Unroll
+    def "parent JSON bootstrap refuses invalid installation result #response without caching"() {
         given:
-        // The MCP's client follows the absolute sysApp redirect and returns 200 with the
-        // configure page; /hub2/appsList still doesn't list the new parent (cache lag).
-        // The classic page injects `appId = <id>` -- the code pulls it from there, commits,
-        // and uses that id directly rather than re-reading the lagging appsList.
-        hubGet.register('/hub2/appsList') { params -> JsonOutput.toJson([apps: []]) }   // never surfaces
-        hubGet.register('/installedapp/configure/json/91') { params ->
-            JsonOutput.toJson([app: [id: 91, installed: true, version: 1], configPage: [name: "mainPage", sections: []], settings: [:]])
-        }
-        hubGet.register('/installedapp/configure/json/91/mainPage') { params ->
-            JsonOutput.toJson([app: [id: 91, installed: true, version: 1], configPage: [name: "mainPage", sections: []], settings: [:]])
-        }
-        hubGet.register('/installedapp/statusJson/91') { params -> statusJson(91) }
-        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
-            [status: 200, location: null, data: "<html><script>var appId = 91; var foo = 1;</script>configure</html>"]
-        }
-        def posts = []
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            posts << [path: path, body: body]
-            [status: 200, location: null, data: '{"status":"success"}']
-        }
+        hubGet.register('/hub2/appsList') { params -> JsonOutput.toJson([apps: [], systemAppTypes: [
+            [id: 731, name: 'Thermostat Controllers', namespace: 'hubitat']]]) }
+        hubGet.register('/installedapp/sysAppByIdJson/731') { params -> JsonOutput.toJson(response) }
 
         when:
-        def id = script._discoverParentAppId("button_controller")
+        script._discoverParentAppId('thermostat_controller')
 
-        then: "the new id was pulled from the body's `appId = <id>`, committed, and returned directly"
-        id == 91
-        posts.any { it.path == "/installedapp/update/json" && it.body._action_update == "Done" }
+        then:
+        def error = thrown(IllegalArgumentException)
+        error.message.contains('successful app id')
+        !atomicStateMap.parentAppIds?.containsKey('thermostat_controller')
+
+        where:
+        response << [[success: false, appId: 88], [success: true, appId: 0], [success: true], []]
+    }
+
+    @Unroll
+    def "existing and legacy-cached parents avoid installation (cached #cached)"() {
+        given:
+        if (cached) atomicStateMap.parentAppIds = [rm: '88']
+        hubGet.register('/hub2/appsList') { params -> JsonOutput.toJson([apps: [[
+            data: [id: 88, type: 'Rule Machine', installed: true], children: []]]]) }
+
+        expect:
+        script._discoverParentAppId('rule_machine') == 88
+        atomicStateMap.parentAppIds.rule_machine == (cached ? '88' : 88)
+        !atomicStateMap.parentAppIds.containsKey('rm')
+        !hubGet.calls.any { it.path.startsWith('/installedapp/sysApp') }
+
+        where:
+        cached << [false, true]
     }
 
     def "_discoverParentAppId raises a clear IAE when the bootstrapped parent's install commit does not take (app.installed reads false)"() {
@@ -240,7 +226,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/hub2/appsList') { params ->
             created
                 ? JsonOutput.toJson([apps: [[data: [id: 88, name: "Button Controllers", type: "Button Controllers", user: false, installed: null, hidden: false], children: []]]])
-                : JsonOutput.toJson([apps: []])
+                : JsonOutput.toJson([apps: [], systemAppTypes: [[id: 731, name: "Button Controllers", namespace: "hubitat"]]])
         }
         hubGet.register('/installedapp/configure/json/88') { params ->
             JsonOutput.toJson([app: [id: 88, installed: false, version: 1], configPage: [name: "mainPage", sections: []], settings: [:]])
@@ -249,9 +235,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             JsonOutput.toJson([app: [id: 88, installed: false, version: 1], configPage: [name: "mainPage", sections: []], settings: [:]])
         }
         hubGet.register('/installedapp/statusJson/88') { params -> statusJson(88) }
-        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
-            if (path.startsWith("/installedapp/sysApp/")) created = true
-            [status: 200, location: null, data: ""]
+        hubGet.register('/installedapp/sysAppByIdJson/731') { params ->
+            created = true
+            '{"success":true,"appId":88}'
         }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '{"status":"success"}']
@@ -264,6 +250,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def ex = thrown(IllegalArgumentException)
         ex.message.contains("commit did not take")
         ex.message.contains("app.installed reads false")
+        !atomicStateMap.parentAppIds?.containsKey("button_controller")
     }
 
     def "_discoverParentAppId does NOT cache the parent id when the install commit threw (next create re-discovers)"() {
@@ -277,7 +264,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/hub2/appsList') { params ->
             created
                 ? JsonOutput.toJson([apps: [[data: [id: 88, name: "Button Controllers", type: "Button Controllers", user: false, installed: null, hidden: false], children: []]]])
-                : JsonOutput.toJson([apps: []])
+                : JsonOutput.toJson([apps: [], systemAppTypes: [[id: 731, name: "Button Controllers", namespace: "hubitat"]]])
         }
         hubGet.register('/installedapp/configure/json/88') { params ->
             JsonOutput.toJson([app: [id: 88, installed: true, version: 1], configPage: [name: "mainPage", sections: []], settings: [:]])
@@ -286,9 +273,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             JsonOutput.toJson([app: [id: 88, installed: true, version: 1], configPage: [name: "mainPage", sections: []], settings: [:]])
         }
         hubGet.register('/installedapp/statusJson/88') { params -> statusJson(88) }
-        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
-            if (path.startsWith("/installedapp/sysApp/")) created = true
-            [status: 200, location: null, data: ""]
+        hubGet.register('/installedapp/sysAppByIdJson/731') { params ->
+            created = true
+            '{"success":true,"appId":88}'
         }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             throw new RuntimeException("transient commit failure")
@@ -300,38 +287,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then: "the id is still returned (createchild may work), but the unverified install is NOT cached"
         id == 88
         !(atomicStateMap.parentAppIds?.containsKey("button_controller"))
-    }
-
-    def "_discoverParentAppId 302-Location bootstrap: pulls the id from the redirect Location, commits, and returns it"() {
-        given:
-        // Variant of the absolute-redirect 200 case: the sysApp GET 302-redirects
-        // and the client preserves the Location header (rather than following it to
-        // a 200 body). The new id rides in the Location's /installedapp/configure/<id>/<page>
-        // path -- the code parses it from there, commits via Done, and returns it directly
-        // without re-reading the lagging appsList.
-        hubGet.register('/hub2/appsList') { params -> JsonOutput.toJson([apps: []]) }   // never surfaces
-        hubGet.register('/installedapp/configure/json/91') { params ->
-            JsonOutput.toJson([app: [id: 91, installed: true, version: 1], configPage: [name: "mainPage", sections: []], settings: [:]])
-        }
-        hubGet.register('/installedapp/configure/json/91/mainPage') { params ->
-            JsonOutput.toJson([app: [id: 91, installed: true, version: 1], configPage: [name: "mainPage", sections: []], settings: [:]])
-        }
-        hubGet.register('/installedapp/statusJson/91') { params -> statusJson(91) }
-        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
-            [status: 302, location: "http://hub/installedapp/configure/91/mainPage", data: ""]
-        }
-        def posts = []
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            posts << [path: path, body: body]
-            [status: 200, location: null, data: '{"status":"success"}']
-        }
-
-        when:
-        def id = script._discoverParentAppId("button_controller")
-
-        then: "the id came from the 302 Location, the parent was committed via Done, and the id was returned"
-        id == 91
-        posts.any { it.path == "/installedapp/update/json" && it.body._action_update == "Done" }
     }
 
     def "_rmSubmitMainPageDone re-submits capability device ids from statusJson #idsField (value is null for device settings)"() {
