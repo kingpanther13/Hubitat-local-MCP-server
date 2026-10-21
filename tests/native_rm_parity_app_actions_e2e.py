@@ -11,9 +11,8 @@ import re
 import unittest
 import urllib.parse
 
-import requests
-
 import native_rule_document_e2e as documents
+import requests
 from native_rm_parity_support import ParityCase, change, field
 
 documents.TOOLS.update({"hub_list_apps", "hub_list_devices", "hub_set_native_app", "hub_get_app_config", "hub_list_modes"})
