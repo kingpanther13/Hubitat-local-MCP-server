@@ -175,6 +175,45 @@ class DeviceMrtrSpec extends ToolSpecBase {
         'hub_list_devices' | [filter: 'virtual']
     }
 
+    def "a slow hub_list_rules read continues from its background snapshot and the next call is fresh"() {
+        given:
+        int reads = 0
+        String label = 'Before'
+        script.metaClass.toolListRmRules = { args ->
+            reads++; clock.addAndGet(12000L); [rules: [[id: 7, label: label]], count: 1]
+        }
+        Map args = [tool: 'hub_list_rules', args: [:]]
+        long started = clock.get()
+
+        when:
+        def first = call('hub_read_rules', args)
+
+        then:
+        first.result.resultType == 'input_required'
+        clock.get() - started < 10000L
+        reads == 0
+        runInMillisCalls.size() == 1
+
+        when:
+        finish(runInMillisCalls[0])
+        def complete = call('hub_read_rules', args, first.result.requestState)
+
+        then:
+        complete.result.resultType == 'complete'
+        mcpDriver.parseInner(complete).rules[0].label == 'Before'
+        reads == 1
+
+        when: 'an independent call after a change reads again'
+        label = 'After'
+        def next = call('hub_read_rules', args)
+        finish(runInMillisCalls.last())
+        def fresh = mcpDriver.parseInner(call('hub_read_rules', args, next.result.requestState))
+
+        then:
+        fresh.rules[0].label == 'After'
+        reads == 2
+    }
+
     def "device read cannot replay a cached profile after scope is revoked"() {
         given:
         settingsMap.selectedDevices = [new TestDevice(id: 88, label: 'Private')]
