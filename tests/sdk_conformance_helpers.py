@@ -294,7 +294,7 @@ def assert_exact_native_actions(config: Any, document: Any, changes: list[dict[s
 
 
 async def read_native_document_sections(
-    fetch: Callable[[str, int, int], Awaitable[dict[str, Any]]],
+    fetch: Callable[[str, str, int], Awaitable[dict[str, Any]]],
 ) -> dict[str, Any]:
     """Assemble independent bounded reads without accepting a torn or incomplete section."""
     document = {}
@@ -302,8 +302,9 @@ async def read_native_document_sections(
         merged = {} if section == "conditions" else []
         seen, offset, total, revision = set(), 0, None, None
         last_identity = None
+        cursor, seen_cursors = "", set()
         while True:
-            result = await fetch(section, offset, 50)
+            result = await fetch(section, cursor, 50)
             assert isinstance(result, dict), "Native section page is not an object"
             page = result.get("page")
             assert isinstance(page, dict), "Native section page metadata is missing"
@@ -337,13 +338,17 @@ async def read_native_document_sections(
                 merged.update(rows)
             else:
                 merged.extend(rows)
-            assert "next_offset" in page, "Native page continuation metadata is missing"
-            following = page["next_offset"]
+            assert "nextCursor" in result, "Native page continuation metadata is missing"
+            following = result["nextCursor"]
             if following is None:
                 assert offset + len(rows) == total, "Native section ended before its declared total"
                 break
-            assert type(following) is int and following == offset + len(rows) and offset < following < total, "Native page cursor does not advance contiguously"
-            offset = following
+            assert isinstance(following, str) and following, "Native continuation cursor is invalid"
+            assert following != cursor and following not in seen_cursors, "Native continuation cursor repeats"
+            assert rows and offset + len(rows) < total, "Native page cursor advances without remaining rows"
+            seen_cursors.add(following)
+            cursor = following
+            offset += len(rows)
         assert len(merged) == total, "Native section row count differs from its declared total"
         document[section] = merged
     return document

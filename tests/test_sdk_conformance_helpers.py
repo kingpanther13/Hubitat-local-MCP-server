@@ -715,54 +715,63 @@ def test_native_action_readback_requires_native_device_map():
         helpers.assert_exact_native_actions(config, document, changes, messages)
 
 
-def _section_page(section, offset, limit):
+
+def _section_page(section, cursor, limit):
+    offset = {"": 0, "opaque-part-two": 17, "opaque-part-three": 34}[cursor]
+    end = min(51, offset + 17)
     if section == "conditions":
-        rows = {str(i): f"condition {i}" for i in sorted(range(51), key=str)[offset:offset + limit]}
+        rows = {str(i): f"condition {i}" for i in sorted(range(51), key=str)[offset:end]}
     elif section == "actions":
-        rows = [{"id": str(i), "value": {"method": "getLogMsg"}} for i in range(offset, min(51, offset + limit))]
+        rows = [{"id": str(i), "value": {"method": "getLogMsg"}} for i in range(offset, end)]
     else:
-        rows = [{"name": f"setting{i:02}", "type": "enum", "value": str(i)} for i in range(offset, min(51, offset + limit))]
-    return {section: rows, "page": {"offset": offset, "limit": limit, "total": 51,
-            "revision": section + "-stable", "next_offset": 50 if offset == 0 else None}}
+        rows = [{"name": f"setting{i:02}", "type": "enum", "value": str(i)} for i in range(offset, end)]
+    following = {0: "opaque-part-two", 17: "opaque-part-three", 34: None}[offset]
+    return {section: rows, "nextCursor": following, "page": {"offset": offset, "limit": limit,
+            "total": 51, "revision": section + "-stable"}}
 
 
-def test_native_paged_readback_preserves_section_shapes_order_and_independent_revisions():
+def test_native_paged_readback_accepts_byte_bounded_pages_and_opaque_cursors():
     calls = []
-    async def fetch(section, offset, limit):
-        calls.append((section, offset, limit))
-        return _section_page(section, offset, limit)
+    async def fetch(section, cursor, limit):
+        calls.append((section, cursor, limit))
+        return _section_page(section, cursor, limit)
     document = asyncio.run(helpers.read_native_document_sections(fetch))
-    assert calls == [(section, offset, 50) for section in ("conditions", "actions", "settings") for offset in (0, 50)]
+    assert calls == [(section, cursor, 50) for section in ("conditions", "actions", "settings")
+                     for cursor in ("", "opaque-part-two", "opaque-part-three")]
     assert list(document["conditions"]) == sorted(map(str, range(51)))
     assert [row["id"] for row in document["actions"]] == list(map(str, range(51)))
     assert [row["name"] for row in document["settings"]] == [f"setting{i:02}" for i in range(51)]
 
 
-@pytest.mark.parametrize("corruption", ["revision", "total", "offset", "stalled", "skipped", "early_end", "duplicate", "order", "missing_identity", "missing_cursor"])
+@pytest.mark.parametrize("corruption", ["revision", "total", "offset", "stalled", "cycle", "skipped", "early_end", "duplicate", "order", "missing_identity", "missing_cursor", "empty_progress"])
 def test_native_paged_readback_rejects_torn_missing_replayed_or_disordered_pages(corruption):
-    async def fetch(section, offset, limit):
-        result = _section_page(section, offset, limit)
+    async def fetch(section, cursor, limit):
+        result = _section_page(section, cursor, limit)
         if section == "settings":
-            if offset == 50:
+            if cursor == "opaque-part-two":
                 if corruption == "revision":
                     result["page"]["revision"] = "changed"
                 elif corruption == "total":
                     result["page"]["total"] = 52
                 elif corruption == "offset":
-                    result["page"]["offset"] = 49
+                    result["page"]["offset"] = 16
                 elif corruption == "duplicate":
                     result["settings"][0]["name"] = "setting00"
                 elif corruption == "missing_identity":
                     del result["settings"][0]["name"]
                 elif corruption == "missing_cursor":
-                    del result["page"]["next_offset"]
-            elif corruption == "stalled":
-                result["page"]["next_offset"] = 0
-            elif corruption == "skipped":
-                result["page"]["next_offset"] = 51
-            elif corruption == "early_end":
-                result["page"]["next_offset"] = None
-            elif corruption == "order":
+                    del result["nextCursor"]
+                elif corruption == "stalled":
+                    result["nextCursor"] = cursor
+                elif corruption == "empty_progress":
+                    result["settings"] = []
+            elif cursor == "opaque-part-three" and corruption == "cycle":
+                result["nextCursor"] = "opaque-part-two"
+            elif cursor == "" and corruption == "skipped":
+                result["nextCursor"] = "opaque-part-three"
+            elif cursor == "" and corruption == "early_end":
+                result["nextCursor"] = None
+            elif cursor == "" and corruption == "order":
                 result["settings"][0], result["settings"][1] = result["settings"][1], result["settings"][0]
         return result
     with pytest.raises(AssertionError):
@@ -770,7 +779,8 @@ def test_native_paged_readback_rejects_torn_missing_replayed_or_disordered_pages
 
 
 def test_native_paged_readback_accepts_empty_sections_only_with_complete_metadata():
-    async def fetch(section, offset, limit):
-        return {section: {} if section == "conditions" else [], "page": {
-            "offset": offset, "limit": limit, "total": 0, "revision": section, "next_offset": None}}
+    async def fetch(section, cursor, limit):
+        assert cursor == ""
+        return {section: {} if section == "conditions" else [], "nextCursor": None, "page": {
+            "offset": 0, "limit": limit, "total": 0, "revision": section}}
     assert asyncio.run(helpers.read_native_document_sections(fetch)) == {"conditions": {}, "actions": [], "settings": []}

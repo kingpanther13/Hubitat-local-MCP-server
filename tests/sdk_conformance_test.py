@@ -578,11 +578,11 @@ class ModernMrtrScenario:
                 "args": {"appId": fixture_id, "includeSettings": True},
             })
             readback_payload = _tool_payload(readback, "slow fixture persisted-state readback")
-            async def fetch_section(section: str, offset: int, limit: int) -> dict[str, Any]:
+            async def fetch_section(section: str, cursor: str, limit: int) -> dict[str, Any]:
                 result = await client.call_tool(self.GATEWAY, {
                     "tool": "hub_set_rule", "args": {
                         "operation": "read", "rule_id": int(fixture_id),
-                        "args": {"sections": [section], "offset": offset, "limit": limit},
+                        "args": {"sections": [section], "cursor": cursor, "limit": limit},
                     },
                 })
                 page = _tool_payload(result, f"independent persisted {section} readback")
