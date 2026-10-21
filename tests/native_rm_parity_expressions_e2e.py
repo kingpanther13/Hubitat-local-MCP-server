@@ -170,6 +170,25 @@ class NativeRmParityExpressions(ParityCase):
         self.assertEqual(self.doc(rule_id)["variables"]["fields"]["value"], 0)
         self._refuse_unchanged(rule_id, [change(
             "variable", operation="create", name="fields", type="integer", value=10)])
+        for variable_type, bad_value in (("integer", 1.5), ("integer", "abc"), ("bigdecimal", "1.2.3")):
+            with self.subTest(variable_type=variable_type, invalid_value=bad_value):
+                before_variables = self.doc(rule_id)["variables"]
+                refused = self._refuse_unchanged(rule_id, [change("variable", operation="create",
+                    name="badNumeric", type=variable_type, value=bad_value)])
+                self.assertIsNone(refused.get("backup"), refused)
+                self.assertEqual(self.doc(rule_id)["variables"], before_variables)
+        for name, variable_type, initial, updated in (("integerProof", "integer", 5, 7),
+                                                     ("decimalProof", "bigdecimal", 2.5, 3.75)):
+            with self.subTest(variable_type=variable_type):
+                self._ok(rule_id, [change("variable", operation="create", name=name,
+                                         type=variable_type, value=initial)])
+                local = self.doc(rule_id)["variables"][name]
+                self.assertEqual(local["type"], variable_type)
+                self.assertEqual(float(local["value"]), initial)
+                self._ok(rule_id, [change("variable", operation="set", name=name, value=updated)])
+                local = self.doc(rule_id)["variables"][name]
+                self.assertEqual(local["type"], variable_type)
+                self.assertEqual(float(local["value"]), updated)
         # DateTime locals retain the native date/time string used by its editor.
         timestamp = "2026-01-01T12:30:00.000-0500"
         self._ok(rule_id, [change("variable", operation="create", name="seenAt",

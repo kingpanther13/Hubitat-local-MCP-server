@@ -10,6 +10,7 @@ import time
 import unittest
 import urllib.parse
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import ClassVar
 
@@ -17,7 +18,9 @@ import requests
 from native_rm_backup_e2e import NativeRmBackupE2E
 from native_rm_parity_actions_e2e import NativeRmParityActions
 from native_rm_parity_support import ParityCase
-from native_rule_document_e2e import HubClient, change, field, log_action
+from native_rule_document_e2e import TOOLS, HubClient, change, field, log_action
+
+TOOLS.add("hub_list_device_events")
 
 SUITES = {
     "lifecycle": ("native_rm_parity_lifecycle_e2e", "NativeRmParityLifecycleE2E"),
@@ -520,15 +523,50 @@ SUITES["recovery"] = (__name__, "NativeRecoverySelectors")
 
 class NativePickerSelectors(NativeRmParityActions):
     def test_set_rule_switch_only_on_and_device_list_no_false_partial(self):
+        devices = [str(self.fixtures[key]) for key in ("switch", "switch2")]
+        self.assertNotEqual(*devices)
         rule_id = self.create([change("action", type="switchActs", subtype="getOnOffSwitch", fields=[
-            field("onOffSwitch.#", "capability.switch", [str(self.fixtures["switch"])]),
-            field("onOff.#", "bool", False), field("optSwitch.#", "bool", True)])])
+            field("onOffSwitch.#", "capability.switch", devices),
+            field("onOff.#", "bool", True), field("optSwitch.#", "bool", True)])])
         action_id = str(self.doc(rule_id)["actions"][0]["id"])
-        values = self._values(rule_id)
-        self.assertIs(native_boolean(values["onOff." + action_id]), False)
-        self.assertIs(native_boolean(values["optSwitch." + action_id]), True)
-        self._devices(rule_id, "onOffSwitch." + action_id, "switch")
-        self.healthy(rule_id)
+
+        def commands(key, action, since):
+            result = self.call("hub_list_device_events", deviceId=str(self.fixtures[key]),
+                               attribute="command-" + action, hoursBack=1, limit=50)
+            self.assertIsNot(result.get("success"), False, result)
+            rows = result.get("events")
+            self.assertIsInstance(rows, list, result)
+            return sum(1 for row in rows if str((row.get("producedBy") or {}).get("appId")) == str(rule_id)
+                       and row.get("date") and datetime.fromisoformat(str(row["date"])) >= since)
+
+        for index, (action, only) in enumerate((("on", True), ("on", False), ("off", True), ("off", False))):
+            with self.subTest(action=action, only_if_changed=only):
+                if index:
+                    edited = self.update(rule_id, [change("action", id=action_id, type="switchActs",
+                        subtype="getOnOffSwitch", fields=[field("onOffSwitch.#", "capability.switch", devices),
+                        field("onOff.#", "bool", action == "on"), field("optSwitch.#", "bool", only)])])
+                    self.assertTrue(edited.get("success"), edited)
+                    self.assertFalse(edited.get("partial"), edited)
+                self.assertEqual([str(row["id"]) for row in self.doc(rule_id)["actions"]], [action_id])
+                values = self._values(rule_id)
+                self.assertIs(native_boolean(values["onOff." + action_id]), action == "on")
+                self.assertIs(native_boolean(values["optSwitch." + action_id]), only)
+                self._devices(rule_id, "onOffSwitch." + action_id, "switch", "switch2")
+                self.healthy(rule_id)
+                self.command("switch", "on")
+                self.command("switch2", "off")
+                self.wait_for(lambda: self.attribute("switch", "switch") == "on"
+                              and self.attribute("switch2", "switch") == "off")
+                needing, already = ("switch2", "switch") if action == "on" else ("switch", "switch2")
+                since = datetime.now(UTC)
+                ran = self.call("hub_call_rule", ruleId=rule_id, action="actions")
+                self.assertIsNot(ran.get("success"), False, ran)
+                self.wait_for(lambda: commands(needing, action, since) > 0
+                              and self.attribute("switch", "switch") == action
+                              and self.attribute("switch2", "switch") == action
+                              and (only or commands(already, action, since) > 0), timeout=15)
+                self.assertGreater(commands(needing, action, since), 0)
+                self.assertIs(commands(already, action, since) > 0, not only)
 
         if "shade" not in self.fixtures:
             label = self.prefix + "_Shade"
