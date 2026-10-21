@@ -3553,7 +3553,7 @@ def test_native_parent_bootstrap_requires_install_redirect_then_successful_edito
 def test_regular_mrtr_selector_uses_normal_client_telemetry_and_independent_readback(monkeypatch, owner_rounds):
     import e2e_native_rule_integration as integration
 
-    calls, deleted, verified = [], [], []
+    calls, deleted, verified, healthy = [], [], [], []
     result = None
     client = SimpleNamespace()
     def call_tool(name, arguments):
@@ -3610,13 +3610,16 @@ def test_regular_mrtr_selector_uses_normal_client_telemetry_and_independent_read
     runner.client = client
     runner._create_native_rule = lambda _suffix: "42"
     runner._delete_native = deleted.append
+    runner._assert_rule_healthy = healthy.append
     runner._run_native_rule_case = lambda *_args: pytest.fail("regular selector bypassed its normal client")
     if owner_rounds == 1:
         runner.test_mrtr_rule_edit_uses_standard_continuation()
         assert len(verified) == 2
+        assert healthy == ["42"]
         assert [name for name, _args in calls] == ["hub_manage_rule_machine", "hub_get_info", "hub_get_app_config"]
     else:
         with pytest.raises(AssertionError, match="owner slices"):
             runner.test_mrtr_rule_edit_uses_standard_continuation()
         assert not verified
+        assert not healthy
     assert deleted == ["42"]

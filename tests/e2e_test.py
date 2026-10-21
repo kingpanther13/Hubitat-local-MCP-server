@@ -6772,6 +6772,7 @@ class TestRunner:
             document = asyncio.run(read_native_document_sections(fetch_section))
             assert_exact_native_conditions(config, document, changes)
             assert_exact_native_actions(config, document, changes, messages)
+            self._assert_rule_healthy(app_id)
         finally:
             self._delete_native(app_id)
 
