@@ -3265,3 +3265,82 @@ def test_regular_native_context_validates_explicit_fixtures_before_caching(monke
             integration.native_context(runner)
         assert not hasattr(runner, "_native_rule_context")
     assert reads == ["/device/fullJson/7"]
+
+
+@pytest.mark.parametrize("value, expected", [(False, False), ("false", False), (True, True), ("true", True)])
+def test_native_boolean_accepts_only_native_boolean_representations(value, expected):
+    import e2e_native_rule_integration as integration
+
+    assert integration.native_boolean(value) is expected
+
+
+@pytest.mark.parametrize("value", [None, 0, 1, "False", "TRUE", "", [], {}])
+def test_native_boolean_rejects_unrecognized_values(value):
+    import e2e_native_rule_integration as integration
+
+    with pytest.raises(AssertionError):
+        integration.native_boolean(value)
+
+
+@pytest.mark.parametrize("label, virtual, accepted", [
+    ("E2E_PERM_Native_switch", True, True),
+    ("Other switch", True, False),
+    ("E2E_PERM_Native_switch", False, False),
+])
+def test_regular_native_fixture_adoption_validates_before_caching(label, virtual, accepted):
+    import e2e_native_rule_integration as integration
+
+    runner = SimpleNamespace(PERM_FIXTURES={}, _perm_fixture_ids={"native_switch": "7"},
+                             _ensure_perm_fixture=lambda _key: "7",
+                             _native_rule_context={"client": SimpleNamespace(native=lambda _path:
+                                 {"device": {"id": 7, "label": label, "virtual": virtual}})})
+    fixtures = integration.RunnerFixtures(runner)
+    if accepted:
+        assert fixtures["switch"] == "7"
+        assert runner._perm_fixture_ids == {"native_switch": "7"}
+    else:
+        with pytest.raises(AssertionError, match="Adopted native fixture"):
+            fixtures["switch"]
+        assert "switch" not in fixtures
+        assert "native_switch" not in runner._perm_fixture_ids
+
+
+@pytest.mark.parametrize("allowed, remote_id, local_id, accepted", [
+    (False, "00124b0012345678", "00124b0012345678", False),
+    (True, "00124b0012345678", "00124b0012345678", True),
+    (True, "00124b0012345678", "00124b0098765432", False),
+    (True, "unavailable", "unavailable", False),
+])
+def test_different_native_url_requires_authorization_and_same_authenticated_hub_identity(
+        monkeypatch, allowed, remote_id, local_id, accepted):
+    import e2e_native_rule_integration as integration
+
+    calls = []
+    client = SimpleNamespace(hub_url="https://relay.invalid", app_id="3", access_token="unused",
+                             endpoint="https://relay.invalid/apps/api/3/mcp",
+                             call_tool=lambda *args: calls.append(("regular", args)) or {"zigbeeId": remote_id})
+    monkeypatch.setenv("HUB_URL", "http://native.invalid")
+    if allowed:
+        monkeypatch.setenv("NATIVE_RULE_E2E_ALLOWED_HUB_URL", "http://native.invalid/")
+    else:
+        monkeypatch.delenv("NATIVE_RULE_E2E_ALLOWED_HUB_URL", raising=False)
+    monkeypatch.setattr(integration.HubClient, "tool", lambda _client, name:
+                        calls.append(("local", name)) or {"zigbeeId": local_id})
+    if accepted:
+        bound = integration.RegularNativeClient(SimpleNamespace(client=client))
+        assert bound.base == "http://native.invalid"
+    else:
+        with pytest.raises(AssertionError, match="authorization|identity"):
+            integration.RegularNativeClient(SimpleNamespace(client=client))
+    assert calls == ([("regular", ("hub_get_info", {})), ("local", "hub_get_info")] if allowed else [])
+
+
+def test_same_normalized_native_url_needs_no_second_endpoint_probe(monkeypatch):
+    import e2e_native_rule_integration as integration
+
+    monkeypatch.setenv("HUB_URL", "http://HUB.invalid:80/")
+    client = SimpleNamespace(hub_url="http://hub.invalid", app_id="3", access_token="unused",
+                             endpoint="http://hub.invalid/apps/api/3/mcp",
+                             call_tool=lambda *_args: pytest.fail("same URL requires no identity round trip"))
+    bound = integration.RegularNativeClient(SimpleNamespace(client=client))
+    assert bound.runner.client is client

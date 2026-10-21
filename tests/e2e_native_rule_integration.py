@@ -23,14 +23,61 @@ SUITES = {
 }
 
 
+def normalized_hub_url(value):
+    parsed = urllib.parse.urlsplit(value)
+    if (parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname
+            or parsed.username or parsed.password or parsed.query or parsed.fragment):
+        raise AssertionError("Native verification requires an HTTP hub base URL without credentials or query")
+    port = parsed.port or (443 if parsed.scheme.lower() == "https" else 80)
+    return parsed.scheme.lower(), parsed.hostname.lower(), port, parsed.path.rstrip("/")
+
+
+def stable_hub_identifiers(info):
+    if not isinstance(info, dict):
+        return {}
+    data = info.get("hubData") if isinstance(info.get("hubData"), dict) else {}
+    identifiers = {}
+    for name in ("hubUID", "hubUid", "hubId", "macAddress", "mac", "zigbeeId"):
+        value = info.get(name) or data.get(name)
+        if not isinstance(value, str):
+            continue
+        token = value.lower().replace(":", "").replace("-", "").strip()
+        if len(token) >= 8 and token not in {"unavailable", "unknown", "null", "<redacted>"} and set(token) not in ({"0"}, {"f"}):
+            identifiers[name] = token
+    return identifiers
+
+
+def require_same_hub_identity(remote, local):
+    remote_ids, local_ids = stable_hub_identifiers(remote), stable_hub_identifiers(local)
+    common = remote_ids.keys() & local_ids.keys()
+    if not common or any(remote_ids[key] != local_ids[key] for key in common):
+        raise AssertionError("Authorized native URL could not be bound to the MCP hub identity")
+
+
+def native_boolean(value):
+    if value is True or value == "true":
+        return True
+    if value is False or value == "false":
+        return False
+    raise AssertionError("Native boolean must be a boolean or lowercase boolean text")
+
+
 class RegularNativeClient(HubClient):
     def __init__(self, runner):
+        self.runner = runner
         local_base = os.environ.get("HUB_URL") or runner.client.hub_url
+        local_url = normalized_hub_url(local_base)
         parsed = urllib.parse.urlsplit(local_base)
         if parsed.hostname == "cloud.hubitat.com":
             raise AssertionError("Native verification requires HUB_URL for the local hub")
         super().__init__(local_base.rstrip("/"), str(runner.client.app_id), runner.client.access_token)
-        self.runner = runner
+        if local_url != normalized_hub_url(runner.client.hub_url):
+            allowed = os.environ.get("NATIVE_RULE_E2E_ALLOWED_HUB_URL")
+            if not allowed or local_url != normalized_hub_url(allowed):
+                raise AssertionError("A different native URL requires explicit native URL authorization")
+            remote_info = runner.client.call_tool("hub_get_info", {})
+            local_info = HubClient.tool(self, "hub_get_info")
+            require_same_hub_identity(remote_info, local_info)
         self.mcp_url = runner.client.endpoint + "?" + urllib.parse.urlencode({
             "access_token": runner.client.access_token})
 
@@ -82,8 +129,19 @@ class RunnerFixtures(dict):
         fixture_key = "native_" + key
         self.runner.PERM_FIXTURES = dict(self.runner.PERM_FIXTURES)
         self.runner.PERM_FIXTURES[fixture_key] = ("E2E_PERM_Native_" + key, self.DRIVERS[key])
-        self[key] = self.runner._ensure_perm_fixture(fixture_key)
-        return self[key]
+        context = getattr(self.runner, "_native_rule_context", None)
+        if context is None:
+            raise AssertionError("Native fixture validation requires a bound hub context")
+        device_id = self.runner._ensure_perm_fixture(fixture_key)
+        self.runner._perm_fixture_ids.pop(fixture_key, None)
+        device = context["client"].native(f"/device/fullJson/{device_id}")["device"]
+        if (str(device.get("id")) != str(device_id) or device.get("label") != "E2E_PERM_Native_" + key
+                or device.get("virtual") is not True):
+            self.runner._perm_fixture_ids.pop(fixture_key, None)
+            raise AssertionError("Adopted native fixture identity or virtual-device status differs")
+        self.runner._perm_fixture_ids[fixture_key] = device_id
+        self[key] = device_id
+        return device_id
 
 
 def native_context(runner):
@@ -271,9 +329,19 @@ class NativeRecoverySelectors(NativeRmBackupE2E):
         self.assertIn("Lamp (Kitchen)", str(self.doc(rule_id)["conditions"]))
         self.assertNotIn("Lamp (Den)", str(self.doc(rule_id)["conditions"]))
         self.delete_device(switches["Gone"][1])
-        refused = self.restore(keys["Kitchen"])
-        self.assertTrue(refused.get("partial") or refused.get("success") is False, refused)
-        self.assertNotIn(str(switches["Gone"][0]), str(self.settings(rule_id).get("rDev_" + condition, {}).get("device_ids")))
+        before_tokens = list(self.doc(rule_id)["expressions"]["0"])
+        refused = self.restore(keys["Kitchen"], preserveRuleId=True)
+        self.assertIs(refused.get("success"), False, refused)
+        self.assertIs(refused.get("partial"), True, refused)
+        self.assertEqual(refused.get("restoredVia"), "settingsReplay", refused)
+        self.assertIs(refused.get("requiredExpressionRestored"), False, refused)
+        self.assertIs(refused.get("preRestoreExpressionKept"), True, refused)
+        error = str(refused.get("requiredExpressionError", ""))
+        self.assertIn(str(switches["Gone"][0]), error, refused)
+        self.assertIn("no longer exist", error, refused)
+        self.assertEqual(self.doc(rule_id)["expressions"]["0"], before_tokens)
+        self.assertEqual(self.settings(rule_id)["rDev_" + condition]["device_ids"], [str(switches["Kitchen"][0])])
+        self.healthy(rule_id)
 
 
 SUITES["recovery"] = (__name__, "NativeRecoverySelectors")
@@ -286,8 +354,8 @@ class NativePickerSelectors(NativeRmParityActions):
             field("onOff.#", "bool", False), field("optSwitch.#", "bool", True)])])
         action_id = str(self.doc(rule_id)["actions"][0]["id"])
         values = self._values(rule_id)
-        self.assertFalse(values["onOff." + action_id])
-        self.assertTrue(values["optSwitch." + action_id])
+        self.assertIs(native_boolean(values["onOff." + action_id]), False)
+        self.assertIs(native_boolean(values["optSwitch." + action_id]), True)
         self._devices(rule_id, "onOffSwitch." + action_id, "switch")
         self.healthy(rule_id)
 
@@ -315,7 +383,7 @@ class NativePickerSelectors(NativeRmParityActions):
         self.assertTrue(committed.get("success"), committed)
         self.assertFalse(committed.get("partial"), committed)
         self._devices(shade_rule, "shadeOpenClose." + index, "shade")
-        self.assertTrue(self._values(shade_rule)["shadeRL." + index])
+        self.assertIs(native_boolean(self._values(shade_rule)["shadeRL." + index]), True)
         self.healthy(shade_rule)
 
 
