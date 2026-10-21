@@ -2145,7 +2145,7 @@ private Map _rmDecodeRuleExport(Integer ruleId, Object raw) {
     def payload = new groovy.json.JsonSlurper().parseText(raw)
     def identity = payload instanceof Map && payload.appReplacements instanceof Map ? payload.appReplacements.find { key, value -> key.toString() == ruleId.toString() }?.value : null
     def data = payload instanceof Map && payload.appData instanceof Map ? payload.appData.find { key, value -> key.toString() == ruleId.toString() }?.value : null
-    if (!(identity instanceof Map) || identity.appTypeNamespace != 'hubitat' || identity.appTypeName != 'Rule-5.1' ||
+    if (!(identity instanceof Map) || identity.appTypeNamespace != 'hubitat' || !(identity.appTypeName in ['Rule-5.1', 'Button Rule-5.1']) ||
         !identity.parentAppInstalledAppId?.toString()?.isLong() || identity.parentAppInstalledAppId.toString().toLong() <= 0L ||
         !(payload.deviceReplacements instanceof Map) || !(data instanceof Map) || !(data.state instanceof Map) ||
         ['actions', 'capabstrue', 'capabsfalse', 'eval'].any { data.state.get(it) != null && !(data.state.get(it) instanceof Map) } ||
@@ -2155,7 +2155,7 @@ private Map _rmDecodeRuleExport(Integer ruleId, Object raw) {
         !(data.appSettings instanceof List) || !(data.subscriptions instanceof List) ||
         data.appSettings.any { !(it instanceof Map) || !(it.name instanceof String) || !it.name || !(it.type instanceof String) || !it.type } ||
         data.appSettings.collect { it.name }.unique().size() != data.appSettings.size()) {
-        throw new IllegalStateException('Native recovery export does not identify a complete Rule-5.1 configuration')
+        throw new IllegalStateException('Native recovery export does not identify a complete supported native rule configuration')
     }
     _rmNativeSettingPlan(data.appSettings)
     payload
@@ -2178,7 +2178,7 @@ private Map _rmBuildNativeEditSnapshot(Integer ruleId, String reason, String nat
     }
     Map config = [app: [id: ruleId, label: identity.appLabel, trueLabel: identity.appLabel,
         appType: [name: identity.appTypeName, namespace: identity.appTypeNamespace]], settings: savedSettings,
-        configPage: [name: 'mainPage', sections: [[input: settingRows.collect { row -> [element: 'input', name: row.name, type: row.type, multiple: row.multiple == true] }]]]]
+        configPage: [name: identity.appTypeName == 'Button Rule-5.1' ? 'selectActions' : 'mainPage', sections: [[input: settingRows.collect { row -> [element: 'input', name: row.name, type: row.type, multiple: row.multiple == true] }]]]]
     long capturedAt = now()
     Map snapshot = [schemaVersion: 1, captureFormat: 'native-rule-edit-v1', ruleId: ruleId, appId: ruleId, appType: 'rule_machine', reason: reason,
         timestamp: capturedAt, timestampIso: formatTimestamp(capturedAt), appLabel: stripAppConfigHtml(identity.appLabel),

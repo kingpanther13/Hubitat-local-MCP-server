@@ -472,7 +472,7 @@ Map toolSetRule(Map request) {
     if (operation == 'update') return toolUpdateRuleDocument(arguments + [rule_id: request.rule_id, confirm: true])
     Long id = _ndId(request.rule_id)
     def target = getAppByAppId(id)
-    if (target?.id?.toString() != id.toString() || target?.appType?.namespace != 'hubitat' || !(target?.appType?.name in ['Rule-5.1', 'Rule Machine'])) throw new IllegalArgumentException('rule_id must identify native Rule-5.1 or Rule Machine')
+    if (target?.id?.toString() != id.toString() || target?.appType?.namespace != 'hubitat' || !(target?.appType?.name in ['Rule-5.1', 'Button Rule-5.1', 'Rule Machine'])) throw new IllegalArgumentException('rule_id must identify native Rule-5.1, Button Rule-5.1 or Rule Machine')
     toolCallAppForm(arguments + [app_id: request.rule_id, confirm: true])
 }
 
@@ -514,7 +514,7 @@ Example changes: [{part:"action",value:{type:"messageActs",subtype:"getLogMsg",f
 
 ## Native Rule Forms
 
-Use hub_set_rule(operation:"form",rule_id,args:{steps:[{kind:"open"}]},confirm:true) to operate an enabled Rule-5.1 rule or its Rule Machine parent. Select operation:"form" without confirmation to inspect the schema. Discover native action variants, input names and option values through the returned forms rather than guessing a static catalogue. Even open renders execute app code and can change state or cause side effects. Start with steps:[{kind:"open"}]; an optional page names a registered native page. Follow returned controls for page parameters and breadcrumbs. A create_child control creates the native child type exposed by its parent, returns created_app_id and closes the parent context. Open that child separately to configure it; creation alone does not prove configuration is complete. App removal uses the dedicated deletion tool.
+Use hub_set_rule(operation:"form",rule_id,args:{steps:[{kind:"open"}]},confirm:true) to operate an enabled Rule-5.1 or Button Rule-5.1 rule, or its Rule Machine parent. Select operation:"form" without confirmation to inspect the schema. Discover native action variants, input names and option values through the returned forms rather than guessing a static catalogue. Even open renders execute app code and can change state or cause side effects. Start with steps:[{kind:"open"}]; an optional page names a registered native page. Follow returned controls for page parameters and breadcrumbs. A create_child control creates the native child type exposed by its parent, returns created_app_id and closes the parent context. Open that child separately to configure it; creation alone does not prove configuration is complete. App removal uses the dedicated deletion tool.
 
 Submit with {kind:"submit",expect_page:"last returned page",fields:{"native field name":value},activate:"returned control_id"}. Omit activate to save the supplied fields and refresh the current page. Control IDs distinguish native buttons sharing a name, such as editing and deleting the same variable. Native enum keys, device IDs, booleans and single/multiple cardinality are checked before the request. Only supplied settings are posted; native page code can still change its own settings. Defaults are shown but are not automatically submitted; supply a required default explicitly before navigating. Use args.options_for:["device field name"] to expand device choices on the final returned page.
 

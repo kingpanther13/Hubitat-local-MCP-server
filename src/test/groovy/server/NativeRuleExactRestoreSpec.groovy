@@ -12,6 +12,7 @@ class NativeRuleExactRestoreSpec extends ToolSpecBase {
     Map snapshot
     List events
     boolean rebuildDrifts
+    String nativeType
     boolean undoFails
 
     void setupSpec() { appExecutor.getApp() >> serverApp }
@@ -24,6 +25,7 @@ class NativeRuleExactRestoreSpec extends ToolSpecBase {
         events = []
         rebuildDrifts = false
         undoFails = false
+        nativeType = 'Rule-5.1'
         child = new RestoreNativeChild(events)
         Map original = [actions: ['1': [method: 'getLogMsg', detail: 'original'], '2': [method: 'getWaitEvents', wait: ['1']]],
             actionList: ['2', '1'], capabstrue: ['3': 'Original trigger'], capabsfalse: ['4': 'Original condition'],
@@ -38,7 +40,7 @@ class NativeRuleExactRestoreSpec extends ToolSpecBase {
             capabstrue: ['9': 'extra'], capabsfalse: [:], eval: [:], stopped: false, paused: true,
             lv_counter: [type: 'integer', value: 99], lv_added: [type: 'string', value: 'extra'], onlyAfterBackup: true]
         child.typed = [count: [type: 'text', value: 'edited', multiple: false], extra: [type: 'text', value: 'remove', multiple: false]]
-        script.metaClass.getAppByAppId = { Long id -> [id: id, parentAppId: 28L, appType: [namespace: 'hubitat', name: 'Rule-5.1']] }
+        script.metaClass.getAppByAppId = { Long id -> [id: id, parentAppId: 28L, appType: [namespace: 'hubitat', name: nativeType]] }
         script.metaClass._nrHandle = { Long id -> child }
         hubGet.register('/installedapp/settings/42') { q -> JsonOutput.toJson([settings: child.typed.collect { name, row -> [name: name] + row }]) }
         script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason, boolean strict, String protectedKey ->
@@ -79,6 +81,11 @@ class NativeRuleExactRestoreSpec extends ToolSpecBase {
     private Map restore() { script._rmRestoreFromBackup([fileName: 'snapshot.json'], snapshot, true, 'rm-rule_42_source') }
 
     def 'same ID restore recovers deleted records full payloads expressions order settings locals and unknown native configuration'() {
+        given:
+        nativeType = ruleType
+        def source = new JsonSlurper().parseText(snapshot.nativeExport)
+        source.appReplacements['42'].appTypeName = ruleType
+        snapshot.nativeExport = JsonOutput.toJson(source)
         when:
         def result = restore()
         then:
@@ -102,6 +109,10 @@ class NativeRuleExactRestoreSpec extends ToolSpecBase {
         child.backing.stopped && !child.backing.paused
         child.label == 'Original'
         events[0] == ['undo', true, 'rm-rule_42_source']
+        events.contains('selectActionsX') == (ruleType == 'Button Rule-5.1')
+        events.contains('mainPage') == (ruleType == 'Rule-5.1')
+        where:
+        ruleType << ['Rule-5.1', 'Button Rule-5.1']
     }
 
     def 'device references use verified native device identity before undo capture'() {
@@ -166,6 +177,16 @@ class NativeRuleExactRestoreSpec extends ToolSpecBase {
         restore()
         then:
         thrown(IllegalStateException)
+        events.empty
+    }
+
+    def 'recovery refuses a different supported native rule type before undo or writes'() {
+        given:
+        nativeType = 'Button Rule-5.1'
+        when:
+        restore()
+        then:
+        thrown(IllegalArgumentException)
         events.empty
     }
 
@@ -247,8 +268,10 @@ class RestoreNativeChild {
     RestoreNativeChild(List events) { this.events = events }
     Object getSetting(String name) { typed.get(name)?.value }
     Map selectTriggers() { rebuild.call(); [name: 'selectTriggers', sections: [[body: []]]] }
-    Map selectActions(Map params) { [name: 'selectActions', sections: [[body: []]]] }
-    Map mainPage() { [name: 'mainPage', sections: [[body: []]]] }
+    Map selectActions(Map params) { events << 'selectActions'; [name: 'selectActions', sections: [[body: []]]] }
+    Map selectActions() { events << 'selectActions'; [name: 'selectActions', sections: [[body: []]]] }
+    Map selectActionsX() { events << 'selectActionsX'; [name: 'selectActionsX', sections: [[body: []]]] }
+    Map mainPage() { events << 'mainPage'; [name: 'mainPage', sections: [[body: []]]] }
     Map getState() { backing }
     void setState(Map value) { pending = value }
     void saveState() { backing = new JsonSlurper().parseText(JsonOutput.toJson(pending)) as Map }

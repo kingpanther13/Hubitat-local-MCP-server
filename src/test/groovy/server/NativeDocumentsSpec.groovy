@@ -261,6 +261,32 @@ class NativeDocumentsSpec extends ToolSpecBase {
         result.document.actions*.id == ['1']
     }
 
+    def 'existing Button Rule edits capture verified native recovery with default backups enabled'() {
+        given:
+        settingsMap.remove('backupBeforeRuleEdits')
+        nativeState.actNdx = 8
+        script.metaClass.getAppByAppId = { Long id -> [id: 42L, parentAppId: 28L, appType: [namespace: 'hubitat', name: 'Button Rule-5.1'], installed: true] }
+        def child = new NativeDocumentBackupButtonChild(events, lifecycle, nativeState, typedSettings)
+        script.metaClass._nrHandle = { Long id -> child }
+        byte[] saved
+        script.metaClass._withBackupLock = { String label, Closure work -> work.call() }
+        script.metaClass.uploadHubFile = { String name, byte[] bytes -> events << 'backupUpload'; saved = bytes }
+        script.metaClass.downloadHubFile = { String name -> events << 'backupReadback'; saved }
+        script.metaClass._publishUploadedItemBackup = { String key, Map entry, String protectedKey -> }
+        when:
+        def result = script.toolUpdateRuleDocument([rule_id: 42, confirm: true, changes: [logChange()]])
+        then:
+        result.success && result.backup.backupKey
+        events.indexOf('export') < events.indexOf('backupUpload')
+        events.indexOf('backupUpload') < events.indexOf('backupReadback')
+        events.indexOf('backupReadback') < events.indexOf('action')
+        def recovery = new groovy.json.JsonSlurper().parseText(new String(saved, 'UTF-8'))
+        recovery.captureFormat == 'native-rule-edit-v1'
+        recovery.configJson.app.appType.name == 'Button Rule-5.1'
+        recovery.configJson.configPage.name == 'selectActions'
+        !events.contains('mainPage')
+    }
+
     def 'existing Button Rule validates its action editor and primary page without resetting native state'() {
         given:
         script.metaClass.getAppByAppId = { Long id -> [id: 42L, parentAppId: 28L, appType: [namespace: 'hubitat', name: 'Button Rule-5.1'], installed: true] }
@@ -789,5 +815,18 @@ class NativeDocumentButtonChild extends NativeDocumentChild {
         events << 'selectActionsX'
         if (nativeState.actNdx == null && !nativeState.actions && !nativeState.actionList) nativeState.actNdx = 1
         [name: 'selectActionsX', sections: [[body: brokenEditor ? [[type: 'paragraph', description: '<span style="color:red">**Broken Action**</span>']] : []]]]
+    }
+}
+
+class NativeDocumentBackupButtonChild extends NativeDocumentButtonChild {
+    NativeDocumentBackupButtonChild(List events, Map lifecycle, Map nativeState, Map typedSettings) {
+        super(events, lifecycle, nativeState, typedSettings)
+    }
+    String exportAppData(List ids) {
+        assert ids == [42L]
+        events << 'export'
+        JsonOutput.toJson([appReplacements: ['42': [appTypeNamespace: 'hubitat', appTypeName: 'Button Rule-5.1',
+            parentAppInstalledAppId: '28', appLabel: 'Button fixture']], deviceReplacements: [:],
+            appData: ['42': [state: nativeState, appSettings: [], subscriptions: []]]])
     }
 }

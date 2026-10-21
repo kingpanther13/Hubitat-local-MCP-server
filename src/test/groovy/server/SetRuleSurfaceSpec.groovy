@@ -26,10 +26,12 @@ class SetRuleSurfaceSpec extends ToolSpecBase {
         given:
         script.metaClass.toolGetRuleDocument = { Map args -> args }
         script.metaClass.toolCallAppForm = { Map args -> args }
-        script.metaClass.getAppByAppId = { Long id -> [id: id, appType: [namespace: 'hubitat', name: 'Rule-5.1']] }
+        script.metaClass.getAppByAppId = { Long id -> [id: id, appType: [namespace: 'hubitat', name: ruleType]] }
         expect:
         script.toolSetRule([operation: 'read', rule_id: 42, args: [sections: ['actions']]]) == [rule_id: 42, sections: ['actions']]
         script.toolSetRule([operation: 'form', rule_id: 42, args: [steps: [[kind: 'open']]], confirm: true]) == [app_id: 42, steps: [[kind: 'open']], confirm: true]
+        where:
+        ruleType << ['Rule-5.1', 'Button Rule-5.1']
     }
 
     def 'create and update retain their private operation arguments'() {

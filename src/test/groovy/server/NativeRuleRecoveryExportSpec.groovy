@@ -14,7 +14,9 @@ class NativeRuleRecoveryExportSpec extends ToolSpecBase {
     def 'strict edit snapshots capture complete native exports before any editor render'() {
         given:
         List calls = []
-        String exported = JsonOutput.toJson(payload())
+        Map source = payload()
+        source.appReplacements['42'].appTypeName = ruleType
+        String exported = JsonOutput.toJson(source)
         script.metaClass._nrHandle = { Long id -> [exportAppData: { List ids -> calls << ['export', ids]; exported }] }
         byte[] stored
         script.metaClass._withBackupLock = { String label, Closure work -> work.call() }
@@ -26,6 +28,11 @@ class NativeRuleRecoveryExportSpec extends ToolSpecBase {
         then:
         result.backupKey.startsWith('rm-rule_42_')
         calls == [['export', [42L]], ['upload', exported]]
+        def saved = new groovy.json.JsonSlurper().parseText(new String(stored, 'UTF-8'))
+        saved.configJson.app.appType.name == ruleType
+        saved.configJson.configPage.name == (ruleType == 'Button Rule-5.1' ? 'selectActions' : 'mainPage')
+        where:
+        ruleType << ['Rule-5.1', 'Button Rule-5.1']
     }
 
     def 'native capture rejects unavailable mismatched and incomplete recovery payloads'() {

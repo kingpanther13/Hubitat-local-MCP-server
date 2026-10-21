@@ -1115,7 +1115,7 @@ private Map _rmRestoreNativeEdit(Map snapshot, String sourceBackupKey) {
     Map data = payload.appData.find { key, value -> key.toString() == id.toString() }.value as Map
     def target = getAppByAppId(id)
     _requireUnprotectedAppMutation(id, 'restore native rule configuration')
-    if (target?.id?.toString() != id.toString() || target?.appType?.namespace != 'hubitat' || target?.appType?.name != 'Rule-5.1' ||
+    if (target?.id?.toString() != id.toString() || target?.appType?.namespace != 'hubitat' || target?.appType?.name != identity.appTypeName ||
         target.parentAppId?.toString() != identity.parentAppInstalledAppId?.toString()) throw new IllegalArgumentException('Recovery target must be the original native rule under its original parent')
     if (target.disabled == true) throw new IllegalArgumentException('Enable the native rule before restoring its configuration')
     Map expectedState = data.state as Map
