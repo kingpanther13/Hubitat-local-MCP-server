@@ -1451,7 +1451,9 @@ class TestRunner:
 
     def _watchdog_set_app_disabled(self, disable: bool) -> bool:
         """One leg of the throttle bounce via the watchdog endpoint. True only on a
-        verified flag read-back (the tool re-reads /installedapp/json after the write)."""
+        verified flag read-back (the tool re-reads /installedapp/json after the write).
+        The watchdog is reached through the relay too, so a lost or unusable answer is
+        settled by reading the app's flag back instead of being read as a failed leg."""
         try:
             resp = requests.post(self.watchdog_url, json={
                 "jsonrpc": "2.0", "id": 1, "method": "tools/call",
@@ -1461,10 +1463,17 @@ class TestRunner:
             }, timeout=30)
             text = resp.json().get("result", {}).get("content", [{}])[0].get("text", "")
             parsed = json.loads(text) if text else {}
-            return parsed.get("success") is True and parsed.get("disabled") is disable
+            if parsed.get("success") is True and parsed.get("disabled") is disable:
+                return True
         except Exception as exc:
-            print(f"    [THROTTLE] watchdog bounce leg (disable={disable}) failed: {exc}")
+            print(f"    [THROTTLE] watchdog bounce leg (disable={disable}) gave no usable answer: {exc}; reading the flag back")
+        try:
+            apps = self._watchdog_tool("hub_list_app_instances", {}).get("apps") or []
+        except AssertionError as exc:
+            print(f"    [THROTTLE] the flag read-back failed too: {exc}")
             return False
+        row = next((a for a in apps if str(a.get("id")) == str(self.server_app_id)), None)
+        return row is not None and (row.get("disabled") is True) is disable
 
     def _watchdog_tool(self, name: str, arguments: dict) -> dict:
         """Call one watchdog v3 tool and return its decoded result. Any unusable answer -- HTTP
@@ -4315,9 +4324,11 @@ class TestRunner:
                     "deviceId": device_id, "command": "sendLanProbe", "parameters": [nonce], "includeState": False,
                 }, f"{profile['path']} explicit asynchronous LAN probe")
                 assert result.get("success") is True, f"LAN command dispatch failed: {result}"
-                observed = self.client.call_tool("hub_get_device_attribute", {
-                    "deviceId": device_id, "attribute": "lanProbeAck", "expectedValue": nonce, "timeoutMs": 10000,
-                })
+                wait_args = {"deviceId": device_id, "attribute": "lanProbeAck", "expectedValue": nonce, "timeoutMs": 10000}
+                observed = self.client.call_tool("hub_get_device_attribute", wait_args)
+                # The wait is capped at the request's time budget; one more wait when that cut it short.
+                if observed.get("success") is not True and observed.get("budgetLimited") and observed.get("timedOut"):
+                    observed = self.client.call_tool("hub_get_device_attribute", wait_args)
                 assert observed.get("success") is True and observed.get("finalValue") == nonce, (
                     f"No nonce-stamped LAN callback on {profile['path']}; provision the owned response file "
                     f"and inspect native routing independently: {observed}"
