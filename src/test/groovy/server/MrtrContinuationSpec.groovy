@@ -1216,11 +1216,11 @@ class MrtrContinuationSpec extends ToolSpecBase {
         itemType << ['app', 'library']
     }
 
-    def "a rule backup restore runs once in a detached worker and replays its terminal result"() {
+    def "a rule restore from #source runs once in a detached worker and replays its terminal result"() {
         given:
         settingsMap.enableWrite = true
         settingsMap.useGateways = true
-        def args = [tool: 'hub_restore_backup', args: [scope: 'source', backupKey: 'rm-rule_55_20261007-000000-000', confirm: true]]
+        def args = [tool: 'hub_restore_backup', args: [scope: 'source', confirm: true] + restoreSource]
         def dispatched = []
         script.metaClass.toolRestoreItemBackup = { Map actual ->
             dispatched << new LinkedHashMap(actual)
@@ -1248,6 +1248,10 @@ class MrtrContinuationSpec extends ToolSpecBase {
         mcpDriver.parseInner(complete).ruleId == 56
         mcpDriver.parseInner(replay).ruleId == 56
         dispatched.size() == 1
+        where:
+        source       | restoreSource
+        'backup key' | [backupKey: 'rm-rule_55_20261007-000000-000']
+        'edited file'| [sourceFile: 'edited-rule.json']
     }
 
     def "modern hub_restore_backup keeps #label on the synchronous path"() {

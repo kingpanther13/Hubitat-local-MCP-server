@@ -25,6 +25,7 @@ class NativeRuleExactRestoreSpec extends ToolSpecBase {
         events = []
         rebuildDrifts = false
         undoFails = false
+        script.metaClass._itemBackupManifest = { -> [:] }
         nativeType = 'Rule-5.1'
         child = new RestoreNativeChild(events)
         Map original = [actions: ['1': [method: 'getLogMsg', detail: 'original'], '2': [method: 'getWaitEvents', wait: ['1']]],
@@ -79,6 +80,136 @@ class NativeRuleExactRestoreSpec extends ToolSpecBase {
     }
 
     private Map restore() { script._rmRestoreFromBackup([fileName: 'snapshot.json'], snapshot, true, 'rm-rule_42_source') }
+
+    def 'an edited snapshot file restores its existing rule without registering or changing the source file'() {
+        given:
+        byte[] saved = JsonOutput.toJson(snapshot).getBytes('UTF-8')
+        def reads = []
+        script.metaClass.downloadHubFile = { String name -> reads << name; saved }
+        script.metaClass._itemBackupManifest = { -> [:] }
+        when:
+        def result = script.toolRestoreItemBackup([sourceFile: 'edited-rule.json', confirm: true])
+        then:
+        result.success
+        result.ruleId == 42L
+        result.sourceFile == 'edited-rule.json'
+        result.restoredVia == 'nativeStateReplay'
+        reads == ['edited-rule.json']
+        new String(saved, 'UTF-8') == JsonOutput.toJson(snapshot)
+        events[0] == ['undo', true, null]
+        child.backing.lv_counter.value == 7
+        child.backing.actionList == ['2', '1']
+    }
+
+    def 'snapshot file arguments reject #label before reading a file or mutating a rule'() {
+        given:
+        def reads = []
+        script.metaClass.downloadHubFile = { String name -> reads << name; JsonOutput.toJson(snapshot).getBytes('UTF-8') }
+        when:
+        script.toolRestoreItemBackup(arguments)
+        then:
+        thrown(IllegalArgumentException)
+        reads.empty
+        events.empty
+        where:
+        label                    | arguments
+        'unconfirmed restore'    | [sourceFile: 'edited-rule.json']
+        'two sources'            | [sourceFile: 'edited-rule.json', backupKey: 'rm-rule_42_source', confirm: true]
+        'path traversal'         | [sourceFile: '../edited-rule.json', confirm: true]
+        'URL'                    | [sourceFile: 'https://example.com/rule.json', confirm: true]
+        'empty file name'        | [sourceFile: '', confirm: true]
+        'nontext file name'      | [sourceFile: [name: 'edited-rule.json'], confirm: true]
+        'replacement requested'  | [sourceFile: 'edited-rule.json', preserveRuleId: false, confirm: true]
+        'whole hub scope'        | [sourceFile: 'edited-rule.json', scope: 'hub_local', fileName: 'database.lzf', confirm: true]
+    }
+
+    def 'snapshot files require the complete native format before undo capture'() {
+        given:
+        snapshot.remove('captureFormat')
+        script.metaClass.downloadHubFile = { String name -> JsonOutput.toJson(snapshot).getBytes('UTF-8') }
+        when:
+        def result = script.toolRestoreItemBackup([sourceFile: 'legacy-rule.json', confirm: true])
+        then:
+        !result.success
+        result.sourceFile == 'legacy-rule.json'
+        result.error.contains('native-rule-edit-v1')
+        events.empty
+    }
+
+    def 'indexed snapshot files are refused before retention can delete the input during undo publication'() {
+        given:
+        script.metaClass._itemBackupManifest = { -> ['rm-rule_42_saved': [fileName: 'saved.json', deletePending: pending]] }
+        def reads = []
+        script.metaClass.downloadHubFile = { String name -> reads << name; JsonOutput.toJson(snapshot).getBytes('UTF-8') }
+        when:
+        def result = script.toolRestoreItemBackup([sourceFile: 'saved.json', confirm: true])
+        then:
+        !result.success
+        result.partial == false
+        result.error.contains("backupKey 'rm-rule_42_saved'")
+        reads.empty
+        events.empty
+        where:
+        pending << [true, false]
+    }
+
+    def 'an edited snapshot file refuses missing devices and never captures undo or mutates'() {
+        given:
+        Map payload = new JsonSlurper().parseText(snapshot.nativeExport) as Map
+        payload.deviceReplacements = ['591': [value: '591']]
+        snapshot.nativeExport = JsonOutput.toJson(payload)
+        script.metaClass.downloadHubFile = { String name -> JsonOutput.toJson(snapshot).getBytes('UTF-8') }
+        hubGet.register('/device/fullJson/591') { q -> JsonOutput.toJson([:]) }
+        when:
+        def result = script.toolRestoreItemBackup([sourceFile: 'edited-rule.json', confirm: true])
+        then:
+        !result.success
+        result.partial == false
+        result.failedStep == 'devicePreflight'
+        result.missingDeviceIds == ['591']
+        events.empty
+    }
+
+    def 'an edited snapshot cannot create a missing target or overwrite a different native app'() {
+        given:
+        script.metaClass.downloadHubFile = { String name -> JsonOutput.toJson(snapshot).getBytes('UTF-8') }
+        script.metaClass.getAppByAppId = { Long id -> target }
+        when:
+        def result = script.toolRestoreItemBackup([sourceFile: 'edited-rule.json', confirm: true])
+        then:
+        !result.success
+        result.partial == false
+        events.empty
+        where:
+        target << [null, [id: 42L, parentAppId: 99L, appType: [namespace: 'hubitat', name: 'Rule-5.1']],
+                   [id: 42L, parentAppId: 28L, appType: [namespace: 'hubitat', name: 'Button Rule-5.1']]]
+    }
+
+    def 'an edited snapshot cannot write without its pre-restore undo'() {
+        given:
+        undoFails = true
+        script.metaClass.downloadHubFile = { String name -> JsonOutput.toJson(snapshot).getBytes('UTF-8') }
+        when:
+        def result = script.toolRestoreItemBackup([sourceFile: 'edited-rule.json', confirm: true])
+        then:
+        !result.success
+        result.partial == false
+        result.error.contains('undo unavailable')
+        events == [['undo', true, null]]
+    }
+
+    def 'a snapshot file retains partial outcome and undo handle if native rebuild changes restored data'() {
+        given:
+        rebuildDrifts = true
+        script.metaClass.downloadHubFile = { String name -> JsonOutput.toJson(snapshot).getBytes('UTF-8') }
+        when:
+        def result = script.toolRestoreItemBackup([sourceFile: 'edited-rule.json', confirm: true])
+        then:
+        !result.success
+        result.partial == true
+        result.backup.backupKey == 'rm-rule_42_undo'
+        result.sourceFile == 'edited-rule.json'
+    }
 
     def 'same ID restore recovers deleted records full payloads expressions order settings locals and unknown native configuration'() {
         given:

@@ -241,6 +241,7 @@ def toolRestoreItemBackup(args) {
     // REPLACE THE ENTIRE HUB DATABASE and REBOOT the hub -- far higher blast radius than a source
     // re-paste -- so they are confirm-gated here too. Default "source" = app/driver/rule restore.
     def scope = (args.scope ?: "source").toString()
+    if (args.containsKey('sourceFile') && scope != 'source') throw new IllegalArgumentException('sourceFile is only for scope=source rule snapshot restoration')
     if (scope in ["hub_local", "hub_cloud"]) {
         requireDestructiveConfirm(args.confirm)
         return _restoreHubBackup(scope, args)
@@ -262,6 +263,7 @@ def toolRestoreItemBackup(args) {
 }
 
 private Map _toolRestoreSourceBackup(args) {
+    if (args.containsKey('sourceFile')) return _restoreRuleSnapshotFile(args)
     if (!args.backupKey) throw new IllegalArgumentException("backupKey is required (e.g., 'app_123', 'driver_456', 'library_42', or 'rm-rule_<id>_<ts>')")
 
     def entry
@@ -557,6 +559,26 @@ private Map _toolRestoreSourceBackup(args) {
             message: "Check the live source and confirm this backup is still available with hub_get_backup before retrying or restoring manually.",
             directDownload: "http://<HUB_IP>/local/${entry.fileName}"
         ]
+    }
+}
+
+private Map _restoreRuleSnapshotFile(Map args) {
+    if (args.containsKey('backupKey')) throw new IllegalArgumentException('Choose sourceFile or backupKey, not both')
+    if (!(args.sourceFile instanceof String) || !(args.sourceFile ==~ /^[A-Za-z0-9][A-Za-z0-9._-]*\.json$/)) {
+        throw new IllegalArgumentException('sourceFile must be a JSON file name in File Manager, without a URL or directory path')
+    }
+    if (args.preserveRuleId == false) throw new IllegalArgumentException('sourceFile restores the existing original rule; preserveRuleId must be true or omitted')
+    String fileName = args.sourceFile
+    try {
+        def indexed = _itemBackupManifest().find { key, entry -> entry.fileName == fileName }
+        if (indexed) throw new IllegalArgumentException("sourceFile must be a separate unindexed copy; use backupKey '${indexed.key}' for this saved backup".toString())
+        Map snapshot = _rmReadBackupSnapshot([fileName: fileName])
+        if (snapshot.captureFormat != 'native-rule-edit-v1') throw new IllegalArgumentException('sourceFile requires a complete native-rule-edit-v1 rule snapshot')
+        // The native replay validates target identity and all referenced devices before capturing
+        // undo or mutating. The supplied file is read once and never published into the backup index.
+        return _rmRestoreNativeEdit(snapshot, null) + [sourceFile: fileName]
+    } catch (Exception failure) {
+        return [success: false, partial: false, type: 'rm-rule', sourceFile: fileName, error: failure.message?.toString()]
     }
 }
 
@@ -1486,7 +1508,7 @@ A transport drop can lose the response while the hub still commits this write; v
         ],
         [
             name: "hub_restore_backup",
-            description: """⚠️ Restore a backup — tell the user first; hub-DB scopes REBOOT the hub.[[FLAT_TRIM]] scope=source (default): an app/driver/rule by backupKey (deleted code → hub_create_*; deleted rules DO recreate; a rule restores in place by default; preserveRuleId:false restores a Rule Machine backup that has an App Cloner export as an exact copy with a NEW id -- read ruleId and restoredVia from the result). scope=hub_local/hub_cloud: restore the WHOLE hub DB (hub_local→fileName; hub_cloud→path+cloudBackupPassword); a full local backup (fullBackup:true) runs the full-restore flow with fullRestore choosing radios/files. scope=hub_uploaded: upload an external .lzf (or a full .tar.gz) from backupUrl, then restore (open-world).[[/FLAT_TRIM]] Write master + confirm.
+            description: """⚠️ Restore a backup — tell the user first; hub-DB scopes REBOOT the hub.[[FLAT_TRIM]] scope=source (default): an app/driver/rule by backupKey, or an edited complete rule snapshot by sourceFile (existing original rule only). For backupKey: deleted code → hub_create_*; deleted rules DO recreate; a rule restores in place by default; preserveRuleId:false restores a Rule Machine backup that has an App Cloner export as an exact copy with a NEW id -- read ruleId and restoredVia from the result. scope=hub_local/hub_cloud: restore the WHOLE hub DB (hub_local→fileName; hub_cloud→path+cloudBackupPassword); a full local backup (fullBackup:true) runs the full-restore flow with fullRestore choosing radios/files. scope=hub_uploaded: upload an external .lzf (or a full .tar.gz) from backupUrl, then restore (open-world).[[/FLAT_TRIM]] Write master + confirm.
 A transport drop can lose the response while the hub still commits this write; verify current hub state before retrying.[[FLAT_TRIM]] See hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]
 """,
             inputSchema: [
@@ -1494,12 +1516,13 @@ A transport drop can lose the response while the hub still commits this write; v
                 properties: [
                     scope: [type: "string", enum: ["source", "hub_local", "hub_cloud", "hub_uploaded"], description: "Default source."],
                     backupKey: [type: "string", description: "scope=source: backupKey from hub_list_backups (e.g. app_123)."],
+                    sourceFile: [type: "string", description: "scope=source: separate unindexed File Manager JSON copy of a complete native-rule-edit-v1 snapshot, optionally edited. Restores its existing original rule in place. Mutually exclusive with backupKey; the file is not changed or indexed."],
                     fileName: [type: "string", description: "scope=hub_local: backup name from hub_list_backups."],
                     path: [type: "string", description: "scope=hub_cloud: `path` from hub_list_backups."],
                     cloudBackupPassword: [type: "string", description: "scope=hub_cloud: cloud backup encryption password."],
                     backupUrl: [type: "string", description: "scope=hub_uploaded: http(s) URL of the .lzf or full .tar.gz."],
                     fullRestore: [type: "object", description: "[[FLAT_TRIM]]Full backups: {restoreZigbee?, restoreZwave?, restoreFiles?, deleteExistingFiles?, allowZwaveFirmwareMismatch?} (default false).[[/FLAT_TRIM]]"],
-                    preserveRuleId: [type: "boolean", description: "Keep the rule id (default true).[[FLAT_TRIM]] true: restore an RM/native app backup in place by settings replay; a replay empties settings the app gained after the backup (settingsCleared). false: restore a Rule Machine backup that carries an App Cloner export as an exact copy with a NEW id, deleting the old rule once the copy matches the backup.[[/FLAT_TRIM]]"],
+                    preserveRuleId: [type: "boolean", description: "Keep the rule id (default true).[[FLAT_TRIM]] true: restore an RM/native app backup in place; complete rule snapshots replay native state and settings, while older snapshots replay settings. A replay empties settings the app gained after the backup (settingsCleared). false: restore a Rule Machine backupKey that carries an App Cloner export as an exact copy with a NEW id, deleting the old rule once the copy matches the backup. sourceFile requires true or omitted.[[/FLAT_TRIM]]"],
                     confirm: [type: "boolean", description: "REQUIRED true. Confirms the restore (hub-DB scopes reboot)."],
                 ],
                 required: ["confirm"]

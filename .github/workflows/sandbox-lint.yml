@@ -3,6 +3,11 @@ on:
   # Manual run on any ref, no PR needed -- opening a PR just to exercise a lane also
   # books the single shared test hub for an hour of e2e. Path filters don't gate a dispatch.
   workflow_dispatch:
+    inputs:
+      generate_guide:
+        description: Generate the tool guide artifact without running checks
+        type: boolean
+        default: false
   pull_request:
     branches: [main]
     paths:
@@ -26,6 +31,7 @@ permissions:
 
 jobs:
   lint:
+    if: ${{ !inputs.generate_guide }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -46,3 +52,17 @@ jobs:
       # an unincluded library or a source the stripper can't tokenize fails here, in-PR).
       - name: Release builder runs against the PR's sources
         run: python tools/build-release-app.py
+
+  generate-guide:
+    if: ${{ inputs.generate_guide }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.x'
+      - run: python tools/build-tool-guide.py
+      - uses: actions/upload-artifact@v7
+        with:
+          name: generated-tool-guide
+          path: TOOL_GUIDE.md
