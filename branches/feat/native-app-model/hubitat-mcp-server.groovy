@@ -22195,9 +22195,59 @@ private Map _rmRestoreNativeEdit(Map snapshot, String sourceBackupKey) {
          error: failure.message?.toString(), note: 'Restore did not pass complete verification. Inspect the native rule; the pre-restore backup is available for recovery.']
     } finally { NATIVE_FORM_BUSY.remove(formKey) }
 }
+private Map _rmLegacyNativeRecovery(Map snapshot) {
+    def config = snapshot.configJson
+    def status = snapshot.statusJson
+    def app = config instanceof Map ? config.app : null
+    if (!(app instanceof Map) || !(app.appType instanceof Map) ||
+        !(app.appType.name in ['Rule-5.1', 'Button Rule-5.1'])) return null
+    if (!(status instanceof Map) || !status.containsKey('appState') || !status.containsKey('appSettings') ||
+        !(status.containsKey('eventSubscriptions') || status.containsKey('appSubscriptions'))) return null
+    Long id = _ndId(snapshot.ruleId)
+    if (app.appType.namespace != 'hubitat' || app.id?.toString() != id.toString() || (snapshot.appId != null && snapshot.appId.toString() != id.toString()) ||
+        (status.installedApp != null && status.installedApp.id?.toString() != id.toString()) ||
+        (status.installedApp?.parentAppId != null && status.installedApp.parentAppId.toString() != app.parentAppId?.toString()) ||
+        (status.installedApp?.appType?.name != null && status.installedApp.appType.name != app.appType.name) ||
+        (status.installedApp?.appType?.namespace != null && status.installedApp.appType.namespace != app.appType.namespace) ||
+        !app.parentAppId?.toString()?.isLong() || app.parentAppId.toString().toLong() <= 0L ||
+        !(status.appSettings instanceof List)) throw new IllegalArgumentException('Legacy recovery contains inconsistent native rule identity or settings')
+    Map savedState = [:]
+    if (status.appState instanceof Map) savedState.putAll(status.appState)
+    else if (status.appState instanceof List) {
+        status.appState.each { row ->
+            if (!(row instanceof Map) || !(row.name instanceof String) || !row.name || !row.containsKey('value') || savedState.containsKey(row.name))
+                throw new IllegalArgumentException('Legacy recovery contains invalid or duplicate native state records')
+            savedState[row.name] = row.value
+        }
+    } else throw new IllegalArgumentException('Legacy recovery is missing complete native state')
+    def subscriptions = status.containsKey('appSubscriptions') ? status.appSubscriptions : status.eventSubscriptions
+    if (!(subscriptions instanceof List) || (status.containsKey('appSubscriptions') && status.containsKey('eventSubscriptions') &&
+        _rmNativeComparable(status.appSubscriptions) != _rmNativeComparable(status.eventSubscriptions)))
+        throw new IllegalArgumentException('Legacy recovery contains invalid native subscriptions')
+    def originalLabel = config.settings instanceof Map ? config.settings.origLabel : null
+    Map identity = [appTypeNamespace: app.appType.namespace, appTypeName: app.appType.name,
+        parentAppInstalledAppId: app.parentAppId.toString(), appLabel: originalLabel instanceof String ? originalLabel : snapshot.appLabel]
+    Map payload
+    if (snapshot.nativeExport) {
+        payload = _rmDecodeRuleExport(id.toString().toInteger(), snapshot.nativeExport)
+        def exported = payload.appReplacements.find { key, value -> key.toString() == id.toString() }.value
+        if (exported.appTypeName != identity.appTypeName || exported.parentAppInstalledAppId.toString() != identity.parentAppInstalledAppId)
+            throw new IllegalArgumentException('Legacy native export conflicts with saved rule identity')
+    } else {
+        payload = [appReplacements: [(id.toString()): identity], deviceReplacements: [:],
+            appData: [(id.toString()): [state: savedState, appSettings: status.appSettings, subscriptions: subscriptions]]]
+    }
+    Map adapted = [:] + snapshot + [captureFormat: 'native-rule-edit-v1', nativeExport: groovy.json.JsonOutput.toJson(payload)]
+    _rmDecodeRuleExport(id.toString().toInteger(), adapted.nativeExport)
+    adapted
+}
 private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean preserveRuleId = true, String backupKey = null) {
     def fileName = entry.fileName
     Map snapshot = preparedSnapshot != null ? preparedSnapshot : _rmReadBackupSnapshot(entry)
+    if (!snapshot.containsKey('captureFormat') && preserveRuleId) {
+        Map adapted = _rmLegacyNativeRecovery(snapshot)
+        if (adapted != null && getAppByAppId(_ndId(snapshot.ruleId)) != null) return _rmRestoreNativeEdit(adapted, backupKey)
+    }
     if (snapshot.containsKey('captureFormat')) {
         if (snapshot.captureFormat != 'native-rule-edit-v1') throw new IllegalArgumentException('Unsupported native recovery format')
         _rmDecodeRuleExport(_ndId(snapshot.ruleId).toString().toInteger(), snapshot.nativeExport)
