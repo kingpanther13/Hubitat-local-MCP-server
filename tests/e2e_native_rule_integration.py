@@ -371,12 +371,17 @@ class NativePickerSelectors(NativeRmParityActions):
             self.fixtures = dict(self.fixtures, shade=str(shade_id))
         shade_rule = self.create([])
         form, index = self._new_editor(shade_rule)
-        form = self._submit(shade_rule, form, fields={"actType." + index: "switchActs"})
+        category_field = next(row for row in form["fields"] if row["name"] == "actType." + index)
+        categories = [row for row in category_field.get("options", [])
+                      if "shades/blinds" in row.get("label", "").lower() and "fans" in row.get("label", "").lower()]
+        self.assertEqual(len(categories), 1, category_field)
+        self.assertEqual(categories[0]["value"], "sceneActs", category_field)
+        form = self._submit(shade_rule, form, fields={"actType." + index: categories[0]["value"]})
         subtype_field = next(row for row in form["fields"] if row["name"] == "actSubType." + index)
-        choices = [row["value"] for row in subtype_field.get("options", [])
-                   if "shade" in str(row).lower() and "close" in str(row).lower()]
+        choices = [row for row in subtype_field.get("options", []) if row.get("value") == "getRLShade"]
         self.assertEqual(len(choices), 1, subtype_field)
-        form = self._submit(shade_rule, form, fields={"actSubType." + index: choices[0]})
+        self.assertIn("open/close", choices[0].get("label", "").lower())
+        form = self._submit(shade_rule, form, fields={"actSubType." + index: choices[0]["value"]})
         form = self._submit(shade_rule, form, fields={"shadeRL." + index: True})
         form = self._submit(shade_rule, form, fields={"shadeOpenClose." + index: [str(self.fixtures["shade"])]})
         committed = self._submit(shade_rule, form, control=self._control(form, name="actionDone"))
