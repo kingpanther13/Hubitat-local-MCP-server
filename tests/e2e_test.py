@@ -6165,7 +6165,7 @@ class TestRunner:
                 "button rule action")
             assert acted.get("success") is True and not acted.get("partial"), acted
             document = self._native_rule_document(rule_id)
-            assert len(document["actions"]) == 1 and "E2E button rule" in json.dumps(document["actions"]), document
+            assert len(document["actions"]) == 1 and document["actions"][0]["value"]["method"] == "getLogMsg", document
             assert document["nativeHealth"]["available"] and not document["nativeHealth"]["broken"], document
             # Reading the actual Button Rule page also detects a wrong mainPage commit.
             page = self.client.call_tool("hub_get_app_config", {

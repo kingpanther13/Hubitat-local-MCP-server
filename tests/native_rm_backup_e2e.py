@@ -17,6 +17,8 @@ documents.TOOLS.update({"hub_list_backups", "hub_get_backup", "hub_restore_backu
 
 
 class NativeRmBackupE2E(ParityCase):
+    maxDiff = None
+
     def setUp(self):
         super().setUp()
         self.addCleanup(self.backups_enabled, True)
@@ -137,7 +139,7 @@ class NativeRmBackupE2E(ParityCase):
                              preserveRuleId=True, confirm=True)
         self.assertTrue(restored.get("success"), restored)
         self.assertEqual(str(restored["ruleId"]), str(rule_id))
-        self.assertEqual(restored.get("restoredVia"), "settingsReplay", restored)
+        self.assertEqual(restored.get("restoredVia"), "nativeStateReplay", restored)
         self.healthy(rule_id)
         self.assertEqual(self.configuration(rule_id), before)
         self.assertEqual(str(self.status(rule_id)["installedApp"]["id"]), str(rule_id))
