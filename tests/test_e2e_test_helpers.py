@@ -3547,3 +3547,76 @@ def test_native_parent_bootstrap_requires_install_redirect_then_successful_edito
     client.base, client.calls = "http://hub.invalid", Counter()
     with pytest.raises(AssertionError):
         client.install_rule_machine_parent(18)
+
+
+@pytest.mark.parametrize("owner_rounds", [1, 2])
+def test_regular_mrtr_selector_uses_normal_client_telemetry_and_independent_readback(monkeypatch, owner_rounds):
+    import e2e_native_rule_integration as integration
+
+    calls, deleted, verified = [], [], []
+    result = None
+    client = SimpleNamespace()
+    def call_tool(name, arguments):
+        nonlocal result
+        calls.append((name, arguments))
+        if name == "hub_manage_rule_machine":
+            assert arguments["tool"] == "hub_set_rule"
+            args = arguments["args"]
+            assert args["operation"] == "update" and args["rule_id"] == 42
+            assert len(args["args"]["changes"]) == 100
+            client._last_request_state = "completed-state"
+            client._last_continuation_rounds = 2
+            client._last_result_type = "complete"
+            client._last_logical_elapsed = 12.0
+            client._last_http_legs = [(4.0, 200, True)] * 3
+            result = {"success": True, "results": [{"part": row["part"], "result": {"success": True}}
+                      for row in args["args"]["changes"]], "mrtr": {"rounds": owner_rounds}}
+            return result
+        if name == "hub_get_info":
+            return {"recentWrites": [{"tool": "hub_set_rule", "rule_id": 42, "status": "finished", "success": True}]}
+        assert name == "hub_get_app_config" and arguments == {"appId": "42", "includeSettings": True}
+        return {"settings": {"independent": "read"}}
+
+    def raw_request(payload, headers):
+        args = payload["params"]["arguments"]["args"]
+        assert args["args"]["changes"][-1]["value"]["fields"][0]["value"] in (None, False, 0)
+        assert payload["params"]["requestState"] == "completed-state"
+        return SimpleNamespace(status_code=200, json=lambda: {
+            "error": {"code": -32602, "message": "Continuation requires original arguments"}})
+
+    def send(method, params=None):
+        if method == "ping":
+            return {"resultType": "complete"}
+        assert params["requestState"] == "completed-state"
+        assert params["arguments"]["args"]["args"]["changes"][-1]["value"]["fields"][0]["value"] is not None
+        return {"resultType": "complete", "structuredContent": result}
+
+    async def read_sections(_fetch):
+        return {"independent": "paged sections"}
+
+    def verify(config, document, changes, *messages):
+        assert config == {"settings": {"independent": "read"}}
+        assert document == {"independent": "paged sections"}
+        assert len(changes) == 100
+        verified.append(messages)
+
+    monkeypatch.setattr(integration, "native_context", lambda _runner: {"fixtures": {"temperature": "588"}})
+    monkeypatch.setattr(et, "read_native_document_sections", read_sections)
+    monkeypatch.setattr(et, "assert_exact_native_conditions", verify)
+    monkeypatch.setattr(et, "assert_exact_native_actions", verify)
+    monkeypatch.setenv("E2E_MRTR_ACTION_COUNT", "6")
+    client.call_tool, client.raw_request, client._send = call_tool, raw_request, send
+    runner = et.TestRunner.__new__(et.TestRunner)
+    runner.client = client
+    runner._create_native_rule = lambda _suffix: "42"
+    runner._delete_native = deleted.append
+    runner._run_native_rule_case = lambda *_args: pytest.fail("regular selector bypassed its normal client")
+    if owner_rounds == 1:
+        runner.test_mrtr_rule_edit_uses_standard_continuation()
+        assert len(verified) == 2
+        assert [name for name, _args in calls] == ["hub_manage_rule_machine", "hub_get_info", "hub_get_app_config"]
+    else:
+        with pytest.raises(AssertionError, match="owner slices"):
+            runner.test_mrtr_rule_edit_uses_standard_continuation()
+        assert not verified
+    assert deleted == ["42"]

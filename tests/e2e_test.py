@@ -19,6 +19,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import asyncio
 import base64
 import json
 import os
@@ -39,6 +40,10 @@ from native_rule_document_e2e import change as native_change
 from native_rule_document_e2e import field as native_field
 from native_rule_document_e2e import log_action as native_log
 from sdk_conformance_helpers import (
+    assert_exact_native_actions,
+    assert_exact_native_conditions,
+    native_mrtr_changes,
+    read_native_document_sections,
     write_cap_holder_retry_blocker,
     write_cap_variable_items,
 )
@@ -6702,7 +6707,73 @@ class TestRunner:
 
     @test("mrtr")
     def test_mrtr_rule_edit_uses_standard_continuation(self) -> None:
-        self._run_native_rule_case("lifecycle", "test_mrtr_rule_edit_uses_standard_continuation")
+        from e2e_native_rule_integration import native_context
+
+        context = native_context(self)
+        changes, messages = native_mrtr_changes("MRTR regular E2E proof", str(context["fixtures"]["temperature"]))
+        app_id = self._create_native_rule("MrtrContinuation")
+        try:
+            args = {"operation": "update", "rule_id": int(app_id), "args": {"changes": changes}, "confirm": True}
+            gateway = "hub_manage_rule_machine"
+            result = self.client.call_tool(gateway, {"tool": "hub_set_rule", "args": args})
+            request_state = self.client._last_request_state
+            assert result.get("success") is True and not result.get("partial") and not result.get("remaining"), result
+            rows = result.get("results", [])
+            assert len(rows) == len(changes), f"Missing mutation results: {result}"
+            assert [row.get("part") for row in rows] == [row["part"] for row in changes], result
+            assert all(row.get("result", {}).get("success") is True for row in rows), result
+            proof = _summarize_mrtr_e2e_proof(
+                continuation_rounds=self.client._last_continuation_rounds,
+                result_type=self.client._last_result_type,
+                logical_elapsed=self.client._last_logical_elapsed,
+                http_legs=self.client._last_http_legs,
+                server_rounds=(result.get("mrtr") or {}).get("rounds"),
+            )
+            print(f"    regular MRTR proof: {json.dumps(proof, sort_keys=True)} "
+                  f"owner_rounds={(result.get('mrtr') or {}).get('rounds')} "
+                  f"physical_legs={self.client._last_http_legs}")
+            assert isinstance(request_state, str) and request_state, "MRTR proof returned no continuation state"
+            for index, replacement in enumerate((None, False, 0)):
+                altered = json.loads(json.dumps(args))
+                altered["args"]["changes"][-1]["value"]["fields"][0]["value"] = replacement
+                response = self.client.raw_request({
+                    "jsonrpc": "2.0", "id": 41600 + index, "method": "tools/call", "params": {
+                        "name": gateway, "arguments": {"tool": "hub_set_rule", "args": altered},
+                        "requestState": request_state,
+                    },
+                }, headers={"MCP-Protocol-Version": MODERN_PROTOCOL_VERSION,
+                            "Mcp-Method": "tools/call", "Mcp-Name": gateway})
+                assert response.status_code == 200, f"Argument-mismatch replay HTTP status: {response.status_code}"
+                error = response.json().get("error") or {}
+                assert error.get("code") == -32602 and "original arguments" in error.get("message", ""), error
+            pong = self.client._send("ping")
+            assert pong.get("resultType") == "complete", pong
+            replay = self.client._send("tools/call", {
+                "name": gateway, "arguments": {"tool": "hub_set_rule", "args": args},
+                "requestState": request_state,
+            })
+            assert replay.get("resultType") == "complete" and not replay.get("isError"), replay
+            replay_value = replay.get("structuredContent")
+            if replay_value is None:
+                replay_value = json.loads(next(row["text"] for row in replay.get("content", []) if row.get("type") == "text"))
+            assert replay_value == result, "Terminal replay changed the public mutation result"
+            info = self.client.call_tool("hub_get_info", {})
+            recent = [row for row in info.get("recentWrites", []) if row.get("tool") == "hub_set_rule"
+                      and str(row.get("rule_id")) == str(app_id)]
+            assert recent and recent[0].get("status") == "finished" and recent[0].get("success") is True, recent
+            config = self.client.call_tool("hub_get_app_config", {"appId": str(app_id), "includeSettings": True})
+
+            async def fetch_section(section: str, cursor: str, limit: int) -> dict:
+                page = self.client.call_tool("hub_set_rule", {"operation": "read", "rule_id": int(app_id),
+                    "args": {"sections": [section], "cursor": cursor, "limit": limit}})
+                assert str(page.get("rule_id")) == str(app_id), page
+                return page
+
+            document = asyncio.run(read_native_document_sections(fetch_section))
+            assert_exact_native_conditions(config, document, changes)
+            assert_exact_native_actions(config, document, changes, messages)
+        finally:
+            self._delete_native(app_id)
 
     @test("native_apps")
     def test_set_rule_contains_comparator(self) -> None:
