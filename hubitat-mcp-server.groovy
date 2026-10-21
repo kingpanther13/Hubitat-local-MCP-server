@@ -2567,11 +2567,11 @@ def handleToolsCall(msg) {
         if (stateId == null) {
             _mrtrValidateAccess(toolName, reactiveToolName, args)
             String leafName = reactiveToolName?.toString()
-            boolean validPureRoute = outerName == leafName ||
+            boolean validPureRoute = toolName == leafName ||
                 (settings.useGateways != false &&
-                    gatewayConfig[outerName]?.tools?.contains(leafName))
+                    gatewayConfig[toolName]?.tools?.contains(leafName))
             if (validPureRoute && leafName == "hub_create_backup") {
-                _requireCreateBackupConfirm(_mrtrLeafArguments(outerName, leafName, args as Map))
+                _requireCreateBackupConfirm(_mrtrLeafArguments(toolName?.toString(), leafName, args as Map))
             }
             boolean readLeaf = _mrtrReadTools().contains(leafName)
             if (readLeaf) {
