@@ -12,7 +12,6 @@ import uuid
 from typing import ClassVar
 
 import requests
-
 from native_rm_backup_e2e import NativeRmBackupE2E
 from native_rm_parity_actions_e2e import NativeRmParityActions
 from native_rm_parity_support import ParityCase
