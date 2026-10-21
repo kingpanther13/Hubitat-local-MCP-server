@@ -3305,34 +3305,31 @@ def test_regular_native_fixture_adoption_validates_before_caching(label, virtual
         assert "native_switch" not in runner._perm_fixture_ids
 
 
-@pytest.mark.parametrize("allowed, remote_id, local_id, accepted", [
-    (False, "00124b0012345678", "00124b0012345678", False),
-    (True, "00124b0012345678", "00124b0012345678", True),
-    (True, "00124b0012345678", "00124b0098765432", False),
-    (True, "unavailable", "unavailable", False),
+@pytest.mark.parametrize("allowed_url, accepted", [
+    (None, False),
+    ("http://native.invalid/", True),
+    ("http://another.invalid/", False),
 ])
-def test_different_native_url_requires_authorization_and_same_authenticated_hub_identity(
-        monkeypatch, allowed, remote_id, local_id, accepted):
+def test_different_native_url_requires_explicit_authorization(monkeypatch, allowed_url, accepted):
     import e2e_native_rule_integration as integration
 
-    calls = []
     client = SimpleNamespace(hub_url="https://relay.invalid", app_id="3", access_token="unused",
                              endpoint="https://relay.invalid/apps/api/3/mcp",
-                             call_tool=lambda *args: calls.append(("regular", args)) or {"zigbeeId": remote_id})
+                             call_tool=lambda *_args: pytest.fail("Endpoint selection must not depend on radio identity"))
     monkeypatch.setenv("HUB_URL", "http://native.invalid")
-    if allowed:
-        monkeypatch.setenv("NATIVE_RULE_E2E_ALLOWED_HUB_URL", "http://native.invalid/")
+    if allowed_url:
+        monkeypatch.setenv("NATIVE_RULE_E2E_ALLOWED_HUB_URL", allowed_url)
     else:
         monkeypatch.delenv("NATIVE_RULE_E2E_ALLOWED_HUB_URL", raising=False)
-    monkeypatch.setattr(integration.HubClient, "tool", lambda _client, name:
-                        calls.append(("local", name)) or {"zigbeeId": local_id})
+    monkeypatch.setattr(integration.HubClient, "tool", lambda *_args, **_kwargs:
+                        pytest.fail("Endpoint selection must not depend on radio identity"))
     if accepted:
         bound = integration.RegularNativeClient(SimpleNamespace(client=client))
         assert bound.base == "http://native.invalid"
+        assert bound.mcp_url == client.endpoint + "?access_token=unused"
     else:
-        with pytest.raises(AssertionError, match=r"authorization|identity"):
+        with pytest.raises(AssertionError, match="authorization"):
             integration.RegularNativeClient(SimpleNamespace(client=client))
-    assert calls == ([("regular", ("hub_get_info", {})), ("local", "hub_get_info")] if allowed else [])
 
 
 def test_same_normalized_native_url_needs_no_second_endpoint_probe(monkeypatch):

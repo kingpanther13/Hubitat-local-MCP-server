@@ -32,28 +32,6 @@ def normalized_hub_url(value):
     return parsed.scheme.lower(), parsed.hostname.lower(), port, parsed.path.rstrip("/")
 
 
-def stable_hub_identifiers(info):
-    if not isinstance(info, dict):
-        return {}
-    data = info.get("hubData") if isinstance(info.get("hubData"), dict) else {}
-    identifiers = {}
-    for name in ("hubUID", "hubUid", "hubId", "macAddress", "mac", "zigbeeId"):
-        value = info.get(name) or data.get(name)
-        if not isinstance(value, str):
-            continue
-        token = value.lower().replace(":", "").replace("-", "").strip()
-        if len(token) >= 8 and token not in {"unavailable", "unknown", "null", "<redacted>"} and set(token) not in ({"0"}, {"f"}):
-            identifiers[name] = token
-    return identifiers
-
-
-def require_same_hub_identity(remote, local):
-    remote_ids, local_ids = stable_hub_identifiers(remote), stable_hub_identifiers(local)
-    common = remote_ids.keys() & local_ids.keys()
-    if not common or any(remote_ids[key] != local_ids[key] for key in common):
-        raise AssertionError("Authorized native URL could not be bound to the MCP hub identity")
-
-
 def native_boolean(value):
     if value is True or value == "true":
         return True
@@ -75,9 +53,6 @@ class RegularNativeClient(HubClient):
             allowed = os.environ.get("NATIVE_RULE_E2E_ALLOWED_HUB_URL")
             if not allowed or local_url != normalized_hub_url(allowed):
                 raise AssertionError("A different native URL requires explicit native URL authorization")
-            remote_info = runner.client.call_tool("hub_get_info", {})
-            local_info = HubClient.tool(self, "hub_get_info")
-            require_same_hub_identity(remote_info, local_info)
         self.mcp_url = runner.client.endpoint + "?" + urllib.parse.urlencode({
             "access_token": runner.client.access_token})
 
