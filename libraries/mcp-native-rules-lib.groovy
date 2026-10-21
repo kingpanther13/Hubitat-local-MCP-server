@@ -3929,14 +3929,10 @@ private String _rmComparatorToken(Object raw) {
 // and a picker option like 'unchanged' must NOT match a '*changed*' request. Use this
 // (not the fuzzy family gate) whenever choosing which option to write.
 
-private boolean _rmComparatorTokensMatch(Object requested, Object candidate) {
-    return _rmComparatorTokenMatchesOption(_rmComparatorToken(requested), candidate)
-}
-
 // Internal _rm helper -- not part of the tool surface.
 // Equality of an ALREADY-NORMALIZED requested token against a candidate picker option.
 // Route sites normalize the requested comparator ONCE (hoisted out of the per-candidate
-// .find) and call this; _rmComparatorTokensMatch is the un-hoisted convenience form.
+// .find) and call this.
 
 private boolean _rmComparatorTokenMatchesOption(String requestedToken, Object candidate) {
     if (requestedToken == null) return false
@@ -5281,6 +5277,8 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
 // reference in the hub_set_rule tool description.
 
 private Map _rmTriggerSchemaForDiscover() {
+    // Keep legacy discovery constants off the main app's bounded JVM constant pool.
+    def _impl = {
     return [
         discriminator: "capability",
         note: "Pass the chosen capability name (case-insensitive) as addTrigger.capability in the real call.",
@@ -5550,6 +5548,8 @@ private Map _rmTriggerSchemaForDiscover() {
             ]
         ]
     ]
+    }
+    return _impl()
 }
 
 // Return a structured schema Map describing every supported addAction capability.
@@ -5558,6 +5558,8 @@ private Map _rmTriggerSchemaForDiscover() {
 // reference in the hub_set_rule tool description.
 
 private Map _rmActionSchemaForDiscover() {
+    // Keep legacy discovery constants off the main app's bounded JVM constant pool.
+    def _impl = {
     return [
         discriminator: "capability",
         note: "Pass the chosen capability name (case-insensitive) as addAction.capability in the real call. 'action' is required for multi-variant capabilities (switch, dimmer, etc.); optional or absent for single-variant ones (log, mode, delay, etc.).",
@@ -6202,6 +6204,8 @@ private Map _rmActionSchemaForDiscover() {
             ]
         ]
     ]
+    }
+    return _impl()
 }
 
 // Scan an RM rule's appSettings for tCapab<N> entries and return the
@@ -8205,33 +8209,6 @@ private void _rmPrevalidateActionSpec(Map actionSpec, String cap, Set validRuleI
                     }
                 }
             }
-        }
-    }
-}
-
-// The argument checks _rmAddTrigger runs before it opens the trigger editor, applied to a whole
-// list so a create can refuse a bad trigger before the rule exists. Device ids are read-only lookups.
-
-private void _rmPrevalidateTriggerSpecList(List specs, String label) {
-    specs.eachWithIndex { spec, i ->
-        if (!(spec instanceof Map)) {
-            throw new IllegalArgumentException("${label}[${i}] must be a trigger spec object, got '${spec}'. RM is not touched.")
-        }
-        def sm = spec as Map
-        if (sm.discover == true) return
-        try {
-            _rmValidateRoundZeroTriggerSpec(sm)
-            if (!sm.capability?.toString()?.trim()) {
-                throw new IllegalArgumentException("addTrigger.capability is required. Pass {discover: true} to get the full structured schema. RM is not touched.")
-            }
-            _rmValidateDeviceIdsExist("addTrigger.deviceIds", sm.deviceIds)
-            if (sm.condition instanceof Map) {
-                def cm = sm.condition as Map
-                _rmValidateDeviceIdsExist("addTrigger.condition.deviceIds", cm.deviceIds ?: (cm.deviceId != null ? [cm.deviceId] : null))
-            }
-            _rmValidateRoundZeroPeriodicSpec(sm)
-        } catch (IllegalArgumentException e) {
-            throw new IllegalArgumentException("${label}[${i}]: ${e.message}".toString(), e)
         }
     }
 }
