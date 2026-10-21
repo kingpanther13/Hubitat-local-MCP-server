@@ -596,7 +596,7 @@ def _native_condition_readback():
         for field in fields:
             name = field["name"].replace("#", str(index))
             device = field["type"].startswith("capability.")
-            settings[name] = {device_id: "Temperature fixture" for device_id in field["value"]} if device else field["value"]
+            settings[name] = dict.fromkeys(field["value"], "Temperature fixture") if device else field["value"]
             typed.append({"name": name, "type": field["type"], "value": field["value"],
                           "device_ids": field["value"] if device else None})
     return {"settings": settings}, {"conditions": {str(i): "native condition" for i in range(1, 55)},
@@ -651,7 +651,7 @@ def _native_action_readback():
                 fields = [{"name": "tCapab#", "type": "enum", "value": "Temperature"}, *event["fields"]]
                 for field in fields:
                     name = field["name"].replace("#", "-" + str(event_index))
-                    settings[name] = ({device_id: "Temperature fixture" for device_id in field["value"]}
+                    settings[name] = (dict.fromkeys(field["value"], "Temperature fixture")
                                       if field["type"].startswith("capability.") else field["value"])
                     typed.append({"name": name, "type": field["type"], "value": field["value"],
                                   "device_ids": field["value"] if field["type"].startswith("capability.") else None})
