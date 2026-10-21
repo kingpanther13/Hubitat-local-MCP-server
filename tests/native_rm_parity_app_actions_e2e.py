@@ -279,6 +279,12 @@ class NativeRmParityAppActions(CloudCaseMixin, ParityCase):
         self._set_scheduler_heat(mode_scheduler, mode, 68)
         self._walk(mode_scheduler, "click", click={"name": "update"})
         self._configure(mode_scheduler, self.prefix + "_ModeScheduler", [])
+        controls = [entry for section in self.raw_configuration(mode_scheduler)["page"]["sections"]
+                    for entry in section.get("embeddedActions", [])
+                    if str(entry.get("name")) == mode and entry.get("stateAttribute") == "tsH"]
+        self.assertEqual(len(controls), 1, controls)
+        self.assertEqual(html.unescape(controls[0]["title"]), "Set Heating Setpoint for " + configured_mode["name"])
+        self.assertRegex(html.unescape(controls[0]["description"]), r"^68(?:\.0+)?°$")
         self.assertEqual(self._scheduler_modes(mode_scheduler), {mode: {"heat": 68, "used": True}})
         thermostat_name = self.fixture_metadata("thermostat")["device"]["label"]
         thermostat2_name = self.fixture_metadata("thermostat2")["device"]["label"]
