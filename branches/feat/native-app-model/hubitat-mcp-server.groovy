@@ -25519,9 +25519,6 @@ private String _rmComparatorToken(Object raw) {
     s = s.trim()
     return s ?: null
 }
-private boolean _rmComparatorTokensMatch(Object requested, Object candidate) {
-    return _rmComparatorTokenMatchesOption(_rmComparatorToken(requested), candidate)
-}
 private boolean _rmComparatorTokenMatchesOption(String requestedToken, Object candidate) {
     if (requestedToken == null) return false
     def b = _rmComparatorToken(candidate)
@@ -26170,12 +26167,12 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
         if (!lostSkipped.isEmpty()) {
             def skippedKeys = lostSkipped*.key.findAll { it != null }.join(', ')
             def settingWord = lostSkipped.size() == 1 ? "setting" : "settings"
-            repairHints << "Some trigger ${settingWord} didn't land: ${skippedKeys}. Use hub_set_rule(walkStep={page:'selectTriggers', operation:'introspect'}) to see the live schema, then write the missing fields one at a time. CAVEAT: if the introspect call returns an empty schema for the missing field, that field is likely wizard-past-state (write-only during initial trigger construction, no longer in the live input list). Verify via hub_get_app_config(appId) -- if the trigger paragraph renders the value correctly (e.g. 'Certain Time 5:30 PM'), the partial flag is cosmetic and the trigger is fully baked. Skip the repair."
+            repairHints << "Some trigger ${settingWord} didn't land: ${skippedKeys}. Use hub_set_native_app(walkStep={page:'selectTriggers', operation:'introspect'}) to see the live schema, then write the missing fields one at a time. CAVEAT: if the introspect call returns an empty schema for the missing field, that field is likely wizard-past-state (write-only during initial trigger construction, no longer in the live input list). Verify via hub_get_app_config(appId) -- if the trigger paragraph renders the value correctly (e.g. 'Certain Time 5:30 PM'), the partial flag is cosmetic and the trigger is fully baked. Skip the repair."
         }
         if (!forceWrittenKeys.isEmpty()) {
             def cmpWord = forceWrittenKeys.size() == 1 ? "Comparator" : "Comparators"
             def cmpVerb = forceWrittenKeys.size() == 1 ? "was" : "were"
-            repairHints << "${cmpWord} ${forceWrittenKeys.join(', ')} ${cmpVerb} force-written via a degraded path after a transient re-fetch failure -- the value IS in settingsApplied and success stays true, but it could not be schema-confirmed. Verify via hub_get_app_config(appId): if the trigger paragraph renders the comparator correctly, the partial flag is cosmetic. Do NOT re-write -- only re-add via hub_set_rule(walkStep={...}) if the paragraph shows the comparator missing."
+            repairHints << "${cmpWord} ${forceWrittenKeys.join(', ')} ${cmpVerb} force-written via a degraded path after a transient re-fetch failure -- the value IS in settingsApplied and success stays true, but it could not be schema-confirmed. Verify via hub_get_app_config(appId): if the trigger paragraph renders the comparator correctly, the partial flag is cosmetic. Do NOT re-write -- only re-add via hub_set_native_app(walkStep={...}) if the paragraph shows the comparator missing."
         }
         def notRepresentable = genuineSkipped.findAll { it instanceof Map && it.reason == "comparator_not_representable_for_enum_attribute" }
         notRepresentable.each { sk ->
@@ -26193,7 +26190,7 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
             repairHints << "Rule has pre-existing broken markers: ${(health.brokenMarkers as List).unique().join(', ')}. The new trigger committed, but run hub_get_rule_health(${appId}) and repair the existing broken trigger/action rows before this rule fires correctly."
         }
         if (skipped?.any { it?.reason == "periodic_href_unresolved_nonfirst_trigger" }) {
-            repairHints << "The periodic sub-page index could not be resolved for this (non-first) trigger -- its href was absent from the trigger schema, or the href's params.n was malformed -- so its schedule was NOT written, because writing it would have overwritten an earlier periodic trigger's schedule. Retry the add: re-fetch with hub_set_rule(walkStep={page:'selectTriggers', operation:'introspect'}) to confirm the periodic href is present with an integer params.n, or rebuild the rule's triggers in order. If the rule has only one periodic trigger, this should not recur."
+            repairHints << "The periodic sub-page index could not be resolved for this (non-first) trigger -- its href was absent from the trigger schema, or the href's params.n was malformed -- so its schedule was NOT written, because writing it would have overwritten an earlier periodic trigger's schedule. Retry the add: re-fetch with hub_set_native_app(walkStep={page:'selectTriggers', operation:'introspect'}) to confirm the periodic href is present with an integer params.n, or rebuild the rule's triggers in order. If the rule has only one periodic trigger, this should not recur."
         }
         if (hubRenderError) {
             repairHints << "WARNING: selectTriggers may have rendered with an error (configPageError=${err}, or skipped items have empty available list). This is a hub-side issue. Consider deleting the trigger and trying with different deviceIds or trigger shape."
@@ -26218,6 +26215,7 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
     return _impl()
 }
 private Map _rmTriggerSchemaForDiscover() {
+    def _impl = {
     return [
         discriminator: "capability",
         note: "Pass the chosen capability name (case-insensitive) as addTrigger.capability in the real call.",
@@ -26487,8 +26485,11 @@ private Map _rmTriggerSchemaForDiscover() {
             ]
         ]
     ]
+    }
+    return _impl()
 }
 private Map _rmActionSchemaForDiscover() {
+    def _impl = {
     return [
         discriminator: "capability",
         note: "Pass the chosen capability name (case-insensitive) as addAction.capability in the real call. 'action' is required for multi-variant capabilities (switch, dimmer, etc.); optional or absent for single-variant ones (log, mode, delay, etc.).",
@@ -27133,6 +27134,8 @@ private Map _rmActionSchemaForDiscover() {
             ]
         ]
     ]
+    }
+    return _impl()
 }
 private Map _rmCollectTriggerCapabilities(Integer appId) {
     def status = _rmFetchStatusJson(appId)
@@ -27164,7 +27167,7 @@ private String _rmModifyTriggerNoStateMessage(Integer triggerIdx) {
     return "modifyTrigger: trigger ${triggerIdx} has no 'state' value to change -- this trigger does not expose a plain state field. Use removeTrigger + addTrigger to reconfigure it.".toString()
 }
 private String _rmModifyTriggerWizardRecoveryHint(Integer appId) {
-    return "A trigger editor may still be open. Inspect hub_get_app_config(appId=${appId}, pageName='selectTriggers', includeSettings=true) before another edit. Only if the original trigger editor remains open, close it with hub_set_rule(appId=${appId}, button='hasAll', pageName='selectTriggers', confirm=true), then verify it closed with hub_get_app_config. Do not click hasAll again if the editor already closed.".toString()
+    return "A trigger editor may still be open. Inspect hub_get_app_config(appId=${appId}, pageName='selectTriggers', includeSettings=true) before another edit. Only if the original trigger editor remains open, close it with hub_set_native_app(appId=${appId}, button='hasAll', pageName='selectTriggers', confirm=true), then verify it closed with hub_get_app_config. Do not click hasAll again if the editor already closed.".toString()
 }
 private Map _rmModifyTrigger(Integer appId, Integer triggerIdx, Map mods) {
     def unsupported = mods.keySet() - ["state"]
@@ -27359,7 +27362,7 @@ private Map _rmModifyAction(Integer appId, Integer actionIdx, Map mods, Long req
             settingsSkipped: addResult?.settingsSkipped,
             removeResult: removeResult, addResult: addResult, moveResults: moveResults, spec: spec,
             error: targetsVerified ? null : (budgetPaused
-                ? "modifyAction: the rebuild committed but the response budget ran out with ${movesRemaining} reposition move(s) unapplied and the readback unverified. Finish with ${movesRemaining} x hub_set_rule(appId=${appId}, moveAction={index:${newIdx}, direction:'up'}), then hub_set_rule(appId=${appId}, button='updateRule') to re-initialize, and verify ${entry.listField}.${newIdx} via hub_get_app_config(appId=${appId}). Do NOT re-issue modifyAction -- it would delete the rebuilt action again."
+                ? "modifyAction: the rebuild committed but the response budget ran out with ${movesRemaining} reposition move(s) unapplied and the readback unverified. Finish with ${movesRemaining} x hub_set_native_app(appId=${appId}, moveAction={index:${newIdx}, direction:'up'}), then hub_set_native_app(appId=${appId}, button='updateRule') to re-initialize, and verify ${entry.listField}.${newIdx} via hub_get_app_config(appId=${appId}). Do NOT re-issue modifyAction -- it would delete the rebuilt action again."
                 : (verificationFetchFailed
                     ? "modifyAction: the rebuild committed but the post-rebuild readback failed -- verify ${entry.listField}.${newIdx} via hub_get_app_config(appId=${appId}) before trusting the retarget."
                     : (!fieldMismatches.isEmpty() && verifiedTargets != null && verifiedTargets.sort(false) == expectedTargets
@@ -27446,7 +27449,7 @@ private List _rmClearActions(Integer appId) {
     }
     def stillThereCount = stillThere.size()
     def stillThereWord = stillThereCount == 1 ? "action" : "actions"
-    throw new IllegalStateException("clearActions: trashActs submit returned 200 but actions ${stillThere.sort()} still present on rule ${appId} after 10s of retries. Likely either state.editAct is set (a cancelAct click was verified live on fw 2.5.1.135 NOT to clear a stale marker -- if set, finish/cancel the open editor in the Hubitat UI, or delete + hub_restore_backup(scope='source') to recreate with fresh state) or a rare RM commit lag. Verify via hub_get_app_config(appId=${appId}) before retrying -- the deletion may commit post-response. Roll back via hub_restore_backup if the ${stillThereWord} really did get clobbered. Note: do NOT use hub_set_rule(button='cancelTrash') as a recovery -- in trash-confirmation mode that button may commit pending deletes rather than abort, potentially wiping additional actions.${getAsyncCommitMarker()}")
+    throw new IllegalStateException("clearActions: trashActs submit returned 200 but actions ${stillThere.sort()} still present on rule ${appId} after 10s of retries. Likely either state.editAct is set (a cancelAct click was verified live on fw 2.5.1.135 NOT to clear a stale marker -- if set, finish/cancel the open editor in the Hubitat UI, or delete + hub_restore_backup(scope='source') to recreate with fresh state) or a rare RM commit lag. Verify via hub_get_app_config(appId=${appId}) before retrying -- the deletion may commit post-response. Roll back via hub_restore_backup if the ${stillThereWord} really did get clobbered. Note: do NOT use hub_set_native_app(button='cancelTrash') as a recovery -- in trash-confirmation mode that button may commit pending deletes rather than abort, potentially wiping additional actions.${getAsyncCommitMarker()}")
 }
 private String _rmCommaJoinedModeHint(Object rawName, Collection validNames, String context = "") {
     def s = rawName?.toString()
@@ -27693,7 +27696,7 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
         actType = "dimmerActs"
         switch (action) {
             case "setColor":
-                if (actionSpec.colorName == null && !(actionSpec.rawSettings instanceof Map)) throw new IllegalArgumentException("color.setColor requires 'colorName' (e.g. 'Red'), OR a custom HSV color supplied via rawSettings (colorH.<N>). Without a color source the action registers but never bakes. See hub_get_tool_guide(section='set_rule_create_reference').")
+                if (actionSpec.colorName == null && !(actionSpec.rawSettings instanceof Map)) throw new IllegalArgumentException("color.setColor requires 'colorName' (e.g. 'Red'), OR a custom HSV color supplied via rawSettings (colorH.<N>). Without a color source the action registers but never bakes. See hub_get_tool_guide(section='native_app_reference_actions').")
                 actSubType = "getSetColor"
                 fields = ["bulbs.@N": deviceIds]
                 if (actionSpec.colorName != null) fields["color.@N"] = actionSpec.colorName
@@ -27727,19 +27730,19 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
         actType = "dimmerActs"
         switch (action) {
             case "setColorTemp":
-                if (actionSpec.kelvin == null) throw new IllegalArgumentException("colorTemp.setColorTemp requires 'kelvin' (color temperature in K, e.g. 2700). Without it the action registers but never bakes. See hub_get_tool_guide(section='set_rule_create_reference').")
+                if (actionSpec.kelvin == null) throw new IllegalArgumentException("colorTemp.setColorTemp requires 'kelvin' (color temperature in K, e.g. 2700). Without it the action registers but never bakes. See hub_get_tool_guide(section='native_app_reference_actions').")
                 actSubType = "getSetColorTemp"
                 fields = ["ct.@N": deviceIds, "ctL.@N": actionSpec.kelvin]
                 if (actionSpec.level != null) fields["ctLevel.@N"] = actionSpec.level
                 break
             case "toggleColorTemp":
-                if (actionSpec.kelvin == null) throw new IllegalArgumentException("colorTemp.toggleColorTemp requires 'kelvin' (color temperature in K, e.g. 2700). Without it the action registers but never bakes. See hub_get_tool_guide(section='set_rule_create_reference').")
+                if (actionSpec.kelvin == null) throw new IllegalArgumentException("colorTemp.toggleColorTemp requires 'kelvin' (color temperature in K, e.g. 2700). Without it the action registers but never bakes. See hub_get_tool_guide(section='native_app_reference_actions').")
                 actSubType = "getToggleColorTemp"
                 fields = ["ctTog.@N": deviceIds, "ctLTog.@N": actionSpec.kelvin]
                 if (actionSpec.level != null) fields["ctTogLevel.@N"] = actionSpec.level
                 break
             case "fadeColorTemp":
-                if (actionSpec.targetKelvin == null || actionSpec.minutes == null) throw new IllegalArgumentException("colorTemp.fadeColorTemp requires 'targetKelvin' (target color temp in K) and 'minutes' (fade duration). Without them the action registers but never bakes. Optional 'direction' (raise/lower) defaults to lower. See hub_get_tool_guide(section='set_rule_create_reference').")
+                if (actionSpec.targetKelvin == null || actionSpec.minutes == null) throw new IllegalArgumentException("colorTemp.fadeColorTemp requires 'targetKelvin' (target color temp in K) and 'minutes' (fade duration). Without them the action registers but never bakes. Optional 'direction' (raise/lower) defaults to lower. See hub_get_tool_guide(section='native_app_reference_actions').")
                 actSubType = "getFadeCT"
                 fields = ["ctFade.@N": deviceIds, "ctFadeUp.@N": (actionSpec.direction == "raise"), "ctFadeTarget.@N": actionSpec.targetKelvin, "ctFadeTime.@N": actionSpec.minutes]
                 if (actionSpec.intervalSeconds != null) fields["ctFadeInterval.@N"] = actionSpec.intervalSeconds
@@ -27778,7 +27781,7 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
     } else if (cap == "thermostat") {
         if (actionSpec.mode == null && actionSpec.fanMode == null && actionSpec.heatingSetpoint == null &&
             actionSpec.adjustHeating == null && actionSpec.coolingSetpoint == null && actionSpec.adjustCooling == null) {
-            throw new IllegalArgumentException("thermostat action requires at least one setting: 'mode', 'fanMode', 'heatingSetpoint', 'adjustHeating', 'coolingSetpoint', or 'adjustCooling'. Without any, the action registers but never bakes. See hub_get_tool_guide(section='set_rule_create_reference').")
+            throw new IllegalArgumentException("thermostat action requires at least one setting: 'mode', 'fanMode', 'heatingSetpoint', 'adjustHeating', 'coolingSetpoint', or 'adjustCooling'. Without any, the action registers but never bakes. See hub_get_tool_guide(section='native_app_reference_actions').")
         }
         actType = "lockActs"
         actSubType = "getSetThermostat"
@@ -27803,7 +27806,7 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
             case "open":  actSubType = "getRLShade"; fields = ["shadeRL.@N": false, "shadeOpenClose.@N": deviceIds]; break
             case "close": actSubType = "getRLShade"; fields = ["shadeRL.@N": true,  "shadeOpenClose.@N": deviceIds]; break
             case "setPosition":
-                if (actionSpec.position == null) throw new IllegalArgumentException("shade.setPosition requires 'position' (0-100). Without it the action registers but never bakes. See hub_get_tool_guide(section='set_rule_create_reference').")
+                if (actionSpec.position == null) throw new IllegalArgumentException("shade.setPosition requires 'position' (0-100). Without it the action registers but never bakes. See hub_get_tool_guide(section='native_app_reference_actions').")
                 actSubType = "getShadePosition"
                 fields = ["shadePosition.@N": deviceIds, "shadeLevel.@N": actionSpec.position]
                 break
@@ -27814,7 +27817,7 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
         actType = "sceneActs"
         switch (action) {
             case "setSpeed":
-                if (actionSpec.speed == null) throw new IllegalArgumentException("fan.setSpeed requires 'speed' (e.g. low / medium-low / medium / medium-high / high / on / auto / off). Without it the action registers but never bakes. See hub_get_tool_guide(section='set_rule_create_reference').")
+                if (actionSpec.speed == null) throw new IllegalArgumentException("fan.setSpeed requires 'speed' (e.g. low / medium-low / medium / medium-high / high / on / auto / off). Without it the action registers but never bakes. See hub_get_tool_guide(section='native_app_reference_actions').")
                 actSubType = "getFanSpeed"
                 fields = ["fanDevice.@N": deviceIds, "fanSpeed.@N": actionSpec.speed]
                 break
@@ -28221,7 +28224,7 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
         fields = ["disEn.@N": (action != "disable"), "devDisable.@N": deviceIds]
     } else if (cap == "delay") {
         if (actionSpec.variable == null && actionSpec.hours == null && actionSpec.minutes == null && actionSpec.seconds == null) {
-            throw new IllegalArgumentException("delay action requires a duration: 'hours', 'minutes', and/or 'seconds' (or 'variable' for a variable-sourced delay). Without any, the action registers but never bakes. See hub_get_tool_guide(section='set_rule_create_reference').")
+            throw new IllegalArgumentException("delay action requires a duration: 'hours', 'minutes', and/or 'seconds' (or 'variable' for a variable-sourced delay). Without any, the action registers but never bakes. See hub_get_tool_guide(section='native_app_reference_actions').")
         }
         actType = "delayActs"
         actSubType = "getDelay"
@@ -28270,7 +28273,7 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
         fields = ["comment.@N": actionSpec.text.toString()]
     } else if (cap == "repeat") {
         if (actionSpec.hours == null && actionSpec.minutes == null && actionSpec.seconds == null) {
-            throw new IllegalArgumentException("repeat action requires an interval: 'hours', 'minutes', and/or 'seconds' (how often to repeat). 'times' alone does not bake. Without an interval the action registers but never bakes. See hub_get_tool_guide(section='set_rule_create_reference').")
+            throw new IllegalArgumentException("repeat action requires an interval: 'hours', 'minutes', and/or 'seconds' (how often to repeat). 'times' alone does not bake. Without an interval the action registers but never bakes. See hub_get_tool_guide(section='native_app_reference_actions').")
         }
         actType = "repeatActs"
         actSubType = "getRepeat"
@@ -28405,29 +28408,6 @@ private void _rmPrevalidateActionSpec(Map actionSpec, String cap, Set validRuleI
                     }
                 }
             }
-        }
-    }
-}
-private void _rmPrevalidateTriggerSpecList(List specs, String label) {
-    specs.eachWithIndex { spec, i ->
-        if (!(spec instanceof Map)) {
-            throw new IllegalArgumentException("${label}[${i}] must be a trigger spec object, got '${spec}'. RM is not touched.")
-        }
-        def sm = spec as Map
-        if (sm.discover == true) return
-        try {
-            _rmValidateRoundZeroTriggerSpec(sm)
-            if (!sm.capability?.toString()?.trim()) {
-                throw new IllegalArgumentException("addTrigger.capability is required. Pass {discover: true} to get the full structured schema. RM is not touched.")
-            }
-            _rmValidateDeviceIdsExist("addTrigger.deviceIds", sm.deviceIds)
-            if (sm.condition instanceof Map) {
-                def cm = sm.condition as Map
-                _rmValidateDeviceIdsExist("addTrigger.condition.deviceIds", cm.deviceIds ?: (cm.deviceId != null ? [cm.deviceId] : null))
-            }
-            _rmValidateRoundZeroPeriodicSpec(sm)
-        } catch (IllegalArgumentException e) {
-            throw new IllegalArgumentException("${label}[${i}]: ${e.message}".toString(), e)
         }
     }
 }
@@ -28780,7 +28760,7 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
         if (!lostSkipped.isEmpty()) {
             def skippedKeys = lostSkipped*.key.findAll { it != null }.join(', ')
             def settingWord = lostSkipped.size() == 1 ? "setting" : "settings"
-            repairHints << "Some ${settingWord} didn't land: ${skippedKeys}. Use hub_set_rule(walkStep={page:'doActPage', operation:'introspect'}) to see the LIVE schema, then write the missing fields one at a time. The 'available' list on each skipped item shows what fields ARE in the schema right now. CAVEAT: if the introspect call returns an empty schema for the missing field, that field is likely wizard-past-state (write-only during initial action construction, no longer in the live input list). Verify via hub_get_app_config(appId) -- if the action paragraph renders the value correctly, the partial flag is cosmetic and the action is fully baked. Skip the repair."
+            repairHints << "Some ${settingWord} didn't land: ${skippedKeys}. Use hub_set_native_app(walkStep={page:'doActPage', operation:'introspect'}) to see the LIVE schema, then write the missing fields one at a time. The 'available' list on each skipped item shows what fields ARE in the schema right now. CAVEAT: if the introspect call returns an empty schema for the missing field, that field is likely wizard-past-state (write-only during initial action construction, no longer in the live input list). Verify via hub_get_app_config(appId) -- if the action paragraph renders the value correctly, the partial flag is cosmetic and the action is fully baked. Skip the repair."
             if (hubRenderError) {
                 repairHints << "WARNING: doActPage may have rendered with an error (configPageError=${err}, or skipped items have empty available list). This is a hub-side issue, not a wire-format problem. The action partially committed; consider removeAction(${idx}) to clear the broken row, then retry with different deviceIds or a different action shape."
             }
@@ -28792,7 +28772,7 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
         if (!forceWrittenKeys.isEmpty()) {
             def cmpWord = forceWrittenKeys.size() == 1 ? "Comparator" : "Comparators"
             def cmpVerb = forceWrittenKeys.size() == 1 ? "was" : "were"
-            repairHints << "${cmpWord} ${forceWrittenKeys.join(', ')} ${cmpVerb} force-written via a degraded path after a transient re-fetch failure -- the value IS in settingsApplied and success stays true, but it could not be schema-confirmed. Verify via hub_get_app_config(appId): if the action paragraph renders the comparator correctly, the partial flag is cosmetic. Do NOT re-write -- only re-add via hub_set_rule(walkStep={...}) if the paragraph shows the comparator missing."
+            repairHints << "${cmpWord} ${forceWrittenKeys.join(', ')} ${cmpVerb} force-written via a degraded path after a transient re-fetch failure -- the value IS in settingsApplied and success stays true, but it could not be schema-confirmed. Verify via hub_get_app_config(appId): if the action paragraph renders the comparator correctly, the partial flag is cosmetic. Do NOT re-write -- only re-add via hub_set_native_app(walkStep={...}) if the paragraph shows the comparator missing."
         }
         genuineSkipped.findAll { it instanceof Map && it.reason == "comparator_not_representable_for_enum_attribute" }.each { sk ->
             repairHints << _rmNotRepresentableEnumComparatorHint(
@@ -29047,7 +29027,7 @@ private Map _rmBuildUpdateErrorResponse(Integer appId, String msg, Map backup, S
             msgStr.contains("is DISABLED") ? "the rule is disabled, and Hubitat does not allow editing a disabled app -- re-enable it, make the change, then disable it again" : null,
             backup)
     } else if (wizardStuck) {
-        restoreHint = "Backup baseline available -- restore via hub_restore_backup with backupKey='${backup.backupKey}'. Restoring returns the app to that snapshot and may undo every later edit in the baseline's one-hour chain. Or, before your next write, close the in-flight wizard manually: hub_set_rule(button='cancelCapab', pageName='${pageName}', confirm=true) for an open condition sub-wizard, or hub_set_rule(button='actionCancel', pageName='doActPage', confirm=true) for a stuck action editor."
+        restoreHint = "Backup baseline available -- restore via hub_restore_backup with backupKey='${backup.backupKey}'. Restoring returns the app to that snapshot and may undo every later edit in the baseline's one-hour chain. Or, before your next write, close the in-flight wizard manually: hub_set_native_app(button='cancelCapab', pageName='${pageName}', confirm=true) for an open condition sub-wizard, or hub_set_native_app(button='actionCancel', pageName='doActPage', confirm=true) for a stuck action editor."
     } else {
         restoreHint = "Backup baseline available. Call hub_restore_backup with backupKey='${backup.backupKey}' to return to that snapshot; a reused baseline undoes every later edit in its one-hour chain."
     }
@@ -29800,7 +29780,7 @@ def _createButtonRuleViaController(args) {
         def result = [success: true, buttonRuleId: newRuleId, controllerId: controllerId,
             buttonNumber: buttonNumber, event: event, backup: backup, health: ruleHealth,
             note: ("Empty button rule created (it shows '(Not Installed)' until it has an action). " +
-                "Author its actions with hub_set_rule(appId=${newRuleId}, addAction={...}) -- the rule is RM-wire-format. " +
+                "Author its actions with hub_set_native_app(appId=${newRuleId}, addAction={...}) -- the rule is RM-wire-format. " +
                 "Trigger (Button ${buttonNumber} ${event}) is already seeded by the controller.").toString()]
         if (newIds.size() > 1) {
             result.newChildIds = newIds
@@ -29940,8 +29920,8 @@ def _createNativeAppShell(args) {
         def repairHints = []
         if (partialTriggers || partialActions || reFailed || rePartial) {
             repairHints << "Rule ${newId} was created BUT some pieces are incomplete -- see partialTriggers / partialActions arrays for indices${reFailed || rePartial ? ", and requiredExpression for the Required Expression outcome" : ""}. Each partial result has its own repairHints list with concrete next steps."
-            repairHints << "Repair pattern: 1) hub_get_app_config(${newId}, includeSettings=true) to inspect current state. 2) For each partial trigger/action, follow its repairHints. 3) hub_set_rule(walkStep={...}) for incremental field writes; replaceActions(...) or removeAction(index) + addAction(...) for whole-action retries. 4) hub_set_rule(button='updateRule') after fixes to commit. 5) Re-run hub_get_rule_health to verify. Don't conclude failure until tool-only repair attempts are exhausted."
-            repairHints << "Full trigger/action field reference: call hub_set_rule(guide:true), or hub_get_tool_guide(section='set_rule_create_reference')."
+            repairHints << "Repair pattern: 1) hub_get_app_config(${newId}, includeSettings=true) to inspect current state. 2) For each partial trigger/action, follow its repairHints. 3) hub_set_native_app(walkStep={...}) for incremental field writes; replaceActions(...) or removeAction(index) + addAction(...) for whole-action retries. 4) hub_set_native_app(button='updateRule') after fixes to commit. 5) Re-run hub_get_rule_health to verify. Don't conclude failure until tool-only repair attempts are exhausted."
+            repairHints << "Full trigger/action field reference: call hub_set_native_app(appId=<existing app id>, guide:true), or hub_get_tool_guide(section='native_app_reference')."
         }
         def labelApplied = (appType == "rule_machine")
         if (!labelApplied && name) {
@@ -29992,7 +29972,7 @@ def _createNativeAppShell(args) {
             result.finalisationNotAttempted = true
             result.error = _rmBulkStopError(createStopAfter, createStopItem)
             result.note = "Created ${appType} app (id=${newId}) but stopped after ${createStopAfter} failed or was partial: items after the stopping item were not attempted, and the remaining updateRule and mainPage Done were not fired. Sections before the stop may already have been finalised.".toString()
-            result.repairHints = (result.repairHints ?: []) + ["Creation stopped fail-closed after ${createStopAfter}. A new rule has no pre-operation backup: inspect with hub_get_app_config(appId=${newId}), then either delete the incomplete rule and re-create it, or repair the failed item and add the notAttempted items, fire hub_set_rule(button='updateRule') and re-run hub_get_rule_health.".toString()]
+            result.repairHints = (result.repairHints ?: []) + ["Creation stopped fail-closed after ${createStopAfter}. A new rule has no pre-operation backup: inspect with hub_get_app_config(appId=${newId}), then either delete the incomplete rule and re-create it, or repair the failed item and add the notAttempted items, fire hub_set_native_app(button='updateRule') and re-run hub_get_rule_health.".toString()]
         }
         if (triggerSpecs) result.triggers = triggerResults
         if (actionSpecs) result.actions = actionResults
@@ -30205,8 +30185,8 @@ private Map _rmApplyLocalVarResult(Integer appId, Map varResult, Map backup, Str
     def repairHints = []
     if (updateRuleFailed) {
         repairHints << (isAdd
-            ? "updateRule click was rejected after the local variable committed. The variable is created on the hub but the rule's action map will not pick it up until updateRule fires. Retry hub_set_rule(button='updateRule', confirm=true), or restore via backup if the retry also fails."
-            : "updateRule click was rejected after the local variable was removed. The variable is gone but the rule's action map will not re-evaluate until updateRule fires. Retry hub_set_rule(button='updateRule', confirm=true), or restore via backup if the retry also fails.")
+            ? "updateRule click was rejected after the local variable committed. The variable is created on the hub but the rule's action map will not pick it up until updateRule fires. Retry hub_set_native_app(button='updateRule', confirm=true), or restore via backup if the retry also fails."
+            : "updateRule click was rejected after the local variable was removed. The variable is gone but the rule's action map will not re-evaluate until updateRule fires. Retry hub_set_native_app(button='updateRule', confirm=true), or restore via backup if the retry also fails.")
     }
     def variableShape = isAdd
         ? [name: varResult?.name, type: varResult?.type, value: varResult?.value]
@@ -30564,7 +30544,7 @@ private void _rmCancelRefusedActionEditor(Integer appId, Integer idx, Exception 
     if (cleaned) throw refusal
     String what = stuckWhat ?: "action ${idx}'s editor or row could not be confirmed removed after the refusal, and the next add can reopen it pre-filled".toString()
     mcpLog("warn", "rm-native", "_rmCancelRefusedActionEditor: app ${appId}: ${what}")
-    throw new IllegalStateException("${(refusal.message ?: refusal.toString()).replace(" RM is not touched.", "")} [wizardStuck -- ${what}; first close the editor with hub_set_rule(button='actionCancel', pageName='doActPage', confirm=true), verify via hub_get_app_config(appId=${appId}), then remove any surviving row with hub_set_rule(removeAction:{index:${idx}}, confirm:true) or restore the pre-write backup]")
+    throw new IllegalStateException("${(refusal.message ?: refusal.toString()).replace(" RM is not touched.", "")} [wizardStuck -- ${what}; first close the editor with hub_set_native_app(button='actionCancel', pageName='doActPage', confirm=true), verify via hub_get_app_config(appId=${appId}), then remove any surviving row with hub_set_native_app(removeAction:{index:${idx}}, confirm:true) or restore the pre-write backup]")
 }
 private void _rmWriteSetVariableSourceModes(Integer appId, Integer idx, Map actionSpec, List applied, List skipped) {
     if (actionSpec.__setVariableSourceVar != null) {
@@ -31670,12 +31650,12 @@ Map _rmAddRequiredExpressionWalk(Integer appId, Map exprSpec) {
             def uniqueCondIdxs = lostEntries.collect { it.condIdx }.findAll { it != null }.unique().size()
             def deg = uniqueCondIdxs > 0 ? uniqueCondIdxs : lostEntries.size()
             def cw = (deg == 1) ? "condition" : "conditions"
-            reRepairHints << "${deg} ${cw} used a degraded write path (e.g. comparator_force_write_failed or offset_field_not_revealed; see settingsSkipped entries with 'reason'). Re-add the affected field(s) via hub_set_rule(walkStep={page:'STPage', operation:'introspect'}) to see the live schema, then write them one at a time -- or rebuild the expression. Verify first via hub_get_app_config(appId, includeSettings=true): if the expression paragraph renders correctly, the partial flag is cosmetic and no repair is needed."
+            reRepairHints << "${deg} ${cw} used a degraded write path (e.g. comparator_force_write_failed or offset_field_not_revealed; see settingsSkipped entries with 'reason'). Re-add the affected field(s) via hub_set_native_app(walkStep={page:'STPage', operation:'introspect'}) to see the live schema, then write them one at a time -- or rebuild the expression. Verify first via hub_get_app_config(appId, includeSettings=true): if the expression paragraph renders correctly, the partial flag is cosmetic and no repair is needed."
         }
         if (!forceWrittenKeys.isEmpty()) {
             def cmpWord = forceWrittenKeys.size() == 1 ? "Comparator" : "Comparators"
             def cmpVerb = forceWrittenKeys.size() == 1 ? "was" : "were"
-            reRepairHints << "${cmpWord} ${forceWrittenKeys.join(', ')} ${cmpVerb} force-written via a degraded path after a transient re-fetch failure -- the value IS in settingsApplied and success stays true, but it could not be schema-confirmed. Verify via hub_get_app_config(appId): if the expression paragraph renders the comparator correctly, the partial flag is cosmetic. Do NOT re-write -- only re-add via hub_set_rule(walkStep={...}) if the paragraph shows the comparator missing."
+            reRepairHints << "${cmpWord} ${forceWrittenKeys.join(', ')} ${cmpVerb} force-written via a degraded path after a transient re-fetch failure -- the value IS in settingsApplied and success stays true, but it could not be schema-confirmed. Verify via hub_get_app_config(appId): if the expression paragraph renders the comparator correctly, the partial flag is cosmetic. Do NOT re-write -- only re-add via hub_set_native_app(walkStep={...}) if the paragraph shows the comparator missing."
         }
         degEntries.findAll { it.reason == "comparator_not_representable_for_enum_attribute" }.each { sk ->
             reRepairHints << _rmNotRepresentableEnumComparatorHint(
@@ -31739,7 +31719,7 @@ private Map _rmFinalizeRequiredExpressionWrite(Integer appId, Map innerResult, M
     def reCondCount = innerResult?.conditionIndices?.size() ?: 0
     def repairHints = (innerResult?.repairHints as List) ?: []
     if (updateRuleFailed) {
-        repairHints = repairHints + ["updateRule click was rejected after the expression conditions wrote successfully. The condition slots are baked but the rule will not re-evaluate the gate until updateRule fires. Retry hub_set_rule(button='updateRule', confirm=true), or restore via backup if the retry also fails."]
+        repairHints = repairHints + ["updateRule click was rejected after the expression conditions wrote successfully. The condition slots are baked but the rule will not re-evaluate the gate until updateRule fires. Retry hub_set_native_app(button='updateRule', confirm=true), or restore via backup if the retry also fails."]
     }
     def baselineHealth = (finalizeOpts?.baselineHealth instanceof Map) ? (finalizeOpts.baselineHealth as Map) : null
     def newHealthIssues = _rmHealthRegressionNewIssues(baselineHealth, health)
@@ -32062,7 +32042,7 @@ private Map _rmBulkStoppedResult(Integer appId, Map backup, String stoppedAfter,
         finalisationNotAttempted: true,
         error: _rmBulkStopError(stoppedAfter, stopItem),
         health: (extra?.containsKey("health") ? extra.health : _rmCheckRuleHealth(appId)),
-        repairHints: ["Stopped fail-closed after ${stoppedAfter}: later items were not attempted and the trailing updateRule was not fired. Items before it remain written and can already affect the rule (actions self-bake). Inspect with hub_get_app_config(appId=${appId}); repair the failed item and add the notAttempted items, or roll back via hub_restore_backup(backupKey='${backup?.backupKey}'). Fire hub_set_rule(button='updateRule') only once the rule is complete.".toString()],
+        repairHints: ["Stopped fail-closed after ${stoppedAfter}: later items were not attempted and the trailing updateRule was not fired. Items before it remain written and can already affect the rule (actions self-bake). Inspect with hub_get_app_config(appId=${appId}); repair the failed item and add the notAttempted items, or roll back via hub_restore_backup(backupKey='${backup?.backupKey}'). Fire hub_set_native_app(button='updateRule') only once the rule is complete.".toString()],
         note: "Stopped after ${stoppedAfter} failed or was partial; finalisation not attempted.".toString()
     ]
     boolean stuck = false
@@ -32071,7 +32051,7 @@ private Map _rmBulkStoppedResult(Integer appId, Map backup, String stoppedAfter,
         out.wizardStuck = true
         def recoveryHint = (stopItem instanceof Map && stopItem.op == "modifyTrigger") ?
             _rmModifyTriggerWizardRecoveryHint(appId) :
-            "An item left an editor open (wizardStuck). Close it before any retry: hub_set_rule(button='actionCancel', pageName='doActPage', confirm=true) for an action, or button='cancelCapab' with the wizard's pageName for a condition. Verify with hub_get_app_config(includeSettings=true), then retry the failed item.".toString()
+            "An item left an editor open (wizardStuck). Close it before any retry: hub_set_native_app(button='actionCancel', pageName='doActPage', confirm=true) for an action, or button='cancelCapab' with the wizard's pageName for a condition. Verify with hub_get_app_config(includeSettings=true), then retry the failed item.".toString()
         out.repairHints = ([recoveryHint] + (out.repairHints as List))
     }
     out.putAll(extra ?: [:])
@@ -32357,7 +32337,7 @@ def _applyNativeAppEdit(args) {
         }
         def maRepairHints = []
         if (updateRuleFailed) {
-            maRepairHints << "updateRule click was rejected after the rebuilt action committed. Retry hub_set_rule(button='updateRule', confirm=true), or restore via backup if the retry also fails."
+            maRepairHints << "updateRule click was rejected after the rebuilt action committed. Retry hub_set_native_app(button='updateRule', confirm=true), or restore via backup if the retry also fails."
         }
         if (maResult?.moveSoftFail && maResult?.verifyHint) {
             maRepairHints << maResult.verifyHint.toString()
@@ -32380,7 +32360,7 @@ def _applyNativeAppEdit(args) {
         def maError = maResult?.error
         if (!maOk && maError == null) {
             if (updateRuleFailed) {
-                maError = "modifyAction: the rebuild committed and verified, but the trailing updateRule click was rejected (${updateRuleError}) -- the rule never re-initialized. Retry hub_set_rule(appId=${appId}, button='updateRule', confirm=true)."
+                maError = "modifyAction: the rebuild committed and verified, but the trailing updateRule click was rejected (${updateRuleError}) -- the rule never re-initialized. Retry hub_set_native_app(appId=${appId}, button='updateRule', confirm=true)."
             } else if (!_rmHealthGatePass(maHealth)) {
                 maError = "modifyAction: the rebuild committed and verified, but the post-rebuild health check reports the rule broken -- inspect health.issues/brokenMarkers and restore via backup if the damage is real."
                 maRepairHints << "Health gate failed after the rebuild. Inspect the health block; hub_restore_backup with this response's backupKey rolls the rule back."
@@ -32522,7 +32502,7 @@ def _applyNativeAppEdit(args) {
                         recommended: 'verify-then-decide',
                         verifyVia: "hub_get_app_config(appId: ${appId})",
                         ifActionsAbsent: 'treat as success -- clearActions committed post-response',
-                        ifActionsPresent: "wait 15s, then call hub_get_app_config to re-check. If actions still present, retry clearActions. If state.editAct is set it will block delete-class clicks -- abort the open editor with hub_set_rule(button='actionCancel', pageName='doActPage', confirm=true) (a cancelAct click was verified NOT to clear it), or delete + hub_restore_backup(scope='source') to recreate the rule with fresh state.",
+                        ifActionsPresent: "wait 15s, then call hub_get_app_config to re-check. If actions still present, retry clearActions. If state.editAct is set it will block delete-class clicks -- abort the open editor with hub_set_native_app(button='actionCancel', pageName='doActPage', confirm=true) (a cancelAct click was verified NOT to clear it), or delete + hub_restore_backup(scope='source') to recreate the rule with fresh state.",
                         avoid: ['cancelTrash']
                     ]
                 ]
@@ -32569,7 +32549,7 @@ def _applyNativeAppEdit(args) {
             addedResults.any { it instanceof Map && it.partial == true })
         def repairHints = []
         if (updateRuleFailed) {
-            repairHints << "updateRule click was rejected after the action mutation committed. The action rows are baked but the rule will not subscribe to its device events until updateRule fires. Retry hub_set_rule(button='updateRule', confirm=true), or restore via backup if the retry also fails."
+            repairHints << "updateRule click was rejected after the action mutation committed. The action rows are baked but the rule will not subscribe to its device events until updateRule fires. Retry hub_set_native_app(button='updateRule', confirm=true), or restore via backup if the retry also fails."
         }
         def moveSoftFail = moveResult != null && moveResult.success == false
         if (moveSoftFail && moveResult.verifyHint) {
@@ -32655,7 +32635,7 @@ def _applyNativeAppEdit(args) {
         def health = _rmCheckRuleHealth(appId)
         def repairHints = []
         if (updateRuleFailed) {
-            repairHints << "updateRule click was rejected after the trigger mutation committed. The trigger row is baked but the rule will not subscribe to its device events until updateRule fires. Retry hub_set_rule(button='updateRule', confirm=true), or restore via backup if the retry also fails."
+            repairHints << "updateRule click was rejected after the trigger mutation committed. The trigger row is baked but the rule will not subscribe to its device events until updateRule fires. Retry hub_set_native_app(button='updateRule', confirm=true), or restore via backup if the retry also fails."
         }
         if (removeTriggerSpec) {
             def removedInnerPartial = trigMutResult?.partial == true
@@ -32719,7 +32699,7 @@ def _applyNativeAppEdit(args) {
         }
         def trigRepairHints = (trigResult?.repairHints as List) ?: []
         if (updateRuleFailed) {
-            trigRepairHints = trigRepairHints + ["updateRule click was rejected after the trigger row committed. The trigger settings are baked but the rule will not subscribe to its device events until updateRule fires. Retry hub_set_rule(button='updateRule', confirm=true), or restore via backup if the retry also fails."]
+            trigRepairHints = trigRepairHints + ["updateRule click was rejected after the trigger row committed. The trigger settings are baked but the rule will not subscribe to its device events until updateRule fires. Retry hub_set_native_app(button='updateRule', confirm=true), or restore via backup if the retry also fails."]
         }
         return [
             success: (trigResult?.success != false) && !updateRuleFailed,
@@ -33068,7 +33048,7 @@ def _applyNativeAppEdit(args) {
         def repairHints = []
         repairHints.addAll(deferredRestoreHints)
         if (updateRuleFailed) {
-            repairHints << "updateRule click was rejected after the patch ops committed. The patch settings are baked but the rule will not re-evaluate / re-subscribe until updateRule fires. Retry hub_set_rule(button='updateRule', confirm=true), or restore via backup if the retry also fails."
+            repairHints << "updateRule click was rejected after the patch ops committed. The patch settings are baked but the rule will not re-evaluate / re-subscribe until updateRule fires. Retry hub_set_native_app(button='updateRule', confirm=true), or restore via backup if the retry also fails."
         }
         def out = [
             success: (patchErr == null) && (opsOk == patchResults.size()) && _rmHealthGatePass(health) && !updateRuleFailed,
@@ -33206,7 +33186,7 @@ def _applyNativeAppEdit(args) {
         def health = _rmCheckRuleHealth(appId)
         def repairHints = []
         if (updateRuleFailed) {
-            repairHints << "updateRule click was rejected after the bulk adds committed. The trigger/action rows are baked but the rule will not subscribe to its device events until updateRule fires. Retry hub_set_rule(button='updateRule', confirm=true), or restore via backup if the retry also fails."
+            repairHints << "updateRule click was rejected after the bulk adds committed. The trigger/action rows are baked but the rule will not subscribe to its device events until updateRule fires. Retry hub_set_native_app(button='updateRule', confirm=true), or restore via backup if the retry also fails."
         }
         def itemsPartial = (trigOk != triggerResults.size()) || (actOk != actionResults.size()) ||
             triggerResults.any { it instanceof Map && it.partial == true } ||
@@ -33284,7 +33264,7 @@ def _applyNativeAppEdit(args) {
                     " Inputs can also appear only after an earlier input is set: write the prerequisite in its own call first (e.g. on an RM rule's selectTriggers, tstate1 appears only after tCapab1 and tDev1 are written).").toString()
             }
             if (!isMainPage) {
-                result.subPageNote = "Sub-page write (pageName='${pageName}') — updateRule NOT auto-fired so the editor state survives. Finish the wizard and call hub_set_rule(button='updateRule') to commit."
+                result.subPageNote = "Sub-page write (pageName='${pageName}') — updateRule NOT auto-fired so the editor state survives. Finish the wizard and call hub_set_native_app(button='updateRule') to commit."
             }
         }
         if (button) {
@@ -33307,7 +33287,7 @@ def _applyNativeAppEdit(args) {
                         _rmUpdateAppSettings(appId, [(residualCondTrigName): false], finalizeSchema)
                         result.wizardDoneAutoRetry = "OK after finalize (set ${residualCondTrigName}=false to clear residual Conditional? prompt)"
                     } catch (Exception finalizeErr) {
-                        result.wizardDoneAutoRetry = "WARN: failed to auto-finalize ${residualCondTrigName} (${finalizeErr.message}) — trigger committed but the residual Conditional? prompt is still open; call hub_set_rule(settings={${residualCondTrigName}: false}, pageName='${pageName}') to clear it manually"
+                        result.wizardDoneAutoRetry = "WARN: failed to auto-finalize ${residualCondTrigName} (${finalizeErr.message}) — trigger committed but the residual Conditional? prompt is still open; call hub_set_native_app(settings={${residualCondTrigName}: false}, pageName='${pageName}') to clear it manually"
                     }
                 } else if (_rmHasWizardScaffold(afterClickConfig?.configPage)) {
                     result.wizardDoneAutoRetry = "WARN: wizard scaffold still present after click — caller probably hasn't filled all required fields (capability, device, state); inspect hub_get_app_config(pageName='${pageName}')"
@@ -33341,7 +33321,7 @@ def _applyNativeAppEdit(args) {
                     settleStatus == null ?
                     "UNKNOWN: updateRule was retried but the follow-up statusJson read failed, so whether the ${trigCount == 1 ? 'trigger' : 'triggers'} subscribed is unverified. Inspect statusJson.eventSubscriptions before relying on the rule." :
                     settleStatus.unsettled ?
-                    "WARN: rule has ${trigCount} ${trigWord} but eventSubscriptions=0 after two updateRule clicks. The ${trigVerb} likely incomplete (missing tstate, attached-condition, or other required field) OR a hub timing race. Inspect statusJson.eventSubscriptions; if still empty, call hub_set_rule(button='updateRule') again or check the wizard for missing fields." :
+                    "WARN: rule has ${trigCount} ${trigWord} but eventSubscriptions=0 after two updateRule clicks. The ${trigVerb} likely incomplete (missing tstate, attached-condition, or other required field) OR a hub timing race. Inspect statusJson.eventSubscriptions; if still empty, call hub_set_native_app(button='updateRule') again or check the wizard for missing fields." :
                     "OK after auto-retry"
             } else if (settleStatus != null) {
                 result.subscriptionSettle = "OK"
@@ -44321,7 +44301,7 @@ A single tool can also be switched off under **Advanced: Per-tool Overrides**. A
   - Data-quality warning types in dataQualityWarnings[]: heid-whitespace-normalized (padded heID normalized; component KEPT), heid-non-scalar-dropped (non-scalar heID; component DROPPED), empty-heid, skipped-malformed-component
   - Limitation: heID-presence-only; HPM stores no source hashes so post-install edits via hub_update_app are not detectable
 
-### hub_manage_native_rules_and_apps (11 tools) — read, trigger, AND full CRUD on native RM rules
+### hub_manage_native_rules_and_apps (12 tools) — read, trigger, AND full CRUD on native RM rules
 
 RMUtils-based control surface (hub_list_rules = Read master; trigger/pause/private-boolean = Write master):
 (These four tools and hub_get_rule_health are also in hub_manage_rule_machine. The reads, hub_list_rules and hub_get_rule_health, are also in hub_read_rules.)
