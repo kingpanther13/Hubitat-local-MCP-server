@@ -1,10 +1,10 @@
 # Bot Acceptance Test (BAT) Suite — Rule Machine Native CRUD
 
-Supplement to `tests/BAT-v2.md`. Scenarios in this file exercise the native Rule Machine CRUD tools in the `hub_manage_native_rules_and_apps` gateway.
+Supplement to `tests/BAT-v2.md`. These scenarios retain the behavioral acceptance goals from the previous Rule Machine authoring interface. Historical request examples below use its parameter names; use `TOOL_GUIDE.md`'s `set_rule_reference` for current requests. Compare persisted configuration, native UI behavior, device outcomes, and refusal guarantees rather than requiring the previous request or response shape.
 
-**New tools exercised** (native CRUD, shipped in the same PR as this file):
+**Current tools exercised**:
 
-- `hub_manage_rule_machine.hub_set_rule` (omit appId to CREATE the rule; provide appId to EDIT it -- one upsert tool replacing the old create/update pair)
+- `hub_manage_rule_machine.hub_set_rule` (`operation=create` with `args.parent_id` and `args.name`; `operation=update` with `rule_id` and `args.changes`; `operation=read` and `operation=form` for native inspection and editor workflows)
 - `hub_manage_native_rules_and_apps.hub_delete_native_app`
 - `hub_manage_native_rules_and_apps.hub_get_rule_health`
 
@@ -16,7 +16,7 @@ Supplement to `tests/BAT-v2.md`. Scenarios in this file exercise the native Rule
 - `hub_manage_native_rules_and_apps.hub_set_rule_private_boolean`
 - `hub_read_apps_code.hub_get_app_config` (used as fallback verification)
 
-**Note on tool names:** the expected tool paths are `hub_set_rule` for RM create/edit (omit appId to create, pass appId to edit), `hub_delete_native_app` for delete, and `hub_get_app_config` (in `hub_read_apps_code`) for readback. These names live in each test's title and **Expected** grading text — the `test_prompt`s themselves stay goal-first (see Prompt style below).
+**Note on tool names:** use `hub_set_rule` for RM authoring, `hub_delete_native_app` for deletion, and native configuration and health for independent verification. The `test_prompt`s remain goal-first (see Prompt style below).
 
 **Status:** Use this file as the acceptance bar for the native CRUD tools: every T### must pass before declaring the feature stable.
 
