@@ -4,6 +4,7 @@ Only disposable, uniquely named native apps and labeled virtual devices are used
 The shared ParityCase authorization and rule cleanup apply unchanged.
 """
 
+import html
 import json
 import os
 import re
@@ -15,7 +16,7 @@ import requests
 import native_rule_document_e2e as documents
 from native_rm_parity_support import ParityCase, change, field
 
-documents.TOOLS.update({"hub_list_apps", "hub_list_devices", "hub_set_native_app"})
+documents.TOOLS.update({"hub_list_apps", "hub_list_devices", "hub_set_native_app", "hub_get_app_config", "hub_list_modes"})
 
 
 class NativeRmParityAppActions(ParityCase):
@@ -165,7 +166,8 @@ class NativeRmParityAppActions(ParityCase):
                 for value in node:
                     visit(value)
         visit(self.client.native(f"/installedapp/configure/json/{app_id}")["configPage"])
-        self.assertEqual(len(fields), 1, fields)
+        self.assertTrue(fields, "Native perX selector is missing")
+        self.assertTrue(all(row == fields[0] for row in fields), "Contradictory native perX descriptors")
         self.assertEqual(fields[0]["type"], "enum")
         self.assertIs(fields[0]["multiple"], True)
         # This native selector is consumed into modeTable, so setting readback
@@ -179,7 +181,7 @@ class NativeRmParityAppActions(ParityCase):
         self.assertFalse(result.get("error"), result)
         self.assertIs(self.state(app_id).get("modeTable", {}).get(mode, {}).get("used"), True)
 
-    def _add(self, rule_id, category, subtype, inputs):
+    def _add(self, rule_id, category, subtype, inputs, rendered):
         before = {str(row["id"]) for row in self.doc(rule_id)["actions"]}
         result = self.update(rule_id, [change("action", type=category, subtype=subtype,
                                              fields=[field(name + ".#", type_, value) for name, type_, value in inputs])])
@@ -204,6 +206,15 @@ class NativeRmParityAppActions(ParityCase):
             else:
                 self.assertEqual(str(saved["value"]), str(value))
         self.healthy(rule_id)
+        page = self.call("hub_get_app_config", appId=rule_id, pageName="selectActions")
+        self.assertTrue(page.get("success"), page)
+        rows = [entry for section in page["page"].get("sections", [])
+                for entry in section.get("embeddedActions", [])
+                if re.fullmatch(re.escape(str(row["id"])) + r"\.\d+\.\w+", str(entry.get("name", "")))]
+        self.assertEqual(len(rows), 1, rows)
+        text = " ".join(html.unescape(re.sub(r"<[^>]*>", "", rows[0].get("description", ""))).split())
+        for fragment in rendered:
+            self.assertIn(fragment.lower(), text.lower(), {"action_id": row["id"], "rendered": text, "missing": fragment})
         return str(row["id"])
 
     def _refuse(self, rule_id, category, subtype, inputs):
@@ -225,9 +236,9 @@ class NativeRmParityAppActions(ParityCase):
         app_id = int(created["appId"])
         parent_id = int(self.status(app_id)["installedApp"]["parentAppId"])
         self.owned_apps.append((app_id, "Room Lights", parent_id))
-        self._add(rule_id, "rulesActs", "getRLActivate", [("actRL", "enum", str(app_id)), ("modeRL", "enum", "X")])
-        self._add(rule_id, "rulesActs", "getRLActivate", [("actRL", "enum", str(app_id)), ("modeRL", "enum", "X"), ("forceRL", "bool", True)])
-        self._add(rule_id, "rulesActs", "getRLTurnOff", [("actOffRL", "enum", [str(app_id)])])
+        self._add(rule_id, "rulesActs", "getRLActivate", [("actRL", "enum", str(app_id)), ("modeRL", "enum", "X")], ["Activate", name, "Force"])
+        self._add(rule_id, "rulesActs", "getRLActivate", [("actRL", "enum", str(app_id)), ("modeRL", "enum", "X"), ("forceRL", "bool", True)], ["Activate", name, "Conditions"])
+        self._add(rule_id, "rulesActs", "getRLTurnOff", [("actOffRL", "enum", [str(app_id)])], ["Turn Off Room Lights", name])
         self.assertIn(name, self.page_text(rule_id))
         self._refuse(rule_id, "rulesActs", "getRLActivate", [("actRL", "enum", str(app_id)), ("modeRL", "enum", "999999999")])
         self._refuse(rule_id, "rulesActs", "getRLTurnOff", [("actOffRL", "enum", [str(app_id), "999999999"])])
@@ -245,9 +256,11 @@ class NativeRmParityAppActions(ParityCase):
         self.assertEqual(len(matches), 1, matches)
         activator = str(matches[0]["id"])
         self.assertEqual(str(self.client.native("/device/fullJson/" + activator)["device"]["parentAppId"]), str(scene))
-        self._add(rule_id, "sceneActs", "getActivateScene", [("sceneAct", "enum", [activator])])
+        self._add(rule_id, "sceneActs", "getActivateScene", [("sceneAct", "enum", [activator])], ["Activate scenes", label])
         mode = str(self.mode_id)
-        self._add(rule_id, "sceneActs", "getActivateScenePerMode", [("sceneModes", "enum", [mode]), ("scene" + mode, "enum", [activator])])
+        modes = self.call("hub_list_modes")["modes"]
+        mode_name = next(row["name"] for row in modes if str(row["id"]) == mode)
+        self._add(rule_id, "sceneActs", "getActivateScenePerMode", [("sceneModes", "enum", [mode]), ("scene" + mode, "enum", [activator])], ["Scenes per mode", mode_name, label])
         self.assertIn(label, self.page_text(rule_id))
         self._refuse(rule_id, "sceneActs", "getActivateScene", [("sceneAct", "enum", [str(scene)])])
 
@@ -277,17 +290,22 @@ class NativeRmParityAppActions(ParityCase):
         self._walk(mode_scheduler, "write", write={"tempX": 68})
         self._walk(mode_scheduler, "click", click={"name": "update"})
         self._configure(mode_scheduler, self.prefix + "_ModeScheduler", [])
-        self._add(rule_id, "lockActs", "getSetThermController", [("thisApp", "enum", str(controller)), ("tcSensors", "capability.temperatureMeasurement", sensors)])
-        by_thermostat = self._add(rule_id, "lockActs", "getSetThermostatScheduler", [("thisTherm", "capability.thermostat", [thermostat]), ("thermSched", "enum", "setEcoMode"), ("ecoMode", "enum", "on")])
+        thermostat_name = self.fixture_metadata("thermostat")["device"]["label"]
+        thermostat2_name = self.fixture_metadata("thermostat2")["device"]["label"]
+        sensor_names = [self.fixture_metadata(key)["device"]["label"] for key in ("temperature", "temperature2")]
+        on_thermostat = ["Thermostat Scheduler for", thermostat_name]
+        self._add(rule_id, "lockActs", "getSetThermController", [("thisApp", "enum", str(controller)), ("tcSensors", "capability.temperatureMeasurement", sensors)], ["Set Sensors for", self.prefix + "_Controller", *sensor_names])
+        by_thermostat = self._add(rule_id, "lockActs", "getSetThermostatScheduler", [("thisTherm", "capability.thermostat", [thermostat]), ("thermSched", "enum", "setEcoMode"), ("ecoMode", "enum", "on")], [*on_thermostat, "EcoMode on"])
         self.assertEqual(str(self.settings(rule_id)["thisApp." + by_thermostat]["value"]), str(scheduler))
-        by_scheduler = self._add(rule_id, "lockActs", "getSetThermostatScheduler", [("tMethod", "bool", True), ("thisApp", "enum", str(scheduler)), ("thermSched", "enum", "setEcoOffset"), ("ecoOffset", "decimal", 2.5)])
+        by_scheduler = self._add(rule_id, "lockActs", "getSetThermostatScheduler", [("tMethod", "bool", True), ("thisApp", "enum", str(scheduler)), ("thermSched", "enum", "setEcoOffset"), ("ecoOffset", "decimal", 2.5)], [*on_thermostat, "EcoMode Offset 2.5"])
         self.assertEqual(self.settings(rule_id)["thisTherm." + by_scheduler]["device_ids"], [thermostat])
-        self._add(rule_id, "lockActs", "getSetThermostatScheduler", [("thisTherm", "capability.thermostat", [thermostat]), ("thermSched", "enum", "setEcoOffset"), ("uVar", "bool", True), ("xVar", "enum", variable)])
-        self._add(rule_id, "lockActs", "getSetThermostatScheduler", [("tMethod", "bool", True), ("thisApp", "enum", str(scheduler)), ("thermSched", "enum", "setHold"), ("setHold", "enum", "off")])
+        self._add(rule_id, "lockActs", "getSetThermostatScheduler", [("thisTherm", "capability.thermostat", [thermostat]), ("thermSched", "enum", "setEcoOffset"), ("uVar", "bool", True), ("xVar", "enum", variable)], [])
+        self._add(rule_id, "lockActs", "getSetThermostatScheduler", [("tMethod", "bool", True), ("thisApp", "enum", str(scheduler)), ("thermSched", "enum", "setHold"), ("setHold", "enum", "off")], [*on_thermostat, "Set Hold off"])
         for operation, extras in (("setSchedDay", [("dayN", "enum", "0")]), ("setThermSched", [])):
-            self._add(rule_id, "lockActs", "getSetThermostatScheduler", [("thisTherm", "capability.thermostat", [thermostat]), ("thermSched", "enum", operation), *extras])
-        self._add(rule_id, "lockActs", "getSetThermostatScheduler", [("thisTherm", "capability.thermostat", [thermostat]), ("thermSched", "enum", "setTimeAway"), ("timeAwayHeat", "decimal", 60), ("uVar3", "bool", True), ("xVar3", "enum", variable)])
-        self._add(rule_id, "lockActs", "getSetThermostatScheduler", [("thisTherm", "capability.thermostat", [thermostat2]), ("thermSched", "enum", "setSched4Mode"), ("modN", "enum", mode)])
+            self._add(rule_id, "lockActs", "getSetThermostatScheduler", [("thisTherm", "capability.thermostat", [thermostat]), ("thermSched", "enum", operation), *extras], [*on_thermostat, "Activate Scheduled Setpoints", *(["Monday"] if operation == "setSchedDay" else [])])
+        self._add(rule_id, "lockActs", "getSetThermostatScheduler", [("thisTherm", "capability.thermostat", [thermostat]), ("thermSched", "enum", "setTimeAway"), ("timeAwayHeat", "decimal", 60), ("uVar3", "bool", True), ("xVar3", "enum", variable)], [*on_thermostat, "Days/Times Away", "Heat 60", "Cool", variable])
+        mode_name = next(row["name"] for row in self.call("hub_list_modes")["modes"] if str(row["id"]) == mode)
+        self._add(rule_id, "lockActs", "getSetThermostatScheduler", [("thisTherm", "capability.thermostat", [thermostat2]), ("thermSched", "enum", "setSched4Mode"), ("modN", "enum", mode)], ["Thermostat Scheduler for", thermostat2_name, "Activate Scheduled Setpoints for", mode_name])
         self._refuse(rule_id, "lockActs", "getSetThermController", [("thisApp", "enum", "999999999"), ("tcSensors", "capability.temperatureMeasurement", sensors)])
         self._refuse(rule_id, "lockActs", "getSetThermostatScheduler", [("tMethod", "bool", True), ("thisApp", "enum", "999999999"), ("thermSched", "enum", "setHold"), ("setHold", "enum", "off")])
         self._refuse(rule_id, "lockActs", "getSetThermostatScheduler", [("thisTherm", "capability.thermostat", [thermostat2]), ("thermSched", "enum", "setSched4Mode"), ("modN", "enum", "999999999")])
