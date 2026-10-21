@@ -4,6 +4,7 @@ Only disposable, uniquely named native apps and labeled virtual devices are used
 The shared ParityCase authorization and rule cleanup apply unchanged.
 """
 
+import json
 import os
 import re
 import urllib.parse
@@ -151,6 +152,33 @@ class NativeRmParityAppActions(ParityCase):
         self._walk(app_id, "done")
         self.assertEqual(self.settings(app_id)[label_input]["value"], label)
 
+    def _select_scheduler_mode(self, app_id, mode):
+        fields = []
+
+        def visit(node):
+            if isinstance(node, dict):
+                if node.get("name") == "perX":
+                    fields.append(node)
+                for value in node.values():
+                    visit(value)
+            elif isinstance(node, list):
+                for value in node:
+                    visit(value)
+        visit(self.client.native(f"/installedapp/configure/json/{app_id}")["configPage"])
+        self.assertEqual(len(fields), 1, fields)
+        self.assertEqual(fields[0]["type"], "enum")
+        self.assertIs(fields[0]["multiple"], True)
+        # This native selector is consumed into modeTable, so setting readback
+        # cannot verify it. Submit the UI form and verify the resulting row.
+        result = self.client.native("/installedapp/update/json", "POST", form={
+            "id": app_id, "settings[perX]": json.dumps([mode]),
+            "perX.type": "enum", "perX.multiple": "true",
+        })
+        self.assertIsNot(result.get("success"), False, result)
+        self.assertNotEqual(result.get("status"), "error", result)
+        self.assertFalse(result.get("error"), result)
+        self.assertIs(self.state(app_id).get("modeTable", {}).get(mode, {}).get("used"), True)
+
     def _add(self, rule_id, category, subtype, inputs):
         before = {str(row["id"]) for row in self.doc(rule_id)["actions"]}
         result = self.update(rule_id, [change("action", type=category, subtype=subtype,
@@ -244,8 +272,8 @@ class NativeRmParityAppActions(ParityCase):
         self._walk(mode_scheduler, "write", write={"therm": [int(thermostat2)]})
         self._walk(mode_scheduler, "write", write={"schedTypeL": "Hub Modes"})
         self._walk(mode_scheduler, "click", click={"name": "addMode", "stateAttribute": "addMode"})
-        self._walk(mode_scheduler, "write", write={"perX": [mode]})
-        self._walk(mode_scheduler, "click", click={"name": "1", "stateAttribute": "tsH"})
+        self._select_scheduler_mode(mode_scheduler, mode)
+        self._walk(mode_scheduler, "click", click={"name": mode, "stateAttribute": "tsH"})
         self._walk(mode_scheduler, "write", write={"tempX": 68})
         self._walk(mode_scheduler, "click", click={"name": "update"})
         self._configure(mode_scheduler, self.prefix + "_ModeScheduler", [])
