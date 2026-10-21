@@ -4,7 +4,6 @@ import unittest
 from types import SimpleNamespace
 
 import pytest
-
 from native_rm_cloud_support import CloudCaseMixin, CloudMcpClient, read_cloud_section
 
 
@@ -89,9 +88,10 @@ def test_cloud_case_page_text_retains_real_native_messages_and_independent_confi
 
 
 def test_representative_shared_case_uses_real_cloud_endpoint_shape_without_native_http(monkeypatch):
+    import urllib.request
+
     import e2e_native_rule_integration as integration
     import requests
-    import urllib.request
 
     monkeypatch.delenv("HUB_URL", raising=False)
     monkeypatch.delenv("HUB_UI_COOKIE", raising=False)
