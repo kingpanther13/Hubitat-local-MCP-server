@@ -153,12 +153,12 @@ class NativeRmParityAppActions(ParityCase):
         self._walk(app_id, "done")
         self.assertEqual(self.settings(app_id)[label_input]["value"], label)
 
-    def _select_scheduler_mode(self, app_id, mode):
+    def _scheduler_input(self, app_id, name, type_, multiple):
         fields = []
 
         def visit(node):
             if isinstance(node, dict):
-                if node.get("name") == "perX":
+                if node.get("name") == name:
                     fields.append(node)
                 for value in node.values():
                     visit(value)
@@ -166,10 +166,13 @@ class NativeRmParityAppActions(ParityCase):
                 for value in node:
                     visit(value)
         visit(self.client.native(f"/installedapp/configure/json/{app_id}")["configPage"])
-        self.assertTrue(fields, "Native perX selector is missing")
-        self.assertTrue(all(row == fields[0] for row in fields), "Contradictory native perX descriptors")
-        self.assertEqual(fields[0]["type"], "enum")
-        self.assertIs(fields[0]["multiple"], True)
+        self.assertTrue(fields, f"Native {name} input is missing")
+        self.assertTrue(all(row == fields[0] for row in fields), f"Contradictory native {name} descriptors")
+        self.assertEqual(fields[0]["type"], type_)
+        self.assertIs(fields[0]["multiple"], multiple)
+
+    def _select_scheduler_mode(self, app_id, mode):
+        self._scheduler_input(app_id, "perX", "enum", True)
         # This native selector is consumed into modeTable, so setting readback
         # cannot verify it. Submit the UI form and verify the resulting row.
         result = self.client.native("/installedapp/update/json", "POST", form={
@@ -180,6 +183,19 @@ class NativeRmParityAppActions(ParityCase):
         self.assertNotEqual(result.get("status"), "error", result)
         self.assertFalse(result.get("error"), result)
         self.assertIs(self.state(app_id).get("modeTable", {}).get(mode, {}).get("used"), True)
+
+    def _set_scheduler_heat(self, app_id, mode, value):
+        self._scheduler_input(app_id, "tempX", "decimal", False)
+        result = self.client.native("/installedapp/update/json", "POST", form={
+            "id": app_id, "settings[tempX]": str(value),
+            "tempX.type": "decimal", "tempX.multiple": "false",
+        })
+        self.assertIsNot(result.get("success"), False, result)
+        self.assertNotEqual(result.get("status"), "error", result)
+        self.assertFalse(result.get("error"), result)
+        saved = self.state(app_id).get("modeTable", {}).get(mode, {})
+        self.assertIs(saved.get("used"), True)
+        self.assertEqual(float(saved["heat"]), value)
 
     def _add(self, rule_id, category, subtype, inputs, rendered):
         before = {str(row["id"]) for row in self.doc(rule_id)["actions"]}
@@ -287,7 +303,7 @@ class NativeRmParityAppActions(ParityCase):
         self._walk(mode_scheduler, "click", click={"name": "addMode", "stateAttribute": "addMode"})
         self._select_scheduler_mode(mode_scheduler, mode)
         self._walk(mode_scheduler, "click", click={"name": mode, "stateAttribute": "tsH"})
-        self._walk(mode_scheduler, "write", write={"tempX": 68})
+        self._set_scheduler_heat(mode_scheduler, mode, 68)
         self._walk(mode_scheduler, "click", click={"name": "update"})
         self._configure(mode_scheduler, self.prefix + "_ModeScheduler", [])
         thermostat_name = self.fixture_metadata("thermostat")["device"]["label"]
