@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 4.8.2 - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
+ * Version: 4.8.3 - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -72,13 +72,14 @@ definition(
 )
 def toolListDashboards(args = null) {
     args = args ?: [:]
-    def token = (args.pinToken != null) ? args.pinToken.toString() : _fetchDashboardPinToken()
+    def page = _fetchDashboardPinToken()
+    def token = page?.token
     def q = [:]
     if (token) q.pinToken = token
     def parsed = null
     boolean allErrored = false
     try {
-        def raw = hubInternalGet("/dashboard/all", q)
+        def raw = page?.session ? hubInternalGetInSession("/dashboard/all", q, page.session as String) : hubInternalGet("/dashboard/all", q)
         parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : []
     } catch (Exception e) {
         mcpLogError("dashboard", "list dashboards via /dashboard/all failed", e)
@@ -94,7 +95,7 @@ def toolListDashboards(args = null) {
     if (viaApps != null && !viaApps.isEmpty()) {
         def note = allErrored
             ? "/dashboard/all errored (logged); listed via the dashboard parents' child apps instead. Each entry carries id + name + type only; call hub_get_dashboard for full config."
-            : "Listed from the dashboard parents' child apps (/dashboard/all returned nothing -- a pinToken may be required). Each entry carries id + name + type only; call hub_get_dashboard for full config."
+            : "Listed from the dashboard parents' child apps (/dashboard/all returned nothing${page?.session ? '' : ': the dashboard page token or its session could not be read'}). Each entry carries id + name + type only; call hub_get_dashboard for full config."
         return [dashboards: viaApps, count: viaApps.size(), source: "child-apps", note: note]
     }
     if (viaApps == null) {
@@ -107,14 +108,19 @@ def toolListDashboards(args = null) {
     return [dashboards: [], count: 0,
             note: allErrored
                 ? "No dashboards found: /dashboard/all errored (logged) and the dashboard parents have no child apps. Retry; if it persists, check hub connectivity."
-                : "No dashboards found: /dashboard/all returned empty (a pinToken may be required) and no dashboard-parent child apps were present. If you expected dashboards, pass pinToken and retry."]
+                : "No dashboards found: /dashboard/all returned empty and no dashboard-parent child apps were present."]
 }
-private String _fetchDashboardPinToken() {
+private Map _fetchDashboardPinToken() {
     try {
-        def html = hubInternalGetRaw("/dashboard/select")?.data?.toString()
-        if (!html) return null
-        def matcher = (html =~ /globalDashboardPinToken\s*=\s*['"]([^'"]+)['"]/)
-        return matcher.find() ? matcher.group(1) : null
+        def pageResp = hubInternalGetRaw("/dashboard/select")
+        def html = pageResp?.data?.toString()
+        def matcher = html ? (html =~ /globalDashboardPinToken\s*=\s*['"]([^'"]+)['"]/) : null
+        if (!matcher?.find()) {
+            mcpLog("warn", "dashboard", "No dashboard pin token on /dashboard/select (HTTP ${pageResp?.status}); listing without it.")
+            return null
+        }
+        if (!pageResp?.setCookie) mcpLog("warn", "dashboard", "/dashboard/select set no session cookie; its pin token cannot be used.")
+        return [token: matcher.group(1), session: pageResp?.setCookie]
     } catch (Exception e) {
         mcpLogError("dashboard", "fetch dashboard pinToken failed", e)
         return null
@@ -177,7 +183,7 @@ def toolGetDashboard(args) {
         return [success: false, error: "No dashboard found with id '${wantId}'.",
                 availableIds: available,
                 note: available.isEmpty()
-                    ? "The list returned no dashboards -- a pinToken may be required (pass pinToken and retry)."
+                    ? "The list returned no dashboards; check the hub's Dashboards page."
                     : "Use hub_list_dashboards to see valid ids."]
     }
     if (match.type == "legacy") {
@@ -962,12 +968,10 @@ def _getAllToolDefinitions_partDashboards() {
     return [
         [
             name: "hub_list_dashboards",
-            description: "List the hub's dashboards -- both Easy Dashboards and legacy Hubitat® Dashboards.[[FLAT_TRIM]] Read-only; each entry carries id, name, and a type ('easy' or 'legacy'). Easy entries also include tile/theme config. Resolves the dashboard token automatically, so no pinToken is normally needed. See hub_get_tool_guide(section='dashboards').[[/FLAT_TRIM]]",
+            description: "List the hub's dashboards -- both Easy Dashboards and legacy Hubitat® Dashboards.[[FLAT_TRIM]] Read-only; each entry carries id, name, and a type ('easy' or 'legacy'). Easy entries also include tile/theme config. See hub_get_tool_guide(section='dashboards').[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
-                properties: [
-                    pinToken: [type: "string", description: "Optional pin token. Auto-resolved when omitted."]
-                ]
+                properties: [:]
             ]
         ],
         [
@@ -976,8 +980,7 @@ def _getAllToolDefinitions_partDashboards() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    dashboardId: [type: "string", description: "installedAppId."],
-                    pinToken: [type: "string", description: "Optional pin token. Auto-resolved when omitted."]
+                    dashboardId: [type: "string", description: "installedAppId."]
                 ],
                 required: ["dashboardId"]
             ]
@@ -1833,14 +1836,17 @@ private Map _vrbParentNode(boolean allowMissing = false) {
 private List _vrbListRules() {
     def parent = _vrbParentNode()
     return (parent.children ?: []).findAll { it?.data?.id != null }.collect {
-        def cleanName = stripAppConfigHtml(it.data.name)
+        def rawName = it.data.name?.toString()
+        def decoration = / <span class=['"]text-red['"]>\(Paused\)<\/span>$/
+        boolean decorated = rawName != null && (rawName =~ decoration).find()
+        def cleanName = decorated ? rawName.replaceFirst(decoration, "") : rawName
         def disabledRaw = it.data.disabled
         def entry = [appId: it.data.id, name: cleanName]
         def versionMatch = (it.data.type?.toString() ?: "") =~ /(\d+\.\d+)\s*$/
         if (versionMatch.find()) entry.version = versionMatch.group(1)
         if (disabledRaw != null) entry.disabled = (disabledRaw == true)
         if (cleanName != null) {
-            entry.paused = cleanName.endsWith("(Paused)")
+            entry.paused = decorated
         } else {
             mcpLog("warn", "vrb", "_vrbListRules: rule ${it.data.id} has no readable name in /hub2/appsList; name null, paused undeterminable")
         }
@@ -2603,6 +2609,11 @@ def toolGetVisualRule(args) {
             if (out.definition == null && !out.definitionParseError) {
                 out.note = "This graph rule has an empty definition (freshly created, never saved)."
             }
+            if (out.definition instanceof Map) out.remove("ruleJson")
+            if (out.ruleApps instanceof List && args.includeRuleApps != true) {
+                out.ruleAppCount = out.ruleApps.size()
+                out.remove("ruleApps")
+            }
         }
         return out
     } catch (Exception e) {
@@ -3083,7 +3094,7 @@ Translation is otherwise reserved for older firmware that offers only ONE builde
 
 ### List mode (`hub_get_visual_rule` with no appId)
 
-One entry per rule: `{appId, name, version, disabled, paused}`. `disabled` is the red-X flag; `paused` is detected from a "(Paused)" suffix on the rule's name (VRB has no RMUtils label to cross-check, so a rule literally named "... (Paused)" reads as paused). For the authoritative pause state read the single rule — its `rulePaused` comes straight from the builder JSON. An OMITTED `paused`, `disabled` or `version` means it was undeterminable from the node data; it is never asserted false when it cannot be read.
+One entry per rule: `{appId, name, version, disabled, paused}`. `disabled` is the red-X flag; `paused` is read from the hub's own red-span "(Paused)" decoration on the listed name, which is removed (a rule the user named "... (Paused)" keeps that text and is not read as paused). For the authoritative pause state read the single rule — its `rulePaused` comes straight from the builder JSON. An OMITTED `paused`, `disabled` or `version` means it was undeterminable from the node data; it is never asserted false when it cannot be read.
 
 ### RECOMMENDED input: the editor form
 
@@ -3243,7 +3254,7 @@ VRB2 separates STORAGE from ACTIVATION. A document that fails the hub's own vali
 - `success` / `verified` — the write landed and the read-back confirmed name, pause state and node counts.
 - `activated` — whether the rule actually RUNS. `false` with a non-empty `validationErrors` is an inactive draft; `false` with an empty list means the hub stored the document but reports no live runtime (an `activationError` is passed through when the hub gives one). The response note says which.
 - `validationErrors` — the hub's human-readable problems. `validationIssues` is the same list in editor form (`{nodeId, field, message}`) so you can highlight the offending node, and `referencedDeviceIds` lists the devices the graph touched.
-- `revision` (reads and writes) — the hub's opaque optimistic-concurrency token for the stored document. `ruleApps` (reads) lists the installed apps a `runRule` action can legally target. `runtimeGraph` (reads) summarizes the live runtime, and is absent when nothing is active.
+- `revision` (reads and writes) — the hub's opaque optimistic-concurrency token for the stored document. `ruleApps` (reads with `includeRuleApps: true`; otherwise `ruleAppCount`) lists the installed apps a `runRule` action can legally target. The raw `ruleJson` string is left out of a read whose `definition` parsed. `runtimeGraph` (reads) summarizes the live runtime, and is absent when nothing is active.
 - `createRoute` (create and restore-recreate) — `createchild` when the per-version child route made the rule, `createVisualRuleBuilderRule` when the legacy builder-page fallback did; the fallback is the only path where the firmware, not your definition, picked the builder. `createRouteNote` appears beside it when the child route answered with a redirect to the new rule's builder page instead of a configure Location (the id was adopted from that redirect).
 - Every field in the two bullets above is OPTIONAL on the wire and appears only when the firmware sends it. `hub_get_rule_health(appId)` reads the same verdict later; for a graph Visual Rule `broken: true` means non-empty `validationErrors`.
 - When the firmware sends them, the hub's own `storedSuccessfully` / `activatedSuccessfully` flags are passed through verbatim. `activatedSuccessfully` takes precedence over the inferred `activated`.
@@ -3268,11 +3279,12 @@ def _getAllToolDefinitions_partVisualRules() {
     return [
         [
             name: "hub_get_visual_rule",
-            description: "List Visual Rules Builder rules (omit appId; each entry: appId, name, version, disabled, paused) or read one rule's full definition.[[FLAT_TRIM]] List-mode `paused` is detected from the rule's name suffix (no cross-check) and `version` ('2.0' / '1.0') comes from the hub's own child type; call with appId for the authoritative `rulePaused`. A single-rule read returns `format`: 'graph' (VRB 2.0, {version, nodes, edges}) or 'classic' (VRB 1.0, {whenNodes, thenNodes, elseNodes}). A graph read ALSO returns `editor` -- the same rule as {triggers, conditions, decisionType, thenActions, elseActions, commonActions}, the shape to modify and hand straight back to hub_set_visual_rule -- plus `activated` (false means the hub stored it as an inactive draft; see validationErrors).[[/FLAT_TRIM]]",
+            description: "List Visual Rules Builder rules (omit appId) or read one rule's full definition.[[FLAT_TRIM]] Each list entry: appId, name, version, disabled, paused. List-mode `paused` is read from the hub's own (Paused) name decoration and `version` ('2.0' / '1.0') comes from the hub's own child type; call with appId for the authoritative `rulePaused`. A single-rule read returns `format`: 'graph' (VRB 2.0, {version, nodes, edges}) or 'classic' (VRB 1.0, {whenNodes, thenNodes, elseNodes}). A graph read ALSO returns `editor` -- the same rule as {triggers, conditions, decisionType, thenActions, elseActions, commonActions}, the shape to modify and hand straight back to hub_set_visual_rule -- plus `activated` (false means the hub stored it as an inactive draft; see validationErrors).[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
-                    appId: [type: "integer", description: "Visual Rule app id. Omit to list all VRB rules."]
+                    appId: [type: "integer", description: "Visual Rule app id. Omit to list all VRB rules."],
+                    includeRuleApps: [type: "boolean", description: "[[FLAT_TRIM]]2.0 rule: list ruleApps (runRule targets).[[/FLAT_TRIM]]"]
                 ]
             ]
         ],
@@ -3514,7 +3526,7 @@ def toolReadFile(args) {
     if (!args.fileName) throw new IllegalArgumentException("fileName is required")
     def maxChunkSize = 60000
     def requestedOffset = args.offset ? args.offset as int : 0
-    def requestedLength = args.length ? Math.min(args.length as int, maxChunkSize) : maxChunkSize
+    def requestedLength = args.length ? Math.min(args.length as int, maxChunkSize) : defaultReadChunkChars()
     mcpLog("debug", "file-manager", "Reading file: ${args.fileName} (offset: ${requestedOffset}, length: ${requestedLength})")
     def content
     try {
@@ -3690,13 +3702,13 @@ def _getAllToolDefinitions_partFiles() {
         ],
         [
             name: "hub_read_file",
-            description: "Read the text content of a single file from the hub's File Manager by exact file name.[[FLAT_TRIM]] Use after hub_list_files to fetch a named file (config, backup, exported rule/app, CSV).[[/FLAT_TRIM]] Read-only.[[FLAT_TRIM]] Large files are returned in chunks: pass offset/length, then follow nextOffset while hasMore is true (default/max chunk 60000 chars).[[/FLAT_TRIM]]",
+            description: "Read the text content of a single file from the hub's File Manager by exact file name.[[FLAT_TRIM]] Use after hub_list_files to fetch a named file (config, backup, exported rule/app, CSV).[[/FLAT_TRIM]] Read-only.[[FLAT_TRIM]] Large files are returned in chunks: pass offset/length, then follow nextOffset while hasMore is true (default chunk 30000 chars, max 60000).[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
                     fileName: [type: "string", description: "The exact file name (e.g., 'dashboard-backup.json', 'mcp-backup-app-123.groovy')"],
                     offset: [type: "integer", description: "Character offset to start reading from. Default: 0"],
-                    length: [type: "integer", description: "Max characters to return in this chunk. Default/max: 60000"]
+                    length: [type: "integer", description: "Max chars (default 30000, max 60000)."]
                 ],
                 required: ["fileName"]
             ]
@@ -4226,23 +4238,30 @@ private Map _toolRestoreSourceBackup(args) {
         ]
     }
 }
-def toolCreateHubBackup(args) {
+void _requireCreateBackupConfirm(args) {
     args = args ?: [:]
     if (args.cloudDownload != null) {
         if (args.schedule != null || args.networkBackup != null || args.testNetworkBackup == true || args.full == true) {
             throw new IllegalArgumentException("cloudDownload runs on its own; send schedule / networkBackup / full on a separate call.")
         }
-        if (!args.confirm) throw new IllegalArgumentException("cloudDownload writes the backup to File Manager: pass confirm=true.")
-        return _downloadCloudBackup(args.cloudDownload)
+        if (args.confirm != true) throw new IllegalArgumentException("cloudDownload writes the backup to File Manager: pass confirm=true.")
+        return
     }
+    if (_backupCallCreates(args) && args.confirm != true) {
+        throw new IllegalArgumentException("You must set confirm=true to create a backup (or pass scheduleOnly=true WITH schedule / networkBackup / testNetworkBackup to only change settings).")
+    }
+}
+private boolean _backupCallCreates(Map args) {
+    return !(args.scheduleOnly == true && (args.schedule != null || args.networkBackup != null || args.testNetworkBackup == true))
+}
+def toolCreateHubBackup(args) {
+    args = args ?: [:]
+    _requireCreateBackupConfirm(args)
+    if (args.cloudDownload != null) return _downloadCloudBackup(args.cloudDownload)
     def schedulePresent = args.schedule != null
     def networkPresent = args.networkBackup != null
     def testNetwork = args.testNetworkBackup == true
-    def scheduleOnly = args.scheduleOnly == true
-    def willCreate = !(scheduleOnly && (schedulePresent || networkPresent || testNetwork))
-    if (willCreate && !args.confirm) {
-        throw new IllegalArgumentException("You must set confirm=true to create a backup (or pass scheduleOnly=true WITH schedule / networkBackup / testNetworkBackup to only change settings).")
-    }
+    def willCreate = _backupCallCreates(args)
     if (willCreate && args.full == true && args.mock != true) {
         def unavailable = _fullBackupUnavailable()
         if (unavailable) return unavailable
@@ -4582,7 +4601,7 @@ private Map _downloadCloudBackup(spec) {
     if (total.size == null || total.size > 16L * 1024 * 1024) {
         return [success: false, cloudDownload: true,
                 error: (total.size == null) ? _sizeLookupError(total.reason, spec.path.toString(), "cloud") :
-                                              "That cloud backup is ${(total.size / (1024 * 1024)) as long} MB, over the 16 MB in-app limit.",
+                                              "That cloud backup is ${_mbText(total.size as long)}, over the 16 MB in-app limit.",
                 note: "Check the path with hub_list_backups(scope='hub_cloud'), or download it from Settings > Backup and Restore in the Hubitat web UI. Nothing was saved."]
     }
     try {
@@ -4698,7 +4717,7 @@ private Map _restoreFullFromBytes(String location, byte[] bytes, String fileName
     int maxBytes = 16 * 1024 * 1024
     if (bytes.length > maxBytes) {
         return [success: false, type: "hub-full", location: location,
-                error: "The full backup is ${(bytes.length / (1024 * 1024)) as int} MB, over the 16 MB in-app limit.",
+                error: "The full backup is ${_mbText(bytes.length as long)}, over the 16 MB in-app limit.",
                 note: "Restore a large full backup from Settings > Backup and Restore in the Hubitat web UI (it accepts up to 150 MB). Nothing was restored."]
     }
     def up
@@ -4761,7 +4780,7 @@ private Map _restoreLocalFullBackup(String fileName, Map opts) {
                 note: "Nothing was restored. Check the name with hub_list_backups(scope='hub_local'), or restore it from Settings > Backup and Restore in the Hubitat web UI."]
     }
     if (listed.size > 16L * 1024 * 1024) {
-        return [success: false, type: "hub-full", location: "hub_local", error: "The full backup is ${(listed.size / (1024 * 1024)) as long} MB, over the 16 MB in-app limit.",
+        return [success: false, type: "hub-full", location: "hub_local", error: "The full backup is ${_mbText(listed.size as long)}, over the 16 MB in-app limit.",
                 note: "Restore a large full backup from Settings > Backup and Restore in the Hubitat web UI (it accepts up to 150 MB). Nothing was restored."]
     }
     def got
@@ -6872,7 +6891,7 @@ def toolGetHubPerformance(args) {
     def trendPoints = Math.min(args.trendPoints ?: 10, 50)
     def current = [timestamp: formatTimestamp(now()), timestampEpoch: now()]
     try {
-        current.freeMemoryKB = hubInternalGet("/hub/advanced/freeOSMemory")?.trim()
+        current.freeMemoryKB = _hubNumber(hubInternalGet("/hub/advanced/freeOSMemory"))
         try {
             def memKB = current.freeMemoryKB as Integer
             if (memKB < 50000) current.memoryWarning = "LOW MEMORY: ${memKB}KB free. Consider rebooting the hub."
@@ -6880,7 +6899,7 @@ def toolGetHubPerformance(args) {
         } catch (Exception nfe) {   }
     } catch (Exception e) { current.freeMemoryKB = "unavailable" }
     try {
-        current.internalTempC = hubInternalGet("/hub/advanced/internalTempCelsius")?.trim()
+        current.internalTempC = _hubNumber(hubInternalGet("/hub/advanced/internalTempCelsius"))
         try {
             def temp = current.internalTempC as Double
             if (temp > 70) current.temperatureWarning = "HIGH TEMPERATURE: ${temp}°C. Hub may need better ventilation."
@@ -6888,12 +6907,9 @@ def toolGetHubPerformance(args) {
         } catch (Exception nfe) {   }
     } catch (Exception e) { current.internalTempC = "unavailable" }
     try {
-        current.databaseSizeKB = hubInternalGet("/hub/advanced/databaseSize")?.trim()
-        try {
-            def dbKB = current.databaseSizeKB as Integer
-            if (dbKB > 500000) current.databaseWarning = "LARGE DATABASE: ${(dbKB / 1024).toInteger()}MB. Consider cleaning up old data."
-        } catch (Exception nfe) {   }
-    } catch (Exception e) { current.databaseSizeKB = "unavailable" }
+        current.databaseSizeMB = _hubNumber(hubInternalGet("/hub/advanced/databaseSize"))
+        if (current.databaseSizeMB instanceof Number && current.databaseSizeMB > 500) current.databaseWarning = "LARGE DATABASE: ${current.databaseSizeMB} MB. Consider cleaning up old data."
+    } catch (Exception e) { current.databaseSizeMB = "unavailable" }
     try { current.uptimeSeconds = location.hub?.uptime } catch (Exception e) { current.uptimeSeconds = "unavailable" }
     if (current.uptimeSeconds && current.uptimeSeconds instanceof Number) {
         def days = (current.uptimeSeconds / 86400).toInteger()
@@ -6902,7 +6918,7 @@ def toolGetHubPerformance(args) {
         current.uptimeFormatted = "${days}d ${hours}h ${mins}m"
     }
     def csvFileName = "mcp-performance-history.csv"
-    def csvHeader = "timestamp,freeMemoryKB,internalTempC,databaseSizeKB,uptimeSeconds"
+    def csvHeader = "timestamp,freeMemoryKB,internalTempC,databaseSizeMB,uptimeSeconds"
     def history = []
     try {
         def existingBytes = downloadHubFile(csvFileName)
@@ -6917,7 +6933,7 @@ def toolGetHubPerformance(args) {
         mcpLog("debug", "monitoring", "No existing performance CSV: ${e.message}")
     }
     if (recordSnapshot) {
-        def csvRow = "${now()},${current.freeMemoryKB},${current.internalTempC},${current.databaseSizeKB},${current.uptimeSeconds}"
+        def csvRow = "${now()},${current.freeMemoryKB},${current.internalTempC},${current.databaseSizeMB},${current.uptimeSeconds}"
         history << csvRow
         if (history.size() > 500) {
             history = history.drop(history.size() - 500)
@@ -6930,28 +6946,41 @@ def toolGetHubPerformance(args) {
         }
     }
     def trends = []
+    int skippedRows = 0
     def startIdx = Math.max(0, history.size() - trendPoints)
     for (int i = startIdx; i < history.size(); i++) {
         def parts = history[i].split(",", -1)
-        if (parts.size() >= 5) {
+        if (parts.size() < 5) skippedRows++
+        else {
             try {
-                trends << [
+                def point = [
                     timestamp: formatTimestamp(parts[0] as Long),
-                    freeMemoryKB: parts[1],
-                    internalTempC: parts[2],
-                    databaseSizeKB: parts[3],
-                    uptimeSeconds: parts[4]
+                    timestampEpoch: parts[0] as Long,
+                    freeMemoryKB: _hubNumber(parts[1]),
+                    internalTempC: _hubNumber(parts[2]),
+                    databaseSizeMB: _hubNumber(parts[3]),
+                    uptimeSeconds: _hubNumber(parts[4])
                 ]
+                if (!(point.freeMemoryKB instanceof Number && point.internalTempC instanceof Number && point.databaseSizeMB instanceof Number && point.uptimeSeconds instanceof Number)) point.incomplete = true
+                trends << point
             } catch (Exception e) {
+                skippedRows++
             }
         }
     }
     mcpLog("info", "monitoring", "Hub performance snapshot recorded=${recordSnapshot}, trendPoints=${trends.size()}")
+    String trendNote = null
+    Long newest = trends ? trends[-1].timestampEpoch as Long : null
+    if (newest == null && skippedRows > 0) trendNote = "No readable trend points: ${skippedRows} row(s) of ${csvFileName} could not be read. For the hub's own memory history use hub_get_memory_history.".toString()
+    else if (newest == null) trendNote = "No trend points: they are recorded only by calls with recordSnapshot=true. For the hub's own memory history use hub_get_memory_history."
+    else if (now() - newest > 86400000L) trendNote = "The newest trend point is from ${formatTimestamp(newest)}: points are recorded only by calls with recordSnapshot=true. For the hub's own memory history use hub_get_memory_history.".toString()
     return [
         current: current,
         healthAlerts: _healthAlertsFromHub2(_getHub2HubData()),
         trends: trends,
         trendPointsAvailable: history.size(),
+        trendNote: trendNote,
+        trendRowsSkipped: skippedRows ?: null,
         historyFile: csvFileName
     ]
 }
@@ -8461,7 +8490,7 @@ def _healthAlertsFromHub2(hub2) {
     if (alerts.alertItems instanceof List) {
         def items = (alerts.alertItems as List).findAll { it instanceof Map && it.key }
         out.active = items.collect { it.key.toString() }.unique().sort()
-        out.items = items.collect { [key: it.key, message: it.message, version: it.version, dismissible: it.dismissible == true] }
+        out.items = items.collect { [key: it.key, message: stripAppConfigHtml(it.message), version: it.version, dismissible: it.dismissible == true] }
     } else {
         out.active = alerts.findAll { k, v -> v == true }.collect { k, v -> k.toString() }.sort()
     }
@@ -8548,7 +8577,7 @@ def toolGetHubInfo(args = null) {
     try {
         def freeMemory = hubInternalGet("/hub/advanced/freeOSMemory")
         if (freeMemory) {
-            info.freeMemoryKB = freeMemory.trim()
+            info.freeMemoryKB = _hubNumber(freeMemory)
             try {
                 def memKB = freeMemory.trim() as Integer
                 if (memKB < 50000) {
@@ -8562,7 +8591,7 @@ def toolGetHubInfo(args = null) {
     try {
         def tempC = hubInternalGet("/hub/advanced/internalTempCelsius")
         if (tempC) {
-            info.internalTempCelsius = tempC.trim()
+            info.internalTempCelsius = _hubNumber(tempC)
             try {
                 def temp = tempC.trim() as Double
                 if (temp > 70) {
@@ -8576,20 +8605,29 @@ def toolGetHubInfo(args = null) {
     try {
         def dbSize = hubInternalGet("/hub/advanced/databaseSize")
         if (dbSize) {
-            info.databaseSizeKB = dbSize.trim()
-            try {
-                def dbKB = dbSize.trim() as Integer
-                if (dbKB > 500000) {
-                    info.databaseWarning = "LARGE DATABASE: ${(dbKB / 1024).toInteger()}MB. Consider cleaning up old data."
-                }
-            } catch (NumberFormatException nfe) {   }
+            info.databaseSizeMB = _hubNumber(dbSize)
+            if (info.databaseSizeMB instanceof Number && info.databaseSizeMB > 500) {
+                info.databaseWarning = "LARGE DATABASE: ${info.databaseSizeMB} MB. Consider cleaning up old data."
+            }
         }
-    } catch (Exception e) { info.databaseSizeKB = "unavailable" }
+    } catch (Exception e) { info.databaseSizeMB = "unavailable" }
     info.mcpServerVersion = currentVersion()
     info.setupCurrent = SETUP_CURRENT
     info.setupVersion = state.setupVersion
     info.mcpClient = mcpClientIdentity()
-    info.mcpDeviceCount = settings.selectedDevices?.size() ?: 0
+    def reachable = ((settings.selectedDevices ?: []) + (getChildDevices() ?: [])).collect { it?.id?.toString() }.findAll { it } as Set
+    if (_bypassEnabled()) {
+        info.deviceAllowlistBypassed = true
+        try {
+            def tree = new groovy.json.JsonSlurper().parseText(hubInternalGet("/hub2/devicesList") ?: "{}")
+            def records = _flattenHub2DeviceTree(tree instanceof Map ? tree.devices : null)
+            if (!(records instanceof List)) throw new IllegalStateException("the device tree was not a list")
+            records.each { r -> if (r?.id != null) reachable << r.id.toString() }
+        } catch (Exception e) {
+            info.mcpDeviceCountNote = "The allowlist is bypassed, so every hub device is reachable, but the hub's device list could not be read (${e.message}); the count covers the selected and MCP-managed devices only.".toString()
+        }
+    }
+    info.mcpDeviceCount = reachable.size()
     info.mcpRuleCount = getChildApps()?.size() ?: 0
     info.mcpLogEntries = logHistory.entries == null ? null : logHistory.entries.size()
     if (logHistory.error) {
@@ -8598,8 +8636,8 @@ def toolGetHubInfo(args = null) {
     }
     info.mcpCapturedStates = countCapturedStates()
     info.lastBackupEpoch = state.lastBackupTimestamp ?: null
-    info.hubSecurityConfigured = settings.hubSecurityEnabled ?: false
     info.hubSecurityRetired = (state.hubSecurityRetired == true)
+    if (!info.hubSecurityRetired) info.hubSecurityConfigured = settings.hubSecurityEnabled ?: false
     info.readEnabled = settings.enableRead != false
     info.writeEnabled = settings.enableWrite != false
     info.customRuleEngineEnabled = settings.enableCustomRuleEngine == true
@@ -8653,8 +8691,10 @@ def toolGetHubInfo(args = null) {
     }
     if (args?.includeAppUpdate == true) {
         try {
-            def refreshStarted = doUpdateCheck()
             def uc = state.updateCheck ?: [:]
+            long sinceCheck = uc.checkedAt instanceof Number ? now() - (uc.checkedAt as long) : -1L
+            boolean fresh = !uc.lastError && sinceCheck >= 0L && sinceCheck < 300000L
+            def refreshStarted = fresh ? false : doUpdateCheck()
             def installed = currentVersion()
             info.appUpdate = [
                 installedVersion: installed,
@@ -9144,7 +9184,13 @@ def toolManageMode(args) {
             def name = args?.name?.toString()?.trim()
             if (!name) throw new IllegalArgumentException("name is required to create a mode")
             def body = args?.icon ? [name: name, icon: args.icon.toString()] : [name: name]
-            return _modeWriteResult("create", _modePost("/modes/jsonCreate", body))
+            def created = _modeWriteResult("create", _modePost("/modes/jsonCreate", body))
+            if (created.success == true) {
+                def newId = location.modes?.find { it?.name?.equalsIgnoreCase(name) }?.id
+                if (newId != null) { created.modeId = newId.toString(); created.name = name }
+                else created.note = "Created; its id was not in this request's mode list yet -- read it with hub_list_modes."
+            }
+            return created
         case "rename":
             def name = args?.name?.toString()?.trim()
             def modeId = _resolveModeId(args?.mode)
@@ -11577,6 +11623,8 @@ def toolSendCommand(deviceId, command, parameters, waitFor = null, commands = nu
         throw new IllegalArgumentException("Device ${deviceLabel} does not support command: ${command}. Available: ${supportedCommands}")
     }
     def pollArgs = (waitFor != null) ? _buildWaitForPollArgs(deviceId, deviceLabel, waitFor) : null
+    String stableRefusal = (pollArgs != null) ? _pollStableRefusal(pollArgs, reqT0) : null
+    if (stableRefusal) throw new IllegalArgumentException("waitFor.${stableRefusal}")
     if (parameters instanceof String && !parameters.trim()) parameters = null
     if (parameters && parameters.size() > 0) {
         def declaration = fullJson.commands?.find { it?.name == command }
@@ -11596,7 +11644,7 @@ def toolSendCommand(deviceId, command, parameters, waitFor = null, commands = nu
             expected : (pollArgs.containsKey("expectedValues") ? pollArgs.expectedValues : pollArgs.expectedValue)
         ]
         try {
-            def poll = toolPollUntilAttribute(pollArgs)
+            def poll = toolPollUntilAttribute(reqT0 instanceof Number ? pollArgs + [__reqT0: reqT0] : pollArgs)
             waitForBlock.converged  = poll.success == true
             waitForBlock.finalValue = poll.finalValue
             waitForBlock.elapsedMs  = poll.elapsedMs
@@ -11607,6 +11655,10 @@ def toolSendCommand(deviceId, command, parameters, waitFor = null, commands = nu
             if (poll.nonNumericAttribute == true) waitForBlock.nonNumericAttribute = true
             if (poll.note != null) waitForBlock.note = poll.note
             if (poll.containsKey("transitioning")) waitForBlock.transitioning = poll.transitioning
+            if (poll.budgetLimited == true) {
+                waitForBlock.budgetLimited = true
+                waitForBlock.budgetNote = poll.budgetNote
+            }
         } catch (Throwable e) {
             def cls = e.class.simpleName
             mcpLog("error", "send-command", "waitFor poll failed for ${deviceLabel}: ${cls}: ${e.message ?: '(no message)'}")
@@ -12030,6 +12082,42 @@ def _evalAttrCondition(value, comparator, matchSet, numericThreshold, betweenLow
     return [matched, true]
 }
 def toolPollUntilAttribute(args) {
+    if (!(args instanceof Map) || !args.containsKey("__reqT0")) return _pollUntilAttributeCore(args)
+    Map pollArgs = [:] + (args as Map)
+    def t0 = pollArgs.remove("__reqT0")
+    long budget = _isCloudRequest() ? _relayBudgetMs() : _lanBudgetMs()
+    def asked = pollArgs.containsKey("timeoutMs") ? pollArgs.timeoutMs : 5000
+    if (!(t0 instanceof Number) || budget <= 0L || !(asked instanceof Number) || asked < 100 || asked > 60000) return _pollUntilAttributeCore(pollArgs)
+    long deadline = (t0 as long) + budget
+    long left = deadline - now()
+    String why = _isCloudRequest() ? 'the cloud relay drops a request that runs much longer' : 'the LAN time budget is set'
+    String refusal = _pollStableRefusal(pollArgs, t0)
+    if (refusal) throw new IllegalArgumentException(refusal)
+    if (left < 100L) {
+        return [success: false, timedOut: true, budgetLimited: true, requestedTimeoutMs: asked, timeoutMs: 0,
+                budgetNote: "Not polled: the request had ${Math.max(0L, left)} ms left (${why}). Poll again in a new call.".toString()]
+    }
+    if (left < (asked as long)) pollArgs.timeoutMs = left as Integer
+    def result = _pollUntilAttributeCore(pollArgs, deadline)
+    if (result instanceof Map && (result.remove("budgetStopped") == true || left < (asked as long)) && result.success != true) {
+        result.requestedTimeoutMs = asked
+        result.timeoutMs = Math.min(left, asked as long)
+        result.budgetLimited = true
+        result.budgetNote = "The poll stopped after ${result.elapsedMs ?: 0} ms instead of waiting ${asked} ms: ${why}. Poll again to keep waiting.".toString()
+    }
+    return result
+}
+private String _pollStableRefusal(Map pollArgs, t0) {
+    long budget = _isCloudRequest() ? _relayBudgetMs() : _lanBudgetMs()
+    def asked = pollArgs.containsKey("timeoutMs") ? pollArgs.timeoutMs : 5000
+    def stable = pollArgs.stableForMs
+    if (!(t0 instanceof Number) || budget <= 0L || !(asked instanceof Number) || !(stable instanceof Number)) return null
+    long left = (t0 as long) + budget - now()
+    if (left >= (asked as long) || (stable as long) < left) return null
+    String why = _isCloudRequest() ? 'the cloud relay drops a request that runs much longer' : 'the LAN time budget is set'
+    return "stableForMs ${stable} cannot settle in the ${Math.max(0L, left)} ms this request has left (${why}); use a shorter stableForMs.".toString()
+}
+def _pollUntilAttributeCore(args, Long deadlineMs = null) {
     def validArgKeys = ["deviceId", "deviceIds", "mode", "attribute", "expectedValue", "expectedValues", "timeoutMs", "pollIntervalMs", "comparator", "stableForMs"] as Set
     if (args instanceof Map) {
         def unknownKeys = (args.keySet() - validArgKeys).sort()
@@ -12220,13 +12308,18 @@ def toolPollUntilAttribute(args) {
         deviceLabels << _bypassDeviceLabel(full, did)
     }
     def deviceLabel = deviceLabels[0]
+    boolean budgetCut = false
+    if (deadlineMs != null && deadlineMs - now() < timeoutMs) {
+        timeoutMs = Math.max(0L, deadlineMs - now()) as Integer
+        budgetCut = true
+    }
     def matchSet = [] as Set
     if (hasExpectedValue)  matchSet << args.expectedValue
     if (hasExpectedValues) matchSet.addAll(args.expectedValues)
     if (multiDevice) {
         return _pollMultiDevice(args, devices, deviceLabels, deviceIdList, mode, comparator,
                                 matchSet, numericThreshold, betweenLow, betweenHigh,
-                                timeoutMs, pollIntervalMs, stableForMs)
+                                timeoutMs, pollIntervalMs, stableForMs, deadlineMs, budgetCut)
     }
     def maxPolls    = ((timeoutMs / pollIntervalMs) as Integer) + 1
     def startMs     = now()
@@ -12274,7 +12367,8 @@ def toolPollUntilAttribute(args) {
         } else {
             conditionTrueSince = null
         }
-        if (elapsedMs >= timeoutMs || polledCount >= maxPolls) {
+        boolean pastDeadline = deadlineMs != null && now() + (now() - tickStartMs) >= deadlineMs
+        if (elapsedMs >= timeoutMs || polledCount >= maxPolls || pastDeadline) {
             def response = [
                 success     : false,
                 finalValue  : finalValue,
@@ -12285,6 +12379,7 @@ def toolPollUntilAttribute(args) {
             ]
             if (sawReadError) response.readError = true
             if (!everNonNull) response.neverReported = true
+            if (budgetCut || pastDeadline) response.budgetStopped = true
             if (comparator != "eq" && comparator != "ne" && everNonNull && !sawNumeric) {
                 response.nonNumericAttribute = true
                 response.note = "comparator '${comparator}' can never match attribute '${args.attribute}' -- it reported a non-numeric value the whole window (use eq/ne for a string attribute)".toString()
@@ -12326,8 +12421,8 @@ private _readPollValue(dev, deviceId, attribute) {
 }
 def _pollMultiDevice(args, devices, deviceLabels, deviceIdList, mode, comparator,
                      matchSet, numericThreshold, betweenLow, betweenHigh,
-                     timeoutMs, pollIntervalMs, stableForMs) {
-    timeoutMs      = (timeoutMs && timeoutMs > 0) ? timeoutMs : 5000
+                     timeoutMs, pollIntervalMs, stableForMs, Long deadlineMs = null, boolean budgetCut = false) {
+    timeoutMs      = (timeoutMs != null && (timeoutMs > 0 || deadlineMs != null)) ? timeoutMs : 5000
     pollIntervalMs = (pollIntervalMs && pollIntervalMs > 0) ? pollIntervalMs : 200
     stableForMs    = (stableForMs && stableForMs > 0) ? stableForMs : 0
     def n           = devices.size()
@@ -12393,7 +12488,8 @@ def _pollMultiDevice(args, devices, deviceLabels, deviceIdList, mode, comparator
         } else {
             conditionTrueSince = null
         }
-        if (elapsedMs >= timeoutMs || polledCount >= maxPolls) {
+        boolean pastDeadline = deadlineMs != null && now() + (now() - tickStartMs) >= deadlineMs
+        if (elapsedMs >= timeoutMs || polledCount >= maxPolls || pastDeadline) {
             def numericComparator = (comparator != "eq" && comparator != "ne")
             def nonNumericCount = 0
             def anyTransitioning = false
@@ -12428,6 +12524,7 @@ def _pollMultiDevice(args, devices, deviceLabels, deviceIdList, mode, comparator
             if (nonNumericCount > 0) {
                 response.note = "comparator '${comparator}' can never match attribute '${args.attribute}' on ${nonNumericCount} device(s) that reported a non-numeric value the whole window (use eq/ne for a string attribute)"
             }
+            if (budgetCut || pastDeadline) response.budgetStopped = true
             return response
         }
         def sleepMs = _pollSleepMs(pollIntervalMs, timeoutMs - elapsedMs, now() - tickStartMs)
@@ -12558,27 +12655,49 @@ def toolGetDeviceHistory(args) {
             return [success: false, error: "Location event history parse failed: ${e.message}", source: "location",
                     note: "Retry; if persistent, firmware may have changed the /logs/eventsJson format -- report with hub_report_issue."]
         }
+        def hubRows = []
+        String hubEventsError = null
+        try {
+            String hubText = hubInternalGet("/hub/eventsJson")?.toString()
+            def parsedHub = hubText?.trim() ? new groovy.json.JsonSlurper().parseText(hubText) : null
+            if (parsedHub == null) hubEventsError = "the hub returned an empty response"
+            else if (parsedHub instanceof List) hubRows = parsedHub
+            else hubEventsError = "the hub events list was not a JSON array"
+        } catch (Exception e) {
+            hubEventsError = (e.message ?: e.toString()).take(200)
+        }
         def locResults = []
         def timeFilterUnparseable = 0
-        for (evt in rows) {
-            if (!(evt instanceof Map)) continue
-            if (attributeFilter && evt.name != attributeFilter) continue
-            def evtDate = null
-            try { evtDate = Date.parse("yyyy-MM-dd'T'HH:mm:ss.SSSZ", evt.date?.toString()) }
-            catch (Exception ignored) { timeFilterUnparseable++ }
-            if (evtDate != null && !evtDate.after(sinceDate)) continue
-            if (untilDate != null && evtDate != null && evtDate.after(untilDate)) continue
-            locResults << [
-                name: evt.name,
-                value: evt.value,
-                unit: evt.unit,
-                description: evt.descriptionText,
-                date: evt.date,
-                type: evt.type,
-                isStateChange: evt.isStateChange
-            ]
-            if (locResults.size() >= limit) break
+        def addRows = { List source, String kind ->
+            for (evt in source) {
+                if (!(evt instanceof Map)) continue
+                if (attributeFilter && evt.name != attributeFilter) continue
+                def evtDate = null
+                try { evtDate = Date.parse("yyyy-MM-dd'T'HH:mm:ss.SSSZ", evt.date?.toString()) }
+                catch (Exception ignored) { timeFilterUnparseable++ }
+                if (evtDate != null && !evtDate.after(sinceDate)) continue
+                if (untilDate != null && evtDate != null && evtDate.after(untilDate)) continue
+                locResults << [
+                    name: evt.name,
+                    value: evt.value,
+                    unit: evt.unit,
+                    description: evt.descriptionText,
+                    date: evt.date,
+                    type: evt.type,
+                    isStateChange: evt.isStateChange,
+                    kind: kind,
+                    _at: evtDate?.time
+                ]
+            }
         }
+        addRows(rows, "location")
+        int hubCount = locResults.size()
+        addRows(hubRows, "hub")
+        hubCount = locResults.size() - hubCount
+        if (hubCount > 0) locResults = locResults.sort { a, b -> (b._at ?: 0L) <=> (a._at ?: 0L) }
+        locResults.each { it.remove("_at") }
+        int matchedCount = locResults.size()
+        if (matchedCount > limit) locResults = locResults.take(limit)
         mcpLog("info", "monitoring", "Retrieved ${locResults.size()} location history event${locResults.size() == 1 ? '' : 's'} (${sinceMode} window since ${sinceDate.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ")}) from /logs/eventsJson")
         def locResult = [
             source: "location",
@@ -12591,7 +12710,12 @@ def toolGetDeviceHistory(args) {
         if (sinceMode == "relative") locResult.hoursBack = effectiveHoursBack
         else locResult.since = sinceEcho
         if (untilEcho) locResult.untilTimestamp = untilEcho
+        if (matchedCount > locResults.size()) {
+            locResult.truncated = true
+            locResult.matchedCount = matchedCount
+        }
         if (timeFilterUnparseable > 0) locResult.timeFilterUnparseable = timeFilterUnparseable
+        if (hubEventsError != null) locResult.hubEventsError = "Hub events (reboots, low memory) could not be read: ${hubEventsError}".toString()
         return locResult
     }
     def deviceId = _canonicalDeviceIdArg(args.deviceId)
@@ -13456,6 +13580,8 @@ def toolCreateDevice(args) {
     if (ctype in ["ZWV", "ZGB"] || readable.contains("z-wave") || readable.contains("zwave") || readable.contains("zigbee") || readable.contains("matter")) {
         warnings << "This is a radio-type driver. Creating it here makes a non-functional orphan shell (no paired node). Add real Z-Wave/Zigbee/Matter devices by PAIRING (hub_call_zwave / hub_call_zigbee / hub_call_matter), then delete this shell with hub_delete_device."
     }
+    def selectWarning = _selectCreatedDevice(newId)
+    if (selectWarning) warnings << selectWarning
     mcpLog("info", "device", "hub_create_device: created device ${newId} from driver-type ${typeId}${appliedLabel ? " labeled '${appliedLabel}'" : ''}")
     return [
         success: true,
@@ -13468,8 +13594,18 @@ def toolCreateDevice(args) {
         capabilities: info?.capabilities,
         warnings: warnings ?: null,
         message: "Created device ${newId} from driver-type ${typeId}${appliedLabel ? " labeled '${appliedLabel}'" : ''}." + (warnings ? " WARNING: see warnings." : ""),
-        note: "Set room/preferences/showOnHome with hub_update_device once the device is selectable, or delete it with hub_delete_device."
+        note: "Set room/preferences/showOnHome with hub_update_device, or delete it with hub_delete_device."
     ]
+}
+private String _selectCreatedDevice(String deviceId) {
+    try {
+        def ids = (settings.selectedDevices ?: []).collect { it.id.toString() }
+        if (!ids.contains(deviceId)) app.updateSetting("selectedDevices", [type: "capability.*", value: ids + [deviceId]])
+        return null
+    } catch (Exception e) {
+        mcpLog("warn", "device", "Could not add device ${deviceId} to the selected devices: ${e.message}")
+        return "Device ${deviceId} was created but could not be added to this app's selected devices (${e.message}); add it in the app's device picker.".toString()
+    }
 }
 private Map _createLinkedMeshDevice(String meshHubId, String meshDeviceId) {
     Map beforeJson = _meshJson()
@@ -13522,6 +13658,7 @@ private Map _createLinkedMeshDevice(String meshHubId, String meshDeviceId) {
     Boolean linked = null
     String newId = null
     String newName = null
+    boolean newIdFromSource = false
     for (int attempt = 0; attempt < 3; attempt++) {
         Map j = _meshJson()
         def after = (j?.localLinkedDevices instanceof List) ? j.localLinkedDevices : null
@@ -13530,7 +13667,7 @@ private Map _createLinkedMeshDevice(String meshHubId, String meshDeviceId) {
             def added = after.findAll { !before.contains(it.id?.toString()) }
             def fromSource = added.findAll { it.sourceHubId?.toString() == meshHubId }
             def pick = (fromSource.size() == 1) ? fromSource[0] : (added.size() == 1 ? added[0] : null)
-            if (pick != null) { newId = pick.id?.toString(); newName = pick.name?.toString() }
+            if (pick != null) { newId = pick.id?.toString(); newName = pick.name?.toString(); newIdFromSource = fromSource.size() == 1 }
         }
         if (avail != null) {
             def srcRow = avail.find { it.hubId?.toString() == meshHubId && it.deviceId?.toString() == meshDeviceId }
@@ -13570,6 +13707,12 @@ private Map _createLinkedMeshDevice(String meshHubId, String meshDeviceId) {
         warnings << "Sent the link request, but could not confirm it against hub_get_hub_mesh availableLinkedDevices (read-back lag or an unreadable mesh list). Verify with hub_get_hub_mesh."
     } else if (newId == null) {
         warnings << "Linked the shared device, but could not resolve its new local id from hub_get_hub_mesh localLinkedDevices (read-back lag or an ambiguous diff). Find it with hub_get_hub_mesh."
+    }
+    if (newId != null && newIdFromSource) {
+        def selectWarning = _selectCreatedDevice(newId)
+        if (selectWarning) warnings << selectWarning
+    } else if (newId != null) {
+        warnings << "Linked as local device ${newId}, but the read-back could not tie it to hub ${meshHubId}, so it was not added to this app's selected devices; add it in the app's device picker once confirmed with hub_get_hub_mesh.".toString()
     }
     mcpLog("info", "device", "hub_create_device: linked Hub Mesh device (hub ${meshHubId}, device ${meshDeviceId})${newId ? " as local ${newId}" : ''}")
     return [
@@ -14022,8 +14165,10 @@ def toolCallDeviceReplace(args) {
             def allowedIds = _bypassEnabled() ? null : (((selectedDevices ?: []) + (getChildDevices() ?: [])).collect { it.id?.toString() } as Set)
             def candidates = allowedIds == null ? parsed : parsed.findAll { it instanceof Map && allowedIds.contains(it.id?.toString()) }
             def options = candidates.collect { [id: it?.id?.toString(), name: it?.name, deviceTypes: it?.deviceTypes] }
-            return [success: true, listOptions: true, oldDeviceId: oldId, options: options, optionCount: options.size(),
+            def out = [success: true, listOptions: true, oldDeviceId: oldId, options: options, optionCount: options.size(),
                     note: options ? "Pick an option's id as new_device_id, then call again with confirm=true to replace." : "No compatible replacement devices found within current MCP device access."]
+            if (newId) out.compatible = options.any { it.id == newId }
+            return out
         } catch (Exception e) {
             mcpLogError("device-replace", "getReplacementOptions for ${oldId} failed", e)
             return [success: false, error: "Could not read replacement options: ${e.message}",
@@ -14043,7 +14188,7 @@ def toolCallDeviceReplace(args) {
         }
         def errText = (parsed instanceof Map) ? (parsed.message ?: parsed.error) : null
         return [success: false, error: errText ?: "/device/replace did not report success", response: raw?.take(300),
-                note: "new_device_id must be capability-compatible -- list valid candidates with list_options=true. Nothing was replaced."]
+                note: "Nothing was replaced. The hub answers \"Incompatible devices\" when the two share no device type, which list_options already checks (with new_device_id it reports compatible); \"Failed to replace device\" is its answer when its own swap of the two devices failed, with no reason given. Its Replace is built for newly paired hardware taking over an existing device."]
     } catch (Exception e) {
         mcpLogError("device-replace", "replace ${oldId} -> ${newId} failed", e)
         return [success: false, error: "Device replace failed: ${e.message}",
@@ -14241,20 +14386,21 @@ If no exact device match: suggest similar devices and get user confirmation befo
         ],
         [
             name: "hub_list_device_events",
-            description: """Get event history for a device, an app or rule (the automation events it emitted), or the location.
+            description: """Get event history for a device, an app or rule (the automation events it emitted), or the location and hub.
 
 [[FLAT_TRIM]]
+Location mode also lists the hub's own events (reboots, low memory, startup), tagged kind:'hub'.
 Default: most-recent events for a device (deviceId + optional limit). Device events include producedBy (the app, rule, or device that caused it) and triggered (the apps it fired) when the hub records them -- use attribute 'command-on' etc. to see who sent a command.
 [[/FLAT_TRIM]]
 """,
             inputSchema: [
                 type: "object",
                 properties: [
-                    deviceId: [type: ["string", "integer"], description: "Device ID. Mutually exclusive with appId; omit both for location-level events (mode/HSM/hub variable)."],
-                    appId: [type: "integer", description: "Installed-app ID for per-app events (what the app/rule emitted). Mutually exclusive with deviceId."],
-                    hoursBack: [type: "integer", description: "If set, return up to this many hours of history (max 168 = 7 days) instead of just the most recent events.[[FLAT_TRIM]] Ignored when since is given.[[/FLAT_TRIM]]"],
+                    deviceId: [type: ["string", "integer"], description: "Device ID. Mutually exclusive with appId; omit both for location and hub events."],
+                    appId: [type: "integer", description: "Installed-app ID: the events that app or rule emitted. Mutually exclusive with deviceId."],
+                    hoursBack: [type: "integer", description: "Hours of history (max 168).[[FLAT_TRIM]] Instead of just the most recent events; ignored when since is given.[[/FLAT_TRIM]]"],
                     until: [type: ["string", "integer"], description: "[[FLAT_TRIM]]Optional window end (inclusive), same formats as since.[[/FLAT_TRIM]]"],
-                    since: [type: ["string", "integer"], description: "Absolute window start -- return only events AFTER this timestamp; ISO-8601 with a numeric offset (-0600 or -06:00; e.g. 2026-06-23T10:00:00.000-0600) or epoch milliseconds.[[FLAT_TRIM]] This is the format this tool emits in `date`/`sinceTimestamp`. Takes precedence over hoursBack; a future timestamp yields an empty list.[[/FLAT_TRIM]]"],
+                    since: [type: ["string", "integer"], description: "Window start, exclusive: ISO-8601 with a numeric offset (e.g. 2026-06-23T10:00:00.000-0600) or epoch ms.[[FLAT_TRIM]] -0600 and -06:00 both work. This is the format this tool emits in `date`/`sinceTimestamp`. Takes precedence over hoursBack; a future timestamp yields an empty list.[[/FLAT_TRIM]]"],
                     attribute: [type: "string", description: "Event-name filter. Device: an attribute (e.g. 'switch').[[FLAT_TRIM]] Location: 'mode', 'hsmStatus', 'hsmAlert', or a hub-variable name.[[/FLAT_TRIM]]"],
                     limit: [type: "integer", description: "Max events to return. Recent mode default 10; history mode default 100 (max 500).[[FLAT_TRIM]] Higher values may slow hub.[[/FLAT_TRIM]]", default: 10]
                 ]
@@ -14333,7 +14479,7 @@ Pre-flight (mandatory): 1) hub backup <24h (hub_create_backup); 2) hub_list_devi
             description: """⚠️ DESTRUCTIVE: Replace a device's hardware, KEEPING its id + all app/rule references.
 
 [[FLAT_TRIM]]
-Two-step: list_options=true to list candidates, then apply with confirm=true.
+Two-step: list_options=true to list candidates (with new_device_id it also reports compatible), then apply with confirm=true. Built for newly paired hardware taking over an existing device.
 [[/FLAT_TRIM]]
 Pre-flight: backup <24h (hub_create_backup) + user OK.""",
             inputSchema: [
@@ -14395,7 +14541,7 @@ def _toolDisplayMeta_partDevices() {
         hub_list_devices: [title: "List Devices", summary: "List accessible devices with filtering, pagination, and field projection."],
         hub_get_device: [title: "Get Device Details", summary: "Inspect a device summary, configuration and preferences, or detailed information by section."],
         hub_get_device_attribute: [title: "Get Device Attribute", summary: "Read one attribute value, optionally waiting until it matches an expected value."],
-        hub_list_device_events: [title: "List Device Events", summary: "Recent events for a device or app, or location events when neither is given."],
+        hub_list_device_events: [title: "List Device Events", summary: "Recent events for a device or app, or location and hub events when neither is given."],
         hub_call_device_command: [title: "Send Device Command", summary: "Send a command like on, off, or setLevel to one device, or up to 20 in one call."],
         hub_call_device_swap: [title: "Swap Device", summary: "Exchange two devices' identities so the apps on one run on the other's hardware."],
         hub_call_device_replace: [title: "Replace Device Hardware", summary: "Re-point a device to replacement hardware, keeping its id and all references."],
@@ -15649,8 +15795,15 @@ def toolRemoveConnector(args) {
         consumersUnknown: (force && nativeModel != null && connectorApps == null) ?: null,
         message: "Connector for '${name}' (deviceId=${deviceId}) removed. Variable itself is unchanged."
     ]
-    result.note = "A java.lang.StackOverflowError from Hubitat's built-in 'Variable Connectors' driver (childRemoved) may appear in the hub log during this removal. It is a known Hubitat platform bug -- the same crash occurs via the UI's Remove Device button -- and is harmless: the connector is removed regardless."
+    if (_hubVarsNoConnectorLeft()) result.note = _hubVarsLastConnectorNote()
     return result
+}
+private boolean _hubVarsNoConnectorLeft() {
+    try { return !(getAllGlobalVars()?.values()?.any { it?.deviceId != null }) }
+    catch (Exception e) { return false }
+}
+private String _hubVarsLastConnectorNote() {
+    return "This was the hub's last variable connector, so the hub also removed its 'Variable Connectors' device, and Hubitat logs a java.lang.StackOverflowError (childRemoved) while doing that, as its own Remove connector button does. The connector is removed."
 }
 private Map _incrementHubVariable(String name, increment) {
     def amount
@@ -15962,7 +16115,7 @@ def toolDeleteHubVariable(args) {
             platformInUse: platformInUse,
             platformInUseError: registryError,
             coverageNote: _hubVarDeleteCoverageNote(),
-            note: unlinkNote
+            note: unlinkNote ?: ((hadConnector && _hubVarsNoConnectorLeft()) ? _hubVarsLastConnectorNote() : null)
         ]
     }
     def previousValue = state.ruleVariables.get(varName)
@@ -16970,6 +17123,10 @@ def toolListHubApps(args) {
         result.source = "mcp_only"
         result.note = "Hub internal API unavailable (${e.message}). Showing only MCP Rule Server apps. This may require Hub Security credentials or a firmware update."
     }
+    if (args?.nameFilter && result.apps instanceof List) {
+        result.apps = _nameFiltered(result.apps, args.nameFilter)
+        result.count = result.apps.size()
+    }
     if (cursor != null && result.apps instanceof List) {
         def paged = _paginateList(result.apps, cursor, 50, "hub_list_apps")
         result.total = result.apps.size()
@@ -17030,9 +17187,17 @@ def _projectAppType(Map t, boolean builtIn, Map enrich) {
     }
     return out
 }
+private List _nameFiltered(List rows, filter) {
+    String f = filter?.toString()?.trim()?.toLowerCase()
+    if (!f) return rows
+    return rows.findAll { it instanceof Map && (stripAppConfigHtml(it.name) ?: "").toLowerCase().contains(f) }
+}
 def toolListHubDrivers(args) {
+    def unknown = ((args ?: [:]).keySet() - ["include", "cursor", "nameFilter"]).sort()
+    if (unknown) throw new IllegalArgumentException("hub_list_drivers does not take ${unknown.join(', ')}. Valid arguments: include, nameFilter, cursor.")
     def cursor = args?.cursor
     def include = (args?.include ?: "user").toString().toLowerCase()
+    if (!(include in ["user", "all"])) throw new IllegalArgumentException("include must be 'user' or 'all' (got '${args.include}').")
     def result = [:]
     if (include == "all") {
         try {
@@ -17091,6 +17256,10 @@ def toolListHubDrivers(args) {
             result.note = "Hub internal API unavailable (${e.message}). This may require Hub Security credentials or a firmware update."
         }
         result.include = "user"
+    }
+    if (args?.nameFilter && result.drivers instanceof List) {
+        result.drivers = _nameFiltered(result.drivers, args.nameFilter)
+        result.count = result.drivers.size()
     }
     if (cursor != null && result.drivers instanceof List) {
         def paged = _paginateList(result.drivers, cursor, 50, "hub_list_drivers")
@@ -17162,7 +17331,7 @@ def toolGetItemSource(String type, String idParam, args) {
     if (!itemId) throw new IllegalArgumentException("${idParam} is required")
     def maxChunkSize = 64000
     def requestedOffset = args.offset ? args.offset as int : 0
-    def requestedLength = args.length ? Math.min(args.length as int, maxChunkSize) : maxChunkSize
+    def requestedLength = args.length ? Math.min(args.length as int, maxChunkSize) : defaultReadChunkChars()
     def ajaxPath = (type == "app") ? "/app/ajax/code" : "/driver/ajax/code"
     try {
         def responseText = hubInternalGet(ajaxPath, [id: itemId])
@@ -17214,7 +17383,7 @@ def toolGetItemSource(String type, String idParam, args) {
         return [success: false, error: "Failed to get ${type} source: ${e.message}"]
     }
 }
-private String stripAppConfigHtml(value) {
+String stripAppConfigHtml(value) {
     if (value == null) return null
     def s = value.toString()
     if (s.contains("<")) {
@@ -18827,7 +18996,7 @@ def toolGetLibrarySource(args) {
     if (!libraryId.toString().isInteger() || libraryId.toString().toInteger() <= 0) throw new IllegalArgumentException("libraryId must be a positive integer (got: '${libraryId}')")
     def maxChunkSize = 64000
     def requestedOffset = args.offset ? args.offset as int : 0
-    def requestedLength = args.length ? Math.min(args.length as int, maxChunkSize) : maxChunkSize
+    def requestedLength = args.length ? Math.min(args.length as int, maxChunkSize) : defaultReadChunkChars()
     try {
         def responseText = hubInternalGet("/library/list/single/data/${libraryId}")
         if (!responseText) return [success: false, error: "Empty response from hub for library ${libraryId}"]
@@ -19277,6 +19446,7 @@ def toolListInstalledApps(args) {
                     throw new IllegalStateException("filter branch missing for '${filter}' -- validFilters and switch have drifted")
             }
         }
+        if (args?.nameFilter) filtered = _nameFiltered(filtered, args.nameFilter)
         def paged = _paginateList(filtered, cursor, 50, "hub_list_apps")
         def result = [
             apps: paged.page,
@@ -19401,6 +19571,7 @@ def _getAllToolDefinitions_partCodeManagement() {
                 properties: [
                     scope: [type: "string", enum: ["instances", "types"], description: "What to list. 'instances' (default) = running app instances with parent/child tree; 'types' = installed app-type catalog (community + built-in), each with system/isBuiltIn and menu (Apps/Automations/Integrations tab, null if undeclared).", default: "instances"],
                     filter: [type: "string", enum: ["all", "builtin", "user", "disabled", "parents", "children"], description: "scope='instances' only: category filter."],
+                    nameFilter: [type: "string", description: "Name contains (case-insensitive)."],
                     includeHidden: [type: "boolean", description: "scope='instances' only: include hidden apps (typically Hubitat internal). Default: false", default: false],
                     cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded (subject to 120KB guard); pass \"\" for the first page, iterate nextCursor (page size 50)."]
                 ]
@@ -19413,6 +19584,7 @@ def _getAllToolDefinitions_partCodeManagement() {
                 type: "object",
                 properties: [
                     include: [type: "string", enum: ["user", "all"], description: "Scope: 'user' (default) = user-installed drivers only; 'all' = full catalog (system + virtual + user)."],
+                    nameFilter: [type: "string", description: "Name contains (case-insensitive)."],
                     cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 50)."]
                 ]
             ]
@@ -19436,7 +19608,7 @@ def _getAllToolDefinitions_partCodeManagement() {
                     type: [type: "string", enum: ["app", "driver", "library"], description: "What kind of code to read."],
                     id: [type: "string", description: "App/driver/library ID (positive integer), from hub_list_apps / hub_list_drivers / hub_list_libraries respectively (library id is also in a hub_create_library response or the Hubitat Libraries code page)."],
                     offset: [type: "integer", description: "Char offset to start reading from. Default: 0"],
-                    length: [type: "integer", description: "Max characters to return in this chunk. Default/max: 64000"]
+                    length: [type: "integer", description: "Max chars (default 30000, max 64000)."]
                 ],
                 required: ["type", "id"]
             ]
@@ -22746,7 +22918,7 @@ def toolGetToolGuide(section, cursor = null, Map apiDocs = null) {
         availableSections: sections.keySet().toList(),
         availableSubSections: subSections.collectEntries { k, v -> [(k): v.keySet().toList()] }
     ]
-    return _withGuidePage(result, fullGuide, cursor)
+    return _withGuidePage(result, fullGuide, cursor, fullGuidePageChars())
 }
 private Map _platformApiSearch(String query, cursor) {
     def terms = query.toLowerCase().split(/\s+/).findAll { it }
@@ -22828,8 +23000,8 @@ private Map _platformApiPage(String pageId, cursor) {
     if (paged.nextCursor != null) out.nextCursor = paged.nextCursor
     return out
 }
-private Map _withGuidePage(Map result, content, cursor) {
-    def paged = paginateGuideContent(content, cursor)
+private Map _withGuidePage(Map result, content, cursor, int pageChars = guidePageChars()) {
+    def paged = paginateGuideContent(content, cursor, pageChars)
     result.content = paged.content
     if (paged.nextCursor != null || paged.offset > 0) {
         result.offset = paged.offset
@@ -22842,7 +23014,7 @@ def _getAllToolDefinitions_partDiscovery() {
     return [
         [
             name: "hub_get_tool_guide",
-            description: "Get the deep-reference guide for an MCP tool topic[[FLAT_TRIM]] (exhaustive capability tables, wire formats, worked examples)[[/FLAT_TRIM]]. Read a write tool's section before calling that tool: the section publishes the acknowledgment key the best-practice gate requires, and best_practice_reference maps each write tool to its section. A `<parent>_<part>` key (e.g. hub_admin_write_devices) returns just that part of its parent section; the bare parent key returns all of it.[[FLAT_TRIM]] A parent's response lists its own sub-keys.[[/FLAT_TRIM]] Prefer a section: omitting it returns the key list plus the first page of the whole guide (paged via nextCursor)[[FLAT_TRIM]], the largest response this tool produces, so on a timeout retry a specific section[[/FLAT_TRIM]].[[FLAT_TRIM]] platform_api_search / platform_api_page read the hub's own Groovy API documentation instead.[[/FLAT_TRIM]]",
+            description: "Get the deep-reference guide for an MCP tool topic[[FLAT_TRIM]] (exhaustive capability tables, wire formats, worked examples)[[/FLAT_TRIM]]. Read a write tool's section before calling that tool: the section publishes the acknowledgment key the best-practice gate requires, and best_practice_reference maps each write tool to its section. A `<parent>_<part>` key (e.g. hub_admin_write_devices) returns just that part of its parent section; the bare parent key returns all of it.[[FLAT_TRIM]] A parent's response lists its own sub-keys.[[/FLAT_TRIM]] Prefer a section: omitting it returns the key list plus the first page of the whole guide (30,000-character pages via nextCursor)[[FLAT_TRIM]], the largest response this tool produces, so on a timeout retry a specific section[[/FLAT_TRIM]].[[FLAT_TRIM]] platform_api_search / platform_api_page read the hub's own Groovy API documentation instead.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -23093,7 +23265,11 @@ def toolListRmRules(args) {
     def cursor = args?.cursor
     def paged = _paginateList(rules, cursor, 50, "hub_list_rules")
     def result = [
-        rules: paged.page,
+        rules: paged.page.collect { r ->
+            def clean = [:] + r
+            ["label", "name"].each { k -> if (clean[k] instanceof CharSequence) clean[k] = stripAppConfigHtml(clean[k]) }
+            clean
+        },
         count: paged.page.size()
     ]
     if (cursor != null) {
@@ -28412,6 +28588,12 @@ def handleToolsCall(msg) {
         if (stateId == null) {
             _mrtrValidateAccess(toolName, reactiveToolName, args)
             String leafName = reactiveToolName?.toString()
+            boolean validPureRoute = outerName == leafName ||
+                (settings.useGateways != false &&
+                    gatewayConfig[outerName]?.tools?.contains(leafName))
+            if (validPureRoute && leafName == "hub_create_backup") {
+                _requireCreateBackupConfirm(_mrtrLeafArguments(outerName, leafName, args as Map))
+            }
             boolean readLeaf = _mrtrReadTools().contains(leafName)
             if (readLeaf) {
                 Map readArgs = _mrtrCopyMap(args as Map)
@@ -28664,7 +28846,8 @@ def _budgetAwareTools() {
             "hub_import_native_app", "hub_call_device_command",
             "hub_get_jobs", "hub_get_performance_stats", "hub_get_logs", "hub_get_info",
             "hub_report_issue", "hub_get_custom_rule", "hub_delete_debug_logs",
-            "hub_get_device", "hub_list_devices", "hub_get_device_health", "hub_list_libraries"] as Set
+            "hub_get_device", "hub_list_devices", "hub_get_device_health", "hub_list_libraries",
+            "hub_get_device_attribute"] as Set
 }
 def _mrtrWriteTools() {
     return ["hub_set_rule", "hub_call_rule",
@@ -30419,8 +30602,8 @@ def getGatewayConfig() {
             description: "Read-only inspection of installed apps, drivers, libraries, code bundles, code backups, and HPM packages: list apps (by code type or running instance), list drivers, view Groovy source, list installed bundles, browse code backups, inspect an installed app's config/pages, and list HPM-tracked packages. All operations are read-only; writes live in hub_manage_code.",
             tools: ["hub_list_apps", "hub_list_drivers", "hub_get_source", "hub_list_libraries", "hub_list_bundles", "hub_list_backups", "hub_get_backup", "hub_list_device_dependents", "hub_get_app_config", "hub_list_app_pages", "hub_list_hpm_packages"],
             summaries: [
-                hub_list_apps: "List installed apps. scope='types' (all app TYPES: community + built-in, each with its menu tab) or 'instances' (running apps with parent/child tree). Args: scope, filter?, includeHidden?, cursor?",
-                hub_list_drivers: "List device driver types. include='user' (default) = user-installed; include='all' = full catalog (system+virtual+user), each id usable with hub_create_device. Args: include?, cursor?",
+                hub_list_apps: "List installed apps. scope='types' (all app TYPES: community + built-in, each with its menu tab) or 'instances' (running apps with parent/child tree). Args: scope, filter?, nameFilter?, includeHidden?, cursor?",
+                hub_list_drivers: "List device driver types. include='user' (default) = user-installed; include='all' = full catalog (system+virtual+user), each id usable with hub_create_device. Args: include?, nameFilter?, cursor?",
                 hub_get_source: "Get app/driver/library Groovy source with chunked reading. Args: type (app|driver|library), id, offset?, length?",
                 hub_list_libraries: "List installed Groovy libraries (id, name, namespace, version). Pair with hub_get_source(type='library', id) to read source. Args: cursor?",
                 hub_list_bundles: "List installed code bundles (the Bundle-Manager containers HPM delivers code in; distinct from Libraries Code). Returns id, name, namespace, private, and a contains summary. Find a bundle id for hub_delete_bundle/hub_export_bundle. Args: cursor?",
@@ -30596,7 +30779,7 @@ def getGatewayConfig() {
                 hub_get_custom_rule: "List MCP custom rules (omit ruleId) or get one rule's detail; detailed=true (with ruleId) adds diagnostics. Args: ruleId?, detailed?, cursor?",
                 hub_test_custom_rule: "Dry-run an MCP custom rule without executing actions. Args: ruleId",
                 hub_list_rules: "List all native Rule Machine rules (RM 4.x + 5.x) with IDs and labels",
-                hub_get_rule_health: "Inspect a rule (Rule Machine OR Visual Rules Builder) for broken state — compiled `broken` boolean / graph validationErrors, plus BROKEN markers, configPage errors, multiple-flag corruption. Args: appId, source",
+                hub_get_rule_health: "Inspect a rule (Rule Machine OR Visual Rules Builder) for broken state — compiled `broken` boolean / graph validationErrors, plus BROKEN markers, configPage errors, multiple-flag corruption. Args: appId, source? (auto|ruleBuilderJson|configPage)",
                 hub_list_rule_local_variables: "List a Rule Machine rule's local variables with their current values. Distinct from hub_list_variables (hub globals). Args: appId",
                 hub_get_visual_rule: "List Visual Rules Builder rules (omit appId) or read one rule's full JSON definition + format. Args: appId?"
             ],
@@ -30623,7 +30806,7 @@ def getGatewayConfig() {
                 hub_clone_native_app: "Clone an existing rule/app via Hubitat's first-party appCloner (deep: child apps and pause state copy too, so a clone of an ACTIVE app lands ACTIVE). Cheaper than rebuilding from scratch via the wizard. Args: appId (alias sourceAppId), newName (opt), stageDisabled (opt: disable clone + every descendant immediately), confirm. Returns newAppId.",
                 hub_export_native_app: "Export a rule/app to its canonical JSON shape via Hubitat's first-party appCloner. Args: appId (alias sourceAppId), saveAs (opt File Manager filename). Returns the JSON content (and writes to File Manager if saveAs given).",
                 hub_import_native_app: "Create a new rule/app from a previously-exported JSON via Hubitat's first-party appCloner (the import lands ACTIVE). Args: jsonContent | fromFile, parentHintAppId (existing rule under the target parent — used to seed the cloner), newName (opt), stageDisabled (opt: disable import + every descendant immediately), confirm. Returns newAppId.",
-                hub_get_rule_health: "Inspect a rule (Rule Machine OR Visual Rules Builder) for broken state — compiled `broken` boolean / graph validationErrors, label *BROKEN*, **Broken Trigger** markers, configPage errors, multiple-flag corruption. Args: appId, source. Returns {ok, broken, source, ruleFormat, issues, ...}. Native documents perform independent compilation checks; visual writes attach health too."
+                hub_get_rule_health: "Inspect a rule (Rule Machine OR Visual Rules Builder) for broken state — compiled `broken` boolean / graph validationErrors, label *BROKEN*, **Broken Trigger** markers, configPage errors, multiple-flag corruption. Args: appId, source? (auto|ruleBuilderJson|configPage). Returns {ok, broken, source, ruleFormat, issues, ...}. Native documents perform independent compilation checks; visual writes attach health too."
             ],
             searchHints: [
                 hub_set_rule: "Read, create, update or use native Rule Machine forms. Args: operation?, rule_id?, args?, confirm?. Omit operation for help; unconfirmed writes return schemas.",
@@ -30656,7 +30839,7 @@ def getGatewayConfig() {
                 hub_list_devices: "List devices with current states; format='context' = plain-text house snapshot (mode + one line per device). Args: detailed?, filter (enabled/disabled/stale:N/virtual), labelFilter?, capabilityFilter?, roomFilter?, onlyOn?, changedSince?, attributeNames?, format (summary/detailed/ids/context), fields?, limit?, cursor?",
                 hub_get_device: "Inspect one device. Args: deviceId, mode? (summary/configuration/details), sections? (details mode), fields? (configuration/details field selector), cursor? (continue one oversized scalar). Configuration mode discovers editable fields, saved preferences, driver identity, and read status before an update.",
                 hub_get_device_attribute: "Read one attribute's value, or block-poll one OR several devices (deviceIds + mode any/all) until it reaches expectedValue/expectedValues. Args: deviceId | deviceIds (max 20), mode? (any/all), attribute, expectedValue?, expectedValues?, timeoutMs?, pollIntervalMs?, comparator?, stableForMs?",
-                hub_list_device_events: "Recent device events, a time-windowed history (hoursBack, max 168), an absolute bookmark (since -- events after an exact timestamp; round-trip a returned date) with an optional end (until), per-app events (appId), or location events (mode/HSM/hub-variable; omit deviceId/appId). Args: deviceId?, appId?, hoursBack?, since?, until?, attribute?, limit?",
+                hub_list_device_events: "Recent device events, a time-windowed history (hoursBack, max 168), an absolute bookmark (since -- events after an exact timestamp; round-trip a returned date) with an optional end (until), per-app events (appId), or location and hub events (mode/HSM/hub-variable, reboots/low memory; omit deviceId/appId). Args: deviceId?, appId?, hoursBack?, since?, until?, attribute?, limit?",
                 hub_get_compatible_devices: "Search Hubitat's compatible-device catalog (brands/models + pairing/exclude/factory-reset instructions). Args: query?, brand?, protocol?, deviceType?, includeInstructions?, cursor?",
                 hub_get_hub_mesh: "Read Hub Mesh (hub-to-hub device/variable sharing on the LAN): enabled state, peer hubs, shared/linked devices + hub variables, sync interval, mode-following hub. Args: include_token?"
             ],
@@ -30664,7 +30847,7 @@ def getGatewayConfig() {
                 hub_list_devices: "show all devices switches lights sensors locks state inventory enumerate context summary snapshot overview house whats on right now changed since room",
                 hub_get_device: "device detail capabilities attributes commands info inspect one configuration editable fields preferences driver identity saved settings",
                 hub_get_device_attribute: "read attribute value poll wait until threshold sensor verify state changed inclusion compare numeric range debounce stable multiple devices deviceIds any all converge across",
-                hub_list_device_events: "device history events timeline recent location mode hsm variable activity app rule automation emitted since bookmark timestamp after new events change watch why caused produced by triggered button command source provenance",
+                hub_list_device_events: "device history events timeline recent location mode hsm variable activity hub reboot restart low memory lowMemory startup app rule automation emitted since bookmark timestamp after new events change watch why caused produced by triggered button command source provenance",
                 hub_get_compatible_devices: "compatible devices catalog supported hardware brands models pairing join exclude factory reset instructions how to pair driver protocol zigbee zwave matter lan",
                 hub_get_hub_mesh: "hub mesh share devices between hubs link remote second hub peer hubs multi hub connect two hubs mesh token follow modes another hub sync interval linked device shared variable hub to hub"
             ]
@@ -30719,7 +30902,7 @@ def getGatewayConfig() {
                 hub_list_devices: "List devices with current states; format='context' = plain-text house snapshot. Args: detailed?, filter, labelFilter?, capabilityFilter?, roomFilter?, onlyOn?, changedSince?, attributeNames?, format, fields?, limit?, cursor?",
                 hub_get_device: "Inspect one device. Args: deviceId, mode? (summary/configuration/details), sections? (details mode), fields? (configuration/details field selector), cursor? (continue one oversized scalar). Configuration mode discovers editable fields and preference definitions/current values before an update.",
                 hub_get_device_attribute: "Read one attribute's value, or block-poll one OR several devices (deviceIds + mode any/all) until it reaches expectedValue/expectedValues. Args: deviceId | deviceIds (max 20), mode? (any/all), attribute, expectedValue?, expectedValues?, timeoutMs?, pollIntervalMs?, comparator?, stableForMs?",
-                hub_list_device_events: "Recent device events, a time-windowed history, an absolute bookmark (since) with an optional end (until), per-app events (appId), or location events. Args: deviceId?, appId?, hoursBack?, since?, until?, attribute?, limit?",
+                hub_list_device_events: "Recent device events, a time-windowed history, an absolute bookmark (since) with an optional end (until), per-app events (appId), or location and hub events (reboots, low memory). Args: deviceId?, appId?, hoursBack?, since?, until?, attribute?, limit?",
                 hub_get_hub_mesh: "Read Hub Mesh (hub-to-hub device/variable sharing on the LAN): enabled state, peer hubs, shared/linked devices + hub variables, sync interval, mode-following hub. Args: include_token?",
                 hub_update_hub_mesh: "Change Hub Mesh settings (enable/disable needs a hub reboot; per-device sharing is hub_update_device meshEnabled). Args: enabled?, full_refresh_interval? (0/120/300/3600), mode_hub_id? ('none'=local modes), peer_hub_id?+peer_token?"
             ],
@@ -30732,7 +30915,7 @@ def getGatewayConfig() {
                 hub_list_devices: "show all devices switches lights sensors locks state inventory context summary snapshot overview house whats on right now changed since room",
                 hub_get_device: "device detail capabilities attributes commands info inspect one configuration editable fields preferences driver identity saved settings",
                 hub_get_device_attribute: "read attribute value poll wait until threshold sensor verify state changed compare numeric range debounce stable multiple devices deviceIds any all converge across",
-                hub_list_device_events: "device history events timeline recent location mode hsm variable activity app rule automation emitted since bookmark timestamp after new events change watch why caused produced by triggered button command source provenance",
+                hub_list_device_events: "device history events timeline recent location mode hsm variable activity hub reboot restart low memory lowMemory startup app rule automation emitted since bookmark timestamp after new events change watch why caused produced by triggered button command source provenance",
                 hub_get_hub_mesh: "hub mesh share devices between hubs link remote second hub peer hubs multi hub connect two hubs mesh token follow modes another hub sync interval linked device shared variable hub to hub",
                 hub_update_hub_mesh: "enable disable hub mesh share devices between hubs link remote second hub peer hubs multi hub connect two hubs mesh token follow modes another hub sync interval full refresh linked device hub to hub"
             ]
@@ -30746,7 +30929,7 @@ def getGatewayConfig() {
                 hub_call_rule: "Trigger an RM rule lifecycle verb. Args: ruleId (id or array of ids), action (rule/actions/stop/start, default rule)",
                 hub_set_rule_paused: "Pause or resume one or more RM rules in one call. Args: ruleId (id or array of ids), paused (true=pause, false=resume)",
                 hub_set_rule_private_boolean: "Set the private boolean of one or more RM rules. Args: ruleId (id or array of ids), value (bool)",
-                hub_get_rule_health: "Inspect a rule (Rule Machine OR Visual Rules Builder) for broken state — compiled `broken` boolean / graph validationErrors, BROKEN markers, configPage errors, multiple-flag corruption. Args: appId, source",
+                hub_get_rule_health: "Inspect a rule (Rule Machine OR Visual Rules Builder) for broken state — compiled `broken` boolean / graph validationErrors, BROKEN markers, configPage errors, multiple-flag corruption. Args: appId, source? (auto|ruleBuilderJson|configPage)",
                 hub_list_rule_local_variables: "List a Rule Machine rule's local variables with their current values. Distinct from hub_list_variables (hub globals). Args: appId",
                 hub_delete_native_app: "Delete any classic native app incl. RM rules (soft by default, force=true for hard). Auto-backs-up first. Args: appId, force (opt), confirm.",
                 hub_get_visual_rule: "List Visual Rules Builder rules (omit appId) or read one rule's full JSON definition + format. Args: appId?",
@@ -30771,8 +30954,8 @@ def getGatewayConfig() {
             description: "Manage Hubitat dashboards -- both Easy Dashboards and legacy Hubitat® Dashboards: list, view, create, update, delete, and clone. Easy update REPLACES the config wholesale (read it first with hub_get_dashboard); legacy update edits name, authorized devices, or the tile layout (grid, background, colors) either wholesale or via granular tile ops. Delete is destructive (confirm + recent backup). Reads are also in hub_read_dashboards.",
             tools: ["hub_list_dashboards", "hub_get_dashboard", "hub_create_dashboard", "hub_update_dashboard", "hub_delete_dashboard", "hub_clone_dashboard"],
             summaries: [
-                hub_list_dashboards: "List Easy + legacy Hubitat® Dashboards (id, name, type). Args: pinToken? (optional; resolved automatically)",
-                hub_get_dashboard: "Get one dashboard's full config by id: Easy tiles/theme or legacy layout. Args: dashboardId, pinToken?",
+                hub_list_dashboards: "List Easy + legacy Hubitat® Dashboards (id, name, type). No args",
+                hub_get_dashboard: "Get one dashboard's full config by id: Easy tiles/theme or legacy layout. Args: dashboardId",
                 hub_create_dashboard: "Create an Easy Dashboard, or an empty legacy one (type='legacy'). Args: name, type?, deviceIds, options?",
                 hub_update_dashboard: "Update by id: Easy wholesale, or legacy name/deviceIds/layout (or tile ops). Args: dashboardId, name?, deviceIds?, options?/layout?/addTiles?/updateTiles?/removeTileIds?/setOptions?",
                 hub_delete_dashboard: "Permanently delete an Easy or legacy dashboard (DESTRUCTIVE). Args: dashboardId, confirm=true",
@@ -30791,8 +30974,8 @@ def getGatewayConfig() {
             description: "Read-only dashboard inspection: list dashboards (Easy and legacy Hubitat®) and view one dashboard's full config -- Easy tiles/navigation/theme/devices, or a legacy dashboard's authorized devices and tile layout (grid, colors). All operations are read-only; create/update/delete/clone live in hub_manage_dashboards.",
             tools: ["hub_list_dashboards", "hub_get_dashboard"],
             summaries: [
-                hub_list_dashboards: "List Easy + legacy Hubitat® Dashboards (id, name, type). Args: pinToken? (optional; resolved automatically)",
-                hub_get_dashboard: "Get one dashboard's full config by id: Easy tiles/theme or legacy layout. Args: dashboardId, pinToken?"
+                hub_list_dashboards: "List Easy + legacy Hubitat® Dashboards (id, name, type). No args",
+                hub_get_dashboard: "Get one dashboard's full config by id: Easy tiles/theme or legacy layout. Args: dashboardId"
             ],
             searchHints: [
                 hub_list_dashboards: "list show easy legacy hubitat dashboards dashboard tiles panels touch UI screen wall tablet read",
@@ -31257,6 +31440,7 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
             && !(toolName in ['hub_get_tool_guide', 'hub_update_mcp_settings'])
             && !_isDeviceReplaceOptionsOnlyCall(toolName, args ?: [:])
             && !_isRuleReadCall(toolName, args ?: [:])
+            && !(toolName == 'hub_update_package' && args instanceof Map && args.dryRun == true)
             && !bpsChecked) {
         String bpsSection = _bpsSectionForTool(toolName)
         def bpsKey = hubBpsKeyFromArgs(args)
@@ -32170,7 +32354,7 @@ private _hubRequest(String method, String path, Map opts = [:]) {
     if (opts.followRedirects != null) params.followRedirects = opts.followRedirects
     def headers = [:]
     if (opts.keepAlive) headers["Connection"] = "keep-alive"
-    if (cookie) headers["Cookie"] = cookie
+    if (cookie || opts.cookie) headers["Cookie"] = [cookie, opts.cookie].findAll { it }.join("; ")
     if (headers) params.headers = headers
     if (opts.body != null) params.body = opts.body
     def result = null
@@ -32181,6 +32365,10 @@ private _hubRequest(String method, String path, Map opts = [:]) {
         catch (Exception re) { readError = re }
         if (opts.returnShape == 'struct') {
             result = [status: resp.status, location: resp.headers?."Location"?.toString(), data: (readError != null ? null : bodyText)]
+            def sc = null
+            try { sc = resp.headers?."Set-Cookie" } catch (Exception ignored) { sc = null }
+            def cookies = (sc instanceof List ? sc : (sc != null ? [sc] : [])).collect { it.toString().replaceFirst(/^(?i)set-cookie:\s*/, "").split(';')[0] }
+            if (cookies) result.setCookie = cookies.find { it.startsWith("HUBSESSION=") } ?: cookies[0]
             readError = null
         } else if (readError == null) {
             result = bodyText
@@ -32243,6 +32431,9 @@ private Map _meshJson() {
         mcpLog("warn", "server", "Could not read Hub Mesh JSON (/hub2/hubMeshJson): ${e.message}")
         return null
     }
+}
+def hubInternalGetInSession(String path, Map query, String sessionCookie, int timeout = 30) {
+    _hubRequest('GET', path, [query: query, timeout: timeout, returnShape: 'text', cookie: sessionCookie])
 }
 def hubInternalGetRaw(String path, Map query = null, int timeout = 30, boolean isRetry = false) {
     _hubRequest('GET', path, [query: query, timeout: timeout, returnShape: 'struct',
@@ -32484,35 +32675,70 @@ def _probeUrl(String url, long maxBytes) {
                     out.size = (long) raw.length
                     if (raw.length <= maxBytes) out.bytes = raw
                 }
+            } else {
+                out.error = "the host answered HTTP ${resp?.status}".toString()
             }
         }
     } catch (Exception e) {
-        mcpLog("warn", "hub-admin", "size check of a backup URL failed (${e.message}); it is not fetched")
+        out.error = (e.message ?: e.toString()).take(200)
+        mcpLog("warn", "hub-admin", "size check of a backup URL failed (${out.error}); it is not fetched")
     }
     return out
 }
-void _requireBackupUrl(String url, String param) {
-    def m = url =~ /(?i)^https?:\/\/([a-z0-9.-]+)(?::\d{1,5})?(\/[^?#]*)?(?:[?#].*)?$/
-    if (url.contains("\\") || !m.matches()) {
-        throw new IllegalArgumentException("${param} must be an http(s) URL with a host name or IPv4 address (no user info or IPv6 literal), got: ${url}")
-    }
+def _hubNumber(raw) {
+    String s = raw?.toString()?.trim()
+    if (s == null || s.isEmpty()) return s
+    if (s.isLong()) return s.toLong()
+    if (s.isBigDecimal()) return s.toBigDecimal()
+    return s
+}
+String _mbText(long bytes) {
+    long tenths = (bytes * 10L + 1048575L).intdiv(1048576L)
+    return tenths % 10L == 0L ? "${tenths.intdiv(10L)} MB".toString() : "${tenths.intdiv(10L)}.${tenths % 10L} MB".toString()
+}
+Map _backupUrlTarget(String url) {
+    def m = url =~ /(?i)^https?:\/\/([a-z0-9.-]+)(?::(\d{1,5}))?(\/[^?#]*)?(?:[?#].*)?$/
+    if (url.contains("\\") || !m.matches()) return null
     String host = m.group(1).toLowerCase().replaceAll(/\.$/, "")
     boolean numeric = host.tokenize(".").every { it ==~ /0x[0-9a-f]*|\d+/ }
-    if (numeric && !(host ==~ /(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}/)) {
+    boolean self = host == "localhost" || host.endsWith(".localhost") ||
+        (numeric && (host.startsWith("127.") || host.startsWith("0."))) || host == location?.hub?.localIP?.toString()
+    if (!self) return [self: false, host: host, numeric: numeric]
+    String path = m.group(3) ?: ""
+    String name = null
+    boolean badEncoding = false
+    if (path.startsWith("/local/") && !path.substring(7).contains("/") && (m.group(2) == null || m.group(2) in ["80", "443", "8080"])) {
+        try { name = java.net.URLDecoder.decode(path.substring(7).replace("+", "%2B"), "UTF-8") } catch (Exception ignored) { badEncoding = true }
+    }
+    if (name == null || name.isEmpty() || name ==~ /\.+/ || name.contains("/") || name.contains("\\")) name = null
+    return [self: true, host: host, numeric: numeric, fileName: name, badEncoding: badEncoding]
+}
+void _requireBackupUrl(String url, String param) {
+    Map target = _backupUrlTarget(url)
+    if (target == null) {
+        throw new IllegalArgumentException("${param} must be an http(s) URL with a host name or IPv4 address (no user info or IPv6 literal), got: ${url}")
+    }
+    String host = target.host
+    if (target.numeric && !(host ==~ /(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}/)) {
         throw new IllegalArgumentException("${param} must spell an IPv4 address as four decimal parts, got: ${host}")
     }
-    boolean self = host == "localhost" || host.endsWith(".localhost") || host.startsWith("127.") || host.startsWith("0.") ||
-        host == location?.hub?.localIP?.toString()
-    String path = m.group(2) ?: ""
-    if (self && !(path ==~ /\/local\/[^\/%]+/ && !(path ==~ /\/local\/\.+/))) {
-        throw new IllegalArgumentException("${param} points at this hub (${host}); only its File Manager files (/local/...) can be fetched from it.")
+    if (target.self && target.badEncoding) {
+        throw new IllegalArgumentException("${param} names a File Manager file whose name is not valid percent-encoding (a % must start a two-digit hex escape), got: ${url}")
+    }
+    if (target.self && target.fileName == null) {
+        throw new IllegalArgumentException("${param} points at this hub (${host}); only its File Manager files (/local/<file name>, on the hub's own web port) can be fetched from it.")
     }
 }
 Map _fetchCappedBackup(String url, long cap) {
-    String limit = "${cap / (1024 * 1024)} MB"
+    String fileName = _backupUrlTarget(url)?.fileName
+    if (fileName != null) return _fetchCappedLocalFile(fileName, cap)
+    String limit = _mbText(cap)
     def probe = _probeUrl(url, cap)
-    if (probe.size == null) return [error: "the host did not report the backup's size, so it was not fetched (the in-app limit is ${limit}); serve it from a host that answers range requests or sends Content-Length."]
-    if (probe.size > cap) return [error: "the backup is ${(probe.size / (1024 * 1024)) as long} MB, over the ${limit} in-app limit."]
+    if (probe.size == null) {
+        if (probe.error) return [error: "the size check of the URL failed (${probe.error}), so nothing was fetched."]
+        return [error: "the host did not report the backup's size, so it was not fetched (the in-app limit is ${limit}); serve it from a host that answers range requests or sends Content-Length."]
+    }
+    if (probe.size > cap) return [error: "the backup is ${_mbText(probe.size as long)} (${probe.size} bytes), over the ${limit} in-app limit."]
     byte[] bytes = probe.bytes
     if (bytes == null) {
         try { bytes = _fetchBytesFromUrl(url, cap) }
@@ -32520,6 +32746,20 @@ Map _fetchCappedBackup(String url, long cap) {
     }
     if (!bytes) return [error: "the host returned no data."]
     if (bytes.length > cap) return [error: "the backup is over the ${limit} in-app limit."]
+    return [bytes: bytes]
+}
+private Map _fetchCappedLocalFile(String fileName, long cap) {
+    def listed
+    try { listed = _fileManagerRootFiles().find { it.name == fileName } }
+    catch (Exception e) { return [error: "could not read the File Manager listing: ${e.message}"] }
+    if (listed == null) return [error: "this hub's File Manager has no file named '${fileName}'."]
+    if (listed.size == null) return [error: "the File Manager listing gives no size for '${fileName}', so it was not read."]
+    if ((listed.size as long) > cap) return [error: "the backup is ${_mbText(listed.size as long)} (${listed.size} bytes), over the ${_mbText(cap)} in-app limit."]
+    byte[] bytes
+    try { bytes = downloadHubFile(fileName) }
+    catch (Exception e) { return [error: "could not read '${fileName}' from the File Manager: ${e.message}"] }
+    if (!bytes) return [error: "the File Manager file '${fileName}' is empty."]
+    if (bytes.length != (listed.size as long)) return [error: "read ${bytes.length} bytes of the ${listed.size}-byte File Manager file '${fileName}', so the incomplete file was not used."]
     return [bytes: bytes]
 }
 def _fetchBytesFromUrl(String url, long maxBytes) {
@@ -34251,7 +34491,7 @@ private Map _rmForceDeleteApp(Integer appId) {
     return resp
 }
 def currentVersion() {
-    return "4.8.2"
+    return "4.8.3"
 }
 def hubBpsGuideKey(String section, Long atMs = null) {
     long bucket = ((atMs != null ? atMs : now()) as long).intdiv(3600000L)
@@ -34593,7 +34833,7 @@ hub_update_driver bulk mode: `updates=[{driverId, sourceFile|source|importUrl|re
 ### hub_update_app / hub_update_driver / hub_update_library — source modes and large sources
 
 - Exactly one source mode per call: `importUrl` (the hub fetches the file itself; cheapest on context), `sourceFile` (a File Manager file), inline `source` (stubs only), or `resave` (recompile the current source unchanged, entirely on-hub).
-- `hub_get_source` returns at most 64000 characters per call; follow `nextOffset` while `hasMore`. A longer source is also saved whole to File Manager as `mcp-source-<app|driver|library>-<id>.groovy` and returned as `sourceFile`, ready for the update tools' `sourceFile` mode.
+- `hub_get_source` returns 30000 characters per call by default (`length` up to 64000); follow `nextOffset` while `hasMore`. A longer source is also saved whole to File Manager as `mcp-source-<app|driver|library>-<id>.groovy` and returned as `sourceFile`, ready for the update tools' `sourceFile` mode.
 
 
 ### hub_call_device_command
@@ -35110,7 +35350,7 @@ Reads the saved source from one backup -- use it to inspect or diff a prior vers
 - A deleted rule cannot retain its old ID. Native import creates a new rule from an available export; `preserveRuleId:false` also explicitly selects replacement. Check the returned `ruleId` and update references when it changes. Missing devices or an unusable export can prevent complete restoration.
 
 - `scope=hub_local` (`fileName`) and `scope=hub_cloud` (`path` + `cloudBackupPassword`) -- restore the WHOLE hub DB and REBOOT the hub. A full local backup (`fullBackup:true`) never goes to the database restore: it runs the full-restore flow the web UI uses (the archive is read off the hub, uploaded to the full-restore endpoint, then restored).
-- `scope=hub_uploaded` -- fetch a backup from `backupUrl` and restore it (open-world). The fetched file decides the route: a `.tar.gz` full backup runs the full-restore flow, a `.lzf` database backup the database restore, and anything else is refused. `fullRestore` needs a full backup and is refused with a `.lzf` URL. The URL's size is read first with a one-byte range request (or the declared length of a host that ignores it): a backup over 16 MB (8 MB for a `.lzf` URL), or one whose size the host does not report, is refused before it is fetched. The URL may not point at this hub (loopback or its own address) except a File Manager file under `/local/`, and must use a host name or a dotted-quad IPv4 address. A full local backup whose size the hub's list does not give is refused rather than downloaded.
+- `scope=hub_uploaded` -- fetch a backup from `backupUrl` and restore it (open-world). The fetched file decides the route: a `.tar.gz` full backup runs the full-restore flow, a `.lzf` database backup the database restore, and anything else is refused. `fullRestore` needs a full backup and is refused with a `.lzf` URL. The URL's size is read first with a one-byte range request (or the declared length of a host that ignores it): a backup over 16 MB (8 MB for a `.lzf` URL), or one whose size the host does not report, is refused before it is fetched. The URL may not point at this hub (loopback or its own address) except a File Manager file under `/local/<file name>` on the hub's web port (a percent-encoded name works), which is read through the File Manager with its listed size; it must use a host name or a dotted-quad IPv4 address. A size check that fails names its reason (an HTTP status, a DNS failure). A full local backup whose size the hub's list does not give is refused rather than downloaded.
 - `fullRestore={restoreZigbee, restoreZwave, restoreFiles, deleteExistingFiles, allowZwaveFirmwareMismatch}` (booleans, all default false) picks what a full restore brings back besides the database, for a full `hub_local` backup or a `hub_uploaded` archive; `scope=hub_cloud` restores the database only and refuses it. `deleteExistingFiles` needs `restoreFiles`. A restore request the hub never answers returns `outcome: "unknown"`: the hub may be rebooting into the restore, so check it before retrying. A Z-Wave firmware or Z-Wave stack mismatch between hub and backup is refused with the reason; `allowZwaveFirmwareMismatch=true` restores over a hub whose Z-Wave firmware is newer. Full archives over 16 MB are refused in-app before they are downloaded (the web UI takes up to 150 MB).''',
         file_manager: '''## File Manager
 
@@ -35224,8 +35464,8 @@ The following filter pipeline applies to hub mode. Current three-column native t
 - **Cursor pagination (staleDevices):** page size 100. Omit the cursor to get all stale devices in one response (subject to the response-size guard). unknownDevices and healthyDevices are always returned in full alongside the page.
 
 ### hub_get_metrics (hub metrics + the hub's own health alerts)
-- `current` snapshot fields: timestamp, timestampEpoch, freeMemoryKB, internalTempC, databaseSizeKB, uptimeSeconds, uptimeFormatted. `current` also carries locally-derived warning notes when thresholds are crossed: memoryWarning (<50 MB free), temperatureWarning (>70 °C), databaseWarning (>500 MB) — with softer memoryNote/temperatureNote variants below those thresholds.
-- `trends`: recent history points {timestamp, freeMemoryKB, internalTempC, databaseSizeKB, uptimeSeconds}. `trendPoints` chooses how many (default 10, max 50). `trendPointsAvailable` = total rows on file; `historyFile` = the CSV name in File Manager (mcp-performance-history.csv).
+- `current` snapshot fields: timestamp, timestampEpoch, freeMemoryKB, internalTempC, databaseSizeMB (the hub reports its database size in MB), uptimeSeconds, uptimeFormatted; the readings are numbers (a reading the hub did not answer with a number stays as its text). `current` also carries locally-derived warning notes when thresholds are crossed: memoryWarning (<50 MB free), temperatureWarning (>70 °C), databaseWarning (>500 MB) — with softer memoryNote/temperatureNote variants below those thresholds.
+- `trends`: recent history points {timestamp, timestampEpoch, freeMemoryKB, internalTempC, databaseSizeMB, uptimeSeconds}. `trendPoints` chooses how many (default 10, max 50). `trendPointsAvailable` = total rows on file; `historyFile` = the CSV name in File Manager (mcp-performance-history.csv); `trendNote` says when there are no points or the newest is over a day old, and `trendRowsSkipped` counts history rows that could not be read.
 - Trend history is sparse/stale: the hub never auto-samples, so points exist only from earlier recordSnapshot=true calls and reset if that CSV is cleared. Call recordSnapshot=true periodically to build a trend — it appends one row to the performance-history CSV (rolling 500-row window) and is the tool's ONLY write side-effect (default false = read-only).
 - `healthAlerts`: the hub's own active health alerts (the hub's alert feed on firmware 2.5.2.129 and later, /hub2/hubData before that) — {safeMode, active (currently-firing alerts: the alert item keys on 2.5.2.129 and later, flags such as hubLowMemory / zwaveOffline / localBackupFailed / weakZigbee before that), items (2.5.2.129+: key, message, version, dismissible), details (the hub's full alert data + message strings, with spammyDeviceDetails when present)}. Covers radio offline, backup failures, low memory, DB bloat, weak mesh, and safeMode. Complements the locally-derived warnings on `current` (and may differ in threshold from them). null if /hub2/hubData was unreadable.
 
@@ -35326,6 +35566,7 @@ Only query devices the user has mentioned or that are relevant to their request.
 
 ### hub_list_device_events
 - Higher limits (50+) may slow the hub; default limit applies otherwise.
+- With neither deviceId nor appId the call returns the location events and the hub's own events (the Logs page's Hub events: reboots, `lowMemory`, startup), newest first, each row tagged `kind: 'location'` or `kind: 'hub'`; `attribute: 'lowMemory'` finds low-memory restarts. A failed hub-events read keeps the location events and adds `hubEventsError`.
 
 - `attribute` filters by event name. For a device it is an attribute (e.g. `switch`); for location-level events it accepts one of `mode`, `hsmStatus`, `hsmAlert`, or a hub-variable name.
 - `until` (same formats as `since`) ends the window inclusively, so `since` + `until` returns one bounded slice, e.g. what happened between 02:00 and 02:15. The response echoes it as `untilTimestamp`. `hoursBack` (default 24) always counts back from now, not from `until`: `until` without `since` cuts the window that starts `hoursBack` hours ago, and an `until` before that start is refused. For a slice further back, pass `since` + `until`.
@@ -35684,7 +35925,7 @@ Per-tool details below.
 
 ### hub_list_dashboards
 
-Read-only; each entry carries id, name, and `type` ('easy' or 'legacy'). Easy entries also include tile/theme config. Resolves the dashboard token automatically, so no pinToken is normally needed.
+Read-only; each entry carries id, name, and `type` ('easy' or 'legacy'). Easy entries also include tile/theme config.
 
 ### hub_get_dashboard
 
@@ -35801,6 +36042,10 @@ Native creation, action replacement, individual driver operations, and patch bat
 
 If eight owner slices leave work unfinished, the terminal `continuation_limit` result retains the completed aggregate, exact remaining-work fields and any deferred-finalization guidance. Inspect that result before making a new, smaller call containing only the remainder. Replaying the old state only returns the same terminal result. Native settings may already be written while updateRule/Done remains deferred.
 
+### The `mrtr` block
+
+A result that ran through request-to-request continuation carries `mrtr: {continued, rounds, startedAt}`: `continued` is always true there, `rounds` is how many owner work slices ran (1 when the background worker finished it in one), and `startedAt` is when the first slice started (epoch ms). A replayed or joined result also carries `rejoined: true`. A successful result without `mrtr` ran inside its first request. An error result can lack `mrtr` even after earlier slices ran (a later slice that could not be scheduled ends the write there), so read the target before retrying it.
+
 ### Client retry limits and resume
 
 The official Python SDK pinned by this project (2.2.0) defaults to ten automatic continuation retries. Contention and worker-coordination responses consume client rounds; the server's `mrtr.rounds` counts owner work slices instead. Its eight-slice cap does not bound a client's retries, and ten retries is an SDK policy, not an MCP requirement. Cloud wait budgets reduce rapid polling but cannot make an arbitrary-duration worker finish within that limit.
@@ -35889,17 +36134,19 @@ def guideSectionBlocks(text) {
     return blocks
 }
 def guidePageChars() { 90000 }
-def paginateGuideContent(content, cursor) {
+def defaultReadChunkChars() { 30000 }
+def fullGuidePageChars() { defaultReadChunkChars() }
+def paginateGuideContent(content, cursor, int pageChars = guidePageChars()) {
     String text = (content ?: '').toString()
     int total = text.length()
     int start = _parseListCursor(cursor, total, "hub_get_tool_guide")
-    if (start > 0 && total <= guidePageChars()) {
+    if (start > 0 && total <= pageChars) {
         throw new IllegalArgumentException(
             "cursor ${start} does not belong to this payload: it fits one response (${total} chars) and was never paged, " +
             "so paging from ${start} would silently drop the first ${start} characters. Omit cursor. " +
             "A cursor is only valid for the call that returned it -- the no-section full-guide call.")
     }
-    int end = Math.min(start + guidePageChars(), total)
+    int end = Math.min(start + pageChars, total)
     if (end < total) {
         int nl = text.lastIndexOf("\n", end)
         if (nl > start) end = nl + 1
