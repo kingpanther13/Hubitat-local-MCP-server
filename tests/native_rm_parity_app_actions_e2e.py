@@ -90,7 +90,7 @@ class NativeRmParityAppActions(CloudCaseMixin, ParityCase):
         if created.get("success") is not True:
             self.assertIn(app_type, ("thermostat_controller", "thermostat_scheduler"), created)
             self.assertIs(created.get("labelApplied"), False, created)
-            self.assertIn("could not be verified as the app's display label", str(created.get("note", "")))
+            self.assertIn("The requested display label could not be verified", str(created.get("note", "")))
         native_fixture_identity(self.installed_app(app_id), app_id, native_name, parent_id)
         return int(app_id)
 
