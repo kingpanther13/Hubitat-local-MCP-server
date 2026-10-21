@@ -551,17 +551,22 @@ def test_exact_fixture_lookup_refuses_ambiguous_matches_without_sleeping() -> No
     assert sleeps == []
 
 
-@pytest.mark.parametrize("count", [6, 36, 99])
+@pytest.mark.parametrize("count", [6, 36, 59])
 def test_native_mrtr_batch_uses_direct_native_rows_and_preserves_each_log(count):
     changes, messages = helpers.native_mrtr_changes(
         "SDK proof", "588", {"E2E_MRTR_ACTION_COUNT": str(count)},
     )
     assert len(changes) == 100
-    conditions, actions = changes[:-count], changes[-count:]
-    assert len(conditions) == 100 - count
+    conditions, waits, actions = changes[:60 - count], changes[60 - count:-count], changes[-count:]
+    assert len(waits) == 40
+    assert all(row["value"]["subtype"] == "getWaitEvents" for row in waits)
+    assert all(len(row["value"]["events"]) == 4 for row in waits)
+    thresholds = [event["fields"][2]["value"] for row in waits for event in row["value"]["events"]]
+    assert thresholds == list(range(1000, 1160))
+    assert len(conditions) == 60 - count
     assert all(row["part"] == "condition" for row in conditions)
     assert all(row["value"]["capability"] == "Temperature" for row in conditions)
-    assert [row["value"]["fields"][2]["value"] for row in conditions] == list(range(60, 160 - count))
+    assert [row["value"]["fields"][2]["value"] for row in conditions] == list(range(60, 120 - count))
     assert all(row["value"]["fields"][0] == {
         "name": "rDev_#", "type": "capability.temperatureMeasurement", "value": ["588"],
     } for row in conditions)
@@ -578,18 +583,18 @@ def test_native_mrtr_batch_rejects_invalid_fixture_ids(device_id):
 
 
 def test_native_mrtr_batch_rejects_over_limit_instead_of_silently_truncating():
-    with pytest.raises(ValueError, match="at most 99"):
+    with pytest.raises(ValueError, match="at most 59"):
         helpers.native_mrtr_changes("SDK proof", "588", {"E2E_MRTR_ACTION_COUNT": "120"})
 
 
 def _native_condition_readback():
     changes, _ = helpers.native_mrtr_changes("SDK proof", "588", {})
     settings = {}
-    for index, row in enumerate(changes[:94], 1):
+    for index, row in enumerate(changes[:54], 1):
         settings[f"rCapab_{index}"] = row["value"]["capability"]
         for field in row["value"]["fields"]:
             settings[field["name"].replace("#", str(index))] = field["value"]
-    return {"settings": settings}, {"conditions": {str(i): "native condition" for i in range(1, 95)}}, changes
+    return {"settings": settings}, {"conditions": {str(i): "native condition" for i in range(1, 55)}}, changes
 
 
 def test_native_condition_readback_verifies_every_persisted_row():
@@ -602,22 +607,79 @@ def test_native_condition_readback_rejects_lost_replayed_or_changed_rows(corrupt
     config, document, changes = _native_condition_readback()
     settings = config["settings"]
     if corruption == "missing":
-        del settings["rDev_94"]
+        del settings["rDev_54"]
     elif corruption == "duplicate":
         for prefix in ("rCapab_", "rDev_", "RelrDev_", "state_"):
-            settings[prefix + "95"] = settings[prefix + "94"]
-        document["conditions"]["95"] = "replayed condition"
+            settings[prefix + "55"] = settings[prefix + "54"]
+        document["conditions"]["55"] = "replayed condition"
     elif corruption == "device":
-        settings["rDev_94"] = ["589"]
+        settings["rDev_54"] = ["589"]
     elif corruption == "comparator":
-        settings["RelrDev_94"] = "<"
+        settings["RelrDev_54"] = "<"
     elif corruption == "threshold":
-        settings["state_94"] = 60
+        settings["state_54"] = 60
     elif corruption == "order":
         settings["state_1"], settings["state_2"] = settings["state_2"], settings["state_1"]
     elif corruption == "type":
-        settings["rCapab_94"] = "Humidity"
+        settings["rCapab_54"] = "Humidity"
     else:
-        del document["conditions"]["94"]
+        del document["conditions"]["54"]
     with pytest.raises(AssertionError):
         helpers.assert_exact_native_conditions(config, document, changes)
+
+
+def _native_action_readback():
+    changes, messages = helpers.native_mrtr_changes("SDK proof", "588", {})
+    settings, typed, actions = {}, [], []
+    event_index = 0
+    for index, change in enumerate((row for row in changes if row["part"] == "action"), 1):
+        requested = change["value"]
+        settings[f"actType.{index}"] = requested["type"]
+        settings[f"actSubType.{index}"] = requested["subtype"]
+        value = {"method": requested["subtype"]}
+        if "events" in requested:
+            value["wait"] = []
+            for event in requested["events"]:
+                event_index += 1
+                value["wait"].append(event_index)
+                fields = [{"name": "tCapab#", "type": "enum", "value": "Temperature"}, *event["fields"]]
+                for field in fields:
+                    name = field["name"].replace("#", "-" + str(event_index))
+                    settings[name] = field["value"]
+                    typed.append({"name": name, "type": field["type"], "value": field["value"],
+                                  "device_ids": field["value"] if field["type"].startswith("capability.") else None})
+        else:
+            settings[f"logmsg.{index}"] = requested["fields"][0]["value"]
+        actions.append({"id": str(index), "value": value})
+    return {"settings": settings}, {"actions": actions, "settings": typed}, changes, messages
+
+
+def test_native_action_readback_verifies_all_wait_events_and_logs():
+    helpers.assert_exact_native_actions(*_native_action_readback())
+
+
+@pytest.mark.parametrize("corruption", ["lost_action", "action_order", "event_id", "missing_event", "type", "device", "comparator", "threshold", "orphan", "duplicate_log"])
+def test_native_action_readback_rejects_lost_replayed_or_corrupted_work(corruption):
+    config, document, changes, messages = _native_action_readback()
+    if corruption == "lost_action":
+        document["actions"].pop()
+    elif corruption == "action_order":
+        document["actions"][0], document["actions"][1] = document["actions"][1], document["actions"][0]
+    elif corruption == "event_id":
+        document["actions"][1]["value"]["wait"][0] = 1
+    elif corruption == "missing_event":
+        document["actions"][0]["value"]["wait"].pop()
+    elif corruption == "type":
+        document["settings"][0]["type"] = "text"
+    elif corruption == "device":
+        config["settings"]["tDev-160"] = ["589"]
+    elif corruption == "comparator":
+        config["settings"]["ReltDev-160"] = "<"
+    elif corruption == "threshold":
+        config["settings"]["tstate-160"] = 1000
+    elif corruption == "orphan":
+        config["settings"]["tCapab-161"] = "Temperature"
+    else:
+        config["settings"]["logmsg.46"] = config["settings"]["logmsg.45"]
+    with pytest.raises(AssertionError):
+        helpers.assert_exact_native_actions(config, document, changes, messages)

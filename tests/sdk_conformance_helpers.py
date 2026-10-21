@@ -54,18 +54,24 @@ def native_mrtr_changes(
     if not isinstance(temperature_id, str) or re.fullmatch(r"[0-9]+", temperature_id) is None:
         raise ValueError("The temperature fixture ID must be decimal")
     count = mrtr_action_count(environ)
-    if count > 99:
-        raise ValueError("Native MRTR proof supports at most 99 log actions in its 100-change batch")
+    if count > 59:
+        raise ValueError("Native MRTR proof supports at most 59 log actions alongside 40 wait actions in its 100-change batch")
     messages = [f"{prefix} {index}" for index in range(1, count + 1)]
     conditions = [{"part": "condition", "value": {"capability": "Temperature", "fields": [
         {"name": "rDev_#", "type": "capability.temperatureMeasurement", "value": [temperature_id]},
         {"name": "RelrDev_#", "type": "enum", "value": ">"},
         {"name": "state_#", "type": "decimal", "value": 60 + index},
-    ]}} for index in range(100 - count)]
+    ]}} for index in range(60 - count)]
     actions = [{"part": "action", "value": {"type": "messageActs", "subtype": "getLogMsg", "fields": [
         {"name": "logmsg.#", "type": "textarea", "value": message},
     ]}} for message in messages]
-    return [*conditions, *actions], messages
+    waits = [{"part": "action", "value": {"type": "delayActs", "subtype": "getWaitEvents", "fields": [],
+        "events": [{"capability": "Temperature", "fields": [
+            {"name": "tDev#", "type": "capability.temperatureMeasurement", "value": [temperature_id]},
+            {"name": "ReltDev#", "type": "enum", "value": ">"},
+            {"name": "tstate#", "type": "decimal", "value": 1000 + index * 4 + event},
+        ]} for event in range(4)]}} for index in range(40)]
+    return [*conditions, *waits, *actions], messages
 
 
 def write_cap_variable_count(environ: Mapping[str, str] | None = None) -> int:
@@ -220,6 +226,56 @@ def assert_exact_native_conditions(config: Any, document: Any, changes: list[dic
         assert list(map(str, actual_devices)) == fields["rDev_#"], "Condition device selection differs"
         assert columns["RelrDev_"][index] == fields["RelrDev_#"], "Condition comparator differs"
         assert float(columns["state_"][index]) == float(fields["state_#"]), "Condition threshold/order differs"
+
+
+def assert_exact_native_actions(config: Any, document: Any, changes: list[dict[str, Any]], messages: list[str]) -> None:
+    """Verify compiled action order and each independently persisted typed wait input."""
+    settings = config["settings"]
+    rows = document.get("actions")
+    expected = [row["value"] for row in changes if row["part"] == "action"]
+    assert isinstance(rows, list) and len(rows) == len(expected), "Persisted action count differs"
+    action_ids = [str(row["id"]) for row in rows]
+    assert len(set(action_ids)) == len(action_ids), "Persisted action IDs repeat"
+    types = _indexed_settings(settings, "actType.")
+    subtypes = _indexed_settings(settings, "actSubType.")
+    assert set(map(str, types)) == set(action_ids) == set(map(str, subtypes)), "Action setting IDs differ"
+    typed_rows = document.get("settings")
+    assert isinstance(typed_rows, list), "Typed native settings are required"
+    typed = {row["name"]: row for row in typed_rows}
+    assert len(typed) == len(typed_rows), "Typed setting names repeat"
+    event_ids, log_ids = [], []
+    for row, requested in zip(rows, expected, strict=True):
+        action_id = str(row["id"])
+        assert types[int(action_id)] == requested["type"], "Action category/order differs"
+        assert subtypes[int(action_id)] == requested["subtype"], "Action subtype/order differs"
+        assert row["value"]["method"] == requested["subtype"], "Compiled action method differs"
+        if requested["subtype"] == "getLogMsg":
+            log_ids.append(int(action_id))
+            continue
+        wait_ids = [str(value) for value in row["value"].get("wait", [])]
+        assert len(wait_ids) == len(requested["events"]), "Wait event count differs"
+        event_ids.extend(wait_ids)
+        for event_id, event in zip(wait_ids, requested["events"], strict=True):
+            fields = [{"name": "tCapab#", "type": "enum", "value": event["capability"]}, *event["fields"]]
+            for field in fields:
+                name = field["name"].replace("#", "-" + event_id)
+                saved = typed.get(name)
+                assert saved is not None and saved["type"] == field["type"], "Wait input type differs"
+                value = field["value"]
+                if field["type"].startswith("capability."):
+                    assert sorted(map(str, saved.get("device_ids") or [])) == sorted(map(str, value)), "Wait device differs"
+                    assert isinstance(settings.get(name), list) and list(map(str, settings[name])) == value, "Raw wait device differs"
+                elif field["type"] == "decimal":
+                    assert float(saved["value"]) == float(value) == float(settings[name]), "Wait threshold/order differs"
+                else:
+                    assert saved["value"] == value == settings[name], "Wait selector/comparator differs"
+    assert len(event_ids) == len(set(event_ids)), "Wait event IDs repeat across actions"
+    for prefix in ("tCapab-", "tDev-", "ReltDev-", "tstate-"):
+        assert set(map(str, _indexed_settings(settings, prefix))) == set(event_ids), "Orphan or missing wait settings"
+    logs = _indexed_settings(settings, "logmsg.")
+    assert set(logs) == set(log_ids), "Unexpected or missing log rows"
+    actual = [logs[index] for index in log_ids]
+    assert actual == messages and len(set(actual)) == len(messages), "Persisted log messages differ or repeat"
 
 
 async def find_exact_fixture_id_with_settle(

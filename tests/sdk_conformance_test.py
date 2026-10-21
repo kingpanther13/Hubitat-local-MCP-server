@@ -22,7 +22,8 @@ Configuration is shared with tests/e2e_test.py — `tests/e2e_config.json` (giti
 HUBITAT_HUB_URL / HUBITAT_APP_ID / HUBITAT_ACCESS_TOKEN.
 The MRTR scenario discovers the existing suite's permanent virtual temperature fixture,
 or accepts NATIVE_RULE_PARENT_ID and NATIVE_RULE_FIXTURES (a JSON object with temperature).
-E2E_MRTR_ACTION_COUNT selects 6..99 logs in a 100-change native batch (default six);
+E2E_MRTR_ACTION_COUNT selects 6..59 logs in a 100-change native batch (default six);
+40 Wait for Events actions each contain four distinct temperature events;
 the remaining changes are distinct temperature conditions. This is a continuation proof,
 not a speed comparison with the former log-only authoring API.
 
@@ -67,8 +68,8 @@ from sdk_conformance_helpers import (  # noqa: E402  (import guard above supplie
     DEFAULT_SDK_INPUT_REQUIRED_MAX_ROUNDS,
     MODERN_PROTOCOL_VERSION,
     RequestTrace,
+    assert_exact_native_actions,
     assert_exact_native_conditions,
-    assert_exact_rule_log_messages,
     assert_mrtr_owner_rounds,
     build_capacity_recovery,
     cleanup_preserving_primary,
@@ -575,16 +576,12 @@ class ModernMrtrScenario:
             readback_payload = _tool_payload(readback, "slow fixture persisted-state readback")
             document_result = await client.call_tool(self.GATEWAY, {
                 "tool": "hub_set_rule", "args": {
-                    "operation": "read", "rule_id": int(fixture_id), "args": {"sections": ["conditions"]},
+                    "operation": "read", "rule_id": int(fixture_id), "args": {"sections": ["conditions", "actions", "settings"]},
                 },
             })
             document = _tool_payload(document_result, "independent persisted condition readback")
             assert_exact_native_conditions(readback_payload, document, changes)
-            assert_exact_rule_log_messages(
-                readback_payload,
-                messages,
-                operation="SDK MRTR proof readback",
-            )
+            assert_exact_native_actions(readback_payload, document, changes, messages)
         except BaseException as exc:
             primary_error = exc
             raise
