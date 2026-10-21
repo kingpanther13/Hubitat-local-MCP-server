@@ -8,8 +8,8 @@ import html
 import json
 import os
 import re
-import urllib.parse
 import unittest
+import urllib.parse
 
 import requests
 
