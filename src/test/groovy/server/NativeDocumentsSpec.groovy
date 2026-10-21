@@ -55,6 +55,77 @@ class NativeDocumentsSpec extends ToolSpecBase {
             fields: [[name: 'logmsg.#', type: 'textarea', value: 'Document fixture']]]]
     }
 
+    def 'paged native reads concatenate complete ordered actions maps and typed settings without persistence'() {
+        given:
+        nativeState.capabsfalse = ['9': 'nine', '2': 'two', '10': 'ten']
+        def beforeAtomic = [:] + atomicStateMap
+        def beforeState = [:] + stateMap
+        when:
+        def actionPages = (0..1).collect { offset -> script.toolSetRule([operation: 'read', rule_id: 42,
+            args: [sections: ['actions'], offset: offset, limit: 1]]) }
+        def conditionPages = (0..2).collect { offset -> script.toolSetRule([operation: 'read', rule_id: 42,
+            args: [sections: ['conditions'], offset: offset, limit: 1]]) }
+        def settingPages = (0..1).collect { offset -> script.toolSetRule([operation: 'read', rule_id: 42,
+            args: [sections: ['settings'], offset: offset, limit: 1]]) }
+        then:
+        actionPages.collectMany { it.actions }*.id == ['3', '1']
+        conditionPages.collectMany { it.conditions.keySet().toList() } == ['10', '2', '9']
+        conditionPages.collectEntries { it.conditions } == nativeState.capabsfalse
+        settingPages.collectMany { it.settings }*.name == ['count', 'flag']
+        settingPages[0].settings[0].value == 0
+        settingPages[1].settings[0].value == false
+        [actionPages, conditionPages, settingPages].every { pages ->
+            pages.collect { it.page.revision }.unique().size() == 1 && (pages[0].page.revision ==~ /[0-9a-f]{64}/) &&
+                pages[0].page.total == pages.size() && pages[0].page.next_offset == 1 && pages.last().page.next_offset == null
+        }
+        atomicStateMap == beforeAtomic
+        stateMap == beforeState
+        events.empty
+    }
+
+    def 'paged read revisions cover data outside the current page and canonicalize map insertion order'() {
+        given:
+        nativeState.capabsfalse = ['2': 'two', '1': 'one']
+        when:
+        def first = script.toolGetRuleDocument([rule_id: 42, sections: ['conditions'], limit: 1])
+        nativeState.capabsfalse = ['1': 'one', '2': 'two']
+        def reordered = script.toolGetRuleDocument([rule_id: 42, sections: ['conditions'], limit: 1])
+        nativeState.capabsfalse['2'] = 'changed outside page'
+        def changed = script.toolGetRuleDocument([rule_id: 42, sections: ['conditions'], limit: 1])
+        then:
+        first.conditions == reordered.conditions && first.conditions == changed.conditions
+        first.page.revision == reordered.page.revision
+        first.page.revision != changed.page.revision
+        first.page.offset == 0 && first.page.limit == 1
+        !script.toolGetRuleDocument([rule_id: 42, sections: ['conditions']]).containsKey('page')
+    }
+
+    def 'paging defaults are bounded and offsets past the end return an explicit final empty section'() {
+        when:
+        def result = script.toolGetRuleDocument([rule_id: 42, sections: ['actions'], offset: 99])
+        then:
+        result.actions == []
+        result.page.offset == 99
+        result.page.limit == 50
+        result.page.total == 2
+        result.page.containsKey('next_offset') && result.page.next_offset == null
+    }
+
+    def 'invalid document paging refuses before native rendering or reads'() {
+        given:
+        script.metaClass._nrHandle = { Long id -> throw new AssertionError('invalid paging must not access native app') }
+        when:
+        script.toolSetRule([operation: 'read', rule_id: 42, args: args])
+        then:
+        thrown(IllegalArgumentException)
+        where:
+        args << [[limit: 1], [sections: [], limit: 1], [sections: ['actions', 'settings'], offset: 0],
+            [sections: ['actions'], offset: -1], [sections: ['actions'], offset: 1000001],
+            [sections: ['actions'], offset: true], [sections: ['actions'], offset: 0.5],
+            [sections: ['actions'], limit: 0], [sections: ['actions'], limit: 101],
+            [sections: ['actions'], limit: false], [sections: ['actions'], limit: 1.5]]
+    }
+
     def 'read document returns native stable order typed values and locals without rendering'() {
         when:
         def result = script.executeTool('hub_set_rule', [operation: 'read', rule_id: 42, args: [:]])
