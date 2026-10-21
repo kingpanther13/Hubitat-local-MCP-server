@@ -797,6 +797,38 @@ class NativeModelSpec extends ToolSpecBase {
         !nativeState.containsKey('deleteCon')
     }
 
+    def 'periodic trigger deletion lets native cleanup own schedule fields while verifying surviving configuration'() {
+        given:
+        nativeState.capabstrue = ['1': 'Periodic Schedule', '2': [label: 'Surviving trigger', nested: [value: 'retain']]]
+        settings.tCapab1 = [type: 'enum', value: 'Periodic Schedule']
+        settings.everyNMinutesC1 = [type: 'number', value: 5]
+        settings.cronStr1 = [type: 'text', value: '0 */5 * ? * *']
+        settings.unrelated = [type: 'text', value: 'retain']
+        nativeRule.selectTriggers = { ->
+            nativeState.capabstrue.remove('1')
+            ['tCapab1', 'everyNMinutesC1', 'cronStr1'].each { settings.remove(it) }
+            nativeState.remove('deleteCon')
+            if (damage == 'addition') settings.unexpected = [type: 'text', value: 'new']
+            if (damage == 'value') settings.unrelated.value = 'changed'
+            if (damage == 'type') settings.unrelated.type = 'enum'
+            if (damage == 'row') nativeState.capabstrue['2'].nested.value = 'corrupted'
+            if (damage == 'reference') nativeState.eval['0'] = ['2']
+        }
+        when:
+        def result = script._nmDeleteRow(42L, 'trigger', '1')
+        then:
+        result.deleted && result.callbackConsumed
+        result.success == (damage == 'none')
+        result.partial == (damage != 'none')
+        result.removedSettings as Set == ['tCapab1', 'everyNMinutesC1', 'cronStr1'] as Set
+        if (damage == 'none') {
+            assert result.settingsVerified && result.rowsPreserved && result.referencesPreserved
+            assert settings == [unrelated: [type: 'text', value: 'retain']]
+        }
+        where:
+        damage << ['none', 'addition', 'value', 'type', 'row', 'reference']
+    }
+
     def 'condition deletion cannot succeed over removed settings while native condition remains'() {
         given:
         settings.put('rCapab_2', [type: 'enum', value: 'Switch'])

@@ -600,7 +600,7 @@ private Map _nmSettingsInventory(Long ruleId) {
 Map _nmDeleteRow(Long ruleId, String part, Object rowId) {
     if (!(part in ['action', 'condition', 'trigger'])) throw new IllegalArgumentException('Unsupported native row collection')
     String id = _nmId(rowId)
-    Map before = _nrState(ruleId)
+    Map before = new groovy.json.JsonSlurper().parseText(groovy.json.JsonOutput.toJson(_nrState(ruleId))) as Map
     String collection = part == 'action' ? 'actions' : (part == 'trigger' ? 'capabstrue' : 'capabsfalse')
     Map rows = before.get(collection) instanceof Map ? [:] + before.get(collection) : [:]
     if (!rows.keySet().any { it.toString() == id }) throw new IllegalArgumentException('Native row does not exist')
@@ -611,25 +611,10 @@ Map _nmDeleteRow(Long ruleId, String part, Object rowId) {
         if (referenced) throw new IllegalArgumentException('Referenced native conditions must be detached before deletion')
     }
     List oldOrder = before.actionList instanceof List ? before.actionList.collect { it.toString() } : []
-    Map settingsBefore = _nmSettingsInventory(ruleId)
+    Map settingsBefore = new groovy.json.JsonSlurper().parseText(groovy.json.JsonOutput.toJson(_nmSettingsInventory(ruleId))) as Map
     if (part == 'condition' && settingsBefore.any { name, setting -> name.startsWith('condTrig.') && setting.value?.toString() == id }) throw new IllegalArgumentException('Referenced trigger conditions must be detached before deletion')
-    List removedNames = []
-    if (part == 'action') {
-        removedNames = settingsBefore.keySet().findAll { it.endsWith(".${id}".toString()) }.toList()
-        def deletedAction = _nmEntry(rows, id)
-        if (deletedAction instanceof Map && deletedAction.wait instanceof List) {
-            List prefixes = ['tCapab', 'tDev', 'ReltDev', 'reltDevice', 'xVarT', 'tstate', 'istVar', 'istDev', 'AlltDev', 'SHours', 'SMins', 'SSecs', 'stays', 'ButtontDev', 'tCustomAttr', 'tCustomAttrType', 'not', 'hhmmss', 'modesX', 'elapseHor', 'elapseMin', 'elapseSec', 'elapseTime']
-            removedNames.addAll(settingsBefore.keySet().findAll { name -> deletedAction.wait.any { eventId -> prefixes.any { name == "${it}-${eventId}".toString() } } })
-        }
-    } else {
-        List prefixes = part == 'trigger' ? ['tCapab', 'tDev', 'ReltDev', 'reltDevice', 'xVarT', 'tstate', 'istVar', 'istDev', 'AlltDev', 'SHours', 'SMins', 'SSecs', 'stays', 'ButtontDev', 'tCustomAttr', 'tCustomAttrType'] : ['rCapab_', 'rDev_', 'RelrDev_', 'relDevice_', 'xVarR_', 'state_', 'isVar_', 'isDev_', 'AllrDev_', 'SHours_', 'SMins_', 'SSecs_', 'stays_', 'rCustomAttr_', 'rCustomAttrType_']
-        prefixes.addAll(['not', 'hhmmss', 'atTime', 'atSunriseOffset', 'atSunsetOffset', 'time', 'date', 'atVarTime', 'atDate', 'modesX', 'elapseHor', 'elapseMin', 'elapseSec', 'elapseTime',
-                         'startDateType', 'endDateType', 'monthStart', 'dayStart', 'timeStart', 'useVarStart', 'varStart', 'monthEnd', 'dayEnd', 'timeEnd', 'useVarEnd', 'varEnd',
-                         'atOrBetween', 'starting', 'startingA', 'startSunriseOffset', 'startSunsetOffset', 'startConTime', 'startVarTime', 'ending', 'endingA', 'endSunriseOffset', 'endSunsetOffset', 'endConTime', 'endVarTime', 'whichPeriod', 'xVar_', 'stateSince_'])
-        removedNames = settingsBefore.keySet().findAll { name -> prefixes.any { name == "${it}${id}".toString() } || (part == 'trigger' && name in ["isCondTrig.${id}".toString(), "condTrig.${id}".toString()]) }.toList()
-        String selector = part == 'trigger' ? "tCapab${id}".toString() : "rCapab_${id}".toString()
-        if (settingsBefore.get(selector)?.value == 'Days of Week Schedule') removedNames.addAll(settingsBefore.keySet().findAll { it.endsWith("-${id}".toString()) })
-    }
+    List requiredRemoved = part == 'action' ? settingsBefore.keySet().findAll { it.endsWith(".${id}".toString()) }.toList() :
+        [part == 'trigger' ? "tCapab${id}".toString() : "rCapab_${id}".toString()]
     if (part == 'action') {
         _nrStatePatch(ruleId, [delAct: id])
         _nrPage(ruleId, _nrRulePages(ruleId).actions)
@@ -642,17 +627,25 @@ Map _nmDeleteRow(Long ruleId, String part, Object rowId) {
     Map settingsAfter = _nmSettingsInventory(ruleId)
     Map remaining = after.get(collection) instanceof Map ? after.get(collection) : [:]
     boolean deleted = !remaining.keySet().any { it.toString() == id }
-    List expectedRows = rows.keySet().collect { it.toString() }.findAll { it != id }.sort()
-    boolean preserved = remaining.keySet().collect { it.toString() }.sort() == expectedRows
+    Map expectedRows = rows.findAll { key, value -> key.toString() != id }
+    boolean preserved = remaining.collectEntries { key, value -> [(key.toString()): value] } == expectedRows
     List expectedOrder = part == 'action' ? oldOrder.findAll { it != id } : oldOrder
     boolean ordered = (after.actionList instanceof List ? after.actionList.collect { it.toString() } : []) == expectedOrder
-    boolean cleaned = removedNames.every { !settingsAfter.containsKey(it) }
+    boolean cleaned = requiredRemoved.every { !settingsAfter.containsKey(it) }
     boolean callbackConsumed = after.get(part == 'action' ? 'delAct' : 'deleteCon') == null
-    Map expectedSettings = [:] + settingsBefore
-    removedNames.each { expectedSettings.remove(it) }
-    boolean settingsPreserved = settingsAfter == expectedSettings
-    [success: deleted && preserved && ordered && cleaned && settingsPreserved && callbackConsumed, partial: !(deleted && preserved && ordered && cleaned && settingsPreserved && callbackConsumed), deleted: deleted, part: part, id: id,
-     settingsVerified: cleaned && settingsPreserved, callbackConsumed: callbackConsumed, removedSettings: removedNames, remainingSettings: settingsAfter, verificationNeeded: true]
+    List removedNames = settingsBefore.keySet().findAll { !settingsAfter.containsKey(it) }.toList()
+    boolean settingsPreserved = settingsAfter.every { name, setting -> settingsBefore.containsKey(name) && settingsBefore.get(name) == setting }
+    boolean referencesPreserved
+    if (part == 'action') {
+        List expressions = ['0'] + expectedRows.values().findAll { it instanceof Map && it.rule != null }.collect { it.rule.toString() }
+        referencesPreserved = expressions.unique().every { expression ->
+            _nmEntry(after.eval instanceof Map ? after.eval : [:], expression) == _nmEntry(before.eval instanceof Map ? before.eval : [:], expression)
+        } && after.predCapabs == before.predCapabs
+    } else {
+        referencesPreserved = ['eval', 'predCapabs', 'actions', part == 'trigger' ? 'capabsfalse' : 'capabstrue'].every { after.get(it) == before.get(it) }
+    }
+    [success: deleted && preserved && ordered && cleaned && settingsPreserved && callbackConsumed && referencesPreserved, partial: !(deleted && preserved && ordered && cleaned && settingsPreserved && callbackConsumed && referencesPreserved), deleted: deleted, part: part, id: id,
+     settingsVerified: cleaned && settingsPreserved, rowsPreserved: preserved, referencesPreserved: referencesPreserved, callbackConsumed: callbackConsumed, removedSettings: removedNames, remainingSettings: settingsAfter, verificationNeeded: true]
 }
 
 Map _nmOrderActions(Long ruleId, List ids) {
