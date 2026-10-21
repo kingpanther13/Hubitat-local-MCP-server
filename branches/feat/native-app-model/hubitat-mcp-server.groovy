@@ -17485,7 +17485,7 @@ private List _extractEmbeddedActions(String html, boolean markDisabled = false, 
         buttonNames << im.group(1)
     }
     def divs = []
-    def dm = (html =~ /(?s)<div([^>]*)class=['"]submitOnChange['"]([^>]*)>(.*?)<\/div>/)
+    def dm = (html =~ /(?s)<div([^>]*)class=['"](?:[^'"]*\s)?submitOnChange(?:\s[^'"]*)?['"]([^>]*)>(.*?)<\/div>/)
     while (dm.find()) {
         def attrs = (dm.group(1) ?: "") + (dm.group(2) ?: "")
         def innerRaw = dm.group(3) ?: ""
