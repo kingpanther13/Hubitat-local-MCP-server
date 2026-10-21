@@ -802,6 +802,9 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         r430.paused == false
         r430.status == 'active'
         !r430.containsKey('requiredExpressionFalse')
+
+        and: 'the label is listed as the user typed it, not HTML-escaped'
+        r430.label == 'Heat On <67'
     }
 
     def "does not false-flag a trailing-whitespace RMUtils label"() {

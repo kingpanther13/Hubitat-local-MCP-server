@@ -174,7 +174,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `hub_call_device_command` with `command=on`, then `hub_get_device_attribute` to confirm. The command response includes a `state` map keyed by attribute name (each entry its current value + a freshness timestamp; the device's attributes, no per-attribute auth filter). This snapshot is an IMMEDIATE read taken in the same request that fired the command, so it shows the PRE-effect value even for a virtual switch (the hub commits the change after the request returns) -- which is why the separate `hub_get_device_attribute` read is what confirms `switch=on`. The per-attribute timestamp is the freshness signal.
+**Expected**: Calls `hub_call_device_command` with `command=on`, then `hub_get_device_attribute` to confirm. The command response includes a `state` map keyed by attribute name (each entry its current value + a freshness timestamp; the device's attributes, no per-attribute auth filter). The snapshot is read after the command fires, so a virtual switch, which reports at once, already shows `switch=on`; a real device may still show its prior value, which is why the separate `hub_get_device_attribute` read is what confirms `switch=on`. The per-attribute timestamp is the freshness signal.
 
 ### T05b — hub_call_device_command with waitFor (confirmed resulting state)
 
@@ -217,12 +217,12 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 ```json
 {
   "setup_prompt": "Create a virtual dimmer called 'BAT Dimmer Test'.",
-  "test_prompt": "Set 'BAT Dimmer Test' to 50% brightness. Confirm the level.",
+  "test_prompt": "Set 'BAT Dimmer Test' to 75% brightness. Confirm the level.",
   "teardown_prompt": "Turn off 'BAT Dimmer Test', then delete the virtual device."
 }
 ```
 
-**Expected**: Calls `hub_call_device_command` with `command=setLevel, args=[50]`. Verifies with `hub_get_device_attribute`.
+**Expected**: Calls `hub_call_device_command` with `command=setLevel, args=[75]`. Verifies with `hub_get_device_attribute`. (A fresh Virtual Dimmer already sits at level 50, so 50% would prove nothing.)
 
 ### T07 — hub_list_device_events
 
@@ -1883,12 +1883,12 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 ```json
 {
   "setup_prompt": "Create a virtual dimmer called 'BAT NL Dimmer'.",
-  "test_prompt": "'BAT NL Dimmer' is too bright. Bring it down to about half and confirm it changed.",
+  "test_prompt": "'BAT NL Dimmer' is too bright. Bring it down to about a quarter and confirm it changed.",
   "teardown_prompt": "Turn off 'BAT NL Dimmer', then delete the virtual device."
 }
 ```
 
-**Expected**: `hub_call_device_command` with setLevel ~50, then verify.
+**Expected**: `hub_call_device_command` with setLevel ~25, then verify. (A fresh Virtual Dimmer starts at level 50, so "about half" would be a no-op.)
 **Equivalent to**: T06
 
 #### T205 — What's been happening with this device?
@@ -2769,6 +2769,8 @@ These operations are too destructive for automated testing. Test manually with e
 | Total visible on `tools/list` | 36 |
 | Total distinct tools in codebase | 117 |
 
+With Developer Mode on, `hub_update_package` joins the flat core tools, so a Developer Mode hub lists one more.
+
 **8 read gateways**: `hub_read_apps_code` (11), `hub_read_devices` (6), `hub_read_diagnostics` (8), `hub_read_files` (2), `hub_read_rooms` (2), `hub_read_rules` (6), `hub_read_variables` (3), `hub_read_dashboards` (2)
 
 **15 manage gateways**: `hub_manage_backup` (4), `hub_manage_code` (10), `hub_manage_custom_rules` (8), `hub_manage_dashboards` (6), `hub_manage_destructive_ops` (4), `hub_manage_devices` (11), `hub_manage_diagnostics` (7), `hub_manage_files` (4), `hub_manage_logs` (5), `hub_manage_mcp` (1), `hub_manage_native_rules_and_apps` (11), `hub_manage_radio` (6), `hub_manage_rooms` (5), `hub_manage_rule_machine` (11), `hub_manage_variables` (8)
@@ -2876,15 +2878,16 @@ Tools in this section have mixed gate requirements. `hub_list_apps` (scope=insta
 
 **Expected**: AI calls `hub_manage_rule_machine.hub_set_rule` (name only, no appId) to create the rule, then `hub_set_rule(appId=N, ...)` to add the motion trigger and switch action. Returns the new appId. Does NOT fall back to `hub_create_custom_rule` (that creates an MCP-engine rule, not a native RM rule).
 
-### T208 — AI correctly refuses Room Lighting creation
+### T208 — AI creates a Room Lighting instance
 
 ```json
 {
-  "test_prompt": "Create a new Room Lighting instance for the Study."
+  "test_prompt": "Create a new Room Lighting instance named 'BAT Study Lights'.",
+  "teardown_prompt": "Delete the 'BAT Study Lights' Room Lighting instance with hub_delete_native_app."
 }
 ```
 
-**Expected**: AI attempts `hub_manage_native_rules_and_apps.hub_set_native_app` (appType=room_lighting) for Room Lighting. Since Room Lighting is not yet in the `_appTypeRegistry`, the tool returns an error listing supported appTypes. AI relays the error and suggests using the native UI. Does not fabricate a fake result.
+**Expected**: AI calls `hub_manage_native_rules_and_apps.hub_set_native_app` (appType=room_lighting, name='BAT Study Lights'). Room Lighting creation is supported: the tool installs the Room Lighting parent app first when the hub does not have it, then creates the child and returns its appId. AI reports the new instance and does not fabricate a result.
 
 ### T209 — Pause and resume an RM rule (reversible)
 
@@ -3115,22 +3118,23 @@ Run on a dedicated test hub. Record the original Developer Mode, logging level a
 ```json
 {
   "setup_prompt": "Developer Mode is enabled and the Write master is enabled.",
-  "test_prompt": "Turn off the MCP server app's own enableHubAdminWrite setting."
+  "test_prompt": "Turn off the MCP server app's own enableWrite setting."
 }
 ```
 
-**Expected**: Tool returns an MCP error (`-32602`) with a message: `Setting 'enableHubAdminWrite' is not allowed for self-modification via hub_update_mcp_settings. Allowed: ...` listing the allowlisted keys. No change is made. AI explains that this setting is intentionally excluded as a footgun (would lock the agent out of its own write path) and offers to walk the user through the UI toggle.
+**Expected**: Tool returns a validation error naming `enableWrite` as not allowed for self-modification via hub_update_mcp_settings and listing the allowlisted keys. No change is made. AI explains that this setting is intentionally excluded (turning off the Write master would lock the agent out of its own write path) and offers to walk the user through the UI toggle.
 
 ### T222 — hub_update_mcp_settings batches multiple settings atomically
 
 ```json
 {
   "setup_prompt": "Developer Mode is enabled and the Write master is enabled.",
-  "test_prompt": "Turn on both the enableHubAdminRead and enableBuiltinApp settings on the MCP server app, in one single change."
+  "test_prompt": "Set the MCP server app's log level to warn and turn on its debug logging, in one single change.",
+  "teardown_prompt": "Put both settings back to the values the call reported as previous."
 }
 ```
 
-**Expected**: AI passes both keys in one `settings` map. Result: `{success:true, updated:{enableHubAdminRead:true, enableBuiltinApp:true}, message:"Updated 2 setting(s)..."}`. Both settings persist. The all-or-nothing pre-validation means a single bad key would have rejected the entire batch before any write — verifiable by re-running with one good and one bad key and confirming neither was applied.
+**Expected**: AI passes both keys in one `settings` map. Result: `{success:true, updated:{mcpLogLevel:"warn", debugLogging:true}, previous:{...}, message:"Updated 2 setting(s)..."}`. Both settings persist. The all-or-nothing pre-validation means a single bad key would have rejected the entire batch before any write — verifiable by re-running with one good and one bad key and confirming neither was applied.
 
 ### T223 — hub_update_mcp_settings includes a reconnect hint after toggling enable* flags
 
@@ -3188,16 +3192,16 @@ This scenario requires no room creation or device command.
 
 **Expected**: AI calls `hub_manage_variables(tool='hub_delete_variable', args={name:'BAT_E2E_DELETE_TEST', confirm:true})`. Result: `{success:true, name:'BAT_E2E_DELETE_TEST', deleted:true, source:'rule_engine', previousValue:'scratch'}`. Follow-up `hub_get_variable` returns "Variable not found". Hub log shows a WARN-level `[developer-mode] hub_delete_variable: removed 'BAT_E2E_DELETE_TEST'` audit entry.
 
-### T225 — hub_delete_variable refuses connector-namespace variables with redirect hint
+### T225 — hub_delete_variable deletes a hub variable created in the UI
 
 ```json
 {
-  "setup_prompt": "the Write master is enabled. Manually create a Hub Variable named TEST_CONNECTOR_VAR via Settings → Hub Variables UI (this lives in the connector namespace, not rule_engine).",
-  "test_prompt": "Delete the hub variable TEST_CONNECTOR_VAR."
+  "setup_prompt": "the Write master is enabled and a hub backup exists (<24h). Manually create a Hub Variable named BAT_UI_VAR via Settings → Hub Variables.",
+  "test_prompt": "Delete the hub variable BAT_UI_VAR."
 }
 ```
 
-**Expected**: Tool returns MCP error (`-32602`) with message: `Variable 'TEST_CONNECTOR_VAR' not found in rule_engine namespace. (Connector-namespace deletion not yet supported via MCP — use Settings → Hub Variables UI.)`. AI surfaces the hint and offers to walk the user through the UI deletion. The variable is unchanged.
+**Expected**: AI calls `hub_delete_variable(name='BAT_UI_VAR', confirm=true)`. The hub variable is deleted (a hub variable no rule uses needs no force) and `hub_list_variables` no longer lists it.
 
 ### T226 — hub_delete_variable refuses without confirm flag (the Write master 24h gate)
 
@@ -3351,13 +3355,13 @@ All tests below require the Write master enabled and a recent backup. Tests are 
 
 ```json
 {
-  "setup_prompt": "the Write master enabled, recent backup exists. This test intentionally installs broken Groovy source -- the hub creates a stub slot in an error state (BAT_BrokenInstallStub). Note the driver ID returned for cleanup.",
+  "setup_prompt": "the Write master enabled, recent backup exists. This test intentionally installs broken Groovy source. The hub refuses it with its compile error; older firmware also left a stub slot in an error state -- if a driver ID comes back, note it for cleanup.",
   "test_prompt": "Install a driver whose source is deliberately broken Groovy — literally 'this is not valid groovy {{ }}' — confirming the install. Report what happens.",
   "teardown_prompt": "Delete the error-state driver slot created in this test using hub_delete_item (type=driver) with the driverId returned and confirm=true."
 }
 ```
 
-**Expected**: Hub creates an item slot (returns a redirect with an ID) but the post-install verification detects `status: error` from `/driver/ajax/code`. Tool returns `success: false` with the compile error message and the item ID in the response. AI reports the error and does not claim success.
+**Expected**: Tool returns `success: false` with the hub's compile error message. On current firmware no driver is created; where an older firmware leaves an error-state stub, the response carries its ID. AI reports the error and does not claim success.
 
 ### T402 — hub_update_driver bulk mode (happy path)
 
@@ -4451,13 +4455,15 @@ Tools in this section require **the Read master** and HPM itself must be install
 
 ```json
 {
-  "setup_prompt": "Make sure the Write master is on and a hub backup exists (<24h). Through the Hubitat UI (Devices > Add Device > Virtual, driver 'Virtual Switch') — NOT the MCP virtual-device tool, since MCP child devices are ineligible — add two compatible free-standing virtual switches named 'BAT Replace Keep' and 'BAT Replace Donor', and note both device IDs. Then set up a Rule Machine rule named 'BAT Replace Rule' that does something when 'BAT Replace Keep' turns on, so a real automation references that device.",
+  "setup_prompt": "Make sure the Write master is on and a hub backup exists (<24h). Through the Hubitat UI (Devices > Add Device > Virtual, driver 'Virtual Switch') — NOT the MCP virtual-device tool, since MCP child devices are ineligible — add a free-standing device named 'BAT Replace Keep' and pair a compatible replacement named 'BAT Replace Donor' (real paired hardware of the same driver; two UI virtual switches only exercise the refusal path below), and note both device IDs. Then set up a Rule Machine rule named 'BAT Replace Rule' that does something when 'BAT Replace Keep' turns on, so a real automation references that device.",
   "test_prompt": "The device 'BAT Replace Keep' has failed and you've paired a compatible replacement, 'BAT Replace Donor', to the hub. Replace the failed device's hardware with the new unit while keeping the original device's identity and all of its automations intact — the original device should keep working as the same device, with 'BAT Replace Rule' still attached to it afterward. Check what the hub considers a compatible replacement before you commit, then confirm afterward that the original device still exists and its rule still references it.",
   "teardown_prompt": "Remove the 'BAT Replace Rule' rule and delete the surviving 'BAT Replace Keep' device (now running on the replacement's hardware). The donor device is consumed by the operation; delete it too if it still appears."
 }
 ```
 
-**Expected**: AI calls `hub_call_device_replace(list_options=true)` first to read the compatible candidates, then `hub_call_device_replace` with `old_device_id`/`new_device_id`/`confirm=true`. The response is `success=true` with `replaced={oldDeviceId, newDeviceId}` and `preservedDeviceId=<old id>`. The KEY invariant: the OLD device id survives and keeps all its app/rule references — `hub_list_device_dependents` on the old id still lists 'BAT Replace Rule' (replace re-points hardware and consumes the donor; swap instead keeps both devices and exchanges their identities -- neither moves references).
+**Expected** (real paired hardware): AI calls `hub_call_device_replace(list_options=true)` first to read the compatible candidates, then `hub_call_device_replace` with `old_device_id`/`new_device_id`/`confirm=true`. The response is `success=true` with `replaced={oldDeviceId, newDeviceId}` and `preservedDeviceId=<old id>`. The KEY invariant: the OLD device id survives and keeps all its app/rule references — `hub_list_device_dependents` on the old id still lists 'BAT Replace Rule' (replace re-points hardware and consumes the donor; swap instead keeps both devices and exchanges their identities -- neither moves references).
+
+**Expected** (two UI virtual switches): `list_options` lists the donor, and the confirmed replace returns `success=false` with the hub's `Failed to replace device` (its answer when its own device swap fails); both devices and the rule's reference are unchanged. On the hubs tested, the hub refuses every replace between two virtual switches, so the success path needs real paired hardware.
 
 **Failure modes**: the tool refuses without `confirm` or a recent backup (expected gate — create the backup, don't bypass). `list_options` returns an empty list even though a compatible donor exists (the hub did not offer it — usually a fixture is an MCP child device or not capability-compatible; this scenario requires free-standing same-driver devices). A structured `success=false` naming an incompatible `new_device_id` (the donor was not in the hub's compatible set — re-read `list_options`). `preservedDeviceId` is the NEW id instead of the old one, or the rule's dependents move to the donor (no device tool moves references — a wire-format regression). Routing the request to `hub_call_device_swap` instead of `hub_call_device_replace` (swap keeps both devices and exchanges their identities; replace re-points the old id onto the new hardware — different end states).
 
@@ -4483,7 +4489,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 
 ```json
 {
-  "setup_prompt": "The Read master is enabled. Pick an installed app likely to have emitted events recently (the MCP Rule Server instance, or a BAT rule that just fired).",
+  "setup_prompt": "The Read master is enabled. Pick an installed app that has emitted app events (its Events tab in the hub UI lists some); Rule Machine rules and most apps emit none, so an empty list for them is not a failure.",
   "test_prompt": "Show me the recent events emitted by that app (app <that app's id> — the app itself, not one of its devices), capping the number of rows returned. Inspect the result: source must be 'app', the events list rows carry {name, value, description, date}, and the row cap is respected. Then ask for events for BOTH that app AND a specific device in the same single request and confirm it is rejected as invalid.",
   "teardown_prompt": "Nothing to clean up (read-only)."
 }

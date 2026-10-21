@@ -160,13 +160,13 @@ class ToolDashboardSpec extends ToolSpecBase {
         r.dashboards[0].deviceIds == ['12', '34']
     }
 
-    def "list passes pinToken through to /dashboard/all when supplied"() {
+    def "a caller pinToken is never sent: the hub honours only the token of its own page session"() {
         when:
         script.toolListDashboards([pinToken: 'tok-123'])
 
         then:
         def call = hubGet.calls.find { it.path == '/dashboard/all' }
-        call.params.pinToken == 'tok-123'
+        !call.params.containsKey('pinToken')
     }
 
     def "list omits pinToken when none is supplied and the page token can't be scraped"() {
@@ -189,10 +189,11 @@ class ToolDashboardSpec extends ToolSpecBase {
         when:
         def r = script.toolListDashboards([:])
 
-        then: 'a CONFIRMED-empty hub reports count:0 and suggests a pinToken'
+        then: 'a CONFIRMED-empty hub reports count:0 and no longer asks for a pinToken (none would work)'
         r.count == 0
         r.dashboards == []
-        r.note.toLowerCase().contains('pintoken')
+        r.note.contains('No dashboards found')
+        !r.note.toLowerCase().contains('pintoken')
     }
 
     def "list surfaces success:false when /dashboard/all is empty but the child-app READ fails (not a fake 'zero')"() {
@@ -253,6 +254,29 @@ class ToolDashboardSpec extends ToolSpecBase {
         then: 'the scraped token is sent to /dashboard/all so the (otherwise pinToken-gated) list returns'
         def call = hubGet.calls.find { it.path == '/dashboard/all' }
         call.params.pinToken == 'tok-scraped'
+    }
+
+    def "list asks /dashboard/all in the session that issued the page pinToken, so theme and PINs come back"() {
+        given: 'the hub honours the page token only with the HUBSESSION cookie the page set'
+        script.metaClass.hubInternalGetRaw = { String p ->
+            p == '/dashboard/select' ? [status: 200, location: null, setCookie: 'HUBSESSION=node0abc.node0',
+                                        data: "<script>var globalDashboardPinToken = 'tok-session';</script>"] : null
+        }
+        def sent = [:]
+        script.metaClass.hubInternalGetInSession = { String path, Map q, String session, int t = 30 ->
+            sent.path = path; sent.q = q; sent.session = session
+            '[{"installedAppId":31,"name":"BAT Dash","version":"2.0","theme":"dark","dashboardPin":"1234","hsmPin":"","deviceIds":[3]}]'
+        }
+
+        when:
+        def r = script.toolListDashboards([:])
+
+        then:
+        sent.path == '/dashboard/all'
+        sent.q.pinToken == 'tok-session'
+        sent.session == 'HUBSESSION=node0abc.node0'
+        r.source == 'dashboard-all'
+        r.dashboards[0].theme == 'dark'
     }
 
     def "list falls back to Easy Dashboard Parent child apps when /dashboard/all is empty"() {

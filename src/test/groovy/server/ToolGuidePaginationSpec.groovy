@@ -43,6 +43,9 @@ class ToolGuidePaginationSpec extends ToolSpecBase {
         first.payload.nextCursor != null
         first.payload.offset == 0
         (first.payload.totalChars as Integer) > (first.payload.content as String).length()
+
+        and: 'a page stays within the full guide page size'
+        (first.payload.content as String).length() <= script.fullGuidePageChars()
     }
 
     def "walking nextCursor through dispatch reassembles the guide, every page inside the real cap"() {

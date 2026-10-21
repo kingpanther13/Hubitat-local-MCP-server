@@ -226,6 +226,27 @@ class MrtrContinuationSpec extends ToolSpecBase {
         'backup freshness' | true     | false        | null           | true    | null            || 'BACKUP REQUIRED'
     }
 
+    def "hub_create_backup without confirm is refused before a write slot is reserved: #label"() {
+        given:
+        settingsMap.enableWrite = true
+        settingsMap.enableMandatoryBPS = false
+
+        when:
+        def response = modernCall('hub_create_backup', leafArgs)
+
+        then:
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.startsWith(expected)
+        !(atomicStateMap.mrtrRequests instanceof Map) || atomicStateMap.mrtrRequests.isEmpty()
+        runInMillisCalls.isEmpty()
+
+        where:
+        label           | leafArgs                       || expected
+        'a backup'      | [:]                            || 'You must set confirm=true to create a backup'
+        'cloudDownload' | [cloudDownload: [path: 'x']]   || 'cloudDownload writes the backup to File Manager'
+    }
+
     def "#leaf returns schema without confirmation or a detached worker"() {
         given:
         settingsMap.enableWrite = true

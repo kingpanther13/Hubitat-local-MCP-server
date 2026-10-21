@@ -258,6 +258,7 @@ def helperMethod() { return "ok" }
         then:
         result.success == true
         result.totalLength == 65000
+        result.chunkLength == 30000
         result.hasMore == true
         result.sourceFile == 'mcp-source-library-10.groovy'
         result.sourceFileHint.contains('hub_update_library')
