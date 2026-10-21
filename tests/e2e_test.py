@@ -8584,6 +8584,17 @@ class TestRunner:
             assert cleared in (None, "", []), f"a validateEnum walkStep write of '' should clear logging: {cleared}"
             if settings_before.get("logging"):
                 self._set_rule(app_id, {"settings": {"logging": settings_before["logging"]}, "pageName": "mainPage"}, strict=True)
+            # A patches settings key not on the page is reported but does not stop the batch, as at top level.
+            patch_mixed = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": {
+                "appId": int(app_id), "confirm": True,
+                "patches": [{"settings": {"comments": "E2E-a", "notAnInputE2E": "1"}}, {"settings": {"comments": "E2E-b"}}]}})
+            mixed_ops = patch_mixed.get("patches") or []
+            assert len(mixed_ops) == 2 and mixed_ops[0].get("success") is True and not mixed_ops[0].get("partial") \
+                and mixed_ops[0].get("settingsSkipped") == ["notAnInputE2E"] and mixed_ops[1].get("success") is True \
+                and not patch_mixed.get("bulkStoppedAfter"), \
+                f"a key not on the page should be reported without stopping the batch: {patch_mixed}"
+            mixed_comments = (self._get_persisted_rule_config(app_id).get("settings") or {}).get("comments")
+            assert mixed_comments == "E2E-b", f"the second patches op did not land: {mixed_comments!r}"
 
             # (2) WRITE composition: open the trigger editor then pick a capability, in ONE
             #     drive call. Mirrors _rmAddTrigger's proven wire format (click name='true'/
@@ -8636,6 +8647,16 @@ class TestRunner:
             assert self._setting_holds_exact(raw_tdev, second_switch) \
                 and not self._setting_holds_exact(raw_tdev, self.get_test_switch_id()), \
                 f"the raw tDev1 write did not land on the second switch: {raw_tdev!r}"
+            # A patches settings op on a sub-page writes with the page's context and checks the key landed.
+            patch_sub = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": {
+                "appId": app_id, "confirm": True,
+                "patches": [{"settings": {"tDev1": [int(self.get_test_switch_id())]}, "pageName": "selectTriggers"}]}})
+            sub_op = (patch_sub.get("patches") or [{}])[0]
+            assert sub_op.get("success") is True and "tDev1" in (sub_op.get("keys") or []), \
+                f"a patches tDev1 write on selectTriggers should land: {patch_sub}"
+            patched_tdev = (self._get_persisted_rule_config(app_id).get("settings") or {}).get("tDev1")
+            assert self._setting_holds_exact(patched_tdev, self.get_test_switch_id()), \
+                f"the patches tDev1 write did not land on the first switch: {patched_tdev!r}"
 
             # (3) failure halt: an invalid step operation aborts the drive (success:false,
             #     the step throws) and must NOT corrupt the rule.
@@ -9781,6 +9802,19 @@ class TestRunner:
                     "addLocalVariable": {"name": "badNum", "type": bad_type, "value": bad_value}}})
                 assert bad_num.get("success") is False and "RM is not touched" in str(bad_num.get("error", "")) \
                     and bad_num.get("backup") is None, f"a {bad_type} local of {bad_value!r} should be refused before any write: {bad_num}"
+            # Any spelling of a whole number or a number is taken and stored in plain form (RM keeps "5.0" as text,
+            # which breaks the rule's page).
+            for good_name, good_type, good_value, stored in (("spPlus", "Number", "+5", "5"), ("spDot", "Number", "5.0", "5"),
+                                                             ("spPad", "Decimal", " 2.5 ", "2.5")):
+                good = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": {
+                    "appId": int(app_id), "confirm": True,
+                    "addLocalVariable": {"name": good_name, "type": good_type, "value": good_value}}})
+                assert good.get("success") is True, f"a {good_type} local of {good_value!r} should be added: {good}"
+                spelled = self.client.call_tool("hub_read_rules", {
+                    "tool": "hub_list_rule_local_variables", "args": {"appId": app_id}})
+                held = next((lv for lv in (spelled.get("localVariables") or []) if lv.get("name") == good_name), {})
+                assert str(held.get("value")) == stored, \
+                    f"the {good_type} local {good_value!r} should be stored as {stored}: {spelled}"
 
             self._assert_rule_healthy(app_id)
 
