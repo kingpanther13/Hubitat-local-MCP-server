@@ -551,10 +551,11 @@ def test_exact_fixture_lookup_refuses_ambiguous_matches_without_sleeping() -> No
     assert sleeps == []
 
 
-@pytest.mark.parametrize(("count", "wait_count", "condition_count"), [
-    (6, 40, 54), (36, 40, 24), (48, 40, 12), (59, 40, 1), (72, 27, 1), (99, 0, 1),
+@pytest.mark.parametrize(("count", "wait_count", "condition_count", "events_per_wait"), [
+    (6, 40, 54, 4), (36, 40, 24, 4), (48, 40, 12, 4), (59, 40, 1, 4),
+    (60, 39, 1, 8), (72, 27, 1, 8), (99, 0, 1, 8),
 ])
-def test_native_mrtr_batch_uses_direct_native_rows_and_preserves_each_log(count, wait_count, condition_count):
+def test_native_mrtr_batch_uses_direct_native_rows_and_preserves_each_log(count, wait_count, condition_count, events_per_wait):
     changes, messages = helpers.native_mrtr_changes(
         "SDK proof", "588", {"E2E_MRTR_ACTION_COUNT": str(count)},
     )
@@ -562,9 +563,9 @@ def test_native_mrtr_batch_uses_direct_native_rows_and_preserves_each_log(count,
     conditions, waits, actions = changes[:condition_count], changes[condition_count:-count], changes[-count:]
     assert len(waits) == wait_count
     assert all(row["value"]["subtype"] == "getWaitEvents" for row in waits)
-    assert all(len(row["value"]["events"]) == 8 for row in waits)
+    assert all(len(row["value"]["events"]) == events_per_wait for row in waits)
     thresholds = [event["fields"][2]["value"] for row in waits for event in row["value"]["events"]]
-    assert thresholds == list(range(1000, 1000 + wait_count * 8))
+    assert thresholds == list(range(1000, 1000 + wait_count * events_per_wait))
     assert len(conditions) == condition_count
     assert all(row["part"] == "condition" for row in conditions)
     assert all(row["value"]["capability"] == "Temperature" for row in conditions)
@@ -681,13 +682,13 @@ def test_native_action_readback_rejects_lost_replayed_or_corrupted_work(corrupti
     elif corruption == "type":
         document["settings"][0]["type"] = "text"
     elif corruption == "device":
-        config["settings"]["tDev-320"] = {"589": "Wrong device"}
+        config["settings"]["tDev-160"] = {"589": "Wrong device"}
     elif corruption == "comparator":
-        config["settings"]["ReltDev-320"] = "<"
+        config["settings"]["ReltDev-160"] = "<"
     elif corruption == "threshold":
-        config["settings"]["tstate-320"] = 1000
+        config["settings"]["tstate-160"] = 1000
     elif corruption == "orphan":
-        config["settings"]["tCapab-321"] = "Temperature"
+        config["settings"]["tCapab-161"] = "Temperature"
     else:
         config["settings"]["logmsg.46"] = config["settings"]["logmsg.45"]
     with pytest.raises(AssertionError):
@@ -710,7 +711,7 @@ def test_native_condition_readback_requires_native_map_and_typed_identity(corrup
 
 def test_native_action_readback_requires_native_device_map():
     config, document, changes, messages = _native_action_readback()
-    config["settings"]["tDev-320"] = ["588"]
+    config["settings"]["tDev-160"] = ["588"]
     with pytest.raises(AssertionError, match="Raw wait device differs"):
         helpers.assert_exact_native_actions(config, document, changes, messages)
 

@@ -57,6 +57,8 @@ def native_mrtr_changes(
     if count > 99:
         raise ValueError("Native MRTR proof supports at most 99 log actions in its 100-change batch")
     wait_count = min(40, 99 - count)
+    # Keep the lighter default; fewer wait rows carry more real compilation work each.
+    events_per_wait = 4 if wait_count == 40 else 8
     condition_count = 100 - count - wait_count
     messages = [f"{prefix} {index}" for index in range(1, count + 1)]
     conditions = [{"part": "condition", "value": {"capability": "Temperature", "fields": [
@@ -71,8 +73,8 @@ def native_mrtr_changes(
         "events": [{"capability": "Temperature", "fields": [
             {"name": "tDev#", "type": "capability.temperatureMeasurement", "value": [temperature_id]},
             {"name": "ReltDev#", "type": "enum", "value": ">"},
-            {"name": "tstate#", "type": "decimal", "value": 1000 + index * 8 + event},
-        ]} for event in range(8)]}} for index in range(wait_count)]
+            {"name": "tstate#", "type": "decimal", "value": 1000 + index * events_per_wait + event},
+        ]} for event in range(events_per_wait)]}} for index in range(wait_count)]
     return [*conditions, *waits, *actions], messages
 
 
