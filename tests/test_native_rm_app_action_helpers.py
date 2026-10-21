@@ -1,8 +1,7 @@
 """Offline catalog selection coverage for native app-action fixtures."""
 
-import pytest
-
 import native_rm_parity_app_actions_e2e as native_apps
+import pytest
 
 
 def catalog_row(**overrides):
