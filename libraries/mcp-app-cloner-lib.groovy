@@ -1110,6 +1110,24 @@ private void _rmNativeRestoreFlags(Long id, Map savedState) {
     if ((live.paused == true) != (savedState.paused == true)) _nrHandle(id).appButtonHandler('pausRule')
 }
 
+// RM's fixAppLabel derives the label from origLabel plus HTML status spans ((Stopped), (Paused),
+// *BROKEN*, ...), sometimes well after the state changes; the user only ever sets origLabel. A
+// snapshot may hold those spans, HTML-stripped to plain text. Compare and restore the name only:
+// the lifecycle state the spans display is verified on its own.
+private String _rmLabelName(label) {
+    (label?.toString() ?: '').replaceAll(/\s*<span style='color:[a-z]+'>[^<]*<\/span>/, '')
+}
+
+private String _rmRestoredRuleName(List plan, Map identity) {
+    def name = plan.find { it.name == 'origLabel' }?.value
+    if (name != null) return name.toString()
+    String label = _rmLabelName(identity.appLabel)
+    ['*BROKEN*', '(Not Installed)', '(Stopped)', '(Paused)', '(Required Expression false)', '(Repeating)'].each { decoration ->
+        if (label.endsWith(' ' + decoration)) label = label.substring(0, label.length() - decoration.length() - 1)
+    }
+    label
+}
+
 private Map _rmRestoreNativeEdit(Map snapshot, String sourceBackupKey) {
     Long id = _ndId(snapshot.ruleId)
     Map payload = _rmDecodeRuleExport(id.toString().toInteger(), snapshot.nativeExport)
@@ -1163,7 +1181,8 @@ private Map _rmRestoreNativeEdit(Map snapshot, String sourceBackupKey) {
         Map restoreState = [:] + expectedState + [stopped: true]
         _nrStatePatch(id, restoreState, _nrState(id).keySet().findAll { !restoreState.containsKey(it) }.collect { it.toString() })
         if (_rmNativeComparable(_nrState(id)) != _rmNativeComparable(restoreState)) throw new IllegalStateException('Complete native state did not persist exactly')
-        _nrHandle(id).updateLabel(identity.appLabel)
+        String restoredName = _rmRestoredRuleName(plan, identity)
+        _nrHandle(id).updateLabel(restoredName)
         _nrHandle(id).appButtonHandler('updateRule')
         _rmNativeRestoreFlags(id, expectedState)
         Map rebuilt = _ndApply(id, [], false)
@@ -1176,7 +1195,7 @@ private Map _rmRestoreNativeEdit(Map snapshot, String sourceBackupKey) {
         if (_rmNativeComparable(actualLocals) != _rmNativeComparable(_rmNativeLocalSignature(expectedState))) throw new IllegalStateException('Native local variables differ from recovery')
         if (_rmNativeComparable(_rmNativeSettingsSignature(_rmNativeCurrentSettings(id))) != _rmNativeComparable(_rmNativeSettingsSignature(data.appSettings))) throw new IllegalStateException('Native rebuild changed restored settings')
         if ((actual.stopped == true) != (expectedState.stopped == true) || (actual.paused == true) != (expectedState.paused == true) ||
-            (_nrHandle(id).label ?: '') != (identity.appLabel ?: '')) throw new IllegalStateException('Native label or lifecycle state differs from recovery')
+            _rmLabelName(_nrHandle(id).label) != restoredName) throw new IllegalStateException('Native label or lifecycle state differs from recovery')
         [success: true, type: 'rm-rule', ruleId: id, originalRuleId: id, restoredVia: 'nativeStateReplay', backup: undo,
          stateVerified: true, settingsVerified: true, localVariablesVerified: true, broken: rebuilt.broken, stopped: rebuilt.stopped, paused: rebuilt.paused,
          eventSubscriptions: rebuilt.eventSubscriptions, scheduledJobs: rebuilt.scheduledJobs]

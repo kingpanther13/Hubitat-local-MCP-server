@@ -261,6 +261,37 @@ class NativeRuleExactRestoreSpec extends ToolSpecBase {
         ruleType << ['Rule-5.1', 'Button Rule-5.1']
     }
 
+    def 'a stopped rule restores its name while RM re-derives the Stopped label decoration'() {
+        given: 'a snapshot whose label carries the decoration HTML-stripped, as captured from a stopped rule'
+        stoppedSnapshot('Original (Stopped)')
+        when:
+        def result = restore()
+        then:
+        result.success
+        result.restoredVia == 'nativeStateReplay'
+        child.backing.stopped
+        child.label == "Original <span style='color:red'>(Stopped)</span>"
+    }
+
+    def 'a restore whose rebuilt rule carries a different name still fails verification'() {
+        given:
+        stoppedSnapshot('Original (Stopped)')
+        child.relabelTo = 'Renamed'
+        when:
+        def result = restore()
+        then:
+        !result.success
+        result.error.contains('Native label or lifecycle state differs from recovery')
+    }
+
+    private void stoppedSnapshot(String capturedLabel) {
+        def source = new JsonSlurper().parseText(snapshot.nativeExport)
+        source.appReplacements['42'].appLabel = capturedLabel
+        source.appData['42'].appSettings << [name: 'origLabel', type: 'text', value: 'Original']
+        snapshot.nativeExport = JsonOutput.toJson(source)
+        child.decorates = true
+    }
+
     def 'device references use verified native device identity before undo capture'() {
         given:
         Map payload = new JsonSlurper().parseText(snapshot.nativeExport) as Map
@@ -467,6 +498,8 @@ class RestoreNativeChild {
     Map pending
     Closure rebuild
     String label = 'Edited'
+    boolean decorates
+    String relabelTo
     List events
 
     RestoreNativeChild(List events) { this.events = events }
@@ -487,6 +520,8 @@ class RestoreNativeChild {
         if (name == 'stopRule') backing.stopped = backing.stopped != true
         if (name == 'pausRule') backing.paused = backing.paused != true
         if (name == 'updateRule') { backing.stopped = false; backing.runtimeCursor = 'reset by native update' }
+        // RM's fixAppLabel: the name, plus a status span derived from the stopped state.
+        if (decorates) label = (relabelTo ?: typed.origLabel?.value ?: label) + (backing.stopped ? " <span style='color:red'>(Stopped)</span>" : '')
     }
     Map getAllLocalVars() { backing.findAll { key, value -> key.startsWith('lv_') }.collectEntries { key, value -> [(key.substring(3)): value] } }
 }
