@@ -153,12 +153,8 @@ def native_context(runner):
     fixtures = json.loads(explicit) if explicit else RunnerFixtures(runner)
     parent_id = os.environ.get("NATIVE_RULE_PARENT_ID")
     if not parent_id:
-        result = runner.client.call_tool("hub_list_apps", {"scope": "instances"})
-        rows = result.get("apps", result.get("installedApps", []))
-        parents = [row for row in rows if (row.get("appTypeName") or row.get("name")) == "Rule Machine"]
-        if len(parents) != 1:
-            raise AssertionError(f"Expected one Rule Machine parent, found {parents}")
-        parent_id = parents[0]["id"]
+        from e2e_test import _discover_native_rule_parent_id
+        parent_id = _discover_native_rule_parent_id(runner.client)
     mode_id = os.environ.get("NATIVE_RULE_MODE_ID")
     if not mode_id:
         modes = runner.client.call_tool("hub_list_modes", {}).get("modes", [])

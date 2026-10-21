@@ -3380,3 +3380,46 @@ def test_edited_snapshot_copy_retargets_only_explicit_device_references_and_labe
     assert edited["configJson"]["settings"] == {"pick.7": {"9": "New fixture"}, "Counter": 7}
     assert edited["statusJson"]["appSettings"][0]["deviceIdsForDeviceList"] == ["9"]
     assert original == json.dumps(snapshot, indent=2)
+
+
+def test_native_parent_discovery_requests_parent_filter_and_reads_all_pages():
+    calls = []
+    pages = iter([
+        {"apps": [{"id": 1, "name": "Other parent", "parentId": None}], "nextCursor": "page-two"},
+        {"apps": [{"id": 28, "name": "Rule Machine", "parentId": None}]},
+    ])
+
+    def call_tool(name, arguments):
+        calls.append((name, arguments))
+        return next(pages)
+
+    assert et._discover_native_rule_parent_id(SimpleNamespace(call_tool=call_tool)) == 28
+    assert calls == [
+        ("hub_list_apps", {"scope": "instances", "filter": "parents", "cursor": ""}),
+        ("hub_list_apps", {"scope": "instances", "filter": "parents", "cursor": "page-two"}),
+    ]
+
+
+def test_native_parent_discovery_checks_later_pages_for_ambiguous_exact_matches():
+    pages = iter([
+        {"apps": [{"id": 28, "name": "Rule Machine", "parentId": None}], "nextCursor": "next"},
+        {"apps": [{"id": 29, "name": "Rule Machine", "parentId": None}]},
+    ])
+    with pytest.raises(AssertionError, match="Expected one Rule Machine parent"):
+        et._discover_native_rule_parent_id(SimpleNamespace(call_tool=lambda *_args: next(pages)))
+
+
+@pytest.mark.parametrize("row", [
+    {"id": 28, "name": "Rule Machine clone", "parentId": None},
+    {"id": 28, "name": "Rule Machine", "parentId": 9},
+    {"id": "bad-id", "name": "Rule Machine", "parentId": None},
+])
+def test_native_parent_discovery_rejects_wrong_identity_or_invalid_id(row):
+    with pytest.raises(AssertionError):
+        et._discover_native_rule_parent_id(SimpleNamespace(call_tool=lambda *_args: {"apps": [row]}))
+
+
+def test_native_parent_discovery_refuses_repeated_inventory_cursor():
+    client = SimpleNamespace(call_tool=lambda *_args: {"apps": [], "nextCursor": "same"})
+    with pytest.raises(AssertionError, match="cursor repeated"):
+        et._discover_native_rule_parent_id(client)
