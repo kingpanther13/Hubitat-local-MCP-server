@@ -17827,7 +17827,7 @@ def toolListAppPages(args) {
     def linked = _rmPageHrefs(parsed.configPage as Map).findAll { !(it.page in knownNames) }.unique { it.page }
     linked.each { pages << [name: it.page, title: it.title, role: "sub-page"] }
     if (linked) {
-        note = "Sub-pages are linked from the primary page. A sub-page can link further pages of its own: read hub_get_app_config(appId, pageName=<sub-page>).page.hrefs. Use hub_set_rule for Rule Machine changes and native form controls; use the native editor for other apps."
+        note = "Sub-pages are linked from the primary page. A sub-page can link further pages of its own: read hub_get_app_config(appId, pageName=<sub-page>).page.hrefs. Use hub_set_rule for Rule Machine changes and native form controls; use hub_set_native_app walkStep (navigate, write, done) for other apps."
     } else if (!curatedHpm) {
         note = "The primary page links no sub-pages."
     }
@@ -17920,7 +17920,7 @@ private Map _createUserAppInstance(Integer codeAppId) {
     if (commit?.uiBlocked) {
         return [
             success: false,
-            error: "Instance ${newId} was created but not installed: ${commit.error} Keep it -- open the native app editor, submit the listed fields, then click Done to install the app.".toString(),
+            error: "Instance ${newId} was created but not installed: ${commit.error} Keep it -- write the listed settings with hub_set_native_app(appId:${newId}, settings:{...}); that call's closing Done installs the app.".toString(),
             codeAppId: codeAppId,
             instanceAppId: newId,
             committed: false
@@ -18050,7 +18050,7 @@ private Map _commitUserAppInstall(Integer instanceId, String pageName) {
             success: false,
             uiBlocked: true,
             error: submit.uiReason,
-            note: "No Done was submitted, so the instance is not installed yet. Open the native app editor, submit the listed fields, then click Done to install it.".toString(),
+            note: "No Done was submitted, so the instance is not installed yet. Write the listed settings with hub_set_native_app(appId:${instanceId}, settings:{...}); that call's closing Done installs it.".toString(),
             scheduledJobCount: 0,
             eventSubscriptionCount: 0
         ]
