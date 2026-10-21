@@ -51,9 +51,9 @@ class NativeRmBackupE2E(ParityCase):
             "seconds": time.monotonic() - started, "result": result}), flush=True)
         return result
 
-    def condition(self, state="on", **extra):
+    def condition(self, state="on", device="switch", **extra):
         return change("condition", capability="Switch", fields=[
-            field("rDev_#", "capability.switch", [str(self.fixtures["switch"])]),
+            field("rDev_#", "capability.switch", [str(self.fixtures[device])]),
             field("state_#", "enum", state)], **extra)
 
     def trigger(self, state="on"):
@@ -77,7 +77,13 @@ class NativeRmBackupE2E(ParityCase):
 
     def _legacy_in_place_recovery(self, required):
         self.backups_enabled(False)
-        rule_id = self.create([self.condition(), self.condition("off"), self.trigger(),
+        gate = "switch2" if required else "switch"
+        if required:
+            self.assertIn(gate, self.fixtures, "Required-expression recovery needs an independent gate switch")
+            self.assertNotEqual(str(self.fixtures[gate]), str(self.fixtures["switch"]))
+        self.command(gate, "off")
+        self.command("switch", "off")
+        rule_id = self.create([self.condition(device=gate), self.condition("off", device=gate), self.trigger(),
                                self.output(True), log_action("legacy baseline")])
         condition_ids = sorted(self.doc(rule_id)["conditions"], key=int)
         if required:
@@ -119,7 +125,7 @@ class NativeRmBackupE2E(ParityCase):
             self.assertTrue(snapshot.get("nativeExport"), snapshot)
         doc = self.doc(rule_id)
         action_ids = [str(row["id"]) for row in doc["actions"]]
-        edits = [self.condition("off", id=condition_ids[0]),
+        edits = [self.condition("off", device=gate, id=condition_ids[0]),
                  change("trigger", id=next(iter(doc["triggers"])), capability="Switch", fields=[
                      field("tDev#", "capability.switch", [str(self.fixtures["switch"])]),
                      field("tstate#", "enum", "off")]),
@@ -144,6 +150,15 @@ class NativeRmBackupE2E(ParityCase):
         self.assertEqual(self.configuration(rule_id), before)
         self.assertEqual(str(self.status(rule_id)["installedApp"]["id"]), str(rule_id))
         self.command("out", "off")
+        self.command("switch", "off")
+        if required:
+            self.command(gate, "on")
+            # Native required-expression transitions arm trigger subscriptions;
+            # the event that enables the expression does not itself fire actions.
+            self.wait_for(lambda: any(
+                str(row.get("typeId")) == str(self.fixtures["switch"])
+                and row.get("name") == "switch.on" and row.get("handler") == "allHandlerX"
+                for row in self.status(rule_id).get("eventSubscriptions", [])))
         self.command("switch", "on")
         self.wait_for(lambda: self.attribute("out", "switch") == "on")
 
