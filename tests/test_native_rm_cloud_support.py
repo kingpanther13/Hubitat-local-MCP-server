@@ -1,6 +1,7 @@
 """Shared acceptance must use ordinary MCP calls rather than native-admin routing."""
 
 import unittest
+from copy import deepcopy
 from types import SimpleNamespace
 
 import pytest
@@ -61,6 +62,37 @@ def test_cloud_case_refuses_to_fabricate_native_state_or_status():
     with pytest.raises(AssertionError, match="installed_app"):
         case.status(42)
 
+
+
+def test_cloud_snapshot_preserves_unfinished_editor_without_rendering_and_detects_changes():
+    document = {"actions": [], "conditions": {}, "triggers": {"1": {}}, "expressions": {}, "variables": {}}
+    rows = [{"name": "tDev1", "type": "capability.switch", "multiple": True,
+             "value": None, "device_ids": ["3"]},
+            {"name": "flag", "type": "bool", "multiple": False, "value": False},
+            {"name": "count", "type": "number", "multiple": False, "value": 0},
+            {"name": "text", "type": "text", "multiple": False, "value": ""}]
+    calls = []
+
+    def call(name, **arguments):
+        calls.append((name, arguments))
+        assert name == "hub_set_rule" and arguments["operation"] == "read", "Snapshot must not render an editor"
+        if arguments["args"]["sections"] == ["settings"]:
+            return {"rule_id": 42, "settings": deepcopy(rows), "nextCursor": None,
+                    "page": {"offset": 0, "limit": 50, "total": len(rows), "revision": "stable"}}
+        return {"rule_id": 42, **deepcopy(document)}
+
+    case = type("CloudCase", (CloudCaseMixin, unittest.TestCase), {})()
+    case.call = call
+    before = case.snapshot(42)
+    assert before["document"]["triggers"] == {"1": {}}
+    assert before["typed_settings"] == {row["name"]: row for row in rows}
+    assert case.snapshot(42) == before
+    document["triggers"] = {}
+    assert case.snapshot(42) != before
+    document["triggers"] = {"1": {}}
+    rows[0]["device_ids"] = ["4"]
+    assert case.snapshot(42) != before
+    assert all(name == "hub_set_rule" for name, _arguments in calls)
 
 def test_cloud_commands_use_public_tools_and_declared_string_arguments():
     calls = []

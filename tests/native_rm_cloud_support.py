@@ -128,8 +128,10 @@ class CloudCaseMixin:
 
     def compiled_snapshot(self, rule_id):
         doc = self.doc(rule_id)
+        # Opening mainPage can consume unfinished native editor state. Snapshot only
+        # pure public reads, retaining every compiled entry and complete typed setting.
         return {"document": {key: doc[key] for key in ("actions", "conditions", "triggers", "expressions", "variables")},
-                "raw_settings": self.raw_configuration(rule_id)["settings"], "typed_settings": self.settings(rule_id)}
+                "typed_settings": self.settings(rule_id)}
 
     snapshot = compiled_snapshot
 
