@@ -45,14 +45,15 @@ def native_boolean(value):
 class RegularNativeClient(HubClient):
     def __init__(self, runner):
         self.runner = runner
-        local_base = os.environ.get("HUB_URL") or runner.client.hub_url
+        native_base = getattr(runner, "native_hub_url", None)
+        local_base = os.environ.get("HUB_URL") or native_base or runner.client.hub_url
         local_url = normalized_hub_url(local_base)
         parsed = urllib.parse.urlsplit(local_base)
         if parsed.hostname == "cloud.hubitat.com":
             raise AssertionError("Native verification requires HUB_URL for the local hub")
         super().__init__(local_base.rstrip("/"), str(runner.client.app_id), runner.client.access_token)
         if local_url != normalized_hub_url(runner.client.hub_url):
-            allowed = os.environ.get("NATIVE_RULE_E2E_ALLOWED_HUB_URL")
+            allowed = os.environ.get("NATIVE_RULE_E2E_ALLOWED_HUB_URL") or native_base
             if not allowed or local_url != normalized_hub_url(allowed):
                 raise AssertionError("A different native URL requires explicit native URL authorization")
         self.mcp_url = runner.client.endpoint + "?" + urllib.parse.urlencode({

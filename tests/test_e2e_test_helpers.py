@@ -3343,6 +3343,31 @@ def test_same_normalized_native_url_needs_no_second_endpoint_probe(monkeypatch):
     assert bound.runner.client is client
 
 
+def test_runner_native_url_is_used_for_ui_while_mcp_keeps_its_transport(monkeypatch):
+    import e2e_native_rule_integration as integration
+
+    monkeypatch.delenv("HUB_URL", raising=False)
+    monkeypatch.delenv("NATIVE_RULE_E2E_ALLOWED_HUB_URL", raising=False)
+    client = SimpleNamespace(hub_url="http://relay.invalid:8081", app_id="3", access_token="unused",
+                             endpoint="http://relay.invalid:8081/apps/api/3/mcp")
+    runner = SimpleNamespace(client=client, native_hub_url="http://native.invalid:8080")
+    bound = integration.RegularNativeClient(runner)
+    assert bound.base == runner.native_hub_url
+    assert bound.mcp_url == client.endpoint + "?access_token=unused"
+
+
+def test_runner_native_url_does_not_authorize_a_different_environment_override(monkeypatch):
+    import e2e_native_rule_integration as integration
+
+    monkeypatch.setenv("HUB_URL", "http://another.invalid")
+    monkeypatch.delenv("NATIVE_RULE_E2E_ALLOWED_HUB_URL", raising=False)
+    client = SimpleNamespace(hub_url="http://relay.invalid:8081", app_id="3", access_token="unused",
+                             endpoint="http://relay.invalid:8081/apps/api/3/mcp")
+    runner = SimpleNamespace(client=client, native_hub_url="http://native.invalid:8080")
+    with pytest.raises(AssertionError, match="authorization"):
+        integration.RegularNativeClient(runner)
+
+
 def test_edited_snapshot_copy_retargets_only_explicit_device_references_and_labels():
     import e2e_native_rule_integration as integration
 
