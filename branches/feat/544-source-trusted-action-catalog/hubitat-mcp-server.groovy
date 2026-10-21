@@ -10035,6 +10035,7 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
             pagedDevices = pagedDevices.subList(0, hydrated)
             endIndex = startIndex + hydrated
         }
+        if (onlyOn == true) pagedDevices = _stillOnAfterPageRead(pagedDevices)
         def attrNames = (attributeNames && !attributeNames.isEmpty()) ? attributeNames.collect { it.toString() } : _contextAttributeNames()
         def lines = pagedDevices.collect { d -> _contextDeviceLine(d, attrNames) }
         def header = _contextHeaderLines()
@@ -10104,6 +10105,12 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
             endIndex = startIndex + hydrated
         }
     }
+    int droppedNotOn = 0
+    if (onlyOn == true) {
+        def stillOn = _stillOnAfterPageRead(pagedDevices)
+        droppedNotOn = pagedDevices.size() - stillOn.size()
+        pagedDevices = stillOn
+    }
     def devices = pagedDevices.collect { device ->
         def deviceIdStr = device.id.toString()
         def info = [:]
@@ -10148,7 +10155,7 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
     def result = applyFilterEchoes([
         devices: devices,
         count: devices.size(),
-        total: totalCount
+        total: totalCount - droppedNotOn
     ])
     if (devices.any { it.metadataUnavailable }) result.partial = true
     if (limit && limit > 0) {
@@ -10244,6 +10251,9 @@ private List _contextHeaderLines() {
     def hsm = _safeHsmStatus()
     if (hsm) header << "HSM: ${hsm}".toString()
     return header
+}
+private List _stillOnAfterPageRead(List paged) {
+    paged.findAll { it._nativeLoaded != true || it._nativeReadError == true || _deviceStatesByName(it).get("switch")?.value?.toString() == "on" }
 }
 private Map _deviceStatesByName(device) {
     def states = [:]
