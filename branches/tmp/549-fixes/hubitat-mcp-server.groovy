@@ -29616,6 +29616,7 @@ private Map _rmPreflightAddLocalVariable(Integer appId, Map varSpec) {
     if (typeCanonical in ["Number", "Decimal"]) {
         BigDecimal num = null
         try { num = new BigDecimal(value.toString().trim()) } catch (NumberFormatException ignored) { }
+        if (num != null && (num.precision() > 64 || Math.abs(num.scale()) > 64)) num = null
         if (num == null || (typeCanonical == "Number" && num.stripTrailingZeros().scale() > 0)) {
             throw new IllegalArgumentException("addLocalVariable.value for ${typeCanonical} must be ${typeCanonical == 'Number' ? 'a whole number' : 'a number'} (got '${value}'). RM is not touched.".toString())
         }
@@ -29675,17 +29676,17 @@ private boolean _rmCancelLocalVarEditor(Integer appId) {
 private String _rmLocalVarEditorHint() {
     "If the variable editor still shows on selectActions (hub_get_app_config pageName:'selectActions'), close it with hub_set_rule(button:'cancelGV', stateAttribute:'cancelGV', pageName:'selectActions'); a cancelGV sent to a closed editor is held and closes the next add's editor."
 }
+private Boolean _rmLocalVarDeletePromptOpen(Integer appId) {
+    try { return (_rmCollectInputSchema(_rmFetchConfigJson(appId, "selectActions")?.configPage as Map) ?: [:]).containsKey("delConfirm") }
+    catch (Exception e) { mcpLog("warn", "rm-native", "removeLocalVariable: selectActions on app ${appId} could not be read: ${e.message ?: e}"); return null }
+}
 private boolean _rmCancelLocalVarDeletePrompt(Integer appId) {
-    def promptOpen = { ->
-        try { return (_rmCollectInputSchema(_rmFetchConfigJson(appId, "selectActions")?.configPage as Map) ?: [:]).containsKey("delConfirm") }
-        catch (Exception e) { mcpLog("warn", "rm-native", "removeLocalVariable: selectActions on app ${appId} could not be read: ${e.message ?: e}"); return null }
-    }
-    Boolean open = promptOpen()
+    Boolean open = _rmLocalVarDeletePromptOpen(appId)
     if (open == false) return true
     if (open == null) return false
     try {
         _rmClickAppButton(appId, "cancelDel", "cancelDel", "selectActions")
-        return promptOpen() == false
+        return _rmLocalVarDeletePromptOpen(appId) == false
     } catch (Exception e) {
         mcpLog("warn", "rm-native", "removeLocalVariable: closing the delete prompt on app ${appId} failed: ${e.message ?: e}")
         return false
