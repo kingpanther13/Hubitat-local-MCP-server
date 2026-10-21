@@ -123,7 +123,7 @@ On MCP 2026-07-28, eligible slow writes continue automatically across bounded St
                     ],
                     addLocalVariable: [
                         type: "object",
-                        description: "Add a local variable: {name, type, value}, all three required. type: Number/Decimal/String/Boolean/DateTime (DateTime is ISO, e.g. 2026-05-06T12:00:00); value must match it. An existing name is refused.[[FLAT_TRIM]] RM commits the variable only when the value is written. Unlike the setLocalVariable ACTION (exactly one of value/sourceVariable/fromDevice/math), all three keys are needed. Use as %name% in actions/expressions; change an existing variable's value with a setLocalVariable action.[[/FLAT_TRIM]]"
+                        description: "Add a local variable: {name, type, value}, all three required. type: Number/Decimal/String/Boolean/DateTime; value must match it (Number a whole number, Decimal a number, DateTime e.g. 2026-05-06T12:00, with a space instead of T, or {date, time}). An existing name is refused.[[FLAT_TRIM]] RM commits the variable only when the value is written. Unlike the setLocalVariable ACTION (exactly one of value/sourceVariable/fromDevice/math), all three keys are needed. Use as %name% in actions/expressions; change an existing variable's value with a setLocalVariable action.[[/FLAT_TRIM]]"
                     ],
                     removeLocalVariable: [
                         type: "object",
@@ -2710,7 +2710,7 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
         configPageError: err,
         repairHints: repairHints,
         health: health,
-        verificationFetchFailed: verificationFetchFailed
+        verificationFetchFailed: verificationFetchFailed || _rmCarriesUnconfirmedWrite(skipped)
     ]
     if (conditionId != null) result.conditionId = conditionId
     return result
@@ -6549,7 +6549,7 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
         configPageError: err,
         repairHints: repairHints,
         health: health,
-        verificationFetchFailed: verificationFetchFailed
+        verificationFetchFailed: verificationFetchFailed || _rmCarriesUnconfirmedWrite(skipped)
     ]
 }
 
@@ -6721,7 +6721,7 @@ private Integer _rmBuildCondition(Integer appId, Integer idx, Map condSpec, List
         // the variable name. If it didn't land, the condition will render
         // as "A <comparator> 0" (state_<N> default) instead of "A vs B".
         // Fail loudly rather than letting the caller think they got A vs B.
-        if (!(applied ?: []).contains("xVarR_${idx}".toString())) {
+        if (!(applied ?: []).contains("xVarR_${idx}".toString()) && !_rmSkipUnconfirmed(skipped, "xVarR_${idx}".toString())) {
             throw new IllegalStateException("condition.compareToVariable=${condSpec.compareToVariable} could not be written: xVarR_${idx} did not appear after comparator '${condSpec.comparator}'; use one of = ≠ < > <= >= in.")
         }
     }
@@ -6972,7 +6972,7 @@ private Map _rmBuildUpdateErrorResponse(Integer appId, String msg, Map backup, S
         // pageName tells the caller which wizard page the cancelCapab recovery click belongs on
         // (doActPage for addAction, STPage for addRequiredExpression). The wizardStuck markers
         // themselves carry no page info, so callers thread it in.
-        restoreHint = _rmBackupHint(backup, "Backup baseline available -- restore via hub_restore_backup with backupKey='${backup?.backupKey}'. Restoring returns the app to that snapshot and may undo every later edit in the baseline's one-hour chain.") + (flags.closeHint ?: " Or, before your next write, close the in-flight wizard manually: hub_set_rule(button='cancelCapab', pageName='${pageName}', confirm=true) for an open condition sub-wizard, hub_set_rule(button='actionCancel', pageName='doActPage', confirm=true) for a stuck editor on a new action row, or button='actionDone' for an editor modifyAction opened on a committed action (actionCancel would delete that action).")
+        restoreHint = _rmBackupHint(backup, "Backup baseline available -- restore via hub_restore_backup with backupKey='${backup?.backupKey}'. Restoring returns the app to that snapshot and may undo every later edit in the baseline's one-hour chain.") + " Or, before your next write, close the in-flight wizard manually: hub_set_rule(button='cancelCapab', pageName='${pageName}', confirm=true) for an open condition sub-wizard, hub_set_rule(button='actionCancel', pageName='doActPage', confirm=true) for a stuck editor on a new action row, or button='actionDone' for an editor modifyAction opened on a committed action (actionCancel would delete that action)."
     } else {
         restoreHint = _rmBackupHint(backup)
     }
@@ -8727,6 +8727,17 @@ def toolSetRule(args) {
 // activated (the rule runs with it: its re-initialization was not skipped or rejected) and
 // verified (activated, and the readback and health check confirmed it). applied is null when a
 // failure left fields written or an editor open. Schema and probe results are left alone.
+// Whether a result carries a write whose read-back failed (verification_fetch_failed), at any depth.
+private boolean _rmCarriesUnconfirmedWrite(Object o, int depth = 0) {
+    if (depth > 5) return false
+    if (o instanceof Map) {
+        if ((o as Map).reason == "verification_fetch_failed") return true
+        return (o as Map).any { k, v -> k != "health" && _rmCarriesUnconfirmedWrite(v, depth + 1) }
+    }
+    if (o instanceof List) return (o as List).any { _rmCarriesUnconfirmedWrite(it, depth + 1) }
+    return false
+}
+
 Map _rmStampOutcome(Object result) {
     if (!(result instanceof Map) || !(result as Map).containsKey("success")) return result as Map
     Map r = result as Map
@@ -8741,7 +8752,7 @@ Map _rmStampOutcome(Object result) {
     boolean activated = applied && r.status != "in_progress" && r.updateRuleFailed != true && r.subscriptionsNotLive != true &&
         r.mainPageDoneFailed != true && r.mainPageDoneSkipped != true && r.finalisationNotAttempted != true
     boolean verified = activated && r.success == true && r.verificationFetchFailed != true && r.healthUnverified != true &&
-        (r.health == null || ((r.health as Map).ok == true && (r.health as Map).unreadable != true))
+        (r.health == null || ((r.health as Map).ok == true && (r.health as Map).unreadable != true)) && !_rmCarriesUnconfirmedWrite(r)
     r.applied = appliedFlag
     r.activated = activated
     r.verified = verified
@@ -9347,13 +9358,15 @@ private Map _rmPreflightAddLocalVariable(Integer appId, Map varSpec) {
         }
     }
 
-    // RM stores a Number or Decimal value as given, and a non-numeric one breaks the rule's page.
-    if (typeCanonical == "Number" && !(value.toString().trim() ==~ /-?\d+/)) {
-        throw new IllegalArgumentException("addLocalVariable.value for Number must be a whole number (got '${value}'). RM is not touched.")
-    }
-    if (typeCanonical == "Decimal") {
-        try { new BigDecimal(value.toString().trim()) }
-        catch (NumberFormatException ignored) { throw new IllegalArgumentException("addLocalVariable.value for Decimal must be a number (got '${value}'). RM is not touched.") }
+    // RM stores the text it is sent: a Number of "5.0" or " 5 " is kept as that string, and "5.0" breaks
+    // the rule's page (seen live). Any spelling of the value is taken and sent in plain form.
+    if (typeCanonical in ["Number", "Decimal"]) {
+        BigDecimal num = null
+        try { num = new BigDecimal(value.toString().trim()) } catch (NumberFormatException ignored) { }
+        if (num == null || (typeCanonical == "Number" && num.stripTrailingZeros().scale() > 0)) {
+            throw new IllegalArgumentException("addLocalVariable.value for ${typeCanonical} must be ${typeCanonical == 'Number' ? 'a whole number' : 'a number'} (got '${value}'). RM is not touched.".toString())
+        }
+        serializedValue = typeCanonical == "Number" ? num.toBigIntegerExact().toString() : num.toPlainString()
     }
 
     if (typeCanonical == "DateTime") {
@@ -9406,15 +9419,40 @@ private boolean _rmSkipUnconfirmed(List skipped, String key) {
 }
 
 // Cancels the local-variable editor a failed add can leave open on selectActions; true when it is closed.
-// A cancelGV sent while the editor is closed is held and closes the next add's editor (seen live), so a
-// closed editor is not clicked.
+// A cancelGV sent while the editor is closed is held and closes the next add's editor (seen live), so it
+// is clicked only when the page shows the editor; an unreadable page is not clicked.
 private boolean _rmCancelLocalVarEditor(Integer appId) {
-    if (_rmLocalVarEditorOpen(appId) == false) return true
+    Boolean open = _rmLocalVarEditorOpen(appId)
+    if (open == false) return true
+    if (open == null) return false
     try {
         _rmClickAppButton(appId, "cancelGV", "cancelGV", "selectActions")
         return _rmLocalVarEditorOpen(appId) == false
     } catch (Exception e) {
         mcpLog("warn", "rm-native", "addLocalVariable: closing the variable editor on app ${appId} failed: ${e.message ?: e.toString()}")
+        return false
+    }
+}
+
+private String _rmLocalVarEditorHint() {
+    "If the variable editor still shows on selectActions (hub_get_app_config pageName:'selectActions'), close it with hub_set_rule(button:'cancelGV', stateAttribute:'cancelGV', pageName:'selectActions'); a cancelGV sent to a closed editor is held and closes the next add's editor."
+}
+
+// Closes RM's delete-variable prompt (its own Cancel, cancelDel) only when the page shows it; true when it is
+// closed. A cancelCapab leaves that prompt open (seen live).
+private boolean _rmCancelLocalVarDeletePrompt(Integer appId) {
+    def promptOpen = { ->
+        try { return (_rmCollectInputSchema(_rmFetchConfigJson(appId, "selectActions")?.configPage as Map) ?: [:]).containsKey("delConfirm") }
+        catch (Exception e) { mcpLog("warn", "rm-native", "removeLocalVariable: selectActions on app ${appId} could not be read: ${e.message ?: e}"); return null }
+    }
+    Boolean open = promptOpen()
+    if (open == false) return true
+    if (open == null) return false
+    try {
+        _rmClickAppButton(appId, "cancelDel", "cancelDel", "selectActions")
+        return promptOpen() == false
+    } catch (Exception e) {
+        mcpLog("warn", "rm-native", "removeLocalVariable: closing the delete prompt on app ${appId} failed: ${e.message ?: e}")
         return false
     }
 }
@@ -9430,10 +9468,12 @@ private Map _rmAddLocalVariable(Integer appId, Map varSpec, Map plan = null) {
     def applied = []
     def skipped = []
 
-    // Step 1. Click moreVar to open the wizard. Any failure from here to the value write closes the
-    // editor it opened before it propagates.
-    _rmClickAppButton(appId, "moreVar", "moreVar", "selectActions")
+    // A write that throws (its response can be lost after RM committed) is judged by the read-back below.
+    Exception writeExc = null
     try {
+
+    // Step 1. Click moreVar to open the wizard.
+    _rmClickAppButton(appId, "moreVar", "moreVar", "selectActions")
 
     // Step 2. Write hbVar (name).
     _rmWriteSettingOnPage(appId, "selectActions", "hbVar", name, applied, null, skipped)
@@ -9453,7 +9493,7 @@ private Map _rmAddLocalVariable(Integer appId, Map varSpec, Map plan = null) {
                 success: false, partial: !closed, wizardStuck: !closed, name: name, type: typeCanonical, value: value,
                 settingsApplied: applied, settingsSkipped: skipped,
                 error: "RM's DateTime editor did not offer ${missing.join(' and ')} for '${name}', so it was not created${closed ? '; the editor was cancelled' : ' and the editor may still be open'}.".toString(),
-                repairHints: closed ? [] : ["Click cancelGV on selectActions (hub_set_rule button:'cancelGV', stateAttribute:'cancelGV', pageName:'selectActions') to close the variable editor."]
+                repairHints: closed ? [] : [_rmLocalVarEditorHint()]
             ]
         }
         String v = serializedValue.toString()
@@ -9468,21 +9508,11 @@ private Map _rmAddLocalVariable(Integer appId, Map varSpec, Map plan = null) {
     } else {
         _rmWriteSettingOnPage(appId, "selectActions", "varValue", serializedValue, applied, null, skipped)
     }
-    } catch (Exception writeExc) {
-        // A response lost after RM committed the variable: the variable is there, so the add stands.
-        def afterRead = _rmReadLocalVarsMap(appId)
-        if (afterRead.ok && _rmLocalVarMatches(afterRead.vars.get(name), typeCanonical, serializedValue)) {
-            mcpLog("warn", "rm-native", "addLocalVariable: a write for '${name}' on app ${appId} failed (${writeExc.message}), but the variable is on the rule as asked")
-            return [success: true, name: name, type: typeCanonical, value: value, settingsApplied: applied, settingsSkipped: skipped]
-        }
-        boolean closed = _rmCancelLocalVarEditor(appId)
-        mcpLog("warn", "rm-native", "addLocalVariable: a write for '${name}' on app ${appId} failed (${writeExc.message}); the variable editor ${closed ? 'is closed' : 'may still be open'}")
-        if (closed && afterRead.ok) throw writeExc
-        String unread = afterRead.ok ? "" : " Whether '${name}' was added could not be read back (${afterRead.error ?: 'no map'}); check hub_list_rule_local_variables."
-        String stuck = closed ? "" : " [wizardStuck -- the variable editor may still be open]"
-        throw _rmFail(new IllegalStateException("${writeExc.message ?: writeExc}${unread}${stuck}".toString(), writeExc), [wizardStuck: !closed, fieldsWritten: true,
-            closeHint: " Or, before your next write, close the variable editor: hub_set_rule(button='cancelGV', stateAttribute='cancelGV', pageName='selectActions', confirm=true)."])
+    } catch (Exception e) {
+        writeExc = e
+        mcpLog("warn", "rm-native", "addLocalVariable: a write for '${name}' on app ${appId} failed (${e.message ?: e}); reading the rule's locals for what Rule Machine kept")
     }
+    String writeNote = writeExc ? " A write failed on the way (${writeExc.message ?: writeExc})." : ""
 
     // Verify via appState.allLocalVars that the variable committed. RM
     // may take a moment to persist after varValue is written, so retry
@@ -9528,19 +9558,19 @@ private Map _rmAddLocalVariable(Integer appId, Map varSpec, Map plan = null) {
             value: value,
             settingsApplied: applied,
             settingsSkipped: skipped,
-            error: "Variable '${name}' is on the rule as type ${foundType}, value ${foundValue}, not the ${typeCanonical} ${value} this call asked for.".toString(),
+            error: "Variable '${name}' is on the rule as type ${foundType}, value ${foundValue}, not the ${typeCanonical} ${value} this call asked for.${writeNote}".toString(),
             repairHints: [
                 "Read the rule's local variables (hub_list_rule_local_variables). If '${name}' is not what you want, set it with an action setLocalVariable, or removeLocalVariable and add it again.".toString()
             ]
         ]
     }
-    if (!committed && !anyReadOk && _rmLocalVarEditorOpen(appId) == false) {
-        // No read answered and the editor is closed: RM closes it when it commits, so the add may have landed.
+    if (!committed && !anyReadOk && _rmLocalVarEditorOpen(appId) != true) {
+        // No read answered and the editor is not seen open: RM closes it when it commits, so the add may have landed.
         return [
             success: false, partial: true, fieldsWritten: true, verificationFetchFailed: true,
             name: name, type: typeCanonical, value: value, settingsApplied: applied, settingsSkipped: skipped,
-            error: "Variable '${name}' was written but the rule's local variables could not be read back (${lastFetchErr}), so whether it was added is unknown.".toString(),
-            repairHints: ["Read the rule's local variables (hub_list_rule_local_variables) before retrying; a retry of an added name is refused as already existing."]
+            error: "Variable '${name}' was written but the rule's local variables could not be read back (${lastFetchErr}), so whether it was added is unknown.${writeNote}".toString(),
+            repairHints: ["Read the rule's local variables (hub_list_rule_local_variables) before retrying; a retry of an added name is refused as already existing.", _rmLocalVarEditorHint()]
         ]
     }
     if (!committed) {
@@ -9549,17 +9579,17 @@ private Map _rmAddLocalVariable(Integer appId, Map varSpec, Map plan = null) {
             success: false,
             partial: !closed,
             wizardStuck: !closed,
-            hubRenderError: true,
+            hubRenderError: writeExc == null,
             name: name,
             type: typeCanonical,
             value: value,
             settingsApplied: applied,
             settingsSkipped: skipped,
-            error: "Variable '${name}' did not commit; check that the value matches the variable's type.",
+            error: (writeExc ? "Variable '${name}' was not added: a write failed (${writeExc.message ?: writeExc}).${closed ? ' The editor was closed.' : ''}" : "Variable '${name}' did not commit; check that the value matches the variable's type.").toString(),
             repairHints: [
                 "Check the value's type against varType — Number/Decimal want numeric, String wants text, Boolean wants true/false, DateTime wants an ISO-style timestamp.",
                 "Inspect via /installedapp/statusJson/<appId> appState.allLocalVars to see what's currently there."
-            ] + (closed ? [] : ["The variable editor is still open: click cancelGV on selectActions (hub_set_rule button:'cancelGV', stateAttribute:'cancelGV', pageName:'selectActions')."])
+            ] + (closed ? [] : [_rmLocalVarEditorHint()])
         ]
     }
 
@@ -9660,19 +9690,24 @@ private Map _rmRemoveLocalVariable(Integer appId, String varName) {
             _rmClickAppButton(appId, name, "deleteGV", "selectActions")
             _rmClickAppButton(appId, "delConfirm", "deleteConfirm", "selectActions")
         } catch (Exception clickExc) {
-            def cleanupFailed = false
-            def cleanupErr = null
-            try { _rmClickAppButton(appId, "cancelCapab", null, "selectActions") }
-            catch (Exception cancelExc) {
-                cleanupFailed = true
-                cleanupErr = cancelExc.message ?: cancelExc.toString()
-                mcpLog("warn", "rm-native", "removeLocalVariable: cancelCapab cleanup failed for app ${appId} after a deleteGV/delConfirm click threw (var '${name}'): ${cleanupErr} -- the delete wizard may stay open and confuse subsequent edits; result will carry wizardStuck=true")
-            }
             def baseMsg = clickExc.message ?: clickExc.toString()
-            if (cleanupFailed) {
-                throw _rmFail(new IllegalStateException("${baseMsg} [wizardStuck -- cancelCapab cleanup also failed: ${cleanupErr}]", clickExc), _rmOutcomeFlags(clickExc) + [wizardStuck: true])
+            // A response lost after RM deleted the variable: it is gone, so the delete stands.
+            def afterRead = _rmReadLocalVarsMap(appId)
+            if (afterRead.ok && !afterRead.vars.containsKey(name)) {
+                mcpLog("warn", "rm-native", "removeLocalVariable: a click for '${name}' on app ${appId} failed (${baseMsg}), but the variable is gone")
+                stillThere = false
+                break
             }
-            throw new IllegalStateException("removeLocalVariable: deleteGV/delConfirm click failed for '${name}' -- ${baseMsg}. The in-flight delete wizard was closed (cancelCapab); retry the removal.")
+            boolean closed = _rmCancelLocalVarDeletePrompt(appId)
+            String promptHint = "If RM's delete prompt still shows on selectActions (its Delete Variable button, delConfirm), close it with hub_set_rule(button:'cancelDel', stateAttribute:'cancelDel', pageName:'selectActions')."
+            if (!afterRead.ok) {
+                return [success: false, partial: true, fieldsWritten: true, verificationFetchFailed: true, wizardStuck: !closed, name: name, deleted: null,
+                        error: "removeLocalVariable: a click for '${name}' failed (${baseMsg}) and the rule's local variables could not be read back (${afterRead.error}), so whether it was deleted is unknown.".toString(),
+                        repairHints: ["Read the rule's local variables (hub_list_rule_local_variables) before deleting again."] + (closed ? [] : [promptHint])]
+            }
+            return [success: false, partial: !closed, wizardStuck: !closed, name: name, deleted: false,
+                    error: "removeLocalVariable: a click for '${name}' failed (${baseMsg}); '${name}' is still on the rule${closed ? ' and the delete prompt is closed, so the removal can be retried' : ''}.".toString(),
+                    repairHints: closed ? ["Retry the removal."] : [promptHint]]
         }
         // Verify: poll appState.allLocalVars until the var is gone. Settle before each
         // read -- RM persists the delete a moment after delConfirm, so reading first
@@ -9697,6 +9732,7 @@ private Map _rmRemoveLocalVariable(Integer appId, String varName) {
 
     if (stillThere) {
         def readMayHaveSucceeded = (lastFetchErr != null && !verifyReadOk)
+        def unknown = readMayHaveSucceeded
         def error
         def repairHints
         if (readMayHaveSucceeded) {
@@ -9721,11 +9757,14 @@ private Map _rmRemoveLocalVariable(Integer appId, String varName) {
                 "Inspect the current locals via hub_list_rule_local_variables."
             ]
         }
+        // An unread outcome is unknown (applied null); a delete that did not take changed nothing.
         return [
             success: false,
-            partial: true,
+            partial: unknown,
+            fieldsWritten: unknown,
+            verificationFetchFailed: unknown,
             name: name,
-            deleted: false,
+            deleted: unknown ? null : false,
             error: error,
             repairHints: repairHints
         ]
@@ -9858,7 +9897,7 @@ private Map _rmApplyLocalVarResult(Integer appId, Map varResult, Map backup, Str
                 : "the rule is broken (cause indeterminate)")
         note = "Local variable '${varResult?.name}' was deleted but ${brokeClause} (see error/repairHints); updateRule ${updateRuleFailed ? 'FAILED -- removal may not be live' : 'fired'}."
     } else {
-        note = "Local variable '${varResult?.name}' ${varResult?.deleted == true ? 'removed' : 'NOT removed (verify miss -- see repairHints)'}; updateRule ${updateRuleFailed ? 'FAILED -- removal may not be live' : (varResult?.deleted == true ? 'fired' : 'fired (removal unconfirmed)')}."
+        note = "Local variable '${varResult?.name}' ${varResult?.deleted == true ? 'removed' : (varResult?.verificationFetchFailed == true ? 'may or may not have been removed (its read-back failed -- see error)' : 'NOT removed (see error)')}; updateRule ${updateRuleFailed ? 'FAILED -- removal may not be live' : (varResult?.deleted == true ? 'fired' : 'fired (removal unconfirmed)')}."
     }
     def envelope = [
         success: (varResult?.success != false) && _rmHealthGatePass(health) && !updateRuleFailed,
@@ -9884,10 +9923,10 @@ private Map _rmApplyLocalVarResult(Integer appId, Map varResult, Map backup, Str
         envelope.settingsApplied = varResult?.settingsApplied
         envelope.settingsSkipped = varResult?.settingsSkipped
         envelope.hubRenderError = varResult?.hubRenderError
-        if (varResult?.wizardStuck == true) envelope.wizardStuck = true
-        if (varResult?.fieldsWritten == true) envelope.fieldsWritten = true
-        if (varResult?.verificationFetchFailed == true) envelope.verificationFetchFailed = true
     }
+    if (varResult?.wizardStuck == true) envelope.wizardStuck = true
+    if (varResult?.fieldsWritten == true) envelope.fieldsWritten = true
+    if (varResult?.verificationFetchFailed == true) envelope.verificationFetchFailed = true
     return envelope
 }
 
@@ -10075,7 +10114,7 @@ private void _rmDropPredClearPending(Integer appId, Object observedGeneration) {
 // reveal-miss blame a firmware gap. No-op when the selector landed.
 private void _rmAssertSelectorLanded(int idx, List applied, List skipped, String modeLabel, String opField = "numOp", String capLbl = "setVariable") {
     def selectorKey = "${opField}.${idx}".toString()
-    if (!applied.contains(selectorKey) && skipped.any { it?.key?.toString() == selectorKey }) {
+    if (!applied.contains(selectorKey) && skipped.any { it?.key?.toString() == selectorKey } && !_rmSkipUnconfirmed(skipped, selectorKey)) {
         def selectorSkip = skipped.find { it?.key?.toString() == selectorKey }
         throw new IllegalArgumentException("${capLbl}: ${opField}.${idx} write did not land (reason: ${selectorSkip?.reason}) -- ${modeLabel} reveal cannot proceed. Verify the doActPage schema includes ${opField}.${idx} at this action position.")
     }
@@ -13964,8 +14003,9 @@ def _applyNativeAppEdit(args) {
                         if (pm.settings instanceof Map && (pm.settings as Map).values().any { it instanceof Map }) {
                             _rmRejectNonDeviceMapSettings(appId, pm.pageName?.toString()?.trim() ?: null, pm.settings as Map)
                         }
-                        // Apply settings via _rmUpdateAppSettings (no auto-updateRule).
-                        def cfg = _rmFetchConfigJson(appId, pm.pageName?.toString())
+                        // No auto-updateRule; the batch fires one at its end.
+                        def opPage = pm.pageName?.toString()?.trim() ?: null
+                        def cfg = _rmFetchConfigJson(appId, opPage)
                         def schema = _rmCollectInputSchema(cfg?.configPage)
                         // As top-level settings: a key not on the page or a value the picker does not offer is
                         // reported and not sent, and the rest is written.
@@ -13983,8 +14023,33 @@ def _applyNativeAppEdit(args) {
                             patchStopItem = patchResults.last()
                             continue
                         }
-                        _rmUpdateAppSettings(appId, opWritable, schema)
-                        patchResults << (opEntry + [success: true, keys: opWritable.keySet().collect { it.toString() }] + ((opRefused || opSkipped) ? [partial: true] : [:]))
+                        def opApplied = []
+                        def opUnconfirmed = []
+                        if (opPage && opPage != "mainPage") {
+                            // A sub-page write needs RM's page context (a wizard field such as doActPage's cond is
+                            // dropped without it, seen live), so it goes key by key through the writer and is checked.
+                            def pageSkips = []
+                            opWritable.each { k, v ->
+                                _rmWriteSettingOnPage(appId, opPage, k.toString(), v, opApplied, null, pageSkips)
+                                _rmVerifySubPageMultipleFlags(appId, opPage, [(k.toString()): v], schema)
+                            }
+                            opUnconfirmed = pageSkips.findAll { it instanceof Map && it.reason == "verification_fetch_failed" }.collect { it.key }
+                            opRefused = opRefused + pageSkips.findAll { !(it instanceof Map && it.reason == "verification_fetch_failed") }
+                            if (opRefused) opEntry.settingsNotLanded = opRefused
+                        } else {
+                            _rmUpdateAppSettings(appId, opWritable, schema)
+                            opApplied = opWritable.keySet().collect { it.toString() }
+                        }
+                        if (opUnconfirmed) {
+                            patchResults << (opEntry + [success: false, partial: true, fieldsWritten: true, keys: opApplied, settingsUnconfirmed: opUnconfirmed,
+                                error: "patches[${pi}].settings: ${opUnconfirmed} ${opUnconfirmed.size() == 1 ? 'was' : 'were'} sent to page '${opPage}' but could not be read back, so whether ${opUnconfirmed.size() == 1 ? 'it' : 'they'} landed is unknown.".toString()])
+                        } else if (!opApplied) {
+                            patchResults << (opEntry + [success: false,
+                                error: "patches[${pi}].settings: none of ${opWritable.keySet().toList()} landed on page '${opPage}'; settingsNotLanded says why.".toString()])
+                        } else {
+                            // As top-level settings, only a value that did not land makes the op partial.
+                            patchResults << (opEntry + [success: true, keys: opApplied] + (opRefused ? [partial: true] : [:]))
+                        }
                     } else if (pm.containsKey("button")) {
                         if (pm.pageName) _rmClickRenderedButton(appId, pm.button.toString(), pm.stateAttribute?.toString(), pm.pageName.toString())
                         else _rmClickAppButton(appId, pm.button.toString(), pm.stateAttribute?.toString(), null)

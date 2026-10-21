@@ -2183,6 +2183,26 @@ class ToolRmNativeCrudSourceSpec extends RmNativeCrudSpecBase {
         w.posts.count { it.path == "/installedapp/btn" && it.body?.name == "cancelCapab" } == 1
     }
 
+    def "a numeric trigger's compareToDevice whose reference device read-back fails is committed as unconfirmed, never verified"() {
+        given: "every write lands except reltDevice1, whose read-back fails"
+        def w = wireTriggerWizard(temperatureTriggerInputs(true))
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass._rmWriteSettingOnPage = { Integer appId, String pageName, String key, Object value, List applied, String typeHint = null, List skipped = null, Map cache = null ->
+            w.writes << [key: key, value: value]
+            if (key == "reltDevice1") skipped << [key: key, reason: "verification_fetch_failed", value: value]
+            else applied << key
+        }
+
+        when:
+        def r = script._rmAddTrigger(100, [capability: "Temperature", deviceIds: [8], comparator: ">", compareToDevice: [deviceId: 9, offset: 2]])
+
+        then: "the trigger goes on to its Done, and the result says the device is unconfirmed"
+        w.writes*.key.contains("reltDevice1")
+        w.posts.any { it.body?.name == "hasAll" }
+        r.verificationFetchFailed == true
+        script._rmStampOutcome([success: true, partial: true, settingsSkipped: r.settingsSkipped]).verified == false
+    }
+
     def "a trigger failure after the editor opened cancels it once and carries no flag"() {
         given:
         def w = wireTriggerWizard(temperatureTriggerInputs(false))

@@ -6690,8 +6690,7 @@ class ToolRmNativeCrudSpec extends RmNativeCrudSpecBase {
         result.success == false
         result.wizardStuck == true
         result.applied == null
-        result.restoreHint.contains("button='cancelGV'")
-        !result.restoreHint.contains("actionCancel")
+        (result.repairHints as List).any { it.toString().contains("button:'cancelGV'") }
     }
 
     def "an addLocalVariable write whose response is lost after RM committed the variable is a success, and cancelGV is not clicked"() {
@@ -6776,6 +6775,128 @@ class ToolRmNativeCrudSpec extends RmNativeCrudSpecBase {
         result.verificationFetchFailed == true
         result.error.contains("unknown")
         !clicks.contains("cancelGV")
+    }
+
+    def "addLocalVariable sends a Number or Decimal in plain form: #value as #type is posted as #posted"() {
+        given:
+        enableWrite()
+        def selActs = [[name: "hbVar", type: "text"], [name: "varType", type: "enum", options: ["Number", "Decimal"]], [name: "varValue", type: "number"]]
+        boolean committed = false
+        def posts = []
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", committed ? [] : selActs) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            JsonOutput.toJson([installedApp: [id: 100], appSettings: [], eventSubscriptions: [], scheduledJobs: [],
+                appState: committed ? [[name: "allLocalVars", value: [n: [type: type == "Number" ? "integer" : "bigdecimal", value: posted]]]] : [], state: [:]])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << body
+            if (body?.containsKey("settings[varValue]")) committed = true
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([appId: 100, addLocalVariable: [name: "n", type: type, value: value], confirm: true])
+
+        then:
+        posts.find { it?.containsKey("settings[varValue]") }?.get("settings[varValue]")?.toString() == posted
+        result.success == true
+
+        where:
+        type      | value   | posted
+        "Number"  | " 5 "   | "5"
+        "Number"  | "+5"    | "5"
+        "Number"  | "5.0"   | "5"
+        "Number"  | 7.00G   | "7"
+        "Decimal" | " 2.5 " | "2.5"
+        "Decimal" | "1e3"   | "1000"
+    }
+
+    def "an addLocalVariable write that throws before RM shows the commit is judged by the retried read-back"() {
+        given: "the varValue POST throws and the variable shows only on the second read"
+        enableWrite()
+        def selActs = [[name: "hbVar", type: "text"], [name: "varType", type: "enum", options: ["Number"]], [name: "varValue", type: "number"]]
+        int reads = 0
+        boolean written = false
+        def clicks = []
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", written ? [] : selActs) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            boolean show = written && (++reads >= 2)
+            JsonOutput.toJson([installedApp: [id: 100], appSettings: [], eventSubscriptions: [], scheduledJobs: [],
+                appState: show ? [[name: "allLocalVars", value: [n: [type: "integer", value: 5]]]] : [], state: [:]])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn") clicks << body.name
+            if (body?.containsKey("settings[varValue]")) { written = true; throw new RuntimeException("Read timed out") }
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([appId: 100, addLocalVariable: [name: "n", type: "Number", value: 5], confirm: true])
+
+        then:
+        result.success == true
+        result.applied == true
+        !clicks.contains("cancelGV")
+    }
+
+    def "an addLocalVariable whose editor page cannot be read sends no blind cancelGV and reports the outcome as unknown"() {
+        given: "the value write throws, nothing commits, and selectActions can no longer be read"
+        enableWrite()
+        def selActs = [[name: "hbVar", type: "text"], [name: "varType", type: "enum", options: ["Number"]], [name: "varValue", type: "number"]]
+        boolean written = false
+        def clicks = []
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            if (written) throw new RuntimeException("HTTP 502")
+            ruleConfigJson(100, "r", selActs)
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> JsonOutput.toJson([installedApp: [id: 100], appSettings: [], eventSubscriptions: [], scheduledJobs: [], appState: [], state: [:]]) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn") clicks << body.name
+            if (body?.containsKey("settings[varValue]")) { written = true; throw new RuntimeException("status code: 500") }
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([appId: 100, addLocalVariable: [name: "n", type: "Number", value: 5], confirm: true])
+
+        then:
+        !clicks.contains("cancelGV")
+        result.success == false
+        result.applied == null
+        (result.repairHints as List).any { it.toString().contains("If the variable editor still shows") }
+    }
+
+    def "an addLocalVariable write that throws with the name on the rule at another value gets the same partial as the normal path"() {
+        given:
+        enableWrite()
+        def selActs = [[name: "hbVar", type: "text"], [name: "varType", type: "enum", options: ["Number"]], [name: "varValue", type: "number"]]
+        boolean written = false
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", written ? [] : selActs) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            JsonOutput.toJson([installedApp: [id: 100], appSettings: [], eventSubscriptions: [], scheduledJobs: [],
+                appState: written ? [[name: "allLocalVars", value: [n: [type: "integer", value: 9]]]] : [], state: [:]])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (body?.containsKey("settings[varValue]")) { written = true; throw new RuntimeException("Read timed out") }
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([appId: 100, addLocalVariable: [name: "n", type: "Number", value: 5], confirm: true])
+
+        then:
+        result.success == false
+        result.partial == true
+        result.error.contains("value 9")
+        result.error.contains("A write failed on the way")
     }
 
     def "addLocalVariable on a name the rule already has is refused before the wizard opens"() {
@@ -29245,7 +29366,7 @@ class ToolRmNativeCrudSpec extends RmNativeCrudSpecBase {
         result.variable?.deleted == true
     }
 
-    def "removeLocalVariable verify-miss returns success=false + partial=true + repairHints"() {
+    def "removeLocalVariable verify-miss returns success=false, applied=false + repairHints"() {
         given:
         enableWrite()
         // The variable NEVER leaves allLocalVars -- the legitimate failure mode is RM
@@ -29264,9 +29385,10 @@ class ToolRmNativeCrudSpec extends RmNativeCrudSpecBase {
             confirm: true
         ])
 
-        then: "unconfirmed delete surfaces as partial, not a clean success"
+        then: "a delete that did not take changed nothing"
         result.success == false
-        result.partial == true
+        result.partial == false
+        result.applied == false
         result.error?.contains("did not delete")
         (result.repairHints as List)?.any { it?.toString()?.contains("hub_list_rule_local_variables") }
     }
@@ -29584,85 +29706,87 @@ class ToolRmNativeCrudSpec extends RmNativeCrudSpecBase {
         result.variable?.deleted == true
     }
 
-    def "removeLocalVariable: a delConfirm click throw runs cancelCapab cleanup and surfaces wizardStuck"() {
-        // REGRESSION GUARD: a mid-sequence delConfirm POST failure must NOT escape raw to
-        // the dispatcher leaving RM's confirm prompt half-open. The helper must close the
-        // wizard (cancelCapab on selectActions) before propagating, and -- when that
-        // cleanup ALSO fails -- embed the wizardStuck marker so the dispatcher surfaces the
-        // cancelCapab recovery hint. Goes RED if the cleanup-on-throw is removed.
-        given:
+    def "removeLocalVariable: a delConfirm click throw closes RM's delete prompt with cancelDel; a failing cancelDel reports wizardStuck"() {
+        given: "the prompt shows, delConfirm throws, and the hub refuses cancelDel"
         enableWrite()
-        def cancelClicks = []
+        def clicks = []
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
-        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", [[name: "cancelDel", type: "button"], [name: "delConfirm", type: "button"]]) }
         hubGet.register('/installedapp/statusJson/100') { params -> statusJsonWithLocals(100, [doomed: [type: "integer", value: 1]]) }
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        // deleteGV succeeds; delConfirm THROWS (the half-open-leaving step). cancelCapab is
-        // recorded AND also throws -- forcing the wizardStuck-marker branch.
         script.metaClass._rmClickAppButton = { Integer aid, String btn, String sa = null, String pg = null ->
+            clicks << btn
             if (btn == "delConfirm") throw new IllegalArgumentException("Button click 'delConfirm' on app ${aid} failed: status=400")
-            if (btn == "cancelCapab") {
-                cancelClicks << [page: pg]
-                throw new IllegalArgumentException("Button click 'cancelCapab' on app ${aid} failed: status=400")
-            }
+            if (btn == "cancelDel") throw new IllegalArgumentException("Button click 'cancelDel' on app ${aid} failed: status=400")
             [status: 200, location: null, data: '']
         }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
 
         when:
-        def result = script.toolSetRule([
-            appId: 100,
-            removeLocalVariable: [name: "doomed"],
-            confirm: true
-        ])
+        def result = script.toolSetRule([appId: 100, removeLocalVariable: [name: "doomed"], confirm: true])
 
-        then: "cancelCapab cleanup was attempted on selectActions before the error propagated"
-        cancelClicks.any { it.page == "selectActions" }
-
-        and: "the error envelope flags wizardStuck with the cancelCapab recovery hint"
+        then:
+        clicks.contains("cancelDel")
+        !clicks.contains("cancelCapab")
         result.success == false
         result.wizardStuck == true
-        result.restoreHint?.contains("cancelCapab")
-        result.restoreHint?.contains("selectActions")
+        result.applied == null
+        (result.repairHints as List).any { it.toString().contains("cancelDel") }
     }
 
-    def "removeLocalVariable: a delConfirm click throw with a SUCCEEDING cancelCapab cleanup surfaces a retry hint (no wizardStuck)"() {
-        // Companion to the cancelCapab-ALSO-fails spec: when the mid-sequence delConfirm POST
-        // throws but the cancelCapab cleanup SUCCEEDS, the wizard is closed cleanly, so the
-        // error must NOT carry wizardStuck -- it surfaces the plain "delete wizard was closed
-        // (cancelCapab); retry" message instead. Goes RED if the success branch starts
-        // mislabelling a clean cleanup as wizardStuck.
-        given:
+    def "removeLocalVariable: a delConfirm click throw with the prompt closed by cancelDel is a plain retryable failure"() {
+        given: "the prompt shows until cancelDel closes it"
         enableWrite()
-        def cancelClicks = []
+        def clicks = []
+        boolean closed = false
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
-        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", closed ? [] : [[name: "cancelDel", type: "button"], [name: "delConfirm", type: "button"]]) }
         hubGet.register('/installedapp/statusJson/100') { params -> statusJsonWithLocals(100, [doomed: [type: "integer", value: 1]]) }
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        // deleteGV succeeds; delConfirm THROWS; cancelCapab is recorded and SUCCEEDS (the clean
-        // cleanup path -- distinct from the wizardStuck case where cancelCapab also throws).
         script.metaClass._rmClickAppButton = { Integer aid, String btn, String sa = null, String pg = null ->
+            clicks << btn
             if (btn == "delConfirm") throw new IllegalArgumentException("Button click 'delConfirm' on app ${aid} failed: status=400")
-            if (btn == "cancelCapab") cancelClicks << [page: pg]
+            if (btn == "cancelDel") closed = true
             [status: 200, location: null, data: '']
         }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
 
         when:
-        def result = script.toolSetRule([
-            appId: 100,
-            removeLocalVariable: [name: "doomed"],
-            confirm: true
-        ])
+        def result = script.toolSetRule([appId: 100, removeLocalVariable: [name: "doomed"], confirm: true])
 
-        then: "cancelCapab cleanup ran on selectActions and the delete error surfaced"
-        cancelClicks.any { it.page == "selectActions" }
+        then:
+        clicks.contains("cancelDel")
+        !clicks.contains("cancelCapab")
         result.success == false
-
-        and: "the clean-cleanup path does NOT flag wizardStuck and points the caller at a retry"
         result.wizardStuck != true
-        result.error?.toString()?.contains("retry") || result.repairHints?.any { it?.toString()?.contains("retry") } ||
-            result.restoreHint?.toString()?.contains("retry")
+        result.applied == false
+        result.error.contains("can be retried")
+    }
+
+    def "removeLocalVariable: a delConfirm response lost after RM deleted the variable is a success, and nothing is cancelled"() {
+        given: "delConfirm deletes on the hub but its response is lost"
+        enableWrite()
+        def clicks = []
+        boolean deleted = false
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJsonWithLocals(100, deleted ? [:] : [doomed: [type: "integer", value: 1]]) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass._rmClickAppButton = { Integer aid, String btn, String sa = null, String pg = null ->
+            clicks << btn
+            if (btn == "delConfirm") { deleted = true; throw new IllegalStateException("Read timed out") }
+            [status: 200, location: null, data: '']
+        }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+
+        when:
+        def result = script.toolSetRule([appId: 100, removeLocalVariable: [name: "doomed"], confirm: true])
+
+        then:
+        result.success == true
+        result.variable?.deleted == true
+        !clicks.contains("cancelDel")
+        !clicks.contains("cancelCapab")
     }
 
     def "removeLocalVariable: when every verify read throws, the hint leads with read-failure (not still-referenced)"() {

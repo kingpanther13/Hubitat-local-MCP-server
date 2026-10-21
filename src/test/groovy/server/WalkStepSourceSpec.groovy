@@ -696,6 +696,62 @@ class WalkStepSourceSpec extends ToolSpecBase {
         !posts.any { it.body?.containsKey("settings[notAnInput]") }
     }
 
+    def "a patches settings key not on the page does not stop the batch, as top-level settings do not"() {
+        given:
+        enableWrite()
+        def posts = []
+        def main = { -> page("mainPage", [[name: "comments", type: "text"], [name: "updateRule", type: "button"]]) }
+        hubGet.register('/installedapp/configure/json/100') { params -> main() }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> main() }
+        hubGet.register('/installedapp/statusJson/100') { params -> status() }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> posts << [path: path, body: body]; [status: 200, data: ''] }
+
+        when:
+        def result = script.toolSetRule([appId: 100, confirm: true, patches: [[settings: [comments: "x", notAnInput: "1"]], [settings: [comments: "y"]]]])
+
+        then:
+        def ops = result.patches as List
+        ops[0].success == true
+        !ops[0].partial
+        ops[0].settingsSkipped == ["notAnInput"]
+        ops[1].success == true
+        !result.bulkStoppedAfter
+        posts.any { it.body?.get("settings[comments]") == "y" }
+    }
+
+    def "a patches settings op on a sub-page writes with RM's page context and reports a write the page does not keep"() {
+        given: "selectTriggers keeps tCapab1 only when the POST carries currentPage"
+        enableWrite()
+        def posts = []
+        boolean kept = false
+        hubGet.register('/installedapp/configure/json/100') { params -> page("mainPage", [[name: "updateRule", type: "button"]]) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            def cap = [name: "tCapab1", type: "enum", options: ["Switch"]]
+            if (kept) cap.value = "Switch"
+            page("selectTriggers", [cap, [name: "hasAll", type: "button"]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> status() }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            if (body?.containsKey("settings[tCapab1]") && body?.currentPage == "selectTriggers" && withContext) kept = true
+            [status: 200, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([appId: 100, confirm: true, patches: [[settings: [tCapab1: "Switch"], pageName: "selectTriggers"]]])
+
+        then:
+        def op = (result.patches as List)[0]
+        posts.find { it.body?.containsKey("settings[tCapab1]") }?.body?.currentPage == "selectTriggers"
+        op.success == landed
+        (op.settingsNotLanded ?: [])*.key == (landed ? [] : ["tCapab1"])
+
+        where:
+        withContext | landed
+        true        | true
+        false       | false
+    }
+
     def "walkStep validateEnum lets an empty value clear the picker, as the settings writer does"() {
         given:
         enableWrite()
