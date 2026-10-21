@@ -140,7 +140,36 @@ class NativeRuleExactRestoreSpec extends ToolSpecBase {
         thrown(IllegalArgumentException)
         events.empty
         where:
-        response << [[:], [device: [id: 595]]]
+        response << [[device: [id: 595]]]
+    }
+
+    def 'a missing recovery device returns structured refusal before undo capture or mutation'() {
+        given:
+        Map payload = new JsonSlurper().parseText(snapshot.nativeExport) as Map
+        payload.deviceReplacements = ['591': [value: '591']]
+        snapshot.nativeExport = JsonOutput.toJson(payload)
+        cacheForm()
+        String beforeState = JsonOutput.toJson(child.backing)
+        String beforeSettings = JsonOutput.toJson(child.typed)
+        hubGet.register('/device/fullJson/591') { q ->
+            if (response == '404') throw new IllegalStateException('status code: 404 Not Found')
+            JsonOutput.toJson([:])
+        }
+        when:
+        def result = restore()
+        then:
+        !result.success && !result.partial
+        result.failedStep == 'devicePreflight'
+        result.missingDeviceIds == ['591']
+        result.error.contains('Nothing was restored')
+        !result.containsKey('settingsSkipped')
+        events.empty
+        JsonOutput.toJson(child.backing) == beforeState
+        JsonOutput.toJson(child.typed) == beforeSettings
+        nativeContexts().containsKey(script._nfCallerKey())
+        busyContexts().isEmpty()
+        where:
+        response << ['404', 'empty']
     }
 
     def 'same IDs with changed compiled payload after rebuild cannot be reported restored'() {

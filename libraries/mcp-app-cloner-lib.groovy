@@ -1125,12 +1125,26 @@ private Map _rmRestoreNativeEdit(Map snapshot, String sourceBackupKey) {
     List plan = _rmNativeSettingPlan(data.appSettings)
     def deviceIds = payload.deviceReplacements.keySet().collect { it.toString() }
     plan.findAll { it.type == 'capability' || it.type.startsWith('capability.') }.each { row -> deviceIds.addAll(row.value instanceof List ? row.value : [row.value]) }
+    List missingDeviceIds = []
     deviceIds.unique().each { wanted ->
         if (!wanted.toString().isLong() || wanted.toString().toLong() <= 0L) throw new IllegalArgumentException('Invalid recovery device reference')
-        def raw = hubInternalGet("/device/fullJson/${wanted}")
+        def raw
+        try { raw = hubInternalGet("/device/fullJson/${wanted}") }
+        catch (Exception failure) {
+            Integer status = _httpStatusOf(failure)
+            String message = failure.message ?: ''
+            boolean missing = status != null ? status == 404 : message ==~ /(?s).*status code:? 404\b.*/ && message.contains('Not Found')
+            if (!missing) throw failure
+            missingDeviceIds << wanted.toString()
+            return
+        }
         def device = raw instanceof Map ? raw : new groovy.json.JsonSlurper().parseText(raw?.toString() ?: '')
+        if (device instanceof Map && device.isEmpty()) { missingDeviceIds << wanted.toString(); return }
         if (!(device instanceof Map) || device.device?.id?.toString() != wanted.toString()) throw new IllegalArgumentException("Recovery device ${wanted} could not be verified; nothing was restored".toString())
     }
+    if (missingDeviceIds) return [success: false, partial: false, type: 'rm-rule', ruleId: id, originalRuleId: id,
+        failedStep: 'devicePreflight', missingDeviceIds: missingDeviceIds,
+        error: "Recovery references devices that no longer exist: ${missingDeviceIds.join(', ')}. Nothing was restored; the rule was not changed.".toString()]
     String formKey = _nfKey(id)
     if (NATIVE_FORM_BUSY.putIfAbsent(formKey, true) != null) throw new IllegalStateException('This rule already has an active native form operation')
     Map undo = null
