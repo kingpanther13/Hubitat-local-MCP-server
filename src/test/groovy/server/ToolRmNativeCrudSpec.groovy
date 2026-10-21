@@ -622,6 +622,39 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.backup != null
     }
 
+    @Unroll
+    def "delete invalidates only matching parent cache aliases after success (force #force, outcome #outcome)"() {
+        given:
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/201') { params -> ruleConfigJson(201, "owned-parent") }
+        hubGet.register('/installedapp/statusJson/201') { params -> statusJson(201) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        atomicStateMap.parentAppIds = [rule_machine: 201, rm: '201', scene: 201L, thermostat_scheduler: 202]
+        def before = [:] + atomicStateMap.parentAppIds
+        hubGet.register('/installedapp/delete/201') { params ->
+            if (outcome == 'error') throw new IOException('delete unavailable')
+            JsonOutput.toJson([success: outcome == 'success', message: 'Cannot delete'])
+        }
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
+            [status: outcome == 'success' ? 302 : 500, location: '/installedapps', data: '']
+        }
+
+        when:
+        def result = script.toolDeleteNativeApp([appId: 201, force: force, confirm: true])
+
+        then:
+        result.success == (outcome == 'success')
+        atomicStateMap.parentAppIds == (outcome == 'success' ? [thermostat_scheduler: 202] : before)
+
+        where:
+        force | outcome
+        false | 'success'
+        true  | 'success'
+        false | 'refusal'
+        false | 'error'
+        true  | 'error'
+    }
+
     def "strict snapshots retain a pinned baseline and a rolling next step"() {
         given:
         enableWrite()
