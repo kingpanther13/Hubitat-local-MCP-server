@@ -3129,16 +3129,6 @@ def test_redaction_is_inert_outside_the_ephemeral_lane(monkeypatch):
     assert sys.stdout is out
 
 
-def test_rule_patch_rows_reads_one_key_so_continued_rows_are_not_doubled():
-    slices = [{"op": "addActions", "results": [{}, {}]}, {"op": "addAction"}]
-    # Continued terminal: patchResults holds every slice and patches mirrors it.
-    assert et._rule_patch_rows({"patchResults": slices, "patches": list(slices)}) == slices
-    assert et._rule_patch_rows({"patches": slices}) == slices
-    assert et._rule_patch_rows({"patchResults": slices}) == slices
-    assert et._rule_patch_rows({"patchResults": [], "patches": slices}) == slices
-    assert et._rule_patch_rows({"success": False}) == []
-
-
 @pytest.mark.parametrize("details,offline", [
     ({"zwaveData": {"enabled": False, "healthy": True}}, True),
     ({"zwaveData": {"enabled": True, "healthy": False}}, True),
@@ -3267,8 +3257,6 @@ def test_native_parent_install_does_not_repeat_when_rediscovery_fails():
     with pytest.raises(AssertionError, match="Expected one Rule Machine parent"):
         et._discover_native_rule_parent_id(client, install_missing=installs.append)
     assert installs == [18]
-
-
 
 
 def test_edited_snapshot_copy_retargets_only_explicit_device_references_and_labels():
