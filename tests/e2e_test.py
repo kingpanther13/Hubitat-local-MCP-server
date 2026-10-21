@@ -6221,6 +6221,14 @@ class TestRunner:
         run_native_rule_case(self, suite, method)
 
     @test("native_apps")
+    def test_legacy_export_backup_restores_in_place(self) -> None:
+        self._run_native_rule_case("backup", "test_legacy_export_backup_restores_in_place")
+
+    @test("native_apps")
+    def test_legacy_required_expression_backup_restores_in_place(self) -> None:
+        self._run_native_rule_case("backup", "test_legacy_required_expression_backup_restores_in_place")
+
+    @test("native_apps")
     def test_complex_edit_recovers_deleted_rows_and_existing_payloads(self) -> None:
         self._run_native_rule_case("backup", "test_complex_edit_recovers_deleted_rows_and_existing_payloads")
 

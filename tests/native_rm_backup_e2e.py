@@ -13,7 +13,7 @@ import native_rule_document_e2e as documents
 from native_rm_parity_support import ParityCase, change, field, log_action
 
 documents.TOOLS.update({"hub_list_backups", "hub_get_backup", "hub_restore_backup",
-                        "hub_update_mcp_settings", "hub_read_file", "hub_write_file", "hub_delete_file"})
+                        "hub_update_mcp_settings", "hub_set_native_app", "hub_read_file", "hub_write_file", "hub_delete_file"})
 
 
 class NativeRmBackupE2E(ParityCase):
@@ -72,6 +72,84 @@ class NativeRmBackupE2E(ParityCase):
                 "type", "multiple", "value", "deviceList")}
                 for name, row in self.settings(rule_id).items()
                 if row.get("type") != "button"}}
+
+    def _legacy_in_place_recovery(self, required):
+        self.backups_enabled(False)
+        rule_id = self.create([self.condition(), self.condition("off"), self.trigger(),
+                               self.output(True), log_action("legacy baseline")])
+        condition_ids = sorted(self.doc(rule_id)["conditions"], key=int)
+        if required:
+            result = self.update(rule_id, [change("required", tokens=[condition_ids[0]])])
+            self.assertTrue(result.get("success"), result)
+        self.command("switch", "off")
+        before = self.configuration(rule_id)
+        self.backups_enabled(True)
+        forced = self.call("hub_update_mcp_settings", confirm=True, settings={
+            "backupBeforeRuleEdits": True, "backupEveryRuleWrite": True})
+        self.assertTrue(forced.get("success"), forced)
+        keys = self.backup_keys(rule_id)
+        captured = self.call("hub_set_native_app", appId=int(rule_id), confirm=True,
+                             settings={"comments": "legacy capture compatibility"})
+        self.assertTrue(captured.get("success"), captured)
+        key = captured["backup"]["backupKey"]
+        self.backups_enabled(True)
+        self.assertEqual(self.backup_keys(rule_id) - keys, {key})
+        metadata = self.call("hub_get_backup", backupKey=key)
+        self.assertNotIn("error", metadata)
+        chunks, offset = [], 0
+        while True:
+            page = self.call("hub_read_file", fileName=metadata["fileName"], offset=offset, length=60000)
+            self.assertTrue(page.get("success"), page)
+            self.assertEqual(page["offset"], offset)
+            chunks.append(page["content"])
+            if not page.get("hasMore"):
+                break
+            self.assertGreater(page["nextOffset"], offset)
+            offset = page["nextOffset"]
+        snapshot = json.loads("".join(chunks))
+        self.assertNotIn("captureFormat", snapshot)
+        self.assertIsInstance(snapshot["configJson"], dict)
+        self.assertIsInstance(snapshot["statusJson"], dict)
+        if required:
+            self.assertFalse(snapshot.get("nativeExport"), snapshot)
+            self.assertIn("Required Expression", snapshot.get("nativeExportSkipped", ""))
+        else:
+            self.assertTrue(snapshot.get("nativeExport"), snapshot)
+        doc = self.doc(rule_id)
+        action_ids = [str(row["id"]) for row in doc["actions"]]
+        edits = [self.condition("off", id=condition_ids[0]),
+                 change("trigger", id=next(iter(doc["triggers"])), capability="Switch", fields=[
+                     field("tDev#", "capability.switch", [str(self.fixtures["switch"])]),
+                     field("tstate#", "enum", "off")]),
+                 change("action", id=action_ids[0], type="switchActs", subtype="getOnOffSwitch", fields=[
+                     field("onOffSwitch.#", "capability.switch", [str(self.fixtures["out"])]),
+                     field("onOff.#", "bool", False)]),
+                 log_action("legacy changed", id=action_ids[1])]
+        if required:
+            edits.append(change("required", tokens=[condition_ids[1]]))
+        else:
+            edits.extend([change("required", tokens=[condition_ids[0]]),
+                          log_action("legacy extra row must disappear")])
+        edited = self.update(rule_id, edits)
+        self.assertTrue(edited.get("success"), edited)
+        self.assertNotEqual(self.configuration(rule_id), before)
+        restored = self.call("hub_restore_backup", scope="source", backupKey=key,
+                             preserveRuleId=True, confirm=True)
+        self.assertTrue(restored.get("success"), restored)
+        self.assertEqual(str(restored["ruleId"]), str(rule_id))
+        self.assertEqual(restored.get("restoredVia"), "settingsReplay", restored)
+        self.healthy(rule_id)
+        self.assertEqual(self.configuration(rule_id), before)
+        self.assertEqual(str(self.status(rule_id)["installedApp"]["id"]), str(rule_id))
+        self.command("out", "off")
+        self.command("switch", "on")
+        self.wait_for(lambda: self.attribute("out", "switch") == "on")
+
+    def test_legacy_export_backup_restores_in_place(self):
+        self._legacy_in_place_recovery(required=False)
+
+    def test_legacy_required_expression_backup_restores_in_place(self):
+        self._legacy_in_place_recovery(required=True)
 
     def test_complex_edit_recovers_deleted_rows_and_existing_payloads(self):
         self.backups_enabled(False)
