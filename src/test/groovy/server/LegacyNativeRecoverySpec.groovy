@@ -58,7 +58,7 @@ class LegacyNativeRecoverySpec extends ToolSpecBase {
         }
         hubGet.register('/installedapp/settings/42') { q -> JsonOutput.toJson([settings: child.typed.collect { name, row -> [name: name] + row }]) }
         hubGet.register('/app/ruleBuilderJson/42') { q -> JsonOutput.toJson([broken: false, stopped: child.backing.stopped == true, paused: false]) }
-        hubGet.register('/installedapp/statusJson/42') { q -> JsonOutput.toJson([eventSubscriptions: [], scheduledJobs: []]) }
+        hubGet.register('/installedapp/statusJson/42') { q -> JsonOutput.toJson([eventSubscriptions: [[name: 'switch.on', typeId: 591]], scheduledJobs: []]) }
         script.metaClass.hubInternalPostFormRaw = { String path, String body, int timeout = 420, boolean retry = false -> [status: 200] }
         when:
         def result = script._rmRestoreFromBackup([fileName: 'old.json'], snapshot, true, 'source')
