@@ -27353,14 +27353,14 @@ Map _nmOrderActions(Long ruleId, List ids) {
     _nrPage(ruleId, _nrRulePages(ruleId).actions)
     _nrHandle(ruleId).markIfs()
     Map after = _nrState(ruleId)
-    boolean ordered = after.actionList instanceof List && after.actionList.collect { it.toString() } == requested
+    boolean orderVerified = after.actionList instanceof List && after.actionList.collect { it.toString() } == requested
     boolean retained = after.actions instanceof Map && after.actions.keySet().collect { it.toString() }.sort() == originalKeys && contracts.every { id, contract ->
         def action = _nmEntry(after.actions, id)
         action instanceof Map && action.method == contract.method && action.cond == contract.cond && action.rule == contract.rule && action.wait == contract.wait
     }
     Map structure = _nmValidateStructure(ruleId, after)
-    boolean verified = ordered && retained && structure.success
-    [success: verified, partial: !verified, orderVerified: ordered, actionsPreserved: retained, ids: requested, structuralIssues: structure.structuralIssues, verificationNeeded: !verified]
+    boolean verified = orderVerified && retained && structure.success
+    [success: verified, partial: !verified, orderVerified: orderVerified, actionsPreserved: retained, ids: requested, structuralIssues: structure.structuralIssues, verificationNeeded: !verified]
 }
 @groovy.transform.Field static final List ND_EXPRESSION_SUBTYPES = ['getIfThen', 'getElseIf', 'getWaitRule']
 @groovy.transform.Field static final Map ND_TERMINATOR_METHODS = [endIf: 'getEndIf', 'else': 'getElse', endRep: 'getEndRepeat']
