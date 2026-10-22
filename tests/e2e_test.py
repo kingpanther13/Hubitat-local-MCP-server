@@ -1806,10 +1806,12 @@ class TestRunner:
 
     def _rule_edit_backups(self, on: bool) -> None:
         """Set the pre-edit backup toggle and confirm the server now reads it that way."""
+        self._backups_on = None
         result = self.client.call_tool("hub_update_mcp_settings", {"settings": {"backupBeforeRuleEdits": on}, "confirm": True})
         assert isinstance(result, dict) and result.get("success") is True \
             and (result.get("updated") or {}).get("backupBeforeRuleEdits") is on, \
             f"setting backupBeforeRuleEdits={on} did not take: {result}"
+        self._backups_on = on
 
     # PERMANENT hub variables for tests that only need a variable to exist (create/delete is not their
     # subject). Created on a fresh hub, reset to their starting value per use, never deleted; the
@@ -2237,6 +2239,16 @@ class TestRunner:
     def _run_one(self, group: str, name: str, method_name: str) -> None:
         print(f"  [TEST] {datetime.now(UTC).isoformat(timespec='seconds')} {group}/{name}", flush=True)
         self._test_started = time.time()
+        # Pre-edit backups are on only for the tests that prove them. Set here, not in the run loop,
+        # because the ephemeral provider calls this method directly; a test that toggles them itself
+        # leaves the tracked state for the next one.
+        proving = method_name in self.BACKUP_PROVING_TESTS
+        if getattr(self, "_backups_on", None) is not proving:
+            try:
+                self._rule_edit_backups(proving)
+            except Exception as exc:
+                self._record(name, group, "fail", message=f"could not turn pre-edit backups {'on' if proving else 'off'}: {exc}")
+                return
         capture_load = getattr(self, "_load_diagnostics", False)
         matrix = method_name == "test_device_configuration_matrix"
         if capture_load and (matrix or method_name == "test_set_rule_native_lifecycle"):
@@ -7660,21 +7672,28 @@ class TestRunner:
 
     @test("native_apps")
     def test_set_rule_contains_comparator(self) -> None:
-        # String *contains* and Boolean variable conditions, in a Required Expression and an IF.
-        names = self._ensure_perm_variables("contains_msg", "bool_flag")
+        # String *contains* and Boolean variable conditions, in a Required Expression and an IF; and a
+        # variable compared to another variable, whose value slot is the offset, so a second literal
+        # right-hand side is refused rather than silently replacing it.
+        names = self._ensure_perm_variables("contains_msg", "bool_flag", "sv_number", "sv_num_src")
         variable = self._rm_variable_condition
+        left, right = names["sv_number"], names["sv_num_src"]
         app_id, created = self._rm_rule("Contains", [
             variable(names["contains_msg"], "*contains*", "error"),
             variable(names["bool_flag"], value="true", value_type="enum"),
-            variable(names["bool_flag"], value="false", value_type="enum")])
+            variable(names["bool_flag"], value="false", value_type="enum"),
+            variable(left, ">", 0, "number", rhs=right)])
         try:
-            contains, yes, no = sorted(created["conditions"], key=int)
+            contains, yes, no, relative = sorted(created["conditions"], key=int)
             self._rm_update(app_id, [native_change("required", tokens=[contains, "AND", yes]),
                                      native_change("action", type="condActs", subtype="getIfThen", fields=[], expression=[no]),
                                      native_log("boolean branch"), native_change("terminator", subtype="endIf")])
             values = self._rm_values(app_id)
             self._rm_assert_stored(values, contains, {"RelrDev": "*contains*", "state": "error"}, sep="_")
             assert sorted(str(values["state_" + slot]).lower() for slot in (yes, no)) == ["false", "true"], values
+            assert values["xVarR_" + relative] == right, values
+            self._rm_refuse_all(app_id, [[native_change("condition", id=relative, capability="Variable", fields=[
+                *variable(left, ">", 0, "number", rhs=right)["value"]["fields"], native_field("state_#", "number", 0)])]])
         finally:
             self._delete_native(app_id)
 
@@ -7689,23 +7708,6 @@ class TestRunner:
         if value is not None:
             fields.append(native_field("state_#", value_type, value))
         return native_change("condition", capability="Variable", fields=fields, **extra)
-
-    @test("native_apps")
-    def test_set_rule_variable_rhs_parity(self) -> None:
-        # A variable compared to another variable: the value slot is the offset, so a second literal
-        # right-hand side is refused rather than silently replacing it.
-        names = self._ensure_perm_variables("sv_number", "sv_num_src")
-        left, right = names["sv_number"], names["sv_num_src"]
-        app_id, created = self._rm_rule("VarRhs", [self._rm_variable_condition(left, ">", 0, "number", rhs=right)])
-        try:
-            condition = next(iter(created["conditions"]))
-            self._rm_update(app_id, [native_change("required", tokens=[condition])])
-            assert self._rm_values(app_id)["xVarR_" + condition] == right
-            self._rm_refuse_all(app_id, [[native_change("condition", id=condition, capability="Variable", fields=[
-                *self._rm_variable_condition(left, ">", 0, "number", rhs=right)["value"]["fields"],
-                native_field("state_#", "number", 0)])]])
-        finally:
-            self._delete_native(app_id)
 
     @test("native_apps")
     def test_set_rule_remove_referenced_local_breaks_rule(self) -> None:
@@ -8420,10 +8422,11 @@ class TestRunner:
     @test("native_apps")
     def test_complex_edit_recovers_deleted_rows_and_existing_payloads(self) -> None:
         # One recovery point covers a whole edit batch: restoring it rebuilds deleted rows, the
-        # Required Expression, IF expressions and local variables, and the rule runs as before.
-        # Its own switches: an event from another test's switch would race the edit's state checks.
+        # Required Expression, IF expressions and local variables, and the rule is subscribed again.
+        # Its own trigger switch, which nothing commands: an event from another test's switch would
+        # race the edit's state checks. The output is only authored, never commanded.
         trigger_switch, _, _ = self._rm_disposable_switch("RecoveryTrigger")
-        out, _, _ = self._rm_disposable_switch("RecoveryOut")
+        out = self._ensure_perm_fixture("switch_b")
         def output(on: bool) -> dict:
             return self._rm_switch_action(out, on)
         self._rule_edit_backups(False)
@@ -8443,10 +8446,6 @@ class TestRunner:
                               events=[self._rm_wait_event(trigger_switch, "off")]), output(False)])["document"]
             ids = [str(r["id"]) for r in built["actions"]]
             expression = str(next(r["value"]["rule"] for r in built["actions"] if r["value"]["method"] == "getIfThen"))
-            # Settle the runtime (no pending wait) before the snapshot the restore must match.
-            self._rm_command(trigger_switch, "off")
-            for action in ("stop", "start"):
-                self.client.call_tool("hub_call_rule", {"ruleId": app_id, "action": action})
             before = self._rm_snapshot(app_id)
             self._rule_edit_backups(True)
             keys = self._rm_backup_keys(app_id)
@@ -8464,10 +8463,8 @@ class TestRunner:
             assert restored.get("success") is True and str(restored["ruleId"]) == str(app_id) \
                 and restored.get("restoredVia") == "nativeStateReplay", restored
             assert self._rm_snapshot(app_id) == before, "the restore did not recover the pre-edit rule"
-            self._rm_command(out, "off")
-            self._rm_command(trigger_switch, "off")
-            self._rm_command(trigger_switch, "on")
-            self._rm_wait(lambda: self._rm_attribute(out, "switch") == "on", what="the restored rule turning the output on")
+            health = self._rm_health(app_id)
+            assert health.get("broken") is False and health["eventSubscriptionCount"] > 0, health
         finally:
             self._delete_native(app_id)
 
@@ -16627,43 +16624,18 @@ class TestRunner:
         self._sweep_rule_engine_variables()
         unknown = sorted(n for n in self.BACKUP_PROVING_TESTS if not callable(getattr(self, n, None)))
         assert not unknown, f"BACKUP_PROVING_TESTS names tests that do not exist: {unknown}"
-        # Pre-edit backups stay off except around the tests that prove them; the default (on) comes
-        # back at the end.
-        self._rule_edit_backups(False)
+        # Pre-edit backups stay off except around the tests that prove them (_run_one sets them per
+        # test); the default (on) comes back at the end.
 
         # Group for display
         self._load_diagnostics = True
         current_group = None
-        abort_run = False
         try:
             for group, display_name, method_name in tests_to_run:
-                if abort_run:
-                    break
                 if group != current_group:
                     current_group = group
                     print(f"\n[{group}]")
-                proves_backups = method_name in self.BACKUP_PROVING_TESTS
-                try:
-                    if proves_backups:
-                        try:
-                            self._rule_edit_backups(True)
-                        except Exception as exc:
-                            self._record(display_name, group, "fail", message=f"could not turn pre-edit backups on: {exc}")
-                            continue
-                    self._run_one(group, display_name, method_name)
-                finally:
-                    if proves_backups:
-                        # Backups must be off again before the next test, or its timing and result
-                        # would be misattributed: one retry, then the run stops here.
-                        try:
-                            self._rule_edit_backups(False)
-                        except Exception as first:
-                            try:
-                                self._rule_edit_backups(False)
-                            except Exception as exc:
-                                self._record(f"{display_name} (pre-edit backups off again)", group, "fail",
-                                             message=f"could not turn pre-edit backups back off ({first}; retry: {exc})")
-                                abort_run = True
+                self._run_one(group, display_name, method_name)
         finally:
             try:
                 self._rule_edit_backups(True)

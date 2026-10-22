@@ -3297,3 +3297,35 @@ def test_edited_snapshot_copy_retargets_only_explicit_device_references_and_labe
     assert edited["configJson"]["settings"] == {"pick.7": {"9": "New fixture"}, "Counter": 7}
     assert edited["statusJson"]["appSettings"][0]["deviceIdsForDeviceList"] == ["9"]
     assert original == json.dumps(snapshot, indent=2)
+
+
+def test_run_one_sets_pre_edit_backups_per_test_for_any_caller(monkeypatch):
+    # The ephemeral provider calls _run_one directly, so the per-test backup toggle lives there.
+    writes = []
+
+    def call_tool(name, args):
+        assert name == "hub_update_mcp_settings"
+        writes.append(args["settings"]["backupBeforeRuleEdits"])
+        return {"success": True, "updated": {"backupBeforeRuleEdits": args["settings"]["backupBeforeRuleEdits"]}}
+
+    runner = et.TestRunner(SimpleNamespace(call_tool=call_tool))
+    monkeypatch.setattr(et.TestRunner, "BACKUP_PROVING_TESTS", frozenset({"test_proves"}))
+    ran = []
+    monkeypatch.setattr(runner, "_run_one_attempts", lambda group, name, method: ran.append((method, runner._backups_on)))
+    for method in ("test_plain", "test_proves", "test_plain", "test_plain"):
+        runner._run_one("native_apps", method, method)
+    assert ran == [("test_plain", False), ("test_proves", True), ("test_plain", False), ("test_plain", False)]
+    assert writes == [False, True, False]
+    # A test that turns them on itself leaves that state for the next one to correct.
+    runner._rule_edit_backups(True)
+    runner._run_one("native_apps", "test_plain", "test_plain")
+    assert writes[-2:] == [True, False]
+
+
+def test_run_one_records_one_failure_when_the_backup_toggle_fails(monkeypatch):
+    runner = et.TestRunner(SimpleNamespace(call_tool=lambda name, args: {"success": False}))
+    monkeypatch.setattr(et.TestRunner, "BACKUP_PROVING_TESTS", frozenset({"test_proves"}))
+    monkeypatch.setattr(runner, "_run_one_attempts", lambda *a: pytest.fail("the test must not run"))
+    runner._run_one("native_apps", "test_proves", "test_proves")
+    assert [(r["name"], r["status"]) for r in runner.results] == [("test_proves", "fail")]
+    assert "could not turn pre-edit backups on" in runner.results[0]["message"]
