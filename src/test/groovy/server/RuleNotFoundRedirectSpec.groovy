@@ -321,7 +321,7 @@ class RuleNotFoundRedirectSpec extends ToolSpecBase {
         ex.message.contains('Rule not found: 300')
         ex.message.contains('hub_get_app_config(appId=300)')
         ex.message.contains(editor)
-        (ex.message.contains('hub_set_rule(')) == (appType == 'Rule-5.1')
+        (ex.message.contains('hub_set_rule(')) == (appType in ['Rule-5.1', 'Button Rule-5.1', 'Rule Machine'])
         ex.message.contains('hub_update_custom_rule')
         // write-verb phrasing: hub_get_custom_rule appears only in read-verb output (lists get/export/clone tools);
         // its absence here confirms we are not emitting the read-verb hint by mistake.
@@ -330,6 +330,10 @@ class RuleNotFoundRedirectSpec extends ToolSpecBase {
         where:
         appType | editor
         'Rule-5.1' | 'hub_set_rule(rule_id=300)'
+        'Button Rule-5.1' | 'hub_set_rule(rule_id=300)'
+        'Rule Machine' | 'hub_set_rule(rule_id=300)'
+        'Rule-5.0' | 'Edit it in the native Rule Machine interface.'
+        'Rule-4.1' | 'Edit it in the native Rule Machine interface.'
         'Room Lights' | 'hub_set_native_app(appId=300)'
         'Basic Rules' | 'hub_set_native_app(appId=300)'
         'Visual Rule Builder 2.0' | 'hub_set_visual_rule(appId=300)'
