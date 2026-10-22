@@ -10,6 +10,11 @@ import spock.lang.Unroll
 
 class ToolRmNativeCrudSpec extends ToolSpecBase {
 
+    // The walker's app is an RM rule unless a test says otherwise: a non-RM app's walk reads its own page.
+    def setup() {
+        script.metaClass.getAppByAppId = { id -> [appType: [name: 'Rule-5.1']] }
+    }
+
     private RMUtilsMock rmUtils
     @Shared private TestLocation sharedLocation = new TestLocation()
     def setupSpec() {
@@ -5054,6 +5059,27 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.before?.inputs?.find { it.name == "tCapab1" } != null
     }
 
+
+    def "a walk on an app that is not an RM rule never renders the app's default page"() {
+        given: "an app whose default page resets its wizard, as HPM's does"
+        enableWrite()
+        script.metaClass.getAppByAppId = { id -> [appType: [name: 'Hubitat Package Manager']] }
+        hubGet.register('/installedapp/configure/json/100/prefPkgInstallUrl') { params ->
+            ruleConfigJson(100, "r", [[name: "pkgInstall", type: "text"]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+
+        when:
+        def result = script.toolSetNativeApp([appId: 100, walkStep: [page: "prefPkgInstallUrl", operation: "introspect"], confirm: true])
+
+        then: "its backup and health check read the page the walk is on"
+        result.success == true
+        result.page == "prefPkgInstallUrl"
+        hubGet.calls.any { it.path == '/installedapp/configure/json/100/prefPkgInstallUrl' }
+        !hubGet.calls.any { it.path == '/installedapp/configure/json/100' }
+    }
 
     def "hub_set_native_app surfaces an unknown appType as a caller-recoverable error"() {
         given:
