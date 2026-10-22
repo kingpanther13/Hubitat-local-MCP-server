@@ -17,19 +17,15 @@ from sdk_conformance_helpers import (
 
 
 @pytest.mark.parametrize(("configured", "expected"), [(None, 6), ("6", 6), ("36", 36), ("120", 120)])
-def test_mrtr_workload_keeps_default_and_requires_each_distinct_real_mutation(configured, expected):
+def test_mrtr_workload_keeps_default_and_bounds_the_configured_count(configured, expected):
     environment = {} if configured is None else {"E2E_MRTR_ACTION_COUNT": configured}
-    actions = helpers.mrtr_log_actions("timing proof", environment)
-    assert len(actions) == expected
-    assert all(action["capability"] == "log" for action in actions)
-    assert [action["message"] for action in actions] == [f"timing proof {index}" for index in range(1, expected + 1)]
-    assert len({action["message"] for action in actions}) == expected
+    assert helpers.mrtr_action_count(environment) == expected
 
 
 @pytest.mark.parametrize("configured", ["", "0", "5", "121", "-1", "+6", "6.0", "word", " 6", "6 ", None, True])
 def test_mrtr_workload_rejects_invalid_or_unbounded_configuration(configured):
     with pytest.raises(ValueError, match="E2E_MRTR_ACTION_COUNT"):
-        helpers.mrtr_log_actions("timing proof", {"E2E_MRTR_ACTION_COUNT": configured})
+        helpers.mrtr_action_count({"E2E_MRTR_ACTION_COUNT": configured})
 
 
 @pytest.mark.parametrize(("configured", "expected"), [(None, 16), ("4", 4), ("72", 72), ("120", 120)])
@@ -78,7 +74,7 @@ def test_write_cap_holder_retry_blocker_names_the_declining_condition():
 
 
 def test_expanded_mrtr_workload_does_not_relax_elapsed_or_continuation_requirements():
-    assert len(helpers.mrtr_log_actions("timing proof", {"E2E_MRTR_ACTION_COUNT": "36"})) == 36
+    assert helpers.mrtr_action_count({"E2E_MRTR_ACTION_COUNT": "36"}) == 36
     one_leg = [{"duration": 2.325, "status": 200, "has_request_state": False,
                 "mcp_protocol_version": "2026-07-28"}]
     with pytest.raises(AssertionError, match="at least 3"):
@@ -326,90 +322,6 @@ def test_mrtr_summary_absorbs_one_relay_dropped_leg() -> None:
 def test_mrtr_summary_rejects_an_invalid_proof(legs, elapsed, message) -> None:
     with pytest.raises(AssertionError, match=message):
         summarize_mrtr_proof(legs, logical_elapsed=elapsed)
-
-
-EXPECTED_LOG_MESSAGES = [f"proof message {index}" for index in range(1, 7)]
-
-
-def _rule_config(messages=EXPECTED_LOG_MESSAGES):
-    settings = {}
-    for index, message in enumerate(messages, 1):
-        settings[f"actType.{index}"] = "messageActs"
-        settings[f"actSubType.{index}"] = "getLogMsg"
-        settings[f"logmsg.{index}"] = message
-    return {"success": True, "settings": settings}
-
-
-@pytest.mark.parametrize("environ", [{}, {"E2E_MRTR_ACTION_COUNT": "36"}, {"E2E_MRTR_ACTION_COUNT": "120"}])
-def test_exact_rule_log_messages_accepts_every_configured_persisted_action(environ) -> None:
-    expected = [action["message"] for action in helpers.mrtr_log_actions("proof message", environ)]
-    actual = helpers.assert_exact_rule_log_messages(
-        _rule_config(expected), expected, operation="regular proof readback",
-    )
-
-    assert actual == expected
-
-
-@pytest.mark.parametrize("count", [0, 5, 121])
-def test_exact_rule_log_messages_rejects_unbounded_expected_workloads(count) -> None:
-    expected = [f"proof message {index}" for index in range(count)]
-    with pytest.raises(AssertionError, match="6 through 120"):
-        helpers.assert_exact_rule_log_messages(_rule_config(expected), expected, operation="proof readback")
-
-
-@pytest.mark.parametrize("invalid_message", ["", "   ", None])
-def test_exact_rule_log_messages_rejects_empty_or_nontext_expected_messages(invalid_message) -> None:
-    expected = [*EXPECTED_LOG_MESSAGES[:-1], invalid_message]
-    with pytest.raises(AssertionError, match="nonempty text"):
-        helpers.assert_exact_rule_log_messages(_rule_config(expected), expected, operation="proof readback")
-
-
-@pytest.mark.parametrize(
-    ("mutate", "message"),
-    [
-        (lambda cfg: [cfg["settings"].pop(f"{prefix}.36")
-                      for prefix in ("actType", "actSubType", "logmsg")], "exactly 36 action rows"),
-        (lambda cfg: cfg["settings"].__setitem__("logmsg.36", "corrupted"), "exact messages"),
-        (lambda cfg: cfg["settings"].__setitem__("logmsg.36", "proof message 35"), "distinct"),
-        (lambda cfg: cfg["settings"].pop("actSubType.36"), "action-subtype indices"),
-        (lambda cfg: cfg["settings"].pop("logmsg.36"), "log-message indices"),
-        (lambda cfg: cfg["settings"].__setitem__("actType.36", "otherActs"), "non-log action type"),
-        (lambda cfg: cfg["settings"].__setitem__("actSubType.36", "otherMsg"), "non-log action subtype"),
-    ],
-)
-def test_exact_rule_log_messages_rejects_truncated_or_corrupted_configured_workload(mutate, message) -> None:
-    expected = [action["message"] for action in helpers.mrtr_log_actions(
-        "proof message", {"E2E_MRTR_ACTION_COUNT": "36"},
-    )]
-    config = _rule_config(expected)
-    mutate(config)
-    with pytest.raises(AssertionError, match=message):
-        helpers.assert_exact_rule_log_messages(config, expected, operation="SDK proof readback")
-
-
-@pytest.mark.parametrize(
-    ("mutate", "message"),
-    [
-        (lambda cfg: cfg["settings"].__setitem__("logmsg.4", "wrong"), "exact messages"),
-        (lambda cfg: cfg["settings"].__setitem__("logmsg.4", "proof message 3"), "distinct"),
-        (lambda cfg: cfg["settings"].pop("logmsg.4"), "log-message indices"),
-        (lambda cfg: cfg["settings"].update({
-            "actType.7": "messageActs",
-            "actSubType.7": "getLogMsg",
-            "logmsg.7": "extra",
-        }), "exactly 6 action rows"),
-    ],
-)
-def test_exact_rule_log_messages_rejects_wrong_duplicate_missing_or_extra_values(
-    mutate, message,
-) -> None:
-    config = _rule_config()
-    mutate(config)
-
-    with pytest.raises(AssertionError, match=message):
-        helpers.assert_exact_rule_log_messages(
-            config, EXPECTED_LOG_MESSAGES, operation="SDK proof readback",
-        )
 
 
 def test_request_trace_returns_every_observed_post_for_modern_contract_checks() -> None:

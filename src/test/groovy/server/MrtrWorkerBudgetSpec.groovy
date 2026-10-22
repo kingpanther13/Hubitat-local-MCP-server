@@ -66,4 +66,44 @@ class MrtrWorkerBudgetSpec extends ToolSpecBase {
         script._activeWrites().isEmpty()
     }
 
+    private Object requestSettingsField() {
+        def field = script.class.getDeclaredField('REQUEST_SETTINGS')
+        field.accessible = true
+        field.get(script)
+    }
+
+    def "a detached slice sees the backup toggle its request read, and the snapshot never outlives the slice"() {
+        given:
+        settingsMap.backupBeforeRuleEdits = true
+        RUN_IN_MILLIS_OVERRIDE.set({ List call ->
+            runInMillisCalls << call
+            // The toggle changes between the request and its scheduled slice.
+            settingsMap.backupBeforeRuleEdits = false
+            script.runMrtrSlice(new LinkedHashMap(call[2].data as Map))
+        })
+        List seen = []
+        script.metaClass.toolUpdateRuleDocument = { Map actual ->
+            seen << script._effectiveBackupSetting('backupBeforeRuleEdits')
+            if (actual.changes[0].value.fields[0].value == 'boom') throw new RuntimeException('slice failed')
+            [success: true, rule_id: actual.rule_id, results: []]
+        }
+        def update = { String text ->
+            [operation: 'update', rule_id: 77, confirm: true, args: [changes: [[part: 'action', value: [type: 'messageActs', subtype: 'getLogMsg',
+                fields: [[name: 'logmsg.#', type: 'textarea', value: text]]]]]]]
+        }
+
+        when:
+        modernCall('hub_set_rule', update('fine'))
+        def afterSuccess = requestSettingsField()
+        settingsMap.backupBeforeRuleEdits = true
+        modernCall('hub_set_rule', update('boom'))
+        def afterFailure = requestSettingsField()
+
+        then:
+        runInMillisCalls.size() == 2
+        seen == ['true', 'true']
+        afterSuccess == null
+        afterFailure == null
+        script._effectiveBackupSetting('backupBeforeRuleEdits') == 'false'
+    }
 }

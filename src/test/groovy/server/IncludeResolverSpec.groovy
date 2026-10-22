@@ -236,7 +236,6 @@ class IncludeResolverSpec extends Specification {
         'McpSelfAdminLib'       | 'toolUpdatePackage'       | 'SelfAdmin'
         'McpAppClonerLib'       | 'toolCloneNativeApp'      | 'AppCloner'
         'McpDiscoveryLib'       | 'toolSearchTools'         | 'Discovery'
-        'McpNativeFormsLib'     | 'toolCallAppForm'         | 'NativeForms'
         'McpNativeDocumentsLib' | 'toolGetRuleDocument'     | 'NativeDocuments'
         'McpNativeRulesLib'     | 'toolListRmRules'             | 'NativeRM'
         'McpDashboardsLib'      | 'toolListDashboards'      | 'Dashboards'

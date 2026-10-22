@@ -6341,7 +6341,7 @@ class TestRunner:
 
     def _rm_settings(self, app_id: Any) -> dict[str, dict]:
         doc = self._rm_call({"operation": "read", "rule_id": int(app_id),
-                                                     "args": {"sections": ["settings"]}})
+                             "args": {"sections": ["settings"]}})
         assert str(doc.get("rule_id")) == str(app_id) and isinstance(doc.get("settings"), list), doc
         return {row["name"]: row for row in doc["settings"]}
 
@@ -6397,7 +6397,7 @@ class TestRunner:
 
     def _rm_form(self, app_id: Any, *steps: dict) -> dict:
         result = self._rm_call({"operation": "form", "rule_id": int(app_id),
-                                                        "args": {"steps": list(steps)}, "confirm": True})
+                                "args": {"steps": list(steps)}, "confirm": True})
         assert result.get("success") is True, result
         return result
 
@@ -6474,11 +6474,13 @@ class TestRunner:
         fields.append(native_field("tstate#" if trigger else "state_#", "enum", state))
         return fields
 
-    def _rm_switch_condition(self, device: Any, state: str = "on", **extra: Any) -> dict:
-        return native_change("condition", capability="Switch", fields=self._rm_switch_fields(device, state), **extra)
+    @staticmethod
+    def _rm_switch_condition(device: Any, state: str = "on", **extra: Any) -> dict:
+        return native_change("condition", capability="Switch", fields=TestRunner._rm_switch_fields(device, state), **extra)
 
-    def _rm_switch_trigger(self, device: Any, state: str = "on", **extra: Any) -> dict:
-        return native_change("trigger", capability="Switch", fields=self._rm_switch_fields(device, state, trigger=True), **extra)
+    @staticmethod
+    def _rm_switch_trigger(device: Any, state: str = "on", **extra: Any) -> dict:
+        return native_change("trigger", capability="Switch", fields=TestRunner._rm_switch_fields(device, state, trigger=True), **extra)
 
     @staticmethod
     def _rm_switch_action(device: Any, on: bool = True, **extra: Any) -> dict:

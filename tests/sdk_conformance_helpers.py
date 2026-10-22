@@ -42,11 +42,6 @@ def mrtr_action_count(environ: Mapping[str, str] | None = None) -> int:
     return count
 
 
-def mrtr_log_actions(prefix: str, environ: Mapping[str, str] | None = None) -> list[dict[str, str]]:
-    return [{"capability": "log", "message": f"{prefix} {index}"}
-            for index in range(1, mrtr_action_count(environ) + 1)]
-
-
 def lane_mrtr_changes(
     prefix: str, temperature_id: str, environ: Mapping[str, str] | None = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
@@ -168,61 +163,14 @@ def _indexed_settings(settings: dict[str, Any], prefix: str) -> dict[int, Any]:
     return indexed
 
 
-def assert_exact_rule_log_messages(
-    config: Any,
-    expected_messages: list[str],
-    *,
-    operation: str,
-) -> list[str]:
-    """Assert an empty RM fixture persisted every requested log action exactly."""
-    assert isinstance(config, dict), f"{operation} returned no config object"
-    assert config.get("success") is not False, (
-        f"{operation} failed: {config.get('error')!r}"
-    )
-    settings = config.get("settings")
-    assert isinstance(settings, dict), (
-        f"{operation} did not return raw settings; includeSettings=true is required"
-    )
-    expected_count = len(expected_messages)
-    assert all(isinstance(message, str) and message.strip() for message in expected_messages), (
-        "the MRTR proof must request nonempty text log messages"
-    )
-    assert 6 <= expected_count <= 120 and len(set(expected_messages)) == expected_count, (
-        "the MRTR proof must request 6 through 120 distinct log messages"
-    )
-
-    action_types = _indexed_settings(settings, "actType.")
-    action_subtypes = _indexed_settings(settings, "actSubType.")
-    log_messages = _indexed_settings(settings, "logmsg.")
-    assert len(action_types) == expected_count, (
-        f"{operation} must contain exactly {expected_count} action rows; saw indices "
-        f"{sorted(action_types)}"
-    )
-    action_indices = set(action_types)
-    assert set(action_subtypes) == action_indices, (
-        f"{operation} action-subtype indices do not match action rows: "
-        f"actions={sorted(action_indices)}, subtypes={sorted(action_subtypes)}"
-    )
-    assert set(log_messages) == action_indices, (
-        f"{operation} log-message indices do not match action rows: "
-        f"actions={sorted(action_indices)}, messages={sorted(log_messages)}"
-    )
-    assert all(action_types[index] == "messageActs" for index in action_indices), (
-        f"{operation} contains a non-log action type: {action_types}"
-    )
-    assert all(action_subtypes[index] == "getLogMsg" for index in action_indices), (
-        f"{operation} contains a non-log action subtype: {action_subtypes}"
-    )
-
-    actual = [log_messages[index] for index in sorted(action_indices)]
-    assert len(set(actual)) == expected_count, (
-        f"{operation} log messages are not distinct: {actual}"
-    )
-    assert actual == expected_messages, (
-        f"{operation} did not persist the exact messages: "
-        f"expected={expected_messages}, actual={actual}"
-    )
-    return actual
+def _assert_typed_value(saved: dict[str, Any], field_type: str, value: Any, label: str) -> None:
+    """Compare one typed native setting with the value a change requested."""
+    if field_type.startswith("capability."):
+        assert sorted(map(str, saved.get("device_ids") or [])) == sorted(map(str, value)), f"{label} device differs"
+    elif field_type == "decimal":
+        assert float(saved["value"]) == float(value), f"{label} threshold differs"
+    else:
+        assert saved["value"] == value, f"{label} selector differs"
 
 
 def assert_exact_native_conditions(config: Any, document: Any, changes: list[dict[str, Any]]) -> None:
@@ -251,12 +199,7 @@ def assert_exact_native_conditions(config: Any, document: Any, changes: list[dic
         for field in [{"name": "rCapab_#", "type": "enum", "value": requested["capability"]}, *requested["fields"]]:
             saved = typed.get(field["name"].replace("#", str(index)))
             assert saved is not None and saved["type"] == field["type"], "Condition input type differs"
-            if field["type"].startswith("capability."):
-                assert sorted(map(str, saved.get("device_ids") or [])) == sorted(field["value"]), "Typed condition device differs"
-            elif field["type"] == "decimal":
-                assert float(saved["value"]) == float(field["value"]), "Typed condition threshold differs"
-            else:
-                assert saved["value"] == field["value"], "Typed condition selector differs"
+            _assert_typed_value(saved, field["type"], field["value"], "Typed condition")
         assert columns["RelrDev_"][index] == fields["RelrDev_#"], "Condition comparator differs"
         assert float(columns["state_"][index]) == float(fields["state_#"]), "Condition threshold/order differs"
 
@@ -295,13 +238,13 @@ def assert_exact_native_actions(config: Any, document: Any, changes: list[dict[s
                 saved = typed.get(name)
                 assert saved is not None and saved["type"] == field["type"], "Wait input type differs"
                 value = field["value"]
+                _assert_typed_value(saved, field["type"], value, "Wait")
                 if field["type"].startswith("capability."):
-                    assert sorted(map(str, saved.get("device_ids") or [])) == sorted(map(str, value)), "Wait device differs"
                     assert isinstance(settings.get(name), dict) and sorted(map(str, settings[name])) == sorted(value), "Raw wait device differs"
                 elif field["type"] == "decimal":
-                    assert float(saved["value"]) == float(value) == float(settings[name]), "Wait threshold/order differs"
+                    assert float(value) == float(settings[name]), "Raw wait threshold/order differs"
                 else:
-                    assert saved["value"] == value == settings[name], "Wait selector/comparator differs"
+                    assert value == settings[name], "Raw wait selector/comparator differs"
     assert len(event_ids) == len(set(event_ids)), "Wait event IDs repeat across actions"
     for prefix in ("tCapab-", "tDev-", "ReltDev-", "tstate-"):
         assert set(map(str, _indexed_settings(settings, prefix))) == set(event_ids), "Orphan or missing wait settings"

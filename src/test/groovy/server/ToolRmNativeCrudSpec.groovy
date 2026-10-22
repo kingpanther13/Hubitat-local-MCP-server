@@ -220,6 +220,29 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         cached << [false, true]
     }
 
+    // appsList nodes carry no installed key on firmware 2.5.2, so a pending parent is found by reading the app.
+    private List registerPendingButtonControllerParent(boolean commitTakes, boolean commitThrows) {
+        script.metaClass.getAppByAppId = { id -> [id: id, installed: false] }
+        hubGet.register('/hub2/appsList') { params -> JsonOutput.toJson([apps: [[
+            data: [id: 88, name: 'Button Controllers', type: 'Button Controllers', user: false, hidden: false], children: []]]]) }
+        ['/installedapp/configure/json/88', '/installedapp/configure/json/88/mainPage'].each { path ->
+            hubGet.register(path) { params ->
+                JsonOutput.toJson([app: [id: 88, installed: commitTakes, version: 1], configPage: [name: 'mainPage', sections: []], settings: [:]])
+            }
+        }
+        hubGet.register('/installedapp/statusJson/88') { params -> statusJson(88) }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            if (commitThrows) throw new RuntimeException('transient commit failure')
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+        posts
+    }
+
+
+
+
     def "_discoverParentAppId raises a clear IAE when the bootstrapped parent's install commit does not take (app.installed reads false)"() {
         given:
         // PENDING parent that gets committed via Done, but the post-commit
@@ -1322,7 +1345,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         // hubInternalPostForm returns a status Map and does NOT throw on 4xx (its real contract --
-        // siblings _rmClickAppButton/_rmSubmitFullPageForm already guard resp.status >= 400 and throw).
+        // _rmClickAppButton already guards resp.status >= 400 and throws).
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 409, location: null, data: 'stale version token']
         }
@@ -4339,362 +4362,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         rmUtils = null
     }
 
-
-    private String doActPageGhostAndLogSchemaJson(int ruleId, int seqNum) {
-        JsonOutput.toJson([
-            app: [id: ruleId, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
-                  appType: [name: "Rule-5.1", namespace: "hubitat"]],
-            configPage: [name: "doActPage", title: "T", install: false, error: null,
-                         sections: [[title: "", input: [
-                             [name: "actType.1", type: "enum",
-                              options: ["condActs": "Conditional Actions", "messageActs": "Messaging and Logging"]],
-                             [name: "actSubType.1", type: "enum",
-                              options: ["getIfThen": "IF Expression THEN", "getLogMsg": "Log a message"]],
-                             [name: "logmsg.1", type: "textarea"],
-                             [name: "actionCancel", type: "button"],
-                             [name: "actionDone", type: "button"]
-                         ], paragraphs: ["seq ${seqNum}".toString()]]]],
-            settings: [:],
-            childApps: []
-        ])
-    }
-
-    private String appsListWithRule(int ruleId = 555) {
-        appsListWithRules([ruleId])
-    }
-
-    // Same tree for a multi-rule set: the RM parent (id 21) with one child node per rule id.
-
-    private String appsListWithRules(List ruleIds) {
-        JsonOutput.toJson([apps: [
-            [data: [id: 21, name: "Rule Machine", type: "Rule Machine"],
-             children: ruleIds.collect { [data: [id: it, name: "Target Rule", type: "Rule-5.1"], children: []] }]
-        ]])
-    }
-
-    // Seed RMUtils so the rule id 555 is the ONLY existing RM rule; the app tree above adds the
-    // non-rule parent id 21. The existence-safe set the guard resolves is therefore {555}.
-
-    private void installRuleTargetStubs() {
-        rmUtils = new RMUtilsMock()
-        rmUtils.stubRuleList5 = [[555: 'Target Rule']]
-        rmUtils.install()
-    }
-
-
-    private Map wireModifyActionTransport(int ruleId, List order, Map committedSettings, Closure postHook = null) {
-        Map ctl = [order: new ArrayList(order), clicks: [], moveShifts: true]
-        def statusFor = { List live ->
-            JsonOutput.toJson([
-                installedApp: [id: ruleId],
-                appSettings: live.collect { [name: "actType.${it}".toString(), value: "rulesActs"] },
-                eventSubscriptions: [[name: "evt1"]],
-                scheduledJobs: [],
-                appState: [],
-                childAppCount: 0, childDeviceCount: 0
-            ])
-        }
-        hubGet.register("/installedapp/configure/json/${ruleId}".toString()) { params ->
-            ruleConfigJson(ruleId, "r", [], null, committedSettings)
-        }
-        hubGet.register("/installedapp/configure/json/${ruleId}/selectActions".toString()) { params ->
-            ruleConfigJson(ruleId, "r", [], null, committedSettings)
-        }
-        hubGet.register("/installedapp/statusJson/${ruleId}".toString()) { params -> statusFor(ctl.order as List) }
-        // Display order, the way production reads it. Minimal on purpose: `broken`
-        // is the key _ruleCompiledState needs to recognize a classic RM rule, and
-        // false is what these fixtures mean -- none of them model a broken rule.
-        hubGet.register("/app/ruleBuilderJson/${ruleId}".toString()) { params ->
-            JsonOutput.toJson([broken: false, actionList: (ctl.order as List).collect { it.toString() }])
-        }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            if (postHook != null) postHook.call(path, body)
-            if (path == "/installedapp/btn") {
-                String name = body?.name?.toString()
-                String attr = body?.stateAttribute?.toString()
-                (ctl.clicks as List) << [name: name, stateAttribute: attr]
-                Integer idx = name?.isInteger() ? name.toInteger() : null
-                List cur = ctl.order as List
-                int at = (idx == null) ? -1 : cur.indexOf(idx)
-                if (attr == "delAct" && at >= 0) {
-                    ctl.order = cur.findAll { it != idx }
-                } else if (attr == "arrowUp" && at > 0 && ctl.moveShifts) {
-                    List shifted = cur.findAll { it != idx }
-                    shifted.add(at - 1, idx)
-                    ctl.order = shifted
-                }
-            }
-            [status: 200, location: null, data: '']
-        }
-        return ctl
-    }
-
-    // The add leg of the composite. _rmAddAction is non-private, so a per-instance metaClass
-    // override DOES intercept it; the rebuilt action lands at the end of the display order,
-    // which is where RM puts it.
-
-    private void wireModifyAddLeg(Map ctl, List specs, Integer newIndex, Map overrides = [:]) {
-        script.metaClass._rmAddAction = { Integer appId, Map spec ->
-            specs << spec
-            def out = [success: true, partial: false, actionIndex: newIndex,
-                       settingsApplied: [], settingsSkipped: []] + overrides
-            // An add that FAILED committed nothing, so the display order must not gain the
-            // row -- otherwise the post-failure health probe reads a phantom action.
-            if (out.success != false) ctl.order = (ctl.order as List) + newIndex
-            out
-        }
-    }
-
-
-    private List arrowUpClicks(Map ctl) {
-        return (ctl.clicks as List).findAll { it.stateAttribute == "arrowUp" }
-    }
-
-
-    private List nestedIfThenSettings() {
-        // Reproduces the live BAT-178 rule structure (well-formed):
-        //   IF -> IF -> lock-delayed -> END-IF -> IF -> lock -> END-IF -> END-IF
-        [
-            [name: "actType.9",  value: "condActs"], [name: "actSubType.9",  value: "getIfThen"],
-            [name: "actType.10", value: "condActs"], [name: "actSubType.10", value: "getIfThen"],
-            [name: "actType.11", value: "lockActs"], [name: "actSubType.11", value: "getLULock"],
-            [name: "actType.12", value: "condActs"], [name: "actSubType.12", value: "getEndIf"],
-            [name: "actType.13", value: "condActs"], [name: "actSubType.13", value: "getIfThen"],
-            [name: "actType.14", value: "lockActs"], [name: "actSubType.14", value: "getLULock"],
-            [name: "actType.15", value: "condActs"], [name: "actSubType.15", value: "getEndIf"],
-            [name: "actType.16", value: "condActs"], [name: "actSubType.16", value: "getEndIf"]
-        ]
-    }
-
-
-    private Map structuralDeleteFixture(Closure<Boolean> fired) {
-        def chain = ifStructureSettings([
-            [idx: 1, actType: "condActs", actSubType: "getIfThen"],
-            [idx: 2, actType: "lockActs", actSubType: "getLULock"],
-            [idx: 3, actType: "condActs", actSubType: "getElseIf"],
-            [idx: 4, actType: "lockActs", actSubType: "getLULock"],
-            [idx: 5, actType: "condActs", actSubType: "getEndIf"]
-        ])
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Chain", []) }
-        hubGet.register('/installedapp/statusJson/100') { params ->
-            fired() ? statusJson(100, chain.findAll { !it.name?.endsWith(".3") }) : statusJson(100, chain)
-        }
-        return [chain: chain]
-    }
-
-
-    private String selectTriggersSchemaJson(int ruleId, int seqNum) {
-        JsonOutput.toJson([
-            app: [id: ruleId, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
-                  appType: [name: "Rule-5.1", namespace: "hubitat"]],
-            configPage: [name: "selectTriggers", title: "T", install: false, error: null,
-                         sections: [[title: "", input: [
-                             [name: "tCapab1", type: "enum", options: ["Switch"]],
-                             [name: "tDev1", type: "capability.switch", multiple: true],
-                             [name: "tstate1", type: "enum", options: ["on", "off"]],
-                             [name: "isCondTrig.1", type: "bool"],
-                             [name: "hasAll", type: "button"]
-                         ], paragraphs: ["seq ${seqNum}".toString()]]]],
-            settings: [:],
-            childApps: []
-        ])
-    }
-
-    /**
-     * Helper: builds a mainPage JSON whose paragraph content controls whether
-     * _rmAddTrigger detects the trigger as baked (no "Define Triggers" placeholder)
-     * or not-baked (placeholder still present).
-     */
-
-    private String mainPageJson(int ruleId, String label = "r", boolean triggerBaked = true) {
-        def paragraph = triggerBaked ? "Switch1 is on" : "Define Triggers"
-        JsonOutput.toJson([
-            app: [id: ruleId, name: "Rule-5.1", label: label, trueLabel: label, installed: true,
-                  appType: [name: "Rule-5.1", namespace: "hubitat"]],
-            configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
-                         sections: [[title: "", input: [], paragraphs: [paragraph]]]],
-            settings: [:],
-            childApps: []
-        ])
-    }
-
-
-    private String customAttrSchemaJson(int ruleId, int seqNum, boolean exposeComparator) {
-        def inputs = [
-            [name: "tCapab1", type: "enum", options: ["Custom Attribute"]],
-            [name: "tDev1", type: "capability.*", multiple: true],
-            [name: "tCustomAttr1", type: "enum", options: ["switch", "fixtureMode"]],
-            [name: "tstate1", type: "enum", options: ["on", "off"]],
-            [name: "isCondTrig.1", type: "bool"],
-            [name: "hasAll", type: "button"]
-        ]
-        if (exposeComparator) {
-            inputs << [name: "ReltDev1", type: "enum", options: ["=", "!=", ">", "<"]]
-        }
-        JsonOutput.toJson([
-            app: [id: ruleId, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
-                  appType: [name: "Rule-5.1", namespace: "hubitat"]],
-            configPage: [name: "selectTriggers", title: "T", install: false, error: null,
-                         sections: [[title: "", input: inputs, paragraphs: ["seq ${seqNum}".toString()]]]],
-            settings: [:],
-            childApps: []
-        ])
-    }
-
-
-    private String customAttrConditionSchemaJson(int ruleId, int seqNum, boolean exposeComparator) {
-        def inputs = [
-            // Condition (idx 1) fields.
-            [name: "isCondTrig.1", type: "bool"],
-            [name: "condTrig.1", type: "enum", options: ["": "Click to set", "a": "--> New Condition"]],
-            [name: "rCapab_1", type: "enum", options: ["Custom Attribute"]],
-            [name: "rDev_1", type: "capability.*", multiple: true],
-            [name: "rCustomAttr_1", type: "enum", options: ["switch", "fixtureMode"]],
-            [name: "state_1", type: "enum", options: ["on", "off"]],
-            [name: "not1", type: "bool"],
-            // Outer Switch trigger (idx 2) fields.
-            [name: "tCapab2", type: "enum", options: ["Switch"]],
-            [name: "tDev2", type: "capability.switch", multiple: true],
-            [name: "tstate2", type: "enum", options: ["on", "off"]],
-            [name: "isCondTrig.2", type: "bool"],
-            [name: "condTrig.2", type: "enum", options: ["": "Click to set"]],
-            [name: "hasAll", type: "button"]
-        ]
-        if (exposeComparator) {
-            inputs << [name: "RelrDev_1", type: "enum", options: ["=", "!=", ">", "<"]]
-        }
-        JsonOutput.toJson([
-            app: [id: ruleId, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
-                  appType: [name: "Rule-5.1", namespace: "hubitat"]],
-            configPage: [name: "selectTriggers", title: "T", install: false, error: null,
-                         sections: [[title: "", input: inputs, paragraphs: ["seq ${seqNum}".toString()]]]],
-            settings: [:],
-            childApps: []
-        ])
-    }
-
-
-    private String customAttrConditionSchemaJsonOpts(int ruleId, int seqNum, List state1Options) {
-        def inputs = [
-            [name: "isCondTrig.1", type: "bool"],
-            [name: "condTrig.1", type: "enum", options: ["": "Click to set", "a": "--> New Condition"]],
-            [name: "rCapab_1", type: "enum", options: ["Custom Attribute"]],
-            [name: "rDev_1", type: "capability.*", multiple: true],
-            [name: "rCustomAttr_1", type: "enum", options: ["switch", "fixtureMode"]],
-            [name: "state_1", type: "enum", options: state1Options],
-            [name: "not1", type: "bool"],
-            [name: "tCapab2", type: "enum", options: ["Switch"]],
-            [name: "tDev2", type: "capability.switch", multiple: true],
-            [name: "tstate2", type: "enum", options: ["on", "off"]],
-            [name: "isCondTrig.2", type: "bool"],
-            [name: "condTrig.2", type: "enum", options: ["": "Click to set"]],
-            [name: "hasAll", type: "button"]
-        ]
-        JsonOutput.toJson([
-            app: [id: ruleId, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
-                  appType: [name: "Rule-5.1", namespace: "hubitat"]],
-            configPage: [name: "selectTriggers", title: "T", install: false, error: null,
-                         sections: [[title: "", input: inputs, paragraphs: ["seq ${seqNum}".toString()]]]],
-            settings: [:],
-            childApps: []
-        ])
-    }
-
-
-    private String periodicSchemaJson(int ruleId) {
-        JsonOutput.toJson([
-            app: [id: ruleId, version: 7],
-            configPage: [name: "periodic", title: "Periodic", install: false, error: null,
-                         sections: [[title: "", input: [
-                             [name: "whichPeriod1", type: "enum", options: ["Seconds", "Minutes", "Hourly", "Daily", "Weekly", "Monthly", "Yearly", "Cron String"]],
-                             [name: "everyNSecs1", type: "enum", options: ["1", "5", "30"]],
-                             [name: "everyNMinutesC1", type: "bool"],
-                             [name: "everyNC1", type: "enum", options: ["1", "5", "15"]],
-                             [name: "selectMinutesC1", type: "enum", multiple: true, options: ["0", "30"]],
-                             // Hourly fields.
-                             [name: "everyNHoursC1", type: "bool"],
-                             [name: "everyNHC1", type: "enum", options: ["1", "2", "3"]],
-                             [name: "startingHC1", type: "time"],
-                             [name: "selectHoursC1", type: "enum", multiple: true, options: ["9", "12"]],
-                             [name: "startingHCX1", type: "number"],
-                             // Daily fields.
-                             [name: "everyNDoMC1", type: "bool"],
-                             [name: "everyNDC1", type: "enum", options: ["1", "2"]],
-                             [name: "startingDC1", type: "time"],
-                             [name: "everyWeekDay1", type: "bool"],
-                             [name: "selectDoMC1", type: "enum", multiple: true, options: ["1", "15"]],
-                             [name: "selectDoWC1", type: "enum", multiple: true, options: ["Monday", "Friday"]],
-                             [name: "startingWC1", type: "time"],
-                             [name: "dayMC1", type: "number"],
-                             [name: "everyNMC1", type: "number"],
-                             [name: "selectMonthC1", type: "enum", multiple: true, options: ["January", "July"]],
-                             [name: "weeklyMC1", type: "enum", options: ["First", "Last"]],
-                             [name: "startingMC1", type: "time"],
-                             [name: "yearlyMonthC1", type: "enum", options: ["December"]],
-                             [name: "weeklyYC1", type: "enum", options: ["First", "Last"]],
-                             [name: "startingYC1", type: "time"],
-                             // nth-weekday reveal fields (Monthly dailyMC1/everyNMCX1, Yearly dailyYC1/yearlyMonthCX1).
-                             [name: "dailyMC1", type: "enum", options: ["Sunday", "Monday", "Saturday"]],
-                             [name: "everyNMCX1", type: "number"],
-                             [name: "dailyYC1", type: "enum", options: ["Sunday", "Monday", "Saturday"]],
-                             [name: "yearlyMonthCX1", type: "enum", options: ["January", "December"]],
-                             [name: "cronStr1", type: "text"]
-                         ], paragraphs: []]]],
-            settings: [:]
-        ])
-    }
-
-    /**
-     * selectTriggers schema for a Periodic Schedule trigger. tCapab1 options
-     * include "Periodic Schedule" so capability normalization passes; the seq
-     * paragraph shifts the render between fetches so tCapab1 routes to applied
-     * (giving success=true). No tDev/tstate -- Periodic takes no deviceIds.
-     */
-
-    private String periodicSelectTriggersJson(int ruleId, int seqNum) {
-        JsonOutput.toJson([
-            app: [id: ruleId, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
-                  appType: [name: "Rule-5.1", namespace: "hubitat"]],
-            configPage: [name: "selectTriggers", title: "T", install: false, error: null,
-                         sections: [[title: "", input: [
-                             [name: "tCapab1", type: "enum", options: ["Periodic Schedule"]],
-                             [name: "isCondTrig.1", type: "bool"],
-                             [name: "hasAll", type: "button"]
-                         ],
-                         // The periodic sub-page link renders as a body href
-                         // carrying params={n:<triggerIdx>} -- this is what the
-                         // dispatcher's schema-driven nav discovery reads.
-                         body: [[element: "href", name: "periodic1", page: "periodic", params: [n: 1]]],
-                         paragraphs: ["seq ${seqNum}".toString()]]]],
-            settings: [:],
-            childApps: []
-        ])
-    }
-
-    /**
-     * Register the standard hub-GET surface for a periodic addTrigger spec and
-     * return the captured POST list. mainPage reports the trigger as baked.
-     */
-
-    private List registerPeriodicHubSurface(int ruleId) {
-        def fetchSeq = 0
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        def posts = []
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            posts << [path: path, body: body]
-            [status: 200, location: null, data: periodicSchemaJson(ruleId)]
-        }
-        hubGet.register("/installedapp/configure/json/${ruleId}".toString()) { params -> ruleConfigJson(ruleId, "r", []) }
-        hubGet.register("/installedapp/configure/json/${ruleId}/selectTriggers".toString()) { params ->
-            fetchSeq++
-            periodicSelectTriggersJson(ruleId, fetchSeq)
-        }
-        hubGet.register("/installedapp/configure/json/${ruleId}/periodic".toString()) { params -> periodicSchemaJson(ruleId) }
-        hubGet.register("/installedapp/configure/json/${ruleId}/mainPage".toString()) { params -> mainPageJson(ruleId, "r", true) }
-        hubGet.register("/installedapp/statusJson/${ruleId}".toString()) { params -> statusJson(ruleId) }
-        return posts
-    }
-
     // Helper: pull the value of a genuine per-field write off the POST list.
     // The Done-submit POST (carries _action_previous) echoes EVERY periodic
     // schema field as an empty string; it is not a real write, so it is
@@ -4728,212 +4395,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             it.body?.containsKey("settings[${field}]".toString())
         }
     }
-
-
-    private String doActPageSchemaJson(int ruleId, int seqNum) {
-        JsonOutput.toJson([
-            app: [id: ruleId, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
-                  appType: [name: "Rule-5.1", namespace: "hubitat"]],
-            configPage: [name: "doActPage", title: "T", install: false, error: null,
-                         sections: [[title: "", input: [
-                             [name: "actType.1", type: "enum",
-                              options: ["switchActs": "Turn on/off/toggle a switch or switches"]],
-                             [name: "actSubType.1", type: "enum",
-                              options: ["getOnOffSwitch": "Turn on, off, or toggle a switch"]],
-                             [name: "onOffSwitch.1", type: "capability.switch", multiple: true],
-                             [name: "onOff.1", type: "bool"],
-                             [name: "actionDone", type: "button"]
-                         ], paragraphs: ["seq ${seqNum}".toString()]]]],
-            settings: [:],
-            childApps: []
-        ])
-    }
-
-
-    private String doActPageLogSchemaJson(int ruleId, int seqNum) {
-        JsonOutput.toJson([
-            app: [id: ruleId, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
-                  appType: [name: "Rule-5.1", namespace: "hubitat"]],
-            configPage: [name: "doActPage", title: "T", install: false, error: null,
-                         sections: [[title: "", input: [
-                             [name: "actType.1", type: "enum",
-                              options: ["notificationActs": "Notifications and Logging"]],
-                             [name: "actSubType.1", type: "enum",
-                              options: ["getLog": "Log a message"]],
-                             [name: "logMessage.1", type: "text"],
-                             [name: "actionDone", type: "button"]
-                         ], paragraphs: ["seq ${seqNum}".toString()]]]],
-            settings: [:], childApps: []
-        ])
-    }
-
-
-    private String doActPageCondSchemaJson(int ruleId, int seqNum) {
-        JsonOutput.toJson([
-            app: [id: ruleId, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
-                  appType: [name: "Rule-5.1", namespace: "hubitat"]],
-            configPage: [name: "doActPage", title: "T", install: false, error: null,
-                         sections: [[title: "", input: [
-                             [name: "actType.1", type: "enum",
-                              options: ["condActs": "Conditional Actions"]],
-                             [name: "actSubType.1", type: "enum",
-                              options: ["getIfThen": "IF Expression THEN"]],
-                             [name: "cond", type: "enum",
-                              options: ["a": "New condition", "b": "Sub-expression"]],
-                             [name: "rCapab_1", type: "enum",
-                              options: ["Custom Attribute", "Switch", "Motion"]],
-                             [name: "rDev_1", type: "capability.sensor", multiple: true],
-                             [name: "rCustomAttr_1", type: "enum",
-                              options: ["wickFilterLife", "battery", "rssi"]],
-                             [name: "RelrDev_1", type: "enum",
-                              options: ["<", "<=", ">", ">=", "=", "!="]],
-                             [name: "state_1", type: "number"],
-                             [name: "hasAll", type: "button"]
-                         ], paragraphs: ["seq ${seqNum}".toString()]]]],
-            settings: [:],
-            childApps: []
-        ])
-    }
-
-
-    private String stPageCondSchemaJson(int ruleId, int seqNum) {
-        JsonOutput.toJson([
-            app: [id: ruleId, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
-                  appType: [name: "Rule-5.1", namespace: "hubitat"]],
-            configPage: [name: "STPage", title: "Required Expression", install: false, error: null,
-                         sections: [[title: "", input: [
-                             [name: "cond", type: "enum",
-                              options: ["a": "New condition", "b": "( sub-expression"]],
-                             [name: "rCapab_1", type: "enum",
-                              options: ["Custom Attribute", "Switch", "Contact"]],
-                             [name: "rDev_1", type: "capability.sensor", multiple: true],
-                             [name: "rCustomAttr_1", type: "enum",
-                              options: ["wickFilterLife", "battery", "rssi"]],
-                             [name: "RelrDev_1", type: "enum",
-                              options: ["<", "<=", ">", ">=", "=", "!="]],
-                             [name: "state_1", type: "number"],
-                             [name: "hasAll", type: "button"],
-                             [name: "doneST", type: "button"]
-                         ], paragraphs: ["seq ${seqNum}".toString()]]]],
-            settings: [:],
-            childApps: []
-        ])
-    }
-
-
-    private String modeActsDoActPageJson(int ruleId, List extraInputs = [], Closure seqProvider = { 0 }) {
-        def seq = seqProvider()
-        JsonOutput.toJson([
-            app: [id: ruleId, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
-                  appType: [name: "Rule-5.1", namespace: "hubitat"]],
-            configPage: [name: "doActPage", title: "T", install: false, error: null,
-                         sections: [[title: "", input: [
-                             [name: "actType.1", type: "enum",
-                              options: ["modeActs": "Set Mode / Variable / Hub Action"]],
-                             [name: "actSubType.1", type: "enum",
-                              options: ["getSetMode": "Set Mode", "getSetVariable": "Set Variable"]],
-                             [name: "actionDone", type: "button"]
-                         ] + extraInputs, paragraphs: ["seq ${seq}".toString()]]]],
-            settings: [:], childApps: []
-        ])
-    }
-
-    // setVariable capability (constant form)
-
-
-    private Map wireSetVariableValueAdd(String varName, boolean local) {
-        def fetchSeq = 0
-        def ctl = [written: [:], posts: []]
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            (ctl.posts as List) << path
-            if (path == "/installedapp/update/json") {
-                body?.each { k, v -> def key = _settingKeyOf(k); if (key != null) (ctl.written as Map)[key] = v }
-            }
-            [status: 200, location: null, data: '']
-        }
-        script.metaClass.getAllGlobalVars = { -> [(varName): [name: varName, type: "integer", value: 0]] }
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
-        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
-            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable / Hub Action"]]])
-        }
-        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
-            modeActsDoActPageJson(100, [
-                [name: "xVarV.1", type: "enum", options: [(varName): varName]],
-                [name: "numOp.1", type: "enum", options: ["number": "number", "add number": "add number"]],
-                [name: "valNumber.1", type: "number"]
-            ], { ++fetchSeq })
-        }
-        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
-        hubGet.register('/installedapp/statusJson/100') { params ->
-            local ? statusJsonWithLocals(100, [(varName): [type: "integer", value: 0]]) : statusJson(100)
-        }
-        return ctl
-    }
-
-    @spock.lang.Unroll
-
-    private String actSelectActionsJson(int ruleId) {
-        ruleConfigJson(ruleId, "r", [[name: "actType.1", type: "enum",
-            options: ["condActs": "Conditional Actions"]]])
-    }
-
-    // Minimal mainPage that shows a baked IF paragraph so post-commit check passes.
-
-    private String actMainPageBakedJson(int ruleId, String para = "IF ... THEN") {
-        JsonOutput.toJson([
-            app: [id: ruleId, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
-                  appType: [name: "Rule-5.1", namespace: "hubitat"]],
-            configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
-                         sections: [[title: "", input: [],
-                                     paragraphs: [para]]]],
-            settings: [:], childApps: []
-        ])
-    }
-
-
-    private Map stubBooleanWizard(Map flags, Map writtenFields, boolean staticState = false, Closure doActPage = null) {
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            if (body?.name != null && body?.containsKey("settings[" + body.name + "]")) flags.clicks = (flags.clicks ?: []) + [body.name]
-            if (path == "/installedapp/update/json" && body?.currentPage == "doActPage") {
-                body.each { k, v ->
-                    def key = _settingKeyOf(k)
-                    if (key != null) {
-                        writtenFields[key] = v
-                        if (key == "rCapab_1") flags.rCapab = true
-                        if (key == "xVar_1") flags.xVar = true
-                    }
-                }
-            }
-            [status: 200, location: null, data: '']
-        }
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
-        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> actSelectActionsJson(100) }
-        hubGet.register('/installedapp/configure/json/100/doActPage', doActPage ?: booleanDoActPage(flags, staticState))
-        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> actMainPageBakedJson(100, "IF myBool is true THEN") }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
-        return flags
-    }
-
-
-    private List stubCreateShell(Integer newId) {
-        hubGet.register('/hub2/appsList') { params -> appsListJson(21) }
-        hubGet.register("/installedapp/configure/json/${newId}".toString()) { params -> ruleConfigJson(newId, "", [[name: "origLabel", type: "text"]]) }
-        hubGet.register("/installedapp/statusJson/${newId}".toString()) { params -> statusJson(newId) }
-        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
-            [status: 302, location: "/installedapp/configure/${newId}".toString(), data: ""]
-        }
-        def posts = []
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            posts << [path: path, body: body]
-            [status: 200, location: null, data: '{"status":"success"}']
-        }
-        return posts
-    }
-
 
     def "hub_set_native_app create branch (no appId) builds a shell via _createNativeAppShell"() {
         given:
@@ -5134,6 +4595,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         and: "but NO updateRule button click fires (Basic Rule is submitOnChange, has no updateRule button)"
         !posts.any { it.path == "/installedapp/btn" && it.body?.name == "updateRule" }
     }
+
+
+
+
 
 
     def "editing an RM-family app still fires the updateRule commit click (commitButton default)"() {
@@ -5354,27 +4819,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
 
-    private String doActPageWith(int ruleId, int seqNum, List inputs) {
-        JsonOutput.toJson([
-            app: [id: ruleId, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
-                  appType: [name: "Rule-5.1", namespace: "hubitat"]],
-            configPage: [name: "doActPage", title: "T", install: false, error: null,
-                         sections: [[title: "", input: inputs, paragraphs: ["seq ${seqNum}".toString()]]]],
-            settings: [:], childApps: []
-        ])
-    }
-
-
-    private String bakedMainPage(int ruleId) {
-        JsonOutput.toJson([
-            app: [id: ruleId, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
-                  appType: [name: "Rule-5.1", namespace: "hubitat"]],
-            configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
-                         sections: [[title: "", input: [], paragraphs: ["action row baked"]]]],
-            settings: [:], childApps: []
-        ])
-    }
-
     // ---------- HSM as an action ----------
 
 
@@ -5581,7 +5025,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-
     def "walkStep writes a driver-specific device.* picker's map as its ids and echoes the stored ids: #label"() {
         given:
         enableWrite()
@@ -5770,7 +5213,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.unknownSettingsWarning.contains("[onMeansPage, offMeansPage]")
         result.unknownSettingsWarning.contains("walkStep")
     }
-
 
 
 }

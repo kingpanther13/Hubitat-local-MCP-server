@@ -202,10 +202,8 @@ private buildToolSearchCorpus(List defs = null) {
     // SHOULD (so hub_search_tools still matches "switch motion contact").
     def allDefs = applyDescriptionTransform(defs ?: getAllToolDefinitions(), false, false)
     def allDefsMap = allDefs.collectEntries { [(it.name): it] }
-    // Friendly names join the searchable text: titles add tokens the bare
-    // name/description lack (native rule documents gain 'author' from "Author Rule
-    // Machine Rule" -- its corpus text otherwise only has 'authoring', and
-    // the tokenizer does not stem).
+    // Friendly names join the searchable text: a title can add tokens the bare
+    // name and description lack, and the tokenizer does not stem.
     def displayMeta = getToolDisplayMeta()
 
     def corpus = []
@@ -319,9 +317,7 @@ def toolGetToolGuide(section, cursor = null, Map apiDocs = null) {
         }
         def sub = guideSubSectionLookup(key)
         if (sub) {
-            // Siblings, not just the parent: some reference material is shared between shortcuts
-            // (the extended condition shapes serve addRequiredExpression, addAction.expression AND
-            // addTrigger.condition), so a caller that landed on the wrong sub-key needs the narrow
+            // Siblings, not just the parent: a caller that landed on the wrong sub-key needs the narrow
             // alternatives -- naming only the parent sends it back to the fetch this split avoids.
             def result = [
                 success: true,

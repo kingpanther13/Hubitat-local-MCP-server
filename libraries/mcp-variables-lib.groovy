@@ -307,18 +307,6 @@ private List getHubVarForbiddenChars() {
     return ["'", '"', '\\', '~', '[', ':', ']', '<', '>']
 }
 
-// Sentinel appended to the IllegalStateException message thrown by
-// _rmClearActions on the retry-window-expired path. The action-mutation
-// dispatcher catches the throw, detects this token, and routes to the
-// structured eventual-consistency response shape (asyncCommitLikely:true).
-// Centralized so the throw site and every strip site share a single source
-// of truth -- a typo or drift would silently fall back to the legacy flat
-// error shape and lose the data-loss-protection contract. Leading space is
-// intentional: stripping " [asyncCommitLikely]" removes the separator too.
-private String getAsyncCommitMarker() {
-    return " [asyncCommitLikely]"
-}
-
 private List getHubVarTypes() {
     return ["Number", "Decimal", "String", "Boolean", "DateTime"]
 }

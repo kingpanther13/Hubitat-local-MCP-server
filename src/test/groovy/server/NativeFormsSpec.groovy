@@ -722,7 +722,7 @@ class NativeFormsSpec extends ToolSpecBase {
         definitions*.name == ['hub_set_rule']
         script._ndOperationSchema('form').properties.steps.maxItems == 16
         !definitions[0].inputSchema.required?.contains('confirm')
-        script._nfGuide().contains('Even open renders execute app code')
+        script._ndGuide().contains('Even open renders execute app code')
     }
     def 'shared validation preserves optional form clearing and native wire encodings'() {
         given:

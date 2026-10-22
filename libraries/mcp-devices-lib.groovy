@@ -617,9 +617,6 @@ private List _contextHeaderLines() {
     return header
 }
 
-// A device's states by attribute name. A native state list can carry an attribute twice; the
-// last entry with a value wins, as a JSON object with a repeated key parses, so every filter
-// and projection reads the same value.
 // onlyOn filters on the bulk read and the page is then read per device: a switch that turned off between
 // the two reads is dropped, so a listed device always reads on in the response.
 private List _stillOnAfterPageRead(List paged, List metadataUnavailableIds) {
@@ -631,6 +628,9 @@ private List _stillOnAfterPageRead(List paged, List metadataUnavailableIds) {
     paged.findAll { it._nativeLoaded != true || it._nativeReadError == true || _deviceStatesByName(it).get("switch")?.value?.toString() == "on" }
 }
 
+// A device's states by attribute name. A native state list can carry an attribute twice; the
+// last entry with a value wins, as a JSON object with a repeated key parses, so every filter
+// and projection reads the same value.
 private Map _deviceStatesByName(device) {
     def states = [:]
     device?.currentStates?.each { st ->

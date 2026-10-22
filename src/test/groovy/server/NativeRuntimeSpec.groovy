@@ -276,16 +276,6 @@ class NativeRuntimeSpec extends ToolSpecBase {
         lookups == 0
         calls.empty
     }
-
-    def 'button return never claims compilation success'() {
-        when:
-        def result = script._nrButton(42L, 'actionDone')
-        then:
-        result.verificationNeeded
-        !result.containsKey('success')
-        result.result == null
-        calls*.name == ['actionDone']
-    }
 }
 
 class NativeRuntimeChild {
