@@ -6631,7 +6631,7 @@ class TestRunner:
                 if result.get("success") is False and "excessive hub load" in str(result.get("error", "")):
                     # RMUtils is refused once the hub's load limiter trips; the rule's own Pause button
                     # (a toggle) is the UI's route and is never limited.
-                    print(f"    [LIMITER] hub_set_rule_paused refused; toggling the pausRule button instead")
+                    print("    [LIMITER] hub_set_rule_paused refused; toggling the pausRule button instead")
                     form = self._rm_open(app_id)
                     self._rm_submit(app_id, form, control=self._rm_control(form, name="pausRule"))
                 else:
