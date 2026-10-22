@@ -1851,12 +1851,17 @@ class TestRunner:
             except (TypeError, ValueError):
                 return str(value).lower() == wanted.lower()
 
+        def same_type(reported, wanted: str) -> bool:
+            # The hub lists a Number variable as integer and a Decimal one as bigdecimal.
+            got = str(reported or "").lower()
+            return {"integer": "number", "bigdecimal": "decimal"}.get(got, got) == wanted.lower()
+
         existing = self._hub_variables_by_name()
         create, reset = [], []
         for key in keys:
             name, var_type, value = self.PERM_VARIABLES[key]
             row = existing.get(name)
-            if row is not None and str(row.get("type", "")).lower() != var_type.lower():
+            if row is not None and not same_type(row.get("type"), var_type):
                 self._delete_variable_safe(name, inline=True)
                 row = None
             if row is None:
@@ -8933,7 +8938,16 @@ class TestRunner:
 
     @test("mrtr")
     def test_mrtr_rule_edit_uses_standard_continuation(self) -> None:
-        changes, messages = native_mrtr_changes("MRTR regular E2E proof", str(self.get_test_temperature_ids()[0]))
+        temperature = str(self.get_test_temperature_ids()[0])
+        if os.environ.get("E2E_MRTR_ACTION_COUNT"):
+            # A lane that sizes the workload for its hub runs the full configured batch.
+            changes, messages = native_mrtr_changes("MRTR regular E2E proof", temperature)
+        else:
+            # The default suits a physical hub: several continuation rounds over the 10-second
+            # proof threshold, without the Wait rows a C-7 cannot finish within a client's
+            # default 10 rounds.
+            changes, messages = native_mrtr_changes("MRTR regular E2E proof", temperature,
+                                                    {"E2E_MRTR_ACTION_COUNT": "30"}, total=50, max_waits=0)
         app_id = self._create_native_rule("MrtrContinuation")
         try:
             args = {"operation": "update", "rule_id": int(app_id), "args": {"changes": changes}, "confirm": True}

@@ -834,3 +834,15 @@ def test_sdk_parent_discovery_rejects_repeated_inventory_cursor():
         return {"apps": [], "nextCursor": "same"}
     with pytest.raises(AssertionError, match="cursor repeated"):
         asyncio.run(helpers.discover_rule_machine_parent(fetch))
+
+
+def test_native_mrtr_changes_sizes_a_smaller_batch_without_waits():
+    changes, messages = helpers.native_mrtr_changes("proof", "588", {"E2E_MRTR_ACTION_COUNT": "30"}, total=50, max_waits=0)
+    assert len(changes) == 50 and len(messages) == 30
+    assert sum(1 for row in changes if row["part"] == "condition") == 20
+    assert not any(row["value"].get("subtype") == "getWaitEvents" for row in changes if row["part"] == "action")
+
+
+def test_native_mrtr_changes_refuses_more_logs_than_the_batch_holds():
+    with pytest.raises(ValueError):
+        helpers.native_mrtr_changes("proof", "588", {"E2E_MRTR_ACTION_COUNT": "50"}, total=50)

@@ -48,18 +48,21 @@ def mrtr_log_actions(prefix: str, environ: Mapping[str, str] | None = None) -> l
 
 
 def native_mrtr_changes(
-    prefix: str, temperature_id: str, environ: Mapping[str, str] | None = None,
+    prefix: str, temperature_id: str, environ: Mapping[str, str] | None = None, total: int = 100,
+    max_waits: int = 40,
 ) -> tuple[list[dict[str, Any]], list[str]]:
-    """Build a full native mutation batch; every condition and log persists real work."""
+    """Build a native mutation batch of `total` changes; every condition and log persists real work."""
     if not isinstance(temperature_id, str) or re.fullmatch(r"[0-9]+", temperature_id) is None:
         raise ValueError("The temperature fixture ID must be decimal")
+    if not isinstance(total, int) or not 10 <= total <= 100:
+        raise ValueError("A native MRTR batch has 10 through 100 changes")
     count = mrtr_action_count(environ)
-    if count > 99:
-        raise ValueError("Native MRTR proof supports at most 99 log actions in its 100-change batch")
-    wait_count = min(40, 99 - count)
+    if count > total - 1:
+        raise ValueError(f"Native MRTR proof supports at most {total - 1} log actions in its {total}-change batch")
+    wait_count = max(0, min(max_waits, total - 1 - count))
     # Keep the lighter default; fewer wait rows carry more real compilation work each.
     events_per_wait = 4 if wait_count == 40 else 8
-    condition_count = 100 - count - wait_count
+    condition_count = total - count - wait_count
     messages = [f"{prefix} {index}" for index in range(1, count + 1)]
     conditions = [{"part": "condition", "value": {"capability": "Temperature", "fields": [
         {"name": "rDev_#", "type": "capability.temperatureMeasurement", "value": [temperature_id]},
