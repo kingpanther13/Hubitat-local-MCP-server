@@ -39,8 +39,8 @@ def getSupportedVirtualDeviceTypes() {
         "Virtual Switch", "Virtual Button", "Virtual Contact Sensor",
         "Virtual Motion Sensor", "Virtual Presence", "Virtual Lock",
         "Virtual Temperature Sensor", "Virtual Humidity Sensor", "Virtual Dimmer",
-        "Virtual RGBW Light", "Virtual Shade", "Virtual Garage Door Opener",
-        "Virtual Water Sensor", "Virtual Omni Sensor", "Virtual Fan Controller"
+        "Virtual RGBW Light", "Virtual Shade", "Virtual Garage Door Controller",
+        "Virtual Leak Sensor", "Virtual Omni Sensor", "Virtual Fan Controller"
     ]
 }
 

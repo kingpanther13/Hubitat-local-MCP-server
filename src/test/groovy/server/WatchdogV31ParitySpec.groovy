@@ -26,6 +26,19 @@ class WatchdogV31ParitySpec extends WatchdogV31Harness {
             (MANUAL_TOOLS.keySet() + ['hub_update_package', 'hub_get_package_deployment', 'hub_set_package_deployment']) as Set
     }
 
+    def 'hub_update_mcp_settings takes the server allowlist minus its server-only keys'() {
+        given: 'mcpLogLevel needs the server-side cache refresh only the main tool does'
+        def server = new File('libraries/mcp-self-admin-lib.groovy').getText('UTF-8') =~ /(?s)def allowedSettings = \[(.*?)\n    \]/
+        def watchdog = new File('e2e-deadman-watchdog-v3-1.groovy').getText('UTF-8') =~ /(?s)Map types = \[(.*?)\]\n/
+        assert server.find() && watchdog.find()
+        Set serverKeys = (server.group(1) =~ /"(\w+)":/).collect { it[1] } as Set
+        Set watchdogKeys = (watchdog.group(1) =~ /(\w+): "/).collect { it[1] } as Set
+
+        expect:
+        watchdogKeys.contains('backupBeforeRuleEdits')
+        watchdogKeys == serverKeys - ['mcpLogLevel']
+    }
+
     def 'v3.1 names itself apart from v3 and protects the code of both watchdogs'() {
         expect:
         script.processJsonRpcMessage([jsonrpc: '2.0', id: 1, method: 'initialize', params: [:]]).result.serverInfo ==

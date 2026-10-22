@@ -76,6 +76,7 @@ def toolUpdateMcpSettings(args) {
     // "false", which is truthy in Groovy — silently flipping the toggle to enabled
     // when the caller meant disabled.
     def updates = [:]
+    def previous = [:]   // each scalar key's stored value before this call (null: never set, so its default applied); selectedDevices is not recorded
     boolean hasDeviceScope = false
     def deviceScopeRaw = null
     args.settings.each { key, value ->
@@ -122,6 +123,7 @@ def toolUpdateMcpSettings(args) {
         if (keyStr == ownTransportKey && coerced == false) {
             throw new IllegalArgumentException("Refusing to set '${keyStr}' to false over the connection it controls: this request arrived through it, so the change would lock this client out. Turn it off from the other connection or the MCP Rule Server app page on the hub.")
         }
+        previous.put(keyStr, settings?.get(keyStr))
         updates.put(keyStr, coerced)
     }
 
@@ -205,6 +207,7 @@ def toolUpdateMcpSettings(args) {
     def result = [
         success: true,
         updated: updates,
+        previous: previous,
         message: message
     ]
     if (hasDeviceScope) {

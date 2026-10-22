@@ -28,6 +28,21 @@
 @groovy.transform.Field static volatile long SETUP_RETRY_AT = 0L
 @groovy.transform.Field static final Object SETUP_REFRESH_LOCK = new Object()
 @groovy.transform.Field static final Set LIVE_WRITE_EXECUTIONS = new java.util.HashSet()
+// A detached slice's view of the settings its request read (see _requestSettingsSnapshot); set for
+// the slice and cleared after it, so it outlives the per-tool cache clear but never a worker run.
+@groovy.transform.Field Map REQUEST_SETTINGS = null
+// The backup toggles as the request's own execution read them. A detached write runs in a
+// scheduled job, and on some hub builds that job reads a setting changed since the app loaded
+// as its old value; the request's view travels with the work item instead.
+private Map _requestSettingsSnapshot() {
+    [backupBeforeRuleEdits: settings?.backupBeforeRuleEdits?.toString(), backupEveryRuleWrite: settings?.backupEveryRuleWrite?.toString()]
+}
+private void _keepRequestSettings(Map snap) { REQUEST_SETTINGS = snap ?: null }
+private String _requestSetting(String key) { (REQUEST_SETTINGS ?: [:]).get(key)?.toString() }
+// A backup toggle as this execution should see it: the request's own view inside a detached slice.
+private String _effectiveBackupSetting(String key) {
+    (REQUEST_SETTINGS instanceof Map && (REQUEST_SETTINGS as Map).containsKey(key)) ? _requestSetting(key) : settings?.get(key)?.toString()
+}
 // Ordinary-write leases, keyed by leaseId. The global write cap is overload
 // protection, not crash safety: nothing here has to survive a recompile, and a
 // durable lease would cost two hub DB round trips on EVERY write call. A killed
@@ -2581,7 +2596,7 @@ def handleToolsCall(msg) {
                 // requestState for the client to continue.
                 Map readArgs = _mrtrCopyMap(args as Map)
                 readArgs.__reqT0 = reqT0
-                if (_mrtrDeviceReadTools().contains(leafName)) readSnapshotId = java.util.UUID.randomUUID().toString()
+                if (_mrtrSnapshotReadTools().contains(leafName)) readSnapshotId = java.util.UUID.randomUUID().toString()
                 def readResult = _executeWithDeviceReadContext(toolName, readArgs,
                     readSnapshotId ? [id: readSnapshotId, fresh: true] : null)
                 if (!(readResult instanceof Map && readResult.status == "in_progress")) {
@@ -2907,7 +2922,7 @@ def _budgetAwareTools() {
             "hub_get_jobs", "hub_get_performance_stats", "hub_get_logs", "hub_get_info",
             "hub_report_issue", "hub_get_custom_rule", "hub_delete_debug_logs",
             "hub_get_device", "hub_list_devices", "hub_get_device_health", "hub_list_libraries",
-            "hub_get_device_attribute"] as Set
+            "hub_get_device_attribute", "hub_list_rules"] as Set
 }
 
 // ==================== MCP 2026-07-28 request-to-request continuation ====================
@@ -2928,10 +2943,12 @@ def _mrtrWriteTools() {
 def _mrtrReadTools() {
     return ["hub_get_jobs", "hub_get_performance_stats", "hub_get_logs", "hub_get_info",
             "hub_report_issue", "hub_get_custom_rule", "hub_get_device", "hub_list_devices",
-            "hub_get_device_health", "hub_list_libraries"] as Set
+            "hub_get_device_health", "hub_list_libraries", "hub_list_rules"] as Set
 }
 
-private Set _mrtrDeviceReadTools() { ["hub_get_device", "hub_list_devices", "hub_get_device_health"] as Set }
+// Reads served from a background snapshot: the worker runs the whole leaf and the request answers in_progress
+// until it lands.
+private Set _mrtrSnapshotReadTools() { ["hub_get_device", "hub_list_devices", "hub_get_device_health", "hub_list_rules"] as Set }
 
 private def _executeWithDeviceReadContext(tool, Map args, Map context, boolean bpsChecked = false) {
     Map previous = deviceReadContext
@@ -4035,8 +4052,8 @@ private Map _mrtrCommitSlice(String stateId, Map rec, Map claim, Map executionAr
                     error: "The ${leaf} read did not finish within ${_mrtrMaxContinuationSlices()} continuation slices.",
                     note: leaf == "hub_get_device_health" ?
                         "The health check may still be running, including any requested identify LED blink. Do not automatically retry: that starts another health check. This requestState only replays this timeout. Wait for the hub's probes to settle before deciding whether to run fewer probes." :
-                        _mrtrDeviceReadTools().contains(leaf) ?
-                        "No hub state was changed. The background device read may still be running. Start a fresh call with a smaller selection; if this repeats, inspect the device page and hub performance." :
+                        _mrtrSnapshotReadTools().contains(leaf) ?
+                        "No hub state was changed. The background read may still be running. Start a fresh call with a smaller selection; if this repeats, inspect hub performance." :
                         "No hub state was changed. The log fetch is still running and its result is cached once it lands; repeat the identical call. If this repeats, inspect the hub's Logs page for a slow or failing fetch.",
                     mrtr: [continued: true, rounds: ((rec.rounds ?: 0) as Integer) + 1, startedAt: rec.startedAt]
                 ]
@@ -4290,7 +4307,8 @@ private Map _mrtrScheduleSlice(String stateId, Map rec, Map claim, Map execution
         }
         MRTR_WORK_ITEMS.put(claimId, [
             stateId: stateId, claimId: claimId, generation: generation,
-            arguments: _mrtrCopyMap(executionArgs), started: false
+            arguments: _mrtrCopyMap(executionArgs), started: false,
+            requestSettings: _requestSettingsSnapshot()
         ])
     }
     try {
@@ -4363,6 +4381,7 @@ def runMrtrSlice(Map job = [:]) {
     mrtrWorkerSliceStartedAt = now()
     try {
         Map executionArgs = _mrtrCopyMap(work.arguments as Map)
+        _keepRequestSettings(work.requestSettings as Map)
         def result = _mrtrExecuteSlice(stateId, rec, executionArgs)
         _mrtrLogBackgroundCommit(stateId, rec, _mrtrCommitSlice(stateId, rec, claim, executionArgs, result))
     } catch (Exception workerErr) {
@@ -4378,6 +4397,7 @@ def runMrtrSlice(Map job = [:]) {
         _mrtrCleanupRecord(rec)
         _mrtrStoreTerminalOrLog(stateId, rec, claim, failure, rec.leafTool)
     } finally {
+        _keepRequestSettings(null)
         mrtrWorkerSliceStartedAt = previousWorkerStart
         synchronized (WRITE_RESERVATION_LOCK) {
             def current = MRTR_WORK_ITEMS.get(claimId)
@@ -6438,7 +6458,7 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
             throw new IllegalArgumentException("${toolName} is not available in read-only mode. The Custom Rule Engine toggle is OFF. Turn it ON in MCP Rule Server settings to use create/delete/export/import/clone operations. NOTE: the custom MCP rule engine is legacy -- for new rule work prefer hub_manage_native_rules_and_apps.")
         }
     }
-    if (deviceReadContext != null && _mrtrDeviceReadTools().contains(toolName?.toString())) {
+    if (deviceReadContext != null && _mrtrSnapshotReadTools().contains(toolName?.toString())) {
         return _deviceReadSnapshot(toolName.toString(), args as Map, deviceReadContext)
     }
     switch (toolName) {
@@ -6459,8 +6479,8 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
                 }
                 return toolListVirtualDevices(args)
             }
-            return toolListDevices(args.detailed, args.offset ?: 0, args.limit ?: 0, args.filter, args.labelFilter, args.capabilityFilter, args.format, args.fields, args.cursor, args.scope, args.roomFilter, args.onlyOn, args.changedSince, args.attributeNames, args.__reqT0)
-        case "hub_get_device": return toolGetDevice(args.deviceId, args.mode ?: "summary", args.sections, args.fields, args.cursor)
+            return toolListDevices(args.detailed, args.offset ?: 0, args.limit ?: 0, args.filter, args.labelFilter, args.capabilityFilter, args.format, args.get("fields"), args.cursor, args.scope, args.roomFilter, args.onlyOn, args.changedSince, args.attributeNames, args.__reqT0)
+        case "hub_get_device": return toolGetDevice(args.deviceId, args.mode ?: "summary", args.sections, args.get("fields"), args.cursor)
         case "hub_call_device_command": return toolSendCommand(args.deviceId, args.command, args.parameters, args.waitFor, args.commands, args.__reqT0)
         case "hub_call_device_swap": return toolCallDeviceSwap(args)
         case "hub_call_device_replace": return toolCallDeviceReplace(args)
@@ -10371,7 +10391,7 @@ private Map _rmEmptyHealthVerdict(Map overrides) {
     return v
 }
 
-Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
+Map _rmCheckRuleHealth(Integer appId, String source = "auto", String activePage = null) {
     // Defensive guard: error paths (_rmBuildUpdateErrorResponse and friends) can call in with a
     // null appId if the failure happened before the id resolved. Reading rule state for a null id
     // would fire redundant HTTP calls (/app/ruleBuilderJson/null, /installedapp/configure/json/null)
@@ -10459,7 +10479,10 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
     }
     if (runHtml) {
         try {
-            def cfg = _rmFetchConfigJson(appId)
+            // A non-RM app's default page can reset its own wizard (HPM clears its pending
+            // install settings there), so a caller mid-wizard passes the page it is on; the
+            // settings in the response are app-wide either way.
+            def cfg = (activePage && ruleFormat != "rm") ? _rmFetchConfigJson(appId, activePage) : _rmFetchConfigJson(appId)
             sourcesUsed << "configPage"
             label = cfg?.app?.label?.toString()
             // Same fetch already in hand: reporting the red-X state costs nothing and spares

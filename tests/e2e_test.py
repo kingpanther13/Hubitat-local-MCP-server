@@ -1788,6 +1788,7 @@ class TestRunner:
     BACKUP_PROVING_TESTS: ClassVar[frozenset[str]] = frozenset({
         "test_set_rule_self_gateway_envelope_edit",
         "test_set_native_app_basic_rule_lifecycle",
+        "test_set_native_app_walk_keeps_the_pending_page",
         "test_rm_rule_restore_in_place_with_device_picker",
         "test_rm_rule_restore_skips_a_deleted_device",
         "test_rm_rule_restore_brings_back_a_removed_trigger",
@@ -7501,7 +7502,10 @@ class TestRunner:
         # and an off action only A; without it both are commanded. The rule's own command-<name> events
         # (producedBy names the rule) show which switch RM commanded. A shade action built through the
         # native editor, whose last input is its device picker, commits without a false partial.
-        a, b = self._ensure_perm_fixture("switch_a"), self._ensure_perm_fixture("switch_b")
+        # Its own switches: rules other tests leave behind command the shared ones, which would
+        # change the states this test sets up before each run.
+        a, _, _ = self._rm_disposable_switch("OnlyChangedA")
+        b, _, _ = self._rm_disposable_switch("OnlyChangedB")
         def switch_action(on: bool, only: bool, **extra) -> dict:
             return self._rm_action("switchActs", "getOnOffSwitch", [
                 ("onOffSwitch", "capability.switch", [str(a), str(b)]), ("onOff", "bool", on), ("optSwitch", "bool", only)], **extra)
@@ -7890,6 +7894,103 @@ class TestRunner:
             assert edited["document"]["expressions"]["0"] == [condition]
         finally:
             self._delete_native(app_id)
+
+    def _ensure_wizard_walk_fixture(self) -> int:
+        """The permanent wizard-walk app's instance id, installing what the hub lacks: the code, the instance, or both."""
+        name = "BAT_E2E_KEEP_Wizard_Walk"
+
+        def listed(scope: str) -> list[dict]:
+            page = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_apps", "args": {"scope": scope}})
+            assert isinstance(page, dict) and isinstance(page.get("apps"), list), f"hub_list_apps({scope}) failed: {page}"
+            return [a for a in page["apps"] if isinstance(a, dict)]
+
+        instance = next((a for a in listed("instances") if str(a.get("name") or a.get("type") or "") == name), None)
+        if instance is not None:
+            return int(instance["id"])
+        code = next((a for a in listed("types") if str(a.get("name") or "") == name and a.get("namespace") == "mcptest"), None)
+        if code is None:
+            source = (Path(__file__).resolve().parent / "fixtures" / "e2e-wizard-walk-app.groovy").read_text(encoding="utf-8")
+            created = self.client.call_tool("hub_manage_code", {"tool": "hub_create_app", "args": {"source": source, "confirm": True}})
+            assert created.get("success") is True and created.get("appId"), f"installing the wizard fixture's code failed: {created}"
+            code_id = int(created["appId"])
+        else:
+            code_id = int(code["id"])
+        inst = self.client.call_tool("hub_manage_code", {"tool": "hub_create_app", "args": {"codeAppId": code_id, "confirm": True}})
+        assert inst.get("success") is True and inst.get("instanceAppId"), f"creating the wizard fixture failed: {inst}"
+        print(f"    [PERM FIXTURE] installed {name} -- reused by later runs")
+        return int(inst["instanceAppId"])
+
+    @test("native_apps")
+    def test_set_native_app_walk_keeps_the_pending_page(self) -> None:
+        # A multi-page wizard walk reads and writes on the page it is on; rendering the app's default
+        # page between steps resets it. The fixture app is Hubitat Package Manager's install-from-URL
+        # flow in miniature (its main page clears a pending install URL): a permanent BAT_E2E_KEEP_
+        # scaffold, installed from the repo once per hub and never removed. The walk also exposes the
+        # page's Next target.
+        app_id = self._ensure_wizard_walk_fixture()
+
+        def walk(step: dict) -> dict:
+            return self.client.call_tool("hub_manage_native_rules_and_apps", {
+                "tool": "hub_set_native_app", "args": {"appId": app_id, "walkStep": step, "confirm": True}})
+
+        passed = False
+        try:
+            to_install = walk({"page": "prefOptions", "operation": "navigate", "navigate": {"targetPage": "prefPkgInstall"}})
+            assert to_install.get("success") is True, f"navigate to prefPkgInstall failed: {to_install}"
+            # This test runs with pre-edit backups on: the backup's own config read is the one that
+            # must stay on the walk's page (#543), so a key must come back and the page must survive.
+            assert (to_install.get("backup") or {}).get("backupKey"), f"the walk took no pre-edit backup: {to_install}"
+            to_url = walk({"page": "prefPkgInstall", "operation": "navigate", "navigate": {"targetPage": "prefPkgInstallUrl"}})
+            assert to_url.get("success") is True and (to_url.get("after") or {}).get("nextPage"), \
+                f"the walk did not expose the page's Next target: {to_url}"
+            url = "https://example.invalid/e2e-manifest.json"
+            wrote = walk({"page": "prefPkgInstallUrl", "operation": "write", "write": {"pkgInstall": url}})
+            assert wrote.get("success") is True, f"writing pkgInstall failed: {wrote}"
+            stored = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config", "args": {
+                "appId": app_id, "pageName": "prefPkgInstallUrl", "includeSettings": True}})
+            assert str((stored.get("settings") or {}).get("pkgInstall")) == url, \
+                f"the pending install URL was reset between steps: {stored.get('settings')}"
+            passed = True
+        finally:
+            # The fixture's default page clears its pending install state, so the next run starts clean.
+            reset = walk({"page": "prefPkgInstallUrl", "operation": "navigate", "navigate": {"targetPage": "prefOptions"}})
+            if passed:
+                assert reset.get("success") is True, f"the fixture was not reset to its default page: {reset}"
+            elif reset.get("success") is not True:
+                print(f"    [WARN] the wizard fixture was not reset to its default page: {reset}")
+
+    @test("virtual_device_lifecycle")
+    def test_create_virtual_leak_sensor_and_garage_door_controller(self) -> None:
+        # The supported type list uses the hub's own built-in driver names; each creates a device
+        # with that driver and deletes cleanly.
+        for driver in ("Virtual Leak Sensor", "Virtual Garage Door Controller"):
+            label = f"{PREFIX}{driver.replace(' ', '')}_{_run_artifact_suffix()}"
+            cw = self._soft_write(
+                lambda driver=driver, label=label: self.client.call_tool("hub_manage_virtual_device", {
+                    "action": "create", "deviceType": driver, "deviceLabel": label, "confirm": True}),
+                lambda label=label: self._find_device_dni_by_label(label),
+                f"create {driver}",
+            )
+            if cw["relayDropped"]:
+                assert cw["committed"], f"create {driver} lost to relay 504 and never committed"
+                dni = str(cw["evidence"])
+            else:
+                result = cw["response"]
+                device = result.get("device") or {}
+                assert result.get("success") is True and device.get("driverType") == driver, \
+                    f"create {driver} did not return a device with that driver: {result}"
+                dni = str(device.get("deviceNetworkId"))
+            self.created_device_dnis.append(dni)
+            dw = self._soft_write(
+                lambda dni=dni: self.client.call_tool("hub_manage_virtual_device", {
+                    "action": "delete", "deviceNetworkId": dni, "confirm": True}),
+                lambda dni=dni, label=label: not self._device_dni_present(dni, label),
+                f"delete {driver}",
+            )
+            if dw["relayDropped"]:
+                assert dw["committed"], f"{label} still present after a relay-504 delete"
+            assert not self._device_dni_present(dni, label), f"{label} ({dni}) still present after deletion"
+            self.created_device_dnis.remove(dni)
 
     # ---- actions backed by other built-in apps ----
 

@@ -394,7 +394,7 @@ Map toolUpdateRuleDocument(Map args) {
 }
 
 private Map _ndEditBackup(Long id, String reason) {
-    if (settings.backupBeforeRuleEdits == false) return [skipped: true, reason: 'Automatic pre-edit backups are disabled']
+    if (_effectiveBackupSetting('backupBeforeRuleEdits') == 'false') return [skipped: true, reason: 'Automatic pre-edit backups are disabled']
     Map backup = _rmBackupRuleSnapshot(id.toString().toInteger(), reason, true)
     if (!(backup?.backupKey instanceof String) || !backup.backupKey) throw new IllegalStateException('No recovery handle was returned')
     backup

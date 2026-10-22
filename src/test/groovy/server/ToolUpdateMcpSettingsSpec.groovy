@@ -589,6 +589,23 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
+    def "the result carries each key's value from before the call, so a caller can restore it"() {
+        given:
+        enableDeveloperModeAndAdminWrite()
+        settingsMap.backupBeforeRuleEdits = false
+
+        when:
+        def result = script.toolUpdateMcpSettings([
+            settings: [backupBeforeRuleEdits: true, backupEveryRuleWrite: false],
+            confirm: true
+        ])
+
+        then: "an unset key reads back as null"
+        result.success == true
+        result.previous == [backupBeforeRuleEdits: false, backupEveryRuleWrite: null]
+        result.updated == [backupBeforeRuleEdits: true, backupEveryRuleWrite: false]
+    }
+
     def "writes native rule backup setting #key=#value"() {
         given:
         enableDeveloperModeAndAdminWrite()

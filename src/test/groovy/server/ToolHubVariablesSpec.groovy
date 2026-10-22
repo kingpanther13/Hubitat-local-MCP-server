@@ -39,6 +39,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
     def setup() {
         // These cases pin the older wizard flow; native endpoints have their own spec.
         script.metaClass._hubVarsNativeModel = { -> null }
+        script.metaClass._hubVarsNativeAvailable = { -> false }
     }
 
     def cleanup() {
@@ -1892,6 +1893,29 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         result.success == true
         buttonClicks == ['condemned', 'delConfirm']
         !armed
+    }
+
+    def "hub_delete_variable on a hub without the native endpoint reads the model once"() {
+        given:
+        enableWrite()
+        def callCount = 0
+        script.metaClass.getGlobalVar = { String n ->
+            callCount++
+            return callCount == 1 ? [name: 'condemned', type: 'String', value: 'bye', deviceId: null, attribute: null] : null
+        }
+        def modelReads = 0
+        script.metaClass._hubVarsNativeModel = { -> modelReads++; null }
+        script.metaClass._rmClickAppButton = { Integer appId, String btnName, String stateAttr, String pageName -> [status: 200] }
+        script.metaClass._findHubVariablesAppId = { -> 1424 }
+        script.metaClass._hubVarPlatformInUse = { Integer a, String n -> false }
+        script.metaClass.backupItemSource = { String type, String id -> [:] }
+
+        when:
+        def result = script.toolDeleteHubVariable([name: 'condemned', confirm: true])
+
+        then:
+        result.success == true
+        modelReads == 1
     }
 
     def "hub_delete_variable hub-namespace wizard sequence: deleteGV then delConfirm"() {

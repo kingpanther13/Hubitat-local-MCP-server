@@ -1437,7 +1437,9 @@ private _restoreUploadedBackup(Map args) {
 }
 
 def _getAllToolDefinitions_partItemBackups() {
-    return [
+    // The list builds in a closure so its strings live in the closure's own class: the app class is
+    // near the JVM 65,535 constant-pool limit.
+    def defs = { [
         // ==================== Hub-DB (whole-hub) backup tools — issue #259 item #1 ====================
         [
             name: "hub_create_backup",
@@ -1528,7 +1530,8 @@ A transport drop can lose the response while the hub still commits this write; v
                 required: ["confirm"]
             ]
         ],
-    ]
+    ] }
+    return defs()
 }
 
 def _readOnlyToolNames_partItemBackups() {

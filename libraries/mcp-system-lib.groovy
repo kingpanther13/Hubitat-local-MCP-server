@@ -1553,7 +1553,9 @@ private Map _parseFirmwareCheck(rawText) {
 }
 
 def _getAllToolDefinitions_partSystem() {
-    return [
+    // The list builds in a closure so its strings live in the closure's own class: the app class is
+    // near the JVM 65,535 constant-pool limit.
+    def defs = { [
         // System Tools
         [
             name: "hub_get_info",
@@ -1713,7 +1715,8 @@ PRE-FLIGHT (apply): 1) Ensure backup <24h old 2) Confirm an update is actually p
                 ]
             ]
         ],
-    ]
+    ] }
+    return defs()
 }
 
 def _readOnlyToolNames_partSystem() {

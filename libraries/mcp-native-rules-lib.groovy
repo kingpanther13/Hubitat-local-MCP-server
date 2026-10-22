@@ -1541,14 +1541,18 @@ private Map _rmNavigateToPage(Integer appId, String fromPage, String targetPage,
     // ONLY place that schema lives, since a follow-up GET on the target
     // page won't carry the state. Callers that need the target schema
     // should consume the returned configPage rather than re-fetch.
-    def actionMarker = "_action_href_${hrefName}|${targetPage}|${hrefIndex}".toString()
+    // hrefName "__next__" submits the page's own Next button (dynamicPage nextPage), the way the
+    // classic UI does: _action_next plus the nextPage hidden field instead of an href marker.
+    boolean asNext = (hrefName == "__next__")
+    def actionMarker = asNext ? "_action_next" : "_action_href_${hrefName}|${targetPage}|${hrefIndex}".toString()
     def body = [
         id: appId.toString(),
         formAction: "update",
         currentPage: fromPage,
         pageBreadcrumbs: _rmPageBreadcrumbs(appId, fromPage, '["mainPage"]'),
-        (actionMarker): ""
+        (actionMarker): asNext ? "Next" : ""
     ]
+    if (asNext) body.nextPage = targetPage
     if (hrefParams != null && !hrefParams.isEmpty()) {
         def paramsMarker = "params_for_action_href_${hrefName}|${targetPage}|${hrefIndex}".toString()
         body.put(paramsMarker, groovy.json.JsonOutput.toJson(hrefParams))
@@ -2103,7 +2107,7 @@ private Map _rmCollectWalkSchema(Map configPage, Map liveSettings = null) {
             }
         }
     }
-    return [
+    def out = [
         inputs: inputs,
         hrefs: hrefs,
         commitButtons: [
@@ -2112,6 +2116,9 @@ private Map _rmCollectWalkSchema(Map configPage, Map liveSettings = null) {
             cancel: hasCancel
         ]
     ]
+    // A wizard page's Next button (dynamicPage nextPage); navigate to it to press Next.
+    if (configPage?.nextPage) out.nextPage = configPage.nextPage.toString()
+    return out
 }
 
 // walkStep — single-step wizard introspection + write/click/navigate.
@@ -2186,9 +2193,9 @@ private Map _rmDecodeRuleExport(Integer ruleId, Object raw) {
     payload
 }
 
-Map _rmBackupRuleSnapshot(Integer ruleId, String reason, boolean requireNativeExport = false, String protectedKey = null) {
+Map _rmBackupRuleSnapshot(Integer ruleId, String reason, boolean requireNativeExport = false, String protectedKey = null, String activePage = null) {
     // Strict edit capture never renders the editor before its recovery point is saved.
-    def built = requireNativeExport ? _rmBuildNativeEditSnapshot(ruleId, reason, _rmCaptureRuleExport(ruleId)) : _rmBuildRuleSnapshot(ruleId, reason)
+    def built = requireNativeExport ? _rmBuildNativeEditSnapshot(ruleId, reason, _rmCaptureRuleExport(ruleId)) : _rmBuildRuleSnapshot(ruleId, reason, activePage)
     return _withBackupLock("rule ${ruleId} snapshot (${reason})") { _rmWriteRuleSnapshotLocked(ruleId, reason, built.snapshot as Map, built.config as Map, protectedKey) }
 }
 
@@ -2212,11 +2219,11 @@ private Map _rmBuildNativeEditSnapshot(Integer ruleId, String reason, String nat
     [snapshot: snapshot, config: config]
 }
 
-private Map _rmBuildRuleSnapshot(Integer ruleId, String reason) {
+private Map _rmBuildRuleSnapshot(Integer ruleId, String reason, String activePage = null) {
     def config
     def status
     try {
-        config = _rmFetchConfigJson(ruleId)
+        config = activePage ? _rmFetchConfigJson(ruleId, activePage) : _rmFetchConfigJson(ruleId)
     } catch (Exception e) {
         // Vue-JSON children (Visual Rules) may not serve configure/json. If the id speaks a
         // VRB serialization, the VRB-flavored snapshot below is still a full backup --
@@ -2361,7 +2368,7 @@ private Map _rmWriteRuleSnapshotLocked(Integer ruleId, String reason, Map snapsh
     // Under strict per-write backups an edit inside an editing session is a rolling step. The
     // session's first snapshot, and a delete's or Required Expression replacement's recovery
     // point, stay pinned. Decided under the lock, against the committed index.
-    boolean editStep = settings?.backupEveryRuleWrite == true &&
+    boolean editStep = _effectiveBackupSetting('backupEveryRuleWrite') == 'true' &&
         !(reason in ["pre-delete", "pre-forcedelete", "pre-replaceRequiredExpression", "pre-native-restore"])
     String retention = editStep && _rmRecentRuleBackup(_itemBackupManifest(), ruleId, now()) != null ? "rolling" : "pinned"
     def ts = new Date(now()).format("yyyyMMdd-HHmmss-SSS")
@@ -3784,7 +3791,7 @@ Map _rmWalkStep(Integer appId, Map spec) {
         // For plain navigation (no href in schema), fall back to
         // hrefName="name", hrefIndex=0, no params.
         def hrefMatch = beforeSchema.hrefs.find { it.targetPage == target }
-        def hrefName = hrefMatch?.name?.toString() ?: "name"
+        def hrefName = hrefMatch?.name?.toString() ?: (beforeSchema.nextPage == target ? "__next__" : "name")
         def hrefIndex = 0
         def hrefParams = null
         if (hrefMatch?.params != null) {
@@ -3925,7 +3932,8 @@ Map _rmWalkStep(Integer appId, Map spec) {
     // condition builders alike); gating on the step's operation, not its page, also covers `done`.
     def health = (walkCache != null && operation in ["write", "click", "navigate", "done"]) ?
         _rmEmptyHealthVerdict(ok: true, skipped: true, source: "deferred", note: "health probe deferred to the end of the drive (wizard in progress)") :
-        _rmWalkStepHealth(appId, spec?.__reqT0 as Long)
+        _rmWalkStepHealth(appId, spec?.__reqT0 as Long, spec?.__activePage != true ? null :
+            ((operation == "navigate" && spec?.navigate instanceof Map) ? (((Map) spec.navigate).targetPage?.toString() ?: page) : page))
     def silentRejection = (operation == "write") &&
         appeared.isEmpty() && disappeared.isEmpty() &&
         valueEcho?.match == false
@@ -4018,12 +4026,12 @@ private void _rmVerifySubPageMultipleFlags(Integer appId, String pageName, Map s
 }
 
 
-private Map _rmWalkStepHealth(Integer appId, Long t0) {
+private Map _rmWalkStepHealth(Integer appId, Long t0, String activePage = null) {
     if (_timeBudgetExceeded(t0)) {
         return _rmEmptyHealthVerdict(ok: true, skipped: true, source: "skipped",
                 note: "health probe skipped: the transport time budget was reached after the committed operation -- verify via hub_get_rule_health(${appId})".toString())
     }
-    return _rmCheckRuleHealth(appId)
+    return activePage ? _rmCheckRuleHealth(appId, "auto", activePage) : _rmCheckRuleHealth(appId)
 }
 
 
@@ -4120,6 +4128,7 @@ private Map _rmDriveWalkSteps(Integer appId, Map spec) {
         // above then fires before the next step. stepsRemaining is built from the
         // raw list via _stripInternalClock, so the clock never leaks into an echo.
         if (spec?.__reqT0 != null) step.__reqT0 = spec.__reqT0
+        if (spec?.__activePage == true) step.__activePage = true
         step.__pageCache = driveWalkCache
         def stepOp = step.operation?.toString()?.trim() ?: "introspect"
         // Inherit the page the previous step ended on when this step omits one.
@@ -4173,7 +4182,7 @@ private Map _rmDriveWalkSteps(Integer appId, Map spec) {
     // The final probe is the drive's only health check for its mutating steps, whose per-step probes were
     // deferred. It is budget-aware: on a pause (or any budget-spent exit) it is skipped, because the pause exists
     // to beat the transport ceiling; a finished drive whose probe was skipped reports itself unverified below.
-    def finalHealth = _rmWalkStepHealth(appId, spec?.__reqT0 as Long)
+    def finalHealth = _rmWalkStepHealth(appId, spec?.__reqT0 as Long, spec?.__activePage == true ? currentPage : null)
     // Paused (budget reached between steps): return an in_progress envelope
     // and skip the fail-loud rollup below -- a pause is NOT an error. success:true holds
     // because the pause guard only trips when nothing has failed; every completed step is
@@ -4302,14 +4311,16 @@ private boolean _rmReusableBackupFileMatches(Map entry, Integer ruleId) {
 }
 
 
-Map _rmBackupBeforeEdit(Integer ruleId, String reason) {
-    def reused = _withBackupLock("rule ${ruleId} baseline (${reason})") { _rmBackupBeforeEditLocked(ruleId, reason) }
-    return reused ?: _rmBackupRuleSnapshot(ruleId, reason)
+// activePage: the page a non-RM wizard edit is on. Its render is read instead of the default page,
+// which can reset the wizard (HPM clears its pending install settings there).
+Map _rmBackupBeforeEdit(Integer ruleId, String reason, String activePage = null) {
+    def reused = _withBackupLock("rule ${ruleId} baseline (${reason})") { _rmBackupBeforeEditLocked(ruleId, reason, activePage) }
+    return reused ?: _rmBackupRuleSnapshot(ruleId, reason, false, null, activePage)
 }
 
 
-private Map _rmBackupBeforeEditLocked(Integer ruleId, String reason) {
-    if (settings?.backupEveryRuleWrite == true || reason == "pre-replaceRequiredExpression") return null
+private Map _rmBackupBeforeEditLocked(Integer ruleId, String reason, String activePage = null) {
+    if (_effectiveBackupSetting('backupEveryRuleWrite') == 'true' || reason == "pre-replaceRequiredExpression") return null
 
     long nowMs = now()
     def mfst = _itemBackupManifest()
@@ -4338,7 +4349,7 @@ private Map _rmBackupBeforeEditLocked(Integer ruleId, String reason) {
         _repairItemBackupRetention(mfst, recent.key.toString(), recent.value as Map)
         def config = null
         try {
-            config = _rmFetchConfigJson(ruleId)
+            config = activePage ? _rmFetchConfigJson(ruleId, activePage) : _rmFetchConfigJson(ruleId)
         } catch (Exception e) {
             def vrbFallback = null
             try { vrbFallback = _vrbDetect(ruleId) } catch (Exception ignored) { }
@@ -4715,7 +4726,11 @@ def _applyNativeAppEdit(args) {
     } catch (IllegalArgumentException failure) {
         return _rmBuildUpdateErrorResponse(appId, failure.message, null)
     }
-    def backup = _rmBackupBeforeEdit(appId, button ? "pre-button-${button}" : (walkStepSpec ? 'pre-walkStep' : 'pre-update'))
+    // A walk on an app that is not an RM rule reads the page it is on, for its backup and health checks.
+    String wsPage = walkStepSpec ? ((walkStepSpec.page ?: ((walkStepSpec.steps instanceof List && walkStepSpec.steps && walkStepSpec.steps[0] instanceof Map) ? walkStepSpec.steps[0].page : null))?.toString()) : null
+    if (wsPage && getAppByAppId(appId)?.appType?.name?.toString() in ['Rule-5.1', 'Button Rule-5.1']) wsPage = null
+    def backupReason = button ? "pre-button-${button}" : (walkStepSpec ? 'pre-walkStep' : 'pre-update')
+    def backup = wsPage ? _rmBackupBeforeEdit(appId, backupReason, wsPage) : _rmBackupBeforeEdit(appId, backupReason)
     if (walkStepSpec) {
         try {
             // Hand EVERY walkStep op the request-entry clock (read as spec.__reqT0):
@@ -4725,9 +4740,10 @@ def _applyNativeAppEdit(args) {
             // Threaded via a copy so the caller's args.walkStep is never mutated and
             // __reqT0 can't leak into a result echo.
             def wsSpec = walkStepSpec
-            if (args?.__reqT0 != null) {
+            if (args?.__reqT0 != null || wsPage) {
                 wsSpec = new LinkedHashMap(walkStepSpec)
-                wsSpec.__reqT0 = args.__reqT0
+                if (args?.__reqT0 != null) wsSpec.__reqT0 = args.__reqT0
+                if (wsPage) wsSpec.__activePage = true
             }
             def result = _rmWalkStep(appId, wsSpec)
             result.appId = appId

@@ -709,7 +709,7 @@ class ToolListRmRulesSpec extends ToolSpecBase {
     }
 
     private static Map ruleNode(int id, String name, boolean disabled = false) {
-        [data: [id: id, name: name, type: 'Rule Machine', user: true, hidden: false, disabled: disabled], children: []]
+        [data: [id: id, name: name, type: 'Rule-5.1', user: true, hidden: false, disabled: disabled], children: []]
     }
 
     def "flags a paused rule from the appsList (Paused) decoration the RMUtils label lacks (plain + HTML-span, RM 4.x + 5.x)"() {
@@ -1040,5 +1040,34 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         then:
         result.rules instanceof List
         result.count instanceof Integer
+    }
+
+    def "labelFilter narrows to rules whose label contains the text, case-insensitively"() {
+        given:
+        rmUtils.stubRuleList5 = [
+            ['413': 'Living Room Relax'],
+            [832: 'Auto - Living Room TV Lights'],
+            [900: 'Porch Light']
+        ]
+
+        when:
+        def result = script.toolListRmRules([labelFilter: 'living ROOM'])
+
+        then:
+        result.rules*.id.sort() == [413, 832]
+        result.count == 2
+    }
+
+    def "RM 5.x entries take their type from the hub's app list"() {
+        given:
+        rmUtils.stubRuleList5 = [['413': 'Living Room Relax']]
+        registerRmAppsList([ruleNode(413, 'Living Room Relax')])
+
+        when:
+        def result = script.toolListRmRules([:])
+
+        then:
+        result.rules[0].type == 'Rule-5.1'
+        result.rules[0].rmVersion == '5.x'
     }
 }

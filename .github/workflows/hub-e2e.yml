@@ -57,7 +57,7 @@ on:
   pull_request_target:
     # The guide PR is stacked on this maintained fixes branch. Keep the trusted
     # base allowlist explicit; lane-gate posts its docs-only diff as not requiring e2e.
-    branches: [main, pr/fixes-447-449-455-471]
+    branches: [main]
     # `labeled`/`unlabeled` are included so the lane-gate job can re-evaluate on a full-run-label
     # (release:patch|minor|major|e2e:full) or e2e:skip toggle -- but e2e RUNS only on the FIRST
     # full-run label or on removing e2e:skip while a full-run label remains; any other toggle runs
@@ -619,12 +619,14 @@ jobs:
             echo "::notice::LEVEL99_TEST_HUB_MCP_URL secret not available — skipping E2E (expected on repos without the test hub configured)"
             echo "E2E NOT RUN — test-hub secret (LEVEL99_TEST_HUB_MCP_URL) not configured." >> "$GITHUB_STEP_SUMMARY"
             echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "lane=no-secret" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           if [ -z "$WATCHDOG_URL" ]; then
             echo "::notice::WATCHDOG31_MCP_URL secret not available — skipping E2E (the watchdog endpoint is not provisioned yet; expected until @level99 sets WATCHDOG31_MCP_URL)"
             echo "E2E NOT RUN — watchdog secret (WATCHDOG31_MCP_URL) not configured." >> "$GITHUB_STEP_SUMMARY"
             echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "lane=no-secret" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
@@ -979,8 +981,11 @@ jobs:
           elif [ "$LABELS_OK" != "true" ]; then
             echo "::warning::Could not read PR labels (3 attempts) — cannot rule out e2e:skip; posting the gate PENDING instead of the run result."
             STATE=pending; DESC="e2e result withheld: PR label read failed (could not rule out e2e:skip); re-run"
-          elif [ "$AVAIL" != "true" ] && [ "$LANE" != "pending" ]; then
+          elif [ "$LANE" = "no-secret" ]; then
             STATE=success; DESC="e2e skipped (no test-hub secret); not required to run"
+          elif [ -z "$LANE" ]; then
+            # The job failed before its gate step decided anything; never read that as the no-secret exemption.
+            STATE=failure; DESC="e2e gate step did not run (the job failed during setup); re-run"
           elif [ "$LANE" = "full" ]; then
             # pkg_validate and sdk_conformance are both SKIPPED (not failed) under a skip_install
             # one-off dispatch, and sdk_conformance is also skipped whenever an earlier step
