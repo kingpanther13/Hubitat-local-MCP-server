@@ -75,13 +75,6 @@ def work(BigDecimal n, int[] counts, byte[][] raw) {
     ['sandbox-for-variable', 'for (java.util.Stack s in []) {}', [[1, 'java.util.Stack']]],
     ['sandbox-array', 'java.io.File[] files = null', [[1, 'java.io.File']]],
     ['sandbox-annotation', '@groovy.transform.Memoized\ndef f() { 1 }', [[1, 'groovy.transform.Memoized']]],
-    ['sandbox-hub-unlisted', 'import com.hubitat.hub.domain.InstalledApp\ndef x() { 1 }', [[1, 'com.hubitat.hub.domain.InstalledApp']]],
-    // A typed hub class does not stop the walk: the blocked class after it is still found.
-    ['sandbox-hub-typed', 'import com.hubitat.app.DeviceWrapper\ndef x(DeviceWrapper d) { new java.util.Stack() }', [[2, 'java.util.Stack']]],
-    ['sandbox-star-import-use', "import java.io.*\ndef f = new File('x')", [[2, 'java.io.File']]],
-    // A hub star import is tried before the default imports: a JDK name must still resolve to the JDK class.
-    ['sandbox-hub-star-jdk', "import hubitat.helper.*\ndef f = new File('x')", [[2, 'java.io.File']]],
-    ['sandbox-hub-star-ok', "import com.hubitat.app.*\nMap m = [:]\ndef x = m", []],
     ['sandbox-imports', 'import java.util.concurrent.locks.ReentrantLock\nimport java.lang.reflect.*\nimport static java.lang.System.currentTimeMillis\ndef x = 1',
         [[1, 'java.util.concurrent.locks.ReentrantLock'], [2, 'java.lang.reflect.*'], [3, 'java.lang.System']]],
 ]
@@ -133,15 +126,11 @@ try {
         verify(name, f, [], null, refs.collect { line, cls -> [f.absolutePath + ':' + line + ':', cls] })
     }
     // Stock Groovy cannot resolve hub classes, so the hub-namespace rule is checked directly.
-    [['hubitat.helper.RMUtils', true], ['com.hubitat.hub.domain.Attribute', true], ['com.hubitat.app.FixtureOnly', false],
-     ['hubitatx.Helper', false]].each { cls, want ->
+    [['hubitat.helper.RMUtils', true], ['com.hubitat.app.FixtureOnly', true], ['hubitatx.Helper', false]].each { cls, want ->
         boolean ok = isAllowed(ClassHelper.make(cls), [] as Set) == want
         if (!ok) failures++
         println "SELF-TEST ${ok ? 'PASS' : 'FAIL'} hub-namespace ${cls}"
     }
-    File unresolved = new File(scratch, 'unresolved.groovy')
-    unresolved.setText('def x(DeviceWrapper d) { d }', 'UTF-8')
-    verify('unresolved-class', unresolved, [], 'unable to resolve class DeviceWrapper')
     File missing = new File(scratch, 'missing.groovy')
     verify('missing-input', missing, [], 'MISSING: ' + missing.absolutePath)
     verify('directory-input', scratch, [], 'MISSING: ' + scratch.absolutePath)

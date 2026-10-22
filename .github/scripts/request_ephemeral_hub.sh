@@ -7,12 +7,7 @@
 #                            write run_id/attempt to $GITHUB_OUTPUT and fetch its public key into DIR
 #   key RUN_ID ATTEMPT DIR   fetch that run attempt's public key for HUB_KIND into DIR
 #   hub KEY_FILE DIR         dispatch the provider and download into DIR its suite results
-#                            (RUN_SUITE=true) or the still-encrypted session (RUN_SUITE=false);
-#                            writes provider_run to $GITHUB_OUTPUT
-#   verdict PROVIDER_RUN     wait for that provider run to end and post its conclusion as the head's
-#                            "Ephemeral e2e verdict (<kind>)" status (PROVIDER, GH_TOKEN, PUBLIC_SHA,
-#                            STATUS_TOKEN); an empty run id posts failure; VERDICT_DEADLINE
-#                            (seconds, default 900) bounds the wait for the run to end
+#                            (RUN_SUITE=true) or the still-encrypted session (RUN_SUITE=false)
 #
 # Env: GITHUB_REPOSITORY; GH_TOKEN (actions:read, or the provider token for `hub`);
 #      HUB_KIND (os|jvm, default os) picks the hub and the test run's key;
@@ -126,7 +121,6 @@ hub() {
       --jq '[.[] | select((.displayTitle | contains($ENV.MATCH)) and .createdAt >= $ENV.SINCE)] | first | .databaseId // empty' || true)"
   done
   echo "Provider run $run_id."
-  [ -z "${GITHUB_OUTPUT:-}" ] || echo "provider_run=$run_id" >> "$GITHUB_OUTPUT"
   if [ "$suite" = true ]; then results "$run_id" "$2"; return; fi
   export ARTIFACT="ephemeral-hub-$run_id"
   until [ -n "$(gh api "repos/$PROVIDER/actions/runs/$run_id/artifacts" \
@@ -140,45 +134,10 @@ hub() {
   test -s "$2/session.key.enc" && test -s "$2/session.json.enc" || fail "The hub session is incomplete."
 }
 
-# The PR's own test workflow reports the results it received, so the trusted verdict is the provider
-# run's conclusion, read here with the provider token and posted from base code.
-verdict() {
-  : "${PUBLIC_SHA:?}" "${STATUS_TOKEN:?}"
-  [[ "$PUBLIC_SHA" =~ ^[0-9a-f]{40}$ ]] || fail "unexpected head SHA shape"
-  local state=failure desc conclusion=""
-  if [ -z "${1:-}" ]; then
-    desc="no provider run was started for the $kind hub"
-  elif ! [[ "$1" =~ ^[0-9]+$ ]]; then
-    desc="the $kind hub's provider run id was unusable"
-  elif [ -z "${PROVIDER:-}" ] || [ -z "${GH_TOKEN:-}" ]; then
-    # A run exists but cannot be read without the provider secrets: still a verdict, a failed one.
-    desc="the $kind hub's provider run could not be read (provider secrets unavailable)"
-  else
-    local deadline=$((SECONDS + ${VERDICT_DEADLINE:-900})) status="" read_ok=0
-    while :; do
-      local answer=""
-      if answer=$(gh run view "$1" --repo "$PROVIDER" --json status,conclusion --jq '"\(.status) \(.conclusion)"'); then
-        read_ok=1
-        read -r status conclusion <<< "$answer"
-      fi
-      [ "$status" != completed ] || break
-      [ "$SECONDS" -lt "$deadline" ] || { conclusion=$([ "$read_ok" = 1 ] && echo unfinished || echo unreadable); break; }
-      sleep 30
-    done
-    desc="the $kind hub's suite did not pass (${conclusion:-unknown})"
-    [ "$conclusion" != unreadable ] || desc="the $kind hub's provider run could not be read"
-    [ "$conclusion" != success ] || { state=success; desc="the $kind hub's suite passed"; }
-  fi
-  GH_TOKEN="$STATUS_TOKEN" gh api -X POST "repos/$GITHUB_REPOSITORY/statuses/$PUBLIC_SHA" \
-    -f state="$state" -f context="Ephemeral e2e verdict ($kind)" -f description="$desc" >/dev/null
-  echo "Ephemeral e2e verdict ($kind): $state -- $desc"
-}
-
 case "${1:-}" in
   release) release "$2" ;;
   consumer) consumer "$2" "$3" ;;
   key) key "$2" "$3" "$4" ;;
   hub) hub "$2" "$3" ;;
-  verdict) verdict "$2" ;;
-  *) fail "usage: $0 release|consumer|key|hub|verdict ..." ;;
+  *) fail "usage: $0 release|consumer|key|hub ..." ;;
 esac

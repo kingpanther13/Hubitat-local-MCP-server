@@ -21,6 +21,7 @@ on:
   # books the single shared test hub for an hour of e2e.
   workflow_dispatch:
   pull_request:
+    branches: [main]
 
 permissions:
   contents: read
