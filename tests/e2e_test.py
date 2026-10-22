@@ -2239,6 +2239,7 @@ class TestRunner:
 
     def _run_one(self, group: str, name: str, method_name: str) -> None:
         print(f"  [TEST] {datetime.now(UTC).isoformat(timespec='seconds')} {group}/{name}", flush=True)
+        self._test_started = time.time()
         capture_load = getattr(self, "_load_diagnostics", False)
         matrix = method_name == "test_device_configuration_matrix"
         if capture_load and (matrix or method_name == "test_set_rule_native_lifecycle"):
@@ -6509,13 +6510,16 @@ class TestRunner:
                 f"{key} should be {wanted!r}, got {values.get(key)!r}"
 
     def _rm_backup_keys(self, app_id: Any) -> set[str]:
+        # The list is newest first and the rule is this test's, so paging stops at backups older than
+        # the test (with ten minutes of clock skew) instead of walking a long-lived hub's whole history.
+        cutoff_ms = (getattr(self, "_test_started", 0) - 600) * 1000
         keys, args = set(), {"scope": "source"}
         while True:
             result = self.client.call_tool("hub_list_backups", args)
             assert result.get("success") is not False, result
-            keys.update(row["backupKey"] for row in result.get("backups", [])
-                        if str(row.get("ruleId", row.get("id"))) == str(app_id))
-            if not result.get("nextCursor"):
+            rows = result.get("backups", [])
+            keys.update(row["backupKey"] for row in rows if str(row.get("ruleId", row.get("id"))) == str(app_id))
+            if not result.get("nextCursor") or (rows and int(rows[-1].get("timestampEpoch") or 0) < cutoff_ms):
                 return keys
             args["cursor"] = result["nextCursor"]
 
