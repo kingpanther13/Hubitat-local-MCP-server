@@ -8,6 +8,8 @@
     "tools/strip_source.py",
     "tools/groovy_lex.py",
     "tests/e2e_test.py",
+    "tests/device_configuration_helpers.py",
+    "tests/fixtures/",
     "tests/sdk_conformance_test.py",
     "tests/sdk_conformance_helpers.py",
     "tests/sdk-conformance-requirements.txt"
