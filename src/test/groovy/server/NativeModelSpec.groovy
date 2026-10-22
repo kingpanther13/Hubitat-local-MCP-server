@@ -794,7 +794,7 @@ class NativeModelSpec extends ToolSpecBase {
             // The native input renderer consumes the prior operation's Done flag.
             nativeState.remove('capabDone')
             if (nativeState.hasAll == true) {
-                nativeState.capabsfalse['1'] = reject ? 'BROKEN' : 'Switch A off'
+                nativeState.capabsfalse['1'] = reject ? 'BROKEN' : compiledLabel
                 // Native string membership checks can append a String beside an Integer ID.
                 nativeState.predCapabs = nativeState.predCapabs + ['1']
                 nativeState.capabDone = true
@@ -813,7 +813,7 @@ class NativeModelSpec extends ToolSpecBase {
         deleted.success
         edited.success == !reject
         !edited.partial
-        nativeState.capabsfalse == ['1': reject ? 'Switch A on' : 'Switch A off', '2': 'Switch B off']
+        nativeState.capabsfalse == ['1': reject ? 'Switch A on' : compiledLabel, '2': 'Switch B off']
         nativeState.predCapabs == [1, 2]
         settings.state_1.value == (reject ? 'on' : 'off')
         if (reject) {
@@ -823,7 +823,11 @@ class NativeModelSpec extends ToolSpecBase {
             assert !settings.containsKey('rDev_1')
         } else assert settings.rDev_1.value == ['7']
         where:
-        reject << [false, true]
+        reject | compiledLabel
+        false  | 'Switch A off'
+        true   | 'Switch A off'
+        // A device that has no current value yet: RM renders it as null inside its value span.
+        false  | "Switch A(<span style='color:black'>null</span>) is off"
     }
 
     def 'trigger deletion uses native delete callback and verifies setting cleanup'() {
