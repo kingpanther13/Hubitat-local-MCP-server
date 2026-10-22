@@ -1312,6 +1312,8 @@ class TestRunner:
         # (app_id, health) the last RM write returned, so _assert_rule_healthy can assert on it without
         # a second hub_get_rule_health round-trip. Keyed by app; cleared on a relay-dropped/soft write.
         self._last_write_health: tuple[str, dict] | None = None
+        # The pre-edit backup toggle as this runner last set it; None until it sets it.
+        self._backups_on: bool | None = None
 
         # Read-round-trip stashes -- each lets a downstream test reuse an UPSTREAM test's identical
         # immutable read instead of re-fetching. EVERY one falls back to a live fetch when unset or
@@ -2239,11 +2241,13 @@ class TestRunner:
     def _run_one(self, group: str, name: str, method_name: str) -> None:
         print(f"  [TEST] {datetime.now(UTC).isoformat(timespec='seconds')} {group}/{name}", flush=True)
         self._test_started = time.time()
-        # Pre-edit backups are on only for the tests that prove them. Set here, not in the run loop,
-        # because the ephemeral provider calls this method directly; a test that toggles them itself
-        # leaves the tracked state for the next one.
+        # Pre-edit backups are on for the tests that prove them and off after one. Set here, not in
+        # the run loop, because the ephemeral provider calls this method directly; a test that toggles
+        # them itself leaves the tracked state for the next one. An unknown state is left alone for
+        # an ordinary test.
         proving = method_name in self.BACKUP_PROVING_TESTS
-        if getattr(self, "_backups_on", None) is not proving:
+        current = self._backups_on
+        if (proving and current is not True) or (not proving and current is True):
             try:
                 self._rule_edit_backups(proving)
             except Exception as exc:
@@ -16626,6 +16630,7 @@ class TestRunner:
         assert not unknown, f"BACKUP_PROVING_TESTS names tests that do not exist: {unknown}"
         # Pre-edit backups stay off except around the tests that prove them (_run_one sets them per
         # test); the default (on) comes back at the end.
+        self._rule_edit_backups(False)
 
         # Group for display
         self._load_diagnostics = True

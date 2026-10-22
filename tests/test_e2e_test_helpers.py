@@ -3314,8 +3314,8 @@ def test_run_one_sets_pre_edit_backups_per_test_for_any_caller(monkeypatch):
     monkeypatch.setattr(runner, "_run_one_attempts", lambda group, name, method: ran.append((method, runner._backups_on)))
     for method in ("test_plain", "test_proves", "test_plain", "test_plain"):
         runner._run_one("native_apps", method, method)
-    assert ran == [("test_plain", False), ("test_proves", True), ("test_plain", False), ("test_plain", False)]
-    assert writes == [False, True, False]
+    assert ran == [("test_plain", None), ("test_proves", True), ("test_plain", False), ("test_plain", False)]
+    assert writes == [True, False]
     # A test that turns them on itself leaves that state for the next one to correct.
     runner._rule_edit_backups(True)
     runner._run_one("native_apps", "test_plain", "test_plain")
