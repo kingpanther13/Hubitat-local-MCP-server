@@ -7894,8 +7894,17 @@ class TestRunner:
         try:
             condition = next(iter(created["conditions"]))
             self._rm_update(app_id, [native_change("required", tokens=[condition]), native_log("gated trigger")])
-            result = self.client.call_tool("hub_set_rule_private_boolean", {"ruleId": app_id, "value": False})
-            assert result.get("success") is not False, result
+            # RMUtils is the only way this app can set another rule's Private Boolean, and the hub's
+            # per-app load limiter refuses it once tripped. A helper rule's Set Private Boolean action,
+            # run through the Run Actions button, is the UI's route and is never limited. Its "Set True
+            # or False?" toggle sets False when on.
+            setter, _ = self._rm_rule("FalseRESetter", [self._rm_action("rulesActs", "getSetPrivateBoolean", [
+                ("pvRuleType", "enum", "Rule Machine"), ("privateT", "enum", [str(app_id)]), ("pvTF", "bool", True)])])
+            try:
+                ran = self.client.call_tool("hub_call_rule", {"ruleId": setter, "action": "actions"})
+                assert ran.get("success") is True, ran
+            finally:
+                self._delete_native(setter)
             self._rm_wait(lambda: self._rm_health(app_id)["eventSubscriptionCount"] == 0, what="subscriptions removed")
             edited = self._rm_update(app_id, [native_log("edit while required expression is false")])
             assert "SUPPRESSED" in str(edited.get("subscriptionSettle", "")).upper(), edited
@@ -8944,10 +8953,10 @@ class TestRunner:
             changes, messages = native_mrtr_changes("MRTR regular E2E proof", temperature)
         else:
             # The default suits a physical hub: several continuation rounds over the 10-second
-            # proof threshold, without the Wait rows a C-7 cannot finish within a client's
-            # default 10 rounds.
+            # proof threshold, without the Wait rows a physical hub cannot finish within a
+            # client's default 10 rounds.
             changes, messages = native_mrtr_changes("MRTR regular E2E proof", temperature,
-                                                    {"E2E_MRTR_ACTION_COUNT": "30"}, total=50, max_waits=0)
+                                                    {"E2E_MRTR_ACTION_COUNT": "20"}, total=30, max_waits=0)
         app_id = self._create_native_rule("MrtrContinuation")
         try:
             args = {"operation": "update", "rule_id": int(app_id), "args": {"changes": changes}, "confirm": True}

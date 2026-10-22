@@ -818,6 +818,7 @@ class NativeModelSpec extends ToolSpecBase {
         settings.state_1.value == (reject ? 'on' : 'off')
         if (reject) {
             assert edited.rolledBack
+            assert edited.compiledLabel == 'BROKEN'
             assert nativeState.isPredicate == false
             assert !settings.containsKey('rDev_1')
         } else assert settings.rDev_1.value == ['7']

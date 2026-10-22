@@ -388,7 +388,7 @@ Map _nmUpsertCondition(Long ruleId, boolean trigger, Map row) {
         boolean persisted = settings.every { echoed.get(it.name)?.type?.toString() == it.type && _nrComparableSetting(it.type, echoed.get(it.name)?.value) == _nrComparableSetting(it.type, it.value) }
         boolean compiled = label instanceof String && label.trim() && !label.contains('null') && !label.contains('BROKEN')
         if (!(compiled && persisted && membership)) return _nmRejectCondition(ruleId, trigger, editing, id, baseline, savedSettings, settings, render,
-            [error: compiled ? 'Native input persistence failed' : 'Native row did not compile a valid label'])
+            [error: compiled ? 'Native input persistence failed' : 'Native row did not compile a valid label', compiledLabel: label?.toString()])
         [success: true, id: id, label: label, partial: false, settingsVerified: true]
     } catch (Exception failure) {
         _nmRejectCondition(ruleId, trigger, editing, id, baseline, savedSettings, settings, render, [error: failure.message ?: 'Native row authoring failed'])
