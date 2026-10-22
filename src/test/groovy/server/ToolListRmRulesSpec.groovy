@@ -708,8 +708,8 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         }
     }
 
-    private static Map ruleNode(int id, String name, boolean disabled = false) {
-        [data: [id: id, name: name, type: 'Rule-5.1', user: true, hidden: false, disabled: disabled], children: []]
+    private static Map ruleNode(int id, String name, boolean disabled = false, String type = 'Rule-5.1') {
+        [data: [id: id, name: name, type: type, user: true, hidden: false, disabled: disabled], children: []]
     }
 
     def "flags a paused rule from the appsList (Paused) decoration the RMUtils label lacks (plain + HTML-span, RM 4.x + 5.x)"() {
@@ -721,7 +721,7 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         registerRmAppsList([
             ruleNode(401, 'Play room toggle (Paused)'),
             ruleNode(402, 'Hall motion <span style="color:red">(Paused)</span>'),
-            ruleNode(403, 'Garden lights (Paused)')
+            ruleNode(403, 'Garden lights (Paused)', false, 'Rule-4.1')
         ])
 
         when:
