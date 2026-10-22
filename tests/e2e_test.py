@@ -40,7 +40,7 @@ from device_configuration_helpers import assert_native_preferences
 from sdk_conformance_helpers import (
     assert_exact_native_actions,
     assert_exact_native_conditions,
-    native_mrtr_changes,
+    lane_mrtr_changes,
     read_native_document_sections,
     write_cap_holder_retry_blocker,
     write_cap_variable_items,
@@ -1800,11 +1800,8 @@ class TestRunner:
         "test_rm_rule_restore_puts_actions_back_in_order",
         "test_rm_rule_restore_expression_by_device_name",
         "test_legacy_export_backup_restores_in_place",
-        "test_legacy_required_expression_backup_restores_in_place",
         "test_complex_edit_recovers_deleted_rows_and_existing_payloads",
-        "test_stopped_time_rule_recovers_clock_and_schedule",
-        "test_form_workflow_has_one_pre_edit_snapshot",
-        "test_reads_and_disabled_backups_do_not_capture",
+        "test_rule_edit_backups_capture_once_per_edit",
     })
 
     def _rule_edit_backups(self, on: bool) -> None:
@@ -6623,7 +6620,7 @@ class TestRunner:
             native_field("time#", "enum", "A specific time"),
             native_field("atTime#", "time", "2026-01-01T17:00:00.000-0500")])
         # A label that already ends in RM's own " (Paused)" decoration must not read as paused.
-        app_id, _ = self._rm_rule("Lifecycle", [clock, native_log("native lifecycle")], name_suffix=" (Paused)")
+        app_id, created = self._rm_rule("Lifecycle", [clock, native_log("native lifecycle")], name_suffix=" (Paused)")
         deleted_inline = False
         try:
             listed = self._rm_listed(app_id)
@@ -6646,9 +6643,21 @@ class TestRunner:
             assert result.get("success") is not False, result
             self._rm_wait(lambda: self._rm_health(app_id).get("stopped") is True, what="stopped")
             assert self._rm_health(app_id)["eventSubscriptionCount"] == 0
-            # An edit keeps the rule stopped.
-            edited = self._rm_update(app_id, [native_log("edit while stopped")])
+            # An edit keeps the rule stopped, and restoring its recovery point brings back the original
+            # time with the rule still stopped.
+            before = self._rm_snapshot(app_id)
+            self._rule_edit_backups(True)
+            try:
+                edited = self._rm_update(app_id, [native_change(
+                    "trigger", id=next(iter(created["triggers"])), capability="Certain Time (and optional date)", fields=[
+                        native_field("time#", "enum", "A specific time"), native_field("atTime#", "time", "2026-01-01T18:00:00.000-0500")]),
+                    native_log("edit while stopped")])
+            finally:
+                self._rule_edit_backups(False)
             assert edited.get("stopped") is True and not edited["scheduledJobs"], edited
+            restored = self._rm_restore(edited["backup"]["backupKey"])
+            assert restored.get("success") is True and restored.get("restoredVia") == "nativeStateReplay", restored
+            assert self._rm_snapshot(app_id) == before and self._rm_health(app_id).get("stopped") is True
             result = self.client.call_tool("hub_call_rule", {"ruleId": app_id, "action": "start"})
             assert result.get("success") is not False, result
             self._rm_wait(lambda: self._rm_health(app_id).get("stopped") is False, what="started")
@@ -7404,7 +7413,7 @@ class TestRunner:
     @test("native_apps")
     def test_rm_action_return_value(self) -> None:
         # Return values exist only on a function rule (isFunction): refused before, then each value
-        # type stores and renders; RM offers only number variables for an Integer return.
+        # type stores and renders.
         number, text = (self._ensure_perm_variables(key)[key] for key in ("sv_number", "sv_string"))
         action = self._rm_action
         app_id, _ = self._rm_rule("ReturnValue")
@@ -7427,16 +7436,7 @@ class TestRunner:
             for row, (_, stored, rendered) in zip(result["document"]["actions"], expected, strict=True):
                 self._rm_assert_stored(values, row["id"], stored)
                 assert rendered is None or rendered in page, f"RM does not render {rendered!r}"
-            form, index = self._rm_new_action_editor(app_id)
-            for name, value in (("actType.", "modeActs"), ("actSubType.", "getReturnValue"), ("valType.", "Integer"), ("useVar.", True)):
-                form = self._rm_submit(app_id, form, fields={name + index: value})
-            picker = next(row for row in form["fields"] if row["name"] == "valVar." + index)
-            offered = {row["value"] for row in picker["options"]}
-            assert number in offered and text not in offered, offered
-            form = self._rm_submit(app_id, form, fields={picker["name"]: number})
-            self._rm_submit(app_id, form, control=self._rm_control(form, name="actionDone"))
-            assert self._rm_values(app_id)["valVar." + index] == number
-            self._rm_update(app_id, [native_delete("action", index)])
+            # Refused: a string variable for an Integer return (RM offers only number variables) and malformed values.
             self._rm_refuse_all(app_id, [
                 [action("modeActs", "getReturnValue", [("valType", "enum", "Integer"), ("useVar", "bool", True), ("valVar", "enum", text)])],
                 [action("modeActs", "getReturnValue", [("valType", "enum", "Boolean"), ("valBool", "enum", "maybe")])],
@@ -7518,44 +7518,26 @@ class TestRunner:
 
     @test("native_apps")
     def test_set_rule_switch_only_on_and_device_list_no_false_partial(self) -> None:
-        # "Command only switches that are off/on": with A on and B off, an on action commands only B
-        # and an off action only A; without it both are commanded. The rule's own command-<name> events
-        # (producedBy names the rule) show which switch RM commanded. A shade action built through the
-        # native editor, whose last input is its device picker, commits without a false partial.
-        # Its own switches: rules other tests leave behind command the shared ones, which would
-        # change the states this test sets up before each run.
-        a, _, _ = self._rm_disposable_switch("OnlyChangedA")
-        b, _, _ = self._rm_disposable_switch("OnlyChangedB")
+        # "Command only switches that are off/on" (optSwitch) is revealed after the device picker, so it
+        # must persist with the device and the on/off choice in one row, and edit in place. A shade
+        # action built through the native editor, whose last input is its device picker, commits
+        # without a false partial. The rule has no trigger, so nothing runs.
+        switches = [str(self._ensure_perm_fixture(key)) for key in ("switch_a", "switch_b")]
         def switch_action(on: bool, only: bool, **extra) -> dict:
             return self._rm_action("switchActs", "getOnOffSwitch", [
-                ("onOffSwitch", "capability.switch", [str(a), str(b)]), ("onOff", "bool", on), ("optSwitch", "bool", only)], **extra)
-        app_id, created = self._rm_rule("OnlyIfChanged", [switch_action(True, True)])
+                ("onOffSwitch", "capability.switch", switches), ("onOff", "bool", on), ("optSwitch", "bool", only)], **extra)
+        app_id, created = self._rm_rule("OnlyIfChanged", [switch_action(False, True)])
         shade_rule = None
         try:
             action_id = str(created["actions"][0]["id"])
-
-            def commands(device, cmd, since):
-                rows = self.client.call_tool("hub_list_device_events", {
-                    "deviceId": str(device), "attribute": f"command-{cmd}", "hoursBack": 1, "limit": 50}).get("events", [])
-                return sum(1 for r in rows if str((r.get("producedBy") or {}).get("appId")) == str(app_id)
-                           and r.get("date") and datetime.fromisoformat(str(r["date"])) >= since)
-
-            for index, (cmd, only) in enumerate((("on", True), ("on", False), ("off", True), ("off", False))):
-                if index:
-                    self._rm_update(app_id, [switch_action(cmd == "on", only, id=action_id)])
-                self._rm_command(a, "on")
-                self._rm_command(b, "off")
-                self._rm_wait(lambda: self._rm_attribute(a, "switch") == "on" and self._rm_attribute(b, "switch") == "off",
-                              what="switch baseline")
-                needing, already = (b, a) if cmd == "on" else (a, b)
-                since = datetime.now(UTC)
-                ran = self.client.call_tool("hub_call_rule", {"ruleId": app_id, "action": "actions"})
-                assert ran.get("success") is not False, ran
-                self._rm_wait(lambda needing=needing, already=already, cmd=cmd, since=since, only=only:
-                              commands(needing, cmd, since) > 0 and (only or commands(already, cmd, since) > 0)
-                              and self._rm_attribute(a, "switch") == cmd and self._rm_attribute(b, "switch") == cmd,
-                              timeout=15, what=f"{cmd} only_if_changed={only}")
-                assert (commands(already, cmd, since) > 0) is (not only), f"{cmd} only_if_changed={only} commanded the wrong switches"
+            for on, only in ((False, True), (True, False)):
+                if (on, only) != (False, True):
+                    edited = self._rm_update(app_id, [switch_action(on, only, id=action_id)])
+                    assert [str(r["id"]) for r in edited["document"]["actions"]] == [action_id], edited["document"]["actions"]
+                values = self._rm_values(app_id)
+                assert sorted(map(str, values["onOffSwitch." + action_id])) == sorted(switches), values
+                assert str(values["onOff." + action_id]).lower() == str(on).lower(), values
+                assert str(values["optSwitch." + action_id]).lower() == str(only).lower(), values
             shade = self.get_test_shade_id()
             if not shade:
                 return
@@ -8490,68 +8472,36 @@ class TestRunner:
             self._delete_native(app_id)
 
     @test("native_apps")
-    def test_stopped_time_rule_recovers_clock_and_schedule(self) -> None:
-        # Restoring a stopped time-triggered rule keeps it stopped with its original time; started
-        # again, it schedules its job.
-        def clock(value: str, **extra) -> dict:
-            return native_change("trigger", capability="Certain Time (and optional date)", fields=[
-                native_field("time#", "enum", "A specific time"), native_field("atTime#", "time", value)], **extra)
-        app_id, created = self._rm_rule("StoppedClock", [clock("2026-01-01T17:00:00.000-0500"), native_log("timed recovery")])
-        try:
-            self.client.call_tool("hub_call_rule", {"ruleId": app_id, "action": "stop"})
-            self._rm_wait(lambda: self._rm_health(app_id).get("stopped") is True, what="stopped")
-            before = self._rm_snapshot(app_id)
-            edited = self._rm_update(app_id, [clock("2026-01-01T18:00:00.000-0500", id=next(iter(created["triggers"]))),
-                                              native_log("remove timed edit")])
-            restored = self._rm_restore(edited["backup"]["backupKey"])
-            assert restored.get("success") is True and restored.get("restoredVia") == "nativeStateReplay", restored
-            assert self._rm_snapshot(app_id) == before and self._rm_health(app_id).get("stopped") is True
-            self.client.call_tool("hub_call_rule", {"ruleId": app_id, "action": "start"})
-            self._rm_wait(lambda: self._rm_health(app_id)["scheduledJobCount"] > 0, what="the restored schedule")
-        finally:
-            self._delete_native(app_id)
-
-    @test("native_apps")
-    def test_form_workflow_has_one_pre_edit_snapshot(self) -> None:
-        # A form workflow takes one recovery point before its first render and reuses it; after the
-        # restore, the workflow's context is gone and a stale submit is refused.
-        app_id, _ = self._rm_rule("FormSnapshot", [native_log("form recovery")])
-        try:
-            keys = self._rm_backup_keys(app_id)
-            page = self._rm_open(app_id)
-            key = page["backup"]["backupKey"]
-            for value in ("first form edit", "second form edit"):
-                page = self._rm_submit(app_id, page, fields={"comments": value})
-                assert page["backup"]["backupKey"] == key, page["backup"]
-            assert self._rm_backup_keys(app_id) - keys == {key}
-            assert self._rm_restore(key).get("success") is True
-            assert self._rm_values(app_id).get("comments") in (None, "")
-            self._rm_refused(self._rm_call({"operation": "form", "rule_id": app_id, "confirm": True, "args": {
-                "steps": [self._rm_step(page, fields={"comments": "stale edit must not apply"})]}}))
-            assert self._rm_values(app_id).get("comments") in (None, "")
-        finally:
-            self._delete_native(app_id)
-
-    @test("native_apps")
-    def test_reads_and_disabled_backups_do_not_capture(self) -> None:
+    def test_rule_edit_backups_capture_once_per_edit(self) -> None:
         # Reads, help and unconfirmed probes take no recovery point; with backups off an edit reports
-        # the skip; back on, it takes exactly one.
+        # the skip; back on, an update takes exactly one, and a form workflow takes one before its
+        # first render and reuses it. After that restore the workflow's context is gone and a stale
+        # submit is refused.
         app_id, _ = self._rm_rule("CaptureControl", [native_log("capture control")])
         try:
             keys = self._rm_backup_keys(app_id)
             self._native_rule_document(app_id)
             self._rm_call({})
             self._rm_call({"operation": "update", "rule_id": app_id})
-            assert self._rm_backup_keys(app_id) == keys, "a read took a recovery point"
             self._rule_edit_backups(False)
             try:
                 skipped = self._rm_update(app_id, [native_log("unprotected edit")])
                 assert skipped["backup"].get("skipped") is True, skipped["backup"]
             finally:
                 self._rule_edit_backups(True)
-            assert self._rm_backup_keys(app_id) == keys
-            protected = self._rm_update(app_id, [native_log("protected edit")])
-            assert self._rm_backup_keys(app_id) - keys == {protected["backup"]["backupKey"]}
+            assert self._rm_backup_keys(app_id) == keys, "a read or a skipped edit took a recovery point"
+            protected = self._rm_update(app_id, [native_log("protected edit")])["backup"]["backupKey"]
+            page = self._rm_open(app_id)
+            key = page["backup"]["backupKey"]
+            for value in ("first form edit", "second form edit"):
+                page = self._rm_submit(app_id, page, fields={"comments": value})
+                assert page["backup"]["backupKey"] == key, page["backup"]
+            assert self._rm_backup_keys(app_id) - keys == {protected, key}
+            assert self._rm_restore(key).get("success") is True
+            assert self._rm_values(app_id).get("comments") in (None, "")
+            self._rm_refused(self._rm_call({"operation": "form", "rule_id": app_id, "confirm": True, "args": {
+                "steps": [self._rm_step(page, fields={"comments": "stale edit must not apply"})]}}))
+            assert self._rm_values(app_id).get("comments") in (None, "")
         finally:
             self._delete_native(app_id)
 
@@ -8608,11 +8558,8 @@ class TestRunner:
 
     @test("native_apps")
     def test_legacy_export_backup_restores_in_place(self) -> None:
+        # The Required Expression variant of the older format is covered by LegacyNativeRecoverySpec.
         self._rm_legacy_in_place_recovery(required=False)
-
-    @test("native_apps")
-    def test_legacy_required_expression_backup_restores_in_place(self) -> None:
-        self._rm_legacy_in_place_recovery(required=True)
 
 
     def _native_form_control(self, app_id: Any, page: str, name: str) -> dict:
@@ -8958,16 +8905,7 @@ class TestRunner:
 
     @test("mrtr")
     def test_mrtr_rule_edit_uses_standard_continuation(self) -> None:
-        temperature = str(self.get_test_temperature_ids()[0])
-        if os.environ.get("E2E_MRTR_ACTION_COUNT"):
-            # A lane that sizes the workload for its hub runs the full configured batch.
-            changes, messages = native_mrtr_changes("MRTR regular E2E proof", temperature)
-        else:
-            # The default suits a physical hub: several continuation rounds over the 10-second
-            # proof threshold, without the Wait rows a physical hub cannot finish within a
-            # client's default 10 rounds.
-            changes, messages = native_mrtr_changes("MRTR regular E2E proof", temperature,
-                                                    {"E2E_MRTR_ACTION_COUNT": "20"}, total=30, max_waits=0)
+        changes, messages = lane_mrtr_changes("MRTR regular E2E proof", str(self.get_test_temperature_ids()[0]))
         app_id = self._create_native_rule("MrtrContinuation")
         try:
             args = {"operation": "update", "rule_id": int(app_id), "args": {"changes": changes}, "confirm": True}

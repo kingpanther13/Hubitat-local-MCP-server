@@ -22,10 +22,11 @@ Configuration is shared with tests/e2e_test.py — `tests/e2e_config.json` (giti
 HUBITAT_HUB_URL / HUBITAT_APP_ID / HUBITAT_ACCESS_TOKEN.
 The MRTR scenario discovers the existing suite's permanent virtual temperature fixture,
 or accepts NATIVE_RULE_PARENT_ID and NATIVE_RULE_FIXTURES (a JSON object with temperature).
-E2E_MRTR_ACTION_COUNT selects 6..99 logs in a 100-change native batch (default six);
-Up to 40 Wait for Events actions each contain four distinct temperature events,
-or eight when additional configured logs displace wait rows;
-the remaining changes are distinct temperature conditions. This is a continuation proof,
+E2E_MRTR_ACTION_COUNT selects 6..99 logs in a 100-change native batch, as the ephemeral
+lanes set it: up to 40 Wait for Events actions each contain four distinct temperature events,
+or eight when additional configured logs displace wait rows, and the remaining changes are
+distinct temperature conditions. Unset (the physical hub), the batch is 20 logs and 10
+conditions with no Wait rows, which a physical hub finishes within the default 10 rounds. This is a continuation proof,
 not a speed comparison with the former log-only authoring API.
 
 Usage:
@@ -77,7 +78,7 @@ from sdk_conformance_helpers import (  # noqa: E402  (import guard above supplie
     discover_rule_machine_parent,
     extract_bps_acknowledgment_key,
     find_exact_fixture_id_with_settle,
-    native_mrtr_changes,
+    lane_mrtr_changes,
     read_native_document_sections,
     summarize_modern_posts,
     summarize_mrtr_proof,
@@ -524,7 +525,7 @@ class ModernMrtrScenario:
             fixture_id = str(create_payload.get("rule_id") or "") or None
             assert fixture_id, "fixture create returned no rule_id"
 
-            changes, messages = native_mrtr_changes("SDK MRTR proof", temperature_id)
+            changes, messages = lane_mrtr_changes("SDK MRTR proof", temperature_id)
             print(f"         MRTR workload: {len(changes)} native changes, {len(messages)} log actions")
             trace_mark = self.trace.mark()
             started = time.monotonic()

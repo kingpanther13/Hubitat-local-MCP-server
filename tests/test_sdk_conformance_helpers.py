@@ -846,3 +846,11 @@ def test_native_mrtr_changes_sizes_a_smaller_batch_without_waits():
 def test_native_mrtr_changes_refuses_more_logs_than_the_batch_holds():
     with pytest.raises(ValueError):
         helpers.native_mrtr_changes("proof", "588", {"E2E_MRTR_ACTION_COUNT": "50"}, total=50)
+
+
+def test_lane_mrtr_changes_uses_the_configured_batch_only_when_a_lane_sets_it():
+    configured, _ = helpers.lane_mrtr_changes("proof", "588", {"E2E_MRTR_ACTION_COUNT": "36"})
+    assert len(configured) == 100 and any(row["value"].get("subtype") == "getWaitEvents" for row in configured)
+    physical, messages = helpers.lane_mrtr_changes("proof", "588", {})
+    assert len(physical) == 30 and len(messages) == 20
+    assert not any(row["value"].get("subtype") == "getWaitEvents" for row in physical)

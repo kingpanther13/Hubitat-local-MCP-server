@@ -47,6 +47,19 @@ def mrtr_log_actions(prefix: str, environ: Mapping[str, str] | None = None) -> l
             for index in range(1, mrtr_action_count(environ) + 1)]
 
 
+def lane_mrtr_changes(
+    prefix: str, temperature_id: str, environ: Mapping[str, str] | None = None,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """The MRTR proof batch for this lane: the configured 100-change batch when
+    E2E_MRTR_ACTION_COUNT is set (the ephemeral lanes size it for their hubs), otherwise
+    20 logs and 10 conditions with no Wait rows, which a physical hub finishes within a
+    client's default 10 continuation rounds while still running past 10 seconds."""
+    settings = os.environ if environ is None else environ
+    if settings.get("E2E_MRTR_ACTION_COUNT"):
+        return native_mrtr_changes(prefix, temperature_id, environ)
+    return native_mrtr_changes(prefix, temperature_id, {"E2E_MRTR_ACTION_COUNT": "20"}, total=30, max_waits=0)
+
+
 def native_mrtr_changes(
     prefix: str, temperature_id: str, environ: Mapping[str, str] | None = None, total: int = 100,
     max_waits: int = 40,
