@@ -10048,7 +10048,7 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
             pagedDevices = pagedDevices.subList(0, hydrated)
             endIndex = startIndex + hydrated
         }
-        if (onlyOn == true) pagedDevices = _stillOnAfterPageRead(pagedDevices)
+        if (onlyOn == true) pagedDevices = _stillOnAfterPageRead(pagedDevices, metadataUnavailableIds)
         def attrNames = (attributeNames && !attributeNames.isEmpty()) ? attributeNames.collect { it.toString() } : _contextAttributeNames()
         def lines = pagedDevices.collect { d -> _contextDeviceLine(d, attrNames) }
         def header = _contextHeaderLines()
@@ -10120,7 +10120,7 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
     }
     int droppedNotOn = 0
     if (onlyOn == true) {
-        def stillOn = _stillOnAfterPageRead(pagedDevices)
+        def stillOn = _stillOnAfterPageRead(pagedDevices, metadataUnavailableIds)
         droppedNotOn = pagedDevices.size() - stillOn.size()
         pagedDevices = stillOn
     }
@@ -10266,7 +10266,12 @@ private List _contextHeaderLines() {
     if (hsm) header << "HSM: ${hsm}".toString()
     return header
 }
-private List _stillOnAfterPageRead(List paged) {
+private List _stillOnAfterPageRead(List paged, List metadataUnavailableIds) {
+    paged.each { device ->
+        if (device._nativeUnavailableCollections?.contains('currentStates') && !metadataUnavailableIds.contains(device.id.toString())) {
+            metadataUnavailableIds << device.id.toString()
+        }
+    }
     paged.findAll { it._nativeLoaded != true || it._nativeReadError == true || _deviceStatesByName(it).get("switch")?.value?.toString() == "on" }
 }
 private Map _deviceStatesByName(device) {
@@ -15315,7 +15320,9 @@ def _hubVarsNativeModel() {
     }
     return model
 }
-boolean _hubVarsNativeAvailable() { _hubVarsNativeModel() != null }
+boolean _hubVarsNativeAvailable() {
+    _hubVarsNativeModel() != null
+}
 private Map _hubVarsNativeRow(Map model, String name) {
     def row = model.variables.find { it instanceof Map && it.name?.toString() == name }
     if (row == null) throw new IllegalStateException("Hub Variables JSON model does not list '${name}'")
@@ -16730,10 +16737,13 @@ private String findRuleAppRedirect(ruleId, String verb) {
             if (verb != "write") {
                 mcpLog("debug", "rules", "findRuleAppRedirect: unrecognized verb '${verb}', defaulting to write-verb message")
             }
+            String editor = isRmRule ? "hub_manage_rule_machine -> hub_set_rule(rule_id=${idStr})" :
+                (appTypeNameLower.contains('visual rule') ? "hub_manage_rule_machine -> hub_set_visual_rule(appId=${idStr})" :
+                    "hub_manage_native_rules_and_apps -> hub_set_native_app(appId=${idStr})")
             return "Rule ${idStr} is a Hubitat built-in ${appTypeName} app. " +
                 "Use `hub_read_apps_code -> hub_get_app_config(appId=${idStr})` for read-only inspection. " +
                 "`hub_update_custom_rule` only handles MCP's own rule engine, not Hubitat built-in apps. " +
-                "Use `hub_manage_rule_machine -> hub_set_rule(rule_id=${idStr})` to modify it programmatically " +
+                "Use `${editor}` to modify it programmatically " +
                 "(requires the Write master)."
         }
     } catch (Exception e) {
@@ -27543,7 +27553,7 @@ private List _ndChanges(Object changes, boolean allowEmpty = false) {
     changes
 }
 private void _ndPreflight(Long id, List changes) {
-    Map before = _nrState(id)
+    Map before = id == null ? [:] : _nrState(id)
     Map conditions = before.capabsfalse instanceof Map ? [:] + before.capabsfalse : [:]
     Map expressions = before.eval instanceof Map ? [:] + before.eval : [:]
     boolean allocatedConditions = false
@@ -27553,7 +27563,7 @@ private void _ndPreflight(Long id, List changes) {
     List projectedOrder = new ArrayList(actionOrder)
     int newAction = 0
     boolean allocatedActions = false
-    Map locals = null
+    Map locals = id == null ? [:] : null
     changes.each { change ->
         Map value = change.value
         if (change.part == 'variable') {
@@ -27741,6 +27751,8 @@ Map toolCreateRuleDocument(Map args) {
     _requireUnprotectedAppMutation(parentId, 'create native rule child')
     def parent = getAppByAppId(parentId)
     if (parent?.appType?.namespace != 'hubitat' || parent?.appType?.name != 'Rule Machine') throw new IllegalArgumentException('parent_id must identify native Rule Machine')
+    try { _ndPreflight(null, changes) }
+    catch (IllegalArgumentException failure) { return [success: false, partial: false, error: failure.message?.toString()] }
     Long id = null
     boolean verifiedChild = false
     try {
@@ -27753,7 +27765,6 @@ Map toolCreateRuleDocument(Map args) {
         _nrHandle(id).initState()
         _nrHandle(id).updateSetting('origLabel', [type: 'text', value: name])
         _nrHandle(id).updateLabel(name)
-        _ndPreflight(id, changes)
         _ndApply(id, changes, true)
     } catch (Exception failure) {
         [success: false, partial: true, rule_id: verifiedChild ? id : null, created: verifiedChild, error: failure.message?.toString()]
