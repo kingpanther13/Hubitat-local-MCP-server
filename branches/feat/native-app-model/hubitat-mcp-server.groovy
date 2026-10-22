@@ -23519,8 +23519,6 @@ private void _rmAnnotateRuleStatus(Map entry, boolean treeReadable, Map liveApps
     }
     if (node.type instanceof String && node.type) {
         entry.type = node.type
-        if (node.type.startsWith("Rule-5.")) entry.rmVersion = "5.x"
-        else if (node.type.startsWith("Rule-4.")) entry.rmVersion = "4.x"
     }
     def disabledRaw = node.disabled
     def cleanApps = stripAppConfigHtml(node.name)
