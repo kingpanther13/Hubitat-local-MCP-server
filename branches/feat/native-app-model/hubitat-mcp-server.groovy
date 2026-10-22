@@ -27054,7 +27054,8 @@ Map _nmUpsertCondition(Long ruleId, boolean trigger, Map row) {
         def label = _nmEntry(after.get(collection) instanceof Map ? after.get(collection) : [:], id)
         Map echoed = _nrSettings(ruleId, settings.collect { it.name })
         boolean persisted = settings.every { echoed.get(it.name)?.type?.toString() == it.type && _nrComparableSetting(it.type, echoed.get(it.name)?.value) == _nrComparableSetting(it.type, it.value) }
-        boolean compiled = label instanceof String && label.trim() && !label.contains('null') && !label.contains('BROKEN')
+        String bare = label instanceof String ? label.replaceAll(/\(?<span style='color:black'>\(?[^<]*\)?<\/span>\)?/, '') : null
+        boolean compiled = bare?.trim() && !bare.contains('null') && !bare.contains('BROKEN')
         if (!(compiled && persisted && membership)) return _nmRejectCondition(ruleId, trigger, editing, id, baseline, savedSettings, settings, render,
             [error: compiled ? 'Native input persistence failed' : 'Native row did not compile a valid label', compiledLabel: label?.toString()])
         [success: true, id: id, label: label, partial: false, settingsVerified: true]
