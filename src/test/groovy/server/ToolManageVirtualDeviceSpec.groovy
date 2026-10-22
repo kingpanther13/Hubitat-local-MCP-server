@@ -1403,4 +1403,15 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         where:
         useGateways << [true, false]
     }
+
+    def "the served virtual_devices guide table names exactly the supported device types"() {
+        when:
+        def rows = script.getToolGuideSections().virtual_devices.readLines()
+            .findAll { it.startsWith('| Virtual ') }
+            .collect { it.split(/\|/)[1].trim() }
+
+        then:
+        rows as Set == script.getSupportedVirtualDeviceTypes() as Set
+        rows.size() == script.getSupportedVirtualDeviceTypes().size()
+    }
 }

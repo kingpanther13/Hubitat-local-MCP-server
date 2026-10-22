@@ -369,7 +369,7 @@ def toolCloneNativeApp(args) {
         Integer newAppId = _appClonerDiscoverNewChild(parentAppId, preIds, sourceLabel, newName)
 
         String note = newAppId
-            ? "Cloned source ${sourceAppId} -> new app ${newAppId}${newName ? " (renamed to '${newName}')" : ""}. Use hub_set_rule to edit RM rules; use the native editor for other apps."
+            ? "Cloned source ${sourceAppId} -> new app ${newAppId}${newName ? " (renamed to '${newName}')" : ""}. Use hub_set_rule for RM rules and hub_set_native_app for other classic apps."
             : "Clone fired but no new child appeared under parent ${parentAppId}. Re-check via hub_list_apps (scope='instances') shortly."
         def result = [
             success: newAppId != null,
@@ -640,7 +640,7 @@ def toolImportNativeApp(args) {
         Integer newAppId = _appClonerDiscoverNewChild(parentAppId, preIds, originalLabel, newName)
 
         String note = newAppId
-            ? "Imported '${originalLabel ?: 'app'}' as new app ${newAppId}${newName ? " (renamed to '${newName}')" : ""}. Use hub_set_rule to edit RM rules; use the native editor for other apps."
+            ? "Imported '${originalLabel ?: 'app'}' as new app ${newAppId}${newName ? " (renamed to '${newName}')" : ""}. Use hub_set_rule for RM rules and hub_set_native_app for other classic apps."
             : "Import fired but no new child appeared under parent ${parentAppId}. Re-check via hub_list_apps (scope='instances') shortly."
         def result = [
             success: newAppId != null,
@@ -1598,7 +1598,7 @@ def _getAllToolDefinitions_partAppCloner() {
     return [
         [
             name: "hub_clone_native_app",
-            description: """Clone any classic native automation app (RM rule, Room Lighting, Button Controller, Basic Rule, Notifier, etc.) using Hubitat's first-party appCloner, then edit RM rules via hub_set_rule or other apps in their native editor.[[FLAT_TRIM]] A lower-overhead alternative to rebuilding via the wizard: clone an existing rule that has the shape you want. Preserves the full rule shape (conditions, expressions, IF/THEN/ELSE structure). The clone completes in tens of seconds for typical rules.[[/FLAT_TRIM]] Returns newAppId on success. Requires the Write master + confirm=true (+ a recent backup).""",
+            description: """Clone any classic native automation app (RM rule, Room Lighting, Button Controller, Basic Rule, Notifier, etc.) using Hubitat's first-party appCloner, then edit RM rules with hub_set_rule and other classic apps with hub_set_native_app.[[FLAT_TRIM]] A lower-overhead alternative to rebuilding via the wizard: clone an existing rule that has the shape you want. Preserves the full rule shape (conditions, expressions, IF/THEN/ELSE structure). The clone completes in tens of seconds for typical rules.[[/FLAT_TRIM]] Returns newAppId on success. Requires the Write master + confirm=true (+ a recent backup).""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1728,7 +1728,7 @@ private Map _mrtrCloneNativeAppSlice(Map rec, Map outerArgs) {
             Integer newAppId = _appClonerDiscoverNewChild(cp.parentAppId as Integer,
                 (cp.preIds ?: []) as Set, cp.sourceLabel?.toString(), cp.newName?.toString())
             String note = newAppId
-                ? "Cloned source ${cp.sourceAppId} -> new app ${newAppId}${cp.newName ? " (renamed to '${cp.newName}')" : ""}. Use hub_set_rule to edit RM rules; use the native editor for other apps."
+                ? "Cloned source ${cp.sourceAppId} -> new app ${newAppId}${cp.newName ? " (renamed to '${cp.newName}')" : ""}. Use hub_set_rule for RM rules and hub_set_native_app for other classic apps."
                 : "Clone fired but no new child appeared under parent ${cp.parentAppId}. Re-check via hub_list_apps (scope='instances') shortly."
             def baseResult = [success: newAppId != null, sourceAppId: cp.sourceAppId,
                               clonerAppId: clonerAppId, newAppId: newAppId, note: note]
@@ -1838,7 +1838,7 @@ private Map _mrtrImportNativeAppSlice(Map rec, Map outerArgs) {
             Integer newAppId = _appClonerDiscoverNewChild(cp.parentAppId as Integer,
                 (cp.preIds ?: []) as Set, cp.originalLabel?.toString(), cp.newName?.toString())
             String note = newAppId
-                ? "Imported '${cp.originalLabel ?: 'app'}' as new app ${newAppId}${cp.newName ? " (renamed to '${cp.newName}')" : ""}. Use hub_set_rule to edit RM rules; use the native editor for other apps."
+                ? "Imported '${cp.originalLabel ?: 'app'}' as new app ${newAppId}${cp.newName ? " (renamed to '${cp.newName}')" : ""}. Use hub_set_rule for RM rules and hub_set_native_app for other classic apps."
                 : "Import fired but no new child appeared under parent ${cp.parentAppId}. Re-check via hub_list_apps (scope='instances') shortly."
             def baseResult = [success: newAppId != null, clonerAppId: clonerAppId,
                               newAppId: newAppId, originalSourceId: cp.originalSourceId,

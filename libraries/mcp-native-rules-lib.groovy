@@ -1143,50 +1143,17 @@ void _rmRejectDisabledAppEdit(Integer appId, String opName) {
     throw new IllegalArgumentException("${opName} blocked: rule ${appId} is DISABLED. Hubitat does not allow editing a disabled app -- its configuration page renders only \"App is disabled\", so there is no wizard to drive. This is intended platform behavior, not an error in the rule. To edit it: hub_set_app_disabled(appId=${appId}, disabled=false), make the change, then disable it again if you want it left parked. RM is not touched.")
 }
 
-// Delete a single action at a specific index. Verified live
-// by inspecting the live UI HTML on selectActions: the per-row trash
-// button has data-stateAttribute='delAct' and the form-input name is
-// just the action index as a digit (e.g. name='2' for action 2). RM's
-// appButtonHandler dispatches on the stateAttribute and uses the name
-// to identify which action to delete.
-//
-// After delete, RM does NOT renumber remaining actions — indices are
-// preserved with gaps. Subsequent addAction picks the next free index
-// via _rmActionIndicesFromSettings' max+1 logic (the settings scan, deliberately -- it must
-// see un-baked rows the compiled list cannot).
-//
-// Pre-flight refuses three things before the delAct click goes out:
-// (a) the requested index does not exist on the rule,
-// (b) the rule has a stuck state.editAct from a prior interrupted
-// edit (RM silently no-ops delAct clicks in that state), and
-// (c) the action is a structural opener/closer (IF / ELSE-IF / ELSE /
-// END-IF / Repeat / While / End-Repeat) and removing it would
-// introduce a new structural-balance issue (compared as a set diff
-// so deletions that merely improve an already-broken rule are
-// still allowed). All three throw IllegalArgumentException /
-// IllegalStateException — no RM mutation is sent.
-//
-// Post-click verification uses a retry loop to absorb RM 5.1's
-// asynchronous button-handler dispatch. The click returns HTTP 200 before
-// the deletion has propagated to appSettings, so a single immediate fetch
-// can falsely report the action still present. Up to 5 attempts are made
-// with increasing delays (1s, 1.5s, 2s, 3s) for a max sleep budget of
-// 7.5s (wall-clock under the relay ceiling including the five HTTP
-// fetches), with ONE verified re-click at the third attempt when the row
-// is still present, and near-zero extra latency on the common success
-// path (first check passes immediately). That budget covers typical and slow hub propagation
-// observed in live-hub runs; on retry exhaustion the throw directs the
-// caller to verify via hub_get_app_config since the deletion may complete
-// post-response. See source comment below for the original race description.
-// `skipStructuralCheck` skips the per-row balance refusal for a caller that has already checked
-// balance itself: the in-flight rollback below (a row this call wrote and never committed, so it
-// is not part of the block structure) and a restore removing a whole set of rows whose combined
-// removal leaves the rule balanced (each half of an IF/END-IF pair alone would be refused).
+// Deletes one action row with RM's delAct button (stateAttribute delAct, name = the action index,
+// verified against the live selectActions HTML). RM keeps the remaining indices, gaps included.
+// Refuses before clicking when the index is not in the rule's settings, when a stuck state.editAct
+// would make RM ignore the click, or when removing a structural row would add a block-balance issue
+// (compared as a set diff, so a deletion that only repairs a broken rule is allowed). The click
+// returns before the deletion propagates, and RM sometimes drops the first click, so the result is
+// polled up to 5 times (1s, 1.5s, 2s, 3s apart) with one verified re-click after the third check.
+// skipStructuralCheck: the caller has checked the balance of its whole set of removals (each half
+// of an IF/END-IF pair alone would be refused).
 Map _rmDeleteAction(Integer appId, Integer actionIdx, boolean skipStructuralCheck = false) {
-    // Single statusJson fetch shared by all three pre-flight checks below;
-    // before the refactor each helper (_rmCollectActionIndices,
-    // _rmGetStateEditAct, structural pre-flight) called _rmFetchStatusJson
-    // independently, tripling the per-delete read load on the hub.
+    // One statusJson read serves all three pre-flight checks below.
     def status = _rmFetchStatusJson(appId)
     def settingsByName = (status?.appSettings ?: []).collectEntries { [(it?.name?.toString()): it] }
     // Existence check reads SETTINGS, not the compiled action list: a row that
@@ -1294,25 +1261,10 @@ Map _rmDeleteAction(Integer appId, Integer actionIdx, boolean skipStructuralChec
     throw new IllegalStateException("removeAction(${actionIdx}): after the delAct click, one verified re-click, and ~8s of polling, action ${actionIdx} is still present in rule ${appId} (before: ${beforeIndices.sort().join(', ')}; after: ${afterIndices.sort().join(', ')}). state.editAct was clear at pre-flight and the re-click also failed to land. Recovery (verify-first, do NOT blind-retry): call hub_get_app_config(appId=${appId}) and check action ${actionIdx}. If still present -> safe to call removeAction(index:${actionIdx}) again. If gone -> a click committed late (rare extreme lag); the removal already succeeded, do not retry. Indices shift on deletion, so retrying without this check can delete the wrong action.")
 }
 
-// Delete a single trigger at a specific index. The per-row delete button on
-// selectTriggers has data-stateAttribute='deleteCon' (truncated, NOT 'deleteCond'
-// — verified live via embeddedActions introspection on rule 289)
-// and the form-input name is the trigger index as a digit (e.g. name='1'
-// for trigger 1). RM's
-// appButtonHandler dispatches on the stateAttribute and uses the name to
-// identify which trigger to delete.
-//
-// After delete, RM does NOT renumber remaining triggers -- indices are
-// preserved with gaps. Subsequent addTrigger picks the next free index
-// via _rmCollectTriggerIndices.
-//
-// Post-click verification uses a retry loop identical to _rmDeleteAction's
-// to absorb RM 5.1's asynchronous button-handler dispatch. The click returns
-// HTTP 200 before the deletion has propagated to appSettings. Up to 4
-// attempts are made with increasing delays (1s, 3s, 6s) for a max sleep
-// budget of 10s. The 10s budget covers typical and slow hub propagation;
-// on retry exhaustion the throw directs the caller to verify via
-// hub_get_app_config since the deletion may complete post-response.
+// Deletes one trigger row with RM's deleteCon button (stateAttribute deleteCon -- truncated, not
+// deleteCond -- name = the trigger index, verified live). RM keeps the remaining indices, gaps
+// included. Like _rmDeleteAction, the result is polled up to 5 times (1s, 1.5s, 2s, 3s apart) with
+// one verified re-fire of the click sequence after the third check.
 Map _rmRemoveTrigger(Integer appId, Integer triggerIdx) {
     def beforeIndices = _rmCollectTriggerIndices(appId)
     if (!beforeIndices.contains(triggerIdx)) {
@@ -1383,24 +1335,12 @@ Map _rmRemoveTrigger(Integer appId, Integer triggerIdx) {
     throw new IllegalStateException("removeTrigger(${triggerIdx}): after the delete click, one verified re-click, and ~8s of polling, trigger ${triggerIdx} is still present in rule ${appId} (before: ${beforeIndices.sort().join(', ')}; after: ${afterIndices.sort().join(', ')}). Recovery (verify-first, do NOT blind-retry): call hub_get_app_config(appId=${appId}) and check trigger ${triggerIdx}. If still present -> safe to call removeTrigger(index:${triggerIdx}) again. If gone -> a click committed late (rare); the removal already succeeded, do not retry. If a retry also fails, hub_restore_backup to the pre-operation snapshot. Indices shift on deletion, so retrying without this check can delete the wrong trigger.")
 }
 
-// Modify a single trigger's state field by opening the editCond wizard,
-// writing the new tstate<N> value, and committing via hasAll.
-//
-// Wire format verified from RM 5.1's selectTriggers page: the per-row edit
-// button has data-stateAttribute='editCond' and name=<idx>. After the click,
-// the wizard exposes tstate<N> for device-state triggers (among other fields).
-// The hasAll button commits the in-flight edit.
-//
-// Scope: only state-value changes (mods.state) are supported. Capability and
-// deviceIds changes require removeTrigger + addTrigger because RM's wizard
-// does not expose a capability-change path in an existing trigger slot.
 Map _rmMoveAction(Integer appId, Integer actionIdx, String direction) {
     def stateAttr = direction == "up" ? "arrowUp" : (direction == "down" ? "arrowDn" : null)
     if (!stateAttr) throw new IllegalArgumentException("moveAction direction must be 'up' or 'down'")
     // Capture pre-move ORDERING from ruleBuilderJson's actionList (RM's own
     // display-ordered array). appSettings key order is arbitrary -- neither
-    // display nor lexical -- so it can never serve this check; see
-    // _rmCollectActionIndices. The ordered list lets us verify the action's
+    // display nor lexical -- so it can never serve this check. The ordered list lets us verify the action's
     // POSITION moved, not just that the index set is unchanged -- a mid-list
     // silent no-op leaves both before- and after-sets identical AND positions
     // identical, but a real move shifts position by exactly one slot.
@@ -1467,8 +1407,7 @@ Map _rmMoveAction(Integer appId, Integer actionIdx, String direction) {
         // short re-check to catch a fast-late commit, kept well under the cloud
         // relay's ~10s window so the call itself does not 504 (a long in-handler
         // poll would). If it STILL has not shifted, return a SOFT
-        // asyncCommitLikely result (mirroring clearActions/replaceActions)
-        // rather than a hard throw: a late commit reported as a hard failure is
+        // asyncCommitLikely result rather than a hard throw: a late commit reported as a hard failure is
         // a false-negative that tempts a caller into a second move that
         // double-shifts the action.
         if (actualShift != expectedShift) {
@@ -1508,12 +1447,8 @@ Map _rmMoveAction(Integer appId, Integer actionIdx, String direction) {
 // commits) submit the current page form WITH a special
 // `_action_href_name|<targetPage>|<idx>` marker that tells the server
 // to navigate. Verified live in Chrome network capture (2026-04-25).
-//
-// Used by _rmAddAction to navigate from doActPage back to selectActions
-// after the actionDone click — the navigation TRIGGERS the bake of the
-// in-flight action into actions[]. Without it, the action's settings
-// stay in appSettings but never land in the actions[] map, and
-// state.actNdx never advances.
+// Leaving doActPage for selectActions after actionDone is what bakes the
+// in-flight action into actions[] and advances state.actNdx.
 //
 // The body is intentionally minimal — the server only needs the
 // navigation marker to perform the transition. We don't need to mirror
@@ -1609,9 +1544,8 @@ private Map _rmNavigateToPage(Integer appId, String fromPage, String targetPage,
 }
 
 private int _rmEmptyRenderPauseMs() {
-    // One tuning value for one problem -- RM's transient empty render -- shared by the walker's
-    // nav recovery and addAction's doActPage re-read. A method, not a field: the Groovy sandbox
-    // rejects static field initializers.
+    // RM's transient empty render: the pause before the walker's nav recovery re-reads the page.
+    // A method, not a field: the Groovy sandbox rejects static field initializers.
     return 750
 }
 
@@ -1678,11 +1612,8 @@ private Map _rmRecoverEmptyNavRender(Integer appId, String targetPage, Map hrefP
 // input on the page + per-type sidecars (X.type, X.multiple,
 // checkbox[X]=on for bools, hours/minutes/amPm[X] for times) +
 // paramsForPage:{n:1} + pageBreadcrumbs:[mainPage,parent].
-//
-// Used by both walkStep's "done" op and the high-level addTrigger flow
-// for sub-page-driven capabilities (Periodic Schedule, Cron String,
-// etc.). Caller passes the current page name + parent page + the href
-// params (so paramsForPage routes correctly).
+// The caller passes the current page, its parent page and the href params
+// (so paramsForPage routes correctly).
 private void _rmSubmitSubPageDone(Integer appId, String page, String parentPage, String hrefName, Map hrefParams, Map cache = null, Map renderedCfg = null) {
     // Sub-pages with route params (periodic.n, etc.) lose state.<paramKey>
     // on a plain GET — `_rmFetchConfigJson(appId, page)` returns the page
@@ -1738,16 +1669,8 @@ private void _rmSubmitSubPageDone(Integer appId, String page, String parentPage,
         }
     }
     if (cfg?.app?.version != null) body.version = cfg.app.version.toString()
-    // Let a Done-POST failure PROPAGATE (hubInternalPostForm throws on a real failure).
-    // Callers handle that throw three ways, by intent -- this is why the catch is scoped at
-    // each call site, not here:
-    //   - addRequiredExpression STPage Done, walkStep done: UNGUARDED -- the throw bubbles to
-    //     the dispatcher's backup-and-catch and surfaces as success:false (abort the op).
-    //   - addTrigger periodic Done: wraps THIS call and folds the failure into skipped as a
-    //     repairable partial (the trigger row already committed).
-    //   - hub_set_native_app trailing Done: wraps THIS call but discards the exception
-    //     (log-only) -- best-effort cleanup, the following updateRule handles the commit.
-    // Catching inside the helper would erase all three distinctions, so it does not.
+    // Let a Done-POST failure propagate (hubInternalPostForm throws on a real failure): the restore
+    // path's STPage Done and walkStep's done each decide what a failed Done means for their operation.
     hubInternalPostForm("/installedapp/update/json", body)
     // The Done POST commits the sub-page + bumps app.version -> drop cached pages for this app.
     _rmCacheInvalidate(cache, appId)
@@ -1779,7 +1702,7 @@ Map _rmSubmitMainPageDone(Integer appId) {
     // Most app types commit on mainPage -- fetch it directly so the common path stays a SINGLE config
     // render (no per-edit regression). Button Rule-5.1's commit page is 'selectActions' instead, so a
     // mainPage fetch fails there ("Cannot find page 'mainPage'"); ONLY on that miss do we probe the app
-    // type from the root config and retry on the resolved page (mirrors _rmInitSelectActionsPage).
+    // type from the root config and retry on the resolved page.
     def commitPage = "mainPage"
     def cfg
     try {
@@ -2021,24 +1944,10 @@ private Map _rmWriteSubPageField(Integer appId, String page, String parentPage, 
     return [persisted: persisted, schemaShifted: schemaShifted, valueLanded: valueLanded, renderShifted: renderShifted, settingsLanded: settingsLanded, verifyFetchFailed: false, afterKeys: afterKeys.toList().sort()]
 }
 
-// Resolve a collection of mode keys (Integer IDs OR String names like "Day"/
-// "Away") into a List of mode IDs as Strings, in insertion order. Used by
-// per-mode action subtypes to write the modes list field. The hub's mode
-// IDs come from location.modes.
-// A mode multi-select is a LIST: RM stores one mode ID per element, so a single
-// comma-joined string ("Day,Evening") is looked up as one nonexistent mode. When a
-// name fails to resolve AND contains a comma, steer to the list shape rather than the
-// opaque "unknown mode" so the caller stops comma-joining. Returns the hint message,
-// or null when the value is not a comma-joined string (caller falls through to its
-// normal unknown-mode error). Only consulted on the not-found path, so a real
-// comma-bearing mode name that DID resolve is never second-guessed. The body carries NO
-// surface word -- each caller passes its own `context` (e.g. "addTrigger Mode",
-// "conditions[2]") so the message is prefixed once, never doubled. ASCII-only.
 private String _rmRetentionSuffix(Map backup) {
     return backup?.retentionNote ? " ${backup.retentionNote}".toString() : ""
 }
 
-// The roll-back hint for a write that may have changed the rule.
 private boolean _rmIsCommittedRETell(Set names, boolean requireStopOnST = false) {
     if (names == null) return false
     def hasNewCondSelector = names.contains("cond") || names.any { it.startsWith("rCapab_") }
@@ -2121,38 +2030,6 @@ private Map _rmCollectWalkSchema(Map configPage, Map liveSettings = null) {
     return out
 }
 
-// walkStep — single-step wizard introspection + write/click/navigate.
-//
-// Designed for LLM-driven dynamic wizard walking. Each call performs at
-// most ONE operation and returns a structured snapshot of how the page
-// changed: schema diff (inputs that appeared/disappeared/changed), the
-// stored-value echo for any write (catches enum case normalization +
-// coercion that the schema wouldn't reveal), sub-page hrefs with their
-// target page, list-count change for actions/triggers (disambiguates
-// "wizard committed cleanly" from "schema went empty because the rule
-// is broken"), and a full health check.
-//
-// Spec shape:
-// { page: <pageName>,
-// operation: "introspect" | "write" | "click" | "navigate" | "done",
-// write?: {<key>: <value>},
-// click?: {name, stateAttribute?},
-// navigate?: {targetPage},
-// validateEnum?: bool,  // if true, reject writes whose value
-// // isn't in the input's options list
-// hrefContext?: {fromPage, hrefName, hrefParams?, hrefIndex?}
-// // for sub-page ops + back-nav (done)
-// }
-//
-// "done" submits the current sub-page back to its parent via
-// _action_previous=Done, carrying ALL current setting values. Required
-// for sub-pages whose parent's row description only renders after a
-// full Done submit (e.g. Periodic Schedule renders "?" without it).
-// Pass hrefContext={fromPage: <parent>, hrefParams: {n: <idx>}} so RM
-// routes the back-nav with the correct paramsForPage.
-//
-// For "introspect" the call only fetches the schema — no mutation. The
-// `before` snapshot is the same as `after` and `diff` is empty.
 private def _rmRecentRuleBackup(Map mfst, Integer ruleId, long nowMs) {
     return mfst.findAll { key, value ->
         if (!(value instanceof Map) || value.deletePending || value.type?.toString() != "rm-rule") return false
@@ -2522,15 +2399,6 @@ private boolean _rmConfigHasBrokenMarkers(config) {
     }
 }
 
-// Shared dispatch-envelope for the local-variable add/remove shortcuts. Both fire
-// a trailing updateRule (re-evaluates the rule's action map / subscriptions against
-// the new or removed local), brief-settle, health-check, then assemble a response
-// that ORs the inner helper's partial into the outer partial. opKind ('add'|'remove')
-// drives the only two real differences: the variable SUB-SHAPE (add returns
-// {name,type,value} + settings*, remove returns {name,deleted}) and the wording of
-// the repairHint / note. varResult is the inner helper's Map (it may itself be a
-// structured success:false + partial:true + repairHints when the commit/verify
-// missed -- those slots ride out unchanged).
 private void _rmDropPredClearPending(Integer appId) {
     synchronized (PRED_CLEAR_STORES) {
         Map pending = _rmPendingPredClearSnapshot()
@@ -3372,15 +3240,12 @@ private Map _rmWholeGuideSection(String sectionKey) {
     return whole
 }
 
-
-
 private String _rmMainPageDoneRepairHint(Integer appId, Map done) {
     if (done?.uiBlocked == true) {
         return "The closing mainPage Done was refused, as Hubitat's app page would refuse it (${done.reason}). Settings are already written; set the listed fields with hub_set_native_app(appId=${appId}, settings={...}), which re-runs the Done.".toString()
     }
     return "The session-end mainPage Done click did not commit (${done?.reason}). Settings are already written, but the app's update lifecycle did not run -- verify via hub_get_app_config(appId=${appId}) and re-commit via hub_set_native_app(appId=${appId}, button='updateRule') for RM-family apps.".toString()
 }
-
 
 private boolean _appTypeRegistryKnows(String configAppName) {
     if (!configAppName) return false
@@ -3389,7 +3254,6 @@ private boolean _appTypeRegistryKnows(String configAppName) {
     def bare = versioned.matches() ? (versioned[0] as List)[1].toString() : null
     return _appTypeRegistry().any { typeKey, reg -> reg.appName == configAppName || (bare != null && reg.appName == bare) }
 }
-
 
 private boolean _rmStatusEntryIsDeviceList(Object entry) {
     if (!(entry instanceof Map)) return false
@@ -3426,7 +3290,7 @@ private void _rmReclassifyDeviceListSkips(Integer appId, List skipped) {
         return
     }
     // Defensive: a malformed appSettings shape (a scalar where a List/Map is expected, etc.)
-    // must never bubble an exception up through _rmAddAction's partial computation. On any
+    // must never bubble an exception up through the caller's partial computation. On any
     // post-fetch anomaly, log and leave every skip as-is (stays partial -- the conservative side).
     try {
         def byName = (status?.appSettings ?: []).findAll { it instanceof Map && it.name != null }
@@ -3523,7 +3387,7 @@ private Map _rmBuildUpdateErrorResponse(Integer appId, String msg, Map backup, S
             backup)
     } else if (wizardStuck) {
         // pageName tells the caller which wizard page the cancelCapab recovery click belongs on
-        // (doActPage for addAction, STPage for addRequiredExpression). The wizardStuck markers
+        // (doActPage for an action, STPage for the Required Expression). The wizardStuck markers
         // themselves carry no page info, so callers thread it in.
         restoreHint = "Backup baseline available -- restore via hub_restore_backup with backupKey='${backup.backupKey}'. Restoring returns the app to that snapshot and may undo every later edit in the baseline's one-hour chain. Or, before your next write, close the in-flight wizard manually: hub_set_native_app(button='cancelCapab', pageName='${pageName}', confirm=true) for an open condition sub-wizard, or hub_set_native_app(button='actionCancel', pageName='doActPage', confirm=true) for a stuck action editor."
     } else {
@@ -3565,11 +3429,10 @@ Map _rmWalkStep(Integer appId, Map spec) {
     def walkCache = spec?.__pageCache instanceof Map ? (Map) spec.__pageCache : null
     if (walkCache != null && operation != "write") walkCache.clear()
 
-    // walkStep is a RAW action-authoring path that bypasses _rmAddAction. If a preceding
-    // addRequiredExpression deferred its predCapabs clear (Step 4b), run it now -- before any
-    // action lands on selectActions/doActPage -- so an action authored here after an RE isn't
-    // wrapped in IF(**Broken Condition**). Mutating ops only (a read lands no action); the helper
-    // fires the ghost clear at most once, then drops the flag.
+    // A predCapabs clear deferred by an earlier version's Required Expression authoring is run
+    // before any action lands on selectActions/doActPage, so an action authored here isn't wrapped
+    // in IF(**Broken Condition**). Mutating ops only (a read lands no action); the helper fires the
+    // ghost clear at most once, then drops the flag.
     if (operation in ["write", "click", "navigate"]) {
         def navTarget = (operation == "navigate" && spec?.navigate instanceof Map) ? ((Map) spec.navigate).targetPage?.toString() : null
         if (page == "selectActions" || page == "doActPage" || navTarget == "selectActions" || navTarget == "doActPage") {
@@ -3626,9 +3489,7 @@ Map _rmWalkStep(Integer appId, Map spec) {
     def beforeStatus = _rmFetchStatusJson(appId)
     def beforeSettings = (beforeStatus?.appSettings ?: []).collectEntries { [(it?.name?.toString()): it?.value] }
     def beforeSchema = _rmCollectWalkSchema(beforeCfg?.configPage, beforeSettings)
-    // Count only, off the status already in hand -- no order needed and no second
-    // fetch. _rmCollectActionIndices would read the compiled rule for an ordering
-    // this never looks at.
+    // Count only, off the status already in hand -- no order needed and no second fetch.
     def beforeActionCount = _rmActionIndicesFromSettings(beforeStatus).size()
     def beforeTriggerCount = _rmCollectTriggerIndices(appId).size()
 
@@ -3731,7 +3592,7 @@ Map _rmWalkStep(Integer appId, Map spec) {
             def pageSkipped = []
             _rmWriteSettingOnPage(appId, page, writtenKey, writtenValue, pageApplied, null, pageSkipped, walkCache)
             _rmVerifySubPageMultipleFlags(appId, page, [(writtenKey): writtenValue], fullSchemaMap, walkCache)
-            // A committed device pick reveals nothing and reads as silent_rejection; re-tag it as addAction does.
+            // A committed device pick reveals nothing and reads as silent_rejection; re-tag it.
             _rmReclassifyDeviceListSkips(appId, pageSkipped)
             if (pageSkipped) opResult.skipped = pageSkipped
         } else if (page && page != "mainPage") {
@@ -4487,7 +4348,7 @@ def _createButtonRuleViaController(args) {
         def result = [success: true, buttonRuleId: newRuleId, controllerId: controllerId,
             buttonNumber: buttonNumber, event: event, backup: backup, health: ruleHealth,
             note: ("Empty button rule created (it shows '(Not Installed)' until it has an action). " +
-                "Author its actions with hub_set_native_app(appId=${newRuleId}, addAction={...}) -- the rule is RM-wire-format. " +
+                "Author its actions with hub_set_rule(operation:'update', rule_id:${newRuleId}, args:{changes:[...]}, confirm:true). " +
                 "Trigger (Button ${buttonNumber} ${event}) is already seeded by the controller.").toString()]
         if (newIds.size() > 1) {
             // More than one new child appeared during the flow (concurrent UI
@@ -4566,9 +4427,6 @@ def _createNativeAppShell(args) {
         // origLabel): RM copies origLabel -> label on updateRule, Group-2.1 relabels from its
         // `name` input immediately. Types without a label input (Button Controller, ...) keep
         // their default type-name label; the labelApplied read-back below reports that honestly.
-        // A prior attempt to set the label generically via /installedapp/update did not take
-        // effect on a live Button Controller, so it was removed rather than shipped dead.
-
         def createDone = _rmSubmitMainPageDone(newId)
         def status = _rmFetchStatusJson(newId)
         def health = _rmCheckRuleHealth(newId)
@@ -4611,7 +4469,7 @@ private void _rmClearPredCapabsViaGhostIfThen(Integer appId, String caller) {
     // Open a new action slot on selectActions.
     _rmClickAppButton(appId, "N", "doActN", "selectActions", cache)
 
-    // Discover the index RM allocated (same pattern as _rmAddAction).
+    // Discover the index RM allocated.
     def ghostCfg = _rmFetchConfigJson(appId, "doActPage", cache)
     def ghostSchema = _rmCollectInputSchema(ghostCfg?.configPage)
     def ghostActTypeField = ghostSchema?.keySet()?.find { it.toString() ==~ /^actType\.\d+$/ }
@@ -4651,9 +4509,7 @@ private void _rmClearPredCapabsViaGhostIfThen(Integer appId, String caller) {
     // routing context stays at selectActions. When the user later opens
     // the browser and clicks "Manage Conditions" (STPage href on mainPage),
     // RM sees a conflicting editAct context and renders "Required Fields
-    // missing or not passing validation" on STPage. Without this nav,
-    // STPage shows a validation error after addRequiredExpression completes;
-    // with it, STPage opens cleanly.
+    // missing or not passing validation" on STPage; with it, STPage opens cleanly.
     def navBack = _rmNavigateToPage(appId, "doActPage", "selectActions", 0, "name", null, cache, null, false, true)
     // A plain name-nav render carries no param-state, so it equals a live selectActions GET;
     // _rmNavigateToPage deliberately doesn't self-store its render, so cache it here for the
@@ -4663,7 +4519,6 @@ private void _rmClearPredCapabsViaGhostIfThen(Integer appId, String caller) {
 
     mcpLog("info", "rm-native", "${caller}: ghost ifThen clear fired for app ${appId} (clears atomicState.predCapabs without adding an action)")
 }
-
 
 private void _rmRunPendingPredCapabsClear(Integer appId) {
     def pending = _rmPendingPredClearSnapshot()

@@ -5756,8 +5756,9 @@ def getReadOnlyToolNames() {
 //     is NOT; hub_export_native_app / hub_export_bundle are timestamp-free.
 //   * invoke-style writes (device commands, rule runs, GC, repair, reboot)
 //     are NOT -- a retry re-fires the action.
-//   * hub_set_native_app are upserts whose no-appId mode
-//     CREATES -- classified non-idempotent for that mode.
+//   * hub_set_native_app is an upsert whose no-appId mode CREATES, and
+//     hub_set_rule's create allocates a new child while its update re-runs
+//     each change -- both classified non-idempotent.
 def getIdempotentWriteToolNames() {
     def cached = _toolMetadataGet("getIdempotentWriteToolNames")
     if (cached != null) return cached
@@ -5831,7 +5832,7 @@ def getToolDisplayMeta() {
     // this file keeps only the gateway entries (gateway membership is cross-domain
     // and lives in getGatewayConfig).
     def meta = [:]
-    [_toolDisplayMeta_partNativeForms(), _toolDisplayMeta_partNativeDocuments(), _toolDisplayMeta_partNativeRM(),
+    [_toolDisplayMeta_partNativeDocuments(), _toolDisplayMeta_partNativeRM(),
      _toolDisplayMeta_partRooms(),
      _toolDisplayMeta_partBundles(),
      _toolDisplayMeta_partVisualRules(),
@@ -6035,7 +6036,6 @@ def handleGateway(gatewayName, toolName, toolArgs, reqT0 = null, boolean bpsChec
     // short-circuit at the very top of their handler (before any gate / appId check),
     // so they must also bypass this required-param pre-validation -- otherwise the
     // gateway rejects them for missing appId/confirm before the handler ever runs.
-    // Native-app metadata probes return schema without mutation.
     def isGatedMetaCall = toolName == "hub_set_native_app" && _isNativeAppSchemaOnlyCall(safeArgs)
     if (required && !isGatedMetaCall) {
         def missing = required.findAll { !safeArgs.containsKey(it) }
@@ -6330,7 +6330,7 @@ def getAllToolDefinitions() {
     // McpBundlesLib / McpVisualRulesLib #include libraries (issue #209 modularization -- a
     // domain's tool DEFINITIONS live with its impl in the library; only the gateway membership
     // + dispatch case stay in this file).
-    return _getAllToolDefinitions_partNativeForms() + _getAllToolDefinitions_partNativeDocuments() + _getAllToolDefinitions_partNativeRM() + _getAllToolDefinitions_partRooms() + _getAllToolDefinitions_partBundles() + _getAllToolDefinitions_partVisualRules() + _getAllToolDefinitions_partDiscovery() + _getAllToolDefinitions_partAppCloner() + _getAllToolDefinitions_partSelfAdmin() + _getAllToolDefinitions_partHpm() + _getAllToolDefinitions_partCodeManagement() + _getAllToolDefinitions_partCustomRules() + _getAllToolDefinitions_partVariables() + _getAllToolDefinitions_partVirtualDevices() + _getAllToolDefinitions_partDevices() + _getAllToolDefinitions_partSystem() + _getAllToolDefinitions_partDiagnostics() + _getAllToolDefinitions_partDebugLogging() + _getAllToolDefinitions_partItemBackups() + _getAllToolDefinitions_partFiles() + _getAllToolDefinitions_partDashboards()
+    return _getAllToolDefinitions_partNativeDocuments() + _getAllToolDefinitions_partNativeRM() + _getAllToolDefinitions_partRooms() + _getAllToolDefinitions_partBundles() + _getAllToolDefinitions_partVisualRules() + _getAllToolDefinitions_partDiscovery() + _getAllToolDefinitions_partAppCloner() + _getAllToolDefinitions_partSelfAdmin() + _getAllToolDefinitions_partHpm() + _getAllToolDefinitions_partCodeManagement() + _getAllToolDefinitions_partCustomRules() + _getAllToolDefinitions_partVariables() + _getAllToolDefinitions_partVirtualDevices() + _getAllToolDefinitions_partDevices() + _getAllToolDefinitions_partSystem() + _getAllToolDefinitions_partDiagnostics() + _getAllToolDefinitions_partDebugLogging() + _getAllToolDefinitions_partItemBackups() + _getAllToolDefinitions_partFiles() + _getAllToolDefinitions_partDashboards()
 }
 
 // Only names and required parameter lists are shared; raw definitions stay mutable per call.
@@ -6387,10 +6387,9 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
             }
         } else if (settings.enableWrite == false
                 && !(toolName == 'hub_set_native_app' && _isNativeAppSchemaOnlyCall(args))) {
-            // hub_set_native_app schema-only calls (guide/discover/
-            // args-omitted probe) return reference content and mutate nothing, so they
-            // stay reachable when writes are disabled; every actual write still hits
-            // this gate.
+            // A hub_set_native_app schema-only call (appId with guide:true) returns
+            // reference content and mutates nothing, so it stays reachable when writes
+            // are disabled; every actual write still hits this gate.
             throw new IllegalArgumentException("Write tools are disabled. Enable 'Write Tools' in MCP Rule Server app settings to use ${toolName}.")
         }
     }
@@ -6407,10 +6406,11 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
     // `!= false` so null/unset/true = active and only an explicit false disables it, mirroring
     // the #113 master-gate convention (the Spock harness + the e2e env setup pin it false so the
     // suites' keyless writes run). Reuses the isGatewayName + read/write partition already
-    // computed above -- gateway names short-circuit (sub-tools gate on re-entry). Two tools are
-    // exempt so the gate can NEVER lock the caller out: hub_get_tool_guide (read-only; it
-    // publishes the keys) and hub_update_mcp_settings (the toggle-off escape hatch).
-    // Rule read/schema probes and package dry runs remain reachable without write acknowledgment.
+    // computed above -- gateway names short-circuit (sub-tools gate on re-entry). Exempt, because
+    // they mutate nothing or must never lock the caller out: hub_get_tool_guide (it publishes the
+    // keys), hub_update_mcp_settings (the toggle-off escape hatch), a device replace options-only
+    // call, a hub_set_rule read or schema probe, a hub_set_native_app guide probe and a
+    // hub_update_package dry run.
     if (!isGatewayName && settings.enableMandatoryBPS != false
             && !getReadOnlyToolNames().contains(toolName)
             && !(toolName in ['hub_get_tool_guide', 'hub_update_mcp_settings'])
@@ -9448,8 +9448,9 @@ private Integer normalizeRuleId(def ruleId) {
  *   - notifier (Notifier), parentType="Notifications"
  *   - visual_rule (Visual Rule Builder), parentType="Visual Rules Builder"
  *
- * Edit through hub_set_rule(operation='form'); delete with hub_delete_native_app
- * using the appId of an existing classic-app instance
+ * Rule-5.1, Button Rule-5.1 and the Rule Machine parent are edited through
+ * hub_set_rule(operation='form'); every other type through hub_set_native_app. Delete with
+ * hub_delete_native_app using the appId of an existing classic-app instance
  * (read appId via hub_list_apps (scope='instances') + hub_get_app_config).
  */
 private Map _appTypeRegistry() {
@@ -9738,9 +9739,8 @@ private String _rmSanitizeRenderForHash(Object sections) {
 
 /**
  * Single-setting write to a sub-page that no-ops if the key isn't in the
- * current schema. Used by _rmAddTrigger to walk the wizard's incremental
- * schema progression without surfacing settingsSkipped warnings on every
- * field that hasn't appeared yet.
+ * current schema, so a wizard walk does not surface settingsSkipped warnings
+ * for fields that have not appeared yet.
  *
  * Post-write verification: after the POST, the page is re-fetched and
  * the new schema is compared to the pre-write schema. The write counts as
@@ -9869,16 +9869,15 @@ def _rmWriteSettingOnPage(Integer appId, String pageName, String key, Object val
     //
     // WHICH field families this catches (verified live, zero-context
     // validation 2026-05-02):
-    //   RelrDev_N  -- Custom Attribute condition's comparator (=, !=, etc.),
-    //                 written inside addRequiredExpression's STPage wizard walk.
-    //                 Field disappears from schema after write but persists in
-    //                 settings as a plain enum string.
-    //   useLastDev.N -- runCommand's "use last device" checkbox written during
-    //                   addAction. Disappears from doActPage schema after write
-    //                   but persists in settings as "true"/"false".
-    //   time1      -- Certain Time trigger's time/mode label written during
-    //                 addTrigger. Disappears from selectTriggers schema after
-    //                 the wizard advances past it, but persists in settings.
+    //   RelrDev_N  -- Custom Attribute condition's comparator (=, !=, etc.) on
+    //                 the STPage wizard. Field disappears from schema after write
+    //                 but persists in settings as a plain enum string.
+    //   useLastDev.N -- runCommand's "use last device" checkbox on doActPage.
+    //                   Disappears from the schema after write but persists in
+    //                   settings as "true"/"false".
+    //   time1      -- Certain Time trigger's time/mode label on selectTriggers.
+    //                 Disappears from the schema after the wizard advances past
+    //                 it, but persists in settings.
     //   Any other submitOnChange-but-not-re-rendered field in RM 5.1.
     //
     // HOW it works: the /installedapp/configure/json response includes BOTH
@@ -10106,11 +10105,10 @@ private Map _ruleCompiledState(Integer appId) {
  * order) tracking IF / Repeat block depth via a stack. Returns the list
  * of structural issue strings (empty list = balanced).
  *
- * Used by _rmCheckRuleHealth for post-mutation detection AND by the
- * pre-flight refusal paths in _rmDeleteAction / _rmAddAction /
- * _applyNativeAppEdit's replaceActions handler — they all build a
- * projected sequence (current minus removals plus additions) and compare
- * projected against current with `projected - current` set diff. Any
+ * Used by _rmCheckRuleHealth for post-mutation detection AND by
+ * _rmDeleteAction's pre-flight refusal, which builds a projected sequence
+ * (current minus the removal) and compares projected against current with
+ * a `projected - current` set diff. Any
  * NEW issue not present in current means the mutation introduces damage
  * and is refused. (Size-only comparison would allow damage-shuffling on
  * already-broken rules — e.g. adding an END-IF to a rule with an open
@@ -10271,7 +10269,7 @@ private TreeSet _rmScannedActionIndices(Map settingsByName) {
  * — _rmOrphanedActionRows reports them separately. Without it, every index either key mentions in
  * numeric order: the pre-membership behaviour, still foolable by a stale row, but the honest best
  * effort when the rule itself cannot be read.
- * VALUES always come from settings. excludeIndices (removeAction's pre-flight) skips listed
+ * VALUES always come from settings. excludeIndices (_rmDeleteAction's pre-flight) skips listed
  * indices so the walker sees the post-deletion state.
  */
 private List _rmStructuralSequenceFromSettings(Map settingsByName, Set excludeIndices = ([] as Set), List orderedIndices = null) {
@@ -10317,9 +10315,8 @@ private List _rmOrphanedActionRows(Map settingsByName, List orderedIndices) {
 /**
  * Fetch the rule's appSettings and return it keyed by setting name.
  * Shared by every site that needs to read the rule's current state
- * (the structural-balance walker, the multiple-flag-poison check, and
- * the pre-flight refusal paths in _rmDeleteAction / _rmAddAction). One
- * statusJson GET per call site instead of three back-to-back.
+ * (the structural-balance walker and the multiple-flag-poison check). One
+ * statusJson GET per call site instead of one per check.
  */
 private Map _rmFetchSettingsByName(Integer appId) {
     def status = _rmFetchStatusJson(appId)
@@ -10514,9 +10511,8 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto", String activePage 
             // formats the hub serves: the body-element format the live UI renderer uses
             // (sect.body[].description where element is "paragraph"/"href") AND the
             // paragraphs-array format. Live on fw 2.5.0.143 a deleted-trigger rule's direct
-            // /configure/json puts '**Broken Trigger**' in the body-element format, which the
-            // old paragraphs-only scan missed — the bug this dual-read fixes (mirrors the
-            // dual-read in _rmAddTrigger's not-baked check).
+            // /configure/json puts '**Broken Trigger**' in the body-element format, which a
+            // paragraphs-only scan misses.
             def paragraphTexts = (cfg?.configPage?.sections ?: []).collectMany { sect ->
                 def fromBody = (sect?.body ?: [])
                     .findAll { b -> b instanceof Map && (b.element == "paragraph" || b.element == "href") }
@@ -10548,10 +10544,9 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto", String activePage 
             if (multipleFlagPoison) {
                 issues << "multiple-flag poison on settings: ${multipleFlagPoison.join(', ')} — re-POST with the 3-field group to recover".toString()
             }
-            // Structural balance check (defense in depth — the pre-flight refusals
-            // in _rmDeleteAction / _rmAddAction / replaceActions block most
-            // imbalance at the source; this catches raw settings writes and the
-            // post-response-commit race for non-structural deletes).
+            // Structural balance check (defense in depth -- the native document batch check and
+            // _rmDeleteAction's pre-flight refusal block most imbalance at the source; this catches
+            // raw settings writes and the post-response-commit race for non-structural deletes).
             structuralIssues = _rmStructuralIssuesFromSequence(
                 _rmStructuralSequenceFromSettings(settingsByName, ([] as Set), compiledActionList))
             orphanedActionRows = _rmOrphanedActionRows(settingsByName, compiledActionList)
@@ -10974,8 +10969,7 @@ private void _rmVerifyMultipleFlags(Integer appId, Map schema, List<String> touc
 
 // Central settings-write POST + 4xx guard. hubInternalPostForm returns a status Map and does
 // NOT throw on 4xx, so a rejected write -- typically a stale version token -- must be detected
-// here or it silently reports success. Mirrors the status guard in _rmSubmitFullPageForm
-// (same IllegalStateException runtime-error contract).
+// here or it silently reports success; a rejection throws IllegalStateException (a runtime error).
 private Map _rmPostSettings(Integer appId, Map body, Map cache = null) {
     def resp = hubInternalPostForm("/installedapp/update/json", body)
     // The settings POST re-renders the page and bumps app.version -> drop all cached pages.
@@ -11166,8 +11160,7 @@ def _guideSectionForTool(toolName) {
 // from the tool's reference. Pure function, no hub I/O. Returns null when: the tool has no dedicated
 // section (no generic fallback by design); the error is a permission/config refusal, not a tool-
 // domain error (the fix there is a toggle, not the guide); or the error already points at the guide
-// (idempotent -- many tools self-cite, so a retry can't stack hints). (args reserved for future
-// arg-shape hints for supported native document changes.)
+// (idempotent -- many tools self-cite, so a retry can't stack hints). args is unused.
 def _reactiveBpsWarning(toolName, args, errorText) {
     def txt = (errorText ?: '').toString()
     if (txt.contains('get_tool_guide')) return null
@@ -11693,8 +11686,8 @@ Deploys every declared library bundle + app from the manifest at `ref`, saving t
 | Virtual Dimmer | switch + level 0-100 | Dimmable light simulation |
 | Virtual RGBW Light | color-controllable | Color light simulation |
 | Virtual Shade | open/close + position | Window shade control |
-| Virtual Garage Door Opener | open/close | Garage door state |
-| Virtual Water Sensor | wet/dry | Water leak simulation |
+| Virtual Garage Door Controller | open/close | Garage door state |
+| Virtual Leak Sensor | wet/dry | Water leak simulation |
 | Virtual Omni Sensor | multi-purpose | Combined sensor types |
 | Virtual Fan Controller | fan speed | Fan simulation |
 
@@ -12274,7 +12267,7 @@ RMUtils-based control surface (hub_list_rules = Read master; trigger/pause/priva
 - **hub_set_rule_private_boolean** — set the private boolean of one or more rules (ruleId takes an id or an array; Boolean or lowercase "true"/"false" only)
 
 Native CRUD (hub admin-layer, additionally requires the Write master):
-- **hub_set_native_app** — create or edit other classic apps using the existing generic CRUD interface. Native RM creation and structure changes use hub_create_rule_document / hub_update_rule_document; native editor controls use hub_call_app_form.
+- **hub_set_native_app** — create or edit other classic apps using the existing generic CRUD interface. Native RM rules are created and changed with hub_set_rule(operation:'create'|'update'), and their native editor forms are driven with hub_set_rule(operation:'form').
 - **hub_set_app_disabled** — enable or disable any installed app (red-X) via POST /installedapp/disable; reversible. Args: appId, disabled (bool). Read-back verified.
 - **hub_delete_native_app** — soft delete (default; refuses if children exist) or force=true. Args: appId, force, confirm. Auto-backs-up before deleting.
 - **hub_clone_native_app** — clone any classic SmartApp via Hubitat's first-party appCloner (deep: child apps and pause state copy, so a clone of an ACTIVE app lands ACTIVE). Args: sourceAppId, newName (opt), stageDisabled (opt: disable the clone + every descendant immediately; a staging failure returns success:false with per-app stageFailures -- do NOT re-clone, the app exists), confirm. Returns newAppId. Drives the appCloner's 4-step wizard (cloneRuleButton -> confirmation -> importRule sub-page -> importNow); typical clones complete in tens of seconds.
@@ -12701,10 +12694,10 @@ No custom operation-token or deployment-job protocol is exposed. If a non-contin
     ]
 }
 
-// Sub-section registry (issue #392). Four sections carry ~70% of the guide, so a caller after one
-// fact -- a Mode condition shape, say -- had to pull all 57 KB of set_rule_reference. This maps each
-// oversized parent to narrower keys that hub_get_tool_guide accepts directly; parent keys are
-// untouched and still return the whole section.
+// Sub-section registry (issue #392). A few sections carry most of the guide, so a caller after one
+// fact would otherwise pull a whole large section. This maps each oversized parent
+// (hub_admin_write, performance, builtin_app_tools) to narrower keys that hub_get_tool_guide
+// accepts directly; parent keys are untouched and still return the whole section.
 //
 // A sub-key's value is the list of "### " heading PREFIXES it owns inside the parent's markdown.
 // A prefix claims EVERY heading it matches (so 'hub_update_app' takes both hub_update_app blocks),
