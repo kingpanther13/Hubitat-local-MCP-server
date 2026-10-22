@@ -752,6 +752,7 @@ def test_run_one_paces_once_after_terminal_result(monkeypatch, outcome, pace):
     runner.results = []
     runner._soft_passes = []
     runner.pace_seconds = pace
+    runner._backups_on = None
     sleeps = []
     monkeypatch.setattr(et.time, "sleep", sleeps.append)
     runner._settle_before_504_retry = lambda name: None
@@ -833,6 +834,7 @@ def test_a_test_rerun_deletes_its_deferred_variables_first(monkeypatch):
     runner.results = []
     runner._soft_passes = []
     runner.pace_seconds = 0
+    runner._backups_on = None
     runner._settle_before_504_retry = lambda name: None
     monkeypatch.setattr(et.time, "sleep", lambda s: None)
     seen = []
