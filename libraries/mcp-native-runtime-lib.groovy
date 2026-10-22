@@ -63,7 +63,7 @@ private Object _nrSettingValue(Object value) {
 }
 
 private Object _nrComparableSetting(String type, Object value) {
-    if (type == 'capability' || type.startsWith('capability.')) {
+    if (_nrIsDeviceType(type)) {
         def ids = value instanceof List ? value : (value == null ? [] : [value])
         return ids.collect { id -> id.toString().isLong() ? id.toString().toLong().toString() : id.toString() }.sort()
     }
@@ -80,28 +80,34 @@ private Object _nrComparableSetting(String type, Object value) {
     value.toString()
 }
 
+// A device picker among native setting types. The editor also renders device.* pickers; those are
+// read through the form model and never written as rule settings.
+boolean _nrIsDeviceType(String type) { type == 'capability' || type?.startsWith('capability.') == true }
+
+// One native setting row: name, type and a non-null scalar value (a list only for enum, mode or
+// device pickers) with positive device ids. Callers add their own rules about the name.
+private void _nrCheckSettingRow(Object row) {
+    if (!(row instanceof Map) || !(row.name instanceof String) || !row.name || !(row.type instanceof String) || !row.containsKey('value') || row.keySet().any { !(it in ['name', 'type', 'value']) }) {
+        throw new IllegalArgumentException('Each setting requires name, type and value')
+    }
+    boolean device = _nrIsDeviceType(row.type)
+    if (!(row.type in ['text', 'textarea', 'password', 'enum', 'mode', 'bool', 'number', 'decimal', 'time']) && !device) throw new IllegalArgumentException('Unsupported native setting type')
+    if (row.value == null) throw new IllegalArgumentException('Null setting values are unsupported; they do not reliably clear native settings')
+    if (row.value instanceof List) {
+        if (!device && !(row.type in ['enum', 'mode'])) throw new IllegalArgumentException('Lists require enum, mode or capability type')
+        if (row.value.any { !(it instanceof String || it instanceof Number || it instanceof Boolean) }) throw new IllegalArgumentException('Setting lists require scalar values')
+    } else if (!(row.value instanceof String || row.value instanceof Number || row.value instanceof Boolean)) {
+        throw new IllegalArgumentException('Unsupported native setting value')
+    }
+    if (device && (row.value instanceof List ? row.value : [row.value]).any { !it.toString().isLong() || it.toString().toLong() <= 0L }) throw new IllegalArgumentException('Capability settings require positive device IDs')
+}
+
 Map _nrWriteSettings(Long ruleId, List rows) {
     if (rows == null) throw new IllegalArgumentException('Setting rows are required')
     def names = []
     rows.each { row ->
-        if (!(row instanceof Map) || !(row.name instanceof String) || !row.name || !(row.type instanceof String) || !row.containsKey('value')) {
-            throw new IllegalArgumentException('Each setting requires name, type and value')
-        }
-        if (row.keySet().any { !(it in ['name', 'type', 'value']) } || row.name in names) throw new IllegalArgumentException('Unsupported or repeated setting fields')
-        def device = row.type == 'capability' || row.type.startsWith('capability.')
-        def enumType = row.type in ['enum', 'mode']
-        if (!(row.type in ['text', 'textarea', 'password', 'enum', 'mode', 'bool', 'number', 'decimal', 'time']) && !device) throw new IllegalArgumentException('Unsupported native setting type')
-        if (row.value == null) throw new IllegalArgumentException('Null setting values are unsupported; they do not reliably clear native settings')
-        if (row.value instanceof List) {
-            if (!device && !enumType) throw new IllegalArgumentException('Lists require enum, mode or capability type')
-            if (row.value.any { !(it instanceof String || it instanceof Number || it instanceof Boolean) }) throw new IllegalArgumentException('Setting lists require scalar values')
-        } else if (!(row.value instanceof String || row.value instanceof Number || row.value instanceof Boolean)) {
-            throw new IllegalArgumentException('Unsupported native setting value')
-        }
-        if (device) {
-            def ids = row.value instanceof List ? row.value : [row.value]
-            if (ids.any { !it.toString().isLong() || it.toString().toLong() <= 0L }) throw new IllegalArgumentException('Capability settings require positive device IDs')
-        }
+        _nrCheckSettingRow(row)
+        if (row.name in names) throw new IllegalArgumentException('Repeated setting name')
         names << row.name
     }
     def handle = _nrHandle(ruleId)
@@ -216,7 +222,7 @@ private void _nrValidateInput(Map field, Object value, boolean allowClear = fals
     List values = value instanceof List ? value : [value]
     if (values.any { !(it instanceof String || it instanceof Number || it instanceof Boolean) }) throw new IllegalArgumentException("Scalar values are required for ${field.name}")
     if (field.required && (!values || values.any { it.toString() == '' })) throw new IllegalArgumentException("Required field: ${field.name}")
-    boolean device = field.type == 'capability' || field.type.startsWith('capability.') || field.type.startsWith('device.')
+    boolean device = _nrIsDeviceType(field.type) || field.type.startsWith('device.')
     List options = device ? _nrDeviceChoices(field).collect { it.id.toString() } : (field.containsKey('option_keys') ? field.option_keys : _nrChoiceKeys(field.options))
     if ((device || field.type in ['enum', 'mode']) && options == null) throw new IllegalArgumentException("Native choices are unavailable for ${field.name}")
     if (options != null && values.any { !(allowClear && it.toString() == '') && !(it.toString() in options) }) throw new IllegalArgumentException("Invalid native choice for ${field.name}")

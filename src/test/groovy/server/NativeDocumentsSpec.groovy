@@ -279,6 +279,39 @@ class NativeDocumentsSpec extends ToolSpecBase {
         events.empty
     }
 
+    def 'a repeated field name in a later change refuses create and update before any write'() {
+        given:
+        settingsMap.remove('backupBeforeRuleEdits')
+        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason, boolean strict -> events << 'backup'; [backupKey: 'unexpected'] }
+        String beforeState = JsonOutput.toJson(nativeState)
+        def repeated = [part: 'action', value: [type: 'messageActs', subtype: 'getLogMsg',
+            fields: [[name: 'logmsg.#', type: 'textarea', value: 'one'], [name: 'logmsg.#', type: 'textarea', value: 'two']]]]
+        when:
+        script.toolCreateRuleDocument([parent_id: 28, name: 'Repeated create', changes: [logChange(), repeated], confirm: true])
+        then:
+        def created = thrown(IllegalArgumentException)
+        created.message == 'changes[1]: Native inputs must not be repeated'
+        events.empty
+        when:
+        script.toolUpdateRuleDocument([rule_id: 42, changes: [logChange(), repeated], confirm: true])
+        then:
+        def updated = thrown(IllegalArgumentException)
+        updated.message == 'changes[1]: Native inputs must not be repeated'
+        events.empty
+        JsonOutput.toJson(nativeState) == beforeState
+    }
+
+    def 'a variable set carrying a type is refused before any write'() {
+        when:
+        script.toolUpdateRuleDocument([rule_id: 42, confirm: true, changes: [
+            [part: 'variable', value: [operation: 'set', name: 'counter', type: 'integer', value: 7]]]])
+        then:
+        def failure = thrown(IllegalArgumentException)
+        failure.message == 'changes[0]: Variable type is accepted only when creating a local variable'
+        nativeState.allLocalVars.counter.value == 0
+        events.empty
+    }
+
     def 'failed change stops and returns truthful partial outcomes'() {
         given:
         failAction = true
