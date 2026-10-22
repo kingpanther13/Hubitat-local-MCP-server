@@ -2509,6 +2509,12 @@ def test_op_key_gateway_set_rule_create():
     assert et._op_key("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": {"operation": "create"}}) == "hub_set_rule:create"
 
 
+def test_op_key_set_rule_unknown_operation_never_echoes_the_argument():
+    # The key is printed in the run summary, so caller-supplied text must not reach it.
+    for operation in ("secret-token-value", {"x": 1}, 7):
+        assert et._op_key("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": {"operation": operation}}) == "hub_set_rule:other"
+
+
 def test_op_key_gateway_set_rule_edit():
     """Native update timing stays separate from native create timing."""
     assert et._op_key("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": {"operation": "update", "rule_id": 5}}) == "hub_set_rule:update"

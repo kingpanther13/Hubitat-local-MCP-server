@@ -456,6 +456,9 @@ def _tool_error_payload(exc: McpError) -> dict:
 # ---------------------------------------------------------------------------
 
 
+_SET_RULE_OPERATION_KEYS = {"help": "help", "read": "read", "create": "create", "update": "update", "form": "form"}
+
+
 def _op_key(name: str, arguments: dict | None) -> str:
     """Group continuation timing by the public operation, including schema and read calls."""
     args = arguments or {}
@@ -468,7 +471,8 @@ def _op_key(name: str, arguments: dict | None) -> str:
             except (json.JSONDecodeError, TypeError):
                 inner = {}
         operation = inner.get("operation", "help") if isinstance(inner, dict) else "help"
-        key += ":" + str(operation)
+        # Fixed names only: the key is printed, so it never carries a caller's argument text.
+        key += ":" + _SET_RULE_OPERATION_KEYS.get(operation if isinstance(operation, str) else "", "other")
     return key
 
 
