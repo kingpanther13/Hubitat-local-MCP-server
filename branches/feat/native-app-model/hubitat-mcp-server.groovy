@@ -21,6 +21,15 @@
 @groovy.transform.Field static volatile long SETUP_RETRY_AT = 0L
 @groovy.transform.Field static final Object SETUP_REFRESH_LOCK = new Object()
 @groovy.transform.Field static final Set LIVE_WRITE_EXECUTIONS = new java.util.HashSet()
+@groovy.transform.Field Map REQUEST_SETTINGS = null
+private Map _requestSettingsSnapshot() {
+    [backupBeforeRuleEdits: settings?.backupBeforeRuleEdits?.toString(), backupEveryRuleWrite: settings?.backupEveryRuleWrite?.toString()]
+}
+private void _keepRequestSettings(Map snap) { REQUEST_SETTINGS = snap ?: null }
+private String _requestSetting(String key) { (REQUEST_SETTINGS ?: [:]).get(key)?.toString() }
+private String _effectiveBackupSetting(String key) {
+    (REQUEST_SETTINGS instanceof Map && (REQUEST_SETTINGS as Map).containsKey(key)) ? _requestSetting(key) : settings?.get(key)?.toString()
+}
 @groovy.transform.Field static final Map WRITE_REQUEST_LEASES = new java.util.HashMap()
 @groovy.transform.Field static final Map MRTR_WORK_ITEMS = new java.util.HashMap()
 @groovy.transform.Field static final Map MRTR_TERMINAL_EVIDENCE = new java.util.HashMap()
@@ -4951,7 +4960,7 @@ private _restoreUploadedBackup(Map args) {
             note: "The backup uploaded but the restore did not confirm — verify hub state."]
 }
 def _getAllToolDefinitions_partItemBackups() {
-    return [
+    def defs = { [
         [
             name: "hub_create_backup",
             description: """Create a hub-database backup. Destructive tools require one within 24h.[[FLAT_TRIM]] Whole-hub .lzf, or with full=true a full local backup (.tar.gz: database, File Manager files, Zigbee and Z-Wave data). Optionally set the automatic-backup schedule (`schedule`) and the network-share backup (`networkBackup`, `testNetworkBackup`); scheduleOnly=true changes those settings only. cloudDownload copies an existing cloud backup into File Manager instead. The only write tool needing no prior backup.[[/FLAT_TRIM]]
@@ -5040,7 +5049,8 @@ A transport drop can lose the response while the hub still commits this write; v
                 required: ["confirm"]
             ]
         ],
-    ]
+    ] }
+    return defs()
 }
 def _readOnlyToolNames_partItemBackups() {
     return [
@@ -5431,6 +5441,7 @@ private List _bugReportSettingsLines(String privacyMode) {
             "- **Max concurrent writes:** ${effNum(settings.maxConcurrentWrites, _maxConcurrentWrites())}",
             "- **Cloud-relay budget (ms):** ${effNum(settings.relayBudgetMs, _relayBudgetMs())}",
             "- **LAN budget (ms):** ${effNum(settings.lanBudgetMs, _lanBudgetMs())}",
+            "- **Back up native apps before edits:** ${eff(settings.backupBeforeRuleEdits, true)}",
             "- **Back up before every native app edit:** ${eff(settings.backupEveryRuleWrite, false)}",
             "- **Backup storage budget (MB):** ${effNum(settings.backupBudgetMb, _itemBackupBudgetMb())}",
             "- **Hide access tokens in responses:** ${eff(settings.redactAccessTokens, false)}",
@@ -8179,7 +8190,7 @@ def toolDeleteCapturedState(args) {
     return stateId ? deleteCapturedState(stateId) : clearAllCapturedStates()
 }
 def _getAllToolDefinitions_partDiagnostics() {
-    return [
+    def defs = { [
         [
             name: "hub_get_logs",
             description: """Read log history and MCP logging status. mode='hub' (default) returns native hub logs; mode='mcp' returns structured MCP entries with component/rule filters; mode='status' returns MCP log level, counts, and capacity.[[FLAT_TRIM]] MCP history recovers from native Past Logs after reload; retention follows the hub's shared log limit.[[/FLAT_TRIM]][[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]""",
@@ -8412,7 +8423,8 @@ Requires Write master.""",
                 ]
             ]
         ],
-    ]
+    ] }
+    return defs()
 }
 def _readOnlyToolNames_partDiagnostics() {
     return [
@@ -9609,7 +9621,7 @@ private Map _parseFirmwareCheck(rawText) {
     }
 }
 def _getAllToolDefinitions_partSystem() {
-    return [
+    def defs = { [
         [
             name: "hub_get_info",
             description: "Get comprehensive hub diagnostics in one call: model, firmware, uptime, memory, temperature, DB size, MCP stats, the calling MCP client, and security/toggle settings. See hub_get_tool_guide(section='hub_admin_write_system')[[FLAT_TRIM]] for the optional deep-dive flags and PII gating[[/FLAT_TRIM]].",
@@ -9768,7 +9780,8 @@ PRE-FLIGHT (apply): 1) Ensure backup <24h old 2) Confirm an update is actually p
                 ]
             ]
         ],
-    ]
+    ] }
+    return defs()
 }
 def _readOnlyToolNames_partSystem() {
     return [
@@ -9939,7 +9952,7 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
         allDevices = allDevices.findAll { d -> d.roomName?.toString()?.equalsIgnoreCase(roomFilter) }
     }
     if (onlyOn == true) {
-        allDevices = allDevices.findAll { d -> d.currentStates?.find { it.name == "switch" }?.value?.toString() == "on" }
+        allDevices = allDevices.findAll { d -> _deviceStatesByName(d).get("switch")?.value?.toString() == "on" }
     }
     if (changedSinceDate != null) {
         allDevices = allDevices.findAll { d ->
@@ -10029,6 +10042,7 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
             pagedDevices = pagedDevices.subList(0, hydrated)
             endIndex = startIndex + hydrated
         }
+        if (onlyOn == true) pagedDevices = _stillOnAfterPageRead(pagedDevices)
         def attrNames = (attributeNames && !attributeNames.isEmpty()) ? attributeNames.collect { it.toString() } : _contextAttributeNames()
         def lines = pagedDevices.collect { d -> _contextDeviceLine(d, attrNames) }
         def header = _contextHeaderLines()
@@ -10098,6 +10112,12 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
             endIndex = startIndex + hydrated
         }
     }
+    int droppedNotOn = 0
+    if (onlyOn == true) {
+        def stillOn = _stillOnAfterPageRead(pagedDevices)
+        droppedNotOn = pagedDevices.size() - stillOn.size()
+        pagedDevices = stillOn
+    }
     def devices = pagedDevices.collect { device ->
         def deviceIdStr = device.id.toString()
         def info = [:]
@@ -10128,8 +10148,9 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
         } else {
             if (fieldSet == null || fieldSet.contains("currentStates")) {
                 info.currentStates = [:]
+                def byName = _deviceStatesByName(device)
                 ["switch", "level", "motion", "contact", "temperature", "humidity", "battery"].each { attr ->
-                    def val = device.currentStates?.find { it.name == attr }?.value
+                    def val = byName.get(attr)?.value
                     if (val != null) info.currentStates[attr] = val
                 }
             }
@@ -10141,7 +10162,7 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
     def result = applyFilterEchoes([
         devices: devices,
         count: devices.size(),
-        total: totalCount
+        total: totalCount - droppedNotOn
     ])
     if (devices.any { it.metadataUnavailable }) result.partial = true
     if (limit && limit > 0) {
@@ -10238,13 +10259,21 @@ private List _contextHeaderLines() {
     if (hsm) header << "HSM: ${hsm}".toString()
     return header
 }
+private List _stillOnAfterPageRead(List paged) {
+    paged.findAll { it._nativeLoaded != true || it._nativeReadError == true || _deviceStatesByName(it).get("switch")?.value?.toString() == "on" }
+}
+private Map _deviceStatesByName(device) {
+    def states = [:]
+    device?.currentStates?.each { st ->
+        if (st?.name != null && st.value != null) states.put(st.name.toString(), st)
+    }
+    return states
+}
 private String _contextDeviceLine(device, List attrNames) {
     def states = [:]
     boolean stateReadFailed = device._nativeReadError == true || device._nativeUnavailableCollections?.contains('currentStates') == true
     try {
-        device.currentStates?.each { st ->
-            if (st?.name != null && st.value != null) states.put(st.name.toString(), st)
-        }
+        states = _deviceStatesByName(device)
     } catch (Exception e) {
         stateReadFailed = true
         mcpLog("warn", "device", "context snapshot: currentStates read failed for device ${device?.id}: ${e.message}")
@@ -10459,10 +10488,8 @@ def _buildContextJson() {
         def attrs = [:]
         boolean stateReadFailed = d._nativeReadError == true || d._nativeUnavailableCollections?.contains('currentStates') == true
         try {
-            d.currentStates?.each { st ->
-                if (st?.name != null && st.value != null && contextAttrs.contains(st.name.toString())) {
-                    attrs.put(st.name.toString(), st.value.toString())
-                }
+            _deviceStatesByName(d).each { name, st ->
+                if (contextAttrs.contains(name)) attrs.put(name, st.value.toString())
             }
         } catch (Exception e) {
             stateReadFailed = true
@@ -14291,7 +14318,7 @@ private boolean _deviceSwapCleanup(Integer appId) {
     }
 }
 def _getAllToolDefinitions_partDevices() {
-    return [
+    def defs = { [
         [
             name: "hub_list_devices",
             description: """List all devices available to MCP with current states. format='context' returns a token-cheap plain-text house snapshot (mode + one line per device)[[FLAT_TRIM]] -- the best first call for broad "what's going on / what's in this house" questions[[/FLAT_TRIM]].
@@ -14543,7 +14570,8 @@ Pre-flight: backup <24h (hub_create_backup) + user OK.""",
                 ]
             ]
         ],
-    ]
+    ] }
+    return defs()
 }
 def _readOnlyToolNames_partDevices() {
     return [
@@ -14605,8 +14633,8 @@ def getSupportedVirtualDeviceTypes() {
         "Virtual Switch", "Virtual Button", "Virtual Contact Sensor",
         "Virtual Motion Sensor", "Virtual Presence", "Virtual Lock",
         "Virtual Temperature Sensor", "Virtual Humidity Sensor", "Virtual Dimmer",
-        "Virtual RGBW Light", "Virtual Shade", "Virtual Garage Door Opener",
-        "Virtual Water Sensor", "Virtual Omni Sensor", "Virtual Fan Controller"
+        "Virtual RGBW Light", "Virtual Shade", "Virtual Garage Door Controller",
+        "Virtual Leak Sensor", "Virtual Omni Sensor", "Virtual Fan Controller"
     ]
 }
 private Map resolveDriverSpec(args) {
@@ -15280,6 +15308,7 @@ def _hubVarsNativeModel() {
     }
     return model
 }
+boolean _hubVarsNativeAvailable() { _hubVarsNativeModel() != null }
 private Map _hubVarsNativeRow(Map model, String name) {
     def row = model.variables.find { it instanceof Map && it.name?.toString() == name }
     if (row == null) throw new IllegalStateException("Hub Variables JSON model does not list '${name}'")
@@ -15357,10 +15386,10 @@ def toolCreateVariable(args) {
     catch (Exception e) {
         mcpLog("debug", "hub-vars", "hub_create_variable: getGlobalVar('${name}') threw ${e.class.simpleName}: ${e.message}")
     }
-    def nativeModel
-    try { nativeModel = _hubVarsNativeModel() }
+    boolean hasNative
+    try { hasNative = _hubVarsNativeAvailable() }
     catch (Exception e) { return _hubVarsNativeFailure("hub_create_variable", _hubVarsModelError(e), true) }
-    if (nativeModel == null) return _createOneVariable(_findHubVariablesAppId(), name, type, value)
+    if (!hasNative) return _createOneVariable(_findHubVariablesAppId(), name, type, value)
     try { return _createOneVariable(null, name, type, value) }
     catch (IllegalArgumentException e) { throw e }
     catch (Exception e) { return _hubVarsNativeFailure("hub_create_variable", e.message ?: e.class.simpleName) }
@@ -15475,10 +15504,10 @@ private Map _createVariablesBulk(variables) {
     if (!(variables instanceof List) || variables.isEmpty()) {
         throw new IllegalArgumentException("variables must be a non-empty array of {name, type, value} objects.")
     }
-    def nativeModel
-    try { nativeModel = _hubVarsNativeModel() }
+    boolean hasNative
+    try { hasNative = _hubVarsNativeAvailable() }
     catch (Exception e) { return _hubVarsNativeFailure("hub_create_variable", _hubVarsModelError(e), true) }
-    def appId = nativeModel != null ? null : _findHubVariablesAppId()
+    def appId = hasNative ? null : _findHubVariablesAppId()
     def results = []
     int createdCount = 0
     int failedCount = 0
@@ -16011,6 +16040,7 @@ def toolDeleteHubVariable(args) {
     String registryError = null
     def linkedMirrorRow = null
     def nativeModel = null
+    boolean nativeRead = false
     if (isHubVar) {
         Map meshJson = _meshJson()
         def meshRows = (meshJson?.localLinkedHubVariables instanceof List) ? meshJson.localLinkedHubVariables : null
@@ -16019,6 +16049,7 @@ def toolDeleteHubVariable(args) {
         }
         try {
             nativeModel = _hubVarsNativeModel()
+            nativeRead = true
             if (nativeModel != null) {
                 registryApps = _hubVarsNativeAppsUsing(_hubVarsNativeRow(nativeModel, varName)).all
                 platformInUse = !registryApps.isEmpty()
@@ -16064,7 +16095,7 @@ def toolDeleteHubVariable(args) {
         def previousValue = hubVar.value
         def previousType  = hubVar.type
         def hadConnector  = hubVar.deviceId != null
-        if (nativeModel == null) {
+        if (!nativeRead) {
             try { nativeModel = _hubVarsNativeModel() }
             catch (Exception e) { return _hubVarsNativeFailure("hub_delete_variable", _hubVarsModelError(e), true) }
         }
@@ -16256,7 +16287,7 @@ private String _hubVarRevealHtml(String raw) {
     return chunks ? chunks.join("\n") : raw
 }
 def _getAllToolDefinitions_partVariables() {
-    return [
+    def defs = { [
         [
             name: "hub_list_variables",
             description: "List all hub variables and rule-engine variables.[[FLAT_TRIM]] Includes every type, even ones without connectors.[[/FLAT_TRIM]]",
@@ -16370,7 +16401,8 @@ def _getAllToolDefinitions_partVariables() {
                 ]
             ]
         ],
-    ]
+    ] }
+    return defs()
 }
 def _readOnlyToolNames_partVariables() {
     return [
@@ -19582,7 +19614,7 @@ def toolGetDeviceInUseBy(args) {
     }
 }
 def _getAllToolDefinitions_partCodeManagement() {
-    return [
+    def defs = { [
         [
             name: "hub_list_apps",
             description: """List apps on the hub — running instances or installed app code/types (see scope).[[FLAT_TRIM]] scope='types' returns both community and built-in app types, each tagged system/isBuiltIn and with its menu tab (Apps/Automations/Integrations). Use system=false/isBuiltIn=false to isolate community (user-installed) types, or menu to group types by the admin UI's Apps/Automations/Integrations tabs. menu is null for a type that declares none. See hub_get_tool_guide(section='builtin_app_tools_apps').[[/FLAT_TRIM]] Per-app event history: hub_list_device_events with appId.[[FLAT_TRIM]] Each instance row carries appTypeId, the app type's code-class id shared with scope='types' and hub_get_source(type='app'), so an instance resolves to its code without matching on the type name. Requires the Read master.[[/FLAT_TRIM]]""",
@@ -19880,7 +19912,8 @@ Use before hub_get_app_config on multi-page apps to avoid guessing page names.[[
                 required: ["deviceId"]
             ]
         ],
-    ]
+    ] }
+    return defs()
 }
 def _readOnlyToolNames_partCodeManagement() {
     return [
@@ -20505,6 +20538,7 @@ def toolUpdateMcpSettings(args) {
     ]
     def allowedKeyNames = ((allowedSettings.keySet() + ["selectedDevices"]) as List).sort()
     def updates = [:]
+    def previous = [:]
     boolean hasDeviceScope = false
     def deviceScopeRaw = null
     args.settings.each { key, value ->
@@ -20539,6 +20573,7 @@ def toolUpdateMcpSettings(args) {
         if (keyStr == ownTransportKey && coerced == false) {
             throw new IllegalArgumentException("Refusing to set '${keyStr}' to false over the connection it controls: this request arrived through it, so the change would lock this client out. Turn it off from the other connection or the MCP Rule Server app page on the hub.")
         }
+        previous.put(keyStr, settings?.get(keyStr))
         updates.put(keyStr, coerced)
     }
     def deviceScopeResult = null
@@ -20575,6 +20610,7 @@ def toolUpdateMcpSettings(args) {
     def result = [
         success: true,
         updated: updates,
+        previous: previous,
         message: message
     ]
     if (hasDeviceScope) {
@@ -23109,7 +23145,7 @@ private Map _withGuidePage(Map result, content, cursor, int pageChars = guidePag
     return result
 }
 def _getAllToolDefinitions_partDiscovery() {
-    return [
+    def defs = { [
         [
             name: "hub_get_tool_guide",
             description: "Get the deep-reference guide for an MCP tool topic[[FLAT_TRIM]] (exhaustive capability tables, wire formats, worked examples)[[/FLAT_TRIM]]. Read a write tool's section before calling that tool: the section publishes the acknowledgment key the best-practice gate requires, and best_practice_reference maps each write tool to its section. A `<parent>_<part>` key (e.g. hub_admin_write_devices) returns just that part of its parent section; the bare parent key returns all of it.[[FLAT_TRIM]] A parent's response lists its own sub-keys.[[/FLAT_TRIM]] Prefer a section: omitting it returns the key list plus the first page of the whole guide (30,000-character pages via nextCursor)[[FLAT_TRIM]], the largest response this tool produces, so on a timeout retry a specific section[[/FLAT_TRIM]].[[FLAT_TRIM]] platform_api_search / platform_api_page read the hub's own Groovy API documentation instead.[[/FLAT_TRIM]]",
@@ -23135,7 +23171,8 @@ def _getAllToolDefinitions_partDiscovery() {
                 required: ["query"]
             ]
         ],
-    ]
+    ] }
+    return defs()
 }
 def _readOnlyToolNames_partDiscovery() {
     return [
@@ -24042,14 +24079,16 @@ Map _rmMoveAction(Integer appId, Integer actionIdx, String direction) {
     return [success: true, index: actionIdx, direction: direction, beforePosition: beforePosition, afterPosition: afterPosition, indicesAfter: afterOrderRaw.sort()]
 }
 private Map _rmNavigateToPage(Integer appId, String fromPage, String targetPage, Integer hrefIndex = 0, String hrefName = "name", Map hrefParams = null, Map cache = null, Long reqT0 = null, boolean recoverEmptyRender = false, boolean uiValidate = false) {
-    def actionMarker = "_action_href_${hrefName}|${targetPage}|${hrefIndex}".toString()
+    boolean asNext = (hrefName == "__next__")
+    def actionMarker = asNext ? "_action_next" : "_action_href_${hrefName}|${targetPage}|${hrefIndex}".toString()
     def body = [
         id: appId.toString(),
         formAction: "update",
         currentPage: fromPage,
         pageBreadcrumbs: _rmPageBreadcrumbs(appId, fromPage, '["mainPage"]'),
-        (actionMarker): ""
+        (actionMarker): asNext ? "Next" : ""
     ]
+    if (asNext) body.nextPage = targetPage
     if (hrefParams != null && !hrefParams.isEmpty()) {
         def paramsMarker = "params_for_action_href_${hrefName}|${targetPage}|${hrefIndex}".toString()
         body.put(paramsMarker, groovy.json.JsonOutput.toJson(hrefParams))
@@ -24386,7 +24425,7 @@ private Map _rmCollectWalkSchema(Map configPage, Map liveSettings = null) {
             }
         }
     }
-    return [
+    def out = [
         inputs: inputs,
         hrefs: hrefs,
         commitButtons: [
@@ -24395,6 +24434,8 @@ private Map _rmCollectWalkSchema(Map configPage, Map liveSettings = null) {
             cancel: hasCancel
         ]
     ]
+    if (configPage?.nextPage) out.nextPage = configPage.nextPage.toString()
+    return out
 }
 private def _rmRecentRuleBackup(Map mfst, Integer ruleId, long nowMs) {
     return mfst.findAll { key, value ->
@@ -24433,8 +24474,8 @@ private Map _rmDecodeRuleExport(Integer ruleId, Object raw) {
     _rmNativeSettingPlan(data.appSettings)
     payload
 }
-Map _rmBackupRuleSnapshot(Integer ruleId, String reason, boolean requireNativeExport = false, String protectedKey = null) {
-    def built = requireNativeExport ? _rmBuildNativeEditSnapshot(ruleId, reason, _rmCaptureRuleExport(ruleId)) : _rmBuildRuleSnapshot(ruleId, reason)
+Map _rmBackupRuleSnapshot(Integer ruleId, String reason, boolean requireNativeExport = false, String protectedKey = null, String activePage = null) {
+    def built = requireNativeExport ? _rmBuildNativeEditSnapshot(ruleId, reason, _rmCaptureRuleExport(ruleId)) : _rmBuildRuleSnapshot(ruleId, reason, activePage)
     return _withBackupLock("rule ${ruleId} snapshot (${reason})") { _rmWriteRuleSnapshotLocked(ruleId, reason, built.snapshot as Map, built.config as Map, protectedKey) }
 }
 private Map _rmBuildNativeEditSnapshot(Integer ruleId, String reason, String nativeExport) {
@@ -24456,11 +24497,11 @@ private Map _rmBuildNativeEditSnapshot(Integer ruleId, String reason, String nat
         statusJson: [appSettings: settingRows, appState: data.state.collect { key, value -> [name: key, value: value] }]]
     [snapshot: snapshot, config: config]
 }
-private Map _rmBuildRuleSnapshot(Integer ruleId, String reason) {
+private Map _rmBuildRuleSnapshot(Integer ruleId, String reason, String activePage = null) {
     def config
     def status
     try {
-        config = _rmFetchConfigJson(ruleId)
+        config = activePage ? _rmFetchConfigJson(ruleId, activePage) : _rmFetchConfigJson(ruleId)
     } catch (Exception e) {
         def vrbFallback = null
         try { vrbFallback = _vrbDetect(ruleId) } catch (Exception ignored) { }
@@ -24552,7 +24593,7 @@ private Map _rmBuildRuleSnapshot(Integer ruleId, String reason) {
     return [snapshot: snapshot, config: config]
 }
 private Map _rmWriteRuleSnapshotLocked(Integer ruleId, String reason, Map snapshot, Map config, String protectedKey = null) {
-    boolean editStep = settings?.backupEveryRuleWrite == true &&
+    boolean editStep = _effectiveBackupSetting('backupEveryRuleWrite') == 'true' &&
         !(reason in ["pre-delete", "pre-forcedelete", "pre-replaceRequiredExpression", "pre-native-restore"])
     String retention = editStep && _rmRecentRuleBackup(_itemBackupManifest(), ruleId, now()) != null ? "rolling" : "pinned"
     def ts = new Date(now()).format("yyyyMMdd-HHmmss-SSS")
@@ -25598,7 +25639,7 @@ Map _rmWalkStep(Integer appId, Map spec) {
         def target = spec?.navigate?.targetPage?.toString()
         if (!target) throw new IllegalArgumentException("walkStep operation='navigate' requires navigate={targetPage}")
         def hrefMatch = beforeSchema.hrefs.find { it.targetPage == target }
-        def hrefName = hrefMatch?.name?.toString() ?: "name"
+        def hrefName = hrefMatch?.name?.toString() ?: (beforeSchema.nextPage == target ? "__next__" : "name")
         def hrefIndex = 0
         def hrefParams = null
         if (hrefMatch?.params != null) {
@@ -25689,7 +25730,8 @@ Map _rmWalkStep(Integer appId, Map spec) {
     }
     def health = (walkCache != null && operation in ["write", "click", "navigate", "done"]) ?
         _rmEmptyHealthVerdict(ok: true, skipped: true, source: "deferred", note: "health probe deferred to the end of the drive (wizard in progress)") :
-        _rmWalkStepHealth(appId, spec?.__reqT0 as Long)
+        _rmWalkStepHealth(appId, spec?.__reqT0 as Long, spec?.__activePage != true ? null :
+            ((operation == "navigate" && spec?.navigate instanceof Map) ? (((Map) spec.navigate).targetPage?.toString() ?: page) : page))
     def silentRejection = (operation == "write") &&
         appeared.isEmpty() && disappeared.isEmpty() &&
         valueEcho?.match == false
@@ -25767,12 +25809,12 @@ private void _rmVerifySubPageMultipleFlags(Integer appId, String pageName, Map s
         }
     }
 }
-private Map _rmWalkStepHealth(Integer appId, Long t0) {
+private Map _rmWalkStepHealth(Integer appId, Long t0, String activePage = null) {
     if (_timeBudgetExceeded(t0)) {
         return _rmEmptyHealthVerdict(ok: true, skipped: true, source: "skipped",
                 note: "health probe skipped: the transport time budget was reached after the committed operation -- verify via hub_get_rule_health(${appId})".toString())
     }
-    return _rmCheckRuleHealth(appId)
+    return activePage ? _rmCheckRuleHealth(appId, "auto", activePage) : _rmCheckRuleHealth(appId)
 }
 private boolean _rmHealthGatePass(Map health) {
     return health?.ok == true || health?.unreadable == true
@@ -25837,6 +25879,7 @@ private Map _rmDriveWalkSteps(Integer appId, Map spec) {
         }
         def step = new LinkedHashMap((Map) rawStep)
         if (spec?.__reqT0 != null) step.__reqT0 = spec.__reqT0
+        if (spec?.__activePage == true) step.__activePage = true
         step.__pageCache = driveWalkCache
         def stepOp = step.operation?.toString()?.trim() ?: "introspect"
         if (!step.page && currentPage) step.page = currentPage
@@ -25879,7 +25922,7 @@ private Map _rmDriveWalkSteps(Integer appId, Map spec) {
             if (stopOnError) break
         }
     }
-    def finalHealth = _rmWalkStepHealth(appId, spec?.__reqT0 as Long)
+    def finalHealth = _rmWalkStepHealth(appId, spec?.__reqT0 as Long, spec?.__activePage == true ? currentPage : null)
     if (pausedAtStep != null) {
         return [
             success: true,
@@ -25982,12 +26025,12 @@ private boolean _rmReusableBackupFileMatches(Map entry, Integer ruleId) {
         return false
     }
 }
-Map _rmBackupBeforeEdit(Integer ruleId, String reason) {
-    def reused = _withBackupLock("rule ${ruleId} baseline (${reason})") { _rmBackupBeforeEditLocked(ruleId, reason) }
-    return reused ?: _rmBackupRuleSnapshot(ruleId, reason)
+Map _rmBackupBeforeEdit(Integer ruleId, String reason, String activePage = null) {
+    def reused = _withBackupLock("rule ${ruleId} baseline (${reason})") { _rmBackupBeforeEditLocked(ruleId, reason, activePage) }
+    return reused ?: _rmBackupRuleSnapshot(ruleId, reason, false, null, activePage)
 }
-private Map _rmBackupBeforeEditLocked(Integer ruleId, String reason) {
-    if (settings?.backupEveryRuleWrite == true || reason == "pre-replaceRequiredExpression") return null
+private Map _rmBackupBeforeEditLocked(Integer ruleId, String reason, String activePage = null) {
+    if (_effectiveBackupSetting('backupEveryRuleWrite') == 'true' || reason == "pre-replaceRequiredExpression") return null
     long nowMs = now()
     def mfst = _itemBackupManifest()
     def recent = mfst.findAll { key, value ->
@@ -26011,7 +26054,7 @@ private Map _rmBackupBeforeEditLocked(Integer ruleId, String reason) {
         _repairItemBackupRetention(mfst, recent.key.toString(), recent.value as Map)
         def config = null
         try {
-            config = _rmFetchConfigJson(ruleId)
+            config = activePage ? _rmFetchConfigJson(ruleId, activePage) : _rmFetchConfigJson(ruleId)
         } catch (Exception e) {
             def vrbFallback = null
             try { vrbFallback = _vrbDetect(ruleId) } catch (Exception ignored) { }
@@ -26274,13 +26317,17 @@ def _applyNativeAppEdit(args) {
     } catch (IllegalArgumentException failure) {
         return _rmBuildUpdateErrorResponse(appId, failure.message, null)
     }
-    def backup = _rmBackupBeforeEdit(appId, button ? "pre-button-${button}" : (walkStepSpec ? 'pre-walkStep' : 'pre-update'))
+    String wsPage = walkStepSpec ? ((walkStepSpec.page ?: ((walkStepSpec.steps instanceof List && walkStepSpec.steps && walkStepSpec.steps[0] instanceof Map) ? walkStepSpec.steps[0].page : null))?.toString()) : null
+    if (wsPage && getAppByAppId(appId)?.appType?.name?.toString() in ['Rule-5.1', 'Button Rule-5.1']) wsPage = null
+    def backupReason = button ? "pre-button-${button}" : (walkStepSpec ? 'pre-walkStep' : 'pre-update')
+    def backup = wsPage ? _rmBackupBeforeEdit(appId, backupReason, wsPage) : _rmBackupBeforeEdit(appId, backupReason)
     if (walkStepSpec) {
         try {
             def wsSpec = walkStepSpec
-            if (args?.__reqT0 != null) {
+            if (args?.__reqT0 != null || wsPage) {
                 wsSpec = new LinkedHashMap(walkStepSpec)
-                wsSpec.__reqT0 = args.__reqT0
+                if (args?.__reqT0 != null) wsSpec.__reqT0 = args.__reqT0
+                if (wsPage) wsSpec.__activePage = true
             }
             def result = _rmWalkStep(appId, wsSpec)
             result.appId = appId
@@ -27671,7 +27718,7 @@ Map toolUpdateRuleDocument(Map args) {
     }
 }
 private Map _ndEditBackup(Long id, String reason) {
-    if (settings.backupBeforeRuleEdits == false) return [skipped: true, reason: 'Automatic pre-edit backups are disabled']
+    if (_effectiveBackupSetting('backupBeforeRuleEdits') == 'false') return [skipped: true, reason: 'Automatic pre-edit backups are disabled']
     Map backup = _rmBackupRuleSnapshot(id.toString().toInteger(), reason, true)
     if (!(backup?.backupKey instanceof String) || !backup.backupKey) throw new IllegalStateException('No recovery handle was returned')
     backup
@@ -29878,7 +29925,7 @@ def handleToolsCall(msg) {
             if (readLeaf) {
                 Map readArgs = _mrtrCopyMap(args as Map)
                 readArgs.__reqT0 = reqT0
-                if (_mrtrDeviceReadTools().contains(leafName)) readSnapshotId = java.util.UUID.randomUUID().toString()
+                if (_mrtrSnapshotReadTools().contains(leafName)) readSnapshotId = java.util.UUID.randomUUID().toString()
                 def readResult = _executeWithDeviceReadContext(toolName, readArgs,
                     readSnapshotId ? [id: readSnapshotId, fresh: true] : null)
                 if (!(readResult instanceof Map && readResult.status == "in_progress")) {
@@ -30127,7 +30174,7 @@ def _budgetAwareTools() {
             "hub_get_jobs", "hub_get_performance_stats", "hub_get_logs", "hub_get_info",
             "hub_report_issue", "hub_get_custom_rule", "hub_delete_debug_logs",
             "hub_get_device", "hub_list_devices", "hub_get_device_health", "hub_list_libraries",
-            "hub_get_device_attribute"] as Set
+            "hub_get_device_attribute", "hub_list_rules"] as Set
 }
 def _mrtrWriteTools() {
     return ["hub_set_native_app", "hub_set_rule", "hub_call_rule",
@@ -30139,9 +30186,9 @@ def _mrtrWriteTools() {
 def _mrtrReadTools() {
     return ["hub_get_jobs", "hub_get_performance_stats", "hub_get_logs", "hub_get_info",
             "hub_report_issue", "hub_get_custom_rule", "hub_get_device", "hub_list_devices",
-            "hub_get_device_health", "hub_list_libraries"] as Set
+            "hub_get_device_health", "hub_list_libraries", "hub_list_rules"] as Set
 }
-private Set _mrtrDeviceReadTools() { ["hub_get_device", "hub_list_devices", "hub_get_device_health"] as Set }
+private Set _mrtrSnapshotReadTools() { ["hub_get_device", "hub_list_devices", "hub_get_device_health", "hub_list_rules"] as Set }
 private def _executeWithDeviceReadContext(tool, Map args, Map context, boolean bpsChecked = false) {
     Map previous = deviceReadContext
     if (context != null) context.outerTool = tool?.toString()
@@ -31028,8 +31075,8 @@ private Map _mrtrCommitSlice(String stateId, Map rec, Map claim, Map executionAr
                     error: "The ${leaf} read did not finish within ${_mrtrMaxContinuationSlices()} continuation slices.",
                     note: leaf == "hub_get_device_health" ?
                         "The health check may still be running, including any requested identify LED blink. Do not automatically retry: that starts another health check. This requestState only replays this timeout. Wait for the hub's probes to settle before deciding whether to run fewer probes." :
-                        _mrtrDeviceReadTools().contains(leaf) ?
-                        "No hub state was changed. The background device read may still be running. Start a fresh call with a smaller selection; if this repeats, inspect the device page and hub performance." :
+                        _mrtrSnapshotReadTools().contains(leaf) ?
+                        "No hub state was changed. The background read may still be running. Start a fresh call with a smaller selection; if this repeats, inspect hub performance." :
                         "No hub state was changed. The log fetch is still running and its result is cached once it lands; repeat the identical call. If this repeats, inspect the hub's Logs page for a slow or failing fetch.",
                     mrtr: [continued: true, rounds: ((rec.rounds ?: 0) as Integer) + 1, startedAt: rec.startedAt]
                 ]
@@ -31223,7 +31270,8 @@ private Map _mrtrScheduleSlice(String stateId, Map rec, Map claim, Map execution
         }
         MRTR_WORK_ITEMS.put(claimId, [
             stateId: stateId, claimId: claimId, generation: generation,
-            arguments: _mrtrCopyMap(executionArgs), started: false
+            arguments: _mrtrCopyMap(executionArgs), started: false,
+            requestSettings: _requestSettingsSnapshot()
         ])
     }
     try {
@@ -31287,6 +31335,7 @@ def runMrtrSlice(Map job = [:]) {
     mrtrWorkerSliceStartedAt = now()
     try {
         Map executionArgs = _mrtrCopyMap(work.arguments as Map)
+        _keepRequestSettings(work.requestSettings as Map)
         def result = _mrtrExecuteSlice(stateId, rec, executionArgs)
         _mrtrLogBackgroundCommit(stateId, rec, _mrtrCommitSlice(stateId, rec, claim, executionArgs, result))
     } catch (Exception workerErr) {
@@ -31300,6 +31349,7 @@ def runMrtrSlice(Map job = [:]) {
         _mrtrCleanupRecord(rec)
         _mrtrStoreTerminalOrLog(stateId, rec, claim, failure, rec.leafTool)
     } finally {
+        _keepRequestSettings(null)
         mrtrWorkerSliceStartedAt = previousWorkerStart
         synchronized (WRITE_RESERVATION_LOCK) {
             def current = MRTR_WORK_ITEMS.get(claimId)
@@ -32792,7 +32842,7 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
             throw new IllegalArgumentException("${toolName} is not available in read-only mode. The Custom Rule Engine toggle is OFF. Turn it ON in MCP Rule Server settings to use create/delete/export/import/clone operations. NOTE: the custom MCP rule engine is legacy -- for new rule work prefer hub_manage_native_rules_and_apps.")
         }
     }
-    if (deviceReadContext != null && _mrtrDeviceReadTools().contains(toolName?.toString())) {
+    if (deviceReadContext != null && _mrtrSnapshotReadTools().contains(toolName?.toString())) {
         return _deviceReadSnapshot(toolName.toString(), args as Map, deviceReadContext)
     }
     switch (toolName) {
@@ -32804,8 +32854,8 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
                 }
                 return toolListVirtualDevices(args)
             }
-            return toolListDevices(args.detailed, args.offset ?: 0, args.limit ?: 0, args.filter, args.labelFilter, args.capabilityFilter, args.format, args.fields, args.cursor, args.scope, args.roomFilter, args.onlyOn, args.changedSince, args.attributeNames, args.__reqT0)
-        case "hub_get_device": return toolGetDevice(args.deviceId, args.mode ?: "summary", args.sections, args.fields, args.cursor)
+            return toolListDevices(args.detailed, args.offset ?: 0, args.limit ?: 0, args.filter, args.labelFilter, args.capabilityFilter, args.format, args.get("fields"), args.cursor, args.scope, args.roomFilter, args.onlyOn, args.changedSince, args.attributeNames, args.__reqT0)
+        case "hub_get_device": return toolGetDevice(args.deviceId, args.mode ?: "summary", args.sections, args.get("fields"), args.cursor)
         case "hub_call_device_command": return toolSendCommand(args.deviceId, args.command, args.parameters, args.waitFor, args.commands, args.__reqT0)
         case "hub_call_device_swap": return toolCallDeviceSwap(args)
         case "hub_call_device_replace": return toolCallDeviceReplace(args)
@@ -35392,7 +35442,7 @@ private Map _rmEmptyHealthVerdict(Map overrides) {
     v.putAll(overrides ?: [:])
     return v
 }
-Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
+Map _rmCheckRuleHealth(Integer appId, String source = "auto", String activePage = null) {
     if (appId == null) {
         return _rmEmptyHealthVerdict(unreadable: true, issues: ["health check failed: appId is null"])
     }
@@ -35452,7 +35502,7 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
     }
     if (runHtml) {
         try {
-            def cfg = _rmFetchConfigJson(appId)
+            def cfg = (activePage && ruleFormat != "rm") ? _rmFetchConfigJson(appId, activePage) : _rmFetchConfigJson(appId)
             sourcesUsed << "configPage"
             label = cfg?.app?.label?.toString()
             if (cfg?.app?.disabled != null) appDisabled = (cfg.app.disabled == true)
