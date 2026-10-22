@@ -141,4 +141,16 @@ class GuideFirstSentenceSpec extends ToolSpecBase {
         description.contains("Read a write tool's section before calling that tool")
         description.contains('acknowledgment key')
     }
+
+    // Served guide content, not the sentence: the virtual-device table must name what the tool accepts.
+    def "the served virtual_devices guide table names exactly the supported device types"() {
+        when:
+        def rows = script.getToolGuideSections().virtual_devices.readLines()
+            .findAll { it.startsWith('| Virtual ') }
+            .collect { it.split(/\|/)[1].trim() }
+
+        then:
+        rows as Set == script.getSupportedVirtualDeviceTypes() as Set
+        rows.size() == script.getSupportedVirtualDeviceTypes().size()
+    }
 }
