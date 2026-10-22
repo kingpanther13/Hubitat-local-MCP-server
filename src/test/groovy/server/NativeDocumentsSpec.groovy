@@ -798,6 +798,25 @@ class NativeDocumentsSpec extends ToolSpecBase {
         result.error.contains('cannot verify')
     }
 
+    def 'create rejects deterministic changes before allocating a child'() {
+        when:
+        def result = script.toolCreateRuleDocument([parent_id: 28, name: 'Rejected create', changes: changes, confirm: true])
+
+        then:
+        !result.success && !result.partial
+        !result.rule_id
+        result.error.contains(message)
+        events.empty
+
+        where:
+        changes | message
+        [[part: 'variable', value: [operation: 'set', name: 'missing', value: 1]]] | 'Local variable does not exist'
+        [[part: 'variable', value: [operation: 'delete', name: 'missing']]] | 'Local variable does not exist'
+        [[part: 'delete', value: [part: 'action', id: '3']]] | 'Native action does not exist'
+        [[part: 'order', value: [ids: ['3']]]] | 'exact permutation'
+        [[part: 'terminator', value: [subtype: 'endIf']]] | 'END-IF'
+    }
+
     def 'create uses native child identity label and actual Done installation'() {
         when:
         def result = script.executeTool('hub_set_rule', [operation: 'create', confirm: true, args: [parent_id: 28, name: 'New document', changes: [logChange()]]])
