@@ -665,6 +665,14 @@ class ToolNativeDeviceInventorySpec extends ToolSpecBase {
         result.devices*.id == ['2']
         result.devices.every { it.currentStates.switch == 'on' }
         result.total == 1
+
+        when: 'the same read is paged one device at a time'
+        def first = script.toolListDevices(false, 0, 1, null, null, null, 'summary', null, '', null, null, true)
+
+        then: 'the page that dropped the device keeps the total its cursor counts through'
+        first.devices == []
+        first.total == 2
+        first.nextCursor == '1'
     }
 
     def 'a device whose filter inputs cannot be read is excluded from the filtered list and named'() {

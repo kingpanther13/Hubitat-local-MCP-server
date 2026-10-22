@@ -1916,6 +1916,15 @@ def adminUpdateMcpSettings(args) {
         if (types[k] == "bool" && !(s in ["true", "false"])) throw new IllegalArgumentException("Setting '${k}' expects a boolean")
         if (types[k] == "number" && !s?.isBigDecimal()) throw new IllegalArgumentException("Setting '${k}' expects a number")
         wanted[k] = (types[k] == "bool") ? (s == "true") : s.toBigDecimal()
+        // The server's own range checks, so a value it refuses is never written here.
+        BigDecimal n = types[k] == "number" ? wanted[k] : null
+        boolean whole = n != null && n.remainder(BigDecimal.ONE) == BigDecimal.ZERO
+        if (k == "maxConcurrentWrites" && !(whole && n >= 0 && n <= 100)) {
+            throw new IllegalArgumentException("Setting 'maxConcurrentWrites' must be an integer between 0 and 100 (0 disables the cap), got: ${s}")
+        }
+        if (k == "backupBudgetMb" && !(whole && n >= 1 && n <= 1000000)) {
+            throw new IllegalArgumentException("Setting 'backupBudgetMb' must be a whole number of MB from 1 to 1000000, got: ${s}")
+        }
     }
     return setMcpServerSettings(id.toInteger(), wanted, types, "MCP server settings")
 }

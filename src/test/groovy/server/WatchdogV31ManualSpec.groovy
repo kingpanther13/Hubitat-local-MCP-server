@@ -863,7 +863,13 @@ class WatchdogV31ManualSpec extends WatchdogSpec {
                  [appId: '194', settings: [enableWrite: false], confirm: true],
                  [appId: '194', settings: [mcpLogLevel: 'info'], confirm: true],
                  [appId: '194', settings: [enableCloudAccess: 'yes'], confirm: true],
-                 [appId: '194', settings: [loopGuardMax: 'many'], confirm: true]]
+                 [appId: '194', settings: [loopGuardMax: 'many'], confirm: true],
+                 // the server's own ranges: a value it refuses is never written through the watchdog
+                 [appId: '194', settings: [backupBudgetMb: 0], confirm: true],
+                 [appId: '194', settings: [backupBudgetMb: 2.5], confirm: true],
+                 [appId: '194', settings: [backupBudgetMb: 1000001], confirm: true],
+                 [appId: '194', settings: [maxConcurrentWrites: 101], confirm: true],
+                 [appId: '194', settings: [maxConcurrentWrites: 1.5], confirm: true]]
     }
 
     @Unroll

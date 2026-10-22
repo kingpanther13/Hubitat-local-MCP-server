@@ -473,7 +473,10 @@ class ModernMrtrScenario:
                 return _tool_payload(listed, f"Rule Machine {scope} discovery")
 
             parent_id = str(await discover_rule_machine_parent(inventory))
-        fixtures = json.loads(os.environ.get("NATIVE_RULE_FIXTURES", "{}"))
+        # An empty value (a workflow env entry mapping an unset variable) means no explicit fixtures.
+        fixtures = json.loads(os.environ.get("NATIVE_RULE_FIXTURES") or "{}")
+        if not isinstance(fixtures, dict):
+            raise AssertionError("NATIVE_RULE_FIXTURES must be a JSON object, e.g. {\"temperature\": \"123\"}")
         temperature_id = str(fixtures.get("temperature") or "")
         if not temperature_id:
             for label in ("E2E_PERM_Omni",):

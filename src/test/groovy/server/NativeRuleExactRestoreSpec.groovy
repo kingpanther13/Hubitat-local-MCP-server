@@ -168,6 +168,22 @@ class NativeRuleExactRestoreSpec extends ToolSpecBase {
         pending << [true, false]
     }
 
+    def 'an edited snapshot file is not read when the backup index cannot be loaded'() {
+        given:
+        script.metaClass._itemBackupManifest = { -> throw new IllegalStateException("${'Backup index unavailable'}: listing failed") }
+        def reads = []
+        script.metaClass.downloadHubFile = { String name -> reads << name; JsonOutput.toJson(snapshot).getBytes('UTF-8') }
+        when:
+        def result = script.toolRestoreItemBackup([sourceFile: 'edited-rule.json', confirm: true])
+        then:
+        !result.success
+        result.sourceFile == 'edited-rule.json'
+        result.error.startsWith('Backup index unavailable')
+        result.note.startsWith('Nothing was changed')
+        reads.empty
+        events.empty
+    }
+
     def 'an edited snapshot file refuses missing devices and never captures undo or mutates'() {
         given:
         Map payload = new JsonSlurper().parseText(snapshot.nativeExport) as Map

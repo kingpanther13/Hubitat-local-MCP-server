@@ -485,10 +485,13 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
         return info
     }
 
+    // A paged response keeps the bulk-read population as its total, so every page reports the same
+    // total its cursor counts through; a single page reports what it lists.
+    boolean paged = (limit && limit > 0) || budgetCut
     def result = applyFilterEchoes([
         devices: devices,
         count: devices.size(),
-        total: totalCount - droppedNotOn
+        total: paged ? totalCount : totalCount - droppedNotOn
     ])
     if (devices.any { it.metadataUnavailable }) result.partial = true
 
