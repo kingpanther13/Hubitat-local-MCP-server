@@ -4256,8 +4256,14 @@ private Map _restoreRuleSnapshotFile(Map args) {
     }
     if (args.preserveRuleId == false) throw new IllegalArgumentException('sourceFile restores the existing original rule; preserveRuleId must be true or omitted')
     String fileName = args.sourceFile
+    def indexed
+    try { indexed = _itemBackupManifest().find { key, entry -> entry.fileName == fileName } }
+    catch (Exception e) {
+        Map unavailable = _itemBackupIndexUnavailableResult(e)
+        if (unavailable == null) throw e
+        return unavailable + [sourceFile: fileName]
+    }
     try {
-        def indexed = _itemBackupManifest().find { key, entry -> entry.fileName == fileName }
         if (indexed) throw new IllegalArgumentException("sourceFile must be a separate unindexed copy; use backupKey '${indexed.key}' for this saved backup".toString())
         Map snapshot = _rmReadBackupSnapshot([fileName: fileName])
         if (snapshot.captureFormat != 'native-rule-edit-v1') throw new IllegalArgumentException('sourceFile requires a complete native-rule-edit-v1 rule snapshot')
@@ -10159,10 +10165,11 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
             requiredCollections.any { device._nativeUnavailableCollections?.contains(it) }) info.metadataUnavailable = true
         return info
     }
+    boolean paged = (limit && limit > 0) || budgetCut
     def result = applyFilterEchoes([
         devices: devices,
         count: devices.size(),
-        total: totalCount - droppedNotOn
+        total: paged ? totalCount : totalCount - droppedNotOn
     ])
     if (devices.any { it.metadataUnavailable }) result.partial = true
     if (limit && limit > 0) {
