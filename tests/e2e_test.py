@@ -1761,6 +1761,9 @@ class TestRunner:
         "thermostat_a": ("E2E_PERM_Thermostat_A", "Virtual Thermostat"),
         "thermostat_b": ("E2E_PERM_Thermostat_B", "Virtual Thermostat"),
         "tone":     ("E2E_PERM_Tone",     "BAT_E2E_KEEP Virtual Tone"),
+        # The scene fixture's only member: no test commands it, so the scene's activator switch
+        # (on while its members match the captured scene) never flips under other tests.
+        "scene_member": ("E2E_PERM_Scene_Member", "Virtual Switch"),
     }
 
     # User drivers for the fixtures no built-in virtual driver covers (none has Tone): installed from
@@ -7524,7 +7527,8 @@ class TestRunner:
                 since = datetime.now(UTC)
                 ran = self.client.call_tool("hub_call_rule", {"ruleId": app_id, "action": "actions"})
                 assert ran.get("success") is not False, ran
-                self._rm_wait(lambda needing=needing, cmd=cmd, since=since: commands(needing, cmd, since) > 0
+                self._rm_wait(lambda needing=needing, already=already, cmd=cmd, since=since, only=only:
+                              commands(needing, cmd, since) > 0 and (only or commands(already, cmd, since) > 0)
                               and self._rm_attribute(a, "switch") == cmd and self._rm_attribute(b, "switch") == cmd,
                               timeout=15, what=f"{cmd} only_if_changed={only}")
                 assert (commands(already, cmd, since) > 0) is (not only), f"{cmd} only_if_changed={only} commanded the wrong switches"
@@ -7977,15 +7981,21 @@ class TestRunner:
     def test_rm_action_scene(self) -> None:
         # Scene actions pick the scene's activator device, not the scene app.
         label, app_type, _ = self.BUILTIN_APP_FIXTURES["scene"]
-        switch = self._ensure_perm_fixture("switch_a")
+        member = self._ensure_perm_fixture("scene_member")
         day, night = self._mode_ids("Day", "Night")
         rows = self._installed_app_rows()
         app_id, _ = self._rm_rule("RmActScene")
         try:
             if not any(r.get("type") == app_type for r in rows):
                 self._rm_refuse(app_id, [self._rm_action("sceneActs", "getActivateScene", [("sceneAct", "enum", ["999999999"])])])
-            scene_app = self._ensure_builtin_app_fixture(rows, "scene", [
-                {"settings": {"switches": [int(switch)]}}, {"button": "captureBtn"}])
+            capture = [{"settings": {"switches": [int(member)]}}, {"button": "captureBtn"}]
+            scene_app = self._ensure_builtin_app_fixture(rows, "scene", capture)
+            # A scene fixture from an earlier run may still capture a shared, often-toggled switch.
+            members = self.client.call_tool("hub_get_app_config", {"appId": scene_app, "includeSettings": True}).get("settings", {}).get("switches")
+            if not self._setting_holds_exact(members, member) or len(members or []) != 1:
+                for step in capture:
+                    done = self.client.call_tool("hub_set_native_app", {"appId": int(scene_app), "confirm": True, **step})
+                    assert done.get("success") is True, f"re-capturing the scene fixture on its own member failed: {done}"
             listed = self.client.call_tool("hub_list_devices", {"scope": "all", "labelFilter": label})
             activators = [str(d["id"]) for d in (listed.get("devices") or []) if d.get("label") == label]
             assert len(activators) == 1, f"expected one activator device labelled {label}: {listed}"
@@ -8299,7 +8309,8 @@ class TestRunner:
     def test_complex_edit_recovers_deleted_rows_and_existing_payloads(self) -> None:
         # One recovery point covers a whole edit batch: restoring it rebuilds deleted rows, the
         # Required Expression, IF expressions and local variables, and the rule runs as before.
-        trigger_switch = self._ensure_perm_fixture("switch_a")
+        # Its own switches: an event from another test's switch would race the edit's state checks.
+        trigger_switch, _, _ = self._rm_disposable_switch("RecoveryTrigger")
         out, _, _ = self._rm_disposable_switch("RecoveryOut")
         def output(on: bool) -> dict:
             return self._rm_switch_action(out, on)
@@ -8320,6 +8331,10 @@ class TestRunner:
                               events=[self._rm_wait_event(trigger_switch, "off")]), output(False)])["document"]
             ids = [str(r["id"]) for r in built["actions"]]
             expression = str(next(r["value"]["rule"] for r in built["actions"] if r["value"]["method"] == "getIfThen"))
+            # Settle the runtime (no pending wait) before the snapshot the restore must match.
+            self._rm_command(trigger_switch, "off")
+            for action in ("stop", "start"):
+                self.client.call_tool("hub_call_rule", {"ruleId": app_id, "action": action})
             before = self._rm_snapshot(app_id)
             self._rule_edit_backups(True)
             keys = self._rm_backup_keys(app_id)
@@ -8342,7 +8357,6 @@ class TestRunner:
             self._rm_command(trigger_switch, "on")
             self._rm_wait(lambda: self._rm_attribute(out, "switch") == "on", what="the restored rule turning the output on")
         finally:
-            self._rm_command(trigger_switch, "off")
             self._delete_native(app_id)
 
     @test("native_apps")
@@ -8415,7 +8429,10 @@ class TestRunner:
         # A recovery point taken by the generic native-app write path (the older snapshot format,
         # without captureFormat) still restores a rule edited through hub_set_rule. With a Required
         # Expression that format carries no native export, so the settings replay alone recovers it.
-        switch, gate = self._ensure_perm_fixture("switch_a"), self._ensure_perm_fixture("switch_b")
+        # Its own switches: rules other tests leave behind command the shared ones, and this rule
+        # firing mid-edit would race the edit's state checks.
+        switch, _, _ = self._rm_disposable_switch("LegacyTrigger")
+        gate, _, _ = self._rm_disposable_switch("LegacyGate")
         self._rule_edit_backups(False)
         app_id, created = self._rm_rule("LegacyRestore", [
             self._rm_switch_condition(gate), self._rm_switch_condition(gate, "off"), self._rm_switch_trigger(switch),
