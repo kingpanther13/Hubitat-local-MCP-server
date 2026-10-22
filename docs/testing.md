@@ -571,31 +571,31 @@ and safety contracts, not proof of restart recovery or eventual completion.
 ### Cooperative worker checkpoints
 
 Detached workers use their own 120-second target, independent of the cloud/LAN request budget.
-They check it between completed native bulk items, patch operations and walk-driver steps, and
-between driver installs or updates. Each checkpoint stores the untouched suffix, advances the
+Bulk rule calls, generic native-app walk steps, and driver installs or updates check it between
+completed items. Each checkpoint stores the untouched suffix, advances the
 owner generation, and renews the three-minute idle window. The next request with the same
 original arguments and state schedules the next slice with a fresh clock. Running claims keep
 their write reservation; duplicate callbacks do not repeat completed items.
 
 This is a cooperative target, not a platform execution deadline or maximum duration. An
-individual wizard operation or driver compile/save/delete runs uninterrupted. Native app
-creation and action replacement have no restart-safe intermediate checkpoint. A patch batch
-containing `replaceRequiredExpression` also stays together: its duplicate-replacement fence and
-deferred rollback context must survive through finalization. A guessed age cutoff cannot safely
+individual native operation or driver compile/save/delete runs uninterrupted. `hub_set_rule`
+executes its entire document change batch in one detached worker, with no intermediate
+checkpoint or remaining-change suffix. Its terminal result can be replayed without repeating
+the write. A guessed age cutoff cannot safely
 distinguish a slow write from a killed worker, so this change does not add one.
 
 At the eight-owner-slice cap, `continuation_limit` is terminal. Its aggregate records completed
-work and its remaining-work fields identify the exact unprocessed suffix. Native results retain
-the finalization guidance: settings may have landed while `updateRule`/Done is still deferred.
+work and its remaining-work fields identify the exact unprocessed suffix. Generic native-app
+walk results retain any finalization guidance returned by the native editor.
 Inspect that outcome before submitting a **new** smaller call containing only the remainder;
 replaying the old state only replays the terminal error.
 
-`MrtrWorkerBudgetSpec` uses virtual time and real tool dispatch to force safe native checkpoints,
-verify ordered results, cap recovery and one finalization, and protect atomic replacement
-batches. The regular live MRTR scenario submits a native conditions-and-logs batch;
+`MrtrWorkerBudgetSpec` uses virtual time and real tool dispatch to verify that a document batch
+dispatches once even when it exceeds the worker target, then replays its terminal result without
+another dispatch. The regular live MRTR scenario submits a native conditions-and-logs batch;
 the official SDK scenario submits its separate configurable conditions, waits and logs batch.
-Both independently check exact persisted settings. These small live calls need not cross 120 seconds; deterministic unit coverage proves
-the clock boundary without adding hub stress or a test-only production setting.
+Both independently check exact persisted settings. These small live calls need not cross 120 seconds;
+the unit test covers that boundary without adding hub stress or a test-only production setting.
 
 ### Leg 2 — official Python SDK client (e2e side)
 

@@ -642,8 +642,8 @@ class ToolNativeDeviceInventorySpec extends ToolSpecBase {
         script._buildContextJson().devices.collectEntries { [(it.id): it.attributes.switch] } == ['1': 'off', '2': 'on']
     }
 
-    def 'onlyOn drops a page device whose switch reads off when the page is read: the listing never shows an off device'() {
-        given: 'the bulk read lists both switches on; by the page read device 1 has turned off'
+    def 'onlyOn drops a page device whose switch is off or unavailable and reports missing metadata'() {
+        given: 'the bulk read lists both switches on; the page read finds device 1 off or unavailable'
         settingsMap.selectedDevices = (1..2).collect { sdkIdentity(it) }
         hubGet.register('/device/listWithCapabilities/json') { throw new IOException('removed') }
         hubGet.register('/hub2/devicesList') {
@@ -654,7 +654,7 @@ class ToolNativeDeviceInventorySpec extends ToolSpecBase {
         (1..2).each { id ->
             hubGet.register("/device/fullJson/${id}") {
                 JsonOutput.toJson([device: [id: id, name: "Native ${id}", label: "Native ${id}", roomName: 'Den',
-                    capabilities: ['Switch'], currentStates: [switch: [value: id == 1 ? 'off' : 'on', dataType: 'ENUM']]], commands: [[name: 'on']]])
+                    capabilities: ['Switch'], currentStates: id == 1 && missingStates ? null : [switch: [value: id == 1 ? 'off' : 'on', dataType: 'ENUM']]], commands: [[name: 'on']]])
             }
         }
 
@@ -665,6 +665,8 @@ class ToolNativeDeviceInventorySpec extends ToolSpecBase {
         result.devices*.id == ['2']
         result.devices.every { it.currentStates.switch == 'on' }
         result.total == 1
+        (result.partial == true) == missingStates
+        (result.metadataUnavailableIds ?: []) == (missingStates ? ['1'] : [])
 
         when: 'the same read is paged one device at a time'
         def first = script.toolListDevices(false, 0, 1, null, null, null, 'summary', null, '', null, null, true)
@@ -673,6 +675,19 @@ class ToolNativeDeviceInventorySpec extends ToolSpecBase {
         first.devices == []
         first.total == 2
         first.nextCursor == '1'
+        (first.partial == true) == missingStates
+        (first.metadataUnavailableIds ?: []) == (missingStates ? ['1'] : [])
+
+        when: 'the same page is read as a context summary'
+        def context = script.toolListDevices(false, 0, 1, null, null, null, 'context', null, '', null, null, true)
+
+        then:
+        context.count == 0
+        (context.partial == true) == missingStates
+        (context.metadataUnavailableIds ?: []) == (missingStates ? ['1'] : [])
+
+        where:
+        missingStates << [false, true]
     }
 
     def 'a device whose filter inputs cannot be read is excluded from the filtered list and named'() {

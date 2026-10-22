@@ -207,7 +207,7 @@ private List _ndChanges(Object changes, boolean allowEmpty = false) {
 }
 
 private void _ndPreflight(Long id, List changes) {
-    Map before = _nrState(id)
+    Map before = id == null ? [:] : _nrState(id)
     Map conditions = before.capabsfalse instanceof Map ? [:] + before.capabsfalse : [:]
     Map expressions = before.eval instanceof Map ? [:] + before.eval : [:]
     boolean allocatedConditions = false
@@ -217,7 +217,7 @@ private void _ndPreflight(Long id, List changes) {
     List projectedOrder = new ArrayList(actionOrder)
     int newAction = 0
     boolean allocatedActions = false
-    Map locals = null
+    Map locals = id == null ? [:] : null
     changes.each { change ->
         Map value = change.value
         if (change.part == 'variable') {
@@ -410,6 +410,8 @@ Map toolCreateRuleDocument(Map args) {
     _requireUnprotectedAppMutation(parentId, 'create native rule child')
     def parent = getAppByAppId(parentId)
     if (parent?.appType?.namespace != 'hubitat' || parent?.appType?.name != 'Rule Machine') throw new IllegalArgumentException('parent_id must identify native Rule Machine')
+    try { _ndPreflight(null, changes) }
+    catch (IllegalArgumentException failure) { return [success: false, partial: false, error: failure.message?.toString()] }
     Long id = null
     boolean verifiedChild = false
     try {
@@ -422,7 +424,6 @@ Map toolCreateRuleDocument(Map args) {
         _nrHandle(id).initState()
         _nrHandle(id).updateSetting('origLabel', [type: 'text', value: name])
         _nrHandle(id).updateLabel(name)
-        _ndPreflight(id, changes)
         _ndApply(id, changes, true)
     } catch (Exception failure) {
         [success: false, partial: true, rule_id: verifiedChild ? id : null, created: verifiedChild, error: failure.message?.toString()]

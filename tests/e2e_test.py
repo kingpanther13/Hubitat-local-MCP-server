@@ -7031,14 +7031,15 @@ class TestRunner:
 
     @test("native_apps")
     def test_set_rule_create_refusal_and_fail_closed_stop(self) -> None:
-        # Shape errors are refused before any child rule exists. A native option failure stops the
+        # Shape and missing-variable errors are refused before a child exists. A native option failure stops the
         # create at that change: earlier changes stay, later ones never run.
         switch = self._ensure_perm_fixture("switch_a")
         def rule_ids() -> set[str]:
             return {str(r["id"]) for r in self.client.call_tool("hub_list_rules", {}).get("rules", [])}
         before = rule_ids()
         for bad in (native_change("trigger", capability="Temperature", value="increased", fields=[]),
-                    native_change("action", type="dimmerActs", subtype="getSetLevel", missingLevel=True, fields=[])):
+                    native_change("action", type="dimmerActs", subtype="getSetLevel", missingLevel=True, fields=[]),
+                    native_change("variable", operation="set", name="MissingCreateVariable", value=1)):
             result = self._rm_call({"operation": "create", "confirm": True, "args": {
                 "parent_id": self._native_rule_parent_id(), "name": f"{PREFIX}CreateRefused_{_run_artifact_suffix()}",
                 "changes": [native_log("first"), bad]}})

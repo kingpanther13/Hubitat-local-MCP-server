@@ -454,9 +454,10 @@ def _hubVarsNativeModel() {
     return model
 }
 
-// Whether this firmware serves the native endpoint: it answers with the variables model (a login or
-// error page is not it). A create needs nothing else from the model.
-boolean _hubVarsNativeAvailable() { _hubVarsNativeModel() != null }
+boolean _hubVarsNativeAvailable() {
+    // A create needs only a valid native variables model, not a login or error page.
+    _hubVarsNativeModel() != null
+}
 
 private Map _hubVarsNativeRow(Map model, String name) {
     def row = model.variables.find { it instanceof Map && it.name?.toString() == name }
