@@ -260,7 +260,7 @@ private String _nfValue(Map field, Object value) {
     List values = value instanceof List ? value : [value]
     if (field.device) return values.collect { it.toString() }.join(',')
     if (field.multiple) return groovy.json.JsonOutput.toJson(values.collect { it.toString() })
-    // The classic browser removes markup from visible scalar inputs.
+    // The classic browser removes markup from visible scalar inputs and escapes any remaining '<'.
     if (!(field.type in ['bool', 'enum', 'mode'])) {
         String text = value.toString(), prior = null
         while (text != prior) { prior = text; text = text.replaceAll(/(?is)<!--.*?-->|<script\b[^>]*>.*?<\/script\s*>|<style\b[^>]*>.*?<\/style\s*>|<\/?[a-z](?:[^"'>]|"[^"]*"|'[^']*')*>/, '') }
@@ -397,6 +397,7 @@ Map toolCallAppForm(Map args) {
         }
         [success: true, app_id: id, completed: completed, backup: backup] + (navigation ? [navigated_app_id: navigation.app_id, navigated_page: navigation.page] : [:]) + (createdId == null ? [:] : [created_app_id: createdId]) + (context ? _nfPublic(context, optionsFor) : [closed: true])
     } catch (Exception failure) {
+        mcpLogError('rm-native', "hub_set_rule form failed for app ${id}: ${failure.message}".toString(), failure)
         // A lost response can follow a successful write; stale controls must never be replayed automatically.
         if (attempted) NATIVE_FORM_CONTEXTS.remove(key)
         [success: false, app_id: id, partial: attempted, completed: completed, error: failure.message?.toString(),
@@ -404,8 +405,3 @@ Map toolCallAppForm(Map args) {
     } finally { NATIVE_FORM_BUSY.remove(appKey); NATIVE_FORM_BUSY.remove(key) }
 }
 
-def _getAllToolDefinitions_partNativeForms() { [] }
-
-def _toolDisplayMeta_partNativeForms() { [:] }
-
-String _nfGuide() { _ndGuide() }

@@ -181,7 +181,8 @@ Map _nmSetRequired(Long ruleId, List tokens) {
     boolean predicate = after.hasPredicate == true && _nmEntry(after.eval instanceof Map ? after.eval : [:], '0') == tokens
     boolean bound = after.predCapabs instanceof List && after.predCapabs.collect { it.toString() }.sort() == operands.collect { it.toString() }.sort()
     boolean persisted = settings.get('useST')?.type == 'bool' && _nrComparableSetting('bool', settings.get('useST')?.value) == 'true'
-    [success: predicate && bound && persisted, partial: !(predicate && bound && persisted), expressionId: '0', tokens: tokens, predicateVerified: predicate && bound, settingsVerified: persisted, verificationNeeded: true]
+    boolean verified = predicate && bound && persisted
+    [success: verified, partial: !verified, expressionId: '0', tokens: tokens, predicateVerified: predicate && bound, settingsVerified: persisted, verificationNeeded: !verified]
 }
 
 private boolean _nmDateTimeValue(Object value) {
@@ -235,7 +236,7 @@ Map _nmLocal(Long ruleId, String operation, String name = null, Object value = n
     def allAfter = _nrHandle(ruleId).getAllLocalVars()
     def inventoryRow = allAfter instanceof Map ? allAfter.get(name) : null
     boolean verified = allAfter instanceof Map && (operation == 'delete' ? after == null && !allAfter.containsKey(name) : after instanceof Map && inventoryRow instanceof Map && inventoryRow.type == after.type && inventoryRow.value == after.value && after.name == name && after.value == value && after.type == (operation == 'create' ? type : before.type))
-    [success: verified, partial: !verified, deleted: operation == 'delete' && verified, variable: after, verificationNeeded: true]
+    [success: verified, partial: !verified, deleted: operation == 'delete' && verified, variable: after, verificationNeeded: !verified]
 }
 
 private void _nmRestoreSettings(Long ruleId, Map savedSettings) {
@@ -308,6 +309,7 @@ private Map _nmRejectEdit(Long ruleId, String id, Map baseline, Map savedSetting
         }
         if (!verified) cleanupError = 'Native row cancellation or restoration could not be verified'
     } catch (Exception cleanupFailure) { cleanupError = cleanupFailure.message ?: 'Native row cleanup failed' }
+    if (cleanupError) mcpLog('warn', 'rm-native', "Rule ${ruleId} row ${id}: ${cleanupError}".toString())
     failure + [success: false, id: id, error: failure.error ?: cleanupError ?: 'Native row authoring failed', fieldErrors: failure.fieldErrors ?: [], partial: !verified, rolledBack: verified,
      cleanupError: cleanupError, verificationNeeded: !verified]
 }
@@ -393,6 +395,7 @@ Map _nmUpsertCondition(Long ruleId, boolean trigger, Map row) {
             [error: compiled ? 'Native input persistence failed' : 'Native row did not compile a valid label', compiledLabel: label?.toString()])
         [success: true, id: id, label: label, partial: false, settingsVerified: true]
     } catch (Exception failure) {
+        mcpLogError('rm-native', "Native ${trigger ? 'trigger' : 'condition'} change failed for rule ${ruleId}: ${failure.message}".toString(), failure)
         _nmRejectCondition(ruleId, trigger, editing, id, baseline, savedSettings, settings, render, [error: failure.message ?: 'Native row authoring failed'])
     }
 }
@@ -503,8 +506,11 @@ Map _nmUpsertAction(Long ruleId, Map row) {
         boolean persisted = settings.every { echoed.get(it.name)?.type?.toString() == it.type && _nrComparableSetting(it.type, echoed.get(it.name)?.value) == _nrComparableSetting(it.type, it.value) }
         if (!(listed && ordered && compiled && persisted && expressionVerified && waitsVerified && conditionVerified)) return reject.call([error: 'Native action compilation or input verification failed', settingsVerified: persisted, expressionVerified: expressionVerified, waitsVerified: waitsVerified, conditionVerified: conditionVerified])
         if (!_nmActionLabel(ruleId, id)) return reject.call([error: 'Native action label is missing or broken'])
-        [success: true, id: id, action: action, partial: false, settingsVerified: true, expressionVerified: true, waitsVerified: true, conditionVerified: true, verificationNeeded: true]
-    } catch (Exception failure) { reject.call([error: failure.message ?: 'Native action authoring failed']) }
+        [success: true, id: id, action: action, partial: false, settingsVerified: true, expressionVerified: true, waitsVerified: true, conditionVerified: true]
+    } catch (Exception failure) {
+        mcpLogError('rm-native', "Native action change failed for rule ${ruleId}: ${failure.message}".toString(), failure)
+        reject.call([error: failure.message ?: 'Native action authoring failed'])
+    }
 }
 
 private Map _nmCompileWait(Long ruleId, String actionId, List events, boolean editing) {
@@ -575,7 +581,7 @@ Map _nmAddTerminator(Long ruleId, String subtype) {
     def action = _nmEntry(after.actions instanceof Map ? after.actions : [:], id)
     Map expected = [endIf: 'getEndIf', 'else': 'getElse', endRep: 'getEndRepeat']
     boolean verified = action instanceof Map && action.method == expected.get(subtype) && after.actionList instanceof List && after.actionList.collect { it.toString() } == priorOrder + [id]
-    [success: verified, id: id, action: action, partial: !verified, verificationNeeded: true]
+    [success: verified, id: id, action: action, partial: !verified, verificationNeeded: !verified]
 }
 
 Map _nmValidateStructure(Long ruleId, Map renderedState = null) {
@@ -652,8 +658,9 @@ Map _nmDeleteRow(Long ruleId, String part, Object rowId) {
     } else {
         referencesPreserved = ['eval', 'predCapabs', 'actions', part == 'trigger' ? 'capabsfalse' : 'capabstrue'].every { after.get(it) == before.get(it) }
     }
-    [success: deleted && preserved && ordered && cleaned && settingsPreserved && callbackConsumed && referencesPreserved, partial: !(deleted && preserved && ordered && cleaned && settingsPreserved && callbackConsumed && referencesPreserved), deleted: deleted, part: part, id: id,
-     settingsVerified: cleaned && settingsPreserved, rowsPreserved: preserved, referencesPreserved: referencesPreserved, callbackConsumed: callbackConsumed, removedSettings: removedNames, remainingSettings: settingsAfter, verificationNeeded: true]
+    boolean verified = deleted && preserved && ordered && cleaned && settingsPreserved && callbackConsumed && referencesPreserved
+    [success: verified, partial: !verified, deleted: deleted, part: part, id: id,
+     settingsVerified: cleaned && settingsPreserved, rowsPreserved: preserved, referencesPreserved: referencesPreserved, callbackConsumed: callbackConsumed, removedSettings: removedNames, remainingSettings: settingsAfter, verificationNeeded: !verified]
 }
 
 Map _nmOrderActions(Long ruleId, List ids) {
@@ -675,11 +682,12 @@ Map _nmOrderActions(Long ruleId, List ids) {
     _nrPage(ruleId, _nrRulePages(ruleId).actions)
     _nrHandle(ruleId).markIfs()
     Map after = _nrState(ruleId)
-    boolean verified = after.actionList instanceof List && after.actionList.collect { it.toString() } == requested
+    boolean orderVerified = after.actionList instanceof List && after.actionList.collect { it.toString() } == requested
     boolean retained = after.actions instanceof Map && after.actions.keySet().collect { it.toString() }.sort() == originalKeys && contracts.every { id, contract ->
         def action = _nmEntry(after.actions, id)
         action instanceof Map && action.method == contract.method && action.cond == contract.cond && action.rule == contract.rule && action.wait == contract.wait
     }
     Map structure = _nmValidateStructure(ruleId, after)
-    [success: verified && retained && structure.success, partial: !(verified && retained && structure.success), orderVerified: verified, actionsPreserved: retained, ids: requested, structuralIssues: structure.structuralIssues, verificationNeeded: true]
+    boolean verified = orderVerified && retained && structure.success
+    [success: verified, partial: !verified, orderVerified: orderVerified, actionsPreserved: retained, ids: requested, structuralIssues: structure.structuralIssues, verificationNeeded: !verified]
 }

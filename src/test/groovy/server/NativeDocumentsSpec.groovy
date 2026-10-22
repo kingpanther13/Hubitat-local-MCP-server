@@ -301,6 +301,22 @@ class NativeDocumentsSpec extends ToolSpecBase {
         JsonOutput.toJson(nativeState) == beforeState
     }
 
+    def 'an edit naming a missing row after a valid change is refused before any write or backup'() {
+        given:
+        settingsMap.remove('backupBeforeRuleEdits')
+        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason, boolean strict -> events << 'backup'; [backupKey: 'unexpected'] }
+        // A new action allocates its id only when written, so a later edit by id of the same kind is left to
+        // the write; a condition edit after a new action is still checked against the rule's conditions.
+        def missing = [part: 'condition', value: [id: '99', capability: 'Switch',
+            fields: [[name: 'rDev_#', type: 'capability.switch', value: ['7']], [name: 'state_#', type: 'enum', value: 'on']]]]
+        when:
+        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [logChange(), missing], confirm: true])
+        then:
+        !result.success && !result.partial
+        result.error == 'changes[1]: Native row does not exist'
+        events.empty
+    }
+
     def 'a variable set carrying a type is refused before any write'() {
         when:
         script.toolUpdateRuleDocument([rule_id: 42, confirm: true, changes: [

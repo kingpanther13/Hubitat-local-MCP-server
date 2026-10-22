@@ -365,7 +365,11 @@ private Map _ndApply(Long id, List changes, boolean created) {
                 case 'terminator': outcome = _nmAddTerminator(id, value.subtype); break
             }
             outcomes << [part: change.part, result: outcome]
-            if (outcome?.success != true) return [success: false, partial: created || outcomes.size() > 1 || outcome?.partial == true, rule_id: id, created: created, results: outcomes, remaining: changes.drop(outcomes.size())]
+            if (outcome?.success != true) {
+                boolean landed = created || outcomes.size() > 1 || outcome?.partial == true
+                return [success: false, partial: landed, rule_id: id, created: created, results: outcomes, remaining: changes.drop(outcomes.size()),
+                    error: outcome?.error?.toString() ?: "Native ${change.part} change did not verify".toString(), note: _ndFailureNote(landed, created)]
+            }
         }
         ['selectTriggers', pages.actions, pages.primary].unique().each { page -> _ndRender(id, page) }
         def health = _ndRuleHealth(id)
@@ -415,8 +419,16 @@ private Map _ndApply(Long id, List changes, boolean created) {
         [success: true, rule_id: id, created: created, results: outcomes, broken: false, stopped: stopped, paused: paused, eventSubscriptions: subscriptions, scheduledJobs: jobs, verification: 'Native persistence, compilation and activation checks passed; verify intended device behavior independently.', document: toolGetRuleDocument([rule_id: id, sections: ['actions', 'conditions', 'triggers', 'expressions', 'variables']])] +
             (suppressed ? [subscriptionSettle: 'SUPPRESSED: Required Expression is false'] : [:])
     } catch (Exception failure) {
-        [success: false, partial: started, rule_id: id, created: created, results: outcomes, remaining: changes.drop(outcomes.size()), error: failure.message?.toString()]
+        mcpLogError('rm-native', "hub_set_rule ${created ? 'create' : 'update'} failed for rule ${id}: ${failure.message}".toString(), failure)
+        [success: false, partial: started, rule_id: id, created: created, results: outcomes, remaining: changes.drop(outcomes.size()), error: failure.message?.toString(), note: _ndFailureNote(started, created)]
     }
+}
+
+// What the caller should do after a failed batch: the hub log carries the detail, the response the recovery.
+private String _ndFailureNote(boolean landed, boolean created) {
+    String written = landed ? "Changes before the failure may have been written; read the rule with hub_set_rule(operation:'read') and resubmit only what is missing." : 'No change was written.'
+    String recovery = created ? ' The new rule exists; delete it with hub_delete_native_app if it is not wanted.' : " An update's response carries backup.backupKey for hub_restore_backup."
+    (written + recovery + " See hub_get_tool_guide(section='set_rule_reference').").toString()
 }
 
 Map toolUpdateRuleDocument(Map args) {
@@ -476,6 +488,7 @@ Map toolCreateRuleDocument(Map args) {
         _nrHandle(id).updateLabel(name)
         _ndApply(id, changes, true)
     } catch (Exception failure) {
+        mcpLogError('rm-native', "hub_set_rule create failed for rule ${id} under parent ${parentId}: ${failure.message}".toString(), failure)
         [success: false, partial: true, rule_id: verifiedChild ? id : null, created: verifiedChild, error: failure.message?.toString()]
     }
 }
