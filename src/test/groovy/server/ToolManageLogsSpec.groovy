@@ -382,6 +382,22 @@ class ToolManageLogsSpec extends ToolSpecBase {
         result.modes.locationEvents.count == 3
     }
 
+    def "hub_get_logs with a list of modes returns each tab's first page with its own cursor"() {
+        given:
+        hubGet.register('/logs/json') { params -> logsJsonWithJobs(150) }
+        hubGet.register('/hub/eventsJson') { params -> '[]' }
+
+        when:
+        def result = script.toolGetHubLogs([mode: ['scheduledJobs', 'hubEvents']])
+
+        then:
+        result.modes.scheduledJobs.count == 100
+        result.modes.scheduledJobs.matched == 150
+        result.modes.scheduledJobs.nextCursor == '100'
+        result.modes.hubEvents.count == 0
+        !result.modes.hubEvents.containsKey('nextCursor')
+    }
+
     @Unroll
     def "hub_get_logs with a list of modes refuses #args before reading anything"() {
         when:

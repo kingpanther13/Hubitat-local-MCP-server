@@ -686,8 +686,9 @@ def toolGetHubLogs(args) {
         if (supplied) throw new IllegalArgumentException("Parameters ${supplied.join(', ')} do not apply to log mode '${m}'")
     }
     if (args.mode instanceof List) {
-        if (args.cursor != null) throw new IllegalArgumentException("cursor pages one mode: call that mode alone with its nextCursor")
-        // Every tab is read and answered under its own key. Once a background read is pending the
+        if (args.cursor != null) throw new IllegalArgumentException("cursor pages one mode: each listed tab returns its first page; call that mode alone with its nextCursor")
+        // Every tab is read and answered under its own key, each as its first page with its own
+        // nextCursor, so several large tabs stay under the response cap. Once a background read is pending the
         // call is answered in_progress, so the inline tabs are skipped for this leg, while the other
         // background reads are still started so one continuation collects them all.
         Map results = [:]
@@ -696,7 +697,7 @@ def toolGetHubLogs(args) {
             if (pending && m in ["cloudCalls", "locationEvents", "hubEvents", "status"]) continue
             Map r
             try {
-                r = toolGetHubLogs(args + [mode: m])
+                r = toolGetHubLogs(args + [mode: m] + (modeArgs[m].contains("cursor") ? [cursor: ""] : [:]))
             } catch (IllegalArgumentException e) {
                 throw e
             } catch (Exception e) {
@@ -2721,7 +2722,7 @@ def _getAllToolDefinitions_partDiagnostics() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    mode: [anyOf: [[type: "string", enum: ["past", "devices", "apps", "cloudCalls", "locationEvents", "hubEvents", "scheduledJobs", "runningJobs", "hubActions", "mcp", "status"]], [type: "array", items: [type: "string", enum: ["past", "devices", "apps", "cloudCalls", "locationEvents", "hubEvents", "scheduledJobs", "runningJobs", "hubActions", "mcp", "status"]]]], default: "past", description: "The Logs page tab, or a list of tabs answered together under modes.<tab>: past = log history; devices/apps = runtime stats; cloudCalls = per-app cloud calls; locationEvents (mode, HSM, variables); hubEvents (reboots, low memory); scheduledJobs; runningJobs; hubActions. mcp = the MCP app's own log; status = its level and counts.[[FLAT_TRIM]] With a list, every other parameter must apply to each listed tab, and cursor is not taken: page one tab alone with its nextCursor.[[/FLAT_TRIM]]"],
+                    mode: [anyOf: [[type: "string", enum: ["past", "devices", "apps", "cloudCalls", "locationEvents", "hubEvents", "scheduledJobs", "runningJobs", "hubActions", "mcp", "status"]], [type: "array", items: [type: "string", enum: ["past", "devices", "apps", "cloudCalls", "locationEvents", "hubEvents", "scheduledJobs", "runningJobs", "hubActions", "mcp", "status"]]]], default: "past", description: "The Logs page tab, or a list of tabs answered together under modes.<tab>: past = log history; devices/apps = runtime stats; cloudCalls = per-app cloud calls; locationEvents (mode, HSM, variables); hubEvents (reboots, low memory); scheduledJobs; runningJobs; hubActions. mcp = the MCP app's own log; status = its level and counts.[[FLAT_TRIM]] With a list, every other parameter must apply to each listed tab, and each tab returns its first page with its own nextCursor; page further by calling that tab alone.[[/FLAT_TRIM]]"],
                     level: [type: "string", enum: ["trace", "debug", "info", "warn", "error", "all"], description: "past and mcp: one log level. Default all."],
                     deviceId: [type: "string", description: "Numeric device id: past logs scoped on the hub, that device's stats, or the jobs and hub actions it owns. Exclusive with appId."],
                     appId: [type: "string", description: "Numeric app id, the same way as deviceId."],
