@@ -1203,7 +1203,7 @@ private Map _logsJsonFailure(String tool, String detail) {
     return [
         success: false, isError: true, tool: tool,
         error: "${tool} could not read the hub's Logs page: ${reason}",
-        note: "Repeat the identical call once; a fresh fetch is already scheduled. If it fails again, check hub_get_logs for the hub-side error, then see hub_get_tool_guide(section='slow_ops')."
+        note: "Repeat the identical call once; a fresh fetch is already scheduled. If it fails again, read hub_get_logs(mode='mcp') for the hub-side error."
     ]
 }
 

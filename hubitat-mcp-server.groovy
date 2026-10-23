@@ -12590,59 +12590,12 @@ To move EXISTING devices into an existing room, set each device's room via hub_u
 Renaming a room preserves device assignments, but may require updating automations/dashboards that reference the room by name.
 ''',
 
-        slow_ops: '''## Slow operations over Streamable HTTP
+        slow_ops: '''## Slow operations
 
-Hubitat's cloud relay can end one HTTP request while hub-side work continues. MCP 2026-07-28 request-to-request continuation solves this without changing transport, installing an extension, or asking the caller to invent a token.
+The cloud relay can end a request while the hub keeps working; a modern client continues the call by itself. Each slow-operation response (`in_progress`, `continuation_limit`, `too_many_writes_in_flight`, `slow_read_timeout`) says what to do next.
 
-### Automatic request-to-request continuation
-
-The modern path applies to `hub_set_native_app`, `hub_set_rule(operation='create')`, `hub_set_rule(operation='update')`, `hub_set_rule(operation='form')`, multi-rule stop/start batches through `hub_call_rule`, `hub_clone_native_app`, `hub_import_native_app`, the slow driver-code lifecycle writes `hub_create_driver`, `hub_update_driver`, and `hub_delete_item(type="driver")`, `hub_manage_virtual_device`, `hub_update_device`, and `hub_restore_backup` for a rule backup (`scope=source` with an `rm-rule_` key or a `sourceFile` snapshot). When the transport carries a time budget, device, log and diagnostic reads also continue as described below.
-
-The first write request reserves the operation and starts its first slice at once; a write that finishes within that request's wait budget returns an ordinary `resultType: "complete"` result in one round trip, so a client that never echoes `requestState` still completes fast writes. Only work still running at the budget returns `resultType: "input_required"` with an opaque `requestState`; compatible MCP clients repeat the same tool call with that state, subject to their retry limit. A resumed request either advances work or observes an internal worker within the request's wait budget. Detached workers use a separate 120-second cooperative target at safe batch boundaries; individual wizard operations may exceed it. A terminal `resultType: "complete"` describes the operation's outcome; neither successful completion nor completion within a particular client's retry limit is guaranteed.
-
-The state is bound to the original leaf tool and exact original arguments. A mismatched, unknown, or expired state executes nothing. A fresh identical call while the original is active rejoins that same `requestState` and observes the running owner; every response to that replay is marked `rejoined: true`, and it cannot reserve or run a second write. This lets a client safely replay a first request whose HTTP response was lost while the work is still running. To INTENTIONALLY run the same write twice while the first record is still live, vary the arguments or wait out the record TTL -- a byte-identical repeat always coalesces. The terminal result remains replayable briefly under the same requestState so losing only the final HTTP response does not rerun the operation. A write that completed within its first request has no state the client could echo, so a lost response there is the same exposure as any single-request write: read the target before repeating it. A client that cannot render `input_required` shows a generic client-side error with no result body while the hub keeps running the write; the same rule applies -- read the target, and know that an identical repeat within the active window joins the running write rather than starting a second one.
-
-### Worker checkpoints and limits
-
-Driver bulk installs/updates pause between drivers. Each saved checkpoint retains the untouched remainder, renews the active window, and advances the owner generation; the next original-argument request with the same state starts a fresh worker slice. If no client request resumes a checkpoint within about five seconds, the server resumes it itself and keeps going to completion or the eight-slice cap, so a client that never continues still gets the whole write; a client request that arrives later observes or replays as usual. Clone and import checkpoints resume the same way (their later phases read only the checkpoint, so the import JSON is not retained). `hub_get_info` returns `recentWrites`: the last ten continuation-eligible writes with their status (`running`, `paused_resuming`, `finished`, `finished_with_error`) and identifiers, so a client that saw only a generic error can learn what happened with one read. Every state-only reply, every background completion and every paused write that expires unresumed is logged in the MCP log (`hub_get_logs` with `mode="mcp"`, component `mrtr`) at info or warn, so a client-side error can be traced without enabling debug logging.
-
-Native Rule Machine document and form operations run in one worker without item checkpoints. Their replies can still use request-to-request continuation while that worker runs. A large changes batch does not yield at the worker target; use smaller batches when necessary and inspect any partial result before continuing. Individual driver operations also remain uninterrupted. The worker target is not a hard execution deadline or a guarantee of recovery from a platform kill.
-
-If eight owner slices leave work unfinished, the terminal `continuation_limit` result retains the completed aggregate, exact remaining-work fields and any deferred-finalization guidance. Inspect that result before making a new, smaller call containing only the remainder. Replaying the old state only returns the same terminal result.
-
-### The `mrtr` block
-
-A result that ran through request-to-request continuation carries `mrtr: {continued, rounds, startedAt}`: `continued` is always true there, `rounds` is how many owner work slices ran (1 when the background worker finished it in one), and `startedAt` is when the first slice started (epoch ms). A replayed or joined result also carries `rejoined: true`. A successful result without `mrtr` ran inside its first request. An error result can lack `mrtr` even after earlier slices ran (a later slice that could not be scheduled ends the write there), so read the target before retrying it.
-
-### Client retry limits and resume
-
-The official Python SDK pinned by this project (2.2.0) defaults to ten automatic continuation retries. Contention and worker-coordination responses consume client rounds; the server's `mrtr.rounds` counts owner work slices instead. Its eight-slice cap does not bound a client's retries, and ten retries is an SDK policy, not an MCP requirement. Cloud wait budgets reduce rapid polling but cannot make an arbitrary-duration worker finish within that limit.
-
-For integrations that control the SDK, configure `Client(..., input_required_max_rounds=...)` for the expected operation size, or use `client.session.call_tool(..., allow_input_required=True)` and retain each returned `request_state` before the next request. Resume with the same outer tool, original arguments and exact state; do not send only the remaining arguments. Hubitat keeps one state string for the logical call. The SDK also accepts `client.call_tool(..., request_state=saved_state)` to resume its automatic loop. Choose state capture before starting: `InputRequiredRoundsExceededError` does not contain the last state. A worked example and offline SDK coverage are in `docs/testing.md`, "Client retry policy".
-
-Stopping client retries does not cancel an executing worker or free its write slot. Replaying the saved state retrieves the retained outcome without repeating the write. Retention is finite: idle active records expire after three minutes; executing workers remain protected while their live marker exists; write terminal results expire after ten minutes and may be evicted earlier under record pressure. If state expires or is lost, inspect the actual target before deciding on a new write. A fresh identical call after completion is a NEW operation, not a terminal replay. Clients with an unconfigurable limit cannot be promised completion for arbitrary operation sizes.
-
-### Global write concurrency cap
-
-Every actual write obtains a server-side lease, whether it uses MRTR or completes in one request. `maxConcurrentWrites` defaults to 2 (1 fully serializes writes; 0 disables the cap). A new write at capacity is refused as `too_many_writes_in_flight` before dispatch, so parallel agents or a client burst cannot overwhelm the hub. Active MRTR calls and the background `hub_update_package` worker keep their slot until completion; abandoned leases expire automatically. Reads, gateway catalog calls, schema-only probes, `hub_call_device_replace(list_options=true)`, and `hub_update_package(dryRun=true)` do not count. No client token or extra argument is involved.
-
-### Older clients
-
-Clients negotiated below MCP 2026-07-28 do not understand requestState. They retain the existing `status: "in_progress"` remainder envelope for bounded multi-step writes. Completed steps are already committed; reissue only the returned remaining work. This is a compatibility fallback, not a second polling protocol.
-
-Reads through `hub_get_logs` (native log history, the Logs page tabs, cold MCP log recovery) continue the same way: a read that is still loading answers `requestState`, or `status: "in_progress"` for a legacy client to repeat the identical call, and a failed Logs page fetch is an ordinary `isError` result with a retry already scheduled. `hub_delete_logs` finishes in one request.
-
-`hub_get_device` (every mode), `hub_list_devices` (including virtual devices), and `hub_get_device_health` use background reads on budgeted modern requests. Fast reads finish in one response. Each independent call fetches fresh data; only continuation/replay shares its snapshot, including any device-details pagination cursor. Device access changes or a lost snapshot reject continuation. Device payloads remain in bounded memory, outside persisted continuation records. Legacy device calls remain synchronous; a legacy `hub_list_devices` page that reaches the request budget ends early with `budgetLimited: true` and a cursor to continue from (see the `performance_devices` section). Health retains its 30-second traceroute and 90-second speedtest timeouts, but eight observation slices or a client's retry limit can end the wait before a long probe finishes. A health `slow_read_timeout` does not cancel probes or the optional identify LED blink; do not automatically retry it as a new call.
-
-The advanced `relayBudgetMs` setting (default 6000 ms, 0 disables) controls cloud slices. Both transport budgets automatically use at least 6000 ms when enabled. `lanBudgetMs` defaults to 0; enable it only when the LAN client timeout leaves room for that minimum plus request overhead.
-
-### Package deployment
-
-`hub_update_package` is intentionally asynchronous instead of MRTR because a full repair can take minutes and recompiles this app. A real call validates and schedules the repair, then immediately returns `status: "in_progress"` with `requestId`. Do not submit it again: the server retains the reservation until that exact worker clears it or a matching terminal `lastSelfDeploy.requestId` proves it finished. Poll `hub_get_info.lastSelfDeploy` until its `requestId` matches; its `success` and `error` fields are the terminal outcome. During normal execution, keep polling rather than retrying the write. If a worker is abandoned, the next write may remove its marker only after the 10-minute recovery lease has expired and no live worker owns it; retry the deploy only after that recovery condition. `dryRun: true` remains synchronous.
-
-### Other writes
-
-No custom operation-token or deployment-job protocol is exposed. If a non-continuation write loses its response, read current hub state before deciding whether it is safe to retry.
+- Make writes one at a time and split a large Rule Machine change batch; parallel writes are refused once the hub's write cap is full.
+- A write that fails with no result body, or whose response is lost, may still be running on the hub. Wait about 15 seconds, check `recentWrites` in `hub_get_info`, and read the target before repeating it. An identical repeat while it is still active joins it instead of running it twice.
 '''
     ]
 }
