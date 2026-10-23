@@ -711,6 +711,13 @@ def toolGetHubLogs(args) {
                     note: "Some tabs are still loading on the hub. Continue with requestState, or repeat the same call on a legacy client."]
         }
         Map out = [modes: results]
+        // The Logs page tabs share one fetch: state its uptime and snapshot once, not per tab.
+        List shared = results.values().findAll { it.snapshot instanceof Map && it.snapshot.background != null }
+        if (shared.size() > 1 && shared*.snapshot*.fetchedAt.unique(false).size() == 1 && shared*.uptime.unique(false).size() == 1) {
+            out.uptime = shared[0].uptime
+            out.snapshot = shared[0].snapshot
+            shared.each { it.remove("uptime"); it.remove("snapshot") }
+        }
         List failed = results.findAll { k, v -> v.isError == true }.collect { it.key }
         if (failed) out.failedModes = failed
         return out

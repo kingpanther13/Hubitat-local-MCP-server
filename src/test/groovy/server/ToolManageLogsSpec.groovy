@@ -360,6 +360,11 @@ class ToolManageLogsSpec extends ToolSpecBase {
         result.modes.runningJobs.entries*.owner == [[type: 'device', id: 900]]
         result.modes.hubActions.entries*.owner == [[type: 'device', id: 900]]
         result.modes.scheduledJobs.matched == 0
+
+        and: 'the shared fetch is stated once'
+        result.uptime == '1d'
+        result.snapshot.fetchedAt instanceof Number
+        result.modes.values().every { !it.containsKey('uptime') && !it.containsKey('snapshot') }
     }
 
     def "hub_get_logs with a list of modes keeps the other tabs when one fails"() {

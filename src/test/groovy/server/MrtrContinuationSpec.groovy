@@ -2676,7 +2676,8 @@ class MrtrContinuationSpec extends ToolSpecBase {
         inner.modes.runningJobs.count == 0
         inner.modes.locationEvents.entries == [[name: 'mode', value: 'Day', date: '2009-02-13T23:00:00.000+0000']]
         inner.modes.locationEvents.nullFields == ['unit']
-        rec.expiresAt == (inner.modes.scheduledJobs.snapshot.fetchedAt as Long) + 30000L
+        !inner.modes.scheduledJobs.containsKey('snapshot')
+        rec.expiresAt == (inner.snapshot.fetchedAt as Long) + 30000L
     }
 
     def "a budgeted hub_get_logs job read continues through requestState while its background fetch runs, holding no write slot"() {
