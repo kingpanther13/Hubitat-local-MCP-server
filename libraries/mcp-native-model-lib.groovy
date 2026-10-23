@@ -668,7 +668,7 @@ Map _nmOrderActions(Long ruleId, List ids) {
     Map before = _nrState(ruleId)
     if (!(before.actionList instanceof List) || !(before.actions instanceof Map)) throw new IllegalStateException('Native action order is unavailable')
     List original = before.actionList.collect { it.toString() }
-    List originalList = new ArrayList(before.actionList)
+    List originalActionList = new ArrayList(before.actionList)
     List originalKeys = before.actions.keySet().collect { it.toString() }.sort()
     if (requested.unique(false).size() != requested.size() || original.unique(false).size() != original.size() || requested.sort(false) != original.sort(false)) throw new IllegalArgumentException('Action order must be an exact permutation of existing action IDs')
     if (requested.any { !(_nmEntry(before.actions, it) instanceof Map) }) throw new IllegalArgumentException('Action order references an unavailable native action')
@@ -678,24 +678,36 @@ Map _nmOrderActions(Long ruleId, List ids) {
         contracts.put(id, [method: action.method, cond: action.cond, rule: action.rule, wait: action.wait instanceof List ? new ArrayList(action.wait) : action.wait])
     }
     List ordered = requested.collect { id -> before.actionList.find { it.toString() == id } }
-    _nrStatePatch(ruleId, [actionList: ordered])
-    _nrPage(ruleId, _nrRulePages(ruleId).actions)
-    _nrHandle(ruleId).markIfs()
+    Closure actionsHold = { Map current ->
+        current.actions instanceof Map && current.actions.keySet().collect { it.toString() }.sort() == originalKeys && contracts.every { id, contract ->
+            def action = _nmEntry(current.actions, id)
+            action instanceof Map && action.method == contract.method && action.cond == contract.cond && action.rule == contract.rule && action.wait == contract.wait
+        }
+    }
+    _nmWriteActionOrder(ruleId, ordered)
     Map after = _nrState(ruleId)
     boolean orderVerified = after.actionList instanceof List && after.actionList.collect { it.toString() } == requested
-    boolean retained = after.actions instanceof Map && after.actions.keySet().collect { it.toString() }.sort() == originalKeys && contracts.every { id, contract ->
-        def action = _nmEntry(after.actions, id)
-        action instanceof Map && action.method == contract.method && action.cond == contract.cond && action.rule == contract.rule && action.wait == contract.wait
-    }
+    boolean retained = actionsHold.call(after)
     Map structure = _nmValidateStructure(ruleId, after)
-    boolean verified = orderVerified && retained && structure.success
-    if (!verified) {
-        _nrStatePatch(ruleId, [actionList: originalList])
-        _nrPage(ruleId, _nrRulePages(ruleId).actions)
-        _nrHandle(ruleId).markIfs()
+    Map checks = [orderVerified: orderVerified, actionsPreserved: retained, ids: requested, structuralIssues: structure.structuralIssues]
+    if (orderVerified && retained && structure.success) return [success: true, partial: false] + checks + [verificationNeeded: false]
+    boolean rolledBack
+    try {
+        _nmWriteActionOrder(ruleId, originalActionList)
         Map restored = _nrState(ruleId)
-        boolean rolledBack = restored.actionList instanceof List && restored.actionList.collect { it.toString() } == original
-        return [success: false, partial: !rolledBack, rolledBack: rolledBack, orderVerified: orderVerified, actionsPreserved: retained, ids: requested, structuralIssues: structure.structuralIssues, verificationNeeded: true]
+        rolledBack = restored.actionList instanceof List && restored.actionList.collect { it.toString() } == original &&
+            actionsHold.call(restored) && _nmValidateStructure(ruleId, restored).success
+    } catch (Exception e) {
+        mcpLogError('rm-native', "Action order rollback failed for rule ${ruleId}: ${e.message}".toString(), e)
+        return [success: false, partial: true, rolledBack: false, rollbackError: e.message, error: 'Action order did not verify and the rollback failed; read the rule before retrying'] + checks + [verificationNeeded: true]
     }
-    [success: true, partial: false, orderVerified: orderVerified, actionsPreserved: retained, ids: requested, structuralIssues: structure.structuralIssues, verificationNeeded: false]
+    String outcome = rolledBack ? 'the original order was restored' : 'the original order could NOT be restored'
+    [success: false, partial: !rolledBack, rolledBack: rolledBack,
+     error: "Action order did not verify (order:${orderVerified}, actions preserved:${retained}, structure:${structure.structuralIssues}); ${outcome}".toString()] + checks + [verificationNeeded: true]
+}
+
+private void _nmWriteActionOrder(Long ruleId, List actionList) {
+    _nrStatePatch(ruleId, [actionList: actionList])
+    _nrPage(ruleId, _nrRulePages(ruleId).actions)
+    _nrHandle(ruleId).markIfs()
 }
