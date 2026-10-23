@@ -6393,6 +6393,12 @@ def toolGetHubLogs(args) {
                     note: "Some tabs are still loading on the hub. Continue with requestState, or repeat the same call on a legacy client."]
         }
         Map out = [modes: results]
+        List shared = results.values().findAll { it.snapshot instanceof Map && it.snapshot.background != null }
+        if (shared.size() > 1 && shared*.snapshot*.fetchedAt.unique(false).size() == 1 && shared*.uptime.unique(false).size() == 1) {
+            out.uptime = shared[0].uptime
+            out.snapshot = shared[0].snapshot
+            shared.each { it.remove("uptime"); it.remove("snapshot") }
+        }
         List failed = results.findAll { k, v -> v.isError == true }.collect { it.key }
         if (failed) out.failedModes = failed
         return out
@@ -31175,7 +31181,7 @@ private boolean _mrtrStoreTerminal(String stateId, Map originalRec, Map claim, r
             rec.expiresAt = rec.finishedAt + (readLeaf ? _mrtrReadTerminalTtlMs() : _mrtrTerminalTtlMs())
             def fetchedAt = readLeaf ? originalRec.readSnapshotFetchedAt : null
             if (!(fetchedAt instanceof Number) && readLeaf && result instanceof Map) {
-                List parts = result.modes instanceof Map ? (result.modes as Map).values().toList() : [result]
+                List parts = [result] + (result.modes instanceof Map ? (result.modes as Map).values().toList() : [])
                 fetchedAt = parts.findAll { it instanceof Map && it.snapshot instanceof Map && it.snapshot.fetchedAt instanceof Number }
                     .collect { it.snapshot.fetchedAt as Long }.min()
             }
@@ -36686,7 +36692,7 @@ Each call reads one tab of the hub's Logs page, named by the page's own tab key,
 | `mcp` | the MCP app's own log | native Past Logs | `{timestamp, time, level, component, message, ...}` |
 | `status` | MCP log level, counts and capacity | | |
 
-- `mode` as a list (for example `['locationEvents', 'hubEvents']` or `['scheduledJobs', 'runningJobs', 'hubActions']`) answers `{modes: {<tab>: <that tab's usual result>}}`. Every other parameter must apply to each listed tab, and `cursor` is not taken: page one tab alone with its `nextCursor`. A tab that fails answers its own error under its key and is named in `failedModes`; the other tabs are still returned.
+- `mode` as a list (for example `['locationEvents', 'hubEvents']` or `['scheduledJobs', 'runningJobs', 'hubActions']`) answers `{modes: {<tab>: <that tab's usual result>}}`. Every other parameter must apply to each listed tab, and `cursor` is not taken: page one tab alone with its `nextCursor`. When several listed tabs come from the same Logs page fetch, their shared `uptime` and `snapshot` are given once at the top instead of in each tab. A tab that fails answers its own error under its key and is named in `failedModes`; the other tabs are still returned.
 - Rows keep the hub's field names. A field that is null on a row is left out of that row and named once in the result's `nullFields`, so a row without a listed field had it null (location events have no device fields, for example). Rows from `/logs/json` come from one fetch cached for 30 s (`snapshot.ageMs`), so a job another write just scheduled or removed can take up to 30 s to show; `hub_delete_logs` drops the cache, so the read after a delete is fresh. `owner` is `{type: 'app'|'device', id}`, read from the row's `link` (`/installedapp/configure/<id>` or `/device/edit/<id>`); system jobs have an empty link and no owner. A job's `id` is what `hub_delete_logs(mode='scheduledJobs')` takes.
 - `devices` and `apps` also return the page's `summary` (uptime, total runtime, % of uptime); `scheduledJobs`, `runningJobs` and `hubActions` return `uptime`.
 - Filters apply in this order: scope (`deviceId`/`appId`), `level`, `pattern`/`patterns`, time window (`since`/`until`), sort, `limit`, then `cursor` pages the result (100 per page). Every list mode reports `total` (rows read), `matched` (rows that passed the filters) and `count` (rows returned).
