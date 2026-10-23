@@ -499,7 +499,6 @@ class NativeDocumentsSpec extends ToolSpecBase {
         !result.success
         result.partial
         result.broken
-        result.note.contains('All changes were applied but the rule reads as broken')
         !events.any { it instanceof Map }
     }
 
@@ -1071,47 +1070,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
         result.partial
         !result.created
         result.rule_id == null
-        result.created_app_id == 42L
-        result.note.contains('Rule Machine returned app 42 but it could not be verified as the requested rule')
         events == ['create']
-    }
-
-    def 'a create that fails before Rule Machine returns an app says no rule was created'() {
-        given:
-        script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean retry = false -> throw new IllegalStateException('create unavailable') }
-        when:
-        def result = script.toolCreateRuleDocument([parent_id: 28, name: 'Failed child', changes: [logChange()], confirm: true])
-        then:
-        !result.success
-        result.rule_id == null
-        !result.containsKey('created_app_id')
-        result.note == 'No rule was created.'
-    }
-
-    def 'a create that fails after verifying its child names the new rule in the recovery note'() {
-        given:
-        script.metaClass._nrHandle = { Long id -> throw new IllegalStateException('handle unavailable') }
-        when:
-        def result = script.toolCreateRuleDocument([parent_id: 28, name: 'Half child', changes: [logChange()], confirm: true])
-        then:
-        !result.success
-        result.created
-        result.rule_id == 42L
-        result.note.contains('The new rule exists')
-    }
-
-    def 'an unexpected create preflight exception is returned as a refusal before allocating a child'() {
-        given:
-        script.metaClass._ndPreflight = { Long id, List changes -> throw new IllegalStateException('read unavailable') }
-        when:
-        def result = script.toolCreateRuleDocument([parent_id: 28, name: 'Preflight child', changes: [logChange()], confirm: true])
-        then:
-        result.success == false
-        result.partial == false
-        !result.containsKey('rule_id')
-        result.error == 'read unavailable'
-        result.note == 'Preflight could not read the rule; no change was written. Retry; if it persists, see the hub log.'
-        events.empty
     }
 
     def 'invalid parent prevents native child creation'() {

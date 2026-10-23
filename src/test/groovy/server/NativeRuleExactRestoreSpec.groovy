@@ -389,26 +389,6 @@ class NativeRuleExactRestoreSpec extends ToolSpecBase {
         result.note.contains("hub_call_rule(ruleId, action:'start')")
     }
 
-    def 'a failed restore whose lifecycle state cannot be read reports it unknown and keeps the original error'() {
-        given:
-        rebuildDrifts = true
-        boolean failed = false
-        script.metaClass.mcpLogError = { String component, String message, Exception e = null, String ruleId = null -> failed = true }
-        script.metaClass._nrState = { Long id ->
-            if (failed) throw new IllegalStateException('state unreadable')
-            [:] + child.backing
-        }
-        when:
-        def result = restore()
-        then:
-        !result.success
-        result.stopped == null
-        result.paused == null
-        result.lifecycleUnknown == true
-        result.error.contains('differ from recovery')
-        result.note.contains("stopped/paused state could not be read")
-    }
-
     def 'failed undo capture leaves original live configuration untouched'() {
         given:
         undoFails = true

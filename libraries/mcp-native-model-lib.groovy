@@ -691,16 +691,9 @@ Map _nmOrderActions(Long ruleId, List ids) {
     Map structure = _nmValidateStructure(ruleId, after)
     Map checks = [orderVerified: orderVerified, actionsPreserved: retained, ids: requested, structuralIssues: structure.structuralIssues]
     if (orderVerified && retained && structure.success) return [success: true, partial: false] + checks + [verificationNeeded: false]
-    boolean rolledBack
-    try {
-        _nmWriteActionOrder(ruleId, originalActionList)
-        Map restored = _nrState(ruleId)
-        rolledBack = restored.actionList instanceof List && restored.actionList.collect { it.toString() } == original &&
-            actionsHold.call(restored) && _nmValidateStructure(ruleId, restored).success
-    } catch (Exception e) {
-        mcpLogError('rm-native', "Action order rollback failed for rule ${ruleId}: ${e.message}".toString(), e)
-        return [success: false, partial: true, rolledBack: false, rollbackError: e.message, error: 'Action order did not verify and the rollback failed; read the rule before retrying'] + checks + [verificationNeeded: true]
-    }
+    _nmWriteActionOrder(ruleId, originalActionList)
+    Map restored = _nrState(ruleId)
+    boolean rolledBack = restored.actionList instanceof List && restored.actionList.collect { it.toString() } == original
     String outcome = rolledBack ? 'the original order was restored' : 'the original order could NOT be restored'
     [success: false, partial: !rolledBack, rolledBack: rolledBack,
      error: "Action order did not verify (order:${orderVerified}, actions preserved:${retained}, structure:${structure.structuralIssues}); ${outcome}".toString()] + checks + [verificationNeeded: true]

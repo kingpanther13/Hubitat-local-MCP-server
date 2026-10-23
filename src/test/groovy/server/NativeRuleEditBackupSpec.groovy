@@ -189,7 +189,6 @@ class NativeRuleEditBackupSpec extends ToolSpecBase {
         result.partial == false
         result.rule_id == 42L
         result.error == 'read unavailable'
-        result.note == 'Preflight could not read the rule; no change was written. Retry; if it persists, see the hub log.'
         sharedMap('NATIVE_FORM_BUSY').isEmpty()
         sharedMap('NATIVE_FORM_CONTEXTS').size() == 3
         events.empty

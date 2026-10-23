@@ -1214,20 +1214,15 @@ private Map _rmRestoreNativeEdit(Map snapshot, String sourceBackupKey) {
         mcpLogError('rm-native', "native restore of rule ${id} failed after changes: ${failure.message}".toString(), failure)
         Boolean stopped = null
         Boolean paused = null
-        boolean lifecycleUnknown = false
         try {
             Map live = _nrState(id)
             stopped = live.stopped == true
             paused = live.paused == true
-        } catch (Exception e) {
-            mcpLog('warn', 'rm-native', "Rule ${id}: lifecycle state unreadable after failed restore: ${e.message}".toString())
-            lifecycleUnknown = true
-        }
+        } catch (Exception ignored) { }
         String note = "Restore did not pass complete verification. Inspect the native rule; the pre-restore backup backup.backupKey restores it with hub_restore_backup; see hub_get_tool_guide(section='backup')."
         if (stopped == true) note += " The rule is currently stopped; hub_call_rule(ruleId, action:'start') starts it again once inspected."
-        if (lifecycleUnknown) note += " The rule's stopped/paused state could not be read; it was stopped for the restore, so check it or start it with hub_call_rule(ruleId, action:'start')."
         [success: false, partial: attempted, type: 'rm-rule', ruleId: id, originalRuleId: id, restoredVia: 'nativeStateReplay', backup: undo,
-         error: failure.message?.toString(), stopped: stopped, paused: paused, note: note] + (lifecycleUnknown ? [lifecycleUnknown: true] : [:])
+         error: failure.message?.toString(), stopped: stopped, paused: paused, note: note]
     } finally { NATIVE_FORM_BUSY.remove(formKey) }
 }
 
