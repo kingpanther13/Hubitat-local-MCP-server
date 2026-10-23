@@ -107,9 +107,9 @@ class ToolGuideSubSectionsSpec extends ToolSpecBase {
         'hub_admin_write_devices'       | '### hub_call_device_command'                                 | '### hub_set_zwave'
         'hub_admin_write_code'          | '### hub_create_app'                                          | '### hub_update_firmware'
         'hub_admin_write_system'        | '### hub_set_system_settings'                                 | '### hub_update_package'
-        'performance_overview'          | '## Performance Tips'                                         | '### hub_get_logs'
+        'performance_overview'          | '## Performance Tips'                                         | '### hub_get_radio_details'
         'performance_devices'           | '### hub_list_devices'                                        | '### hub_get_metrics'
-        'performance_diagnostics'       | '### hub_get_logs'                                            | '### hub_list_devices'
+        'performance_diagnostics'       | '### hub_get_radio_details'                                      | '### hub_list_devices'
         'builtin_app_tools_overview'    | '## Installed-App & Native-Rule Tools'                        | '### hub_call_rule'
         'builtin_app_tools_apps'        | '### hub_list_hpm_packages'                                   | '### hub_set_rule'
         'builtin_app_tools_rules'       | '### hub_get_rule_health'                                     | '### hub_list_drivers'
@@ -176,6 +176,6 @@ class ToolGuideSubSectionsSpec extends ToolSpecBase {
         then:
         overview.success == true
         (overview.content as String).startsWith('## Performance Tips')
-        !(overview.content as String).contains('### hub_get_logs')
+        !(overview.content as String).contains('### hub_get_radio_details')
     }
 }

@@ -2726,31 +2726,31 @@ def _getAllToolDefinitions_partDiagnostics() {
     def defs = { [
         [
             name: "hub_get_logs",
-            description: """Read tabs of the hub's Logs page, one or several per call, or the MCP app's own log. Rows keep the hub's own field names; null fields are listed in nullFields instead.[[FLAT_TRIM]] Jobs, running jobs and hub actions also carry owner {type: app|device, id}, read from their link. Pass deviceId or appId to see one app's or device's logs, stats or jobs.[[/FLAT_TRIM]]""",
+            description: """Read tabs of the hub's Logs page, one or several per call, or the MCP app's own log. Rows are the hub's own; null fields are named once in nullFields. The stats and job tabs come from one Logs page fetch cached for 30 s.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    mode: [anyOf: [[type: "string", enum: ["past", "devices", "apps", "cloudCalls", "locationEvents", "hubEvents", "scheduledJobs", "runningJobs", "hubActions", "mcp", "status"]], [type: "array", items: [type: "string", enum: ["past", "devices", "apps", "cloudCalls", "locationEvents", "hubEvents", "scheduledJobs", "runningJobs", "hubActions", "mcp", "status"]]]], default: "past", description: "The Logs page tab, or a list of tabs answered together under modes.<tab>: past = log history; devices/apps = runtime stats; cloudCalls = per-app cloud calls; locationEvents (mode, HSM, variables); hubEvents (reboots, low memory); scheduledJobs; runningJobs; hubActions. mcp = the MCP app's own log; status = its level and counts.[[FLAT_TRIM]] With a list, every other parameter must apply to each listed tab, and each tab returns its first page (pageSize rows, 50 by default) with its own nextCursor; page further by calling that tab alone.[[/FLAT_TRIM]]"],
+                    mode: [anyOf: [[type: "string", enum: ["past", "devices", "apps", "cloudCalls", "locationEvents", "hubEvents", "scheduledJobs", "runningJobs", "hubActions", "mcp", "status"]], [type: "array", items: [type: "string", enum: ["past", "devices", "apps", "cloudCalls", "locationEvents", "hubEvents", "scheduledJobs", "runningJobs", "hubActions", "mcp", "status"]]]], default: "past", description: "The Logs page tab, or a list of tabs answered under modes.<tab>: past = log history; devices/apps = runtime stats; cloudCalls = per-app cloud calls; locationEvents (mode, HSM, variables); hubEvents (reboots, low memory); scheduledJobs, runningJobs, hubActions (each row's owner is read from its link). mcp = the MCP app's own log; status = its level and counts. With a list, every other parameter must apply to each tab, and each tab returns its first page."],
                     level: [type: "string", enum: ["trace", "debug", "info", "warn", "error", "all"], description: "past and mcp: one log level. Default all."],
                     deviceId: [type: "string", description: "Numeric device id: past logs scoped on the hub, that device's stats, or the jobs and hub actions it owns. Exclusive with appId."],
                     appId: [type: "string", description: "Numeric app id, the same way as deviceId."],
-                    pattern: [type: "string", description: "Case-insensitive regex over the tab's text.[[FLAT_TRIM]] past: name and message; jobs: name and methodName; events: name, descriptionText and value; other tabs: name.[[/FLAT_TRIM]]"],
+                    pattern: [type: "string", description: "Case-insensitive regex over past name and message, job name and methodName, event name, descriptionText and value, or other tabs' name."],
                     patterns: [type: "array", items: [type: "string"], description: "More regexes, combined by patternMode."],
                     patternMode: [type: "string", enum: ["any", "all"], description: "How patterns combine. Default any."],
-                    since: [type: ["string", "integer"], description: "past and event modes: rows after this time. '30m', '2h', '7d' (max 30d), ISO-8601 with an offset or Z, or epoch ms.[[FLAT_TRIM]] An event's date passed back as since never repeats it. A time without a zone is read as UTC.[[/FLAT_TRIM]]"],
+                    since: [type: ["string", "integer"], description: "past and event modes: rows strictly after this time, so a returned date never repeats. '30m', '2h', '7d' (max 30d), ISO-8601 (no zone = UTC) or epoch ms."],
                     until: [type: ["string", "integer"], description: "past and event modes: rows at or before this time; same formats as since."],
                     sortBy: [type: "string", enum: ["pct", "count", "total", "stateSize", "name"], description: "devices and apps: sort field, highest first (name A-Z). Default pct (% busy)."],
                     limit: [type: "integer", description: "Max rows after filters; 0 = all. Default 100 for past and events, 20 for devices and apps, 50 for mcp, all for the others."],
                     component: [type: "string", description: "mcp: component substring (for example server or rule)."],
                     ruleId: [type: "string", description: "mcp: custom rule id."],
-                    cursor: [type: "string", description: "Pagination cursor.[[FLAT_TRIM]] Pass \"\" for the first page, then nextCursor.[[/FLAT_TRIM]]"],
+                    cursor: [type: "string", description: "\"\" for the first page, then nextCursor."],
                     pageSize: [type: "integer", description: "Rows per page, 1-100. Default 100, or 50 per tab when mode is a list."]
                 ]
             ]
         ],
         [
             name: "hub_delete_logs",
-            description: """Delete from the logs: mode='mcp' clears the MCP app's own log; mode='scheduledJobs' deletes one scheduled job, like the Delete button on the Logs page's Scheduled jobs tab.[[FLAT_TRIM]] Deleting a job removes that scheduled run of its app's or device's method and nothing else; the owner schedules it again only if its own code does, for example when its settings are saved. System jobs cannot be deleted. Hub log history is never touched.[[/FLAT_TRIM]] Cannot be undone.""",
+            description: """Delete from the logs: mode='mcp' clears the MCP app's own log; mode='scheduledJobs' deletes one scheduled job, like the Logs page's Delete button. Only that timer goes: its app or device is unchanged and schedules it again only if its own code does (for example on a settings save). System jobs are refused; hub log history is never touched. Cannot be undone.""",
             inputSchema: [
                 type: "object",
                 properties: [
