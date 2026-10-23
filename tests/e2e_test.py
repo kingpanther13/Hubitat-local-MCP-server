@@ -8546,16 +8546,12 @@ class TestRunner:
             assert any("\t" in str(r["value"].get("indent") or "") for r in before["document"]["actions"]), before["document"]["actions"]
             self._rule_edit_backups(True)
             self._mcp_settings({"backupEveryRuleWrite": True})
-            # A stopped rule's statusJson reports eventSubscriptions as null.
-            stopped = self.client.call_tool("hub_call_rule", {"ruleId": app_id, "action": "stop"})
-            assert stopped.get("success") is not False, stopped
+            # The rule stays running for the capture: Hubitat's App Cloner exports nothing for a stopped rule.
             try:
                 captured = self.client.call_tool("hub_set_native_app", {"appId": app_id, "confirm": True,
                                                                         "settings": {"comments": "legacy capture compatibility"}})
             finally:
                 self._mcp_settings({"backupEveryRuleWrite": False})
-            started = self.client.call_tool("hub_call_rule", {"ruleId": app_id, "action": "start"})
-            assert started.get("success") is not False, started
             assert captured.get("success") is True and (captured.get("backup") or {}).get("backupKey"), captured
             key = captured["backup"]["backupKey"]
             meta = self.client.call_tool("hub_get_backup", {"backupKey": key})
