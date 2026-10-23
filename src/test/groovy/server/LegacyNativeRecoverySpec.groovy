@@ -81,6 +81,23 @@ class LegacyNativeRecoverySpec extends ToolSpecBase {
         installedLabel << ['Original', "Original<span style='color:red'> (Required Expression false)</span>"]
     }
 
+    def 'a legacy snapshot of a rule with no subscriptions adapts with an empty subscription list'() {
+        given:
+        snapshot.statusJson.eventSubscriptions = null
+        when:
+        def adapted = script._rmLegacyNativeRecovery(snapshot)
+        then:
+        adapted.captureFormat == 'native-rule-edit-v1'
+        new JsonSlurper().parseText(adapted.nativeExport).appData['42'].subscriptions == []
+    }
+
+    def 'a device row without a deviceList map plans its devices from deviceIdsForDeviceList'() {
+        when:
+        def plan = script._rmNativeSettingPlan([[name: 'tDev1', type: 'capability.switch', deviceList: null, deviceIdsForDeviceList: [16], multiple: true]])
+        then:
+        plan == [[name: 'tDev1', type: 'capability.switch', multiple: true, value: ['16']]]
+    }
+
     def 'incomplete historical status keeps the legacy compatibility path'() {
         given:
         snapshot.statusJson.remove('appState')
@@ -103,7 +120,7 @@ class LegacyNativeRecoverySpec extends ToolSpecBase {
             { s -> s.statusJson.appState << [name: 'eval', value: [:]] },
             { s -> s.statusJson.appState = 'not state' },
             { s -> s.statusJson.appSettings << [name: 'enabled', type: 'bool', value: true] },
-            { s -> s.statusJson.eventSubscriptions = null },
+            { s -> s.statusJson.eventSubscriptions = 'not a list' },
             { s -> s.nativeExport = '{}' }
         ]
     }

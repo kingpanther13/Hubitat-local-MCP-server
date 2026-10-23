@@ -993,8 +993,9 @@ private Map _rmRestoreViaNativeImport(Map snapshot, Integer savedId, boolean exi
     return out
 }
 
-// Null when the imported copy matches the backup's Rule Machine state (trigger and action ids, not
-// broken); otherwise why not. Unreadable counts as a mismatch, since the old rule goes next.
+// Null when the imported copy matches the backup (not broken, and for a v1 export the same compiled
+// model, settings and local variables; older snapshots compare trigger and action ids only);
+// otherwise why not. Unreadable counts as a mismatch, since the old rule goes next.
 String _rmNativeCopyMismatch(Integer copyId, Map snapshot) {
     def snap = [:]
     (snapshot?.statusJson?.appState ?: []).each { if (it instanceof Map && it.name != null) snap.put(it.name.toString(), it.value) }
@@ -1051,30 +1052,36 @@ private Object _rmNativeComparable(Object value) {
 private List _rmNativeSettingPlan(List rows) {
     List plan = []
     rows.each { row ->
-        if (!(row instanceof Map) || !(row.name instanceof String) || !row.name || !(row.type instanceof String) || !row.type ||
-            (row.multiple != null && !(row.multiple instanceof Boolean))) throw new IllegalArgumentException('Invalid native recovery setting')
-        if (row.type == 'button') {
-            if (row.value != null && row.value != '') throw new IllegalArgumentException('Recovery contains an unfinished native button operation')
-        } else {
-            boolean device = row.type == 'capability' || row.type.startsWith('capability.')
-            def value = row.value
-            if (device) {
-                if (row.deviceList != null && !(row.deviceList instanceof Map)) throw new IllegalArgumentException('Invalid recovery device selection')
-                List ids = row.deviceList instanceof Map ? row.deviceList.keySet().collect { it.toString() } : []
-                if (ids.any { !it.isLong() || it.toLong() <= 0L } || (row.multiple != true && ids.size() > 1)) throw new IllegalArgumentException('Invalid recovery device IDs')
-                value = ids ? (row.multiple == true ? ids : ids[0]) : null
-            } else if (row.multiple == true && value instanceof String) value = new groovy.json.JsonSlurper().parseText(value)
-            if (value != null) {
-                if (row.multiple == true && !(value instanceof List)) throw new IllegalArgumentException('Recovery setting requires a list')
-                if (row.multiple != true && value instanceof List) throw new IllegalArgumentException('Recovery setting requires a scalar')
-                List values = value instanceof List ? value : [value]
-                if (values.any { !(it instanceof String || it instanceof Number || it instanceof Boolean) }) throw new IllegalArgumentException('Recovery settings require scalar values')
-                _nrComparableSetting(row.type, value)
-                plan << [name: row.name, type: row.type, multiple: row.multiple == true, value: value]
+        String settingName = row instanceof Map && row.name != null ? row.name.toString() : 'an unnamed setting'
+        try {
+            if (!(row instanceof Map) || !(row.name instanceof String) || !row.name || !(row.type instanceof String) || !row.type ||
+                (row.multiple != null && !(row.multiple instanceof Boolean))) throw new IllegalArgumentException('Invalid native recovery setting')
+            if (row.type == 'button') {
+                if (row.value != null && row.value != '') throw new IllegalArgumentException('Recovery contains an unfinished native button operation')
+            } else {
+                boolean device = row.type == 'capability' || row.type.startsWith('capability.')
+                def value = row.value
+                if (device) {
+                    if (row.deviceList != null && !(row.deviceList instanceof Map)) throw new IllegalArgumentException('Invalid recovery device selection')
+                    List ids = row.deviceList instanceof Map ? row.deviceList.keySet().collect { it.toString() } :
+                        (row.deviceIdsForDeviceList instanceof List ? row.deviceIdsForDeviceList.collect { it.toString() } : [])
+                    if (ids.any { !it.isLong() || it.toLong() <= 0L } || (row.multiple != true && ids.size() > 1)) throw new IllegalArgumentException('Invalid recovery device IDs')
+                    value = ids ? (row.multiple == true ? ids : ids[0]) : null
+                } else if (row.multiple == true && value instanceof String) value = new groovy.json.JsonSlurper().parseText(value)
+                if (value != null) {
+                    if (row.multiple == true && !(value instanceof List)) throw new IllegalArgumentException('Recovery setting requires a list')
+                    if (row.multiple != true && value instanceof List) throw new IllegalArgumentException('Recovery setting requires a scalar')
+                    List values = value instanceof List ? value : [value]
+                    if (values.any { !(it instanceof String || it instanceof Number || it instanceof Boolean) }) throw new IllegalArgumentException('Recovery settings require scalar values')
+                    _nrComparableSetting(row.type, value)
+                    plan << [name: row.name, type: row.type, multiple: row.multiple == true, value: value]
+                }
             }
-        }
+        } catch (IllegalArgumentException failure) { throw new IllegalArgumentException("${failure.message} for ${settingName}".toString()) }
     }
-    if (rows.collect { it.name }.unique().size() != rows.size()) throw new IllegalArgumentException('Duplicate recovery setting')
+    List names = rows.collect { it.name }
+    List duplicates = names.findAll { names.count(it) > 1 }.unique()
+    if (duplicates) throw new IllegalArgumentException("Duplicate recovery setting for ${duplicates.join(', ')}".toString())
     plan
 }
 
@@ -1201,8 +1208,17 @@ private Map _rmRestoreNativeEdit(Map snapshot, String sourceBackupKey) {
          eventSubscriptions: rebuilt.eventSubscriptions, scheduledJobs: rebuilt.scheduledJobs]
     } catch (Exception failure) {
         if (!attempted) throw failure
+        Boolean stopped = null
+        Boolean paused = null
+        try {
+            Map live = _nrState(id)
+            stopped = live.stopped == true
+            paused = live.paused == true
+        } catch (Exception ignored) { }
+        String note = 'Restore did not pass complete verification. Inspect the native rule; the pre-restore backup is available for recovery.'
+        if (stopped == true) note += " The rule is currently stopped; hub_call_rule(ruleId, action:'start') starts it again once inspected."
         [success: false, partial: attempted, type: 'rm-rule', ruleId: id, originalRuleId: id, restoredVia: 'nativeStateReplay', backup: undo,
-         error: failure.message?.toString(), note: 'Restore did not pass complete verification. Inspect the native rule; the pre-restore backup is available for recovery.']
+         error: failure.message?.toString(), stopped: stopped, paused: paused, note: note]
     } finally { NATIVE_FORM_BUSY.remove(formKey) }
 }
 
@@ -1231,10 +1247,13 @@ private Map _rmLegacyNativeRecovery(Map snapshot) {
             savedState.put(row.name, row.value)
         }
     } else throw new IllegalArgumentException('Legacy recovery is missing complete native state')
-    def subscriptions = status.containsKey('appSubscriptions') ? status.appSubscriptions : status.eventSubscriptions
-    if (!(subscriptions instanceof List) || (status.containsKey('appSubscriptions') && status.containsKey('eventSubscriptions') &&
-        _rmNativeComparable(status.appSubscriptions) != _rmNativeComparable(status.eventSubscriptions)))
+    // statusJson reports a rule with no subscriptions (no triggers, or stopped) as null.
+    def appSubscriptions = status.appSubscriptions
+    def eventSubscriptions = status.eventSubscriptions
+    if ((appSubscriptions != null && !(appSubscriptions instanceof List)) || (eventSubscriptions != null && !(eventSubscriptions instanceof List)) ||
+        (appSubscriptions instanceof List && eventSubscriptions instanceof List && _rmNativeComparable(appSubscriptions) != _rmNativeComparable(eventSubscriptions)))
         throw new IllegalArgumentException('Legacy recovery contains invalid native subscriptions')
+    def subscriptions = appSubscriptions instanceof List ? appSubscriptions : (eventSubscriptions instanceof List ? eventSubscriptions : [])
     def originalLabel = config.settings instanceof Map ? config.settings.origLabel : null
     if (app.label != null && !(app.label instanceof String)) throw new IllegalArgumentException('Legacy recovery contains an invalid installed label')
     Map identity = [appTypeNamespace: app.appType.namespace, appTypeName: app.appType.name,
