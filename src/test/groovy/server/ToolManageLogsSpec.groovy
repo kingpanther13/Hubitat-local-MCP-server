@@ -2177,7 +2177,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         'a non-string jobId' | [mode: 'scheduledJobs', jobId: 5, confirm: true]                    || 'jobId must be a string'
         'a malformed jobId'  | [mode: 'scheduledJobs', jobId: 'nodot', confirm: true]              || 'is not a scheduled-job id'
         'a system job'       | [mode: 'scheduledJobs', jobId: 'system.sunJob', confirm: true]      || 'System jobs cannot be deleted'
-        'no confirm'         | [mode: 'scheduledJobs', jobId: 'app1Once.run']                      || 'needs confirm=true'
+        'no confirm'         | [mode: 'scheduledJobs', jobId: 'app12Once.run']                     || 'needs confirm=true'
         'jobId on mcp'       | [mode: 'mcp', jobId: 'app1Once.run']                                || "apply to mode='scheduledJobs' only"
     }
 
