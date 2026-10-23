@@ -1067,7 +1067,10 @@ private List _rmNativeSettingPlan(List rows) {
                         (row.deviceIdsForDeviceList instanceof List ? row.deviceIdsForDeviceList.collect { it.toString() } : [])
                     if (ids.any { !it.isLong() || it.toLong() <= 0L } || (row.multiple != true && ids.size() > 1)) throw new IllegalArgumentException('Invalid recovery device IDs')
                     value = ids ? (row.multiple == true ? ids : ids[0]) : null
-                } else if (row.multiple == true && value instanceof String) value = new groovy.json.JsonSlurper().parseText(value)
+                } else if (row.multiple == true && value instanceof String) {
+                    try { value = new groovy.json.JsonSlurper().parseText(value) }
+                    catch (Exception e) { throw new IllegalArgumentException('Recovery setting is not valid JSON', e) }
+                }
                 if (value != null) {
                     if (row.multiple == true && !(value instanceof List)) throw new IllegalArgumentException('Recovery setting requires a list')
                     if (row.multiple != true && value instanceof List) throw new IllegalArgumentException('Recovery setting requires a scalar')
@@ -1077,7 +1080,7 @@ private List _rmNativeSettingPlan(List rows) {
                     plan << [name: row.name, type: row.type, multiple: row.multiple == true, value: value]
                 }
             }
-        } catch (IllegalArgumentException failure) { throw new IllegalArgumentException("${failure.message} for ${settingName}".toString()) }
+        } catch (IllegalArgumentException failure) { throw new IllegalArgumentException("${failure.message} for ${settingName}".toString(), failure) }
     }
     List names = rows.collect { it.name }
     List duplicates = names.findAll { names.count(it) > 1 }.unique()
@@ -1208,18 +1211,32 @@ private Map _rmRestoreNativeEdit(Map snapshot, String sourceBackupKey) {
          eventSubscriptions: rebuilt.eventSubscriptions, scheduledJobs: rebuilt.scheduledJobs]
     } catch (Exception failure) {
         if (!attempted) throw failure
+        mcpLogError('rm-native', "native restore of rule ${id} failed after changes: ${failure.message}".toString(), failure)
         Boolean stopped = null
         Boolean paused = null
+        boolean lifecycleUnknown = false
         try {
             Map live = _nrState(id)
             stopped = live.stopped == true
             paused = live.paused == true
-        } catch (Exception ignored) { }
-        String note = 'Restore did not pass complete verification. Inspect the native rule; the pre-restore backup is available for recovery.'
+        } catch (Exception e) {
+            mcpLog('warn', 'rm-native', "Rule ${id}: lifecycle state unreadable after failed restore: ${e.message}".toString())
+            lifecycleUnknown = true
+        }
+        String note = "Restore did not pass complete verification. Inspect the native rule; the pre-restore backup backup.backupKey restores it with hub_restore_backup; see hub_get_tool_guide(section='backup')."
         if (stopped == true) note += " The rule is currently stopped; hub_call_rule(ruleId, action:'start') starts it again once inspected."
+        if (lifecycleUnknown) note += " The rule's stopped/paused state could not be read; it was stopped for the restore, so check it or start it with hub_call_rule(ruleId, action:'start')."
         [success: false, partial: attempted, type: 'rm-rule', ruleId: id, originalRuleId: id, restoredVia: 'nativeStateReplay', backup: undo,
-         error: failure.message?.toString(), stopped: stopped, paused: paused, note: note]
+         error: failure.message?.toString(), stopped: stopped, paused: paused, note: note] + (lifecycleUnknown ? [lifecycleUnknown: true] : [:])
     } finally { NATIVE_FORM_BUSY.remove(formKey) }
+}
+
+// The App Cloner export double-escapes control characters in state strings; statusJson does not.
+private void _rmUnescapeLegacyIndents(Map nativeState) {
+    if (nativeState.actions instanceof Map) nativeState.actions = nativeState.actions.collectEntries { key, action ->
+        [(key): action instanceof Map && action.indent instanceof String ? [:] + action + [indent: action.indent.replace('\\t', '\t')] : action]
+    }
+    if (nativeState.actLabelIndent instanceof String) nativeState.actLabelIndent = nativeState.actLabelIndent.replace('\\t', '\t')
 }
 
 private Map _rmLegacyNativeRecovery(Map snapshot) {
@@ -1250,10 +1267,10 @@ private Map _rmLegacyNativeRecovery(Map snapshot) {
     // statusJson reports a rule with no subscriptions (no triggers, or stopped) as null.
     def appSubscriptions = status.appSubscriptions
     def eventSubscriptions = status.eventSubscriptions
-    if ((appSubscriptions != null && !(appSubscriptions instanceof List)) || (eventSubscriptions != null && !(eventSubscriptions instanceof List)) ||
-        (appSubscriptions instanceof List && eventSubscriptions instanceof List && _rmNativeComparable(appSubscriptions) != _rmNativeComparable(eventSubscriptions)))
+    if ([appSubscriptions, eventSubscriptions].any { it != null && !(it instanceof List) } ||
+        (appSubscriptions != null && eventSubscriptions != null && _rmNativeComparable(appSubscriptions) != _rmNativeComparable(eventSubscriptions)))
         throw new IllegalArgumentException('Legacy recovery contains invalid native subscriptions')
-    def subscriptions = appSubscriptions instanceof List ? appSubscriptions : (eventSubscriptions instanceof List ? eventSubscriptions : [])
+    def subscriptions = [appSubscriptions, eventSubscriptions, []].find { it != null }
     def originalLabel = config.settings instanceof Map ? config.settings.origLabel : null
     if (app.label != null && !(app.label instanceof String)) throw new IllegalArgumentException('Legacy recovery contains an invalid installed label')
     Map identity = [appTypeNamespace: app.appType.namespace, appTypeName: app.appType.name,
@@ -1264,18 +1281,10 @@ private Map _rmLegacyNativeRecovery(Map snapshot) {
         def exported = payload.appReplacements.find { key, value -> key.toString() == id.toString() }.value
         if (exported.appTypeName != identity.appTypeName || exported.parentAppInstalledAppId.toString() != identity.parentAppInstalledAppId)
             throw new IllegalArgumentException('Legacy native export conflicts with saved rule identity')
+        _rmUnescapeLegacyIndents(payload.appData.find { key, value -> key.toString() == id.toString() }.value.state as Map)
     } else {
         payload = [appReplacements: [(id.toString()): identity], deviceReplacements: [:],
             appData: [(id.toString()): [state: savedState, appSettings: status.appSettings, subscriptions: subscriptions]]]
-    }
-    // The App Cloner export double-escapes control characters in state strings, so a legacy snapshot's
-    // indents can hold the two characters backslash-t where Rule Machine stores a tab.
-    def legacyState = payload.appData instanceof Map ? payload.appData.find { key, value -> key.toString() == id.toString() }?.value?.state : null
-    if (legacyState instanceof Map) {
-        if (legacyState.actions instanceof Map) legacyState.actions = legacyState.actions.collectEntries { key, action ->
-            [(key): action instanceof Map && action.indent instanceof String ? [:] + action + [indent: action.indent.replace('\\t', '\t')] : action]
-        }
-        if (legacyState.actLabelIndent instanceof String) legacyState.actLabelIndent = legacyState.actLabelIndent.replace('\\t', '\t')
     }
     Map adapted = [:] + snapshot + [captureFormat: 'native-rule-edit-v1', nativeExport: groovy.json.JsonOutput.toJson(payload)]
     _rmDecodeRuleExport(id.toString().toInteger(), adapted.nativeExport)

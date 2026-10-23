@@ -112,6 +112,90 @@ class LegacyNativeRecoverySpec extends ToolSpecBase {
         state.actLabelIndent == '\t'
     }
 
+    private static String legacyExport(Map actions) {
+        JsonOutput.toJson([appReplacements: ['42': [appTypeNamespace: 'hubitat', appTypeName: 'Rule-5.1', parentAppInstalledAppId: '28']],
+            deviceReplacements: [:],
+            appData: ['42': [state: [actions: actions, actionList: actions.keySet().toList()],
+                appSettings: [[name: 'enabled', type: 'bool', value: false]], subscriptions: []]]])
+    }
+
+    def 'a legacy export unescapes multi-level indents and passes other action records through unchanged'() {
+        given:
+        snapshot.nativeExport = legacyExport(['1': [method: 'getLogMsg', indent: '\\t\\t'], '2': [method: 'getLogMsg'], '3': 'not a record'])
+        String exported = snapshot.nativeExport
+        Map before = new JsonSlurper().parseText(JsonOutput.toJson(snapshot)) as Map
+        when:
+        def adapted = script._rmLegacyNativeRecovery(snapshot)
+        def actions = new JsonSlurper().parseText(adapted.nativeExport).appData['42'].state.actions
+        then:
+        actions['1'].indent == '\t\t'
+        actions['2'] == [method: 'getLogMsg']
+        actions['3'] == 'not a record'
+        snapshot.nativeExport == exported
+        new JsonSlurper().parseText(JsonOutput.toJson(snapshot)) == before
+    }
+
+    def 'a legacy snapshot without a native export keeps its statusJson indents as saved'() {
+        given:
+        snapshot.statusJson.appState[0] = [name: 'actions', value: ['1': [method: 'getLogMsg', indent: '\\t']]]
+        when:
+        def adapted = script._rmLegacyNativeRecovery(snapshot)
+        then:
+        new JsonSlurper().parseText(adapted.nativeExport).appData['42'].state.actions['1'].indent == '\\t'
+    }
+
+    def 'legacy subscriptions adapt from whichever list is present'() {
+        given:
+        snapshot.statusJson.remove('eventSubscriptions')
+        if (app != 'absent') snapshot.statusJson.appSubscriptions = app
+        if (event != 'absent') snapshot.statusJson.eventSubscriptions = event
+        when:
+        def adapted = script._rmLegacyNativeRecovery(snapshot)
+        then:
+        new JsonSlurper().parseText(adapted.nativeExport).appData['42'].subscriptions == expected
+        where:
+        app                  | event                | expected
+        [[name: 'switch']]   | 'absent'             | [[name: 'switch']]
+        null                 | [[name: 'contact']]  | [[name: 'contact']]
+    }
+
+    def 'conflicting or malformed legacy subscriptions refuse'() {
+        given:
+        snapshot.statusJson.appSubscriptions = app
+        snapshot.statusJson.eventSubscriptions = event
+        when:
+        script._rmLegacyNativeRecovery(snapshot)
+        then:
+        def error = thrown(IllegalArgumentException)
+        error.message.contains('invalid native subscriptions')
+        where:
+        app                  | event
+        [[name: 'switch']]   | [[name: 'contact']]
+        'not a list'         | []
+    }
+
+    def 'setting-plan refusals name the setting and keep device rules'() {
+        when:
+        script._rmNativeSettingPlan(rows)
+        then:
+        def error = thrown(IllegalArgumentException)
+        error.message.endsWith(suffix)
+        where:
+        rows                                                                                                     | suffix
+        [[name: 'tDev1', type: 'capability.switch', deviceList: ['1': 'A', '2': 'B'], multiple: false]]          | 'for tDev1'
+        [[name: 'tDev1', type: 'capability.switch', deviceIdsForDeviceList: [0], multiple: true]]                | 'for tDev1'
+        [[name: 'flag', type: 'bool', value: true], [name: 'flag', type: 'bool', value: false]]                  | 'for flag'
+        ['not a row']                                                                                            | 'for an unnamed setting'
+        [[name: 'modes', type: 'enum', multiple: true, value: '[1, 2']]                                          | 'for modes'
+    }
+
+    def 'a deviceList map wins over a differing deviceIdsForDeviceList'() {
+        when:
+        def plan = script._rmNativeSettingPlan([[name: 'tDev1', type: 'capability.switch', deviceList: ['5': 'Lamp'], deviceIdsForDeviceList: [16], multiple: true]])
+        then:
+        plan[0].value == ['5']
+    }
+
     def 'incomplete historical status keeps the legacy compatibility path'() {
         given:
         snapshot.statusJson.remove('appState')
