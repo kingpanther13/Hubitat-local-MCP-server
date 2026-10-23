@@ -76,7 +76,6 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
 
     def "deviceIdResolved is true when the scoped read returned rows"() {
         given:
-        settingsMap.selectedDevices = [[id: 5]]
         registerLogs(['2026-09-06 12:00:00.000\tINFO\tdev|5|Lamp|switched on'])
 
         when:

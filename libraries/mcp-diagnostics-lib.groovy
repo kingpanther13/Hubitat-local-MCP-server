@@ -1022,8 +1022,9 @@ def toolDeleteLogs(args) {
     if (jobId.startsWith("system.")) throw new IllegalArgumentException("System jobs cannot be deleted; the Logs page offers no Delete for them either")
     def ownerMatch = key.group(1) =~ /^(app|dev)(\d+)(Recur|Once)$/
     Map owner = ownerMatch.matches() ? [type: ownerMatch.group(1) == "dev" ? "device" : "app", id: ownerMatch.group(2) as Integer] : null
-    // A protected app's timers are guarded like the rest of it, and a client token may not touch
-    // the MCP app's own (its background workers and update check).
+    // A job's owner is guarded like the owner itself: a device outside this server's device access,
+    // a protected app, and (for a client token) the MCP app's own background workers.
+    if (owner?.type == "device") _requireDeviceToolAccess(owner.id.toString())
     if (owner?.type == "app") {
         String ownerId = owner.id.toString()
         if (callerClient != null && ownerId == app.id?.toString()) {

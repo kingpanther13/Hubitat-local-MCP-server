@@ -2222,9 +2222,31 @@ class ToolManageLogsSpec extends ToolSpecBase {
         (scriptStaticField('LOGS_JSON_SNAPSHOT') as Map).containsKey('snapshot')
     }
 
+    def "hub_delete_logs refuses a job of a device outside the server's device access, and allows a selected one"() {
+        given:
+        settingsMap.selectedDevices = [new TestDevice(id: 5, name: 'Lamp', label: 'Lamp')]
+        hubGet.register('/hub/advanced/deleteScheduledJob') { params -> 'done' }
+
+        when:
+        script.toolDeleteLogs([mode: 'scheduledJobs', jobId: 'dev615Once.off', confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('Device not found: 615')
+        hubGet.calls.empty
+
+        when:
+        def allowed = script.toolDeleteLogs([mode: 'scheduledJobs', jobId: 'dev5Once.off', confirm: true])
+
+        then:
+        allowed.success == true
+        allowed.owner == [type: 'device', id: 5]
+    }
+
     @Unroll
     def "hub_delete_logs reports the hub's #reply reply as an error"() {
         given:
+        settingsMap.selectedDevices = [new TestDevice(id: 5, name: 'Lamp', label: 'Lamp')]
         hubGet.register('/hub/advanced/deleteScheduledJob') { params -> reply }
 
         when:
