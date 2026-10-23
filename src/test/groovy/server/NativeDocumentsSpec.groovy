@@ -671,6 +671,87 @@ class NativeDocumentsSpec extends ToolSpecBase {
         events.empty
     }
 
+    def 'a required expression moved off a condition lets a later change in the batch delete it'() {
+        given:
+        nativeState.capabsfalse = ['4': 'Switch is on', '8': 'Switch is off']
+        nativeState.predCapabs = ['4']
+        when:
+        script._ndPreflight(42L, script._ndChanges([
+            [part: 'required', value: [tokens: ['8']]],
+            [part: 'delete', value: [part: 'condition', id: '4']]
+        ]))
+        then:
+        noExceptionThrown()
+    }
+
+    def 'a conditional action deleted earlier in the batch no longer holds its condition'() {
+        given:
+        nativeState.capabsfalse = ['4': 'Switch is on', '8': 'Switch is off']
+        nativeState.actionList = ['3', '1']
+        nativeState.actions = ['3': [method: 'getLogMsg'], '1': [method: 'getOnOffSwitch', cond: '8']]
+        when:
+        script._ndPreflight(42L, script._ndChanges([
+            [part: 'delete', value: [part: 'action', id: '1']],
+            [part: 'delete', value: [part: 'condition', id: '8']]
+        ]))
+        then:
+        noExceptionThrown()
+    }
+
+    def 'an action deleted earlier in the batch cannot be edited later in it'() {
+        when:
+        def result = script.toolUpdateRuleDocument([rule_id: 42, confirm: true, changes: [
+            [part: 'delete', value: [part: 'action', id: '1']],
+            [part: 'action', value: logChange().value + [id: '1']]
+        ]])
+        then:
+        !result.success
+        !result.partial
+        result.error.contains('Native action does not exist')
+        events.empty
+    }
+
+    def 'an order after a new action in the same batch is refused before any write'() {
+        when:
+        def result = script.toolUpdateRuleDocument([rule_id: 42, confirm: true, changes: [
+            logChange(),
+            [part: 'order', value: [ids: ['1', '3']]]
+        ]])
+        then:
+        !result.success
+        !result.partial
+        result.error.contains('cannot follow new actions')
+        events.empty
+    }
+
+    def 'an order placing END-REP before its REPEAT is refused before any write'() {
+        given:
+        nativeState.actionList = ['1', '2', '3', '4']
+        nativeState.actions = ['1': [method: 'getLogMsg'], '2': [method: 'getRepeat'], '3': [method: 'getLogMsg'], '4': [method: 'getEndRepeat']]
+        when:
+        def result = script.toolUpdateRuleDocument([rule_id: 42, confirm: true, changes: [
+            [part: 'order', value: [ids: ['1', '4', '3', '2']]]
+        ]])
+        then:
+        !result.success
+        !result.partial
+        result.error.contains('Native END-REP has no matching REPEAT')
+        result.error.contains('Native REPEAT block has no END-REP')
+        events.empty
+        nativeState.actionList == ['1', '2', '3', '4']
+    }
+
+    def 'two edits of the same wait in one batch keep its event count'() {
+        given:
+        nativeState.actionList = ['3', '1']
+        nativeState.actions = ['3': [method: 'getLogMsg'], '1': [method: 'getWaitEvents', wait: [7]]]
+        Map edit = [part: 'action', value: [id: '1', type: 'delayActs', subtype: 'getWaitEvents', fields: [], events: [[capability: 'Switch', fields: []]]]]
+        when:
+        script._ndPreflight(42L, script._ndChanges([edit, edit]))
+        then:
+        noExceptionThrown()
+    }
+
     def 'wait expression and simple condition changes retain their native semantic fields'() {
         given:
         List received = []

@@ -41,15 +41,20 @@ private List _ndBlockIssues(List order, Map actions) {
         if (!(action instanceof Map)) issues << 'Native action order references a missing action'
         else {
             if (action.method == 'getIfThen') blocks << 'if'
-            else if (action.method in ['getElse', 'getElseIf', 'getElseIfThen']) {
+            else if (action.method in ['getRepeat', 'getWhile', 'getUntil', 'getRepeatWhile']) blocks << 'repeat'
+            else if (action.method in ['getElse', 'getElseIf']) {
                 if (!blocks || blocks.last() != 'if') issues << 'Native ELSE has no matching IF'
             } else if (action.method == 'getEndIf') {
                 if (!blocks || blocks.last() != 'if') issues << 'Native END-IF has no matching IF'
                 else blocks.remove(blocks.size() - 1)
+            } else if (action.method == 'getEndRepeat') {
+                if (!blocks || blocks.last() != 'repeat') issues << 'Native END-REP has no matching REPEAT'
+                else blocks.remove(blocks.size() - 1)
             }
         }
     }
-    if (blocks) issues << 'Native IF block has no END-IF'
+    if (blocks.contains('if')) issues << 'Native IF block has no END-IF'
+    if (blocks.contains('repeat')) issues << 'Native REPEAT block has no END-REP'
     issues
 }
 
@@ -237,6 +242,7 @@ private void _ndPreflight(Long id, List changes) {
     List actionOrder = before.actionList instanceof List ? before.actionList.collect { it.toString() } : []
     Map projectedActions = before.actions instanceof Map ? before.actions.collectEntries { key, value -> [(key.toString()): value] } : [:]
     List projectedOrder = new ArrayList(actionOrder)
+    List projectedPredicate = before.predCapabs instanceof List ? before.predCapabs.collect { it?.toString() } : []
     int newAction = 0
     boolean allocatedActions = false
     Map locals = id == null ? [:] : null
@@ -280,9 +286,17 @@ private void _ndPreflight(Long id, List changes) {
                 String actionId = value.containsKey('id') ? value.id.toString() : "new:${newAction++}".toString()
                 if (!value.containsKey('id')) projectedOrder << actionId
                 String method = change.part == 'terminator' ? ND_TERMINATOR_METHODS.get(value.subtype) : value.subtype
-                projectedActions.put(actionId, [method: method])
+                def prior = projectedActions.get(actionId)
+                Map record = (prior instanceof Map ? [:] + prior : [:]) + [method: method]
+                if (change.part == 'action' && !value.containsKey('id')) {
+                    if (value.containsKey('condition')) record.cond = value.condition.toString()
+                    // Placeholder events let a later edit of this wait in the same batch pass the event-count check.
+                    if (value.subtype == 'getWaitEvents' && value.events instanceof List) record.wait = value.events.collect { null }
+                }
+                projectedActions.put(actionId, record)
             }
-            if (change.part == 'order' && !allocatedActions) {
+            if (change.part == 'order') {
+                if (allocatedActions) throw new IllegalArgumentException('Action order cannot follow new actions in the same batch; add the actions first and order them in a later call')
                 List requested = value.ids.collect { it.toString() }
                 if (requested.sort(false) != actionOrder.sort(false)) throw new IllegalArgumentException('Action order must be an exact permutation of existing action IDs')
                 actionOrder = requested
@@ -291,6 +305,7 @@ private void _ndPreflight(Long id, List changes) {
             if (change.part == 'delete' && value.part == 'action') {
                 String target = value.id.toString()
                 projectedOrder = projectedOrder.findAll { it != target }
+                projectedActions.remove(target)
                 if (!allocatedActions) {
                     if (!actionOrder.contains(target)) throw new IllegalArgumentException('Native action does not exist')
                     actionOrder = actionOrder.findAll { it != target }
@@ -310,13 +325,14 @@ private void _ndPreflight(Long id, List changes) {
                     String expressionId = change.part == 'required' ? '0' : value.id.toString()
                     expressions.keySet().findAll { it.toString() == expressionId }.each { expressions.remove(it) }
                     expressions.put(expressionId, tokens)
+                    if (change.part == 'required') projectedPredicate = tokens.findAll { it?.toString()?.isInteger() }.collect { it.toString() }
                 }
             }
             if (change.part == 'delete' && value.part == 'condition') {
                 String target = value.id.toString()
                 boolean referenced = (expressions.values().toList() + pendingExpressions).any { tokens -> tokens instanceof List && tokens.any { it?.toString() == target } }
-                referenced = referenced || (before.predCapabs instanceof List && before.predCapabs.any { it?.toString() == target })
-                referenced = referenced || (before.actions instanceof Map && before.actions.values().any { it instanceof Map && it.cond?.toString() == target })
+                referenced = referenced || projectedPredicate.any { it == target }
+                referenced = referenced || projectedActions.values().any { it instanceof Map && it.cond?.toString() == target }
                 if (referenced) throw new IllegalArgumentException('Referenced native conditions must be detached before deletion')
                 if (id != null) {
                     // A Conditional Trigger binds its condition through a condTrig setting, not the compiled state.

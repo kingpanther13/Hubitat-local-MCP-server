@@ -437,7 +437,7 @@ Map _nmUpsertAction(Long ruleId, Map row) {
     List settings = [[name: "actType.${id}".toString(), type: 'enum', value: row.type], [name: "actSubType.${id}".toString(), type: 'enum', value: row.subtype]] + fields
     String editToken = 'N'
     if (editing) {
-        boolean expressionAction = prior.method in ['getIfThen', 'getElseIfThen', 'getWhile', 'getUntil', 'getWaitRule']
+        boolean expressionAction = prior.method in ['getIfThen', 'getWhile', 'getUntil', 'getWaitRule']
         editToken = "${id}.${conditionId ?: 0}.${expressionAction}".toString()
     }
     Map savedSettings = _nmSettingsInventory(ruleId)
@@ -669,6 +669,7 @@ Map _nmOrderActions(Long ruleId, List ids) {
     Map before = _nrState(ruleId)
     if (!(before.actionList instanceof List) || !(before.actions instanceof Map)) throw new IllegalStateException('Native action order is unavailable')
     List original = before.actionList.collect { it.toString() }
+    List originalList = new ArrayList(before.actionList)
     List originalKeys = before.actions.keySet().collect { it.toString() }.sort()
     if (requested.unique(false).size() != requested.size() || original.unique(false).size() != original.size() || requested.sort(false) != original.sort(false)) throw new IllegalArgumentException('Action order must be an exact permutation of existing action IDs')
     if (requested.any { !(_nmEntry(before.actions, it) instanceof Map) }) throw new IllegalArgumentException('Action order references an unavailable native action')
@@ -689,5 +690,13 @@ Map _nmOrderActions(Long ruleId, List ids) {
     }
     Map structure = _nmValidateStructure(ruleId, after)
     boolean verified = orderVerified && retained && structure.success
-    [success: verified, partial: !verified, orderVerified: orderVerified, actionsPreserved: retained, ids: requested, structuralIssues: structure.structuralIssues, verificationNeeded: !verified]
+    if (!verified) {
+        _nrStatePatch(ruleId, [actionList: originalList])
+        _nrPage(ruleId, _nrRulePages(ruleId).actions)
+        _nrHandle(ruleId).markIfs()
+        Map restored = _nrState(ruleId)
+        boolean rolledBack = restored.actionList instanceof List && restored.actionList.collect { it.toString() } == original
+        return [success: false, partial: !rolledBack, rolledBack: rolledBack, orderVerified: orderVerified, actionsPreserved: retained, ids: requested, structuralIssues: structure.structuralIssues, verificationNeeded: true]
+    }
+    [success: true, partial: false, orderVerified: orderVerified, actionsPreserved: retained, ids: requested, structuralIssues: structure.structuralIssues, verificationNeeded: false]
 }

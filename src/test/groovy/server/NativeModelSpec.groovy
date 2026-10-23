@@ -957,6 +957,24 @@ class NativeModelSpec extends ToolSpecBase {
         nativeState.keep == [unknown: true]
     }
 
+    def 'an action order that fails structure verification restores the original order'() {
+        given:
+        nativeState.actions = ['1': [method: 'getRepeat', indent: ''], '2': [method: 'getEndRepeat', indent: '']]
+        nativeState.actionList = ['1', '2']
+        int marks = 0
+        nativeRule.selectActions = { Map params -> }
+        nativeRule.markIfs = { -> marks++; nativeState.inRepeat = nativeState.actionList.collect { it.toString() } != ['1', '2'] }
+        when:
+        def result = script._nmOrderActions(42L, ['2', '1'])
+        then:
+        !result.success
+        result.rolledBack
+        !result.partial
+        result.structuralIssues == ['A repeat block remains open']
+        marks == 2
+        nativeState.actionList == ['1', '2']
+    }
+
     def 'native structural flags reject unfinished IF and repeat without relying on broken flag'() {
         given:
         nativeRule.selectActions = { Map params -> nativeState.inIf = inIf; nativeState.inRepeat = inRepeat }
