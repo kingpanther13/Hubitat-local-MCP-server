@@ -660,7 +660,7 @@ Map _nmDeleteRow(Long ruleId, String part, Object rowId) {
     }
     boolean verified = deleted && preserved && ordered && cleaned && settingsPreserved && callbackConsumed && referencesPreserved
     [success: verified, partial: !verified, deleted: deleted, part: part, id: id,
-     settingsVerified: cleaned && settingsPreserved, rowsPreserved: preserved, referencesPreserved: referencesPreserved, callbackConsumed: callbackConsumed, removedSettings: removedNames, remainingSettings: settingsAfter, verificationNeeded: !verified]
+     settingsVerified: cleaned && settingsPreserved, rowsPreserved: preserved, referencesPreserved: referencesPreserved, callbackConsumed: callbackConsumed, removedSettings: removedNames, remainingSettingCount: settingsAfter.size(), verificationNeeded: !verified]
 }
 
 Map _nmOrderActions(Long ruleId, List ids) {

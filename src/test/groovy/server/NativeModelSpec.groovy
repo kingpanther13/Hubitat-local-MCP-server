@@ -874,6 +874,8 @@ class NativeModelSpec extends ToolSpecBase {
         result.success == (damage == 'none')
         result.partial == (damage != 'none')
         result.removedSettings as Set == ['tCapab1', 'everyNMinutesC1', 'cronStr1'] as Set
+        !result.containsKey('remainingSettings')
+        result.remainingSettingCount == settings.size()
         if (damage == 'none') {
             assert result.settingsVerified && result.rowsPreserved && result.referencesPreserved
             assert settings == [unrelated: [type: 'text', value: 'retain']]
