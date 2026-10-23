@@ -742,6 +742,61 @@ class NativeDocumentsSpec extends ToolSpecBase {
         nativeState.actionList == ['1', '2', '3', '4']
     }
 
+    private void orderedBlock(List methods) {
+        List ids = (1..methods.size()).collect { it.toString() }
+        nativeState.actionList = ids
+        nativeState.actions = [ids, methods].transpose().collectEntries { pair -> [(pair[0]): [method: pair[1]]] }
+    }
+
+    private void preflightOrder() {
+        script._ndPreflight(42L, script._ndChanges([[part: 'order', value: [ids: nativeState.actionList]]]))
+    }
+
+    def 'nested IF and REPEAT blocks pass preflight when each closes in order'() {
+        given:
+        orderedBlock(methods)
+        when:
+        preflightOrder()
+        then:
+        noExceptionThrown()
+        where:
+        methods << [
+            ['getIfThen', 'getRepeat', 'getLogMsg', 'getEndRepeat', 'getEndIf'],
+            ['getRepeat', 'getIfThen', 'getLogMsg', 'getElse', 'getLogMsg', 'getEndIf', 'getEndRepeat'],
+            ['getRepeat', 'getIfThen', 'getLogMsg', 'getElseIf', 'getLogMsg', 'getEndIf', 'getEndRepeat']
+        ]
+    }
+
+    def 'interleaved IF and REPEAT blocks are refused by preflight'() {
+        given:
+        orderedBlock(methods)
+        when:
+        preflightOrder()
+        then:
+        def error = thrown(IllegalArgumentException)
+        error.message.contains(message)
+        where:
+        methods                                                                          | message
+        ['getIfThen', 'getRepeat', 'getEndIf', 'getEndRepeat']                           | 'Native END-IF has no matching IF'
+        ['getIfThen', 'getRepeat', 'getElse', 'getEndRepeat', 'getEndIf']                | 'Native ELSE has no matching IF'
+    }
+
+    def 'every Rule Machine repeat opener starts a block that END-REP closes'() {
+        when:
+        orderedBlock([opener, 'getLogMsg', 'getEndRepeat'])
+        preflightOrder()
+        then:
+        noExceptionThrown()
+        when:
+        orderedBlock([opener, 'getLogMsg'])
+        preflightOrder()
+        then:
+        def error = thrown(IllegalArgumentException)
+        error.message.contains('Native REPEAT block has no END-REP')
+        where:
+        opener << ['getRepeat', 'getWhile', 'getUntil', 'getRepeatWhile']
+    }
+
     def 'two edits of the same wait in one batch keep its event count'() {
         given:
         nativeState.actionList = ['3', '1']

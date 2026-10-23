@@ -7227,6 +7227,8 @@ class TestRunner:
             swapped = self._rm_update(app_id, [native_delete("trigger", trigger), self._rm_switch_trigger(switch)])
             assert [row["part"] for row in swapped["results"]] == ["delete", "trigger"] \
                 and swapped["results"][0]["result"].get("deleted"), swapped
+            deleted_row = swapped["results"][0]["result"]
+            assert isinstance(deleted_row.get("remainingSettingCount"), int) and "remainingSettings" not in deleted_row, deleted_row
             replacement = self._rm_ids(swapped)[1]
             removed = self._rm_update(app_id, [native_delete("trigger", replacement)])
             assert set(removed["document"]["triggers"]) == original, removed["document"]["triggers"]
@@ -7352,6 +7354,15 @@ class TestRunner:
             assert any("repeat" in str(issue).lower() for issue in health.get("structuralIssues", [])), health
             # The write succeeds only once the block is balanced and the rule compiles.
             self._rm_update(app_id, [native_change("terminator", subtype="endRep")])
+            # Preflight refuses, before any write, an END-REP ordered ahead of its REPEAT and an order
+            # that follows a new action in the same batch.
+            before = self._rm_snapshot(app_id)
+            ids = [str(row["id"]) for row in before["document"]["actions"]]
+            self._rm_refuse(app_id, [native_change("order", ids=[i for i in ids if i != repeat] + [repeat])])
+            assert self._rm_snapshot(app_id) == before, "a refused order changed the rule"
+            error = self._rm_refuse(app_id, [native_log("appended"), native_change("order", ids=ids)])
+            assert "cannot follow new actions" in error, error
+            assert self._rm_snapshot(app_id) == before, "a refused append and order changed the rule"
         finally:
             self._delete_native(app_id)
 
@@ -8520,19 +8531,31 @@ class TestRunner:
         self._rule_edit_backups(False)
         app_id, created = self._rm_rule("LegacyRestore", [
             self._rm_switch_condition(gate), self._rm_switch_condition(gate, "off"), self._rm_switch_trigger(switch),
-            self._rm_switch_action(switch, False), native_log("legacy baseline")])
+            self._rm_switch_action(switch, False)])
         try:
             conditions = sorted(created["conditions"], key=int)
+            # The log action sits inside an IF so the snapshot carries a nested (tab) indent.
+            doc = self._rm_update(app_id, [
+                native_change("action", type="condActs", subtype="getIfThen", fields=[], expression=[conditions[0]]),
+                native_log("legacy baseline"), native_change("terminator", subtype="endIf")])["document"]
+            methods = {str(r["id"]): r["value"]["method"] for r in doc["actions"]}
+            actions = [next(i for i, m in methods.items() if m == "getOnOffSwitch"), next(i for i, m in methods.items() if m == "getLogMsg")]
             if required:
                 self._rm_update(app_id, [native_change("required", tokens=[conditions[0]])])
             before = self._rm_snapshot(app_id)
+            assert any("\t" in str(r["value"].get("indent") or "") for r in before["document"]["actions"]), before["document"]["actions"]
             self._rule_edit_backups(True)
             self._mcp_settings({"backupEveryRuleWrite": True})
+            # A stopped rule's statusJson reports eventSubscriptions as null.
+            stopped = self.client.call_tool("hub_call_rule", {"ruleId": app_id, "action": "stop"})
+            assert stopped.get("success") is not False, stopped
             try:
                 captured = self.client.call_tool("hub_set_native_app", {"appId": app_id, "confirm": True,
                                                                         "settings": {"comments": "legacy capture compatibility"}})
             finally:
                 self._mcp_settings({"backupEveryRuleWrite": False})
+            started = self.client.call_tool("hub_call_rule", {"ruleId": app_id, "action": "start"})
+            assert started.get("success") is not False, started
             assert captured.get("success") is True and (captured.get("backup") or {}).get("backupKey"), captured
             key = captured["backup"]["backupKey"]
             meta = self.client.call_tool("hub_get_backup", {"backupKey": key})
@@ -8542,7 +8565,6 @@ class TestRunner:
                 assert not snapshot.get("nativeExport") and "Required Expression" in snapshot.get("nativeExportSkipped", ""), sorted(snapshot)
             else:
                 assert snapshot.get("nativeExport"), sorted(snapshot)
-            actions = [str(r["id"]) for r in created["actions"]]
             edits = [self._rm_switch_condition(gate, "off", id=conditions[0]),
                      self._rm_switch_trigger(switch, "off", id=next(iter(created["triggers"]))),
                      self._rm_switch_action(switch, True, id=actions[0]), native_log("legacy changed", id=actions[1])]
