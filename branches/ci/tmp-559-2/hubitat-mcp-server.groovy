@@ -22133,7 +22133,10 @@ private List _rmNativeSettingPlan(List rows) {
                         (row.deviceIdsForDeviceList instanceof List ? row.deviceIdsForDeviceList.collect { it.toString() } : [])
                     if (ids.any { !it.isLong() || it.toLong() <= 0L } || (row.multiple != true && ids.size() > 1)) throw new IllegalArgumentException('Invalid recovery device IDs')
                     value = ids ? (row.multiple == true ? ids : ids[0]) : null
-                } else if (row.multiple == true && value instanceof String) value = new groovy.json.JsonSlurper().parseText(value)
+                } else if (row.multiple == true && value instanceof String) {
+                    try { value = new groovy.json.JsonSlurper().parseText(value) }
+                    catch (Exception e) { throw new IllegalArgumentException('Recovery setting is not valid JSON', e) }
+                }
                 if (value != null) {
                     if (row.multiple == true && !(value instanceof List)) throw new IllegalArgumentException('Recovery setting requires a list')
                     if (row.multiple != true && value instanceof List) throw new IllegalArgumentException('Recovery setting requires a scalar')
@@ -22143,7 +22146,7 @@ private List _rmNativeSettingPlan(List rows) {
                     plan << [name: row.name, type: row.type, multiple: row.multiple == true, value: value]
                 }
             }
-        } catch (IllegalArgumentException failure) { throw new IllegalArgumentException("${failure.message} for ${settingName}".toString()) }
+        } catch (IllegalArgumentException failure) { throw new IllegalArgumentException("${failure.message} for ${settingName}".toString(), failure) }
     }
     List names = rows.collect { it.name }
     List duplicates = names.findAll { names.count(it) > 1 }.unique()
@@ -22260,6 +22263,7 @@ private Map _rmRestoreNativeEdit(Map snapshot, String sourceBackupKey) {
          eventSubscriptions: rebuilt.eventSubscriptions, scheduledJobs: rebuilt.scheduledJobs]
     } catch (Exception failure) {
         if (!attempted) throw failure
+        mcpLogError('rm-native', "native restore of rule ${id} failed after changes: ${failure.message}".toString(), failure)
         Boolean stopped = null
         Boolean paused = null
         try {
@@ -22267,11 +22271,17 @@ private Map _rmRestoreNativeEdit(Map snapshot, String sourceBackupKey) {
             stopped = live.stopped == true
             paused = live.paused == true
         } catch (Exception ignored) { }
-        String note = 'Restore did not pass complete verification. Inspect the native rule; the pre-restore backup is available for recovery.'
+        String note = "Restore did not pass complete verification. Inspect the native rule; the pre-restore backup backup.backupKey restores it with hub_restore_backup; see hub_get_tool_guide(section='backup')."
         if (stopped == true) note += " The rule is currently stopped; hub_call_rule(ruleId, action:'start') starts it again once inspected."
         [success: false, partial: attempted, type: 'rm-rule', ruleId: id, originalRuleId: id, restoredVia: 'nativeStateReplay', backup: undo,
          error: failure.message?.toString(), stopped: stopped, paused: paused, note: note]
     } finally { NATIVE_FORM_BUSY.remove(formKey) }
+}
+private void _rmUnescapeLegacyIndents(Map nativeState) {
+    if (nativeState.actions instanceof Map) nativeState.actions = nativeState.actions.collectEntries { key, action ->
+        [(key): action instanceof Map && action.indent instanceof String ? [:] + action + [indent: action.indent.replace('\\t', '\t')] : action]
+    }
+    if (nativeState.actLabelIndent instanceof String) nativeState.actLabelIndent = nativeState.actLabelIndent.replace('\\t', '\t')
 }
 private Map _rmLegacyNativeRecovery(Map snapshot) {
     def config = snapshot.configJson
@@ -22300,10 +22310,10 @@ private Map _rmLegacyNativeRecovery(Map snapshot) {
     } else throw new IllegalArgumentException('Legacy recovery is missing complete native state')
     def appSubscriptions = status.appSubscriptions
     def eventSubscriptions = status.eventSubscriptions
-    if ((appSubscriptions != null && !(appSubscriptions instanceof List)) || (eventSubscriptions != null && !(eventSubscriptions instanceof List)) ||
-        (appSubscriptions instanceof List && eventSubscriptions instanceof List && _rmNativeComparable(appSubscriptions) != _rmNativeComparable(eventSubscriptions)))
+    if ([appSubscriptions, eventSubscriptions].any { it != null && !(it instanceof List) } ||
+        (appSubscriptions != null && eventSubscriptions != null && _rmNativeComparable(appSubscriptions) != _rmNativeComparable(eventSubscriptions)))
         throw new IllegalArgumentException('Legacy recovery contains invalid native subscriptions')
-    def subscriptions = appSubscriptions instanceof List ? appSubscriptions : (eventSubscriptions instanceof List ? eventSubscriptions : [])
+    def subscriptions = [appSubscriptions, eventSubscriptions, []].find { it != null }
     def originalLabel = config.settings instanceof Map ? config.settings.origLabel : null
     if (app.label != null && !(app.label instanceof String)) throw new IllegalArgumentException('Legacy recovery contains an invalid installed label')
     Map identity = [appTypeNamespace: app.appType.namespace, appTypeName: app.appType.name,
@@ -22314,16 +22324,10 @@ private Map _rmLegacyNativeRecovery(Map snapshot) {
         def exported = payload.appReplacements.find { key, value -> key.toString() == id.toString() }.value
         if (exported.appTypeName != identity.appTypeName || exported.parentAppInstalledAppId.toString() != identity.parentAppInstalledAppId)
             throw new IllegalArgumentException('Legacy native export conflicts with saved rule identity')
+        _rmUnescapeLegacyIndents(payload.appData.find { key, value -> key.toString() == id.toString() }.value.state as Map)
     } else {
         payload = [appReplacements: [(id.toString()): identity], deviceReplacements: [:],
             appData: [(id.toString()): [state: savedState, appSettings: status.appSettings, subscriptions: subscriptions]]]
-    }
-    def legacyState = payload.appData instanceof Map ? payload.appData.find { key, value -> key.toString() == id.toString() }?.value?.state : null
-    if (legacyState instanceof Map) {
-        if (legacyState.actions instanceof Map) legacyState.actions = legacyState.actions.collectEntries { key, action ->
-            [(key): action instanceof Map && action.indent instanceof String ? [:] + action + [indent: action.indent.replace('\\t', '\t')] : action]
-        }
-        if (legacyState.actLabelIndent instanceof String) legacyState.actLabelIndent = legacyState.actLabelIndent.replace('\\t', '\t')
     }
     Map adapted = [:] + snapshot + [captureFormat: 'native-rule-edit-v1', nativeExport: groovy.json.JsonOutput.toJson(payload)]
     _rmDecodeRuleExport(id.toString().toInteger(), adapted.nativeExport)
@@ -27125,10 +27129,10 @@ Map _nmUpsertAction(Long ruleId, Map row) {
     if (editing && !(prior instanceof Map)) throw new IllegalArgumentException('Native action does not exist')
     if (!editing && prior != null) throw new IllegalArgumentException('Native action allocation slot is already occupied')
     if (waitEvents && editing && (!(prior.wait instanceof List) || prior.wait.size() != row.events.size())) throw new IllegalArgumentException('Editing waits currently requires the existing event count')
-    if (!editing && row.subtype in ['getIfThen', 'getElseIf', 'getWaitRule'] && !row.containsKey('expression')) throw new IllegalArgumentException('New expression actions require expression tokens')
+    if (!editing && row.subtype in ND_EXPRESSION_SUBTYPES && !row.containsKey('expression')) throw new IllegalArgumentException('New expression actions require expression tokens')
     String expectedExpressionId = null
     if (row.containsKey('expression')) {
-        if (!(row.subtype in ['getIfThen', 'getElseIf', 'getWaitRule'])) throw new IllegalArgumentException('Unsupported native expression action')
+        if (!(row.subtype in ND_EXPRESSION_SUBTYPES)) throw new IllegalArgumentException('Unsupported native expression action')
         _nmTokens(row.expression as List, before.capabsfalse instanceof Map ? before.capabsfalse : [:])
     }
     String conditionId = row.containsKey('condition') ? _nmId(row.condition) : (editing && prior.cond ? prior.cond.toString() : null)
@@ -27272,15 +27276,14 @@ private boolean _nmWaitDuration(Long ruleId, String eventId) {
     parts.size() == 3 && parts.every { it.isBigDecimal() } && parts.collect { new BigDecimal(it) } == expected
 }
 Map _nmAddTerminator(Long ruleId, String subtype) {
-    if (!(subtype in ['endIf', 'else', 'endRep'])) throw new IllegalArgumentException('Unsupported structural action')
+    if (!ND_TERMINATOR_METHODS.containsKey(subtype)) throw new IllegalArgumentException('Unsupported structural action')
     Map before = _nrState(ruleId)
     String id = _nmId(before.actNdx)
     List priorOrder = before.actionList instanceof List ? before.actionList.collect { it.toString() } : []
     _nrHandle(ruleId).addAction(subtype)
     Map after = _nrState(ruleId)
     def action = _nmEntry(after.actions instanceof Map ? after.actions : [:], id)
-    Map expected = [endIf: 'getEndIf', 'else': 'getElse', endRep: 'getEndRepeat']
-    boolean verified = action instanceof Map && action.method == expected.get(subtype) && after.actionList instanceof List && after.actionList.collect { it.toString() } == priorOrder + [id]
+    boolean verified = action instanceof Map && action.method == ND_TERMINATOR_METHODS.get(subtype) && after.actionList instanceof List && after.actionList.collect { it.toString() } == priorOrder + [id]
     [success: verified, id: id, action: action, partial: !verified, verificationNeeded: !verified]
 }
 Map _nmValidateStructure(Long ruleId, Map renderedState = null) {
@@ -27364,7 +27367,7 @@ Map _nmOrderActions(Long ruleId, List ids) {
     Map before = _nrState(ruleId)
     if (!(before.actionList instanceof List) || !(before.actions instanceof Map)) throw new IllegalStateException('Native action order is unavailable')
     List original = before.actionList.collect { it.toString() }
-    List originalList = new ArrayList(before.actionList)
+    List originalActionList = new ArrayList(before.actionList)
     List originalKeys = before.actions.keySet().collect { it.toString() }.sort()
     if (requested.unique(false).size() != requested.size() || original.unique(false).size() != original.size() || requested.sort(false) != original.sort(false)) throw new IllegalArgumentException('Action order must be an exact permutation of existing action IDs')
     if (requested.any { !(_nmEntry(before.actions, it) instanceof Map) }) throw new IllegalArgumentException('Action order references an unavailable native action')
@@ -27374,26 +27377,30 @@ Map _nmOrderActions(Long ruleId, List ids) {
         contracts.put(id, [method: action.method, cond: action.cond, rule: action.rule, wait: action.wait instanceof List ? new ArrayList(action.wait) : action.wait])
     }
     List ordered = requested.collect { id -> before.actionList.find { it.toString() == id } }
-    _nrStatePatch(ruleId, [actionList: ordered])
-    _nrPage(ruleId, _nrRulePages(ruleId).actions)
-    _nrHandle(ruleId).markIfs()
+    Closure actionsHold = { Map current ->
+        current.actions instanceof Map && current.actions.keySet().collect { it.toString() }.sort() == originalKeys && contracts.every { id, contract ->
+            def action = _nmEntry(current.actions, id)
+            action instanceof Map && action.method == contract.method && action.cond == contract.cond && action.rule == contract.rule && action.wait == contract.wait
+        }
+    }
+    _nmWriteActionOrder(ruleId, ordered)
     Map after = _nrState(ruleId)
     boolean orderVerified = after.actionList instanceof List && after.actionList.collect { it.toString() } == requested
-    boolean retained = after.actions instanceof Map && after.actions.keySet().collect { it.toString() }.sort() == originalKeys && contracts.every { id, contract ->
-        def action = _nmEntry(after.actions, id)
-        action instanceof Map && action.method == contract.method && action.cond == contract.cond && action.rule == contract.rule && action.wait == contract.wait
-    }
+    boolean retained = actionsHold.call(after)
     Map structure = _nmValidateStructure(ruleId, after)
-    boolean verified = orderVerified && retained && structure.success
-    if (!verified) {
-        _nrStatePatch(ruleId, [actionList: originalList])
-        _nrPage(ruleId, _nrRulePages(ruleId).actions)
-        _nrHandle(ruleId).markIfs()
-        Map restored = _nrState(ruleId)
-        boolean rolledBack = restored.actionList instanceof List && restored.actionList.collect { it.toString() } == original
-        return [success: false, partial: !rolledBack, rolledBack: rolledBack, orderVerified: orderVerified, actionsPreserved: retained, ids: requested, structuralIssues: structure.structuralIssues, verificationNeeded: true]
-    }
-    [success: true, partial: false, orderVerified: orderVerified, actionsPreserved: retained, ids: requested, structuralIssues: structure.structuralIssues, verificationNeeded: false]
+    Map checks = [orderVerified: orderVerified, actionsPreserved: retained, ids: requested, structuralIssues: structure.structuralIssues]
+    if (orderVerified && retained && structure.success) return [success: true, partial: false] + checks + [verificationNeeded: false]
+    _nmWriteActionOrder(ruleId, originalActionList)
+    Map restored = _nrState(ruleId)
+    boolean rolledBack = restored.actionList instanceof List && restored.actionList.collect { it.toString() } == original
+    String outcome = rolledBack ? 'the original order was restored' : 'the original order could NOT be restored'
+    [success: false, partial: !rolledBack, rolledBack: rolledBack,
+     error: "Action order did not verify (order:${orderVerified}, actions preserved:${retained}, structure:${structure.structuralIssues}); ${outcome}".toString()] + checks + [verificationNeeded: true]
+}
+private void _nmWriteActionOrder(Long ruleId, List actionList) {
+    _nrStatePatch(ruleId, [actionList: actionList])
+    _nrPage(ruleId, _nrRulePages(ruleId).actions)
+    _nrHandle(ruleId).markIfs()
 }
 @groovy.transform.Field static final List ND_EXPRESSION_SUBTYPES = ['getIfThen', 'getElseIf', 'getWaitRule']
 @groovy.transform.Field static final Map ND_TERMINATOR_METHODS = [endIf: 'getEndIf', 'else': 'getElse', endRep: 'getEndRepeat']
@@ -27657,15 +27664,13 @@ private void _ndPreflight(Long id, List changes) {
             if ((change.part == 'action' && !value.containsKey('id')) || change.part == 'terminator') allocatedActions = true
             if (change.part == 'trigger' && !value.containsKey('id')) allocatedTriggers = true
             if (change.part in ['action', 'terminator']) {
-                String actionId = value.containsKey('id') ? value.id.toString() : "new:${newAction++}".toString()
-                if (!value.containsKey('id')) projectedOrder << actionId
+                boolean newRow = !value.containsKey('id')
+                String actionId = newRow ? "new:${newAction++}".toString() : value.id.toString()
+                if (newRow) projectedOrder << actionId
                 String method = change.part == 'terminator' ? ND_TERMINATOR_METHODS.get(value.subtype) : value.subtype
                 def prior = projectedActions.get(actionId)
                 Map record = (prior instanceof Map ? [:] + prior : [:]) + [method: method]
-                if (change.part == 'action' && !value.containsKey('id')) {
-                    if (value.containsKey('condition')) record.cond = value.condition.toString()
-                    if (value.subtype == 'getWaitEvents' && value.events instanceof List) record.wait = value.events.collect { null }
-                }
+                if (change.part == 'action' && newRow && value.containsKey('condition')) record.cond = value.condition.toString()
                 projectedActions.put(actionId, record)
             }
             if (change.part == 'order') {
@@ -27778,8 +27783,8 @@ private Map _ndApply(Long id, List changes, boolean created) {
             if (wasStopped != stopped) _nrHandle(id).appButtonHandler('stopRule')
             if (wasPaused != paused) _nrHandle(id).appButtonHandler('pausRule')
             finalHealth = _ndRuleHealth(id)
-            stopped = finalHealth instanceof Map && finalHealth.stopped == true
-            paused = finalHealth instanceof Map && finalHealth.paused == true
+            stopped = finalHealth instanceof Map && _ndNativeFlag(finalHealth, 'stopped') == true
+            paused = finalHealth instanceof Map && _ndNativeFlag(finalHealth, 'paused') == true
             if (!(finalHealth instanceof Map) || finalHealth.broken != false || wasStopped != stopped || wasPaused != paused) throw new IllegalStateException('Native stopped or paused state was not preserved')
         }
         def status = _ndJson(hubInternalGet("/installedapp/statusJson/${id}"))
@@ -27811,7 +27816,7 @@ private Map _ndApply(Long id, List changes, boolean created) {
 }
 private String _ndFailureNote(boolean landed, boolean created) {
     String written = landed ? "Changes before the failure may have been written; read the rule with hub_set_rule(operation:'read') and resubmit only what is missing." : 'No change was written.'
-    String recovery = created ? ' The new rule exists; delete it with hub_delete_native_app if it is not wanted.' : " An update's response carries backup.backupKey for hub_restore_backup."
+    String recovery = created ? ' The new rule exists; delete it with hub_delete_native_app if it is not wanted.' : " An update's response carries backup.backupKey for hub_restore_backup when pre-edit backups are on."
     (written + recovery + " See hub_get_tool_guide(section='set_rule_reference').").toString()
 }
 Map toolUpdateRuleDocument(Map args) {
@@ -31923,7 +31928,7 @@ def _responseTooLargeSuggestion(String toolName) {
         case "hub_get_source":
             return "Source file exceeds the inline cap. Use offset/length to read it in chunks, use hub_list_files / hub_read_file via the File Manager bridge, or fetch the source from version control instead."
         case "hub_set_rule":
-            return "This write was applied before its response was measured: do NOT resend it. Read the rule with hub_set_rule(operation:'read', rule_id:..., args:{sections:[...]}) to confirm what landed; the pre-edit backup is listed by hub_list_backups (scope source). Smaller batches keep the write response under the cap."
+            return "operation:'read': page one section, args:{sections:['actions'], cursor:'', limit:50}, and follow nextCursor. A create/update/form write was applied before its response was measured: do NOT resend it. Find a created rule with hub_list_rules(labelFilter:<name>); confirm what landed with hub_set_rule(operation:'read', rule_id, args:{sections:[...]}). An update's pre-edit backup, when pre-edit backups are on, is listed by hub_list_backups(scope:'source'). Smaller batches keep write responses under the cap."
         case "hub_get_hub_mesh":
             return "This tool has no filters or pagination -- the payload is driven by the shared/linked device and hub-variable lists on a large multi-hub mesh. Read the full device inventory via hub_list_devices (which does paginate) instead; note include_token is off by default and does not affect size."
         default:
