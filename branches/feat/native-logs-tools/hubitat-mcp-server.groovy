@@ -6351,7 +6351,7 @@ private Date _logsTimeArg(String name, value) {
     if (rel.matches()) {
         long ms = rel.group(1).toLong() * ([m: 60000L, h: 3600000L, d: 86400000L][rel.group(2)] as Long)
         if (ms > 30L * 86400000L) {
-            throw new IllegalArgumentException("${name} exceeds the 30d cap (got '${s}'); use a full time for older bounds")
+            throw new IllegalArgumentException("${name} exceeds the 30d cap (got '${s}'); use an ISO-8601 time for older bounds")
         }
         return new Date(now() - ms)
     }
