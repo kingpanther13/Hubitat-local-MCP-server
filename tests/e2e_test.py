@@ -1439,7 +1439,7 @@ class TestRunner:
         def _usable_logs(result: Any) -> list | None:
             if not isinstance(result, dict) or result.get("success") is False:
                 return None
-            logs = result.get("logs")
+            logs = result.get("entries")
             return logs if isinstance(logs, list) else None
 
         res = None
@@ -12942,8 +12942,23 @@ class TestRunner:
                 bookmark = result["entries"][0]["date"]
                 after = self.client.call_tool("hub_read_diagnostics", {
                     "tool": "hub_get_logs", "args": {"mode": mode, "since": bookmark}})
-                assert all(r.get("date") != bookmark for r in after.get("entries") or []), \
-                    f"{mode}: since must exclude the bookmarked event: {after}"
+                mark = datetime.strptime(bookmark, "%Y-%m-%dT%H:%M:%S.%f%z")
+                assert all(datetime.strptime(r["date"], "%Y-%m-%dT%H:%M:%S.%f%z") > mark
+                           for r in after.get("entries") or [] if r.get("date")), \
+                    f"{mode}: since must return only events after the bookmark: {after}"
+
+    @test("system_tools")
+    def test_delete_logs_mcp_starts_a_new_log(self) -> None:
+        """Clearing the MCP log reads nothing first and starts a new log: no entry from before the
+        clear comes back."""
+        before = self.client.call_tool("hub_read_diagnostics", {"tool": "hub_get_logs", "args": {"mode": "mcp", "limit": 0}})
+        last = max((e.get("timestamp") or 0 for e in before.get("entries") or []), default=0)
+        cleared = self.client.call_tool("hub_manage_logs", {"tool": "hub_delete_logs", "args": {"mode": "mcp"}})
+        assert cleared.get("success") is True and "clearedCount" in cleared, f"clear: {cleared}"
+        after = self.client.call_tool("hub_read_diagnostics", {"tool": "hub_get_logs", "args": {"mode": "mcp", "limit": 0}})
+        assert isinstance(after.get("entries"), list), f"MCP log after clear: {after}"
+        assert all((e.get("timestamp") or 0) > last for e in after["entries"]), \
+            f"entries from before the clear came back: {after}"
 
     @test("system_tools")
     def test_manage_rooms_list(self) -> None:
@@ -14622,7 +14637,7 @@ class TestRunner:
                 if logs.get("status") != "in_progress":
                     break
                 time.sleep(1)
-            assert logs.get("success") is not False and isinstance(logs.get("logs"), list), (
+            assert logs.get("success") is not False and isinstance(logs.get("entries"), list), (
                 f"Device-filtered logs must remain readable regardless of device access: {logs}"
             )
 
@@ -15469,7 +15484,8 @@ class TestRunner:
                 "tool": "hub_get_logs",
                 "args": {"level": "error"},
             })
-            logs = result if isinstance(result, list) else result.get("logs", [])
+            logs = result.get("entries") if isinstance(result, dict) else None
+            assert isinstance(logs, list), f"hub_get_logs(level='error') returned no entries list: {result}"
             # New errors = entries whose name+message key was not present at run start. Counted
             # exact messages derived from observed -32602 responses are intentional negative-test
             # evidence. Consume only those lines; an extra duplicate or unrelated error remains.
@@ -16652,7 +16668,9 @@ class TestRunner:
         # run (a name+message set-delta -- no clock alignment needed; see _error_log_baseline).
         try:
             _base = self.client.call_tool("hub_manage_logs", {"tool": "hub_get_logs", "args": {"level": "error"}})
-            _blogs = _base if isinstance(_base, list) else _base.get("logs", [])
+            _blogs = _base.get("entries") if isinstance(_base, dict) else None
+            if not isinstance(_blogs, list):
+                raise ValueError(f"hub_get_logs returned no entries list: {_base}")
             self._error_log_baseline = Counter(
                 f"{e.get('name', '')}|{e.get('message', e.get('msg', ''))}" for e in _blogs)
         except Exception as exc:

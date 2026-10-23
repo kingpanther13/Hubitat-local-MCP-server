@@ -65,7 +65,7 @@ private String _effectiveBackupSetting(String key) {
 // MRTR worker or server-side resume, which restores the client that started the write.
 @groovy.transform.Field Map callerClient = null
 // JVM-live /logs/json snapshot behind hub_get_logs' stats and job modes (see _logsJsonSnapshot in
-// McpDiagnosticsLib). Keys: snapshot (the page's tables + at), fetchId
+// McpDiagnosticsLib). Keys: snapshot (the page's tables and summary + at), fetchId
 // (monotonic; fences a stale worker's publish), fetchStartedAt (in-flight marker owned by
 // fetchId), fetchError (last worker failure, at + message).
 @groovy.transform.Field static final Map LOGS_JSON_SNAPSHOT = new java.util.HashMap()
@@ -4155,7 +4155,7 @@ private Map _mrtrCommitSlice(String stateId, Map rec, Map claim, Map executionAr
         if (stored == null) {
             throw new IllegalStateException("requestState ownership was lost before its continuation checkpoint could be stored")
         }
-        // Writes only, matching the slow_ops contract: a slow read's background fetch already
+        // Writes only: a slow read's background fetch already
         // runs on its own schedule, and resuming it here would re-enter the read for no gain.
         if (_mrtrWriteTools().contains(stored.leafTool?.toString())) {
             _mrtrScheduleAutoContinue(stateId, stored)
@@ -4993,7 +4993,7 @@ def _responseTooLargeSuggestion(String toolName) {
         case "hub_get_memory_history":
             return "Pass a smaller limit (e.g. 100). limit=0 returns the entire hub ring buffer which can be thousands of entries."
         case "hub_get_logs":
-            return "Narrow with deviceId/appId/level/pattern, set a smaller limit, filter by time window (since/until), or page with cursor=''. With a list of modes, lower pageSize or ask for fewer tabs per call. The tool already truncates per-entry messages but cannot trim the entry count below the requested limit."
+            return "Narrow with deviceId/appId/level/pattern, set a smaller limit, filter by time window (since/until), or page with cursor=''. With a list of modes, lower pageSize or ask for fewer tabs per call. Past logs already cut long messages, but no mode trims the row count below the requested limit."
         case "hub_export_native_app":
             return "Large app payloads can exceed the inline cap. Pass saveAs=<filename.json> to write the export to the hub File Manager instead of returning it inline."
         case "hub_get_info":
@@ -5298,7 +5298,6 @@ def getGatewayConfig() {
                 hub_set_log_level: "verbosity debug trace quiet"
             ]
         ],
-
         hub_manage_diagnostics: [
             description: "Health monitoring, diagnostics, and radio details: hub metrics, memory history, garbage collection, device health, radio info, and state snapshots. (Z-Wave/Zigbee/Matter radio writes — repair, inclusion, config, reset — live in hub_manage_radio. Custom-rule diagnostics: use hub_get_custom_rule with detailed=true.)",
             tools: ["hub_get_metrics", "hub_get_memory_history", "hub_call_gc", "hub_get_device_health", "hub_get_radio_details", "hub_list_captured_states", "hub_delete_captured_state"],

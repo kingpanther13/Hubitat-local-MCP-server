@@ -195,12 +195,10 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    // --- hub_get_logs pattern applied to the message field (v0.8.5) --
+    // --- hub_get_logs pattern matches name and message, never the time column (v0.8.5) --
     //
-    // The pre-fix code compared the source filter against `entry.time`
-    // (timestamp), so a filter like source='Thermostat' never matched any
-    // log lines. The fix in toolGetHubLogs() checks both `entry.message`
-    // and `entry.name`.
+    // The v0.8.5 bug matched the filter against `entry.time`, so a name like
+    // 'Thermostat' never matched any log line.
 
     def "hub_get_logs pattern matches against message field, not timestamp"() {
         given:
@@ -219,7 +217,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         positive.entries.size() == 1
         positive.entries[0].message.contains('Thermostat')
 
-        when: 'source filter matches the timestamp prefix — a pre-fix hit, a post-fix miss'
+        when: 'pattern matches the timestamp prefix, which is in the time column only'
         def negative = script.toolGetHubLogs([pattern: '2026-04-19'])
 
         then: 'zero matches — the fix checks message/name, not the time column'
@@ -249,7 +247,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         positive.entries.size() == 1
         positive.entries[0].message.contains('Thermostat')
 
-        when: 'source filter matches the timestamp prefix — a pre-fix hit, a post-fix miss'
+        when: 'pattern matches the timestamp prefix, which is in the time column only'
         def negativeResp = mcpDriver.callTool('hub_get_logs', [pattern: '2026-04-19'])
 
         then:

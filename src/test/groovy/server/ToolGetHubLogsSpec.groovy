@@ -10,11 +10,11 @@ import spock.lang.Shared
  *
  * Covers: most-recent-first ordering (golden), Read master central gate,
  * appId numeric validation, deviceId/appId mutual exclusion, the
- * pattern/patterns/patternMode/since/until/limit filter pipeline, type-shape
- * validation for all new args, case-insensitivity in both directions,
- * limit truncation, naked-T ISO timestamps parsed as UTC, space-separated
- * hub-native timestamps (no T, no Z) parsed as UTC in the fallback loop, and a
- * kitchen-sink combined-filter scenario.
+ * pattern/patterns/patternMode/since/until/limit filter pipeline, argument type
+ * validation, case-insensitivity in both directions, limit truncation, past
+ * row times read in the hub's time zone, zone-less since/until read in the
+ * hub's time zone (UTC in this harness), and a kitchen-sink combined-filter
+ * scenario.
  *
  * Filter pipeline (in order): scope (hub-side) -> level -> pattern ->
  * patterns -> time-window (since/until) -> limit -> cursor.
@@ -56,6 +56,35 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         result.entries[0].type == 'app'
         result.entries[0].message.contains('[monitoring] slow request')
         !result.timeFilterUnparseable
+    }
+
+    def "a past row's own time passed back as since is read in the hub's zone and never returns that row"() {
+        given: 'a hub in New York, rows in its local time, oldest first as the hub sends them'
+        sharedLocation.timeZone = TimeZone.getTimeZone('America/New_York')
+        registerLogs(['2026-09-06 11:59:00.000\tINFO\tapp|1|A|older',
+                      '2026-09-06 12:00:00.000\tINFO\tapp|1|A|bookmark',
+                      '2026-09-06 12:01:00.000\tINFO\tapp|1|A|newer'])
+
+        when:
+        def after = script.toolGetHubLogs([since: '2026-09-06 12:00:00.000'])
+        def upTo = script.toolGetHubLogs([until: '2026-09-06 12:00:00.000'])
+
+        then: 'since is exclusive and until inclusive, both in hub time'
+        after.entries*.message*.endsWith('newer') == [true]
+        upTo.entries.collect { it.message.tokenize('|')[-1] } == ['bookmark', 'older']
+    }
+
+    def "deviceIdResolved is true when the scoped read returned rows"() {
+        given:
+        settingsMap.selectedDevices = [[id: 5]]
+        registerLogs(['2026-09-06 12:00:00.000\tINFO\tdev|5|Lamp|switched on'])
+
+        when:
+        def result = script.toolGetHubLogs([deviceId: '5'])
+
+        then:
+        result.count == 1
+        result.deviceIdResolved == true
     }
 
     // Shared convenience: registers a canned log array with the mock hub
@@ -1031,7 +1060,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         result.matched == 50
     }
 
-    def "no filters active means filteredOut and appliedFilters are absent"() {
+    def "with no filters every row is matched and returned"() {
         given:
         settingsMap.enableRead = true
         registerLogs([
@@ -1041,9 +1070,10 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         when: 'no filter args'
         def result = script.toolGetHubLogs([:])
 
-        then: 'metadata fields absent when no filters were applied'
-        !result.containsKey('filteredOut')
-        !result.containsKey('appliedFilters')
+        then:
+        result.total == 1
+        result.matched == 1
+        result.count == 1
     }
 
     // ==================== I5: empty pattern / empty patterns element ====================
@@ -1246,7 +1276,5 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
 
         then: 'all entries returned; empty patterns list treated as no-filter'
         result.entries.size() == 2
-        // empty patterns list means no filter was applied -- appliedFilters omits patterns key
-        !result.containsKey('appliedFilters') || !result.appliedFilters?.containsKey('patterns')
     }
 }

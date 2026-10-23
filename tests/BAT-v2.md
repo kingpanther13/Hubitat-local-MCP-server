@@ -1440,7 +1440,7 @@ Complex scenarios spanning multiple tools and gateways.
 }
 ```
 
-**Expected**: These reads are available from `hub_read_diagnostics`: `hub_get_metrics`, `hub_get_device_health`, and `hub_get_logs` in hub and MCP modes. A read-only client gets the whole report from the pure-read gateway; the write-bearing `hub_manage_diagnostics` / `hub_manage_logs` also expose them.
+**Expected**: These reads are available from `hub_read_diagnostics`: `hub_get_metrics`, `hub_get_device_health`, and `hub_get_logs` in past and MCP modes. A read-only client gets the whole report from the pure-read gateway; the write-bearing `hub_manage_diagnostics` / `hub_manage_logs` also expose them.
 
 ### T84 — Cross-gateway workflow
 

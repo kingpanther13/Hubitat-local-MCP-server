@@ -574,8 +574,7 @@ def runNativeLogFetch(Map job = [:]) {
 }
 
 // hub_get_logs reads tabs of the hub's Logs page (mode = the page's own tab key, or a list of them), or
-// the MCP app's own log. Each mode takes its tab's filters plus the shared MCP extras: regex
-// patterns over the tab's searchable fields, a since/until window, owner ids, limit and cursor.
+// the MCP app's own log. _logsModeArgs is the source of truth for what each mode accepts.
 private Map _logsModeArgs() {
     List shared = ["pattern", "patterns", "patternMode", "limit", "cursor", "pageSize"]
     return [
@@ -646,88 +645,55 @@ private boolean _logsRowMatches(Map row, List fields, Map patterns) {
     return patterns.all ? patterns.list.every(hit) : patterns.list.any(hit)
 }
 
-// since/until for every mode: a relative age ('30m', '2h', '7d'; at most 30 days), ISO-8601 with an
-// offset or Z, epoch milliseconds, or a zone-less timestamp, which is read as UTC.
+// since is exclusive and until inclusive, so a row's time passed back as since never returns it again.
+private boolean _logsOutsideWindow(Date at, Map query) {
+    return (query.since != null && !at.after(query.since)) || (query.until != null && at.after(query.until))
+}
+
+// since/until for past and the event tabs: a relative age ('30m', '2h', '7d'; at most 30 days),
+// ISO-8601 with an offset or Z, epoch milliseconds, or a time without a zone, read in the hub's own
+// time zone because that is how past rows give their time.
 private Date _logsTimeArg(String name, value) {
     if (value == null) return null
     if (!(value instanceof String) && !(value instanceof Number)) {
         throw new IllegalArgumentException("${name} must be a string or epoch milliseconds")
     }
     String s = value.toString().trim()
+    String formats = "use a relative age like '30m', '2h' or '1d', a time like '2026-06-23 10:00:00' (hub time) or '2026-06-23T16:00:00Z', or epoch milliseconds"
     def rel = s =~ /^(\d+)([mhd])$/
     if (rel.matches()) {
         long ms = rel.group(1).toLong() * ([m: 60000L, h: 3600000L, d: 86400000L][rel.group(2)] as Long)
         if (ms > 30L * 86400000L) {
-            throw new IllegalArgumentException("${name} exceeds the 30d cap (got '${s}'); use an ISO-8601 time for older bounds")
+            throw new IllegalArgumentException("${name} exceeds the 30d cap (got '${s}'); use a full time for older bounds")
         }
         return new Date(now() - ms)
     }
-    Date parsed = _parseSinceArg(value)
-    if (parsed != null) return parsed
-    def bare = s =~ /^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})(\.\d{3})?$/
-    if (bare.matches()) {
-        def sdf = new java.text.SimpleDateFormat(bare.group(3) ? "yyyy-MM-dd HH:mm:ss.SSS" : "yyyy-MM-dd HH:mm:ss")
-        sdf.setTimeZone(TimeZone.getTimeZone("UTC"))
-        sdf.setLenient(false)
-        return sdf.parse("${bare.group(1)} ${bare.group(2)}${bare.group(3) ?: ''}".toString())
+    if (s.isLong()) {
+        // A small bare number is a missing unit ('30' for '30m'), not a time in 1970.
+        if (s.toLong() < 946684800000L) throw new IllegalArgumentException("Cannot read ${name}='${s}' as a time: ${formats}")
+        return new Date(s.toLong())
     }
-    throw new IllegalArgumentException("Cannot parse ${name}='${s}': use a relative age like '30m', '2h' or '1d', ISO-8601 (e.g. '2026-06-23T10:00:00.000-0600' or '2026-06-23T16:00:00Z') or epoch milliseconds")
+    def stamp = s =~ /^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})(\.\d{1,3})?(.*)$/
+    if (!stamp.matches()) throw new IllegalArgumentException("Cannot parse ${name}='${s}': ${formats}")
+    // The date and time must exist: a lenient parse would roll '2026-02-30' into March.
+    def strict = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss")
+    strict.setLenient(false)
+    String zone = stamp.group(4)
+    strict.setTimeZone(zone ? TimeZone.getTimeZone("UTC") : (location?.timeZone ?: TimeZone.getTimeZone("UTC")))
+    Date local
+    try {
+        local = strict.parse("${stamp.group(1)} ${stamp.group(2)}".toString())
+    } catch (Exception e) {
+        throw new IllegalArgumentException("Cannot parse ${name}='${s}': no such date and time")
+    }
+    if (!zone) return new Date(local.time + (stamp.group(3) ? (stamp.group(3).substring(1) + "00").take(3).toLong() : 0L))
+    Date parsed = _parseSinceArg(s)
+    if (parsed == null) throw new IllegalArgumentException("Cannot parse ${name}='${s}': ${formats}")
+    return parsed
 }
 
-def toolGetHubLogs(args) {
-    Map modeArgs = _logsModeArgs()
-    List modes = args.mode instanceof List ? args.mode.collect { it?.toString() }.unique() : [args.mode == null ? "past" : args.mode.toString()]
-    if (!modes) throw new IllegalArgumentException("mode must name at least one tab")
-    for (m in modes) {
-        if (!modeArgs.containsKey(m)) {
-            throw new IllegalArgumentException("Invalid log mode: ${m}. Valid modes: ${modeArgs.keySet().join(', ')}")
-        }
-        def supplied = (modeArgs.values().flatten().unique() - modeArgs[m]).findAll { args[it] != null }
-        if (supplied) throw new IllegalArgumentException("Parameters ${supplied.join(', ')} do not apply to log mode '${m}'")
-    }
-    if (args.mode instanceof List) {
-        if (args.cursor != null) throw new IllegalArgumentException("cursor pages one mode: each listed tab returns its first page; call that mode alone with its nextCursor")
-        // Every tab is read and answered under its own key, each as its first page with its own
-        // nextCursor, so several large tabs stay under the response cap. Once a background read is pending the
-        // call is answered in_progress, so the inline tabs are skipped for this leg, while the other
-        // background reads are still started so one continuation collects them all.
-        Map results = [:]
-        boolean pending = false
-        for (m in modes) {
-            if (pending && m in ["cloudCalls", "locationEvents", "hubEvents", "status"]) continue
-            Map r
-            try {
-                Map paging = modeArgs[m].contains("pageSize") ? [cursor: "", pageSize: args.pageSize != null ? args.pageSize : 50] :
-                    modeArgs[m].contains("cursor") ? [cursor: ""] : [:]
-                r = toolGetHubLogs(args + [mode: m] + paging)
-            } catch (IllegalArgumentException e) {
-                throw e
-            } catch (Exception e) {
-                r = [success: false, isError: true, error: e.message ?: e.class.simpleName]
-            }
-            if (r.status == "in_progress") pending = true
-            r.remove("mode")
-            results.put(m, r)
-        }
-        if (pending) {
-            return [status: "in_progress", tool: "hub_get_logs", retryable: true,
-                    note: "Some tabs are still loading on the hub. Continue with requestState, or repeat the same call on a legacy client."]
-        }
-        Map out = [modes: results]
-        // The Logs page tabs share one fetch: state its uptime and snapshot once, not per tab.
-        List shared = results.values().findAll { it.snapshot instanceof Map && it.snapshot.background != null }
-        if (shared.size() > 1 && shared*.snapshot*.fetchedAt.unique(false).size() == 1 && shared*.uptime.unique(false).size() == 1) {
-            out.uptime = shared[0].uptime
-            out.snapshot = shared[0].snapshot
-            shared.each { it.remove("uptime"); it.remove("snapshot") }
-        }
-        List failed = results.findAll { k, v -> v.isError == true }.collect { it.key }
-        if (failed) out.failedModes = failed
-        return out
-    }
-    String mode = modes[0]
-    if (mode == "mcp") return toolGetDebugLogs(args)
-    if (mode == "status") return toolGetLoggingStatus(args)
+// Validate one log tab's arguments and build its query. Throws before anything is read.
+private Map _logsQuery(Map args, String mode) {
     if (args.deviceId != null && args.appId != null) {
         throw new IllegalArgumentException("deviceId and appId are mutually exclusive: set only one")
     }
@@ -747,31 +713,109 @@ def toolGetHubLogs(args) {
     if (since != null && until != null && !until.after(since)) {
         throw new IllegalArgumentException("until must be later than since (relative ages count back from now, so since='2h' is earlier than until='1h')")
     }
-    // Defaults follow the tools these modes replaced: newest 100 log lines and events, the 20 busiest
-    // stat rows, and every job, hub action and cloud-call row.
-    int limit = args.limit != null ? (args.limit as Integer) : (mode in ["devices", "apps"] ? 20 : mode in ["past", "locationEvents", "hubEvents"] ? 100 : 0)
-    if (limit < 0) throw new IllegalArgumentException("limit must be 0 (no limit) or more")
-    if (args.pageSize != null && (!(args.pageSize instanceof Integer || args.pageSize instanceof Long) || (args.pageSize as Integer) < 1 || (args.pageSize as Integer) > 100)) {
+    if (args.limit != null && (!(args.limit instanceof Integer || args.limit instanceof Long) || (args.limit as Long) < 0L || (args.limit as Long) > Integer.MAX_VALUE)) {
+        throw new IllegalArgumentException("limit must be a whole number: 0 for every row, or the most rows to return (got '${args.limit}')")
+    }
+    if (args.pageSize != null && (!(args.pageSize instanceof Integer || args.pageSize instanceof Long) || (args.pageSize as Long) < 1L || (args.pageSize as Long) > 100L)) {
         throw new IllegalArgumentException("pageSize must be a whole number from 1 to 100 (got '${args.pageSize}')")
     }
-    // pageSize alone starts paging from the first row.
-    def cursor = args.cursor != null ? args.cursor : (args.pageSize != null ? "" : null)
-    Map query = [patterns: patterns, since: since, until: until, limit: limit, deviceId: deviceId, appId: appId,
-                 sortBy: args.sortBy ?: "pct", level: args.level?.toString()?.toLowerCase(),
-                 cursor: cursor, pageSize: args.pageSize != null ? (args.pageSize as Integer) : 100]
+    // Defaults: the newest 100 log lines and events, the 20 busiest stat rows, every other row.
+    int limit
+    if (args.limit != null) limit = args.limit as Integer
+    else if (mode in ["devices", "apps"]) limit = 20
+    else if (mode in ["past", "locationEvents", "hubEvents"]) limit = 100
+    else limit = 0
+    return [patterns: patterns, since: since, until: until, limit: limit, deviceId: deviceId, appId: appId,
+            sortBy: args.sortBy ?: "pct", level: args.level?.toString()?.toLowerCase(),
+            // pageSize alone starts paging from the first row.
+            cursor: args.cursor != null ? args.cursor : (args.pageSize != null ? "" : null),
+            pageSize: args.pageSize != null ? (args.pageSize as Integer) : 100]
+}
+
+def toolGetHubLogs(args) {
+    Map modeArgs = _logsModeArgs()
+    List allModeArgs = modeArgs.values().flatten().unique()
+    // Internal request keys start with "__". Any other unknown key is refused, so a filter a client
+    // still sends from an older catalog (source, type) is never silently ignored.
+    List unknown = args.keySet().collect { it.toString() }.findAll { !(it in allModeArgs) && it != "mode" && !it.startsWith("__") }
+    if (unknown) {
+        throw new IllegalArgumentException("Unknown parameter${unknown.size() == 1 ? '' : 's'} for hub_get_logs: ${unknown.join(', ')}. Search a row's name and text with pattern, and scope with deviceId or appId.")
+    }
+    List modes = args.mode instanceof List ? args.mode.collect { it?.toString() }.unique() : [args.mode == null ? "past" : args.mode.toString()]
+    if (!modes) throw new IllegalArgumentException("mode must name at least one tab")
+    for (m in modes) {
+        if (!modeArgs.containsKey(m)) {
+            throw new IllegalArgumentException("Invalid log mode: ${m}. Valid modes: ${modeArgs.keySet().join(', ')}")
+        }
+        def supplied = (allModeArgs - modeArgs[m]).findAll { args[it] != null }
+        if (supplied) throw new IllegalArgumentException("Parameters ${supplied.join(', ')} do not apply to log mode '${m}'")
+    }
+    if (args.mode instanceof List) {
+        if (args.cursor != null) throw new IllegalArgumentException("cursor pages one mode: each listed tab returns its first page; call that mode alone with its nextCursor")
+        // Validate every tab before reading any of them.
+        modes.findAll { !(it in ["mcp", "status"]) }.each { _logsQuery(args, it) }
+        // Every tab is answered under its own key as its first page with its own nextCursor. Once a
+        // background read is pending the call answers in_progress, so the inline tabs are skipped for
+        // this leg while the other background reads still start, and one continuation collects them all.
+        Map results = [:]
+        boolean pending = false
+        for (m in modes) {
+            if (pending && m in ["cloudCalls", "locationEvents", "hubEvents", "status"]) continue
+            Map paging = [:]
+            if (modeArgs[m].contains("pageSize")) paging = [cursor: "", pageSize: args.pageSize != null ? args.pageSize : 50]
+            else if (modeArgs[m].contains("cursor")) paging = [cursor: ""]
+            Map r
+            try {
+                r = toolGetHubLogs(args + [mode: m] + paging)
+            } catch (IllegalArgumentException e) {
+                throw e
+            } catch (Exception e) {
+                mcpLogError("monitoring", "hub_get_logs tab ${m} failed", e)
+                r = [success: false, isError: true, error: e.message ?: e.class.simpleName, note: "Call hub_get_logs(mode='${m}') alone to retry it."]
+            }
+            if (r.status == "in_progress") pending = true
+            r.remove("mode")
+            results.put(m, r)
+        }
+        if (pending) {
+            return [status: "in_progress", tool: "hub_get_logs", retryable: true,
+                    note: "Some tabs are still loading on the hub. Continue with requestState, or repeat the same call on a legacy client."]
+        }
+        Map out = [modes: results]
+        // The Logs page tabs share one fetch: state its uptime and snapshot once, not per tab.
+        List shared = results.values().findAll { it.snapshot instanceof Map && it.snapshot.background != null }
+        if (shared.size() > 1 && shared*.snapshot*.fetchedAt.unique(false).size() == 1 && shared*.uptime.unique(false).size() == 1) {
+            out.uptime = shared[0].uptime
+            out.snapshot = shared[0].snapshot
+            shared.each { it.remove("uptime"); it.remove("snapshot") }
+        }
+        List failed = results.findAll { k, v -> v.isError == true }.collect { it.key }
+        if (failed) out.failedModes = failed
+        if (failed && failed.size() == results.size()) {
+            out.success = false
+            out.isError = true
+            out.error = "Every listed tab failed: ${failed.join(', ')}"
+        }
+        return out
+    }
+    String mode = modes[0]
+    if (mode == "mcp") return toolGetDebugLogs(args)
+    if (mode == "status") return toolGetLoggingStatus(args)
+    Map query = _logsQuery(args, mode)
     if (mode == "past") {
         Map past = _pastLogs(args, query)
-        if (deviceId && past.status != "in_progress") {
+        if (query.deviceId && past.status != "in_progress") {
             // The hub answers [] for an unknown id and for a quiet device alike; an empty scoped read
             // checks the id once so a typo does not read as a silent device.
-            past.deviceIdResolved = past.matched ? true : (_fetchDeviceFullJson(deviceId)?.device?.id?.toString() == deviceId)
+            past.deviceIdResolved = past.matched > 0 || _fetchDeviceFullJson(query.deviceId)?.device?.id?.toString() == query.deviceId
         }
         return past
     }
 
     List rows
     Map result = [mode: mode]
-    if (mode in ["devices", "apps", "scheduledJobs", "runningJobs", "hubActions"]) {
+    Map logsJsonTables = [devices: "deviceStats", apps: "appStats", scheduledJobs: "jobs", runningJobs: "runningJobs", hubActions: "hubCommands"]
+    if (logsJsonTables.containsKey(mode)) {
         def snap
         try {
             snap = _logsJsonSnapshot(args)
@@ -782,7 +826,7 @@ def toolGetHubLogs(args) {
         if (snap.state == "failed") return _logsJsonFailure("hub_get_logs", snap.error)
         if (snap.state == "pending") return _logsJsonInProgress("hub_get_logs")
         Map data = snap.snapshot
-        rows = data[[devices: "deviceStats", apps: "appStats", scheduledJobs: "jobs", runningJobs: "runningJobs", hubActions: "hubCommands"][mode]] ?: []
+        rows = data[logsJsonTables[mode]] ?: []
         result.uptime = data.uptime
         if (mode == "devices") result.summary = [devicesUptime: data.devicesUptime, totalDevicesRuntime: data.totalDevicesRuntime, devicePct: data.devicePct]
         if (mode == "apps") result.summary = [appsUptime: data.appsUptime, totalAppsRuntime: data.totalAppsRuntime, appPct: data.appPct]
@@ -792,9 +836,11 @@ def toolGetHubLogs(args) {
         String path = [cloudCalls: "/logs/cloudCalls/json", locationEvents: "/logs/eventsJson", hubEvents: "/hub/eventsJson"][mode]
         def parsed
         try {
-            String text = (mode == "cloudCalls" ? hubInternalGet("/logs/cloudCalls/json", null, 30) :
-                mode == "hubEvents" ? hubInternalGet("/hub/eventsJson", null, 30) : hubInternalGet("/logs/eventsJson", null, 30))?.toString()
-            parsed = text?.trim() ? new groovy.json.JsonSlurper().parseText(text) : null
+            def text
+            if (mode == "cloudCalls") text = hubInternalGet("/logs/cloudCalls/json", null, 30)
+            else if (mode == "hubEvents") text = hubInternalGet("/hub/eventsJson", null, 30)
+            else text = hubInternalGet("/logs/eventsJson", null, 30)
+            parsed = text?.toString()?.trim() ? new groovy.json.JsonSlurper().parseText(text.toString()) : null
         } catch (Exception e) {
             mcpLogError("monitoring", "${path} read failed", e)
             return [success: false, isError: true, error: "Could not read ${path}: ${e.message ?: e.class.simpleName}",
@@ -811,7 +857,7 @@ def toolGetHubLogs(args) {
             if (parsed.startedAt != null) result.countingSince = formatTimestamp(parsed.startedAt as Long)
         }
     }
-    return result + _logsPage(mode, rows, query, query.cursor)
+    return result + _logsPage(mode, rows, query)
 }
 
 // Apps from /logs/cloudCalls/json, each with its hourly counts (newest first, at most 48),
@@ -832,7 +878,7 @@ private List _cloudCallRows(Map raw) {
 
 // Filter, sort, limit and page one tab's native rows. Rows keep the hub's own field names; jobs,
 // running jobs and hub actions gain an owner read from their link.
-private Map _logsPage(String mode, List rows, Map query, cursor) {
+private Map _logsPage(String mode, List rows, Map query) {
     List fields = _logsSearchFields(mode)
     boolean owned = mode in ["scheduledJobs", "runningJobs", "hubActions"]
     boolean timed = mode in ["locationEvents", "hubEvents"]
@@ -840,24 +886,27 @@ private Map _logsPage(String mode, List rows, Map query, cursor) {
     List matched = []
     for (row in rows) {
         if (!(row instanceof Map)) continue
-        Map entry = owned && _logsOwner(row.link) != null ? row + [owner: _logsOwner(row.link)] : row
+        Map owner = owned ? _logsOwner(row.link) : null
+        Map entry = owner != null ? row + [owner: owner] : row
         if (query.deviceId || query.appId) {
-            def owner = owned ? entry.owner : [type: mode == "devices" ? "device" : "app", id: row.id]
-            String wantType = query.deviceId ? "device" : "app"
-            if (owner?.type != wantType || owner.id?.toString() != (query.deviceId ?: query.appId)) continue
+            Map scope = owned ? owner : [type: mode == "devices" ? "device" : "app", id: row.id]
+            if (scope?.type != (query.deviceId ? "device" : "app") || scope.id?.toString() != (query.deviceId ?: query.appId)) continue
         }
         if (!_logsRowMatches(entry, fields, query.patterns)) continue
         if (timed && (query.since != null || query.until != null)) {
             Date at = row.date != null ? _parseSinceArg(row.date) : null
             if (at == null) unparseable++
-            else if ((query.since != null && !at.after(query.since)) || (query.until != null && at.after(query.until))) continue
+            else if (_logsOutsideWindow(at, query)) continue
         }
         matched << entry
     }
-    if (mode in ["devices", "apps"]) matched = _logsSortStats(matched, query.sortBy)
+    if (mode in ["devices", "apps"]) {
+        if (query.sortBy == "name") matched.sort { (it.name ?: "").toString().toLowerCase() }
+        else matched.sort { -((it[query.sortBy] ?: 0) as double) }
+    }
     Map out = [total: rows.size(), matched: matched.size()]
     if (query.limit > 0 && matched.size() > query.limit) matched = matched.take(query.limit)
-    def paged = _paginateList(matched, cursor, query.pageSize as int, "hub_get_logs")
+    def paged = _paginateList(matched, query.cursor, query.pageSize as int, "hub_get_logs")
     // Null fields are left out of each row and named once in nullFields, so a row without a listed
     // field had it null (location events, for example, have no device fields).
     Set nullFields = new TreeSet()
@@ -872,13 +921,6 @@ private Map _logsPage(String mode, List rows, Map query, cursor) {
     if (paged.nextCursor != null) out.nextCursor = paged.nextCursor
     if (unparseable > 0) out.timeFilterUnparseable = unparseable
     return out
-}
-
-private List _logsSortStats(List rows, String sortBy) {
-    // Sort a copy: the snapshot's lists are shared by every concurrent reader.
-    List sorted = new ArrayList(rows)
-    if (sortBy == "name") return sorted.sort { (it.name ?: "").toString().toLowerCase() }
-    return sorted.sort { -((it[sortBy] ?: 0) as double) }
 }
 
 // Past logs: the hub's log history, newest first. deviceId/appId scope the read on the hub, the
@@ -919,15 +961,17 @@ private Map _pastLogs(Map args, Map query) {
         boolean hubLocal = entry.remove("hubLocalTime") == true
         entry.remove("sourceId")
         if (query.level && query.level != "all" && entry.level?.toLowerCase() != query.level) continue
-        if (!_logsRowMatches(entry, ["name", "message"], query.patterns)) continue
+        if (!_logsRowMatches(entry, _logsSearchFields("past"), query.patterns)) continue
         if (query.since != null || query.until != null) {
             Date at = _pastLogTime(entry, hubLocal ? hubZone : TimeZone.getTimeZone("UTC"))
             if (at == null) unparseable++
-            else if ((query.since != null && !at.after(query.since)) || (query.until != null && at.after(query.until))) continue
+            else if (_logsOutsideWindow(at, query)) continue
         }
         entries << entry
     }
-    Map out = [mode: "past"] + _logsPage("past", entries, query + [patterns: [single: null, list: []], since: null, until: null, deviceId: null, appId: null], query.cursor)
+    // The rows are already filtered above (the hub scoped the read), so _logsPage only limits and
+    // pages them here.
+    Map out = [mode: "past"] + _logsPage("past", entries, query + [patterns: [single: null, list: []], since: null, until: null, deviceId: null, appId: null])
     out.total = rows.size()
     if (unparseable > 0) out.timeFilterUnparseable = unparseable
     if (fetchedAt != null) out.snapshot = [fetchedAt: fetchedAt, ageMs: Math.max(0L, now() - (fetchedAt as Long))]
@@ -970,14 +1014,26 @@ def toolDeleteLogs(args) {
         mcpLog("info", "server", "MCP log cleared (${cleared.clearedCount != null ? "${cleared.clearedCount} entries" : 'entry count not loaded'})")
         return [success: true, mode: mode] + cleared
     }
-    String jobId = args.jobId instanceof String ? args.jobId.trim() : null
+    if (args.jobId != null && !(args.jobId instanceof String)) throw new IllegalArgumentException("jobId must be a string, e.g. app12Recur.poll")
+    String jobId = args.jobId?.trim()
     if (!jobId) throw new IllegalArgumentException("jobId is required: the id of a row from hub_get_logs(mode='scheduledJobs'), e.g. app12Recur.poll")
     def key = jobId =~ /^([^.]+)\.(.+)$/
     if (!key.matches()) throw new IllegalArgumentException("jobId '${jobId}' is not a scheduled-job id (group.name, e.g. app12Recur.poll)")
     if (jobId.startsWith("system.")) throw new IllegalArgumentException("System jobs cannot be deleted; the Logs page offers no Delete for them either")
+    def ownerMatch = key.group(1) =~ /^(app|dev)(\d+)(Recur|Once)$/
+    Map owner = ownerMatch.matches() ? [type: ownerMatch.group(1) == "dev" ? "device" : "app", id: ownerMatch.group(2) as Integer] : null
+    // A protected app's timers are guarded like the rest of it, and a client token may not touch
+    // the MCP app's own (its background workers and update check).
+    if (owner?.type == "app") {
+        String ownerId = owner.id.toString()
+        if (callerClient != null && ownerId == app.id?.toString()) {
+            throw new IllegalArgumentException("A per-client access token cannot delete the MCP Rule Server app's own scheduled jobs.")
+        }
+        if (_protectedAppIds().contains(ownerId)) {
+            throw new IllegalArgumentException("App ${ownerId} is protected, so its scheduled jobs cannot be deleted. Manage Protected apps on the Advanced page of the MCP server's Hubitat app.")
+        }
+    }
     if (args.confirm != true) throw new IllegalArgumentException("Deleting scheduled job ${jobId} needs confirm=true")
-    def group = key.group(1) =~ /^(app|dev)(\d+)(Recur|Once)$/
-    Map owner = group.matches() ? [type: group.group(1) == "dev" ? "device" : "app", id: group.group(2) as Integer] : null
     String reply
     try {
         reply = hubInternalGet("/hub/advanced/deleteScheduledJob", [id: jobId], 30)?.toString()?.trim()
@@ -996,7 +1052,7 @@ def toolDeleteLogs(args) {
     }
     if (reply == "job does not exist") {
         return [success: false, isError: true, jobId: jobId, error: "No scheduled job ${jobId} exists",
-                note: "Read current ids with hub_get_logs(mode='scheduledJobs'); a one-time job is gone once it has run."]
+                note: "A one-time job is gone once it has run, and an earlier delete of it may already have worked. Read current ids with hub_get_logs(mode='scheduledJobs')."]
     }
     return [success: false, isError: true, jobId: jobId, error: "The hub did not delete ${jobId}: ${reply ?: 'empty reply'}"]
 }
@@ -2734,10 +2790,10 @@ def _getAllToolDefinitions_partDiagnostics() {
                     level: [type: "string", enum: ["trace", "debug", "info", "warn", "error", "all"], description: "past and mcp."],
                     deviceId: [type: "string", description: "Numeric device id to scope past logs, stats or jobs to."],
                     appId: [type: "string", description: "Numeric app id, the same way."],
-                    pattern: [type: "string", description: "Case-insensitive regex over the row's name and text."],
+                    pattern: [type: "string", description: "Case-insensitive regex over the row's name, and its message, methodName or description where it has one."],
                     patterns: [type: "array", items: [type: "string"], description: "More regexes, combined by patternMode."],
                     patternMode: [type: "string", enum: ["any", "all"], description: "Default any."],
-                    since: [type: ["string", "integer"], description: "past and events: rows after this time, so a returned date never repeats. '30m', '2h', '7d', ISO-8601 (no zone = UTC) or epoch ms."],
+                    since: [type: ["string", "integer"], description: "past and events: rows after this time, so a returned time never repeats. '30m', '2h', '7d', a time as rows show it (no zone = hub time), ISO-8601 with a zone, or epoch ms."],
                     until: [type: ["string", "integer"], description: "Rows at or before this time."],
                     sortBy: [type: "string", enum: ["pct", "count", "total", "stateSize", "name"], description: "devices and apps; default pct (% busy)."],
                     limit: [type: "integer", description: "Max rows; 0 = all."],

@@ -2680,6 +2680,44 @@ class MrtrContinuationSpec extends ToolSpecBase {
         rec.expiresAt == (inner.snapshot.fetchedAt as Long) + 30000L
     }
 
+    def "a hub_get_logs list whose tabs were fetched at different times bounds its replay by the older fetch"() {
+        given:
+        settingsMap.useGateways = true
+        settingsMap.relayBudgetMs = 6000
+        script.metaClass._isCloudRequest = { -> true }
+        def fetches = new AtomicInteger(0)
+        registerLogsJson(fetches, 2)
+        hubGet.register('/logs/past/json') { params -> groovy.json.JsonOutput.toJson(['2026-09-06 12:00:00.000\tINFO\tapp|1|A|hello']) }
+        def virtualNow = new AtomicLong(1234567890000L)
+        NOW_OVERRIDE.set({ -> virtualNow.get() })
+        PAUSE_EXECUTION_OVERRIDE.set({ Long ms -> virtualNow.addAndGet(ms) })
+        def args = [tool: 'hub_get_logs', args: [mode: ['past', 'scheduledJobs']]]
+
+        when: 'both background reads are started in the first leg'
+        String stateId = modernCall('hub_read_diagnostics', args).result.requestState
+        def pastJob = runInMillisCalls.find { it[1] == 'runNativeLogFetch' }
+        def jobsJob = runInMillisCalls.find { it[1] == 'runLogsJsonFetch' }
+
+        then:
+        stateId
+        pastJob && jobsJob
+
+        when: 'the past read lands first, the Logs page 10 s later'
+        script.runNativeLogFetch(pastJob[2].data as Map)
+        long pastAt = virtualNow.get()
+        virtualNow.addAndGet(10000L)
+        script.runLogsJsonFetch(jobsJob[2].data as Map)
+        def done = modernCall('hub_read_diagnostics', args, stateId)
+        def inner = mcpDriver.parseInner(done)
+        def rec = (atomicStateMap.mrtrRequests as Map)[stateId] as Map
+
+        then:
+        done.result.resultType == 'complete'
+        inner.modes.past.count == 1
+        inner.modes.scheduledJobs.count == 2
+        rec.expiresAt == pastAt + 30000L
+    }
+
     def "a budgeted hub_get_logs job read continues through requestState while its background fetch runs, holding no write slot"() {
         given: 'the Write master is OFF (a read must not need it) and the write cap is already full'
         settingsMap.enableRead = true

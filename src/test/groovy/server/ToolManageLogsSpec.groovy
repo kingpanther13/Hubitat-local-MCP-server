@@ -9,7 +9,7 @@ import support.TestLocation
 import support.ToolSpecBase
 
 /**
- * Spec for the hub_manage_logs gateway tools (hubitat-mcp-server.groovy):
+ * Spec for the hub_manage_logs gateway tools (libraries/mcp-diagnostics-lib.groovy, mcp-debug-logging-lib.groovy):
  *
  * - toolGetHubLogs         -> hub_get_logs          (additional coverage beyond ToolGetHubLogsSpec)
  * - toolGetHubLogs         -> hub_get_logs (Logs page tabs: events, stats, jobs, hub actions)
@@ -421,6 +421,51 @@ class ToolManageLogsSpec extends ToolSpecBase {
         !whole.containsKey('nextCursor')
     }
 
+    def "hub_get_logs with a list of modes validates every tab before reading any"() {
+        given:
+        hubGet.register('/logs/json') { params -> logsJsonWithJobs(1) }
+
+        when:
+        script.toolGetHubLogs([mode: ['devices', 'past'], level: 'bogus'])
+
+        then:
+        thrown(IllegalArgumentException)
+        hubGet.calls.empty
+    }
+
+    def "hub_get_logs with a list of modes is an error when every tab fails, and keeps the other tabs when one does"() {
+        given:
+        hubGet.register('/logs/past/json') { params -> throw new RuntimeException('store down') }
+        hubGet.register('/logs/eventsJson') { params -> LOCATION_ROWS }
+        hubGet.register('/hub/eventsJson') { params -> '{"a":1}' }
+
+        when:
+        def one = script.toolGetHubLogs([mode: ['past', 'locationEvents']])
+        def all = script.toolGetHubLogs([mode: ['past', 'hubEvents']])
+
+        then:
+        one.failedModes == ['past']
+        !one.containsKey('isError')
+        one.modes.past.note.contains("hub_get_logs(mode='past')")
+        one.modes.locationEvents.count == 3
+        all.isError == true
+        all.success == false
+        all.error.contains('Every listed tab failed')
+    }
+
+    def "hub_get_logs with past and mcp listed returns both, each as its first page"() {
+        given:
+        hubGet.register('/logs/past/json') { params -> JsonOutput.toJson(['2026-09-06 12:00:00.000\tINFO\tapp|1|A|hello']) }
+
+        when:
+        def result = script.toolGetHubLogs([mode: ['past', 'mcp']])
+
+        then:
+        result.modes.keySet() as List == ['past', 'mcp']
+        result.modes.past.count == 1
+        result.modes.mcp.entries instanceof List
+    }
+
     @Unroll
     def "hub_get_logs with a list of modes refuses #args before reading anything"() {
         when:
@@ -592,6 +637,15 @@ class ToolManageLogsSpec extends ToolSpecBase {
         'scheduledJobs'  | [pageSize: '20']                || 'pageSize must be a whole number from 1 to 100'
         'scheduledJobs'  | [pageSize: 20.5]                || 'pageSize must be a whole number from 1 to 100'
         'mcp'            | [pageSize: 20]                  || 'do not apply'
+        'past'           | [source: 'Lock']                || 'Unknown parameter for hub_get_logs: source'
+        'devices'        | [type: 'app', includeCloudCalls: true] || 'Unknown parameters for hub_get_logs: type, includeCloudCalls'
+        'past'           | [limit: 'abc']                  || 'limit must be a whole number'
+        'past'           | [limit: -1]                     || 'limit must be a whole number'
+        'scheduledJobs'  | [pageSize: 4294967301L]         || 'pageSize must be a whole number from 1 to 100'
+        'past'           | [since: '2026-02-30 10:00:00']  || 'no such date and time'
+        'past'           | [since: '2026-13-01T00:00:00Z'] || 'no such date and time'
+        'past'           | [since: '30']                   || "Cannot read since='30' as a time"
+        'past'           | [until: 30]                     || "Cannot read until='30' as a time"
     }
 
     def "hub_list_device_events returns location events when deviceId is omitted (reads /logs/eventsJson)"() {
@@ -2120,11 +2174,52 @@ class ToolManageLogsSpec extends ToolSpecBase {
         label                | args                                                                || says
         'no mode'            | [jobId: 'app1Once.run', confirm: true]                              || "mode must be 'mcp'"
         'no jobId'           | [mode: 'scheduledJobs', confirm: true]                              || 'jobId is required'
-        'a non-string jobId' | [mode: 'scheduledJobs', jobId: 5, confirm: true]                    || 'jobId is required'
+        'a non-string jobId' | [mode: 'scheduledJobs', jobId: 5, confirm: true]                    || 'jobId must be a string'
         'a malformed jobId'  | [mode: 'scheduledJobs', jobId: 'nodot', confirm: true]              || 'is not a scheduled-job id'
         'a system job'       | [mode: 'scheduledJobs', jobId: 'system.sunJob', confirm: true]      || 'System jobs cannot be deleted'
         'no confirm'         | [mode: 'scheduledJobs', jobId: 'app1Once.run']                      || 'needs confirm=true'
         'jobId on mcp'       | [mode: 'mcp', jobId: 'app1Once.run']                                || "apply to mode='scheduledJobs' only"
+    }
+
+    def "hub_delete_logs refuses a protected app's job, and a client token the MCP app's own, before sending anything"() {
+        given:
+        settingsMap.protectedAppIds = ['42']
+        atomicStateMap.protectedAppsPolicy = [ids: ['42']]
+
+        when:
+        script.toolDeleteLogs([mode: 'scheduledJobs', jobId: 'app42Recur.poll', confirm: true])
+
+        then:
+        def protectedEx = thrown(IllegalArgumentException)
+        protectedEx.message.contains('App 42 is protected')
+
+        when:
+        script.callerClient = [id: 'c1', label: 'client']
+        script.toolDeleteLogs([mode: 'scheduledJobs', jobId: "app${script.app.id}Once.runLogsJsonFetch".toString(), confirm: true])
+
+        then:
+        def selfEx = thrown(IllegalArgumentException)
+        selfEx.message.contains("own scheduled jobs")
+        hubGet.calls.empty
+
+        cleanup:
+        script.callerClient = null
+    }
+
+    def "hub_delete_logs keeps the cached Logs page when the delete request itself fails"() {
+        given:
+        hubGet.register('/logs/json') { params -> logsJsonWithJobs(1) }
+        hubGet.register('/hub/advanced/deleteScheduledJob') { params -> throw new RuntimeException('timeout') }
+        script.toolGetHubLogs([mode: 'scheduledJobs'])
+
+        when:
+        def result = script.toolDeleteLogs([mode: 'scheduledJobs', jobId: 'app40Recur.poll', confirm: true])
+
+        then:
+        result.success == false
+        result.error.contains('The delete request failed')
+        result.note.contains('before retrying')
+        (scriptStaticField('LOGS_JSON_SNAPSHOT') as Map).containsKey('snapshot')
     }
 
     @Unroll
@@ -2391,6 +2486,22 @@ class ToolManageLogsSpec extends ToolSpecBase {
     }
 
     // -------- hub_delete_logs: the MCP log --------
+
+    def "hub_get_logs mode=mcp with limit 0 returns every stored entry"() {
+        given:
+        seedDebugLogHistory([
+            entries: (1..60).collect { [timestamp: it as Long, level: 'info', component: 'c', message: "m${it}".toString()] },
+            config: [logLevel: 'info', maxEntries: 100]
+        ])
+
+        when:
+        def all = script.toolGetHubLogs([mode: 'mcp', limit: 0])
+        def some = script.toolGetHubLogs([mode: 'mcp', limit: 5])
+
+        then:
+        all.count == 60
+        some.count == 5
+    }
 
     def "hub_delete_logs mode=mcp clears loaded MCP history and reports the count"() {
         given: 'logLevel=debug so the post-clear confirmation mcpLog write is retained'
