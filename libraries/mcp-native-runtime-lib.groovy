@@ -71,8 +71,7 @@ private Object _nrComparableSetting(String type, Object value) {
     if (value == null) return null
     if (type == 'number' || type == 'decimal') return value.toString().isBigDecimal() ? new BigDecimal(value.toString()).stripTrailingZeros().toPlainString() : value.toString()
     if (type == 'bool') return value.toString().toLowerCase()
-    // Rule Machine stores a time input as the wall clock (HH:mm); a dated input loses its date and offset on
-    // save, so compare clocks only.
+    // Rule Machine keeps a time setting as the hub-local clock: a dated or offset input is converted to the hub timezone and its date dropped, so compare hub-local clocks only.
     if (type == 'time') {
         String clock = value.toString()
         if (clock ==~ /(?:[01][0-9]|2[0-3]):[0-5][0-9]/) return clock + ':00.000'

@@ -421,10 +421,10 @@ Map _nmUpsertAction(Long ruleId, Map row) {
     if (editing && !(prior instanceof Map)) throw new IllegalArgumentException('Native action does not exist')
     if (!editing && prior != null) throw new IllegalArgumentException('Native action allocation slot is already occupied')
     if (waitEvents && editing && (!(prior.wait instanceof List) || prior.wait.size() != row.events.size())) throw new IllegalArgumentException('Editing waits currently requires the existing event count')
-    if (!editing && row.subtype in ['getIfThen', 'getElseIf', 'getWaitRule'] && !row.containsKey('expression')) throw new IllegalArgumentException('New expression actions require expression tokens')
+    if (!editing && row.subtype in ND_EXPRESSION_SUBTYPES && !row.containsKey('expression')) throw new IllegalArgumentException('New expression actions require expression tokens')
     String expectedExpressionId = null
     if (row.containsKey('expression')) {
-        if (!(row.subtype in ['getIfThen', 'getElseIf', 'getWaitRule'])) throw new IllegalArgumentException('Unsupported native expression action')
+        if (!(row.subtype in ND_EXPRESSION_SUBTYPES)) throw new IllegalArgumentException('Unsupported native expression action')
         _nmTokens(row.expression as List, before.capabsfalse instanceof Map ? before.capabsfalse : [:])
     }
     String conditionId = row.containsKey('condition') ? _nmId(row.condition) : (editing && prior.cond ? prior.cond.toString() : null)
@@ -572,15 +572,14 @@ private boolean _nmWaitDuration(Long ruleId, String eventId) {
 }
 
 Map _nmAddTerminator(Long ruleId, String subtype) {
-    if (!(subtype in ['endIf', 'else', 'endRep'])) throw new IllegalArgumentException('Unsupported structural action')
+    if (!ND_TERMINATOR_METHODS.containsKey(subtype)) throw new IllegalArgumentException('Unsupported structural action')
     Map before = _nrState(ruleId)
     String id = _nmId(before.actNdx)
     List priorOrder = before.actionList instanceof List ? before.actionList.collect { it.toString() } : []
     _nrHandle(ruleId).addAction(subtype)
     Map after = _nrState(ruleId)
     def action = _nmEntry(after.actions instanceof Map ? after.actions : [:], id)
-    Map expected = [endIf: 'getEndIf', 'else': 'getElse', endRep: 'getEndRepeat']
-    boolean verified = action instanceof Map && action.method == expected.get(subtype) && after.actionList instanceof List && after.actionList.collect { it.toString() } == priorOrder + [id]
+    boolean verified = action instanceof Map && action.method == ND_TERMINATOR_METHODS.get(subtype) && after.actionList instanceof List && after.actionList.collect { it.toString() } == priorOrder + [id]
     [success: verified, id: id, action: action, partial: !verified, verificationNeeded: !verified]
 }
 

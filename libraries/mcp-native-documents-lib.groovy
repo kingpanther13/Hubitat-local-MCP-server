@@ -283,16 +283,14 @@ private void _ndPreflight(Long id, List changes) {
             if ((change.part == 'action' && !value.containsKey('id')) || change.part == 'terminator') allocatedActions = true
             if (change.part == 'trigger' && !value.containsKey('id')) allocatedTriggers = true
             if (change.part in ['action', 'terminator']) {
-                String actionId = value.containsKey('id') ? value.id.toString() : "new:${newAction++}".toString()
-                if (!value.containsKey('id')) projectedOrder << actionId
+                boolean newRow = !value.containsKey('id')
+                String actionId = newRow ? "new:${newAction++}".toString() : value.id.toString()
+                if (newRow) projectedOrder << actionId
                 String method = change.part == 'terminator' ? ND_TERMINATOR_METHODS.get(value.subtype) : value.subtype
                 def prior = projectedActions.get(actionId)
+                // Merge over the prior record so a second edit of the same existing row still sees its wait events and condition.
                 Map record = (prior instanceof Map ? [:] + prior : [:]) + [method: method]
-                if (change.part == 'action' && !value.containsKey('id')) {
-                    if (value.containsKey('condition')) record.cond = value.condition.toString()
-                    // Placeholder events let a later edit of this wait in the same batch pass the event-count check.
-                    if (value.subtype == 'getWaitEvents' && value.events instanceof List) record.wait = value.events.collect { null }
-                }
+                if (change.part == 'action' && newRow && value.containsKey('condition')) record.cond = value.condition.toString()
                 projectedActions.put(actionId, record)
             }
             if (change.part == 'order') {
@@ -393,7 +391,11 @@ private Map _ndApply(Long id, List changes, boolean created) {
         def structuralIssues = _ndStructuralIssues(renderedState, _nrHandle(id).getSetting('useST') == true)
         structuralIssues.addAll(_nmValidateStructure(id, renderedState).structuralIssues ?: [])
         if (structuralIssues) throw new IllegalStateException(structuralIssues.join('; '))
-        if (!(health instanceof Map) || health.broken != false) return [success: false, partial: true, rule_id: id, created: created, results: outcomes, broken: health instanceof Map ? health.broken : null, error: 'Native rule health is broken or unverified', note: _ndFailureNote(true, created)]
+        if (!(health instanceof Map) || health.broken != false) {
+            mcpLog('warn', 'rm-native', "Rule ${id}: health broken after changes".toString())
+            return [success: false, partial: true, rule_id: id, created: created, results: outcomes, broken: health instanceof Map ? health.broken : null, error: 'Native rule health is broken or unverified',
+                note: "All changes were applied but the rule reads as broken; inspect it with hub_set_rule(operation:'read') and restore backup.backupKey with hub_restore_backup if it is not wanted."]
+        }
         def done = hubInternalPostFormRaw('/installedapp/update/json', 'id=' + id.toString() + '&_action_update=Done&_cancellable=true')
         def doneStatus = done instanceof Map ? done.get('status') : null
         if (doneStatus != null && doneStatus.toString().isInteger() && doneStatus.toInteger() >= 400) throw new IllegalStateException('Native Done was rejected')
@@ -401,14 +403,15 @@ private Map _ndApply(Long id, List changes, boolean created) {
         if (doneBody instanceof Map || (doneBody != null && doneBody.toString().trim())) _nfJson(doneBody)
         def finalHealth = _ndRuleHealth(id)
         if (!(finalHealth instanceof Map) || finalHealth.broken != false) throw new IllegalStateException('Native rule health failed after Done')
+        if (_ndNativeFlag(finalHealth, 'stopped') == null || _ndNativeFlag(finalHealth, 'paused') == null) throw new IllegalStateException('Native rule lifecycle state is malformed after Done')
         boolean stopped = _ndNativeFlag(finalHealth, 'stopped') == true
         boolean paused = _ndNativeFlag(finalHealth, 'paused') == true
         if (!created) {
             if (wasStopped != stopped) _nrHandle(id).appButtonHandler('stopRule')
             if (wasPaused != paused) _nrHandle(id).appButtonHandler('pausRule')
             finalHealth = _ndRuleHealth(id)
-            stopped = finalHealth instanceof Map && finalHealth.stopped == true
-            paused = finalHealth instanceof Map && finalHealth.paused == true
+            stopped = finalHealth instanceof Map && _ndNativeFlag(finalHealth, 'stopped') == true
+            paused = finalHealth instanceof Map && _ndNativeFlag(finalHealth, 'paused') == true
             if (!(finalHealth instanceof Map) || finalHealth.broken != false || wasStopped != stopped || wasPaused != paused) throw new IllegalStateException('Native stopped or paused state was not preserved')
         }
         def status = _ndJson(hubInternalGet("/installedapp/statusJson/${id}"))
@@ -443,7 +446,7 @@ private Map _ndApply(Long id, List changes, boolean created) {
 // What the caller should do after a failed batch: the hub log carries the detail, the response the recovery.
 private String _ndFailureNote(boolean landed, boolean created) {
     String written = landed ? "Changes before the failure may have been written; read the rule with hub_set_rule(operation:'read') and resubmit only what is missing." : 'No change was written.'
-    String recovery = created ? ' The new rule exists; delete it with hub_delete_native_app if it is not wanted.' : " An update's response carries backup.backupKey for hub_restore_backup."
+    String recovery = created ? ' The new rule exists; delete it with hub_delete_native_app if it is not wanted.' : " An update's response carries backup.backupKey for hub_restore_backup when pre-edit backups are on."
     (written + recovery + " See hub_get_tool_guide(section='set_rule_reference').").toString()
 }
 
@@ -459,7 +462,11 @@ Map toolUpdateRuleDocument(Map args) {
         _nrHandle(id)
         if (getAppByAppId(id)?.disabled == true) throw new IllegalArgumentException('Enable the native rule before editing its document')
         try { _ndPreflight(id, changes) }
-        catch (Exception failure) { return [success: false, partial: false, rule_id: id, error: failure.message?.toString()] }
+        catch (IllegalArgumentException failure) { return [success: false, partial: false, rule_id: id, error: failure.message?.toString()] }
+        catch (Exception failure) {
+            mcpLogError('rm-native', "hub_set_rule preflight failed for rule ${id}: ${failure.message}".toString(), failure)
+            return [success: false, partial: false, rule_id: id, error: failure.message ?: failure.toString(), note: 'Preflight could not read the rule; no change was written. Retry; if it persists, see the hub log.']
+        }
         Map backup
         try { backup = _ndEditBackup(id, 'pre-document-update') }
         catch (Exception failure) { return [success: false, partial: false, rule_id: id, error: "Pre-edit backup failed; no document changes were applied: ${failure.message}".toString()] }
@@ -490,6 +497,10 @@ Map toolCreateRuleDocument(Map args) {
     if (parent?.appType?.namespace != 'hubitat' || parent?.appType?.name != 'Rule Machine') throw new IllegalArgumentException('parent_id must identify native Rule Machine')
     try { _ndPreflight(null, changes) }
     catch (IllegalArgumentException failure) { return [success: false, partial: false, error: failure.message?.toString()] }
+    catch (Exception failure) {
+        mcpLogError('rm-native', "hub_set_rule preflight failed for a new rule under parent ${parentId}: ${failure.message}".toString(), failure)
+        return [success: false, partial: false, error: failure.message ?: failure.toString(), note: 'Preflight could not read the rule; no change was written. Retry; if it persists, see the hub log.']
+    }
     Long id = null
     boolean verifiedChild = false
     try {
@@ -505,6 +516,8 @@ Map toolCreateRuleDocument(Map args) {
         _ndApply(id, changes, true)
     } catch (Exception failure) {
         mcpLogError('rm-native', "hub_set_rule create failed for rule ${id} under parent ${parentId}: ${failure.message}".toString(), failure)
+        if (id != null && !verifiedChild) return [success: false, partial: true, rule_id: null, created: false, created_app_id: id, error: failure.message?.toString(),
+            note: "Rule Machine returned app ${id} but it could not be verified as the requested rule; inspect it with hub_list_rules / hub_get_app_config and delete it with hub_delete_native_app if unwanted.".toString()]
         [success: false, partial: true, rule_id: verifiedChild ? id : null, created: verifiedChild, error: failure.message?.toString(), note: verifiedChild ? _ndFailureNote(true, true) : 'No rule was created.']
     }
 }
