@@ -177,14 +177,18 @@ class NativeRuleEditBackupSpec extends ToolSpecBase {
         sharedMap('NATIVE_FORM_CONTEXTS').keySet() == ['otherRule'] as Set
     }
 
-    def 'unexpected preflight exception releases document lock without invalidating form contexts'() {
+    def 'unexpected preflight exception is returned as a refusal and releases document lock without invalidating form contexts'() {
         given:
         cacheForms()
         script.metaClass._nrState = { Long id -> throw new IllegalStateException('read unavailable') }
         when:
-        script.toolUpdateRuleDocument(update())
+        def result = script.toolUpdateRuleDocument(update())
         then:
-        thrown(IllegalStateException)
+        result instanceof Map
+        result.success == false
+        result.partial == false
+        result.rule_id == 42L
+        result.error == 'read unavailable'
         sharedMap('NATIVE_FORM_BUSY').isEmpty()
         sharedMap('NATIVE_FORM_CONTEXTS').size() == 3
         events.empty
