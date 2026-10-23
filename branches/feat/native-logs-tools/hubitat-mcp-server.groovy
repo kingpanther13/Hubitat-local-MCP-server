@@ -6371,14 +6371,14 @@ def toolGetHubLogs(args) {
         if (supplied) throw new IllegalArgumentException("Parameters ${supplied.join(', ')} do not apply to log mode '${m}'")
     }
     if (args.mode instanceof List) {
-        if (args.cursor != null) throw new IllegalArgumentException("cursor pages one mode: call that mode alone with its nextCursor")
+        if (args.cursor != null) throw new IllegalArgumentException("cursor pages one mode: each listed tab returns its first page; call that mode alone with its nextCursor")
         Map results = [:]
         boolean pending = false
         for (m in modes) {
             if (pending && m in ["cloudCalls", "locationEvents", "hubEvents", "status"]) continue
             Map r
             try {
-                r = toolGetHubLogs(args + [mode: m])
+                r = toolGetHubLogs(args + [mode: m] + (modeArgs[m].contains("cursor") ? [cursor: ""] : [:]))
             } catch (IllegalArgumentException e) {
                 throw e
             } catch (Exception e) {
@@ -8080,7 +8080,7 @@ def _getAllToolDefinitions_partDiagnostics() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    mode: [anyOf: [[type: "string", enum: ["past", "devices", "apps", "cloudCalls", "locationEvents", "hubEvents", "scheduledJobs", "runningJobs", "hubActions", "mcp", "status"]], [type: "array", items: [type: "string", enum: ["past", "devices", "apps", "cloudCalls", "locationEvents", "hubEvents", "scheduledJobs", "runningJobs", "hubActions", "mcp", "status"]]]], default: "past", description: "The Logs page tab, or a list of tabs answered together under modes.<tab>: past = log history; devices/apps = runtime stats; cloudCalls = per-app cloud calls; locationEvents (mode, HSM, variables); hubEvents (reboots, low memory); scheduledJobs; runningJobs; hubActions. mcp = the MCP app's own log; status = its level and counts.[[FLAT_TRIM]] With a list, every other parameter must apply to each listed tab, and cursor is not taken: page one tab alone with its nextCursor.[[/FLAT_TRIM]]"],
+                    mode: [anyOf: [[type: "string", enum: ["past", "devices", "apps", "cloudCalls", "locationEvents", "hubEvents", "scheduledJobs", "runningJobs", "hubActions", "mcp", "status"]], [type: "array", items: [type: "string", enum: ["past", "devices", "apps", "cloudCalls", "locationEvents", "hubEvents", "scheduledJobs", "runningJobs", "hubActions", "mcp", "status"]]]], default: "past", description: "The Logs page tab, or a list of tabs answered together under modes.<tab>: past = log history; devices/apps = runtime stats; cloudCalls = per-app cloud calls; locationEvents (mode, HSM, variables); hubEvents (reboots, low memory); scheduledJobs; runningJobs; hubActions. mcp = the MCP app's own log; status = its level and counts.[[FLAT_TRIM]] With a list, every other parameter must apply to each listed tab, and each tab returns its first page with its own nextCursor; page further by calling that tab alone.[[/FLAT_TRIM]]"],
                     level: [type: "string", enum: ["trace", "debug", "info", "warn", "error", "all"], description: "past and mcp: one log level. Default all."],
                     deviceId: [type: "string", description: "Numeric device id: past logs scoped on the hub, that device's stats, or the jobs and hub actions it owns. Exclusive with appId."],
                     appId: [type: "string", description: "Numeric app id, the same way as deviceId."],
@@ -31727,7 +31727,7 @@ def _responseTooLargeSuggestion(String toolName) {
         case "hub_get_memory_history":
             return "Pass a smaller limit (e.g. 100). limit=0 returns the entire hub ring buffer which can be thousands of entries."
         case "hub_get_logs":
-            return "Narrow with deviceId/appId/level/pattern, set a smaller limit, filter by time window (since/until), or page with cursor=''. The tool already truncates per-entry messages but cannot trim the entry count below the requested limit."
+            return "Narrow with deviceId/appId/level/pattern, set a smaller limit, filter by time window (since/until), or page with cursor=''. With a list of modes, ask for fewer tabs per call. The tool already truncates per-entry messages but cannot trim the entry count below the requested limit."
         case "hub_export_native_app":
             return "Large app payloads can exceed the inline cap. Pass saveAs=<filename.json> to write the export to the hub File Manager instead of returning it inline."
         case "hub_get_info":
@@ -36692,7 +36692,7 @@ Each call reads one tab of the hub's Logs page, named by the page's own tab key,
 | `mcp` | the MCP app's own log | native Past Logs | `{timestamp, time, level, component, message, ...}` |
 | `status` | MCP log level, counts and capacity | | |
 
-- `mode` as a list (for example `['locationEvents', 'hubEvents']` or `['scheduledJobs', 'runningJobs', 'hubActions']`) answers `{modes: {<tab>: <that tab's usual result>}}`. Every other parameter must apply to each listed tab, and `cursor` is not taken: page one tab alone with its `nextCursor`. When several listed tabs come from the same Logs page fetch, their shared `uptime` and `snapshot` are given once at the top instead of in each tab. A tab that fails answers its own error under its key and is named in `failedModes`; the other tabs are still returned.
+- `mode` as a list (for example `['locationEvents', 'hubEvents']` or `['scheduledJobs', 'runningJobs', 'hubActions']`) answers `{modes: {<tab>: <that tab's usual result>}}`. Every other parameter must apply to each listed tab, and `cursor` is not taken: each tab returns its first page of 100 rows with its own `nextCursor`, so page a tab further by calling it alone with that cursor. If the tabs together are still over the response cap, ask for fewer tabs per call. When several listed tabs come from the same Logs page fetch, their shared `uptime` and `snapshot` are given once at the top instead of in each tab. A tab that fails answers its own error under its key and is named in `failedModes`; the other tabs are still returned.
 - Rows keep the hub's field names. A field that is null on a row is left out of that row and named once in the result's `nullFields`, so a row without a listed field had it null (location events have no device fields, for example). Rows from `/logs/json` come from one fetch cached for 30 s (`snapshot.ageMs`), so a job another write just scheduled or removed can take up to 30 s to show; `hub_delete_logs` drops the cache, so the read after a delete is fresh. `owner` is `{type: 'app'|'device', id}`, read from the row's `link` (`/installedapp/configure/<id>` or `/device/edit/<id>`); system jobs have an empty link and no owner. A job's `id` is what `hub_delete_logs(mode='scheduledJobs')` takes.
 - `devices` and `apps` also return the page's `summary` (uptime, total runtime, % of uptime); `scheduledJobs`, `runningJobs` and `hubActions` return `uptime`.
 - Filters apply in this order: scope (`deviceId`/`appId`), `level`, `pattern`/`patterns`, time window (`since`/`until`), sort, `limit`, then `cursor` pages the result (100 per page). Every list mode reports `total` (rows read), `matched` (rows that passed the filters) and `count` (rows returned).
