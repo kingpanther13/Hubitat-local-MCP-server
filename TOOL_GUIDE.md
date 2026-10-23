@@ -865,33 +865,18 @@ Use after hub_list_files to fetch a named file (config, backup, exported rule/ap
 
 ### hub_get_logs (the Logs page and the MCP log)
 
-Each call reads one tab of the hub's Logs page, named by the page's own tab key, or the MCP app's own log. `mode` also takes a list of tabs, read in one call:
+`mode` is a tab of the hub's Logs page, or a list of tabs, and each row is the hub's own row for that tab; `mcp` and `status` read the MCP app's own log. Live logs (the page's websocket stream) is not served: `past` holds the same history.
 
-| mode | tab | endpoint | rows |
-|---|---|---|---|
-| `past` (default) | Past logs | `/logs/past/json` | `{name, level, message, time, type}`, newest first |
-| `devices`, `apps` | Device stats, App stats | `/logs/json` | `{id, name, count, pct, pctTotal, total, average, stateSize, largeState, hubActionCount, cloudCallCount, pendingEventsCount, customAttributes, grandTotal}` |
-| `cloudCalls` | Cloud calls | `/logs/cloudCalls/json` | `{id, name, installed, total, currentHour, hours: [{hourStart, count}]}`, busiest first, newest 48 hours |
-| `locationEvents` | Location events | `/logs/eventsJson` | the hub's event rows: `{id, name, value, unit, descriptionText, isStateChange, type, source, date, ...}` |
-| `hubEvents` | Hub events (reboots, `lowMemory`, startup) | `/hub/eventsJson` | same as location events |
-| `scheduledJobs` | Scheduled jobs | `/logs/json` | `{id, name, link, recurring, methodName, nextRun, nextRunDt, owner}`, soonest first |
-| `runningJobs` | Running jobs | `/logs/json` | `{name, link, methodName, runningFor, owner}` |
-| `hubActions` | Hub actions | `/logs/json` | the hub's rows, with `name`, `link` and `owner` |
-| `mcp` | the MCP app's own log | native Past Logs | `{timestamp, time, level, component, message, ...}` |
-| `status` | MCP log level, counts and capacity | | |
-
-- `mode` as a list (for example `['locationEvents', 'hubEvents']` or `['scheduledJobs', 'runningJobs', 'hubActions']`) answers `{modes: {<tab>: <that tab's usual result>}}`. Every other parameter must apply to each listed tab, and `cursor` is not taken: each tab returns its first page (`pageSize` rows, 50 by default) with its own `nextCursor`, so page a tab further by calling it alone with that cursor. If the tabs together are still over the response cap, lower `pageSize` or ask for fewer tabs per call. When several listed tabs come from the same Logs page fetch, their shared `uptime` and `snapshot` are given once at the top instead of in each tab. A tab that fails answers its own error under its key and is named in `failedModes`; the other tabs are still returned.
-- Rows keep the hub's field names. A field that is null on a row is left out of that row and named once in the result's `nullFields`, so a row without a listed field had it null (location events have no device fields, for example). Rows from `/logs/json` come from one fetch cached for 30 s (`snapshot.ageMs`), so a job another write just scheduled or removed can take up to 30 s to show; `hub_delete_logs` drops the cache, so the read after a delete is fresh. `owner` is `{type: 'app'|'device', id}`, read from the row's `link` (`/installedapp/configure/<id>` or `/device/edit/<id>`); system jobs have an empty link and no owner. A job's `id` is what `hub_delete_logs(mode='scheduledJobs')` takes.
-- `devices` and `apps` also return the page's `summary` (uptime, total runtime, % of uptime); `scheduledJobs`, `runningJobs` and `hubActions` return `uptime`.
-- Filters apply in this order: scope (`deviceId`/`appId`), `level`, `pattern`/`patterns`, time window (`since`/`until`), sort, `limit`, then `cursor` pages the result (`pageSize` rows per page, 1-100, default 100; `pageSize` alone starts at the first page). Every list mode reports `total` (rows read), `matched` (rows that passed the filters) and `count` (rows returned).
-- `deviceId`/`appId`: on `past` they scope the read on the hub, like the Logs page opened from a device or app; logs are hub-wide diagnostics, including history for deleted devices. The hub answers an empty list for an unknown id and a quiet device alike, so a device-scoped `past` read carries `deviceIdResolved` (false means the id names no device). On `devices`/`apps` they keep that one row; on the job and hub-action modes they keep the rows that `owner` names.
-- `pattern`/`patterns`: case-insensitive regexes over the tab's own search fields: `past` name and message; `scheduledJobs`/`runningJobs` name and methodName; event modes name, descriptionText and value; other modes name. `pattern` must match; `patterns` combine by `patternMode` (`any` by default, or `all`); with both, both apply. Each is at most 100 characters and is compiled once; invalid syntax is refused. A pathological regex like `(.*)*` may hang the matcher, so prefer alternation (`error|fail`) or anchors (`^mode$` for an exact name).
-- `since`/`until` (`past` and event modes): `since` keeps rows strictly after it, so an event's `date` passed back as `since` never returns that event again; `until` keeps rows at or before it. Both take a relative age subtracted from now (`30m`, `2h`, `7d`, at most 30 days), ISO-8601 with an offset or `Z`, or epoch milliseconds; a time without a zone is read as UTC. Past-log times without a zone are the hub's local time. Rows whose time cannot be read are kept and counted in `timeFilterUnparseable`.
-- `sortBy` (`devices`/`apps`): `pct` (% busy, default), `count`, `total` (ms), `stateSize`, highest first, or `name` A-Z.
-- `limit`: default 100 for `past` and the event modes, 20 for `devices`/`apps`, 50 for `mcp`, and every row for the job, hub-action and cloud-call modes; 0 returns every matched row.
-- `past`: when the estimated payload is over the response cap, messages are cut to 200 characters and `truncated` is set. Known-benign Rule Machine noise is counted in `benignRmNoiseCount`.
-- `mcp` keeps level/component/ruleId/limit/cursor filters and the diagnostic fields hub_report_issue reads. Debug and info are kept alongside warnings and errors when admitted by the configured threshold. After reload, MCP history recovers from this app's native Past Logs; retention shares Hubitat's approximately 1 MB rolling history with other apps and devices. The memory view keeps up to 100 entries without storing the ring in app state. MCP entries keep up to 500 characters of message and 1,000 of exception/stack text; the native log line keeps the full message.
-- Live logs (the page's websocket stream) is not served; `past` holds the same history.
+- A list of tabs answers `{modes: {<tab>: <its result>}}`. Every other argument must apply to each listed tab. Each tab returns its first page (`pageSize`, 50 by default) with its own `nextCursor`; page further by calling that tab alone with `cursor`. Tabs from one Logs page fetch give `uptime` and `snapshot` once at the top. A tab that fails is named in `failedModes` and the others are still returned.
+- A field that is null is left out of the row and named once in `nullFields`.
+- The stats and job tabs come from one Logs page fetch cached for 30 s (`snapshot.ageMs`); `hub_delete_logs` drops the cache.
+- `owner` (`{type: 'app'|'device', id}`) is read from the row's `link`; system jobs have neither. A job's `id` is what `hub_delete_logs(mode='scheduledJobs')` takes.
+- Filters apply in this order: scope, level, patterns, time window, sort, `limit`, then paging (`cursor: ""` for the first page). Results report `total` (rows read), `matched` and `count`.
+- `deviceId`/`appId` scope `past` on the hub, where `deviceIdResolved: false` means no such device; on the stats and job tabs they keep the rows that id owns.
+- `pattern`/`patterns` search `past` name and message, the job tabs name and methodName, the event tabs name, descriptionText and value, and the other tabs name. At most 100 characters each; avoid nested quantifiers such as `(.*)*`.
+- `since` is exclusive, so an event's `date` passed back as `since` never repeats it. A time without a zone is read as UTC; past-log times are the hub's local time. Rows whose time cannot be read are kept and counted in `timeFilterUnparseable`.
+- `past` cuts messages to 200 characters when the page would pass the response cap (`truncated`) and counts known-benign Rule Machine noise in `benignRmNoiseCount`.
+- `mcp` history is recovered after a reload from this app's native Past Logs, which share Hubitat's rolling history of about 1 MB; an entry keeps 500 characters of message and 1,000 of stack text.
 
 ### hub_get_radio_details (read-only Z-Wave/Zigbee/Matter radio surface)
 
@@ -941,8 +926,8 @@ Each call reads one tab of the hub's Logs page, named by the page's own tab key,
 
 ### hub_delete_logs
 
-- `mode='mcp'` clears the MCP log read by hub_get_logs(mode='mcp') by starting a new log generation, so old native entries do not return after reload. Nothing is read first; `clearedCount` is null when the history had not been loaded yet. Hubitat's own log history and captured device states are unchanged. Use it before reproducing an issue.
-- `mode='scheduledJobs'` deletes one scheduled job, the same request as the Delete button on the Logs page's Scheduled jobs tab (`/hub/advanced/deleteScheduledJob`). A job is a timer an app or driver set with `runIn`, `runOnce`, `schedule` or `runEvery*`; its id is `<owner group>.<method>`, e.g. `app12Recur.poll` (`Recur` = repeating, `Once` = one-shot; a number before the method marks an extra copy). Deleting it removes that one timer: the method is not called at the next run time, and a repeating job is gone for every later run. The app or device, its settings, state, event subscriptions and other jobs are unchanged, and nothing tells it the timer is gone; it comes back only when the owner's own code schedules it again (for example when its settings are saved). It is the same deletion as the owner calling `unschedule('<method>')`, limited to the one row. `confirm=true` is required. `system.*` jobs are refused, as the Logs page offers no Delete for them. A reply of `job does not exist` (a one-shot job that already ran, or a stale id) is an error result; nothing was changed.
+- `mode='mcp'` starts a new MCP log generation, so cleared entries do not return after a reload; `clearedCount` is null when the history had not been loaded. Hubitat's own log history is untouched.
+- `mode='scheduledJobs'` sends the Logs page's own Delete request for one job. The id is `<owner group>.<method>`, e.g. `app12Recur.poll` (`Recur` repeats, `Once` runs once). Only that timer is removed, as if its owner called `unschedule('<method>')` for that one row; it returns only when the owner's code schedules it again, for example when its settings are saved. `system.*` jobs are refused. `job does not exist` (a one-shot job that already ran, or a stale id) is an error and changes nothing.
 
 ### hub_report_issue
 
