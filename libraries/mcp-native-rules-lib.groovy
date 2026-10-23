@@ -985,42 +985,6 @@ private Map _collectLiveApps() {
     return complete ? apps : null
 }
 
-// Normalize an atTime string to the form RM 5.1 expects:
-// {@code YYYY-MM-DDTHH:mm:ss.SSS+HHMM} (millis + numeric zone offset,
-// no colon in the offset, e.g. {@code 2026-04-28T03:00:00.000-0500}).
-//
-// <p>RM 5.1's {@code selectTriggers} page render throws
-// {@code java.text.ParseException: Unparseable date: ...} and enters a
-// broken state if the stored {@code atTime<N>} value lacks the millis
-// fraction or the timezone offset. Any subsequent trigger-add then also
-// fails because the page can't render. Normalizing here prevents the
-// cascade.
-//
-// <p><b>Format choice has SEMANTIC consequences for trigger recurrence:</b>
-// <ul>
-// <li>HH:mm form -- trigger fires DAILY at that wall-clock time (every day).</li>
-// <li>Any ISO datetime form -- trigger fires ONCE on the specific date.</li>
-// </ul>
-//
-// <p>Accepted input forms:
-// <ol>
-// <li>{@code 17:00} or {@code 5:00} -- HH:mm form; passes through unchanged.
-// RM 5.1 stores this verbatim and renders the trigger as
-// "When time is HH:MM AM/PM" with daily recurrence. Verified live on
-// firmware 2.4.4.156: rule with {@code atTime1="22:00"} fires every day
-// at 10 PM (existing rule id 825 used as reference).</li>
-// <li>{@code 2026-04-28T03:00:00.000-0500} -- explicit numeric offset; normalized
-// to UTC equivalent (same instant: {@code 2026-04-28T08:00:00.000+0000}). One-shot dated.</li>
-// <li>{@code 2026-04-28T03:00:00} -- no millis, no tz; hub local tz applied. One-shot dated.</li>
-// <li>{@code 2026-04-28T03:00:00.000} -- millis present, no tz; hub local tz applied. One-shot dated.</li>
-// <li>{@code 2026-04-28T03:00:00-0500} -- no millis, explicit offset; normalized to UTC. One-shot dated.</li>
-// <li>{@code 2026-04-28T03:00:00Z} -- Zulu shorthand; normalized to +0000. One-shot dated.</li>
-// <li>{@code 2026-04-28T03:00:00.000Z} -- Zulu with millis; normalized to +0000. One-shot dated.</li>
-// </ol>
-//
-// <p>Throws {@code IllegalArgumentException} for input that does not
-// match any of the above forms (ASCII-only message, echoes the bad value).
-// Internal _rm helper -- not part of the tool surface.
 private Integer _rmCoerceRuleId(Object id) {
     try {
         if (id instanceof Number) {
