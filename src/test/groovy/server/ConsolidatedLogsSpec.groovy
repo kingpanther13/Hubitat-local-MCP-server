@@ -12,7 +12,8 @@ class ConsolidatedLogsSpec extends ToolSpecBase {
         then:
         readLogs*.name == ['hub_get_logs']
         def tabs = ['past', 'devices', 'apps', 'cloudCalls', 'locationEvents', 'hubEvents', 'scheduledJobs', 'runningJobs', 'hubActions', 'mcp', 'status']
-        readLogs[0].inputSchema.properties.mode.anyOf == [[type: 'string', enum: tabs], [type: 'array', items: [type: 'string', enum: tabs]]]
+        readLogs[0].inputSchema.properties.mode.type == ['string', 'array']
+        readLogs[0].inputSchema.properties.mode.items == [type: 'string', enum: tabs]
         tabs == script._logsModeArgs().keySet() as List
         readLogs[0].inputSchema.properties.component != null
         readLogs[0].inputSchema.properties.ruleId != null

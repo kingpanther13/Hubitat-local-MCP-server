@@ -2726,37 +2726,37 @@ def _getAllToolDefinitions_partDiagnostics() {
     def defs = { [
         [
             name: "hub_get_logs",
-            description: """Read tabs of the hub's Logs page, one or several per call, or the MCP app's own log. Rows are the hub's own; null fields are named once in nullFields. The stats and job tabs come from one Logs page fetch cached for 30 s.""",
+            description: """Read tabs of the hub's Logs page, one or a list, or the MCP app's own log. The stats and job tabs are cached for 30 s.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    mode: [anyOf: [[type: "string", enum: ["past", "devices", "apps", "cloudCalls", "locationEvents", "hubEvents", "scheduledJobs", "runningJobs", "hubActions", "mcp", "status"]], [type: "array", items: [type: "string", enum: ["past", "devices", "apps", "cloudCalls", "locationEvents", "hubEvents", "scheduledJobs", "runningJobs", "hubActions", "mcp", "status"]]]], default: "past", description: "The Logs page tab, or a list of tabs answered under modes.<tab>: past = log history; devices/apps = runtime stats; cloudCalls = per-app cloud calls; locationEvents (mode, HSM, variables); hubEvents (reboots, low memory); scheduledJobs, runningJobs, hubActions (each row's owner is read from its link). mcp = the MCP app's own log; status = its level and counts. With a list, every other parameter must apply to each tab, and each tab returns its first page."],
-                    level: [type: "string", enum: ["trace", "debug", "info", "warn", "error", "all"], description: "past and mcp: one log level. Default all."],
-                    deviceId: [type: "string", description: "Numeric device id: past logs scoped on the hub, that device's stats, or the jobs and hub actions it owns. Exclusive with appId."],
-                    appId: [type: "string", description: "Numeric app id, the same way as deviceId."],
-                    pattern: [type: "string", description: "Case-insensitive regex over past name and message, job name and methodName, event name, descriptionText and value, or other tabs' name."],
+                    mode: [type: ["string", "array"], items: [type: "string", enum: ["past", "devices", "apps", "cloudCalls", "locationEvents", "hubEvents", "scheduledJobs", "runningJobs", "hubActions", "mcp", "status"]], default: "past", description: "Tab or list of tabs: past = log history; devices/apps = runtime stats; cloudCalls; locationEvents (mode, HSM, variables); hubEvents (reboots, low memory); scheduledJobs; runningJobs; hubActions; mcp = the MCP log; status = its level."],
+                    level: [type: "string", enum: ["trace", "debug", "info", "warn", "error", "all"], description: "past and mcp."],
+                    deviceId: [type: "string", description: "Numeric device id to scope past logs, stats or jobs to."],
+                    appId: [type: "string", description: "Numeric app id, the same way."],
+                    pattern: [type: "string", description: "Case-insensitive regex over the row's name and text."],
                     patterns: [type: "array", items: [type: "string"], description: "More regexes, combined by patternMode."],
-                    patternMode: [type: "string", enum: ["any", "all"], description: "How patterns combine. Default any."],
-                    since: [type: ["string", "integer"], description: "past and event modes: rows strictly after this time, so a returned date never repeats. '30m', '2h', '7d' (max 30d), ISO-8601 (no zone = UTC) or epoch ms."],
-                    until: [type: ["string", "integer"], description: "past and event modes: rows at or before this time; same formats as since."],
-                    sortBy: [type: "string", enum: ["pct", "count", "total", "stateSize", "name"], description: "devices and apps: sort field, highest first (name A-Z). Default pct (% busy)."],
-                    limit: [type: "integer", description: "Max rows after filters; 0 = all. Default 100 for past and events, 20 for devices and apps, 50 for mcp, all for the others."],
-                    component: [type: "string", description: "mcp: component substring (for example server or rule)."],
+                    patternMode: [type: "string", enum: ["any", "all"], description: "Default any."],
+                    since: [type: ["string", "integer"], description: "past and events: rows after this time, so a returned date never repeats. '30m', '2h', '7d', ISO-8601 (no zone = UTC) or epoch ms."],
+                    until: [type: ["string", "integer"], description: "Rows at or before this time."],
+                    sortBy: [type: "string", enum: ["pct", "count", "total", "stateSize", "name"], description: "devices and apps; default pct (% busy)."],
+                    limit: [type: "integer", description: "Max rows; 0 = all."],
+                    component: [type: "string", description: "mcp: component substring."],
                     ruleId: [type: "string", description: "mcp: custom rule id."],
                     cursor: [type: "string", description: "\"\" for the first page, then nextCursor."],
-                    pageSize: [type: "integer", description: "Rows per page, 1-100. Default 100, or 50 per tab when mode is a list."]
+                    pageSize: [type: "integer", description: "Rows per page, 1-100."]
                 ]
             ]
         ],
         [
             name: "hub_delete_logs",
-            description: """Delete from the logs: mode='mcp' clears the MCP app's own log; mode='scheduledJobs' deletes one scheduled job, like the Logs page's Delete button. Only that timer goes: its app or device is unchanged and schedules it again only if its own code does (for example on a settings save). System jobs are refused; hub log history is never touched. Cannot be undone.""",
+            description: """Clear the MCP app's own log (mode='mcp'), or delete one scheduled job like the Logs page's Delete button (mode='scheduledJobs'). Only that timer goes; its app or device schedules it again only if its own code does. Cannot be undone.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    mode: [type: "string", enum: ["mcp", "scheduledJobs"], description: "mcp = clear the MCP log; scheduledJobs = delete the job in jobId."],
-                    jobId: [type: "string", description: "scheduledJobs: the job's id from hub_get_logs(mode='scheduledJobs'), e.g. app12Recur.poll."],
-                    confirm: [type: "boolean", description: "scheduledJobs: must be true."]
+                    mode: [type: "string", enum: ["mcp", "scheduledJobs"]],
+                    jobId: [type: "string", description: "Job id from hub_get_logs(mode='scheduledJobs')."],
+                    confirm: [type: "boolean", description: "Must be true to delete a job."]
                 ],
                 required: ["mode"]
             ]
