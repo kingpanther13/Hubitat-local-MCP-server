@@ -108,7 +108,7 @@ class DiagnosticLogRecoverySpec extends ToolSpecBase {
         result.logs.errorCount == null
     }
 
-    def "clear succeeds despite failed cold recovery and prevents old rows returning later"() {
+    def "clear needs no history read, so a failing cold recovery cannot block it, and old rows never return"() {
         given:
         script.log.messages.clear()
         script.mcpLog('error', 'server', 'old error')
@@ -118,13 +118,11 @@ class DiagnosticLogRecoverySpec extends ToolSpecBase {
         def oldGeneration = atomicStateMap.debugLogGeneration
 
         when:
-        def result = script.toolClearDebugLogs([:])
+        def result = script.toolDeleteLogs([mode: 'mcp'])
 
         then:
         result.success
         result.clearedCount == null
-        result.countIncomplete == true
-        result.logReadError.contains('503 history unavailable')
         atomicStateMap.debugLogGeneration != oldGeneration
 
         when:

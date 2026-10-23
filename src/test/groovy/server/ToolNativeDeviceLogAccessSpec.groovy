@@ -21,7 +21,7 @@ class ToolNativeDeviceLogAccessSpec extends ToolSpecBase {
         then:
         response.error == null
         response.result.isError != true
-        mcpDriver.parseInner(response).logs[0].message == 'dev|42|Unselected fixture|global diagnostic'
+        mcpDriver.parseInner(response).entries[0].message == 'dev|42|Unselected fixture|global diagnostic'
         !hubGet.calls.any { it.path.startsWith('/device/') }
 
         where:
@@ -43,7 +43,7 @@ class ToolNativeDeviceLogAccessSpec extends ToolSpecBase {
         then:
         response.error == null
         response.result.isError != true
-        mcpDriver.parseInner(response).logs[0].message == 'dev|42|Unselected fixture|scoped diagnostic'
+        mcpDriver.parseInner(response).entries[0].message == 'dev|42|Unselected fixture|scoped diagnostic'
         hubGet.calls*.path == ['/logs/past/json']
 
         where:
@@ -67,7 +67,7 @@ class ToolNativeDeviceLogAccessSpec extends ToolSpecBase {
 
         then: 'an entry proves the id; no identity read is spent'
         result.count == 1
-        result.logs[0].message.contains('native diagnostic')
+        result.entries[0].message.contains('native diagnostic')
         result.deviceIdResolved == true
         hubGet.calls*.path == ['/logs/past/json']
 

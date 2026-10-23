@@ -195,14 +195,14 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    // --- hub_get_logs source filter applied to the message field (v0.8.5) --
+    // --- hub_get_logs pattern applied to the message field (v0.8.5) --
     //
     // The pre-fix code compared the source filter against `entry.time`
     // (timestamp), so a filter like source='Thermostat' never matched any
     // log lines. The fix in toolGetHubLogs() checks both `entry.message`
     // and `entry.name`.
 
-    def "hub_get_logs source filter matches against message field, not timestamp"() {
+    def "hub_get_logs pattern matches against message field, not timestamp"() {
         given:
         settingsMap.enableRead = true
         hubGet.register('/logs/past/json') { params ->
@@ -212,18 +212,18 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
             ])
         }
 
-        when: 'source filter matches a word that only appears in the message field'
-        def positive = script.toolGetHubLogs([source: 'Thermostat'])
+        when: 'pattern matches a word that only appears in the message field'
+        def positive = script.toolGetHubLogs([pattern: 'Thermostat'])
 
         then: 'only the Thermostat-mentioning entry survives the message-field filter'
-        positive.logs.size() == 1
-        positive.logs[0].message.contains('Thermostat')
+        positive.entries.size() == 1
+        positive.entries[0].message.contains('Thermostat')
 
         when: 'source filter matches the timestamp prefix — a pre-fix hit, a post-fix miss'
-        def negative = script.toolGetHubLogs([source: '2026-04-19'])
+        def negative = script.toolGetHubLogs([pattern: '2026-04-19'])
 
         then: 'zero matches — the fix checks message/name, not the time column'
-        negative.logs.size() == 0
+        negative.entries.size() == 0
     }
 
     @Unroll
@@ -238,25 +238,25 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
             ])
         }
 
-        when: 'source filter matches a word that only appears in the message field'
-        def positiveResp = mcpDriver.callTool('hub_get_logs', [source: 'Thermostat'])
+        when: 'pattern matches a word that only appears in the message field'
+        def positiveResp = mcpDriver.callTool('hub_get_logs', [pattern: 'Thermostat'])
 
         then:
         positiveResp.jsonrpc == '2.0'
         positiveResp.error == null
         !positiveResp.result.isError
         def positive = mcpDriver.parseInner(positiveResp)
-        positive.logs.size() == 1
-        positive.logs[0].message.contains('Thermostat')
+        positive.entries.size() == 1
+        positive.entries[0].message.contains('Thermostat')
 
         when: 'source filter matches the timestamp prefix — a pre-fix hit, a post-fix miss'
-        def negativeResp = mcpDriver.callTool('hub_get_logs', [source: '2026-04-19'])
+        def negativeResp = mcpDriver.callTool('hub_get_logs', [pattern: '2026-04-19'])
 
         then:
         negativeResp.error == null
         !negativeResp.result.isError
         def negative = mcpDriver.parseInner(negativeResp)
-        negative.logs.size() == 0
+        negative.entries.size() == 0
 
         where:
         useGateways << [true, false]
@@ -282,9 +282,9 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         def result = script.toolGetHubLogs([:])
 
         then: 'both lines parse + reverse-ordering still applies'
-        result.logs.size() == 2
-        result.logs[0].message == 'Second'
-        result.logs[1].message == 'First'
+        result.entries.size() == 2
+        result.entries[0].message == 'Second'
+        result.entries[1].message == 'First'
     }
 
     @Unroll
@@ -305,9 +305,9 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         response.error == null
         !response.result.isError
         def inner = mcpDriver.parseInner(response)
-        inner.logs.size() == 2
-        inner.logs[0].message == 'Second'
-        inner.logs[1].message == 'First'
+        inner.entries.size() == 2
+        inner.entries[0].message == 'Second'
+        inner.entries[1].message == 'First'
 
         where:
         useGateways << [true, false]

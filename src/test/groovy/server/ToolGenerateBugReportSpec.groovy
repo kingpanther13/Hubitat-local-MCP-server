@@ -1429,7 +1429,7 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         result.preflight[0].contains("hub_set_log_level(level='debug')")
         result.preflight[0].contains("hub_get_logs(mode='mcp')")
         result.preflight[0].contains('clientLogs')
-        result.preflight[1].contains("hub_get_logs(mode='hub')")
+        result.preflight[1].contains("hub_get_logs(mode='past')")
         result.preflight[1].contains('clientLogs')
         result.preflight[2].contains('verbatimToolCalls')
     }

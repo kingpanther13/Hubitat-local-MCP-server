@@ -59,7 +59,7 @@ class DebugLogRingSpec extends ToolSpecBase {
         atomicStateMap.reportErrors.every { it.generation == atomicStateMap.debugLogGeneration }
 
         when:
-        script.toolClearDebugLogs([:])
+        script.toolDeleteLogs([mode: 'mcp'])
 
         then:
         atomicStateMap.reportErrors == []
@@ -85,7 +85,7 @@ class DebugLogRingSpec extends ToolSpecBase {
         given: 'an error retained, then a clear that a slow request did not observe'
         script.mcpLog('error', 'server', 'before the clear', null, [details: [tool: 'hub_set_rule']])
         def stale = atomicStateMap.reportErrors
-        script.toolClearDebugLogs([:])
+        script.toolDeleteLogs([mode: 'mcp'])
         atomicStateMap.reportErrors = stale + [stale[0] + [message: 'late write from the old generation']]
         script.mcpLog('error', 'server', 'after the clear', null, [details: [tool: 'hub_set_rule']])
 
@@ -195,7 +195,7 @@ class DebugLogRingSpec extends ToolSpecBase {
         script.getDebugLogEntries()*.level == ['debug', 'info', 'warn', 'error']
 
         when:
-        def result = script.toolClearDebugLogs([:])
+        def result = script.toolDeleteLogs([mode: 'mcp'])
         reload()
 
         then:
@@ -289,7 +289,7 @@ class DebugLogRingSpec extends ToolSpecBase {
         when:
         first.mcpLog('error', 'server', 'first app')
         second.mcpLog('error', 'server', 'second app')
-        second.toolClearDebugLogs([:])
+        second.toolDeleteLogs([mode: 'mcp'])
 
         then:
         first.getDebugLogEntries()*.message == ['first app']

@@ -16,8 +16,8 @@ import spock.lang.Shared
  * hub-native timestamps (no T, no Z) parsed as UTC in the fallback loop, and a
  * kitchen-sink combined-filter scenario.
  *
- * Filter pipeline (in order): scope (hub-side) -> level -> source ->
- * pattern -> patterns -> time-window (since/until) -> limit.
+ * Filter pipeline (in order): scope (hub-side) -> level -> pattern ->
+ * patterns -> time-window (since/until) -> limit -> cursor.
  *
  * Note on regex compile-count testing (Pre2): pinning that Pattern.compile
  * is called once per pattern (not per log entry) via a static metaClass
@@ -46,15 +46,15 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         registerLogs(['2026-09-06 12:00:00.000\tWARN\tapp|194|MCP Rule Server|[monitoring] slow request'])
 
         when:
-        def result = script.toolGetHubLogs([level: 'warn', source: 'MCP Rule Server', pattern: 'slow',
+        def result = script.toolGetHubLogs([level: 'warn', patterns: ['MCP Rule Server'], pattern: 'slow',
             since: '2026-09-06T15:00:00Z', until: '2026-09-06T17:00:00Z'])
 
         then:
         result.count == 1
-        result.logs[0].name == 'MCP Rule Server'
-        result.logs[0].time == '2026-09-06 12:00:00.000'
-        result.logs[0].type == 'app'
-        result.logs[0].message.contains('[monitoring] slow request')
+        result.entries[0].name == 'MCP Rule Server'
+        result.entries[0].time == '2026-09-06 12:00:00.000'
+        result.entries[0].type == 'app'
+        result.entries[0].message.contains('[monitoring] slow request')
         !result.timeFilterUnparseable
     }
 
@@ -78,10 +78,10 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         def result = script.toolGetHubLogs([:])
 
         then:
-        result.logs.size() == 3
-        result.logs[0].message == 'Newest message'
-        result.logs[1].message == 'Middle message'
-        result.logs[2].message == 'Oldest message'
+        result.entries.size() == 3
+        result.entries[0].message == 'Newest message'
+        result.entries[1].message == 'Middle message'
+        result.entries[2].message == 'Oldest message'
         result.count == 3
     }
 
@@ -99,7 +99,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         def result = script.toolGetHubLogs([:])
 
         then: "the benign RM-internal noise is counted + explained, without altering the raw entries"
-        result.logs.size() == 2
+        result.entries.size() == 2
         result.benignRmNoiseCount == 1
         result.benignRmNoiseNote?.contains('NON-FATAL')
         result.benignRmNoiseNote?.contains('periodic')
@@ -136,10 +136,10 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         response.error == null
         !response.result.isError
         def inner = mcpDriver.parseInner(response)
-        inner.logs.size() == 3
-        inner.logs[0].message == 'Newest message'
-        inner.logs[1].message == 'Middle message'
-        inner.logs[2].message == 'Oldest message'
+        inner.entries.size() == 3
+        inner.entries[0].message == 'Newest message'
+        inner.entries[1].message == 'Middle message'
+        inner.entries[2].message == 'Oldest message'
         inner.count == 3
 
         where:
@@ -216,8 +216,8 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         def result = script.toolGetHubLogs([pattern: 'ERROR.*'])
 
         then: 'only the two ERROR entries are kept (newest first after reverse)'
-        result.logs.size() == 2
-        result.logs.every { it.message.startsWith('ERROR') }
+        result.entries.size() == 2
+        result.entries.every { it.message.startsWith('ERROR') }
     }
 
     @spock.lang.Unroll
@@ -238,8 +238,8 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         response.error == null
         !response.result.isError
         def inner = mcpDriver.parseInner(response)
-        inner.logs.size() == 2
-        inner.logs.every { it.message.startsWith('ERROR') }
+        inner.entries.size() == 2
+        inner.entries.every { it.message.startsWith('ERROR') }
 
         where:
         useGateways << [true, false]
@@ -257,8 +257,8 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         def result = script.toolGetHubLogs([pattern: 'ERROR'])
 
         then:
-        result.logs.size() == 1
-        result.logs[0].message == 'error in device'
+        result.entries.size() == 1
+        result.entries[0].message == 'error in device'
     }
 
     def "invalid pattern throws IllegalArgumentException with helpful message"() {
@@ -308,8 +308,8 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         def result = script.toolGetHubLogs([patterns: ['foo', 'bar']])
 
         then: 'entries with foo OR bar match; baz (newest) is excluded'
-        result.logs.size() == 2
-        result.logs.every { it.message.contains('foo') || it.message.contains('bar') }
+        result.entries.size() == 2
+        result.entries.every { it.message.contains('foo') || it.message.contains('bar') }
     }
 
     def "patterns with patternMode all keeps only entries matching every pattern"() {
@@ -325,8 +325,8 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         def result = script.toolGetHubLogs([patterns: ['foo', 'bar'], patternMode: 'all'])
 
         then: 'only the entry that has both foo AND bar is kept'
-        result.logs.size() == 1
-        result.logs[0].message == 'foo and bar both'
+        result.entries.size() == 1
+        result.entries[0].message == 'foo and bar both'
     }
 
     def "pattern and patterns both apply when both are set"() {
@@ -344,8 +344,8 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         def result = script.toolGetHubLogs([pattern: 'ERROR', patterns: ['foo', 'bar']])
 
         then: 'only the entry satisfying BOTH conditions is returned'
-        result.logs.size() == 1
-        result.logs[0].message == 'ERROR: foo'
+        result.entries.size() == 1
+        result.entries[0].message == 'ERROR: foo'
     }
 
     // ==================== since / until ====================
@@ -374,8 +374,8 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         def result = script.toolGetHubLogs([since: '30m'])
 
         then:
-        result.logs.size() == 1
-        result.logs[0].message == 'Recent entry'
+        result.entries.size() == 1
+        result.entries[0].message == 'Recent entry'
     }
 
     def "since ISO-8601 timestamp filters correctly"() {
@@ -390,8 +390,8 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         def result = script.toolGetHubLogs([since: '2024-01-15T00:00:00Z'])
 
         then:
-        result.logs.size() == 1
-        result.logs[0].message == 'After cutoff'
+        result.entries.size() == 1
+        result.entries[0].message == 'After cutoff'
     }
 
     def "since ISO-8601 with milliseconds filters correctly"() {
@@ -406,8 +406,8 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         def result = script.toolGetHubLogs([since: '2024-01-15T00:00:00.000Z'])
 
         then:
-        result.logs.size() == 1
-        result.logs[0].message == 'After cutoff'
+        result.entries.size() == 1
+        result.entries[0].message == 'After cutoff'
     }
 
     def "since and until define a closed time window"() {
@@ -434,8 +434,8 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         def result = script.toolGetHubLogs([since: '2h', until: '1h'])
 
         then:
-        result.logs.size() == 1
-        result.logs[0].message == 'In window'
+        result.entries.size() == 1
+        result.entries[0].message == 'In window'
     }
 
     def "bad since value throws IllegalArgumentException with format example"() {
@@ -492,7 +492,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         def result = script.toolGetHubLogs([since: '2024-01-15T00:00:00Z'])
 
         then: 'empty/unparseable-time entries are included (not excluded), normal entry also included'
-        result.logs.size() == 3
+        result.entries.size() == 3
     }
 
     def "time-window filter uses entry.name as timestamp when entry.time is empty (firmware 2.5.0.126+ shape)"() {
@@ -509,8 +509,8 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         def result = script.toolGetHubLogs([since: '2024-01-15T00:00:00Z'])
 
         then: 'timestamp parsed from name field, window filter applied correctly'
-        result.logs.size() == 1
-        result.logs[0].message == 'After cutoff -- should be included'
+        result.entries.size() == 1
+        result.entries[0].message == 'After cutoff -- should be included'
     }
 
     def "time-window filter handles mixed firmware log shapes in the same response"() {
@@ -529,9 +529,9 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         def result = script.toolGetHubLogs([since: '2024-01-15T00:00:00Z'])
 
         then: 'one from each format passes the window; two are excluded as too old'
-        result.logs.size() == 2
-        result.logs*.message.contains('Documented format in window')
-        result.logs*.message.contains('Firmware shape in window')
+        result.entries.size() == 2
+        result.entries*.message.contains('Documented format in window')
+        result.entries*.message.contains('Firmware shape in window')
     }
 
     // ==================== timezone correctness ====================
@@ -569,8 +569,8 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         def result = script.toolGetHubLogs([since: '5m'])
 
         then: 'UTC parsing: inside-window entry is included; outside-window entry is excluded'
-        result.logs.size() == 1
-        result.logs[0].message == 'Inside window -- should be included'
+        result.entries.size() == 1
+        result.entries[0].message == 'Inside window -- should be included'
     }
 
     // ==================== patternMode validation ====================
@@ -600,7 +600,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('window is empty')
+        ex.message.contains('until must be later than since')
     }
 
     // ==================== type-shape validation (Pre1) ====================
@@ -631,17 +631,29 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         ex.message.toLowerCase().contains('list')
     }
 
-    def "since as number throws IllegalArgumentException with format hint"() {
+    def "since and until as epoch milliseconds bound the window"() {
         given:
         settingsMap.enableRead = true
+        registerLogs([
+            'App 1\tinfo\tBefore\t2024-01-15 07:00:00.000\ttype',
+            'App 1\tinfo\tInside\t2024-01-15 10:00:00.000\ttype',
+            'App 1\tinfo\tAfter\t2024-01-15 13:00:00.000\ttype'
+        ])
 
+        when: '08:00Z to 12:00Z'
+        def result = script.toolGetHubLogs([since: 1705305600000L, until: '1705320000000'])
+
+        then:
+        result.entries*.message == ['Inside']
+    }
+
+    def "since of another type is refused naming the formats"() {
         when:
-        script.toolGetHubLogs([since: 30])
+        script.toolGetHubLogs([since: [1]])
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.toLowerCase().contains('since')
-        ex.message.toLowerCase().contains('string')
+        ex.message.contains('since must be a string or epoch milliseconds')
     }
 
     def "patterns list containing a non-string element throws IllegalArgumentException naming the index"() {
@@ -672,8 +684,8 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         def result = script.toolGetHubLogs([pattern: 'error'])
 
         then: 'case-insensitive match succeeds in the lowercase-pattern direction'
-        result.logs.size() == 1
-        result.logs[0].message == 'ERROR in device'
+        result.entries.size() == 1
+        result.entries[0].message == 'ERROR in device'
     }
 
     def "patterns list entries are case-insensitive: mixed-case patterns match opposite-case messages"() {
@@ -689,13 +701,13 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         def result = script.toolGetHubLogs([patterns: ['foo', 'BAR']])
 
         then: 'both directions of case-insensitive matching work in the patterns list'
-        result.logs.size() == 2
-        result.logs.every { it.message.toLowerCase() =~ /(foo|bar)/ }
+        result.entries.size() == 2
+        result.entries.every { it.message.toLowerCase() =~ /(foo|bar)/ }
     }
 
     // ==================== kitchen-sink combined filter (Pre3) ====================
 
-    def "kitchen-sink: level + source + pattern + patterns + since applied in pipeline order"() {
+    def "kitchen-sink: level + pattern + patterns + since applied together"() {
         given:
         settingsMap.enableRead = true
         // now() in harness = 1234567890000L; "2h" window = entries from 1234560090000L onward
@@ -707,13 +719,13 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         def old    = fmtDate(nowMs - 3 * 3600 * 1000L)  // 3h ago -- outside 2h window
 
         // Six entries. Exactly two should survive all filters:
-        //   level=warn, source=testapp (in name), pattern=keyword, patterns any(foo|bar), since=2h, limit=5
+        //   level=warn, pattern=^testapp$ (the name), patterns all(keyword, foo|bar), since=2h, limit=5
         //
         // Entry A: passes all -- warn level, name contains testapp, message has "keyword foo", recent
         // Entry B: passes all -- warn level, name contains testapp, message has "keyword bar", recent
         // Entry C: fails level (info)
-        // Entry D: fails source (name is 'otherone')
-        // Entry E: fails pattern (message has no "keyword")
+        // Entry D: fails pattern (name is 'otherone')
+        // Entry E: fails patterns (no foo or bar)
         // Entry F: fails since (too old)
         registerLogs([
             "testapp\twarn\tkeyword foo result\t${recent}\tapp",   // A -- passes
@@ -727,20 +739,19 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         when:
         def result = script.toolGetHubLogs([
             level      : 'warn',
-            source     : 'testapp',
-            pattern    : 'keyword',
-            patterns   : ['foo', 'bar'],
-            patternMode: 'any',
+            pattern    : '^testapp$',
+            patterns   : ['keyword', 'foo|bar'],
+            patternMode: 'all',
             since      : '2h',
             limit      : 5
         ])
 
         then: 'exactly entries A and B survive the full filter pipeline'
-        result.logs.size() == 2
-        result.logs.every { it.level == 'warn' }
-        result.logs.every { it.name?.toLowerCase()?.contains('testapp') }
-        result.logs.every { it.message?.toLowerCase()?.contains('keyword') }
-        result.logs.every { it.message?.toLowerCase() =~ /(foo|bar)/ }
+        result.entries.size() == 2
+        result.entries.every { it.level == 'warn' }
+        result.entries.every { it.name?.toLowerCase()?.contains('testapp') }
+        result.entries.every { it.message?.toLowerCase()?.contains('keyword') }
+        result.entries.every { it.message?.toLowerCase() =~ /(foo|bar)/ }
         result.count == 2
     }
 
@@ -767,10 +778,9 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         when:
         def response = mcpDriver.callTool('hub_get_logs', [
             level      : 'warn',
-            source     : 'testapp',
-            pattern    : 'keyword',
-            patterns   : ['foo', 'bar'],
-            patternMode: 'any',
+            pattern    : '^testapp$',
+            patterns   : ['keyword', 'foo|bar'],
+            patternMode: 'all',
             since      : '2h',
             limit      : 5
         ])
@@ -779,9 +789,9 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         response.error == null
         !response.result.isError
         def inner = mcpDriver.parseInner(response)
-        inner.logs.size() == 2
-        inner.logs.every { it.level == 'warn' }
-        inner.logs.every { it.name?.toLowerCase()?.contains('testapp') }
+        inner.entries.size() == 2
+        inner.entries.every { it.level == 'warn' }
+        inner.entries.every { it.name?.toLowerCase()?.contains('testapp') }
         inner.count == 2
 
         where:
@@ -812,8 +822,8 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         def result = script.toolGetHubLogs([level: 'error', pattern: 'FAULT', since: '30m'])
 
         then: 'only the entry passing all three filters is returned'
-        result.logs.size() == 1
-        result.logs[0].message == 'FAULT: recent issue'
+        result.entries.size() == 1
+        result.entries[0].message == 'FAULT: recent issue'
     }
 
     // ==================== limit truncation ====================
@@ -834,7 +844,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         def result = script.toolGetHubLogs([level: 'warn', limit: 2])
 
         then: 'limit is the binding constraint -- 5 passed the level filter, 2 are returned'
-        result.logs.size() == 2
+        result.entries.size() == 2
         // count reflects what was returned after limit applied
         result.count == 2
     }
@@ -857,8 +867,8 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         def result = script.toolGetHubLogs([since: '2024-01-15T10:30:00'])
 
         then: 'entry at 10:30:01 UTC is included; entry at 10:29:59 UTC is excluded'
-        result.logs.size() == 1
-        result.logs[0].message == 'After cutoff'
+        result.entries.size() == 1
+        result.entries[0].message == 'After cutoff'
     }
 
     def "since as space-separated timestamp (hub log copy-paste shape, no TZ marker) is parsed as UTC -- JVM TZ swap"() {
@@ -888,8 +898,8 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         }
 
         then: 'entry at 12:30:46 UTC is included; entry at 12:30:44 UTC is excluded -- UTC parse is TZ-default-independent'
-        result.logs.size() == 1
-        result.logs[0].message == 'After cutoff'
+        result.entries.size() == 1
+        result.entries[0].message == 'After cutoff'
     }
 
     def "TZ-swap asymmetric regression: space-separated UTC entry and explicit-Z entry both resolve to same epoch ms"() {
@@ -921,8 +931,8 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         }
 
         then: 'both "after" entries are included; both "before" entries are excluded regardless of format'
-        result.logs.size() == 2
-        result.logs*.message.sort() == ['ISO-Z after', 'Space-sep after'].sort()
+        result.entries.size() == 2
+        result.entries*.message.sort() == ['ISO-Z after', 'Space-sep after'].sort()
     }
 
     // ==================== B3: timeFilterUnparseable counter ====================
@@ -946,7 +956,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         def result = script.toolGetHubLogs([since: '2024-01-15T00:00:00Z'])
 
         then: '5 valid + 2 unparseable = 7 total entries returned'
-        result.logs.size() == 7
+        result.entries.size() == 7
         result.timeFilterUnparseable == 2
     }
 
@@ -965,9 +975,9 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         !result.containsKey('timeFilterUnparseable')
     }
 
-    // ==================== I4: filteredOut and appliedFilters ====================
+    // ==================== I4: total, matched and count ====================
 
-    def "zero-match result includes filteredOut count and appliedFilters echo"() {
+    def "zero-match result reports how many rows were read and matched"() {
         given:
         settingsMap.enableRead = true
         registerLogs([
@@ -979,14 +989,13 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         when: 'pattern matches nothing'
         def result = script.toolGetHubLogs([pattern: 'DEFINITELY_NOT_PRESENT'])
 
-        then: 'count is 0 but filteredOut and appliedFilters reveal what happened'
+        then: 'count is 0 but total and matched reveal what happened'
         result.count == 0
-        result.filteredOut == 3
-        result.appliedFilters != null
-        result.appliedFilters.pattern == 'DEFINITELY_NOT_PRESENT'
+        result.matched == 0
+        result.total == 3
     }
 
-    def "partial-match result includes filteredOut count reflecting excluded entries"() {
+    def "partial-match result reports the excluded rows through matched and total"() {
         given:
         settingsMap.enableRead = true
         registerLogs([
@@ -998,18 +1007,17 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         when:
         def result = script.toolGetHubLogs([pattern: 'found'])
 
-        then: '2 matched "found", 1 filtered out; filteredOut = 1'
+        then: '2 matched "found", 1 filtered out'
         result.count == 2
-        result.filteredOut == 1
-        result.appliedFilters.pattern == 'found'
+        result.matched == 2
+        result.total == 3
     }
 
-    def "filteredOut counts only filter-excluded entries not limit-truncated ones"() {
+    def "matched counts filter survivors, not the limit-truncated page"() {
         given:
         settingsMap.enableRead = true
         // 100 entries: 50 contain 'ALPHA' (match), 50 contain 'BETA' (no match). limit=10.
-        // filteredOut must be 50 (the BETA entries excluded by filter), NOT 90 (totalParsed - count).
-        // The 40 ALPHA entries beyond the limit are limit-truncated, not filter-excluded.
+        // matched must be 50 (the ALPHA entries), not the 10 the limit keeps.
         def lines = (1..50).collect { "App 1\tinfo\tALPHA entry ${it}\t2026-04-19 10:00:00.000\ttype" } +
                     (1..50).collect { "App 1\tinfo\tBETA entry ${it}\t2026-04-19 10:00:00.000\ttype" }
         registerLogs(lines)
@@ -1017,11 +1025,10 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         when:
         def result = script.toolGetHubLogs([pattern: 'ALPHA', limit: 10])
 
-        then: 'count = 10 (limit hit), filteredOut = 50 (filter-excluded), totalParsed = 100'
+        then: 'count = 10 (limit hit), matched = 50, total = 100'
         result.count == 10
-        result.totalParsed == 100
-        result.filteredOut == 50
-        // limit-truncated entries (the other 40 ALPHA matches) are NOT counted in filteredOut
+        result.total == 100
+        result.matched == 50
     }
 
     def "no filters active means filteredOut and appliedFilters are absent"() {
@@ -1159,20 +1166,16 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.toLowerCase().contains('window is empty')
+        ex.message.contains('until must be later than since')
     }
 
-    def "until as Number throws IllegalArgumentException with format hint"() {
-        given:
-        settingsMap.enableRead = true
-
+    def "until of another type is refused naming the formats"() {
         when:
-        script.toolGetHubLogs([until: 1234567890000])
+        script.toolGetHubLogs([until: true])
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.toLowerCase().contains('until')
-        ex.message.toLowerCase().contains('string')
+        ex.message.contains('until must be a string or epoch milliseconds')
     }
 
     def "patternMode as List throws IllegalArgumentException naming the expected type"() {
@@ -1200,20 +1203,20 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         def page1 = script.toolGetHubLogs([limit: 150, cursor: ''])
 
         then:
-        page1.logs.size() == 100
-        page1.total == 150               // post-limit candidate pool, NOT raw 300
+        page1.entries.size() == 100
+        page1.total == 300               // rows read
+        page1.matched == 300             // rows that passed the (absent) filters; limit then keeps 150
         page1.nextCursor == '100'
-        page1.appliedLimit == 150        // visibility into the limit ceiling
 
         when: 'last page within the limit pool'
         def page2 = script.toolGetHubLogs([limit: 150, cursor: '100'])
 
         then:
-        page2.logs.size() == 50
+        page2.entries.size() == 50
         !page2.containsKey('nextCursor')
     }
 
-    def "no-cursor call still emits appliedLimit but no nextCursor/total leakage"() {
+    def "no-cursor call returns the whole result with no nextCursor"() {
         // Backward-compat shape guard for callers who don't paginate.
         given:
         settingsMap.enableRead = true
@@ -1225,10 +1228,9 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         def result = script.toolGetHubLogs([:])
 
         then:
-        result.logs.size() == 1
-        result.appliedLimit == 100       // default
+        result.entries.size() == 1
+        result.total == 1
         !result.containsKey('nextCursor')
-        !result.containsKey('total')
     }
 
     def "empty patterns list is accepted and applies no pattern filter"() {
@@ -1243,7 +1245,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         def result = script.toolGetHubLogs([patterns: []])
 
         then: 'all entries returned; empty patterns list treated as no-filter'
-        result.logs.size() == 2
+        result.entries.size() == 2
         // empty patterns list means no filter was applied -- appliedFilters omits patterns key
         !result.containsKey('appliedFilters') || !result.appliedFilters?.containsKey('patterns')
     }

@@ -752,7 +752,7 @@ class HubitatMcpClient:
                     self._http_leg_timings.append((method, _http_elapsed, _http_status))
                 if 500 <= resp.status_code < 600:
                     # Hub or cloud relay returned a transient error. Heavy
-                    # queries (e.g. hub_get_performance_stats) sometimes 504.
+                    # queries (e.g. hub_get_logs Logs-page modes) sometimes 504.
                     last_exc = requests.HTTPError(f"{resp.status_code} {resp.reason} on {method}")
                     if not replay_safe:
                         # Write: unknown-commit. Never replay the request; hand back the typed
@@ -2161,7 +2161,7 @@ class TestRunner:
         try:
             source, entries = None, None
             try:
-                entries = _read_main({"mode": "hub", "appId": int(app_id), "since": since, "limit": 300})
+                entries = _read_main({"mode": "past", "appId": int(app_id), "since": since, "limit": 300})
                 source = f"hub log since {since}"
             except Exception as exc_main:
                 try:
@@ -2217,12 +2217,12 @@ class TestRunner:
                     "recentCalls": self.client.op_timings[-10:]}
         try:
             stats = self.client.call_tool("hub_read_diagnostics", {
-                "tool": "hub_get_performance_stats", "args": {"type": "app", "sortBy": "totalMs", "limit": 0},
+                "tool": "hub_get_logs", "args": {"mode": "apps", "sortBy": "total", "limit": 0},
             })
-            snapshot.update({key: stats.get(key) for key in ("uptime", "snapshot", "appSummary")})
-            rows = stats.get("appStats", [])
-            fields = ("id", "count", "pctBusy", "pctTotal", "stateSize", "totalMs", "averageMs",
-                      "totalEvents", "states", "hubActions", "pendingEvents", "cloudCalls", "largeState")
+            snapshot.update({key: stats.get(key) for key in ("uptime", "snapshot", "summary")})
+            rows = stats.get("entries", [])
+            fields = ("id", "count", "pct", "pctTotal", "stateSize", "total", "average", "customAttributes",
+                      "hubActionCount", "pendingEventsCount", "cloudCallCount", "largeState")
             snapshot["apps"] = [{key: row.get(key) for key in fields}
                                 for index, row in enumerate(rows)
                                 if index < 5 or str(row.get("id")) == self.server_app_id]
@@ -3181,8 +3181,7 @@ class TestRunner:
                 refused = _tool_error_payload(exc)
             # Bypass ON reaches native metadata; OFF refuses at the selection gate.
             error = str(refused.get("error", "")) if isinstance(refused, dict) else ""
-            assert isinstance(refused, dict) and refused.get("success") is False \
-                and refused.get("source") != "location" and (
+            assert isinstance(refused, dict) and refused.get("success") is False and (
                     error == "Device metadata fetch failed (/device/fullJson/0)"
                     or error == "Device not found: 0" or error.startswith("Device not found: 0 ")), \
                 f"supplied zero must be validated as a device ID: {supplied_id!r} -> {refused}"
@@ -3196,14 +3195,6 @@ class TestRunner:
             "deviceId": dev_id, "since": "2099-01-01T00:00:00.000+0000"})
         assert isinstance(fut, dict) and fut.get("count") == 0 and fut.get("events") == [], \
             f"future since should yield an empty list, not: {fut}"
-
-        # Location mode also carries the hub's own events (reboots, low memory, startup), each row
-        # tagged with its kind; the hub events read must not fail.
-        loc = self.client.call_tool("hub_list_device_events", {"hoursBack": 168, "limit": 50})
-        assert isinstance(loc, dict) and loc.get("source") == "location" and "hubEventsError" not in loc, \
-            f"location events must include the hub events: {loc}"
-        assert all(e.get("kind") in ("location", "hub") for e in loc.get("events") or []), \
-            f"every location-mode row must say its kind: {loc.get('events')}"
 
         # Read the scaffold's history (relative/hoursBack mode). Also pins the
         # relative-mode envelope: sinceMode=relative, echoes hoursBack not since.
@@ -3394,7 +3385,7 @@ class TestRunner:
             # Capture endpoint timings near the failure before later suite logs displace them.
             try:
                 logs = self.client.call_tool("hub_get_logs", {
-                    "mode": "hub", "pattern": "/hub/networkTest/", "limit": 10,
+                    "mode": "past", "pattern": "/hub/networkTest/", "limit": 10,
                 })
                 print(f"    health native network diagnostics: {json.dumps(logs)}")
             except Exception as diagnostic_error:
@@ -6993,12 +6984,20 @@ class TestRunner:
 
     # ---- trigger forms: periodic schedule ----
 
+    def _logs_jobs(self, app_id) -> list:
+        """The Logs page's scheduled jobs owned by one app."""
+        result = self.client.call_tool("hub_read_diagnostics", {
+            "tool": "hub_get_logs", "args": {"mode": "scheduledJobs", "appId": str(app_id)}})
+        assert isinstance(result.get("entries"), list), f"scheduled jobs read: {result}"
+        return result["entries"]
+
     @test("native_apps")
     def test_periodic_trigger_deletion_preserves_other_rows(self) -> None:
         # A Periodic Schedule trigger built through the native form (no document contract exists for
         # it): a frequency's time input disappears when another frequency is chosen and is refused if
-        # submitted anyway; the trigger schedules a job; deleting it keeps the other rows and leaves
-        # the Switch trigger subscribed.
+        # submitted anyway; the trigger schedules a job, which the Logs page lists under the rule and
+        # whose deletion there removes only that timer until the rule is saved again; deleting the
+        # trigger keeps the other rows and leaves the Switch trigger subscribed.
         switch = self._ensure_perm_fixture("switch_a")
         app_id, before = self._rm_rule("Periodic", [self._rm_switch_trigger(switch), native_log("periodic deletion baseline")])
         try:
@@ -7022,6 +7021,21 @@ class TestRunner:
             finalized = self._rm_update(app_id, [native_log("periodic deletion baseline", id=before["actions"][0]["id"])])
             periodic = set(finalized["document"]["triggers"]) - set(before["triggers"])
             assert len(periodic) == 1 and finalized["scheduledJobs"], finalized
+            owner = {"type": "app", "id": int(app_id)}
+            owned = self._logs_jobs(app_id)
+            assert owned and all(job.get("owner") == owner and job.get("link") == f"/installedapp/configure/{app_id}"
+                                 for job in owned), owned
+            for job in owned:
+                gone = self.client.call_tool("hub_manage_logs", {"tool": "hub_delete_logs", "args": {
+                    "mode": "scheduledJobs", "jobId": job["id"], "confirm": True}})
+                assert gone.get("success") is True and gone.get("owner") == owner, gone
+            assert not self._logs_jobs(app_id), "a deleted job is still listed"
+            # Saving the rule runs its own scheduling again. The save reports the rule's jobs from a fresh
+            # read; the Logs page is a 30 s snapshot, so it is not re-read here.
+            saved = self._rm_update(app_id, [native_log("periodic deletion baseline", id=before["actions"][0]["id"])])
+            assert saved["document"]["triggers"] == finalized["document"]["triggers"], saved
+            assert [job.get("handler") for job in saved["scheduledJobs"]] == [job["methodName"] for job in owned], \
+                f"saving the rule must schedule its trigger again: {saved['scheduledJobs']}"
             deleted = self._rm_update(app_id, [native_delete("trigger", periodic.pop())])
             assert deleted["document"]["triggers"] == before["triggers"] and deleted["document"]["actions"] == before["actions"], deleted
             assert not deleted["scheduledJobs"] and deleted["eventSubscriptions"], deleted
@@ -12751,100 +12765,109 @@ class TestRunner:
         assert "totalEntries" in summary, "Summary missing 'totalEntries'"
 
     @test("system_tools")
-    def test_get_performance_stats_device(self) -> None:
-        """Test hub_get_performance_stats with type=device (default)."""
+    def test_get_logs_device_stats(self) -> None:
+        """hub_get_logs(mode='devices') returns the Logs page's device stats rows."""
         result = self.client.call_tool("hub_manage_logs", {
-            "tool": "hub_get_performance_stats",
+            "tool": "hub_get_logs",
+            "args": {"mode": "devices"},
         })
-        assert isinstance(result, dict), f"hub_get_performance_stats returned {type(result)}"
+        assert isinstance(result, dict), f"hub_get_logs returned {type(result)}"
+        assert result.get("mode") == "devices", f"wrong mode echo: {result.get('mode')}"
         assert "uptime" in result, "Missing 'uptime'"
-        assert "deviceSummary" in result, "Missing 'deviceSummary'"
-        assert "deviceStats" in result, "Missing 'deviceStats'"
-        assert isinstance(result["deviceStats"], list), "deviceStats should be a list"
-        ds = result["deviceSummary"]
-        assert "deviceCount" in ds, "deviceSummary missing 'deviceCount'"
-        # Default limit is 20
-        assert len(result["deviceStats"]) <= 20, \
-            f"Default limit is 20 but got {len(result['deviceStats'])} entries"
-        if result["deviceStats"]:
-            entry = result["deviceStats"][0]
-            assert "name" in entry, "Stats entry missing 'name'"
-            assert "count" in entry, "Stats entry missing 'count'"
+        assert isinstance(result.get("summary"), dict) and "devicePct" in result["summary"], \
+            f"device summary missing: {result.get('summary')}"
+        entries = result.get("entries")
+        assert isinstance(entries, list), "entries should be a list"
+        assert result["count"] == len(entries), f"count {result['count']} != len(entries) {len(entries)}"
+        assert len(entries) <= 20, f"Default limit is 20 but got {len(entries)} entries"
+        assert result["matched"] >= result["count"], f"matched {result['matched']} < count {result['count']}"
+        pcts = [e.get("pct") or 0 for e in entries]
+        assert pcts == sorted(pcts, reverse=True), f"default sort must be % busy, highest first: {pcts}"
+        if entries:
+            entry = entries[0]
+            assert {"name", "count", "stateSize"} <= set(entry) | set(result.get("nullFields") or []), \
+                f"native stat row: {entry}"
+            assert not any(k.startswith("formatted") for k in entry), f"display copies must be dropped: {entry}"
 
     @test("system_tools")
-    def test_get_performance_stats_app(self) -> None:
-        """Test hub_get_performance_stats with type=app."""
+    def test_get_logs_app_stats_and_cloud_calls(self) -> None:
+        """apps mode keeps app rows only; cloudCalls mode reads the Cloud calls tab."""
         result = self.client.call_tool("hub_manage_logs", {
-            "tool": "hub_get_performance_stats",
-            "args": {"type": "app", "limit": 5, "includeCloudCalls": True},
+            "tool": "hub_get_logs",
+            "args": {"mode": "apps", "limit": 5, "sortBy": "name"},
         })
-        assert isinstance(result, dict), f"hub_get_performance_stats returned {type(result)}"
-        cc = result.get("cloudCalls")
-        assert isinstance(cc, dict) and ("error" in cc or isinstance(cc.get("apps"), list)), \
-            f"includeCloudCalls attached neither per-app cloud calls nor an error: {cc}"
+        assert isinstance(result, dict), f"hub_get_logs returned {type(result)}"
+        assert isinstance(result.get("summary"), dict) and "appPct" in result["summary"], f"apps summary: {result}"
+        names = [str(e.get("name") or "").lower() for e in result.get("entries") or []]
+        assert len(names) <= 5, f"limit=5 but got {len(names)} entries"
+        assert names == sorted(names), f"sortBy=name must sort A-Z: {names}"
+        server = self.client.call_tool("hub_manage_logs", {
+            "tool": "hub_get_logs",
+            "args": {"mode": "apps", "appId": str(self.server_app_id)},
+        })
+        assert [str(e.get("id")) for e in server.get("entries") or []] == [str(self.server_app_id)], \
+            f"appId must keep only the MCP app's row: {server}"
+        try:
+            cc = self.client.call_tool("hub_manage_logs", {"tool": "hub_get_logs", "args": {"mode": "cloudCalls"}})
+        except McpToolError as exc:
+            cc = _tool_error_payload(exc)
         if self._hub_fw_at_least("2.5.2.129"):
-            assert isinstance(cc.get("apps"), list), f"cloud-call history unreadable on 2.5.2.129+: {cc}"
-        assert all("total" in a and isinstance(a.get("hourly"), list) for a in (cc.get("apps") or [])), \
-            f"cloud-call app entries lack total/hourly: {cc}"
-        assert "appSummary" in result, "Missing 'appSummary'"
-        assert "appStats" in result, "Missing 'appStats'"
-        assert isinstance(result["appStats"], list), "appStats should be a list"
-        assert len(result["appStats"]) <= 5, \
-            f"limit=5 but got {len(result['appStats'])} entries"
-        # Should NOT have device stats when type=app
-        assert "deviceStats" not in result, "type=app should not include deviceStats"
+            assert isinstance(cc.get("entries"), list), f"cloud-call history unreadable on 2.5.2.129+: {cc}"
+        else:
+            assert isinstance(cc.get("entries"), list) or cc.get("isError") is True, f"cloud calls: {cc}"
+        assert all("total" in a and isinstance(a.get("hours"), list) for a in (cc.get("entries") or [])), \
+            f"cloud-call rows lack total/hours: {cc}"
 
     @test("system_tools")
-    def test_get_performance_stats_both(self) -> None:
-        """Test hub_get_performance_stats with type=both."""
+    def test_get_logs_scheduled_jobs_owner(self) -> None:
+        """Scheduled jobs keep the hub's link and nextRunDt and name their owner; the MCP app's own
+        recurring update check is listed under the MCP app."""
         result = self.client.call_tool("hub_manage_logs", {
-            "tool": "hub_get_performance_stats",
-            "args": {"type": "both", "limit": 3},
+            "tool": "hub_get_logs",
+            "args": {"mode": "scheduledJobs"},
         })
-        assert isinstance(result, dict), f"hub_get_performance_stats returned {type(result)}"
-        assert "deviceStats" in result, "type=both missing 'deviceStats'"
-        assert "appStats" in result, "type=both missing 'appStats'"
+        assert isinstance(result, dict), f"hub_get_logs returned {type(result)}"
+        jobs = result.get("entries")
+        assert isinstance(jobs, list) and jobs, f"a hub always has scheduled jobs: {result}"
+        assert result["count"] == len(jobs), f"count {result['count']} != len(entries) {len(jobs)}"
+        nulls = set(result.get("nullFields") or [])
+        for job in jobs:
+            assert None not in job.values(), f"null fields are left out of rows: {job}"
+            assert {"id", "name", "link", "methodName", "nextRun", "nextRunDt", "recurring"} <= set(job) | nulls, \
+                f"native job row incomplete: {job}"
+            link = job.get("link") or ""
+            if link.startswith("/installedapp/configure/"):
+                assert job.get("owner") == {"type": "app", "id": int(link.rsplit("/", 1)[1])}, f"app owner: {job}"
+            elif link.startswith("/device/edit/"):
+                assert job.get("owner") == {"type": "device", "id": int(link.rsplit("/", 1)[1])}, f"device owner: {job}"
+            else:
+                assert "owner" not in job, f"a job without a link has no owner: {job}"
+        mine = self.client.call_tool("hub_manage_logs", {
+            "tool": "hub_get_logs",
+            "args": {"mode": "scheduledJobs", "appId": str(self.server_app_id), "pattern": "^checkForUpdate$"},
+        })
+        rows = mine.get("entries") or []
+        assert len(rows) == 1 and rows[0]["owner"] == {"type": "app", "id": int(self.server_app_id)} \
+            and rows[0]["link"] == f"/installedapp/configure/{self.server_app_id}", \
+            f"the MCP app's update check must be listed under it: {mine}"
+        both = self.client.call_tool("hub_read_diagnostics", {
+            "tool": "hub_get_logs", "args": {"mode": ["runningJobs", "hubActions"]}})
+        assert set(both.get("modes") or {}) == {"runningJobs", "hubActions"} and "failedModes" not in both, both
+        for mode, other in both["modes"].items():
+            assert isinstance(other.get("entries"), list) and other["count"] == len(other["entries"]), \
+                f"{mode}: {other}"
 
     @test("system_tools")
-    def test_get_hub_jobs(self) -> None:
-        """Test hub_get_jobs returns scheduled jobs and hub actions."""
-        result = self.client.call_tool("hub_manage_logs", {
-            "tool": "hub_get_jobs",
-        })
-        assert isinstance(result, dict), f"hub_get_jobs returned {type(result)}"
-        assert "uptime" in result, "Missing 'uptime'"
-        assert "scheduledJobs" in result, "Missing 'scheduledJobs'"
-        assert "runningJobs" in result, "Missing 'runningJobs'"
-        assert "hubActions" in result, "Missing 'hubActions'"
-        sj = result["scheduledJobs"]
-        assert "count" in sj, "scheduledJobs missing 'count'"
-        assert "jobs" in sj, "scheduledJobs missing 'jobs'"
-        assert isinstance(sj["jobs"], list), "scheduledJobs.jobs should be a list"
-        # count must match the array length -- a 404-degraded / empty read can't false-green here.
-        assert sj["count"] == len(sj["jobs"]), \
-            f"scheduledJobs.count {sj['count']} != len(jobs) {len(sj['jobs'])} (degraded/partial read?)"
-        if sj["jobs"]:
-            job = sj["jobs"][0]
-            assert "name" in job, "Job missing 'name'"
-
-    @test("system_tools")
-    def test_get_hub_jobs_cursor(self) -> None:
-        """hub_get_jobs pages scheduledJobs through the universal cursor; runningJobs and
-        hubActions stay in full; totals are comparable only within the same snapshot."""
+    def test_get_logs_scheduled_jobs_cursor(self) -> None:
+        """scheduledJobs pages through the universal cursor; totals are comparable within one snapshot."""
         first = self.client.call_tool("hub_manage_logs", {
-            "tool": "hub_get_jobs",
-            "args": {"cursor": ""},
+            "tool": "hub_get_logs",
+            "args": {"mode": "scheduledJobs", "cursor": ""},
         })
-        assert isinstance(first, dict), f"hub_get_jobs returned {type(first)}"
-        sj = first["scheduledJobs"]
-        assert sj["count"] == len(sj["jobs"]), \
-            f"scheduledJobs.count {sj['count']} != len(jobs) {len(sj['jobs'])}"
-        assert sj["count"] <= 100, f"page holds {sj['count']} jobs; page size is 100"
-        assert "total" in sj, "cursor mode must report scheduledJobs.total"
-        assert sj["total"] >= sj["count"], f"total {sj['total']} < page count {sj['count']}"
-        assert "runningJobs" in first and "hubActions" in first, \
-            "runningJobs / hubActions must stay in full on a paged response"
-        seen = list(sj["jobs"])
+        assert isinstance(first, dict), f"hub_get_logs returned {type(first)}"
+        assert first["count"] == len(first["entries"]) and first["count"] <= 100, f"first page: {first}"
+        assert first["matched"] >= first["count"], f"matched {first['matched']} < page count {first['count']}"
+        seen = list(first["entries"])
         cursor = first.get("nextCursor")
         pages = 1
         fetched_at = (first.get("snapshot") or {}).get("fetchedAt")
@@ -12853,44 +12876,30 @@ class TestRunner:
             pages += 1
             assert pages <= 50, "nextCursor never ended"
             page = self.client.call_tool("hub_manage_logs", {
-                "tool": "hub_get_jobs",
-                "args": {"cursor": cursor},
+                "tool": "hub_get_logs",
+                "args": {"mode": "scheduledJobs", "cursor": cursor},
             })
-            current = page["scheduledJobs"]
-            assert current["count"] == len(current["jobs"]), \
-                f"page {pages}: scheduledJobs.count {current['count']} != len(jobs) {len(current['jobs'])}"
-            assert current["count"] <= 100, f"page {pages} holds {current['count']} jobs; page size is 100"
-            assert current["total"] >= current["count"], \
-                f"page {pages}: total {current['total']} < page count {current['count']}"
-            page_same_snapshot = (page.get("snapshot") or {}).get("fetchedAt") == fetched_at
-            same_snapshot = same_snapshot and page_same_snapshot
-            for key in ("runningJobs", "hubActions"):
-                assert isinstance(page.get(key), dict), f"page {pages}: missing {key}: {page}"
-                if page_same_snapshot:
-                    assert page[key] == first[key], f"page {pages}: {key} must match page 1 within one snapshot"
-            seen.extend(current["jobs"])
+            assert page["count"] == len(page["entries"]) and page["count"] <= 100, f"page {pages}: {page}"
+            same_snapshot = same_snapshot and (page.get("snapshot") or {}).get("fetchedAt") == fetched_at
+            seen.extend(page["entries"])
             cursor = page.get("nextCursor")
         if same_snapshot:
-            assert len(seen) == sj["total"], \
-                f"pages summed to {len(seen)} jobs but total is {sj['total']}"
-        # Exercise the second Logs-page reader immediately after the paginated jobs flow.
+            assert len(seen) == first["matched"], f"pages summed to {len(seen)} jobs but matched is {first['matched']}"
         stats = self.client.call_tool("hub_manage_logs", {
-            "tool": "hub_get_performance_stats",
-            "args": {"limit": 1},
+            "tool": "hub_get_logs",
+            "args": {"mode": "devices", "limit": 1},
         })
-        assert isinstance(stats, dict) and "uptime" in stats, f"performance stats after jobs: {stats}"
+        assert isinstance(stats, dict) and "uptime" in stats, f"device stats after jobs: {stats}"
 
     @test("system_tools")
-    def test_get_hub_jobs_snapshot_provenance(self) -> None:
-        """Both Logs-page readers expose fetch provenance independently of this request's budget.
-
-        Another client can populate or replace the shared snapshot between these calls. Cold
-        worker scheduling and warm-cache reuse are pinned deterministically by ToolManageLogsSpec.
-        """
-        jobs = self.client.call_tool("hub_read_diagnostics", {"tool": "hub_get_jobs", "args": {"cursor": ""}})
-        assert isinstance(jobs, dict) and "scheduledJobs" in jobs, f"jobs read: {jobs}"
-        stats = self.client.call_tool("hub_read_diagnostics", {"tool": "hub_get_performance_stats", "args": {"limit": 1}})
-        assert isinstance(stats, dict) and "uptime" in stats, f"performance stats after jobs: {stats}"
+    def test_get_logs_snapshot_provenance(self) -> None:
+        """Every Logs-page mode built on /logs/json exposes fetch provenance independently of this
+        request's budget. Another client can replace the shared snapshot between these calls; cold
+        worker scheduling and warm-cache reuse are pinned deterministically by ToolManageLogsSpec."""
+        jobs = self.client.call_tool("hub_read_diagnostics", {"tool": "hub_get_logs", "args": {"mode": "scheduledJobs", "cursor": ""}})
+        assert isinstance(jobs, dict) and isinstance(jobs.get("entries"), list), f"jobs read: {jobs}"
+        stats = self.client.call_tool("hub_read_diagnostics", {"tool": "hub_get_logs", "args": {"mode": "apps", "limit": 1}})
+        assert isinstance(stats, dict) and "uptime" in stats, f"app stats after jobs: {stats}"
         first = jobs.get("snapshot") or {}
         second = stats.get("snapshot") or {}
         for prov in (first, second):
@@ -12901,6 +12910,35 @@ class TestRunner:
         assert second["fetchedAt"] >= first["fetchedAt"], f"snapshot moved backwards: {second} vs {first}"
         if second["fetchedAt"] == first["fetchedAt"]:
             assert second["ageMs"] >= first["ageMs"], f"snapshot age moved backwards: {second} vs {first}"
+
+    @test("system_tools")
+    def test_get_logs_location_and_hub_events(self) -> None:
+        """Location and hub events are their own Logs page tabs, with the hub's field names, read
+        together in one call; null fields are left out of rows and named in nullFields."""
+        both = self.client.call_tool("hub_read_diagnostics", {
+            "tool": "hub_get_logs", "args": {"mode": ["locationEvents", "hubEvents"], "since": "7d", "limit": 50}})
+        assert set(both.get("modes") or {}) == {"locationEvents", "hubEvents"} and "failedModes" not in both, both
+        for mode, result in both["modes"].items():
+            assert isinstance(result, dict) and isinstance(result.get("entries"), list), f"{mode}: {result}"
+            assert result["count"] == len(result["entries"]) <= 50, f"{mode}: {result}"
+            nulls = set(result.get("nullFields") or [])
+            assert all(any(name not in row for row in result["entries"]) for name in nulls), \
+                f"{mode}: every field in nullFields is missing from some row: {result}"
+            for row in result["entries"]:
+                assert None not in row.values(), f"{mode}: null fields are left out of rows: {row}"
+                assert {"name", "date", "descriptionText"} <= set(row) | nulls, f"{mode} native row: {row}"
+            if result["entries"]:
+                bookmark = result["entries"][0]["date"]
+                after = self.client.call_tool("hub_read_diagnostics", {
+                    "tool": "hub_get_logs", "args": {"mode": mode, "since": bookmark}})
+                assert all(r.get("date") != bookmark for r in after.get("entries") or []), \
+                    f"{mode}: since must exclude the bookmarked event: {after}"
+        try:
+            refused = self.client.call_tool("hub_list_device_events", {"hoursBack": 1})
+        except McpToolError as exc:
+            refused = _tool_error_payload(exc)
+        assert "hub_get_logs(mode='locationEvents')" in str(refused.get("error", "")), \
+            f"hub_list_device_events without ids must point at hub_get_logs: {refused}"
 
     @test("system_tools")
     def test_manage_rooms_list(self) -> None:

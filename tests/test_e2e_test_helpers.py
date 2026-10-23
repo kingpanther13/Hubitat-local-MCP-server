@@ -30,38 +30,35 @@ import e2e_test as et  # noqa: E402 -- must follow the importorskip above (e2e_t
 @pytest.mark.parametrize("refetched", [False, True])
 def test_jobs_cursor_checks_multiple_pages_without_pinning_expired_snapshot(refetched):
     first = {
-        "scheduledJobs": {"jobs": [{"name": str(i)} for i in range(100)], "count": 100, "total": 101},
-        "runningJobs": {"jobs": [], "count": 0}, "hubActions": {"actions": [], "count": 0},
+        "entries": [{"name": str(i)} for i in range(100)], "count": 100, "matched": 101, "total": 101,
         "snapshot": {"fetchedAt": 1000}, "nextCursor": "next-page",
     }
     second = {
-        "scheduledJobs": {"jobs": [{"name": "last"}], "count": 1, "total": 102 if refetched else 101},
-        "runningJobs": {"jobs": ["new"] if refetched else [], "count": 1 if refetched else 0},
-        "hubActions": {"actions": [], "count": 0},
+        "entries": [{"name": "last"}], "count": 1, "matched": 102 if refetched else 101,
         "snapshot": {"fetchedAt": 32000 if refetched else 1000},
     }
     calls = []
 
     def call_tool(gateway, args):
         calls.append(args)
-        if args["tool"] == "hub_get_performance_stats":
+        if args["args"]["mode"] == "devices":
             return {"uptime": "1d"}
         return first if args["args"]["cursor"] == "" else second
 
     runner = object.__new__(et.TestRunner)
     runner.client = SimpleNamespace(call_tool=call_tool)
-    runner.test_get_hub_jobs_cursor()
+    runner.test_get_logs_scheduled_jobs_cursor()
     assert [call["args"].get("cursor") for call in calls[:2]] == ["", "next-page"]
     if not refetched:
-        second["scheduledJobs"]["jobs"] = []
-        second["scheduledJobs"]["count"] = 0
+        second["entries"] = []
+        second["count"] = 0
         with pytest.raises(AssertionError, match="pages summed"):
-            runner.test_get_hub_jobs_cursor()
+            runner.test_get_logs_scheduled_jobs_cursor()
 
 
 @pytest.mark.parametrize("refetched", [False, True])
 def test_jobs_provenance_accepts_shared_snapshot_from_another_transport(refetched):
-    jobs = {"scheduledJobs": {}, "snapshot": {
+    jobs = {"entries": [], "snapshot": {
         "fetchedAt": 1000, "ageMs": 500, "background": False, "budgeted": True,
     }}
     stats = {"uptime": "1d", "snapshot": {
@@ -70,11 +67,11 @@ def test_jobs_provenance_accepts_shared_snapshot_from_another_transport(refetche
     }}
     runner = object.__new__(et.TestRunner)
     runner.client = SimpleNamespace(call_tool=lambda gateway, args:
-                                    jobs if args["tool"] == "hub_get_jobs" else stats)
-    runner.test_get_hub_jobs_snapshot_provenance()
+                                    jobs if args["args"]["mode"] == "scheduledJobs" else stats)
+    runner.test_get_logs_snapshot_provenance()
     stats["snapshot"]["ageMs"] = 30001
     with pytest.raises(AssertionError, match="stale snapshot"):
-        runner.test_get_hub_jobs_snapshot_provenance()
+        runner.test_get_logs_snapshot_provenance()
 
 
 def _raw_tool_body(body, *, is_error=False):
@@ -104,9 +101,6 @@ def test_event_bookmark_reaches_history_after_expected_zero_refusals(refusal):
         assert params["name"] == "hub_read_devices"
         args = params["arguments"]["args"]
         calls.append(args)
-        if "deviceId" not in args:
-            return _raw_tool_body({"source": "location", "count": 1,
-                                   "events": [{"name": "systemStart", "kind": "hub", "date": dates[0]}]})
         if args["deviceId"] in (0, "0"):
             return _raw_tool_body({"success": False, "isError": True, "error": refusal}, is_error=True)
         assert str(args["deviceId"]) == "42"
@@ -141,12 +135,11 @@ def test_event_bookmark_reaches_history_after_expected_zero_refusals(refusal):
 
 
 @pytest.mark.parametrize("result", [
-    {"success": True, "source": "location", "events": []},
-    {"success": False, "isError": True, "error": "Location event history fetch failed", "source": "location"},
+    {"success": True, "events": []},
     {"success": False, "isError": True, "error": "Device metadata fetch failed (/device/fullJson/42)"},
     {"success": False, "isError": True, "error": "Read tools are disabled"},
 ])
-def test_event_bookmark_rejects_location_fallback_and_unrelated_failures(result):
+def test_event_bookmark_rejects_empty_and_unrelated_failures(result):
     client = et.HubitatMcpClient("http://hub.invalid", "1", "unused")
     client._gateway_members = {"hub_read_devices": {"hub_list_device_events"}}
     client._gateway_route = {"hub_list_device_events": "hub_read_devices"}
@@ -164,7 +157,7 @@ def test_health_probes_require_completed_bounded_transport(method, failure):
     def call_tool(tool, args):
         if tool == "hub_get_logs":
             assert failure == "relay"
-            return {"logs": [{"message": "native network timeout"}]}
+            return {"entries": [{"message": "native network timeout"}]}
         assert tool == "hub_get_device_health"
         if failure == "relay":
             raise et.McpError("504 Gateway Timeout")
@@ -919,10 +912,10 @@ def test_load_snapshot_is_read_only_redacted_and_preserves_failed_operation(caps
         if unavailable:
             raise et.McpToolError(name, "sensitive response detail")
         if name == "hub_read_diagnostics":
-            assert arguments["tool"] == "hub_get_performance_stats"
-            return {"uptime": 42, "appStats": [
-                {"id": i, "totalMs": 100 - i, "name": "private app name"} for i in range(6)
-            ] + [{"id": 38, "totalMs": 5}]}
+            assert arguments["tool"] == "hub_get_logs" and arguments["args"]["mode"] == "apps"
+            return {"uptime": 42, "entries": [
+                {"id": i, "total": 100 - i, "name": "private app name"} for i in range(6)
+            ] + [{"id": 38, "total": 5}]}
         assert name == "hub_get_hub_mesh"
         return {"hubMeshEnabled": True, "hubMeshToken": "secret token",
                 "peers": [{"token": "peer secret"}], "sharedDevices": []}

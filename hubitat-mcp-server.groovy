@@ -64,8 +64,8 @@ private String _effectiveBackupSetting(String key) {
 // _resolveCaller. Null is the main token and non-request contexts (UI, schedules), except an
 // MRTR worker or server-side resume, which restores the client that started the write.
 @groovy.transform.Field Map callerClient = null
-// JVM-live /logs/json snapshot shared by hub_get_jobs and hub_get_performance_stats (see
-// _logsJsonSnapshot in McpDiagnosticsLib). Keys: snapshot (the trimmed page + at), fetchId
+// JVM-live /logs/json snapshot behind hub_get_logs' stats and job modes (see _logsJsonSnapshot in
+// McpDiagnosticsLib). Keys: snapshot (the page's tables + at), fetchId
 // (monotonic; fences a stale worker's publish), fetchStartedAt (in-flight marker owned by
 // fetchId), fetchError (last worker failure, at + message).
 @groovy.transform.Field static final Map LOGS_JSON_SNAPSHOT = new java.util.HashMap()
@@ -2919,8 +2919,8 @@ def _maxConcurrentWrites() {
 def _budgetAwareTools() {
     return ["hub_set_native_app", "hub_call_rule", "hub_clone_native_app",
             "hub_import_native_app", "hub_call_device_command",
-            "hub_get_jobs", "hub_get_performance_stats", "hub_get_logs", "hub_get_info",
-            "hub_report_issue", "hub_get_custom_rule", "hub_delete_debug_logs",
+            "hub_get_logs", "hub_get_info",
+            "hub_report_issue", "hub_get_custom_rule",
             "hub_get_device", "hub_list_devices", "hub_get_device_health", "hub_list_libraries",
             "hub_get_device_attribute", "hub_list_rules"] as Set
 }
@@ -2931,7 +2931,7 @@ def _mrtrWriteTools() {
     return ["hub_set_native_app", "hub_set_rule", "hub_call_rule",
             "hub_clone_native_app", "hub_import_native_app",
             "hub_create_driver", "hub_update_driver", "hub_delete_item",
-            "hub_delete_debug_logs", "hub_manage_virtual_device", "hub_update_device",
+            "hub_manage_virtual_device", "hub_update_device",
             "hub_restore_backup", "hub_create_backup"] as Set
 }
 
@@ -2941,7 +2941,7 @@ def _mrtrWriteTools() {
 // the read from its cached snapshot). The leaf itself answers status: "in_progress" while its
 // background fetch is still running. Every member must also be in getReadOnlyToolNames().
 def _mrtrReadTools() {
-    return ["hub_get_jobs", "hub_get_performance_stats", "hub_get_logs", "hub_get_info",
+    return ["hub_get_logs", "hub_get_info",
             "hub_report_issue", "hub_get_custom_rule", "hub_get_device", "hub_list_devices",
             "hub_get_device_health", "hub_list_libraries", "hub_list_rules"] as Set
 }
@@ -3983,8 +3983,7 @@ private Map _mrtrContinuation(String leafTool, Map executionArgs, result, Map re
             result.updatesRemaining instanceof List && !result.updatesRemaining.isEmpty()) {
         nextLeaf.updates = result.updatesRemaining
         kind = "driver_updates"
-    } else if ((_mrtrReadTools().contains(leafTool) || leafTool == "hub_delete_debug_logs")
-            && result.status == "in_progress") {
+    } else if (_mrtrReadTools().contains(leafTool) && result.status == "in_progress") {
         // The background fetch is still running; the next leg re-runs the identical read.
         kind = "slow_read"
     }
@@ -4158,8 +4157,6 @@ private Map _mrtrCommitSlice(String stateId, Map rec, Map claim, Map executionAr
         }
         // Writes only, matching the slow_ops contract: a slow read's background fetch already
         // runs on its own schedule, and resuming it here would re-enter the read for no gain.
-        // hub_delete_debug_logs uses the slow_read continuation kind but is a write, so gate on
-        // the tool set rather than the kind.
         if (_mrtrWriteTools().contains(stored.leafTool?.toString())) {
             _mrtrScheduleAutoContinue(stateId, stored)
         }
@@ -4276,8 +4273,11 @@ private boolean _mrtrStoreTerminal(String stateId, Map originalRec, Map claim, r
             // The replay re-reads the cached snapshot, so the record must not outlive it:
             // clock the read TTL from when that snapshot was fetched, not from finishedAt.
             def fetchedAt = readLeaf ? originalRec.readSnapshotFetchedAt : null
-            if (!(fetchedAt instanceof Number) && readLeaf && result instanceof Map && result.snapshot instanceof Map) {
-                fetchedAt = result.snapshot.fetchedAt
+            if (!(fetchedAt instanceof Number) && readLeaf && result instanceof Map) {
+                // hub_get_logs with a list of modes carries one snapshot per tab; the oldest bounds the replay.
+                List parts = result.modes instanceof Map ? (result.modes as Map).values().toList() : [result]
+                fetchedAt = parts.findAll { it instanceof Map && it.snapshot instanceof Map && it.snapshot.fetchedAt instanceof Number }
+                    .collect { it.snapshot.fetchedAt as Long }.min()
             }
             if (fetchedAt instanceof Number) {
                 rec.expiresAt = Math.min(rec.expiresAt as Long, (fetchedAt as Long) + _logsJsonSnapshotTtlMs())
@@ -4993,13 +4993,9 @@ def _responseTooLargeSuggestion(String toolName) {
         case "hub_get_memory_history":
             return "Pass a smaller limit (e.g. 100). limit=0 returns the entire hub ring buffer which can be thousands of entries."
         case "hub_get_logs":
-            return "Narrow with deviceId/appId/level/source/pattern, set a smaller limit, or filter by time window (since/until). The tool already truncates per-entry messages but cannot trim the entry count below the requested limit."
+            return "Narrow with deviceId/appId/level/pattern, set a smaller limit, filter by time window (since/until), or page with cursor=''. The tool already truncates per-entry messages but cannot trim the entry count below the requested limit."
         case "hub_export_native_app":
             return "Large app payloads can exceed the inline cap. Pass saveAs=<filename.json> to write the export to the hub File Manager instead of returning it inline."
-        case "hub_get_jobs":
-            return "Pass cursor='' to page scheduledJobs 100 at a time (then follow nextCursor); runningJobs and hubActions stay in full on every page."
-        case "hub_get_performance_stats":
-            return "Pass a smaller limit (default 20; limit=0 returns every device and app) or narrow type to device or app."
         case "hub_get_info":
         case "hub_get_metrics":
             return "Hub status payload is unusually large -- consider polling at a lower frequency or fetching a single subsection via the matching sub-tool if available."
@@ -5289,23 +5285,20 @@ def getGatewayConfig() {
         ],
         // Option B: manage_logs_diagnostics split into logs + diagnostics
         hub_manage_logs: [
-            description: "System logs, performance stats, and log settings: hub logs, device/app performance stats, scheduled jobs, MCP debug logs, and log level configuration. (Device/app/location event history: use the core hub_list_device_events tool.)",
-            tools: ["hub_get_logs", "hub_get_performance_stats", "hub_get_jobs", "hub_delete_debug_logs", "hub_set_log_level"],
+            description: "The hub's Logs page and MCP log settings: log history, device/app runtime stats, cloud calls, location and hub events, scheduled and running jobs, hub actions, the MCP log, deleting a scheduled job, and the MCP log level. (Device and app event history: use hub_list_device_events.)",
+            tools: ["hub_get_logs", "hub_delete_logs", "hub_set_log_level"],
             summaries: [
-                hub_get_logs: "Read logs: mode=hub (default) for native history, mcp for structured MCP history, status for MCP logging status. Hub filters: level, source, pattern/patterns, since/until, deviceId|appId, limit. MCP filters: level, component, ruleId, limit",
-                hub_get_performance_stats: "Get device/app performance stats (count, % busy, total ms, state size, events, cloud calls, large state flag). Args: type (device/app/both), sortBy (pct/count/stateSize/totalMs/name), limit, includeCloudCalls?",
-                hub_get_jobs: "Get scheduled jobs, running jobs, and hub actions. Args: cursor? (pages scheduledJobs, 100 per page)",
-                hub_delete_debug_logs: "Clear all MCP debug log entries",
+                hub_get_logs: "Read Logs page tabs or the MCP log. Args: mode (one tab or a list: past default, devices, apps, cloudCalls, locationEvents, hubEvents, scheduledJobs, runningJobs, hubActions, mcp, status), level, deviceId|appId, pattern/patterns, since/until, sortBy, limit, cursor",
+                hub_delete_logs: "Clear the MCP log, or delete one scheduled job like the Logs page's Delete button. Args: mode (mcp|scheduledJobs), jobId, confirm",
                 hub_set_log_level: "Set minimum log level threshold. Args: level (debug/info/warn/error)"
             ],
             searchHints: [
-                hub_get_logs: "mcp internal debug logging status buffer capacity errors warnings trace syslog recent device app regex time window since until",
-                hub_get_performance_stats: "slow cpu busy resource usage hog bottleneck",
-                hub_get_jobs: "scheduled cron timer recurring what is running next automation",
-                hub_delete_debug_logs: "wipe reset mcp internal",
+                hub_get_logs: "errors warnings trace syslog recent device app regex time window since until performance stats slow cpu busy hog state size cloud calls location events mode hsm hub events reboot low memory scheduled jobs cron timer recurring running hub actions mcp internal status",
+                hub_delete_logs: "wipe reset clear mcp log remove cancel unschedule scheduled job timer",
                 hub_set_log_level: "verbosity debug trace quiet"
             ]
         ],
+
         hub_manage_diagnostics: [
             description: "Health monitoring, diagnostics, and radio details: hub metrics, memory history, garbage collection, device health, radio info, and state snapshots. (Z-Wave/Zigbee/Matter radio writes — repair, inclusion, config, reset — live in hub_manage_radio. Custom-rule diagnostics: use hub_get_custom_rule with detailed=true.)",
             tools: ["hub_get_metrics", "hub_get_memory_history", "hub_call_gc", "hub_get_device_health", "hub_get_radio_details", "hub_list_captured_states", "hub_delete_captured_state"],
@@ -5365,12 +5358,10 @@ def getGatewayConfig() {
             ]
         ],
         hub_read_diagnostics: [
-            description: "Read-only hub health, logs, and diagnostics: system logs, performance stats, scheduled jobs, MCP debug logs, hub metrics, free-memory/CPU history, device health/staleness, Z-Wave/Zigbee radio details, and saved state snapshots. All operations are read-only; the matching writes (gc, Z-Wave repair, clear logs, set log level, delete snapshots) live in hub_manage_logs / hub_manage_diagnostics.",
-            tools: ["hub_get_logs", "hub_get_performance_stats", "hub_get_jobs", "hub_get_metrics", "hub_get_memory_history", "hub_get_device_health", "hub_get_radio_details", "hub_list_captured_states"],
+            description: "Read-only hub health, logs, and diagnostics: the Logs page (log history, runtime stats, cloud calls, location and hub events, jobs, hub actions), the MCP log, hub metrics, free-memory/CPU history, device health/staleness, Z-Wave/Zigbee radio details, and saved state snapshots. All operations are read-only; the matching writes (gc, Z-Wave repair, clear the MCP log, delete a scheduled job, set log level, delete snapshots) live in hub_manage_logs / hub_manage_diagnostics.",
+            tools: ["hub_get_logs", "hub_get_metrics", "hub_get_memory_history", "hub_get_device_health", "hub_get_radio_details", "hub_list_captured_states"],
             summaries: [
-                hub_get_logs: "Read logs: mode=hub (default) for native history, mcp for structured MCP history, status for MCP logging status. Hub filters: level, source, pattern/patterns, since/until, deviceId|appId, limit. MCP filters: level, component, ruleId, limit",
-                hub_get_performance_stats: "Get device/app performance stats (count, % busy, total ms, state size, events, cloud calls). Args: type, sortBy, limit, includeCloudCalls?",
-                hub_get_jobs: "Get scheduled jobs, running jobs, and hub actions. Args: cursor? (pages scheduledJobs, 100 per page)",
+                hub_get_logs: "Read Logs page tabs or the MCP log. Args: mode (one tab or a list: past default, devices, apps, cloudCalls, locationEvents, hubEvents, scheduledJobs, runningJobs, hubActions, mcp, status), level, deviceId|appId, pattern/patterns, since/until, sortBy, limit, cursor",
                 hub_get_metrics: "Get hub metrics (memory, temp, DB) with CSV trend history + the hub's own health alerts (radio offline, backup failures, low memory, DB bloat, safeMode). Read-only by default; pass recordSnapshot=true to also append a snapshot to the File Manager. Args: recordSnapshot?, trendPoints?",
                 hub_get_memory_history: "Get free OS memory and CPU load history with summary stats. Args: limit",
                 hub_get_device_health: "Check device staleness; run network diagnostics (ICMP-ping arbitrary IPs, traceroute to one IPv4, WAN download speedtest); and/or blink the hub identify-LED. Args: staleHours, includeHealthy, pingHosts, pingCount, tracerouteHost, speedtest, identifyHub",
@@ -5378,9 +5369,7 @@ def getGatewayConfig() {
                 hub_list_captured_states: "List saved device state snapshots"
             ],
             searchHints: [
-                hub_get_logs: "errors warnings messages trace syslog output recent latest device app scope regex pattern filter time window since until",
-                hub_get_performance_stats: "slow cpu busy resource usage hog bottleneck",
-                hub_get_jobs: "scheduled cron timer recurring what is running next automation",
+                hub_get_logs: "errors warnings messages trace syslog output recent latest device app scope regex pattern filter time window since until performance stats slow cpu busy hog state size cloud calls location events mode hsm hub events reboot low memory scheduled jobs cron timer recurring running next hub actions",
                 hub_get_metrics: "temperature database size trending monitoring memory over time snapshot history health alerts safe mode radio offline backup failed weak mesh",
                 hub_get_memory_history: "ram free used leak trending over time java heap nio",
                 hub_get_device_health: "stale offline dead unresponsive battery not reporting ping icmp reachable network ip lan host router traceroute route hops speedtest bandwidth wan download internet speed identify led blink locate",
@@ -5461,7 +5450,7 @@ def getGatewayConfig() {
                 hub_list_devices: "List devices with current states; format='context' = plain-text house snapshot (mode + one line per device). Args: detailed?, filter (enabled/disabled/stale:N/virtual), labelFilter?, capabilityFilter?, roomFilter?, onlyOn?, changedSince?, attributeNames?, format (summary/detailed/ids/context), fields?, limit?, cursor?",
                 hub_get_device: "Inspect one device. Args: deviceId, mode? (summary/configuration/details), sections? (details mode), fields? (configuration/details field selector), cursor? (continue one oversized scalar). Configuration mode discovers editable fields, saved preferences, driver identity, and read status before an update.",
                 hub_get_device_attribute: "Read one attribute's value, or block-poll one OR several devices (deviceIds + mode any/all) until it reaches expectedValue/expectedValues. Args: deviceId | deviceIds (max 20), mode? (any/all), attribute, expectedValue?, expectedValues?, timeoutMs?, pollIntervalMs?, comparator?, stableForMs?",
-                hub_list_device_events: "Recent device events, a time-windowed history (hoursBack, max 168), an absolute bookmark (since -- events after an exact timestamp; round-trip a returned date) with an optional end (until), per-app events (appId), or location and hub events (mode/HSM/hub-variable, reboots/low memory; omit deviceId/appId). Args: deviceId?, appId?, hoursBack?, since?, until?, attribute?, limit?",
+                hub_list_device_events: "Recent device events, a time-windowed history (hoursBack, max 168), an absolute bookmark (since -- events after an exact timestamp; round-trip a returned date) with an optional end (until), or per-app events (appId). Location and hub events are hub_get_logs modes. Args: deviceId|appId, hoursBack?, since?, until?, attribute?, limit?",
                 hub_get_compatible_devices: "Search Hubitat's compatible-device catalog (brands/models + pairing/exclude/factory-reset instructions). Args: query?, brand?, protocol?, deviceType?, includeInstructions?, cursor?",
                 hub_get_hub_mesh: "Read Hub Mesh (hub-to-hub device/variable sharing on the LAN): enabled state, peer hubs, shared/linked devices + hub variables, sync interval, mode-following hub. Args: include_token?"
             ],
@@ -5469,7 +5458,7 @@ def getGatewayConfig() {
                 hub_list_devices: "show all devices switches lights sensors locks state inventory enumerate context summary snapshot overview house whats on right now changed since room",
                 hub_get_device: "device detail capabilities attributes commands info inspect one configuration editable fields preferences driver identity saved settings",
                 hub_get_device_attribute: "read attribute value poll wait until threshold sensor verify state changed inclusion compare numeric range debounce stable multiple devices deviceIds any all converge across",
-                hub_list_device_events: "device history events timeline recent location mode hsm variable activity hub reboot restart low memory lowMemory startup app rule automation emitted since bookmark timestamp after new events change watch why caused produced by triggered button command source provenance",
+                hub_list_device_events: "device history events timeline recent activity app rule automation emitted since bookmark timestamp after new events change watch why caused produced by triggered button command source provenance",
                 hub_get_compatible_devices: "compatible devices catalog supported hardware brands models pairing join exclude factory reset instructions how to pair driver protocol zigbee zwave matter lan",
                 hub_get_hub_mesh: "hub mesh share devices between hubs link remote second hub peer hubs multi hub connect two hubs mesh token follow modes another hub sync interval linked device shared variable hub to hub"
             ]
@@ -5524,7 +5513,7 @@ def getGatewayConfig() {
                 hub_list_devices: "List devices with current states; format='context' = plain-text house snapshot. Args: detailed?, filter, labelFilter?, capabilityFilter?, roomFilter?, onlyOn?, changedSince?, attributeNames?, format, fields?, limit?, cursor?",
                 hub_get_device: "Inspect one device. Args: deviceId, mode? (summary/configuration/details), sections? (details mode), fields? (configuration/details field selector), cursor? (continue one oversized scalar). Configuration mode discovers editable fields and preference definitions/current values before an update.",
                 hub_get_device_attribute: "Read one attribute's value, or block-poll one OR several devices (deviceIds + mode any/all) until it reaches expectedValue/expectedValues. Args: deviceId | deviceIds (max 20), mode? (any/all), attribute, expectedValue?, expectedValues?, timeoutMs?, pollIntervalMs?, comparator?, stableForMs?",
-                hub_list_device_events: "Recent device events, a time-windowed history, an absolute bookmark (since) with an optional end (until), per-app events (appId), or location and hub events (reboots, low memory). Args: deviceId?, appId?, hoursBack?, since?, until?, attribute?, limit?",
+                hub_list_device_events: "Recent device events, a time-windowed history, an absolute bookmark (since) with an optional end (until), or per-app events (appId). Args: deviceId|appId, hoursBack?, since?, until?, attribute?, limit?",
                 hub_get_hub_mesh: "Read Hub Mesh (hub-to-hub device/variable sharing on the LAN): enabled state, peer hubs, shared/linked devices + hub variables, sync interval, mode-following hub. Args: include_token?",
                 hub_update_hub_mesh: "Change Hub Mesh settings (enable/disable needs a hub reboot; per-device sharing is hub_update_device meshEnabled). Args: enabled?, full_refresh_interval? (0/120/300/3600), mode_hub_id? ('none'=local modes), peer_hub_id?+peer_token?"
             ],
@@ -5537,7 +5526,7 @@ def getGatewayConfig() {
                 hub_list_devices: "show all devices switches lights sensors locks state inventory context summary snapshot overview house whats on right now changed since room",
                 hub_get_device: "device detail capabilities attributes commands info inspect one configuration editable fields preferences driver identity saved settings",
                 hub_get_device_attribute: "read attribute value poll wait until threshold sensor verify state changed compare numeric range debounce stable multiple devices deviceIds any all converge across",
-                hub_list_device_events: "device history events timeline recent location mode hsm variable activity hub reboot restart low memory lowMemory startup app rule automation emitted since bookmark timestamp after new events change watch why caused produced by triggered button command source provenance",
+                hub_list_device_events: "device history events timeline recent activity app rule automation emitted since bookmark timestamp after new events change watch why caused produced by triggered button command source provenance",
                 hub_get_hub_mesh: "hub mesh share devices between hubs link remote second hub peer hubs multi hub connect two hubs mesh token follow modes another hub sync interval linked device shared variable hub to hub",
                 hub_update_hub_mesh: "enable disable hub mesh share devices between hubs link remote second hub peer hubs multi hub connect two hubs mesh token follow modes another hub sync interval full refresh linked device hub to hub"
             ]
@@ -6487,12 +6476,13 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
         case "hub_call_device_swap": return toolCallDeviceSwap(args)
         case "hub_call_device_replace": return toolCallDeviceReplace(args)
         case "hub_list_device_events":
-            // Recent-N for one device when no window/filter given; otherwise windowed
-            // device history, per-app events (appId), or location-level events when
-            // both deviceId and appId are omitted. Reject deviceId+appId loudly --
-            // the recent-N route below would otherwise silently drop appId.
+            // Recent-N for one device when no window/filter given; otherwise windowed device
+            // history or per-app events (appId). Reject deviceId+appId loudly -- the recent-N
+            // route below would otherwise silently drop appId.
             if (args.deviceId != null && args.appId != null)
-                throw new IllegalArgumentException("deviceId and appId are mutually exclusive. Pass deviceId for device events, appId for events emitted by an installed app/rule, or neither for location events.")
+                throw new IllegalArgumentException("deviceId and appId are mutually exclusive. Pass deviceId for device events or appId for events emitted by an installed app/rule.")
+            if (args.deviceId == null && args.appId == null)
+                throw new IllegalArgumentException("Pass deviceId or appId. Location and hub events are on the Logs page: hub_get_logs(mode='locationEvents') or hub_get_logs(mode='hubEvents').")
             // since/until bound a window -- like hoursBack/attribute they route to windowed
             // history mode, not the recent-N path.
             if (args.deviceId != null && args.hoursBack == null && args.attribute == null && args.since == null && args.until == null)
@@ -6565,7 +6555,6 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
         case "hub_delete_captured_state": return toolDeleteCapturedState(args)
 
         // Debug Logging Tools
-        case "hub_delete_debug_logs": return toolClearDebugLogs(args)
         case "hub_set_log_level": return toolSetLogLevel(args)
         case "hub_report_issue": return toolGenerateBugReport(args)
 
@@ -6585,8 +6574,7 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
 
         // Monitoring Tools
         case "hub_get_logs": return toolGetHubLogs(args)
-        case "hub_get_performance_stats": return toolGetPerformanceStats(args)
-        case "hub_get_jobs": return toolGetHubJobs(args)
+        case "hub_delete_logs": return toolDeleteLogs(args)
         case "hub_get_metrics": return toolGetHubPerformance(args)
         case "hub_get_device_health": return toolDeviceHealthCheck(args)
         case "hub_get_memory_history": return toolGetMemoryHistory(args)
@@ -9023,7 +9011,7 @@ def jsonRpcError(id, code, message, data = null) {
 }
 
 // Per-call MCP traffic stays out of mcpLog on purpose: at debug level it would flush the
-// 100-entry MCP history within about 50 calls. Read it through hub_get_logs mode=hub.
+// 100-entry MCP history within about 50 calls. Read it through hub_get_logs mode=past.
 def logMcpTraffic(msg) {
     if (settings.debugLogging) {
         log.debug msg
@@ -9220,12 +9208,12 @@ def getDebugLogReadResult(Map args = [:]) {
     }
 }
 
-def clearDebugLogEntries(Map args = [:]) {
-    def history = getDebugLogReadResult(args)
-    if (history.status == "in_progress") return history
+// A clear starts a new generation: native lines from older generations are never recovered, so
+// nothing needs reading first. The count is known only once history has been loaded.
+def clearDebugLogEntries() {
     def buffer = initDebugLogs()
     synchronized (buffer) {
-        int count = buffer.entries.size()
+        Integer count = buffer.hydrated ? buffer.entries.size() : null
         String generation = java.util.UUID.randomUUID().toString()
         atomicState.debugLogGeneration = generation
         if (atomicState.reportErrors != null) atomicState.reportErrors = []
@@ -9236,12 +9224,7 @@ def clearDebugLogEntries(Map args = [:]) {
         buffer.remove("fetchClaimId")
         buffer.remove("fetchStartedAt")
         buffer.remove("fetchError")
-        def result = [clearedCount: history.error ? null : count]
-        if (history.error) {
-            result.countIncomplete = true
-            result.logReadError = history.error
-        }
-        return result
+        return [clearedCount: count]
     }
 }
 
@@ -12000,11 +11983,11 @@ Use after hub_list_files to fetch a named file (config, backup, exported rule/ap
 
 **hub_list_device_events:**
 - Default: most-recent events for a device (deviceId + limit)
-- Add hoursBack for up to 7 days of relative history; omit deviceId for location-level events (mode/HSM/hub variable)
+- Add hoursBack for up to 7 days of relative history
 - Add since for an absolute bookmark -- return only events AFTER an exact timestamp (ISO-8601 in the same format the tool emits in date/sinceTimestamp -- a numeric offset in either spelling (-0600 or -06:00), e.g. 2026-06-23T10:00:00.000-0600; a trailing Z for UTC and a millis-less variant are also accepted -- or epoch milliseconds). since takes precedence over hoursBack; a future since yields an empty list. Both since and hoursBack route to history mode
 - Change-watching loop: record a returned event date, run your action, then pass that date back as since to get exactly the new events. The response echoes sinceMode ("explicit" when since drove it, "relative" for hoursBack) and the bounding field (since or hoursBack)
 - appId (mutually exclusive with deviceId) returns the events an installed app/rule emitted; rows are {name, value, description, date}
-- With neither deviceId nor appId, the tool reads the hub's location event log: mode, hsmStatus/hsmAlert, hub-variable changes, sunrise/sunset and system events. The result carries `source: 'location'` and no device fields.
+- deviceId or appId is required. Location events (mode, hsmStatus/hsmAlert, hub-variable changes, sunrise/sunset) and the hub's own events (reboots, `lowMemory`, startup) are Logs page tabs: `hub_get_logs(mode='locationEvents')` and `hub_get_logs(mode='hubEvents')`.
 
 - Use the attribute filter to reduce data volume
 
@@ -12013,25 +11996,38 @@ Use after hub_list_files to fetch a named file (config, backup, exported rule/ap
 **Cursor pagination.** List tools that take `cursor` return the whole list when it is omitted, subject to the guard; `hub_list_backups` (scope=source) is the exception and always returns one page, with `hasMore: true` and `nextCursor` when more backups follow. Pass `cursor: ""` for the first page, then pass each returned `nextCursor` until it is absent. A malformed or out-of-range cursor is rejected as a validation error. Page sizes:
 - 25: `hub_list_hpm_packages`.
 - 50: `hub_list_apps` (pages the filtered set), `hub_list_drivers`, `hub_list_libraries`, `hub_list_bundles`, `hub_list_rules`, `hub_get_custom_rule` (list mode), `hub_list_captured_states`, `hub_list_backups` (scope=source, newest first), and `hub_list_devices`. For `hub_list_devices`, 50 applies when `limit` is unset (virtual filter included); the cursor is an alternative to `offset`, and the two cannot be combined.
-- 100: `hub_list_variables` (hubVariables; ruleVariables stay whole), `hub_list_files`, `hub_list_rooms`, `hub_list_device_dependents` (appsUsing), `hub_get_logs`, `hub_get_memory_history`, `hub_get_device_health` (staleDevices), and `hub_get_jobs` (scheduledJobs).
+- 100: `hub_list_variables` (hubVariables; ruleVariables stay whole), `hub_list_files`, `hub_list_rooms`, `hub_list_device_dependents` (appsUsing), `hub_get_logs`, `hub_get_memory_history`, and `hub_get_device_health` (staleDevices).
 - `hub_get_device` and `hub_get_tool_guide` page oversized responses automatically.
 
-### hub_get_logs (history, logging status, and filters)
+### hub_get_logs (the Logs page and the MCP log)
 
-Use mode='hub' (default) for native app/device logs, mode='mcp' for structured MCP entries, or mode='status' for MCP log level, counts, and capacity. MCP mode keeps level/component/ruleId/limit/cursor filters and the existing diagnostic fields used by hub_report_issue. Debug and info are retained alongside warnings and errors when admitted by the configured threshold. After reload, MCP history recovers from this app's native Past Logs; retention shares Hubitat's approximately 1 MB rolling history with other apps and devices. The memory view keeps up to 100 entries without storing the ring in app state.
+Each call reads one tab of the hub's Logs page, named by the page's own tab key, or the MCP app's own log. `mode` also takes a list of tabs, read in one call:
 
-The following filter pipeline applies to hub mode. Current three-column native timestamps use the hub's timezone; timezone-free since/until arguments still mean UTC.
+| mode | tab | endpoint | rows |
+|---|---|---|---|
+| `past` (default) | Past logs | `/logs/past/json` | `{name, level, message, time, type}`, newest first |
+| `devices`, `apps` | Device stats, App stats | `/logs/json` | `{id, name, count, pct, pctTotal, total, average, stateSize, largeState, hubActionCount, cloudCallCount, pendingEventsCount, customAttributes, grandTotal}` |
+| `cloudCalls` | Cloud calls | `/logs/cloudCalls/json` | `{id, name, installed, total, currentHour, hours: [{hourStart, count}]}`, busiest first, newest 48 hours |
+| `locationEvents` | Location events | `/logs/eventsJson` | the hub's event rows: `{id, name, value, unit, descriptionText, isStateChange, type, source, date, ...}` |
+| `hubEvents` | Hub events (reboots, `lowMemory`, startup) | `/hub/eventsJson` | same as location events |
+| `scheduledJobs` | Scheduled jobs | `/logs/json` | `{id, name, link, recurring, methodName, nextRun, nextRunDt, owner}`, soonest first |
+| `runningJobs` | Running jobs | `/logs/json` | `{name, link, methodName, runningFor, owner}` |
+| `hubActions` | Hub actions | `/logs/json` | the hub's rows, with `name`, `link` and `owner` |
+| `mcp` | the MCP app's own log | native Past Logs | `{timestamp, time, level, component, message, ...}` |
+| `status` | MCP log level, counts and capacity | | |
 
-- Device scope: `deviceId` filters hub-wide history regardless of device selection or bypass (logs are hub diagnostics, including history for deleted devices). The hub answers an empty list for an unknown id and a quiet device alike, so a device-filtered read carries `deviceIdResolved` (true when an entry or a native identity read proves the id; false means the id names no device on the hub).
-- Filter pipeline order: scope (deviceId/appId, server-side) -> level -> source -> pattern -> patterns -> time window (since/until) -> limit.
-- `pattern` / `patterns`: the regex matches the log message field ONLY (use `source` for app/device-name substring matching); it is compiled once and throws on invalid regex syntax. A pathological regex like `(.*)*` may hang the matcher -- prefer simple alternation (`error|fail`) or anchored prefixes.
-- `pattern` and `patterns` are compatible: when both are supplied, both apply simultaneously.
-- `patternMode` is case-insensitive ('ANY' and 'any' both work).
-- `since`/`until` relative offsets are subtracted from now; the max relative offset is 30d and a larger offset throws -- use an ISO-8601 timestamp for longer ranges.
-- Timestamps without a TZ marker (e.g. '2024-01-15T10:30:00' or '2024-01-15 10:30:00.000') are parsed as UTC. '0m' / '0d' is a degenerate `since` that filters out everything older than now (useful for test harnesses, rarely otherwise).
-- `until` defaults to now (no upper bound); pair it with `since` for a window, e.g. since='2h', until='1h' means '1 to 2 hours ago'.
-- `cursor`: filters + limit apply first, then the cursor pages within the filtered result (page size 100).
-- Hub mode returns the newest entries first, so `limit` keeps the most recent. MCP-mode entries keep up to 500 characters of message and 1,000 of exception/stack text. The native log line keeps the full message.
+- `mode` as a list (for example `['locationEvents', 'hubEvents']` or `['scheduledJobs', 'runningJobs', 'hubActions']`) answers `{modes: {<tab>: <that tab's usual result>}}`. Every other parameter must apply to each listed tab, and `cursor` is not taken: page one tab alone with its `nextCursor`. A tab that fails answers its own error under its key and is named in `failedModes`; the other tabs are still returned.
+- Rows keep the hub's field names. A field that is null on a row is left out of that row and named once in the result's `nullFields`, so a row without a listed field had it null (location events have no device fields, for example). Rows from `/logs/json` come from one fetch cached for 30 s (`snapshot.ageMs`), so a job another write just scheduled or removed can take up to 30 s to show; `hub_delete_logs` drops the cache, so the read after a delete is fresh. `owner` is `{type: 'app'|'device', id}`, read from the row's `link` (`/installedapp/configure/<id>` or `/device/edit/<id>`); system jobs have an empty link and no owner. A job's `id` is what `hub_delete_logs(mode='scheduledJobs')` takes.
+- `devices` and `apps` also return the page's `summary` (uptime, total runtime, % of uptime); `scheduledJobs`, `runningJobs` and `hubActions` return `uptime`.
+- Filters apply in this order: scope (`deviceId`/`appId`), `level`, `pattern`/`patterns`, time window (`since`/`until`), sort, `limit`, then `cursor` pages the result (100 per page). Every list mode reports `total` (rows read), `matched` (rows that passed the filters) and `count` (rows returned).
+- `deviceId`/`appId`: on `past` they scope the read on the hub, like the Logs page opened from a device or app; logs are hub-wide diagnostics, including history for deleted devices. The hub answers an empty list for an unknown id and a quiet device alike, so a device-scoped `past` read carries `deviceIdResolved` (false means the id names no device). On `devices`/`apps` they keep that one row; on the job and hub-action modes they keep the rows that `owner` names.
+- `pattern`/`patterns`: case-insensitive regexes over the tab's own search fields: `past` name and message; `scheduledJobs`/`runningJobs` name and methodName; event modes name, descriptionText and value; other modes name. `pattern` must match; `patterns` combine by `patternMode` (`any` by default, or `all`); with both, both apply. Each is at most 100 characters and is compiled once; invalid syntax is refused. A pathological regex like `(.*)*` may hang the matcher, so prefer alternation (`error|fail`) or anchors (`^mode$` for an exact name).
+- `since`/`until` (`past` and event modes): `since` keeps rows strictly after it, so an event's `date` passed back as `since` never returns that event again; `until` keeps rows at or before it. Both take a relative age subtracted from now (`30m`, `2h`, `7d`, at most 30 days), ISO-8601 with an offset or `Z`, or epoch milliseconds; a time without a zone is read as UTC. Past-log times without a zone are the hub's local time. Rows whose time cannot be read are kept and counted in `timeFilterUnparseable`.
+- `sortBy` (`devices`/`apps`): `pct` (% busy, default), `count`, `total` (ms), `stateSize`, highest first, or `name` A-Z.
+- `limit`: default 100 for `past` and the event modes, 20 for `devices`/`apps`, 50 for `mcp`, and every row for the job, hub-action and cloud-call modes; 0 returns every matched row.
+- `past`: when the estimated payload is over the response cap, messages are cut to 200 characters and `truncated` is set. Known-benign Rule Machine noise is counted in `benignRmNoiseCount`.
+- `mcp` keeps level/component/ruleId/limit/cursor filters and the diagnostic fields hub_report_issue reads. Debug and info are kept alongside warnings and errors when admitted by the configured threshold. After reload, MCP history recovers from this app's native Past Logs; retention shares Hubitat's approximately 1 MB rolling history with other apps and devices. The memory view keeps up to 100 entries without storing the ring in app state. MCP entries keep up to 500 characters of message and 1,000 of exception/stack text; the native log line keeps the full message.
+- Live logs (the page's websocket stream) is not served; `past` holds the same history.
 
 ### hub_get_radio_details (read-only Z-Wave/Zigbee/Matter radio surface)
 
@@ -12070,13 +12066,6 @@ The following filter pipeline applies to hub mode. Current three-column native t
 - limit caps the most-recent entries returned (default 100); limit=0 returns all (the hub may hold thousands of rows)
 - Cursor mode pages within the limit-filtered entries; with limit=0 + cursor it pages the FULL ring buffer (every history row, not just a limit-filtered window). Pass "" for the first page and iterate nextCursor (page size 100)
 
-### hub_get_performance_stats (per-device/app metrics it reports)
-
-- Reports per device/app: method call counts, % busy, state size, events, states, hub actions, and pending events.
-- The `sortBy` enum maps onto these columns: `pct` = % busy (default), `count` = method call count, `stateSize` = state size, `totalMs` = total ms, `name` = device/app name.
-- Each entry also carries `cloudCalls`, its count of calls to Hubitat cloud services (firmware 2.5.2.129+).
-- `includeCloudCalls=true` adds a top-level `cloudCalls` block: per app `{id, name, installed, total, currentHour, hourly:[{hourStart, count}]}` (newest hour first, at most 48), sorted by total, plus `countingSince` and `timeZone`. Use it to find which integration is calling the cloud most.
-
 **hub_list_captured_states (list saved device-state snapshots):**
 - Storage limit is configurable (default 20; `maxCapturedStates` setting). When the store is full, the oldest snapshot is auto-deleted to make room for a new capture.
 - The response reports `maxLimit` (the retention cap) and, when near/at the cap, a `warning` field: "Approaching limit" within 4 slots of the cap, "At maximum capacity" once full (the next capture will evict the oldest).
@@ -12086,9 +12075,10 @@ The following filter pipeline applies to hub mode. Current three-column native t
 - Returns free memory before and after GC in KB (`beforeFreeMemoryKB`, `afterFreeMemoryKB`).
 - Reports the reclaimed amount as `deltaKB` plus a `memoryReclaimed` boolean (true when free memory increased); both are present only when both readings succeeded.
 
-### hub_delete_debug_logs
+### hub_delete_logs
 
-Clears the MCP history view read by hub_get_logs(mode='mcp') using a durable clear marker, so old native entries do not return after reload. Hubitat system logs (hub_get_logs) and captured device states (hub_delete_captured_state) are unchanged. Use it before reproducing an issue.
+- `mode='mcp'` clears the MCP log read by hub_get_logs(mode='mcp') by starting a new log generation, so old native entries do not return after reload. Nothing is read first; `clearedCount` is null when the history had not been loaded yet. Hubitat's own log history and captured device states are unchanged. Use it before reproducing an issue.
+- `mode='scheduledJobs'` deletes one scheduled job, the same request as the Delete button on the Logs page's Scheduled jobs tab (`/hub/advanced/deleteScheduledJob`). A job is a timer an app or driver set with `runIn`, `runOnce`, `schedule` or `runEvery*`; its id is `<owner group>.<method>`, e.g. `app12Recur.poll` (`Recur` = repeating, `Once` = one-shot; a number before the method marks an extra copy). Deleting it removes that one timer: the method is not called at the next run time, and a repeating job is gone for every later run. The app or device, its settings, state, event subscriptions and other jobs are unchanged, and nothing tells it the timer is gone; it comes back only when the owner's own code schedules it again (for example when its settings are saved). It is the same deletion as the owner calling `unschedule('<method>')`, limited to the one row. `confirm=true` is required. `system.*` jobs are refused, as the Logs page offers no Delete for them. A reply of `job does not exist` (a one-shot job that already ran, or a stale id) is an error result; nothing was changed.
 
 ### hub_report_issue
 
@@ -12098,7 +12088,7 @@ Rule routing: a legacy custom MCP rule-engine rule id goes in the `ruleId` param
 
 Issue-type routing: `issueType` picks the GitHub issue template behind `submitUrl` -- `bug` opens the bug-report template, `enhancement` the feature template, `agent_behavior` the agent-behavior template -- and sets the report heading and the title prefix (`[bug]` / `[feature]` / `[agent-behavior]`) with it. Filing a feature request as a bug lands the user on the wrong form, so pick the type before you call.
 
-**Before filing a bug.** The result carries `preflight` (bug and agent_behavior reports) and `missingContext`; resolve both before handing the user the link. On a bug, preflight asks you to raise the MCP log level to debug (`hub_set_log_level`), reproduce the failure, and then attach the debug lines from `hub_get_logs(mode='mcp')` via `clientLogs` -- the report itself only embeds error/warn entries, so debug output reaches the maintainer only if you paste it. That step is present only when the level is not already debug. Then attach logs from EVERY source -- `hub_get_logs(mode='hub')` for the native hub log around the failure and the client host's own MCP log via `clientLogs`. In `privacyMode='public'` the verbatim and client-log sections and the raw log text are withheld unconditionally -- a placeholder names how many lines were held back, and there is no override; `includeRawLogs` only matters in private mode, where `false` withholds the same content. The link also prefills the MCP server version, hub firmware, client and failing tool, and labels the issue `diag-prefilled` so a tool-generated report is recognisable. In both modes credentials are redacted -- the same redaction also runs over `expected`, `actual`, `stepsToReproduce`, the title and the embedded log block. The settings snapshot prints posture only (no hostname, no token), which is why it is kept in public mode.
+**Before filing a bug.** The result carries `preflight` (bug and agent_behavior reports) and `missingContext`; resolve both before handing the user the link. On a bug, preflight asks you to raise the MCP log level to debug (`hub_set_log_level`), reproduce the failure, and then attach the debug lines from `hub_get_logs(mode='mcp')` via `clientLogs` -- the report itself only embeds error/warn entries, so debug output reaches the maintainer only if you paste it. That step is present only when the level is not already debug. Then attach logs from EVERY source -- `hub_get_logs(mode='past')` for the native hub log around the failure and the client host's own MCP log via `clientLogs`. In `privacyMode='public'` the verbatim and client-log sections and the raw log text are withheld unconditionally -- a placeholder names how many lines were held back, and there is no override; `includeRawLogs` only matters in private mode, where `false` withholds the same content. The link also prefills the MCP server version, hub firmware, client and failing tool, and labels the issue `diag-prefilled` so a tool-generated report is recognisable. In both modes credentials are redacted -- the same redaction also runs over `expected`, `actual`, `stepsToReproduce`, the title and the embedded log block. The settings snapshot prints posture only (no hostname, no token), which is why it is kept in public mode.
 
 **What to pass.** `llmClient` is the host app plus version (`Claude Code 2.1`, `Claude Desktop`, `Claude.ai web`, `ChatGPT desktop`, `Cursor`); `Claude` alone is not enough -- ask the user. When the server has no client self-report, or it names a transport wrapper (mcp-remote, mcp-proxy, fastmcp-remote, supergateway, or the Python SDK default identity those bridges send -- `mcp 0.1.0`, or `mcp` with no version), the result says so in missingContext: ask the user and never infer the host app or model from context. Wrapper detection reads only what THIS request self-reported; nothing is carried over from an earlier one. A legacy client names itself on `initialize` alone, so an ordinary tool call from one reports `not reported on this request` and the tool asks the user instead. `llmModel` is the model behind it (`Claude Opus 5`, `Sonnet 5`, `Haiku 4.5`, `GPT-5`); ask if unknown. `verbatimToolCalls` takes the exact failing call (tool name and args JSON) and the exact raw response or error text copied from the transcript -- never a paraphrase, the real wording is usually the diagnosis. `clientLogs` takes raw log lines from the client host for the failure window (Claude Desktop writes `mcp-server-*.log`; Claude Code has its own debug log), and also takes pasted `hub_get_logs` output. An `agent_behavior` report asks for `stepsToReproduce`, `verbatimToolCalls` and `clientLogs` exactly as a bug does, and renders the same sections.
 
@@ -12162,9 +12152,8 @@ Only query devices the user has mentioned or that are relevant to their request.
 
 ### hub_list_device_events
 - Higher limits (50+) may slow the hub; default limit applies otherwise.
-- With neither deviceId nor appId the call returns the location events and the hub's own events (the Logs page's Hub events: reboots, `lowMemory`, startup), newest first, each row tagged `kind: 'location'` or `kind: 'hub'`; `attribute: 'lowMemory'` finds low-memory restarts. A failed hub-events read keeps the location events and adds `hubEventsError`.
 
-- `attribute` filters by event name. For a device it is an attribute (e.g. `switch`); for location-level events it accepts one of `mode`, `hsmStatus`, `hsmAlert`, or a hub-variable name.
+- `attribute` filters by event name. For a device it is an attribute (e.g. `switch`).
 - `until` (same formats as `since`) ends the window inclusively, so `since` + `until` returns one bounded slice, e.g. what happened between 02:00 and 02:15. The response echoes it as `untilTimestamp`. `hoursBack` (default 24) always counts back from now, not from `until`: `until` without `since` cuts the window that starts `hoursBack` hours ago, and an `until` before that start is refused. For a slice further back, pass `since` + `until`.
 - Device event rows add `type` (e.g. `command`, `physical`, `digital`), `producedBy` (what caused the event: `{name, appId}` for an app or rule, `{name, deviceId}` for a device, or `{name}` alone such as `Unknown app`), and `triggered` (the app subscriptions the event fired: `[{name, appId, handler}]`) whenever the hub records them. Commands appear as `command-<name>` events (e.g. `attribute: 'command-on'`); their `producedBy` answers "why did this device turn on". A button's own `pushed` row lists the rule it fired in `triggered`, and the device that rule commanded carries that same `appId` in its `producedBy`. Button Controller rules are auto-named like `<button>: button 1 pushed`, so `name` is the app's label, not a description of the event.
 
@@ -12642,7 +12631,7 @@ Hubitat's cloud relay can end one HTTP request while hub-side work continues. MC
 
 ### Automatic request-to-request continuation
 
-The modern path applies to `hub_set_native_app`, `hub_set_rule(operation='create')`, `hub_set_rule(operation='update')`, `hub_set_rule(operation='form')`, multi-rule stop/start batches through `hub_call_rule`, `hub_clone_native_app`, `hub_import_native_app`, the slow driver-code lifecycle writes `hub_create_driver`, `hub_update_driver`, and `hub_delete_item(type="driver")`, `hub_delete_debug_logs`, `hub_manage_virtual_device`, `hub_update_device`, and `hub_restore_backup` for a rule backup (`scope=source` with an `rm-rule_` key or a `sourceFile` snapshot). When the transport carries a time budget, device, log and diagnostic reads also continue as described below.
+The modern path applies to `hub_set_native_app`, `hub_set_rule(operation='create')`, `hub_set_rule(operation='update')`, `hub_set_rule(operation='form')`, multi-rule stop/start batches through `hub_call_rule`, `hub_clone_native_app`, `hub_import_native_app`, the slow driver-code lifecycle writes `hub_create_driver`, `hub_update_driver`, and `hub_delete_item(type="driver")`, `hub_manage_virtual_device`, `hub_update_device`, and `hub_restore_backup` for a rule backup (`scope=source` with an `rm-rule_` key or a `sourceFile` snapshot). When the transport carries a time budget, device, log and diagnostic reads also continue as described below.
 
 The first write request reserves the operation and starts its first slice at once; a write that finishes within that request's wait budget returns an ordinary `resultType: "complete"` result in one round trip, so a client that never echoes `requestState` still completes fast writes. Only work still running at the budget returns `resultType: "input_required"` with an opaque `requestState`; compatible MCP clients repeat the same tool call with that state, subject to their retry limit. A resumed request either advances work or observes an internal worker within the request's wait budget. Detached workers use a separate 120-second cooperative target at safe batch boundaries; individual wizard operations may exceed it. A terminal `resultType: "complete"` describes the operation's outcome; neither successful completion nor completion within a particular client's retry limit is guaranteed.
 
@@ -12676,12 +12665,12 @@ Every actual write obtains a server-side lease, whether it uses MRTR or complete
 
 Clients negotiated below MCP 2026-07-28 do not understand requestState. They retain the existing `status: "in_progress"` remainder envelope for bounded multi-step writes. Completed steps are already committed; reissue only the returned remaining work. This is a compatibility fallback, not a second polling protocol.
 
-Native log reads through `hub_get_logs` and cold MCP log recovery use the same continuation. Recovery also serves logging status, `hub_get_info`, `hub_report_issue`, and detailed `hub_get_custom_rule` diagnostics. `hub_delete_debug_logs` waits for recovery before clearing and retains its small terminal result for safe replay. Reload recovery reads the existing native history; old state-backed entries are discarded once when updating to native storage. No log content is stored in the continuation record.
-A legacy client that receives `status: "in_progress"` from a log read or from `hub_delete_debug_logs` repeats the identical call.
+Native log reads through `hub_get_logs` and cold MCP log recovery use the same continuation. Recovery also serves logging status, `hub_get_info`, `hub_report_issue`, and detailed `hub_get_custom_rule` diagnostics. Clearing the MCP log with `hub_delete_logs` reads nothing and finishes in one request. Reload recovery reads the existing native history; old state-backed entries are discarded once when updating to native storage. No log content is stored in the continuation record.
+A legacy client that receives `status: "in_progress"` from a log read repeats the identical call.
 
 `hub_get_device` (every mode), `hub_list_devices` (including virtual devices), and `hub_get_device_health` use background reads on budgeted modern requests. Fast reads finish in one response. Each independent call fetches fresh data; only continuation/replay shares its snapshot, including any device-details pagination cursor. Device access changes or a lost snapshot reject continuation. Device payloads remain in bounded memory, outside persisted continuation records. Legacy device calls remain synchronous; a legacy `hub_list_devices` page that reaches the request budget ends early with `budgetLimited: true` and a cursor to continue from (see the `performance_devices` section). Health retains its 30-second traceroute and 90-second speedtest timeouts, but eight observation slices or a client's retry limit can end the wait before a long probe finishes. A health `slow_read_timeout` does not cancel probes or the optional identify LED blink; do not automatically retry it as a new call.
 
-Two reads use the same continuation: `hub_get_jobs` and `hub_get_performance_stats` both come from the hub's `/logs/json` page, one document that carries every device and app stat plus the job tables, so its fetch time grows with hub size and on a large hub can outrun the relay. When the request's transport has a time budget (`relayBudgetMs` over the cloud relay, `lanBudgetMs` on the LAN) the fetch runs in a background worker and its trimmed result is cached for 30 s; a modern client's first call already runs the read (a cached or quickly landed snapshot answers in one round trip) and only a still-pending fetch hands back `requestState` to continue, a legacy client that receives `status: "in_progress"` repeats the identical call, and a failed fetch is returned as an ordinary `isError` result with a retry already scheduled. Reads never hold a write lease or count toward `maxConcurrentWrites`, and their terminal record carries no payload (a replay re-runs the read from the cache). With no budget on the transport the fetch runs inline and the call is a single ordinary response.
+`hub_get_logs`' `devices`, `apps`, `scheduledJobs`, `runningJobs` and `hubActions` modes use the same continuation: they all come from the hub's `/logs/json` page, one document that carries every device and app stat plus the job tables, so its fetch time grows with hub size and on a large hub can outrun the relay. When the request's transport has a time budget (`relayBudgetMs` over the cloud relay, `lanBudgetMs` on the LAN) the fetch runs in a background worker and its tables are cached for 30 s, so every one of those modes and its cursor pages answer from one fetch; a modern client's first call already runs the read (a cached or quickly landed snapshot answers in one round trip) and only a still-pending fetch hands back `requestState` to continue, a legacy client that receives `status: "in_progress"` repeats the identical call, and a failed fetch is returned as an ordinary `isError` result with a retry already scheduled. Reads never hold a write lease or count toward `maxConcurrentWrites`, and their terminal record carries no payload (a replay re-runs the read from the cache). With no budget on the transport the fetch runs inline and the call is a single ordinary response.
 
 The advanced `relayBudgetMs` setting (default 6000 ms, 0 disables) controls cloud slices. Both transport budgets automatically use at least 6000 ms when enabled. `lanBudgetMs` defaults to 0; enable it only when the LAN client timeout leaves room for that minimum plus request overhead.
 
@@ -12732,7 +12721,7 @@ def getToolGuideSubSections() {
             performance_devices: ["hub_list_devices", "hub_list_device_events", "hub_get_device",
                                   "hub_get_compatible_devices"],
             performance_diagnostics: ["hub_get_logs", "hub_get_radio_details", "hub_get_metrics",
-                                      "hub_get_performance_stats", "hub_delete_debug_logs",
+                                      "hub_delete_logs",
                                       "hub_report_issue"]
         ],
         builtin_app_tools: [
