@@ -393,7 +393,7 @@ private Map _ndApply(Long id, List changes, boolean created) {
         def structuralIssues = _ndStructuralIssues(renderedState, _nrHandle(id).getSetting('useST') == true)
         structuralIssues.addAll(_nmValidateStructure(id, renderedState).structuralIssues ?: [])
         if (structuralIssues) throw new IllegalStateException(structuralIssues.join('; '))
-        if (!(health instanceof Map) || health.broken != false) return [success: false, partial: true, rule_id: id, created: created, results: outcomes, broken: health instanceof Map ? health.broken : null, error: 'Native rule health is broken or unverified']
+        if (!(health instanceof Map) || health.broken != false) return [success: false, partial: true, rule_id: id, created: created, results: outcomes, broken: health instanceof Map ? health.broken : null, error: 'Native rule health is broken or unverified', note: _ndFailureNote(true, created)]
         def done = hubInternalPostFormRaw('/installedapp/update/json', 'id=' + id.toString() + '&_action_update=Done&_cancellable=true')
         def doneStatus = done instanceof Map ? done.get('status') : null
         if (doneStatus != null && doneStatus.toString().isInteger() && doneStatus.toInteger() >= 400) throw new IllegalStateException('Native Done was rejected')
@@ -401,8 +401,8 @@ private Map _ndApply(Long id, List changes, boolean created) {
         if (doneBody instanceof Map || (doneBody != null && doneBody.toString().trim())) _nfJson(doneBody)
         def finalHealth = _ndRuleHealth(id)
         if (!(finalHealth instanceof Map) || finalHealth.broken != false) throw new IllegalStateException('Native rule health failed after Done')
-        boolean stopped = finalHealth.stopped == true
-        boolean paused = finalHealth.paused == true
+        boolean stopped = _ndNativeFlag(finalHealth, 'stopped') == true
+        boolean paused = _ndNativeFlag(finalHealth, 'paused') == true
         if (!created) {
             if (wasStopped != stopped) _nrHandle(id).appButtonHandler('stopRule')
             if (wasPaused != paused) _nrHandle(id).appButtonHandler('pausRule')
@@ -459,7 +459,7 @@ Map toolUpdateRuleDocument(Map args) {
         _nrHandle(id)
         if (getAppByAppId(id)?.disabled == true) throw new IllegalArgumentException('Enable the native rule before editing its document')
         try { _ndPreflight(id, changes) }
-        catch (IllegalArgumentException failure) { return [success: false, partial: false, rule_id: id, error: failure.message?.toString()] }
+        catch (Exception failure) { return [success: false, partial: false, rule_id: id, error: failure.message?.toString()] }
         Map backup
         try { backup = _ndEditBackup(id, 'pre-document-update') }
         catch (Exception failure) { return [success: false, partial: false, rule_id: id, error: "Pre-edit backup failed; no document changes were applied: ${failure.message}".toString()] }
@@ -505,7 +505,7 @@ Map toolCreateRuleDocument(Map args) {
         _ndApply(id, changes, true)
     } catch (Exception failure) {
         mcpLogError('rm-native', "hub_set_rule create failed for rule ${id} under parent ${parentId}: ${failure.message}".toString(), failure)
-        [success: false, partial: true, rule_id: verifiedChild ? id : null, created: verifiedChild, error: failure.message?.toString()]
+        [success: false, partial: true, rule_id: verifiedChild ? id : null, created: verifiedChild, error: failure.message?.toString(), note: verifiedChild ? _ndFailureNote(true, true) : 'No rule was created.']
     }
 }
 
