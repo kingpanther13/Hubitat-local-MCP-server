@@ -101,6 +101,9 @@ def test_event_bookmark_reaches_history_after_expected_zero_refusals(refusal):
         assert params["name"] == "hub_read_devices"
         args = params["arguments"]["args"]
         calls.append(args)
+        if "deviceId" not in args:
+            return _raw_tool_body({"source": "location", "count": 1,
+                                   "events": [{"name": "systemStart", "kind": "hub", "date": dates[0]}]})
         if args["deviceId"] in (0, "0"):
             return _raw_tool_body({"success": False, "isError": True, "error": refusal}, is_error=True)
         assert str(args["deviceId"]) == "42"
@@ -135,11 +138,12 @@ def test_event_bookmark_reaches_history_after_expected_zero_refusals(refusal):
 
 
 @pytest.mark.parametrize("result", [
-    {"success": True, "events": []},
+    {"success": True, "source": "location", "events": []},
+    {"success": False, "isError": True, "error": "Location event history fetch failed", "source": "location"},
     {"success": False, "isError": True, "error": "Device metadata fetch failed (/device/fullJson/42)"},
     {"success": False, "isError": True, "error": "Read tools are disabled"},
 ])
-def test_event_bookmark_rejects_empty_and_unrelated_failures(result):
+def test_event_bookmark_rejects_location_fallback_and_unrelated_failures(result):
     client = et.HubitatMcpClient("http://hub.invalid", "1", "unused")
     client._gateway_members = {"hub_read_devices": {"hub_list_device_events"}}
     client._gateway_route = {"hub_list_device_events": "hub_read_devices"}
