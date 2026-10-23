@@ -12556,6 +12556,87 @@ def toolGetDeviceHistory(args) {
         if (timeFilterUnparseable > 0) appResult.timeFilterUnparseable = timeFilterUnparseable
         return appResult
     }
+    if (args.deviceId == null) {
+        def rawJson
+        try {
+            rawJson = hubInternalGet("/logs/eventsJson")
+        } catch (Exception e) {
+            mcpLogError("monitoring", "/logs/eventsJson fetch failed", e)
+            return [success: false, error: "Location event history fetch failed: ${e.message}", source: "location",
+                    note: "Likely a transient hub blip (the same endpoint feeds the hub's Logs page) -- retry."]
+        }
+        def rows
+        try {
+            def parsed = new groovy.json.JsonSlurper().parseText(rawJson?.toString() ?: "[]")
+            rows = (parsed instanceof List) ? parsed : []
+        } catch (Exception e) {
+            mcpLogError("monitoring", "/logs/eventsJson parse failed", e)
+            return [success: false, error: "Location event history parse failed: ${e.message}", source: "location",
+                    note: "Retry; if persistent, firmware may have changed the /logs/eventsJson format -- report with hub_report_issue."]
+        }
+        def hubRows = []
+        String hubEventsError = null
+        try {
+            String hubText = hubInternalGet("/hub/eventsJson")?.toString()
+            def parsedHub = hubText?.trim() ? new groovy.json.JsonSlurper().parseText(hubText) : null
+            if (parsedHub == null) hubEventsError = "the hub returned an empty response"
+            else if (parsedHub instanceof List) hubRows = parsedHub
+            else hubEventsError = "the hub events list was not a JSON array"
+        } catch (Exception e) {
+            hubEventsError = (e.message ?: e.toString()).take(200)
+        }
+        def locResults = []
+        def timeFilterUnparseable = 0
+        def addRows = { List source, String kind ->
+            for (evt in source) {
+                if (!(evt instanceof Map)) continue
+                if (attributeFilter && evt.name != attributeFilter) continue
+                def evtDate = null
+                try { evtDate = Date.parse("yyyy-MM-dd'T'HH:mm:ss.SSSZ", evt.date?.toString()) }
+                catch (Exception ignored) { timeFilterUnparseable++ }
+                if (evtDate != null && !evtDate.after(sinceDate)) continue
+                if (untilDate != null && evtDate != null && evtDate.after(untilDate)) continue
+                locResults << [
+                    name: evt.name,
+                    value: evt.value,
+                    unit: evt.unit,
+                    description: evt.descriptionText,
+                    date: evt.date,
+                    type: evt.type,
+                    isStateChange: evt.isStateChange,
+                    kind: kind,
+                    _at: evtDate?.time
+                ]
+            }
+        }
+        addRows(rows, "location")
+        int hubCount = locResults.size()
+        addRows(hubRows, "hub")
+        hubCount = locResults.size() - hubCount
+        if (hubCount > 0) locResults = locResults.sort { a, b -> (b._at ?: 0L) <=> (a._at ?: 0L) }
+        locResults.each { it.remove("_at") }
+        int matchedCount = locResults.size()
+        if (matchedCount > limit) locResults = locResults.take(limit)
+        mcpLog("info", "monitoring", "Retrieved ${locResults.size()} location history event${locResults.size() == 1 ? '' : 's'} (${sinceMode} window since ${sinceDate.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ")}) from /logs/eventsJson")
+        def locResult = [
+            source: "location",
+            attributeFilter: attributeFilter,
+            events: locResults,
+            count: locResults.size(),
+            sinceMode: sinceMode,
+            sinceTimestamp: sinceDate.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ")
+        ]
+        if (sinceMode == "relative") locResult.hoursBack = effectiveHoursBack
+        else locResult.since = sinceEcho
+        if (untilEcho) locResult.untilTimestamp = untilEcho
+        if (matchedCount > locResults.size()) {
+            locResult.truncated = true
+            locResult.matchedCount = matchedCount
+        }
+        if (timeFilterUnparseable > 0) locResult.timeFilterUnparseable = timeFilterUnparseable
+        if (hubEventsError != null) locResult.hubEventsError = "Hub events (reboots, low memory) could not be read: ${hubEventsError}".toString()
+        return locResult
+    }
     def deviceId = _canonicalDeviceIdArg(args.deviceId)
     if (deviceId == null) {
         throw new IllegalArgumentException("deviceId must be a non-empty string or integral number (got: ${_describeValueForError(args.deviceId)})")
@@ -14224,21 +14305,22 @@ If no exact device match: suggest similar devices and get user confirmation befo
         ],
         [
             name: "hub_list_device_events",
-            description: """Get event history for a device, or for an app or rule (the automation events it emitted).
+            description: """Get event history for a device, an app or rule (the automation events it emitted), or the location and hub.
 
 [[FLAT_TRIM]]
-Default: most-recent events for a device (deviceId + optional limit). Device events include producedBy (the app, rule, or device that caused it) and triggered (the apps it fired) when the hub records them -- use attribute 'command-on' etc. to see who sent a command. Location and hub events (mode, HSM, reboots) are hub_get_logs(mode='locationEvents'|'hubEvents').
+Location mode also lists the hub's own events (reboots, low memory, startup), tagged kind:'hub'.
+Default: most-recent events for a device (deviceId + optional limit). Device events include producedBy (the app, rule, or device that caused it) and triggered (the apps it fired) when the hub records them -- use attribute 'command-on' etc. to see who sent a command.
 [[/FLAT_TRIM]]
 """,
             inputSchema: [
                 type: "object",
                 properties: [
-                    deviceId: [type: ["string", "integer"], description: "Device ID. Give deviceId or appId."],
+                    deviceId: [type: ["string", "integer"], description: "Device ID. Mutually exclusive with appId; omit both for location and hub events."],
                     appId: [type: "integer", description: "Installed-app ID: the events that app or rule emitted. Mutually exclusive with deviceId."],
                     hoursBack: [type: "integer", description: "Hours of history (max 168).[[FLAT_TRIM]] Instead of just the most recent events; ignored when since is given.[[/FLAT_TRIM]]"],
                     until: [type: ["string", "integer"], description: "[[FLAT_TRIM]]Optional window end (inclusive), same formats as since.[[/FLAT_TRIM]]"],
                     since: [type: ["string", "integer"], description: "Window start, exclusive: ISO-8601 with a numeric offset (e.g. 2026-06-23T10:00:00.000-0600) or epoch ms.[[FLAT_TRIM]] -0600 and -06:00 both work. This is the format this tool emits in `date`/`sinceTimestamp`. Takes precedence over hoursBack; a future timestamp yields an empty list.[[/FLAT_TRIM]]"],
-                    attribute: [type: "string", description: "Event-name filter, e.g. an attribute such as 'switch'."],
+                    attribute: [type: "string", description: "Event-name filter. Device: an attribute (e.g. 'switch').[[FLAT_TRIM]] Location: 'mode', 'hsmStatus', 'hsmAlert', or a hub-variable name.[[/FLAT_TRIM]]"],
                     limit: [type: "integer", description: "Max events to return. Recent mode default 10; history mode default 100 (max 500).[[FLAT_TRIM]] Higher values may slow hub.[[/FLAT_TRIM]]", default: 10]
                 ]
             ]
@@ -14379,7 +14461,7 @@ def _toolDisplayMeta_partDevices() {
         hub_list_devices: [title: "List Devices", summary: "List accessible devices with filtering, pagination, and field projection."],
         hub_get_device: [title: "Get Device Details", summary: "Inspect a device summary, configuration and preferences, or detailed information by section."],
         hub_get_device_attribute: [title: "Get Device Attribute", summary: "Read one attribute value, optionally waiting until it matches an expected value."],
-        hub_list_device_events: [title: "List Device Events", summary: "Recent or windowed events for a device, or the events an app or rule emitted."],
+        hub_list_device_events: [title: "List Device Events", summary: "Recent events for a device or app, or location and hub events when neither is given."],
         hub_call_device_command: [title: "Send Device Command", summary: "Send a command like on, off, or setLevel to one device, or up to 20 in one call."],
         hub_call_device_swap: [title: "Swap Device", summary: "Exchange two devices' identities so the apps on one run on the other's hardware."],
         hub_call_device_replace: [title: "Replace Device Hardware", summary: "Re-point a device to replacement hardware, keeping its id and all references."],
@@ -32051,7 +32133,7 @@ def getGatewayConfig() {
                 hub_list_devices: "List devices with current states; format='context' = plain-text house snapshot (mode + one line per device). Args: detailed?, filter (enabled/disabled/stale:N/virtual), labelFilter?, capabilityFilter?, roomFilter?, onlyOn?, changedSince?, attributeNames?, format (summary/detailed/ids/context), fields?, limit?, cursor?",
                 hub_get_device: "Inspect one device. Args: deviceId, mode? (summary/configuration/details), sections? (details mode), fields? (configuration/details field selector), cursor? (continue one oversized scalar). Configuration mode discovers editable fields, saved preferences, driver identity, and read status before an update.",
                 hub_get_device_attribute: "Read one attribute's value, or block-poll one OR several devices (deviceIds + mode any/all) until it reaches expectedValue/expectedValues. Args: deviceId | deviceIds (max 20), mode? (any/all), attribute, expectedValue?, expectedValues?, timeoutMs?, pollIntervalMs?, comparator?, stableForMs?",
-                hub_list_device_events: "Recent device events, a time-windowed history (hoursBack, max 168), an absolute bookmark (since -- events after an exact timestamp; round-trip a returned date) with an optional end (until), or per-app events (appId). Location and hub events are hub_get_logs modes. Args: deviceId|appId, hoursBack?, since?, until?, attribute?, limit?",
+                hub_list_device_events: "Recent device events, a time-windowed history (hoursBack, max 168), an absolute bookmark (since -- events after an exact timestamp; round-trip a returned date) with an optional end (until), per-app events (appId), or location and hub events (mode/HSM/hub-variable, reboots/low memory; omit deviceId/appId). Args: deviceId?, appId?, hoursBack?, since?, until?, attribute?, limit?",
                 hub_get_compatible_devices: "Search Hubitat's compatible-device catalog (brands/models + pairing/exclude/factory-reset instructions). Args: query?, brand?, protocol?, deviceType?, includeInstructions?, cursor?",
                 hub_get_hub_mesh: "Read Hub Mesh (hub-to-hub device/variable sharing on the LAN): enabled state, peer hubs, shared/linked devices + hub variables, sync interval, mode-following hub. Args: include_token?"
             ],
@@ -32059,7 +32141,7 @@ def getGatewayConfig() {
                 hub_list_devices: "show all devices switches lights sensors locks state inventory enumerate context summary snapshot overview house whats on right now changed since room",
                 hub_get_device: "device detail capabilities attributes commands info inspect one configuration editable fields preferences driver identity saved settings",
                 hub_get_device_attribute: "read attribute value poll wait until threshold sensor verify state changed inclusion compare numeric range debounce stable multiple devices deviceIds any all converge across",
-                hub_list_device_events: "device history events timeline recent activity app rule automation emitted since bookmark timestamp after new events change watch why caused produced by triggered button command source provenance",
+                hub_list_device_events: "device history events timeline recent location mode hsm variable activity hub reboot restart low memory lowMemory startup app rule automation emitted since bookmark timestamp after new events change watch why caused produced by triggered button command source provenance",
                 hub_get_compatible_devices: "compatible devices catalog supported hardware brands models pairing join exclude factory reset instructions how to pair driver protocol zigbee zwave matter lan",
                 hub_get_hub_mesh: "hub mesh share devices between hubs link remote second hub peer hubs multi hub connect two hubs mesh token follow modes another hub sync interval linked device shared variable hub to hub"
             ]
@@ -32114,7 +32196,7 @@ def getGatewayConfig() {
                 hub_list_devices: "List devices with current states; format='context' = plain-text house snapshot. Args: detailed?, filter, labelFilter?, capabilityFilter?, roomFilter?, onlyOn?, changedSince?, attributeNames?, format, fields?, limit?, cursor?",
                 hub_get_device: "Inspect one device. Args: deviceId, mode? (summary/configuration/details), sections? (details mode), fields? (configuration/details field selector), cursor? (continue one oversized scalar). Configuration mode discovers editable fields and preference definitions/current values before an update.",
                 hub_get_device_attribute: "Read one attribute's value, or block-poll one OR several devices (deviceIds + mode any/all) until it reaches expectedValue/expectedValues. Args: deviceId | deviceIds (max 20), mode? (any/all), attribute, expectedValue?, expectedValues?, timeoutMs?, pollIntervalMs?, comparator?, stableForMs?",
-                hub_list_device_events: "Recent device events, a time-windowed history, an absolute bookmark (since) with an optional end (until), or per-app events (appId). Args: deviceId|appId, hoursBack?, since?, until?, attribute?, limit?",
+                hub_list_device_events: "Recent device events, a time-windowed history, an absolute bookmark (since) with an optional end (until), per-app events (appId), or location and hub events (reboots, low memory). Args: deviceId?, appId?, hoursBack?, since?, until?, attribute?, limit?",
                 hub_get_hub_mesh: "Read Hub Mesh (hub-to-hub device/variable sharing on the LAN): enabled state, peer hubs, shared/linked devices + hub variables, sync interval, mode-following hub. Args: include_token?",
                 hub_update_hub_mesh: "Change Hub Mesh settings (enable/disable needs a hub reboot; per-device sharing is hub_update_device meshEnabled). Args: enabled?, full_refresh_interval? (0/120/300/3600), mode_hub_id? ('none'=local modes), peer_hub_id?+peer_token?"
             ],
@@ -32127,7 +32209,7 @@ def getGatewayConfig() {
                 hub_list_devices: "show all devices switches lights sensors locks state inventory context summary snapshot overview house whats on right now changed since room",
                 hub_get_device: "device detail capabilities attributes commands info inspect one configuration editable fields preferences driver identity saved settings",
                 hub_get_device_attribute: "read attribute value poll wait until threshold sensor verify state changed compare numeric range debounce stable multiple devices deviceIds any all converge across",
-                hub_list_device_events: "device history events timeline recent activity app rule automation emitted since bookmark timestamp after new events change watch why caused produced by triggered button command source provenance",
+                hub_list_device_events: "device history events timeline recent location mode hsm variable activity hub reboot restart low memory lowMemory startup app rule automation emitted since bookmark timestamp after new events change watch why caused produced by triggered button command source provenance",
                 hub_get_hub_mesh: "hub mesh share devices between hubs link remote second hub peer hubs multi hub connect two hubs mesh token follow modes another hub sync interval linked device shared variable hub to hub",
                 hub_update_hub_mesh: "enable disable hub mesh share devices between hubs link remote second hub peer hubs multi hub connect two hubs mesh token follow modes another hub sync interval full refresh linked device hub to hub"
             ]
@@ -32700,9 +32782,7 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
         case "hub_call_device_replace": return toolCallDeviceReplace(args)
         case "hub_list_device_events":
             if (args.deviceId != null && args.appId != null)
-                throw new IllegalArgumentException("deviceId and appId are mutually exclusive. Pass deviceId for device events or appId for events emitted by an installed app/rule.")
-            if (args.deviceId == null && args.appId == null)
-                throw new IllegalArgumentException("Pass deviceId or appId. Location and hub events are on the Logs page: hub_get_logs(mode='locationEvents') or hub_get_logs(mode='hubEvents').")
+                throw new IllegalArgumentException("deviceId and appId are mutually exclusive. Pass deviceId for device events, appId for events emitted by an installed app/rule, or neither for location events.")
             if (args.deviceId != null && args.hoursBack == null && args.attribute == null && args.since == null && args.until == null)
                 return toolGetDeviceEvents(args.deviceId, args.limit != null ? args.limit : 10)
             return toolGetDeviceHistory(args)
@@ -36573,11 +36653,11 @@ Use after hub_list_files to fetch a named file (config, backup, exported rule/ap
 
 **hub_list_device_events:**
 - Default: most-recent events for a device (deviceId + limit)
-- Add hoursBack for up to 7 days of relative history
+- Add hoursBack for up to 7 days of relative history; omit deviceId for location-level events (mode/HSM/hub variable)
 - Add since for an absolute bookmark -- return only events AFTER an exact timestamp (ISO-8601 in the same format the tool emits in date/sinceTimestamp -- a numeric offset in either spelling (-0600 or -06:00), e.g. 2026-06-23T10:00:00.000-0600; a trailing Z for UTC and a millis-less variant are also accepted -- or epoch milliseconds). since takes precedence over hoursBack; a future since yields an empty list. Both since and hoursBack route to history mode
 - Change-watching loop: record a returned event date, run your action, then pass that date back as since to get exactly the new events. The response echoes sinceMode ("explicit" when since drove it, "relative" for hoursBack) and the bounding field (since or hoursBack)
 - appId (mutually exclusive with deviceId) returns the events an installed app/rule emitted; rows are {name, value, description, date}
-- deviceId or appId is required. Location events (mode, hsmStatus/hsmAlert, hub-variable changes, sunrise/sunset) and the hub's own events (reboots, `lowMemory`, startup) are Logs page tabs: `hub_get_logs(mode='locationEvents')` and `hub_get_logs(mode='hubEvents')`.
+- With neither deviceId nor appId, the tool reads the hub's location event log: mode, hsmStatus/hsmAlert, hub-variable changes, sunrise/sunset and system events. The result carries `source: 'location'` and no device fields.
 
 - Use the attribute filter to reduce data volume
 
@@ -36742,8 +36822,9 @@ Only query devices the user has mentioned or that are relevant to their request.
 
 ### hub_list_device_events
 - Higher limits (50+) may slow the hub; default limit applies otherwise.
+- With neither deviceId nor appId the call returns the location events and the hub's own events (the Logs page's Hub events: reboots, `lowMemory`, startup), newest first, each row tagged `kind: 'location'` or `kind: 'hub'`; `attribute: 'lowMemory'` finds low-memory restarts. A failed hub-events read keeps the location events and adds `hubEventsError`.
 
-- `attribute` filters by event name. For a device it is an attribute (e.g. `switch`).
+- `attribute` filters by event name. For a device it is an attribute (e.g. `switch`); for location-level events it accepts one of `mode`, `hsmStatus`, `hsmAlert`, or a hub-variable name.
 - `until` (same formats as `since`) ends the window inclusively, so `since` + `until` returns one bounded slice, e.g. what happened between 02:00 and 02:15. The response echoes it as `untilTimestamp`. `hoursBack` (default 24) always counts back from now, not from `until`: `until` without `since` cuts the window that starts `hoursBack` hours ago, and an `until` before that start is refused. For a slice further back, pass `since` + `until`.
 - Device event rows add `type` (e.g. `command`, `physical`, `digital`), `producedBy` (what caused the event: `{name, appId}` for an app or rule, `{name, deviceId}` for a device, or `{name}` alone such as `Unknown app`), and `triggered` (the app subscriptions the event fired: `[{name, appId, handler}]`) whenever the hub records them. Commands appear as `command-<name>` events (e.g. `attribute: 'command-on'`); their `producedBy` answers "why did this device turn on". A button's own `pushed` row lists the rule it fired in `triggered`, and the device that rule commanded carries that same `appId` in its `producedBy`. Button Controller rules are auto-named like `<button>: button 1 pushed`, so `name` is the app's label, not a description of the event.
 
