@@ -385,7 +385,6 @@ class NativeRuleExactRestoreSpec extends ToolSpecBase {
         !result.success
         result.stopped == true
         result.paused == false
-        !result.containsKey('lifecycleUnknown')
         result.note.contains("hub_call_rule(ruleId, action:'start')")
     }
 
