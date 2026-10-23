@@ -577,7 +577,7 @@ def runNativeLogFetch(Map job = [:]) {
 // the MCP app's own log. Each mode takes its tab's filters plus the shared MCP extras: regex
 // patterns over the tab's searchable fields, a since/until window, owner ids, limit and cursor.
 private Map _logsModeArgs() {
-    List shared = ["pattern", "patterns", "patternMode", "limit", "cursor"]
+    List shared = ["pattern", "patterns", "patternMode", "limit", "cursor", "pageSize"]
     return [
         past: shared + ["level", "deviceId", "appId", "since", "until"],
         devices: shared + ["deviceId", "sortBy"],
@@ -697,7 +697,9 @@ def toolGetHubLogs(args) {
             if (pending && m in ["cloudCalls", "locationEvents", "hubEvents", "status"]) continue
             Map r
             try {
-                r = toolGetHubLogs(args + [mode: m] + (modeArgs[m].contains("cursor") ? [cursor: ""] : [:]))
+                Map paging = modeArgs[m].contains("pageSize") ? [cursor: "", pageSize: args.pageSize != null ? args.pageSize : 50] :
+                    modeArgs[m].contains("cursor") ? [cursor: ""] : [:]
+                r = toolGetHubLogs(args + [mode: m] + paging)
             } catch (IllegalArgumentException e) {
                 throw e
             } catch (Exception e) {
@@ -749,8 +751,14 @@ def toolGetHubLogs(args) {
     // stat rows, and every job, hub action and cloud-call row.
     int limit = args.limit != null ? (args.limit as Integer) : (mode in ["devices", "apps"] ? 20 : mode in ["past", "locationEvents", "hubEvents"] ? 100 : 0)
     if (limit < 0) throw new IllegalArgumentException("limit must be 0 (no limit) or more")
+    if (args.pageSize != null && (!(args.pageSize instanceof Integer || args.pageSize instanceof Long) || (args.pageSize as Integer) < 1 || (args.pageSize as Integer) > 100)) {
+        throw new IllegalArgumentException("pageSize must be a whole number from 1 to 100 (got '${args.pageSize}')")
+    }
+    // pageSize alone starts paging from the first row.
+    def cursor = args.cursor != null ? args.cursor : (args.pageSize != null ? "" : null)
     Map query = [patterns: patterns, since: since, until: until, limit: limit, deviceId: deviceId, appId: appId,
-                 sortBy: args.sortBy ?: "pct", level: args.level?.toString()?.toLowerCase()]
+                 sortBy: args.sortBy ?: "pct", level: args.level?.toString()?.toLowerCase(),
+                 cursor: cursor, pageSize: args.pageSize != null ? (args.pageSize as Integer) : 100]
     if (mode == "past") {
         Map past = _pastLogs(args, query)
         if (deviceId && past.status != "in_progress") {
@@ -803,7 +811,7 @@ def toolGetHubLogs(args) {
             if (parsed.startedAt != null) result.countingSince = formatTimestamp(parsed.startedAt as Long)
         }
     }
-    return result + _logsPage(mode, rows, query, args.cursor)
+    return result + _logsPage(mode, rows, query, query.cursor)
 }
 
 // Apps from /logs/cloudCalls/json, each with its hourly counts (newest first, at most 48),
@@ -849,7 +857,7 @@ private Map _logsPage(String mode, List rows, Map query, cursor) {
     if (mode in ["devices", "apps"]) matched = _logsSortStats(matched, query.sortBy)
     Map out = [total: rows.size(), matched: matched.size()]
     if (query.limit > 0 && matched.size() > query.limit) matched = matched.take(query.limit)
-    def paged = _paginateList(matched, cursor, 100, "hub_get_logs")
+    def paged = _paginateList(matched, cursor, query.pageSize as int, "hub_get_logs")
     // Null fields are left out of each row and named once in nullFields, so a row without a listed
     // field had it null (location events, for example, have no device fields).
     Set nullFields = new TreeSet()
@@ -919,7 +927,7 @@ private Map _pastLogs(Map args, Map query) {
         }
         entries << entry
     }
-    Map out = [mode: "past"] + _logsPage("past", entries, query + [patterns: [single: null, list: []], since: null, until: null, deviceId: null, appId: null], args.cursor)
+    Map out = [mode: "past"] + _logsPage("past", entries, query + [patterns: [single: null, list: []], since: null, until: null, deviceId: null, appId: null], query.cursor)
     out.total = rows.size()
     if (unparseable > 0) out.timeFilterUnparseable = unparseable
     if (fetchedAt != null) out.snapshot = [fetchedAt: fetchedAt, ageMs: Math.max(0L, now() - (fetchedAt as Long))]
@@ -2722,7 +2730,7 @@ def _getAllToolDefinitions_partDiagnostics() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    mode: [anyOf: [[type: "string", enum: ["past", "devices", "apps", "cloudCalls", "locationEvents", "hubEvents", "scheduledJobs", "runningJobs", "hubActions", "mcp", "status"]], [type: "array", items: [type: "string", enum: ["past", "devices", "apps", "cloudCalls", "locationEvents", "hubEvents", "scheduledJobs", "runningJobs", "hubActions", "mcp", "status"]]]], default: "past", description: "The Logs page tab, or a list of tabs answered together under modes.<tab>: past = log history; devices/apps = runtime stats; cloudCalls = per-app cloud calls; locationEvents (mode, HSM, variables); hubEvents (reboots, low memory); scheduledJobs; runningJobs; hubActions. mcp = the MCP app's own log; status = its level and counts.[[FLAT_TRIM]] With a list, every other parameter must apply to each listed tab, and each tab returns its first page with its own nextCursor; page further by calling that tab alone.[[/FLAT_TRIM]]"],
+                    mode: [anyOf: [[type: "string", enum: ["past", "devices", "apps", "cloudCalls", "locationEvents", "hubEvents", "scheduledJobs", "runningJobs", "hubActions", "mcp", "status"]], [type: "array", items: [type: "string", enum: ["past", "devices", "apps", "cloudCalls", "locationEvents", "hubEvents", "scheduledJobs", "runningJobs", "hubActions", "mcp", "status"]]]], default: "past", description: "The Logs page tab, or a list of tabs answered together under modes.<tab>: past = log history; devices/apps = runtime stats; cloudCalls = per-app cloud calls; locationEvents (mode, HSM, variables); hubEvents (reboots, low memory); scheduledJobs; runningJobs; hubActions. mcp = the MCP app's own log; status = its level and counts.[[FLAT_TRIM]] With a list, every other parameter must apply to each listed tab, and each tab returns its first page (pageSize rows, 50 by default) with its own nextCursor; page further by calling that tab alone.[[/FLAT_TRIM]]"],
                     level: [type: "string", enum: ["trace", "debug", "info", "warn", "error", "all"], description: "past and mcp: one log level. Default all."],
                     deviceId: [type: "string", description: "Numeric device id: past logs scoped on the hub, that device's stats, or the jobs and hub actions it owns. Exclusive with appId."],
                     appId: [type: "string", description: "Numeric app id, the same way as deviceId."],
@@ -2735,7 +2743,8 @@ def _getAllToolDefinitions_partDiagnostics() {
                     limit: [type: "integer", description: "Max rows after filters; 0 = all. Default 100 for past and events, 20 for devices and apps, 50 for mcp, all for the others."],
                     component: [type: "string", description: "mcp: component substring (for example server or rule)."],
                     ruleId: [type: "string", description: "mcp: custom rule id."],
-                    cursor: [type: "string", description: "Pagination cursor.[[FLAT_TRIM]] Pass \"\" for the first page of 100, then nextCursor.[[/FLAT_TRIM]]"]
+                    cursor: [type: "string", description: "Pagination cursor.[[FLAT_TRIM]] Pass \"\" for the first page, then nextCursor.[[/FLAT_TRIM]]"],
+                    pageSize: [type: "integer", description: "Rows per page, 1-100. Default 100, or 50 per tab when mode is a list."]
                 ]
             ]
         ],

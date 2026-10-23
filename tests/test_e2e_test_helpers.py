@@ -30,11 +30,11 @@ import e2e_test as et  # noqa: E402 -- must follow the importorskip above (e2e_t
 @pytest.mark.parametrize("refetched", [False, True])
 def test_jobs_cursor_checks_multiple_pages_without_pinning_expired_snapshot(refetched):
     first = {
-        "entries": [{"name": str(i)} for i in range(100)], "count": 100, "matched": 101, "total": 101,
+        "entries": [{"name": str(i)} for i in range(5)], "count": 5, "matched": 6, "total": 6,
         "snapshot": {"fetchedAt": 1000}, "nextCursor": "next-page",
     }
     second = {
-        "entries": [{"name": "last"}], "count": 1, "matched": 102 if refetched else 101,
+        "entries": [{"name": "last"}], "count": 1, "matched": 7 if refetched else 6,
         "snapshot": {"fetchedAt": 32000 if refetched else 1000},
     }
     calls = []
@@ -49,6 +49,7 @@ def test_jobs_cursor_checks_multiple_pages_without_pinning_expired_snapshot(refe
     runner.client = SimpleNamespace(call_tool=call_tool)
     runner.test_get_logs_scheduled_jobs_cursor()
     assert [call["args"].get("cursor") for call in calls[:2]] == ["", "next-page"]
+    assert [call["args"].get("pageSize") for call in calls[:2]] == [5, 5]
     if not refetched:
         second["entries"] = []
         second["count"] = 0

@@ -389,13 +389,36 @@ class ToolManageLogsSpec extends ToolSpecBase {
 
         when:
         def result = script.toolGetHubLogs([mode: ['scheduledJobs', 'hubEvents']])
+        def sized = script.toolGetHubLogs([mode: ['scheduledJobs', 'hubEvents'], pageSize: 70])
 
-        then:
-        result.modes.scheduledJobs.count == 100
+        then: '50 rows per tab by default'
+        result.modes.scheduledJobs.count == 50
         result.modes.scheduledJobs.matched == 150
-        result.modes.scheduledJobs.nextCursor == '100'
+        result.modes.scheduledJobs.nextCursor == '50'
         result.modes.hubEvents.count == 0
         !result.modes.hubEvents.containsKey('nextCursor')
+
+        and: 'pageSize sets it'
+        sized.modes.scheduledJobs.count == 70
+        sized.modes.scheduledJobs.nextCursor == '70'
+    }
+
+    def "hub_get_logs pageSize pages a single tab, alone or with a cursor"() {
+        given:
+        hubGet.register('/logs/json') { params -> logsJsonWithJobs(150) }
+
+        when:
+        def first = script.toolGetHubLogs([mode: 'scheduledJobs', pageSize: 40])
+        def next = script.toolGetHubLogs([mode: 'scheduledJobs', pageSize: 40, cursor: first.nextCursor])
+        def whole = script.toolGetHubLogs([mode: 'scheduledJobs'])
+
+        then:
+        first.entries*.id == (1..40).collect { "app${it}Recur.run".toString() }
+        first.nextCursor == '40'
+        next.entries*.id == (41..80).collect { "app${it}Recur.run".toString() }
+        next.nextCursor == '80'
+        whole.count == 150
+        !whole.containsKey('nextCursor')
     }
 
     @Unroll
@@ -564,6 +587,11 @@ class ToolManageLogsSpec extends ToolSpecBase {
         'scheduledJobs'  | [appId: 'x']                    || 'appId must be numeric'
         'past'           | [patterns: ['ok', '(']]         || 'Invalid regex patterns[1]'
         'nope'           | [:]                             || 'Invalid log mode'
+        'scheduledJobs'  | [pageSize: 0]                   || 'pageSize must be a whole number from 1 to 100'
+        'scheduledJobs'  | [pageSize: 101]                 || 'pageSize must be a whole number from 1 to 100'
+        'scheduledJobs'  | [pageSize: '20']                || 'pageSize must be a whole number from 1 to 100'
+        'scheduledJobs'  | [pageSize: 20.5]                || 'pageSize must be a whole number from 1 to 100'
+        'mcp'            | [pageSize: 20]                  || 'do not apply'
     }
 
     def "hub_list_device_events returns location events when deviceId is omitted (reads /logs/eventsJson)"() {

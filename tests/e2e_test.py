@@ -12868,13 +12868,15 @@ class TestRunner:
 
     @test("system_tools")
     def test_get_logs_scheduled_jobs_cursor(self) -> None:
-        """scheduledJobs pages through the universal cursor; totals are comparable within one snapshot."""
+        """scheduledJobs pages through the universal cursor, pageSize rows at a time; totals are
+        comparable within one snapshot."""
+        page_size = 5
         first = self.client.call_tool("hub_manage_logs", {
             "tool": "hub_get_logs",
-            "args": {"mode": "scheduledJobs", "cursor": ""},
+            "args": {"mode": "scheduledJobs", "cursor": "", "pageSize": page_size},
         })
         assert isinstance(first, dict), f"hub_get_logs returned {type(first)}"
-        assert first["count"] == len(first["entries"]) and first["count"] <= 100, f"first page: {first}"
+        assert first["count"] == len(first["entries"]) and first["count"] <= page_size, f"first page: {first}"
         assert first["matched"] >= first["count"], f"matched {first['matched']} < page count {first['count']}"
         seen = list(first["entries"])
         cursor = first.get("nextCursor")
@@ -12883,12 +12885,12 @@ class TestRunner:
         same_snapshot = fetched_at is not None
         while cursor is not None:
             pages += 1
-            assert pages <= 50, "nextCursor never ended"
+            assert pages <= 400, "nextCursor never ended"
             page = self.client.call_tool("hub_manage_logs", {
                 "tool": "hub_get_logs",
-                "args": {"mode": "scheduledJobs", "cursor": cursor},
+                "args": {"mode": "scheduledJobs", "cursor": cursor, "pageSize": page_size},
             })
-            assert page["count"] == len(page["entries"]) and page["count"] <= 100, f"page {pages}: {page}"
+            assert page["count"] == len(page["entries"]) and page["count"] <= page_size, f"page {pages}: {page}"
             same_snapshot = same_snapshot and (page.get("snapshot") or {}).get("fetchedAt") == fetched_at
             seen.extend(page["entries"])
             cursor = page.get("nextCursor")
