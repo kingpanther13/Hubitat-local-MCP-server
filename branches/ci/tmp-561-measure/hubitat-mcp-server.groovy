@@ -8083,31 +8083,31 @@ def _getAllToolDefinitions_partDiagnostics() {
     def defs = { [
         [
             name: "hub_get_logs",
-            description: """Read tabs of the hub's Logs page, one or several per call, or the MCP app's own log. Rows keep the hub's own field names; null fields are listed in nullFields instead.[[FLAT_TRIM]] Jobs, running jobs and hub actions also carry owner {type: app|device, id}, read from their link. Pass deviceId or appId to see one app's or device's logs, stats or jobs.[[/FLAT_TRIM]]""",
+            description: """Read tabs of the hub's Logs page, one or several per call, or the MCP app's own log. Rows are the hub's own; null fields are named once in nullFields. The stats and job tabs come from one Logs page fetch cached for 30 s.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    mode: [anyOf: [[type: "string", enum: ["past", "devices", "apps", "cloudCalls", "locationEvents", "hubEvents", "scheduledJobs", "runningJobs", "hubActions", "mcp", "status"]], [type: "array", items: [type: "string", enum: ["past", "devices", "apps", "cloudCalls", "locationEvents", "hubEvents", "scheduledJobs", "runningJobs", "hubActions", "mcp", "status"]]]], default: "past", description: "The Logs page tab, or a list of tabs answered together under modes.<tab>: past = log history; devices/apps = runtime stats; cloudCalls = per-app cloud calls; locationEvents (mode, HSM, variables); hubEvents (reboots, low memory); scheduledJobs; runningJobs; hubActions. mcp = the MCP app's own log; status = its level and counts.[[FLAT_TRIM]] With a list, every other parameter must apply to each listed tab, and each tab returns its first page (pageSize rows, 50 by default) with its own nextCursor; page further by calling that tab alone.[[/FLAT_TRIM]]"],
+                    mode: [anyOf: [[type: "string", enum: ["past", "devices", "apps", "cloudCalls", "locationEvents", "hubEvents", "scheduledJobs", "runningJobs", "hubActions", "mcp", "status"]], [type: "array", items: [type: "string", enum: ["past", "devices", "apps", "cloudCalls", "locationEvents", "hubEvents", "scheduledJobs", "runningJobs", "hubActions", "mcp", "status"]]]], default: "past", description: "The Logs page tab, or a list of tabs answered under modes.<tab>: past = log history; devices/apps = runtime stats; cloudCalls = per-app cloud calls; locationEvents (mode, HSM, variables); hubEvents (reboots, low memory); scheduledJobs, runningJobs, hubActions (each row's owner is read from its link). mcp = the MCP app's own log; status = its level and counts. With a list, every other parameter must apply to each tab, and each tab returns its first page."],
                     level: [type: "string", enum: ["trace", "debug", "info", "warn", "error", "all"], description: "past and mcp: one log level. Default all."],
                     deviceId: [type: "string", description: "Numeric device id: past logs scoped on the hub, that device's stats, or the jobs and hub actions it owns. Exclusive with appId."],
                     appId: [type: "string", description: "Numeric app id, the same way as deviceId."],
-                    pattern: [type: "string", description: "Case-insensitive regex over the tab's text.[[FLAT_TRIM]] past: name and message; jobs: name and methodName; events: name, descriptionText and value; other tabs: name.[[/FLAT_TRIM]]"],
+                    pattern: [type: "string", description: "Case-insensitive regex over past name and message, job name and methodName, event name, descriptionText and value, or other tabs' name."],
                     patterns: [type: "array", items: [type: "string"], description: "More regexes, combined by patternMode."],
                     patternMode: [type: "string", enum: ["any", "all"], description: "How patterns combine. Default any."],
-                    since: [type: ["string", "integer"], description: "past and event modes: rows after this time. '30m', '2h', '7d' (max 30d), ISO-8601 with an offset or Z, or epoch ms.[[FLAT_TRIM]] An event's date passed back as since never repeats it. A time without a zone is read as UTC.[[/FLAT_TRIM]]"],
+                    since: [type: ["string", "integer"], description: "past and event modes: rows strictly after this time, so a returned date never repeats. '30m', '2h', '7d' (max 30d), ISO-8601 (no zone = UTC) or epoch ms."],
                     until: [type: ["string", "integer"], description: "past and event modes: rows at or before this time; same formats as since."],
                     sortBy: [type: "string", enum: ["pct", "count", "total", "stateSize", "name"], description: "devices and apps: sort field, highest first (name A-Z). Default pct (% busy)."],
                     limit: [type: "integer", description: "Max rows after filters; 0 = all. Default 100 for past and events, 20 for devices and apps, 50 for mcp, all for the others."],
                     component: [type: "string", description: "mcp: component substring (for example server or rule)."],
                     ruleId: [type: "string", description: "mcp: custom rule id."],
-                    cursor: [type: "string", description: "Pagination cursor.[[FLAT_TRIM]] Pass \"\" for the first page, then nextCursor.[[/FLAT_TRIM]]"],
+                    cursor: [type: "string", description: "\"\" for the first page, then nextCursor."],
                     pageSize: [type: "integer", description: "Rows per page, 1-100. Default 100, or 50 per tab when mode is a list."]
                 ]
             ]
         ],
         [
             name: "hub_delete_logs",
-            description: """Delete from the logs: mode='mcp' clears the MCP app's own log; mode='scheduledJobs' deletes one scheduled job, like the Delete button on the Logs page's Scheduled jobs tab.[[FLAT_TRIM]] Deleting a job removes that scheduled run of its app's or device's method and nothing else; the owner schedules it again only if its own code does, for example when its settings are saved. System jobs cannot be deleted. Hub log history is never touched.[[/FLAT_TRIM]] Cannot be undone.""",
+            description: """Delete from the logs: mode='mcp' clears the MCP app's own log; mode='scheduledJobs' deletes one scheduled job, like the Logs page's Delete button. Only that timer goes: its app or device is unchanged and schedules it again only if its own code does (for example on a settings save). System jobs are refused; hub log history is never touched. Cannot be undone.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -36683,21 +36683,6 @@ Use after hub_list_files to fetch a named file (config, backup, exported rule/ap
 - 100: `hub_list_variables` (hubVariables; ruleVariables stay whole), `hub_list_files`, `hub_list_rooms`, `hub_list_device_dependents` (appsUsing), `hub_get_logs`, `hub_get_memory_history`, and `hub_get_device_health` (staleDevices).
 - `hub_get_device` and `hub_get_tool_guide` page oversized responses automatically.
 
-### hub_get_logs (the Logs page and the MCP log)
-
-`mode` is a tab of the hub's Logs page, or a list of tabs, and each row is the hub's own row for that tab; `mcp` and `status` read the MCP app's own log. Live logs (the page's websocket stream) is not served: `past` holds the same history.
-
-- A list of tabs answers `{modes: {<tab>: <its result>}}`. Every other argument must apply to each listed tab. Each tab returns its first page (`pageSize`, 50 by default) with its own `nextCursor`; page further by calling that tab alone with `cursor`. Tabs from one Logs page fetch give `uptime` and `snapshot` once at the top. A tab that fails is named in `failedModes` and the others are still returned.
-- A field that is null is left out of the row and named once in `nullFields`.
-- The stats and job tabs come from one Logs page fetch cached for 30 s (`snapshot.ageMs`); `hub_delete_logs` drops the cache.
-- `owner` (`{type: 'app'|'device', id}`) is read from the row's `link`; system jobs have neither. A job's `id` is what `hub_delete_logs(mode='scheduledJobs')` takes.
-- Filters apply in this order: scope, level, patterns, time window, sort, `limit`, then paging (`cursor: ""` for the first page). Results report `total` (rows read), `matched` and `count`.
-- `deviceId`/`appId` scope `past` on the hub, where `deviceIdResolved: false` means no such device; on the stats and job tabs they keep the rows that id owns.
-- `pattern`/`patterns` search `past` name and message, the job tabs name and methodName, the event tabs name, descriptionText and value, and the other tabs name. At most 100 characters each; avoid nested quantifiers such as `(.*)*`.
-- `since` is exclusive, so an event's `date` passed back as `since` never repeats it. A time without a zone is read as UTC; past-log times are the hub's local time. Rows whose time cannot be read are kept and counted in `timeFilterUnparseable`.
-- `past` cuts messages to 200 characters when the page would pass the response cap (`truncated`) and counts known-benign Rule Machine noise in `benignRmNoiseCount`.
-- `mcp` history is recovered after a reload from this app's native Past Logs, which share Hubitat's rolling history of about 1 MB; an entry keeps 500 characters of message and 1,000 of stack text.
-
 ### hub_get_radio_details (read-only Z-Wave/Zigbee/Matter radio surface)
 
 - Covers radio details (firmware, home/PAN ID, channel, device nodes), mesh topology, per-node state, lifecycle status pollers, channel scan, SmartStart entries, and firmware-eligible devices.
@@ -36744,14 +36729,9 @@ Use after hub_list_files to fetch a named file (config, backup, exported rule/ap
 - Returns free memory before and after GC in KB (`beforeFreeMemoryKB`, `afterFreeMemoryKB`).
 - Reports the reclaimed amount as `deltaKB` plus a `memoryReclaimed` boolean (true when free memory increased); both are present only when both readings succeeded.
 
-### hub_delete_logs
-
-- `mode='mcp'` starts a new MCP log generation, so cleared entries do not return after a reload; `clearedCount` is null when the history had not been loaded. Hubitat's own log history is untouched.
-- `mode='scheduledJobs'` sends the Logs page's own Delete request for one job. The id is `<owner group>.<method>`, e.g. `app12Recur.poll` (`Recur` repeats, `Once` runs once). Only that timer is removed, as if its owner called `unschedule('<method>')` for that one row; it returns only when the owner's code schedules it again, for example when its settings are saved. `system.*` jobs are refused. `job does not exist` (a one-shot job that already ran, or a stale id) is an error and changes nothing.
-
 ### hub_report_issue
 
-With the opt-in advanced setting "Keep recent errors for bug reports" (off by default), reports include up to ten recent server errors kept in app state (they survive native log rollover), in a section ahead of the native log history. With it off, reports read errors from the native log history only. On a bug report with no `failingTool`, the newest retained error inside the report's log window that names a tool supplies it for the title and the prefilled form field only; the result marks it `failingToolSource: "retained_error"`, and the log scope stays whatever the caller passed. Privacy controls also apply to retained errors; hub_delete_debug_logs clears them.
+With the opt-in advanced setting "Keep recent errors for bug reports" (off by default), reports include up to ten recent server errors kept in app state (they survive native log rollover), in a section ahead of the native log history. With it off, reports read errors from the native log history only. On a bug report with no `failingTool`, the newest retained error inside the report's log window that names a tool supplies it for the title and the prefilled form field only; the result marks it `failingToolSource: "retained_error"`, and the log scope stays whatever the caller passed. Privacy controls also apply to retained errors; hub_delete_logs(mode='mcp') clears them.
 
 Rule routing: a legacy custom MCP rule-engine rule id goes in the `ruleId` param; a native Rule Machine rule/app goes in the `nativeAppId` param. They are different engines -- do not cross them (each scopes the report's logs to its own engine).
 
@@ -37330,12 +37310,9 @@ Every actual write obtains a server-side lease, whether it uses MRTR or complete
 
 Clients negotiated below MCP 2026-07-28 do not understand requestState. They retain the existing `status: "in_progress"` remainder envelope for bounded multi-step writes. Completed steps are already committed; reissue only the returned remaining work. This is a compatibility fallback, not a second polling protocol.
 
-Native log reads through `hub_get_logs` and cold MCP log recovery use the same continuation. Recovery also serves logging status, `hub_get_info`, `hub_report_issue`, and detailed `hub_get_custom_rule` diagnostics. Clearing the MCP log with `hub_delete_logs` reads nothing and finishes in one request. Reload recovery reads the existing native history; old state-backed entries are discarded once when updating to native storage. No log content is stored in the continuation record.
-A legacy client that receives `status: "in_progress"` from a log read repeats the identical call.
+Reads through `hub_get_logs` (native log history, the Logs page tabs, cold MCP log recovery) continue the same way: a read that is still loading answers `requestState`, or `status: "in_progress"` for a legacy client to repeat the identical call, and a failed Logs page fetch is an ordinary `isError` result with a retry already scheduled. `hub_delete_logs` finishes in one request.
 
 `hub_get_device` (every mode), `hub_list_devices` (including virtual devices), and `hub_get_device_health` use background reads on budgeted modern requests. Fast reads finish in one response. Each independent call fetches fresh data; only continuation/replay shares its snapshot, including any device-details pagination cursor. Device access changes or a lost snapshot reject continuation. Device payloads remain in bounded memory, outside persisted continuation records. Legacy device calls remain synchronous; a legacy `hub_list_devices` page that reaches the request budget ends early with `budgetLimited: true` and a cursor to continue from (see the `performance_devices` section). Health retains its 30-second traceroute and 90-second speedtest timeouts, but eight observation slices or a client's retry limit can end the wait before a long probe finishes. A health `slow_read_timeout` does not cancel probes or the optional identify LED blink; do not automatically retry it as a new call.
-
-`hub_get_logs`' `devices`, `apps`, `scheduledJobs`, `runningJobs` and `hubActions` modes use the same continuation: they all come from the hub's `/logs/json` page, one document that carries every device and app stat plus the job tables, so its fetch time grows with hub size and on a large hub can outrun the relay. When the request's transport has a time budget (`relayBudgetMs` over the cloud relay, `lanBudgetMs` on the LAN) the fetch runs in a background worker and its tables are cached for 30 s, so every one of those modes and its cursor pages answer from one fetch; a modern client's first call already runs the read (a cached or quickly landed snapshot answers in one round trip) and only a still-pending fetch hands back `requestState` to continue, a legacy client that receives `status: "in_progress"` repeats the identical call, and a failed fetch is returned as an ordinary `isError` result with a retry already scheduled. Reads never hold a write lease or count toward `maxConcurrentWrites`, and their terminal record carries no payload (a replay re-runs the read from the cache). With no budget on the transport the fetch runs inline and the call is a single ordinary response.
 
 The advanced `relayBudgetMs` setting (default 6000 ms, 0 disables) controls cloud slices. Both transport budgets automatically use at least 6000 ms when enabled. `lanBudgetMs` defaults to 0; enable it only when the LAN client timeout leaves room for that minimum plus request overhead.
 
@@ -37370,9 +37347,7 @@ def getToolGuideSubSections() {
             performance_overview: [],
             performance_devices: ["hub_list_devices", "hub_list_device_events", "hub_get_device",
                                   "hub_get_compatible_devices"],
-            performance_diagnostics: ["hub_get_logs", "hub_get_radio_details", "hub_get_metrics",
-                                      "hub_delete_logs",
-                                      "hub_report_issue"]
+            performance_diagnostics: ["hub_get_radio_details", "hub_get_metrics", "hub_report_issue"]
         ],
         builtin_app_tools: [
             builtin_app_tools_overview: [],
