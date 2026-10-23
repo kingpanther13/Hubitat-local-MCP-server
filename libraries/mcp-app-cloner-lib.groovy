@@ -1268,6 +1268,15 @@ private Map _rmLegacyNativeRecovery(Map snapshot) {
         payload = [appReplacements: [(id.toString()): identity], deviceReplacements: [:],
             appData: [(id.toString()): [state: savedState, appSettings: status.appSettings, subscriptions: subscriptions]]]
     }
+    // The App Cloner export double-escapes control characters in state strings, so a legacy snapshot's
+    // indents can hold the two characters backslash-t where Rule Machine stores a tab.
+    def legacyState = payload.appData instanceof Map ? payload.appData.find { key, value -> key.toString() == id.toString() }?.value?.state : null
+    if (legacyState instanceof Map) {
+        if (legacyState.actions instanceof Map) legacyState.actions = legacyState.actions.collectEntries { key, action ->
+            [(key): action instanceof Map && action.indent instanceof String ? [:] + action + [indent: action.indent.replace('\\t', '\t')] : action]
+        }
+        if (legacyState.actLabelIndent instanceof String) legacyState.actLabelIndent = legacyState.actLabelIndent.replace('\\t', '\t')
+    }
     Map adapted = [:] + snapshot + [captureFormat: 'native-rule-edit-v1', nativeExport: groovy.json.JsonOutput.toJson(payload)]
     _rmDecodeRuleExport(id.toString().toInteger(), adapted.nativeExport)
     adapted

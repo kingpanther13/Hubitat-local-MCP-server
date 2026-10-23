@@ -98,6 +98,20 @@ class LegacyNativeRecoverySpec extends ToolSpecBase {
         plan == [[name: 'tDev1', type: 'capability.switch', multiple: true, value: ['16']]]
     }
 
+    def 'a legacy export indent escaped as backslash-t adapts to the tab Rule Machine stores'() {
+        given:
+        snapshot.nativeExport = JsonOutput.toJson([appReplacements: ['42': [appTypeNamespace: 'hubitat', appTypeName: 'Rule-5.1', parentAppInstalledAppId: '28']],
+            deviceReplacements: [:],
+            appData: ['42': [state: [actions: ['1': [method: 'getLogMsg', indent: '\\t']], actionList: ['1'], actLabelIndent: '\\t'],
+                appSettings: [[name: 'enabled', type: 'bool', value: false]], subscriptions: []]]])
+        when:
+        def adapted = script._rmLegacyNativeRecovery(snapshot)
+        def state = new JsonSlurper().parseText(adapted.nativeExport).appData['42'].state
+        then:
+        state.actions['1'].indent == '\t'
+        state.actLabelIndent == '\t'
+    }
+
     def 'incomplete historical status keeps the legacy compatibility path'() {
         given:
         snapshot.statusJson.remove('appState')
