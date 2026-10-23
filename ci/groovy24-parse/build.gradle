@@ -42,6 +42,7 @@ def productionFiles = [
     new File(repoRoot, 'tests/fixtures/app-trigger-updated.groovy'),
     new File(repoRoot, 'tests/fixtures/driver-code-update.groovy'),
     new File(repoRoot, 'tests/fixtures/e2e-wizard-walk-app.groovy'),
+    new File(repoRoot, 'tests/fixtures/e2e-tone-driver.groovy'),
 ]
 
 tasks.register('parse24Fixtures', JavaExec) {

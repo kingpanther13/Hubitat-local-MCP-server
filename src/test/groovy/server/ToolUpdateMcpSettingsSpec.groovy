@@ -589,23 +589,41 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "writes backupEveryRuleWrite=#value as the strict rule-backup policy toggle"() {
+    def "the result carries each key's value from before the call, so a caller can restore it"() {
+        given:
+        enableDeveloperModeAndAdminWrite()
+        settingsMap.backupBeforeRuleEdits = false
+
+        when:
+        def result = script.toolUpdateMcpSettings([
+            settings: [backupBeforeRuleEdits: true, backupEveryRuleWrite: false],
+            confirm: true
+        ])
+
+        then: "an unset key reads back as null"
+        result.success == true
+        result.previous == [backupBeforeRuleEdits: false, backupEveryRuleWrite: null]
+        result.updated == [backupBeforeRuleEdits: true, backupEveryRuleWrite: false]
+    }
+
+    def "writes native rule backup setting #key=#value"() {
         given:
         enableDeveloperModeAndAdminWrite()
 
         when:
         def result = script.toolUpdateMcpSettings([
-            settings: [backupEveryRuleWrite: value],
+            settings: [(key): value],
             confirm: true
         ])
 
         then:
         result.success == true
-        result.updated == [backupEveryRuleWrite: value]
-        sharedAppStub.settingsStore['backupEveryRuleWrite'] == [type: 'bool', value: value]
+        result.updated == [(key): value]
+        sharedAppStub.settingsStore[key] == [type: 'bool', value: value]
 
         where:
-        value << [true, false]
+        [key, value] << [['backupBeforeRuleEdits', true], ['backupBeforeRuleEdits', false],
+                        ['backupEveryRuleWrite', true], ['backupEveryRuleWrite', false]]
     }
 
     @spock.lang.Unroll

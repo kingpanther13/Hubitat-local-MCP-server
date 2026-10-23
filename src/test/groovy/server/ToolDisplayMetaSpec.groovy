@@ -139,10 +139,12 @@ class ToolDisplayMetaSpec extends ToolSpecBase {
     }
 
     def "search corpus entries carry titles so friendly phrasing is searchable"() {
-        given: 'a clean cache'
+        given: 'a clean cache, and a title token that appears in no other indexed field of its tool'
         settingsMap.useGateways = true
         settingsMap.enableCustomRuleEngine = true
         (scriptStaticField('TOOL_SEARCH_INDEX') as Map).clear()
+        Map meta = script.getToolDisplayMeta()
+        script.metaClass.getToolDisplayMeta = { -> meta + [hub_call_gc: (meta.hub_call_gc as Map) + [title: 'Force Garbage Collection Quokka']] }
 
         when: 'a query phrased like the friendly name, not the bare name'
         def result = script.toolSearchTools([query: 'force garbage collection', maxResults: 5])
@@ -152,13 +154,13 @@ class ToolDisplayMetaSpec extends ToolSpecBase {
         result.results*.tool.contains('hub_call_gc')
 
         and: 'results surface the friendly title alongside the bare name'
-        result.results.find { it.tool == 'hub_call_gc' }.title == 'Force Garbage Collection'
+        result.results.find { it.tool == 'hub_call_gc' }.title == 'Force Garbage Collection Quokka'
 
-        and: 'the TITLE itself is tokenized into the BM25 doc: hub_set_rule gains the token "author", which appears nowhere in its corpus text (only "authoring" does, and the tokenizer does not stem)'
+        and: 'the TITLE itself is tokenized into the BM25 doc: "quokka" is only in the title'
         def corpus = (scriptStaticField('TOOL_SEARCH_INDEX') as Map).corpus
-        def idx = corpus.findIndexOf { it.name == 'hub_set_rule' }
+        def idx = corpus.findIndexOf { it.name == 'hub_call_gc' }
         idx >= 0
-        (scriptStaticField('TOOL_SEARCH_INDEX') as Map).tokens[idx].contains('author')
+        (scriptStaticField('TOOL_SEARCH_INDEX') as Map).tokens[idx].contains('quokka')
     }
 
     def "a pre-title persisted corpus (deployed-over previous version) is ignored and shed on the first search"() {

@@ -10,6 +10,30 @@ import support.IncludeResolver
  */
 class IncludeResolverSpec extends Specification {
 
+    def 'native runtime library is included in the production app'() {
+        given:
+        def source = new File('hubitat-mcp-server.groovy').text
+        when:
+        def resolved = IncludeResolver.resolve(source, new File('libraries'))
+        then:
+        source.contains('#include mcp.McpNativeRuntimeLib')
+        resolved.contains('Map _nrWriteSettings')
+        resolved.contains('Map _nrSettings')
+        !resolved.contains('#include mcp.McpNativeRuntimeLib')
+    }
+
+    def 'native model library is included in the production app'() {
+        given:
+        def source = new File('hubitat-mcp-server.groovy').text
+        when:
+        def resolved = IncludeResolver.resolve(source, new File('libraries'))
+        then:
+        source.contains('#include mcp.McpNativeModelLib')
+        resolved.contains('Map _nmSetExpression')
+        resolved.contains('Map _nmUpsertCondition')
+        !resolved.contains('#include mcp.McpNativeModelLib')
+    }
+
     @TempDir
     File tempDir
 
@@ -190,7 +214,7 @@ class IncludeResolverSpec extends Specification {
         def out = IncludeResolver.resolve(src, realLibs)
 
         then:
-        out.contains("def ${markerImpl}")
+        (out.contains("def ${markerImpl}") || out.contains("Map ${markerImpl}"))
         out.contains("def _getAllToolDefinitions_part${part}")
         out.contains("def _toolDisplayMeta_part${part}")
         !(out =~ /(?m)^\s*#include\b/)
@@ -212,7 +236,8 @@ class IncludeResolverSpec extends Specification {
         'McpSelfAdminLib'       | 'toolUpdatePackage'       | 'SelfAdmin'
         'McpAppClonerLib'       | 'toolCloneNativeApp'      | 'AppCloner'
         'McpDiscoveryLib'       | 'toolSearchTools'         | 'Discovery'
-        'McpNativeRulesLib'     | 'toolSetRule'             | 'NativeRM'
+        'McpNativeDocumentsLib' | 'toolGetRuleDocument'     | 'NativeDocuments'
+        'McpNativeRulesLib'     | 'toolListRmRules'             | 'NativeRM'
         'McpDashboardsLib'      | 'toolListDashboards'      | 'Dashboards'
     }
 

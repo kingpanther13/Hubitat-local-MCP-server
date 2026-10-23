@@ -48,9 +48,9 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
 
         where:
         [developerMode, row] << [[false, true], [
-            ['toolSetNativeApp', [appId: 42, settings: [protectedAppIds: []]]],
-            ['toolSetRule', [appId: ' 42 ', settings: [enableDeveloperMode: true]]],
-            ['toolSetNativeApp', [appId: '00042', button: 'updateRule']],
+            ['toolCallAppForm', [app_id: 42, steps: [[kind: 'open']]]],
+            ['toolUpdateRuleDocument', [rule_id: 42, changes: [[part: 'variable', value: [operation: 'create', name: 'Fixture', type: 'integer', value: 1]]]]],
+            ['toolCreateRuleDocument', [parent_id: 42, name: 'Fixture', changes: [[part: 'variable', value: [operation: 'create', name: 'Fixture', type: 'integer', value: 1]]]]],
             ['toolSetAppDisabled', [appId: '00042', disabled: true]],
             ['toolSetAppDisabled', [appId: 42, disabled: false]],
             ['toolDeleteNativeApp', [appId: 42]],
@@ -59,7 +59,6 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
             ['toolDeleteVisualRule', [appId: 42]],
             ['toolUpdateDashboard', [dashboardId: '42', name: 'Changed']],
             ['toolDeleteDashboard', [dashboardId: '42']],
-            ['toolSetNativeApp', [buttonRule: [controllerId: 42, buttonNumber: 1, event: 'pushed']]],
             ['toolRunRmRule', [ruleId: 42, action: 'stop']],
             ['toolSetRulePaused', [ruleId: 42, paused: true]],
             ['toolSetRmRuleBoolean', [ruleId: 42, value: true]]
@@ -79,16 +78,6 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
         result.success
         result.appId == 43
         writes == ['/installedapp/disable']
-    }
-
-    def 'read-only authoring discovery remains available for a protected target'() {
-        when:
-        def result = script.toolSetRule([appId: 42, addTrigger: [discover: true]])
-
-        then:
-        result.discriminator == 'capability'
-        result.capabilities.find { it.name == 'Switch' }?.requiredFields*.name == ['deviceIds', 'state']
-        writes.empty
     }
 
     @Unroll
@@ -183,11 +172,11 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
         settingsMap.enableDeveloperMode = developerMode
         settingsMap.enableMandatoryBPS = false
         settingsMap.useGateways = gateway
-        def args = [appId: 42, settings: [protectedAppIds: []], confirm: true]
+        def args = [appId: 42, disabled: true, confirm: true]
 
         when:
-        script.executeTool(gateway ? 'hub_manage_native_rules_and_apps' : 'hub_set_native_app',
-            gateway ? [tool: 'hub_set_native_app', args: args] : args)
+        script.executeTool(gateway ? 'hub_manage_native_rules_and_apps' : 'hub_set_app_disabled',
+            gateway ? [tool: 'hub_set_app_disabled', args: args] : args)
 
         then:
         def e = thrown(IllegalArgumentException)
@@ -518,23 +507,6 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
         result.route == 'createchild'
         writes == ['/installedapp/createchild/hubitat/Visual Rule Builder 2.0/parent/70']
         hubGet.calls.count { it.path == '/hub2/appsList' } == 1
-    }
-
-    def 'native creation refuses its discovered protected parent before creating a child'() {
-        given:
-        hubGet.register('/hub2/appsList') {
-            '{"apps":[{"data":{"id":42,"type":"Rule Machine","installed":true},"children":[]}]}'
-        }
-
-        when:
-        script.toolSetNativeApp([appType: 'rule_machine', name: 'New rule', confirm: true])
-
-        then:
-        def e = thrown(IllegalArgumentException)
-        e.message.toLowerCase().contains('protected')
-        e.message.contains('42')
-        hubGet.calls.any { it.path == '/hub2/appsList' }
-        writes.empty
     }
 
     @Unroll

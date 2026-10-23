@@ -131,7 +131,7 @@ ALL destructive write tools (`confirm`+backup tier) require these steps in order
 - Use `hub_manage_virtual_device` with `action="create"` or `action="delete"` for MCP-managed virtual devices
 - Do NOT use `hub_delete_device` for virtual devices created by MCP
 - Virtual devices created by MCP are automatically accessible to all device tools
-- 15 supported types: Virtual Switch, Button, Contact Sensor, Motion Sensor, Presence, Lock, Temperature Sensor, Humidity Sensor, Dimmer, RGBW Light, Shade, Garage Door Opener, Water Sensor, Omni Sensor, Fan Controller
+- 15 supported types: Virtual Switch, Button, Contact Sensor, Motion Sensor, Presence, Lock, Temperature Sensor, Humidity Sensor, Dimmer, RGBW Light, Shade, Garage Door Controller, Leak Sensor, Omni Sensor, Fan Controller
 
 ---
 

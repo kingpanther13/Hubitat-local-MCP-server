@@ -71,6 +71,7 @@ def runner_for(client):
     runner = object.__new__(et.TestRunner)
     runner.client = client
     runner.pace_seconds = 0
+    runner._backups_on = None
     return runner
 
 

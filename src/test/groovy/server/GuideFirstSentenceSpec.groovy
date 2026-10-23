@@ -56,16 +56,15 @@ class GuideFirstSentenceSpec extends ToolSpecBase {
         gateways << [false, true]
     }
 
-    def "flat hub_set_rule selector is classified as the write tool it fronts"() {
+    def "flat native writer advertises the guide first without a legacy selector"() {
         given:
         widestCatalog(false)
-
         when:
-        def setRule = script.getToolDefinitions().find { it.name == 'hub_set_rule' }
-
+        def writer = script.getToolDefinitions().find { it.name == 'hub_set_rule' }
         then:
-        setRule.inputSchema.properties.keySet() == ['operation', 'appId', 'args', 'confirm'] as Set
-        (setRule.description as String).startsWith(SENTENCE + ' Create or edit a Hubitat Rule Machine rule')
+        writer.inputSchema.properties.keySet() == ['operation', 'rule_id', 'args', 'confirm', 'bestPracticeKey'] as Set
+        (writer.description as String).startsWith(SENTENCE + ' ')
+        script.getToolDefinitions().count { it.name == 'hub_set_rule' } == 1
     }
 
     def "a gateway whose write sub-tools are all hidden drops the sentence"() {
@@ -141,5 +140,17 @@ class GuideFirstSentenceSpec extends ToolSpecBase {
         !description.contains("when a tool's own description and parameter descriptions are not enough")
         description.contains("Read a write tool's section before calling that tool")
         description.contains('acknowledgment key')
+    }
+
+    // Served guide content, not the sentence: the virtual-device table must name what the tool accepts.
+    def "the served virtual_devices guide table names exactly the supported device types"() {
+        when:
+        def rows = script.getToolGuideSections().virtual_devices.readLines()
+            .findAll { it.startsWith('| Virtual ') }
+            .collect { it.split(/\|/)[1].trim() }
+
+        then:
+        rows as Set == script.getSupportedVirtualDeviceTypes() as Set
+        rows.size() == script.getSupportedVirtualDeviceTypes().size()
     }
 }

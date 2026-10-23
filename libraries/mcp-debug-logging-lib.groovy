@@ -424,6 +424,7 @@ private List _bugReportSettingsLines(String privacyMode) {
             "- **Max concurrent writes:** ${effNum(settings.maxConcurrentWrites, _maxConcurrentWrites())}",
             "- **Cloud-relay budget (ms):** ${effNum(settings.relayBudgetMs, _relayBudgetMs())}",
             "- **LAN budget (ms):** ${effNum(settings.lanBudgetMs, _lanBudgetMs())}",
+            "- **Back up native apps before edits:** ${eff(settings.backupBeforeRuleEdits, true)}",
             "- **Back up before every native app edit:** ${eff(settings.backupEveryRuleWrite, false)}",
             "- **Backup storage budget (MB):** ${effNum(settings.backupBudgetMb, _itemBackupBudgetMb())}",
             "- **Hide access tokens in responses:** ${eff(settings.redactAccessTokens, false)}",

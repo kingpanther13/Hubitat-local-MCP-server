@@ -307,10 +307,10 @@ class RuleNotFoundRedirectSpec extends ToolSpecBase {
 
     // ============================================================== toolUpdateRule
 
-    def "hub_update_custom_rule (b) RM rule id -- write-verb redirect in exception"() {
+    def "hub_update_custom_rule redirects #appType to its editor"() {
         given:
         hubGet.register('/hub2/appsList') { _ ->
-            appsListJson(300, 'Rule-5.1')
+            appsListJson(300, appType)
         }
 
         when:
@@ -320,11 +320,19 @@ class RuleNotFoundRedirectSpec extends ToolSpecBase {
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('Rule not found: 300')
         ex.message.contains('hub_get_app_config(appId=300)')
-        ex.message.contains('hub_set_rule')
+        ex.message.contains(editor)
+        (ex.message.contains('hub_set_rule(')) == (appType == 'Rule-5.1')
         ex.message.contains('hub_update_custom_rule')
         // write-verb phrasing: hub_get_custom_rule appears only in read-verb output (lists get/export/clone tools);
         // its absence here confirms we are not emitting the read-verb hint by mistake.
         !ex.message.contains('hub_get_custom_rule')
+
+        where:
+        appType | editor
+        'Rule-5.1' | 'hub_set_rule(rule_id=300)'
+        'Room Lights' | 'hub_set_native_app(appId=300)'
+        'Basic Rules' | 'hub_set_native_app(appId=300)'
+        'Visual Rule Builder 2.0' | 'hub_set_visual_rule(appId=300)'
     }
 
     def "hub_update_custom_rule (c) id not found anywhere -- generic not found"() {

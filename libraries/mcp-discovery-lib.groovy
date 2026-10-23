@@ -202,10 +202,8 @@ private buildToolSearchCorpus(List defs = null) {
     // SHOULD (so hub_search_tools still matches "switch motion contact").
     def allDefs = applyDescriptionTransform(defs ?: getAllToolDefinitions(), false, false)
     def allDefsMap = allDefs.collectEntries { [(it.name): it] }
-    // Friendly names join the searchable text: titles add tokens the bare
-    // name/description lack (hub_set_rule gains 'author' from "Author Rule
-    // Machine Rule" -- its corpus text otherwise only has 'authoring', and
-    // the tokenizer does not stem).
+    // Friendly names join the searchable text: a title can add tokens the bare
+    // name and description lack, and the tokenizer does not stem.
     def displayMeta = getToolDisplayMeta()
 
     def corpus = []
@@ -319,9 +317,7 @@ def toolGetToolGuide(section, cursor = null, Map apiDocs = null) {
         }
         def sub = guideSubSectionLookup(key)
         if (sub) {
-            // Siblings, not just the parent: some reference material is shared between shortcuts
-            // (the extended condition shapes serve addRequiredExpression, addAction.expression AND
-            // addTrigger.condition), so a caller that landed on the wrong sub-key needs the narrow
+            // Siblings, not just the parent: a caller that landed on the wrong sub-key needs the narrow
             // alternatives -- naming only the parent sends it back to the fetch this split avoids.
             def result = [
                 success: true,
@@ -463,15 +459,17 @@ private Map _withGuidePage(Map result, content, cursor, int pageChars = guidePag
 }
 
 def _getAllToolDefinitions_partDiscovery() {
-    return [
+    // The list builds in a closure so its strings live in the closure's own class: the app class is
+    // near the JVM 65,535 constant-pool limit.
+    def defs = { [
         // Tool Guide
         [
             name: "hub_get_tool_guide",
-            description: "Get the deep-reference guide for an MCP tool topic[[FLAT_TRIM]] (exhaustive capability tables, wire formats, worked examples)[[/FLAT_TRIM]]. Read a write tool's section before calling that tool: the section publishes the acknowledgment key the best-practice gate requires, and best_practice_reference maps each write tool to its section. A `<parent>_<part>` key (e.g. set_rule_reference_conditions) returns just that part of its parent section; the bare parent key returns all of it.[[FLAT_TRIM]] A parent's response lists its own sub-keys.[[/FLAT_TRIM]] Prefer a section: omitting it returns the key list plus the first page of the whole guide (30,000-character pages via nextCursor).[[FLAT_TRIM]] platform_api_search / platform_api_page read the hub's own Groovy API documentation instead.[[/FLAT_TRIM]]",
+            description: "Get the deep-reference guide for an MCP tool topic[[FLAT_TRIM]] (exhaustive capability tables, wire formats, worked examples)[[/FLAT_TRIM]]. Read a write tool's section before calling that tool: the section publishes the acknowledgment key the best-practice gate requires, and best_practice_reference maps each write tool to its section. A `<parent>_<part>` key (e.g. hub_admin_write_devices) returns just that part of its parent section; the bare parent key returns all of it.[[FLAT_TRIM]] A parent's response lists its own sub-keys.[[/FLAT_TRIM]] Prefer a section: omitting it returns the key list plus the first page of the whole guide (30,000-character pages via nextCursor)[[FLAT_TRIM]], the largest response this tool produces, so on a timeout retry a specific section[[/FLAT_TRIM]].[[FLAT_TRIM]] platform_api_search / platform_api_page read the hub's own Groovy API documentation instead.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
-                    section: [type: "string", description: "One section key from the enum. Omit to get the key list plus the first page of the full guide.", enum: ["device_authorization", "best_practice_reference", "tool_access", "hub_admin_write", "hub_admin_write_overview", "hub_admin_write_destructive", "hub_admin_write_radios", "hub_admin_write_devices", "hub_admin_write_code", "hub_admin_write_system", "virtual_devices", "update_device", "rules", "backup", "file_manager", "performance", "performance_overview", "performance_devices", "performance_diagnostics", "builtin_app_tools", "builtin_app_tools_overview", "builtin_app_tools_apps", "builtin_app_tools_rules", "builtin_app_tools_crud", "set_rule_reference", "set_rule_reference_overview", "set_rule_reference_triggers", "set_rule_reference_actions", "set_rule_reference_conditions", "set_rule_reference_walkstep", "set_rule_reference_responses", "set_rule_reference_guards", "set_rule_create_reference", "visual_rule_reference", "variables", "dashboards", "bundles", "rooms", "slow_ops"]],
+                    section: [type: "string", description: "One section key from the enum. Omit to get the key list plus the first page of the full guide.", enum: ["set_rule_reference", "device_authorization", "best_practice_reference", "tool_access", "hub_admin_write", "hub_admin_write_overview", "hub_admin_write_destructive", "hub_admin_write_radios", "hub_admin_write_devices", "hub_admin_write_code", "hub_admin_write_system", "virtual_devices", "update_device", "rules", "backup", "file_manager", "performance", "performance_overview", "performance_devices", "performance_diagnostics", "builtin_app_tools", "builtin_app_tools_overview", "builtin_app_tools_apps", "builtin_app_tools_rules", "builtin_app_tools_crud", "visual_rule_reference", "variables", "dashboards", "bundles", "rooms", "slow_ops"]],
                     cursor: [type: "string", description: "Continue a paged payload: pass the prior call's nextCursor. Omit otherwise -- a cursor is rejected on a payload that fit one response."],
                     platform_api_search: [type: "string", description: "[[FLAT_TRIM]]Instead of a section: search the hub's Groovy API docs, e.g. 'eventsBetween'.[[/FLAT_TRIM]]"],
                     platform_api_page: [type: "string", description: "[[FLAT_TRIM]]Instead of a section: one API docs class page by pageId.[[/FLAT_TRIM]]"]
@@ -491,7 +489,8 @@ def _getAllToolDefinitions_partDiscovery() {
                 required: ["query"]
             ]
         ],
-    ]
+    ] }
+    return defs()
 }
 
 def _readOnlyToolNames_partDiscovery() {

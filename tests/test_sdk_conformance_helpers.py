@@ -17,19 +17,15 @@ from sdk_conformance_helpers import (
 
 
 @pytest.mark.parametrize(("configured", "expected"), [(None, 6), ("6", 6), ("36", 36), ("120", 120)])
-def test_mrtr_workload_keeps_default_and_requires_each_distinct_real_mutation(configured, expected):
+def test_mrtr_workload_keeps_default_and_bounds_the_configured_count(configured, expected):
     environment = {} if configured is None else {"E2E_MRTR_ACTION_COUNT": configured}
-    actions = helpers.mrtr_log_actions("timing proof", environment)
-    assert len(actions) == expected
-    assert all(action["capability"] == "log" for action in actions)
-    assert [action["message"] for action in actions] == [f"timing proof {index}" for index in range(1, expected + 1)]
-    assert len({action["message"] for action in actions}) == expected
+    assert helpers.mrtr_action_count(environment) == expected
 
 
 @pytest.mark.parametrize("configured", ["", "0", "5", "121", "-1", "+6", "6.0", "word", " 6", "6 ", None, True])
 def test_mrtr_workload_rejects_invalid_or_unbounded_configuration(configured):
     with pytest.raises(ValueError, match="E2E_MRTR_ACTION_COUNT"):
-        helpers.mrtr_log_actions("timing proof", {"E2E_MRTR_ACTION_COUNT": configured})
+        helpers.mrtr_action_count({"E2E_MRTR_ACTION_COUNT": configured})
 
 
 @pytest.mark.parametrize(("configured", "expected"), [(None, 16), ("4", 4), ("72", 72), ("120", 120)])
@@ -78,7 +74,7 @@ def test_write_cap_holder_retry_blocker_names_the_declining_condition():
 
 
 def test_expanded_mrtr_workload_does_not_relax_elapsed_or_continuation_requirements():
-    assert len(helpers.mrtr_log_actions("timing proof", {"E2E_MRTR_ACTION_COUNT": "36"})) == 36
+    assert helpers.mrtr_action_count({"E2E_MRTR_ACTION_COUNT": "36"}) == 36
     one_leg = [{"duration": 2.325, "status": 200, "has_request_state": False,
                 "mcp_protocol_version": "2026-07-28"}]
     with pytest.raises(AssertionError, match="at least 3"):
@@ -328,90 +324,6 @@ def test_mrtr_summary_rejects_an_invalid_proof(legs, elapsed, message) -> None:
         summarize_mrtr_proof(legs, logical_elapsed=elapsed)
 
 
-EXPECTED_LOG_MESSAGES = [f"proof message {index}" for index in range(1, 7)]
-
-
-def _rule_config(messages=EXPECTED_LOG_MESSAGES):
-    settings = {}
-    for index, message in enumerate(messages, 1):
-        settings[f"actType.{index}"] = "messageActs"
-        settings[f"actSubType.{index}"] = "getLogMsg"
-        settings[f"logmsg.{index}"] = message
-    return {"success": True, "settings": settings}
-
-
-@pytest.mark.parametrize("environ", [{}, {"E2E_MRTR_ACTION_COUNT": "36"}, {"E2E_MRTR_ACTION_COUNT": "120"}])
-def test_exact_rule_log_messages_accepts_every_configured_persisted_action(environ) -> None:
-    expected = [action["message"] for action in helpers.mrtr_log_actions("proof message", environ)]
-    actual = helpers.assert_exact_rule_log_messages(
-        _rule_config(expected), expected, operation="regular proof readback",
-    )
-
-    assert actual == expected
-
-
-@pytest.mark.parametrize("count", [0, 5, 121])
-def test_exact_rule_log_messages_rejects_unbounded_expected_workloads(count) -> None:
-    expected = [f"proof message {index}" for index in range(count)]
-    with pytest.raises(AssertionError, match="6 through 120"):
-        helpers.assert_exact_rule_log_messages(_rule_config(expected), expected, operation="proof readback")
-
-
-@pytest.mark.parametrize("invalid_message", ["", "   ", None])
-def test_exact_rule_log_messages_rejects_empty_or_nontext_expected_messages(invalid_message) -> None:
-    expected = [*EXPECTED_LOG_MESSAGES[:-1], invalid_message]
-    with pytest.raises(AssertionError, match="nonempty text"):
-        helpers.assert_exact_rule_log_messages(_rule_config(expected), expected, operation="proof readback")
-
-
-@pytest.mark.parametrize(
-    ("mutate", "message"),
-    [
-        (lambda cfg: [cfg["settings"].pop(f"{prefix}.36")
-                      for prefix in ("actType", "actSubType", "logmsg")], "exactly 36 action rows"),
-        (lambda cfg: cfg["settings"].__setitem__("logmsg.36", "corrupted"), "exact messages"),
-        (lambda cfg: cfg["settings"].__setitem__("logmsg.36", "proof message 35"), "distinct"),
-        (lambda cfg: cfg["settings"].pop("actSubType.36"), "action-subtype indices"),
-        (lambda cfg: cfg["settings"].pop("logmsg.36"), "log-message indices"),
-        (lambda cfg: cfg["settings"].__setitem__("actType.36", "otherActs"), "non-log action type"),
-        (lambda cfg: cfg["settings"].__setitem__("actSubType.36", "otherMsg"), "non-log action subtype"),
-    ],
-)
-def test_exact_rule_log_messages_rejects_truncated_or_corrupted_configured_workload(mutate, message) -> None:
-    expected = [action["message"] for action in helpers.mrtr_log_actions(
-        "proof message", {"E2E_MRTR_ACTION_COUNT": "36"},
-    )]
-    config = _rule_config(expected)
-    mutate(config)
-    with pytest.raises(AssertionError, match=message):
-        helpers.assert_exact_rule_log_messages(config, expected, operation="SDK proof readback")
-
-
-@pytest.mark.parametrize(
-    ("mutate", "message"),
-    [
-        (lambda cfg: cfg["settings"].__setitem__("logmsg.4", "wrong"), "exact messages"),
-        (lambda cfg: cfg["settings"].__setitem__("logmsg.4", "proof message 3"), "distinct"),
-        (lambda cfg: cfg["settings"].pop("logmsg.4"), "log-message indices"),
-        (lambda cfg: cfg["settings"].update({
-            "actType.7": "messageActs",
-            "actSubType.7": "getLogMsg",
-            "logmsg.7": "extra",
-        }), "exactly 6 action rows"),
-    ],
-)
-def test_exact_rule_log_messages_rejects_wrong_duplicate_missing_or_extra_values(
-    mutate, message,
-) -> None:
-    config = _rule_config()
-    mutate(config)
-
-    with pytest.raises(AssertionError, match=message):
-        helpers.assert_exact_rule_log_messages(
-            config, EXPECTED_LOG_MESSAGES, operation="SDK proof readback",
-        )
-
-
 def test_request_trace_returns_every_observed_post_for_modern_contract_checks() -> None:
     trace = RequestTrace()
     trace.legs = [
@@ -549,3 +461,308 @@ def test_exact_fixture_lookup_refuses_ambiguous_matches_without_sleeping() -> No
         ))
 
     assert sleeps == []
+
+
+@pytest.mark.parametrize(("count", "wait_count", "condition_count", "events_per_wait"), [
+    (6, 40, 54, 4), (36, 40, 24, 4), (48, 40, 12, 4), (59, 40, 1, 4),
+    (60, 39, 1, 8), (72, 27, 1, 8), (99, 0, 1, 8),
+])
+def test_native_mrtr_batch_uses_direct_native_rows_and_preserves_each_log(count, wait_count, condition_count, events_per_wait):
+    changes, messages = helpers.native_mrtr_changes(
+        "SDK proof", "588", {"E2E_MRTR_ACTION_COUNT": str(count)},
+    )
+    assert len(changes) == 100
+    conditions, waits, actions = changes[:condition_count], changes[condition_count:-count], changes[-count:]
+    assert len(waits) == wait_count
+    assert all(row["value"]["subtype"] == "getWaitEvents" for row in waits)
+    assert all(len(row["value"]["events"]) == events_per_wait for row in waits)
+    thresholds = [event["fields"][2]["value"] for row in waits for event in row["value"]["events"]]
+    assert thresholds == list(range(1000, 1000 + wait_count * events_per_wait))
+    assert len(conditions) == condition_count
+    assert all(row["part"] == "condition" for row in conditions)
+    assert all(row["value"]["capability"] == "Temperature" for row in conditions)
+    assert [row["value"]["fields"][2]["value"] for row in conditions] == list(range(60, 60 + condition_count))
+    assert all(row["value"]["fields"][0] == {
+        "name": "rDev_#", "type": "capability.temperatureMeasurement", "value": ["588"],
+    } for row in conditions)
+    assert messages == [f"SDK proof {index}" for index in range(1, count + 1)]
+    assert all(row["part"] == "action" and row["value"]["type"] == "messageActs"
+               and row["value"]["subtype"] == "getLogMsg" for row in actions)
+    assert [row["value"]["fields"][0]["value"] for row in actions] == messages
+
+
+@pytest.mark.parametrize("device_id", ["", "-1", "588x", None, 588])
+def test_native_mrtr_batch_rejects_invalid_fixture_ids(device_id):
+    with pytest.raises(ValueError, match="fixture ID must be decimal"):
+        helpers.native_mrtr_changes("SDK proof", device_id, {})
+
+
+def test_native_mrtr_batch_rejects_over_limit_instead_of_silently_truncating():
+    with pytest.raises(ValueError, match="at most 99"):
+        helpers.native_mrtr_changes("SDK proof", "588", {"E2E_MRTR_ACTION_COUNT": "120"})
+
+
+def _native_condition_readback():
+    changes, _ = helpers.native_mrtr_changes("SDK proof", "588", {})
+    settings, typed = {}, []
+    for index, row in enumerate(changes[:54], 1):
+        fields = [{"name": "rCapab_#", "type": "enum", "value": row["value"]["capability"]},
+                  *row["value"]["fields"]]
+        for field in fields:
+            name = field["name"].replace("#", str(index))
+            device = field["type"].startswith("capability.")
+            settings[name] = dict.fromkeys(field["value"], "Temperature fixture") if device else field["value"]
+            typed.append({"name": name, "type": field["type"], "value": field["value"],
+                          "device_ids": field["value"] if device else None})
+    return {"settings": settings}, {"conditions": {str(i): "native condition" for i in range(1, 55)},
+                                     "settings": typed}, changes
+
+
+def test_native_condition_readback_verifies_every_persisted_row():
+    config, document, changes = _native_condition_readback()
+    helpers.assert_exact_native_conditions(config, document, changes)
+
+
+@pytest.mark.parametrize("corruption", ["missing", "duplicate", "device", "comparator", "threshold", "order", "type", "document"])
+def test_native_condition_readback_rejects_lost_replayed_or_changed_rows(corruption):
+    config, document, changes = _native_condition_readback()
+    settings = config["settings"]
+    if corruption == "missing":
+        del settings["rDev_54"]
+    elif corruption == "duplicate":
+        for prefix in ("rCapab_", "rDev_", "RelrDev_", "state_"):
+            settings[prefix + "55"] = settings[prefix + "54"]
+        document["conditions"]["55"] = "replayed condition"
+    elif corruption == "device":
+        settings["rDev_54"] = {"589": "Wrong device"}
+    elif corruption == "comparator":
+        settings["RelrDev_54"] = "<"
+    elif corruption == "threshold":
+        settings["state_54"] = 60
+    elif corruption == "order":
+        settings["state_1"], settings["state_2"] = settings["state_2"], settings["state_1"]
+    elif corruption == "type":
+        settings["rCapab_54"] = "Humidity"
+    else:
+        del document["conditions"]["54"]
+    with pytest.raises(AssertionError):
+        helpers.assert_exact_native_conditions(config, document, changes)
+
+
+def _native_action_readback():
+    changes, messages = helpers.native_mrtr_changes("SDK proof", "588", {})
+    settings, typed, actions = {}, [], []
+    event_index = 0
+    for index, change in enumerate((row for row in changes if row["part"] == "action"), 1):
+        requested = change["value"]
+        settings[f"actType.{index}"] = requested["type"]
+        settings[f"actSubType.{index}"] = requested["subtype"]
+        value = {"method": requested["subtype"]}
+        if "events" in requested:
+            value["wait"] = []
+            for event in requested["events"]:
+                event_index += 1
+                value["wait"].append(event_index)
+                fields = [{"name": "tCapab#", "type": "enum", "value": "Temperature"}, *event["fields"]]
+                for field in fields:
+                    name = field["name"].replace("#", "-" + str(event_index))
+                    settings[name] = (dict.fromkeys(field["value"], "Temperature fixture")
+                                      if field["type"].startswith("capability.") else field["value"])
+                    typed.append({"name": name, "type": field["type"], "value": field["value"],
+                                  "device_ids": field["value"] if field["type"].startswith("capability.") else None})
+        else:
+            settings[f"logmsg.{index}"] = requested["fields"][0]["value"]
+        actions.append({"id": str(index), "value": value})
+    return {"settings": settings}, {"actions": actions, "settings": typed}, changes, messages
+
+
+def test_native_action_readback_verifies_all_wait_events_and_logs():
+    helpers.assert_exact_native_actions(*_native_action_readback())
+
+
+@pytest.mark.parametrize("corruption", ["lost_action", "action_order", "event_id", "missing_event", "type", "device", "comparator", "threshold", "orphan", "duplicate_log"])
+def test_native_action_readback_rejects_lost_replayed_or_corrupted_work(corruption):
+    config, document, changes, messages = _native_action_readback()
+    if corruption == "lost_action":
+        document["actions"].pop()
+    elif corruption == "action_order":
+        document["actions"][0], document["actions"][1] = document["actions"][1], document["actions"][0]
+    elif corruption == "event_id":
+        document["actions"][1]["value"]["wait"][0] = 1
+    elif corruption == "missing_event":
+        document["actions"][0]["value"]["wait"].pop()
+    elif corruption == "type":
+        document["settings"][0]["type"] = "text"
+    elif corruption == "device":
+        config["settings"]["tDev-160"] = {"589": "Wrong device"}
+    elif corruption == "comparator":
+        config["settings"]["ReltDev-160"] = "<"
+    elif corruption == "threshold":
+        config["settings"]["tstate-160"] = 1000
+    elif corruption == "orphan":
+        config["settings"]["tCapab-161"] = "Temperature"
+    else:
+        config["settings"]["logmsg.46"] = config["settings"]["logmsg.45"]
+    with pytest.raises(AssertionError):
+        helpers.assert_exact_native_actions(config, document, changes, messages)
+
+
+@pytest.mark.parametrize("corruption", ["typed_device", "typed_type", "raw_list"])
+def test_native_condition_readback_requires_native_map_and_typed_identity(corruption):
+    config, document, changes = _native_condition_readback()
+    device = next(row for row in document["settings"] if row["name"] == "rDev_54")
+    if corruption == "typed_device":
+        device["device_ids"] = ["589"]
+    elif corruption == "typed_type":
+        device["type"] = "enum"
+    else:
+        config["settings"]["rDev_54"] = ["588"]
+    with pytest.raises(AssertionError):
+        helpers.assert_exact_native_conditions(config, document, changes)
+
+
+def test_native_action_readback_requires_native_device_map():
+    config, document, changes, messages = _native_action_readback()
+    config["settings"]["tDev-160"] = ["588"]
+    with pytest.raises(AssertionError, match="Raw wait device differs"):
+        helpers.assert_exact_native_actions(config, document, changes, messages)
+
+
+
+def _section_page(section, cursor, limit):
+    offset = {"": 0, "opaque-part-two": 17, "opaque-part-three": 34}[cursor]
+    end = min(51, offset + 17)
+    if section == "conditions":
+        rows = {str(i): f"condition {i}" for i in sorted(range(51), key=str)[offset:end]}
+    elif section == "actions":
+        rows = [{"id": str(i), "value": {"method": "getLogMsg"}} for i in range(offset, end)]
+    else:
+        rows = [{"name": f"setting{i:02}", "type": "enum", "value": str(i)} for i in range(offset, end)]
+    following = {0: "opaque-part-two", 17: "opaque-part-three", 34: None}[offset]
+    return {section: rows, "nextCursor": following, "page": {"offset": offset, "limit": limit,
+            "total": 51, "revision": section + "-stable"}}
+
+
+def test_native_paged_readback_accepts_byte_bounded_pages_and_opaque_cursors():
+    calls = []
+    async def fetch(section, cursor, limit):
+        calls.append((section, cursor, limit))
+        return _section_page(section, cursor, limit)
+    document = asyncio.run(helpers.read_native_document_sections(fetch))
+    assert calls == [(section, cursor, 50) for section in ("conditions", "actions", "settings")
+                     for cursor in ("", "opaque-part-two", "opaque-part-three")]
+    assert list(document["conditions"]) == sorted(map(str, range(51)))
+    assert [row["id"] for row in document["actions"]] == list(map(str, range(51)))
+    assert [row["name"] for row in document["settings"]] == [f"setting{i:02}" for i in range(51)]
+
+
+@pytest.mark.parametrize("corruption", ["revision", "total", "offset", "stalled", "cycle", "skipped", "early_end", "duplicate", "order", "missing_identity", "missing_cursor", "empty_progress"])
+def test_native_paged_readback_rejects_torn_missing_replayed_or_disordered_pages(corruption):
+    async def fetch(section, cursor, limit):
+        result = _section_page(section, cursor, limit)
+        if section == "settings":
+            if cursor == "opaque-part-two":
+                if corruption == "revision":
+                    result["page"]["revision"] = "changed"
+                elif corruption == "total":
+                    result["page"]["total"] = 52
+                elif corruption == "offset":
+                    result["page"]["offset"] = 16
+                elif corruption == "duplicate":
+                    result["settings"][0]["name"] = "setting00"
+                elif corruption == "missing_identity":
+                    del result["settings"][0]["name"]
+                elif corruption == "missing_cursor":
+                    del result["nextCursor"]
+                elif corruption == "stalled":
+                    result["nextCursor"] = cursor
+                elif corruption == "empty_progress":
+                    result["settings"] = []
+            elif cursor == "opaque-part-three" and corruption == "cycle":
+                result["nextCursor"] = "opaque-part-two"
+            elif cursor == "" and corruption == "skipped":
+                result["nextCursor"] = "opaque-part-three"
+            elif cursor == "" and corruption == "early_end":
+                result["nextCursor"] = None
+            elif cursor == "" and corruption == "order":
+                result["settings"][0], result["settings"][1] = result["settings"][1], result["settings"][0]
+        return result
+    with pytest.raises(AssertionError):
+        asyncio.run(helpers.read_native_document_sections(fetch))
+
+
+def test_native_paged_readback_accepts_empty_sections_only_with_complete_metadata():
+    async def fetch(section, cursor, limit):
+        assert cursor == ""
+        return {section: {} if section == "conditions" else [], "nextCursor": None, "page": {
+            "offset": 0, "limit": limit, "total": 0, "revision": section}}
+    assert asyncio.run(helpers.read_native_document_sections(fetch)) == {"conditions": {}, "actions": [], "settings": []}
+
+
+def test_sdk_parent_discovery_finds_renamed_childless_parent_on_later_inventory_pages():
+    calls = []
+    async def fetch(scope, cursor):
+        calls.append((scope, cursor))
+        if scope == "types":
+            if not cursor:
+                return {"apps": [{"id": 17, "name": "Other", "system": True}], "nextCursor": "more-types"}
+            assert cursor == "more-types"
+            return {"apps": [{"id": 18, "name": "Rule Machine", "system": True}]}
+        if not cursor:
+            return {"apps": [{"id": 27, "name": "Rule Machine", "appTypeId": 99, "parentId": None}],
+                    "nextCursor": "more-instances"}
+        assert cursor == "more-instances"
+        return {"apps": [{"id": 28, "name": "My renamed automations", "appTypeId": 18,
+                           "parentId": None, "hasChildren": False}]}
+    assert asyncio.run(helpers.discover_rule_machine_parent(fetch)) == 28
+    assert calls == [("types", ""), ("types", "more-types"), ("instances", ""), ("instances", "more-instances")]
+
+
+@pytest.mark.parametrize("parents", [
+    [], [{"id": 28, "name": "Rule Machine", "appTypeId": 99, "parentId": None}],
+    [{"id": 28, "name": "Rule Machine", "appTypeId": 18, "parentId": 5}],
+    [{"id": 28, "appTypeId": 18, "parentId": None}, {"id": 29, "appTypeId": 18, "parentId": None}],
+    [{"id": "not-decimal", "appTypeId": 18, "parentId": None}],
+])
+def test_sdk_parent_discovery_rejects_missing_wrong_nested_ambiguous_or_invalid_identity(parents):
+    async def fetch(scope, _cursor):
+        return {"apps": [{"id": 18, "name": "Rule Machine", "system": True}] if scope == "types" else parents}
+    with pytest.raises(AssertionError):
+        asyncio.run(helpers.discover_rule_machine_parent(fetch))
+
+
+def test_sdk_parent_discovery_reads_later_pages_before_rejecting_ambiguity():
+    async def fetch(scope, cursor):
+        if scope == "types":
+            return {"apps": [{"id": 18, "name": "Rule Machine", "system": True}]}
+        return {"apps": [{"id": 28 if not cursor else 29, "appTypeId": 18, "parentId": None}],
+                "nextCursor": "second" if not cursor else None}
+    with pytest.raises(AssertionError, match="Expected one Rule Machine parent"):
+        asyncio.run(helpers.discover_rule_machine_parent(fetch))
+
+
+def test_sdk_parent_discovery_rejects_repeated_inventory_cursor():
+    async def fetch(_scope, _cursor):
+        return {"apps": [], "nextCursor": "same"}
+    with pytest.raises(AssertionError, match="cursor repeated"):
+        asyncio.run(helpers.discover_rule_machine_parent(fetch))
+
+
+def test_native_mrtr_changes_sizes_a_smaller_batch_without_waits():
+    changes, messages = helpers.native_mrtr_changes("proof", "588", {"E2E_MRTR_ACTION_COUNT": "30"}, total=50, max_waits=0)
+    assert len(changes) == 50 and len(messages) == 30
+    assert sum(1 for row in changes if row["part"] == "condition") == 20
+    assert not any(row["value"].get("subtype") == "getWaitEvents" for row in changes if row["part"] == "action")
+
+
+def test_native_mrtr_changes_refuses_more_logs_than_the_batch_holds():
+    with pytest.raises(ValueError):
+        helpers.native_mrtr_changes("proof", "588", {"E2E_MRTR_ACTION_COUNT": "50"}, total=50)
+
+
+def test_lane_mrtr_changes_uses_the_configured_batch_only_when_a_lane_sets_it():
+    configured, _ = helpers.lane_mrtr_changes("proof", "588", {"E2E_MRTR_ACTION_COUNT": "36"})
+    assert len(configured) == 100 and any(row["value"].get("subtype") == "getWaitEvents" for row in configured)
+    physical, messages = helpers.lane_mrtr_changes("proof", "588", {})
+    assert len(physical) == 30 and len(messages) == 20
+    assert not any(row["value"].get("subtype") == "getWaitEvents" for row in physical)

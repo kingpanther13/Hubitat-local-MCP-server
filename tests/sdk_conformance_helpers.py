@@ -42,9 +42,51 @@ def mrtr_action_count(environ: Mapping[str, str] | None = None) -> int:
     return count
 
 
-def mrtr_log_actions(prefix: str, environ: Mapping[str, str] | None = None) -> list[dict[str, str]]:
-    return [{"capability": "log", "message": f"{prefix} {index}"}
-            for index in range(1, mrtr_action_count(environ) + 1)]
+def lane_mrtr_changes(
+    prefix: str, temperature_id: str, environ: Mapping[str, str] | None = None,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """The MRTR proof batch for this lane: the configured 100-change batch when
+    E2E_MRTR_ACTION_COUNT is set (the ephemeral lanes size it for their hubs), otherwise
+    20 logs and 10 conditions with no Wait rows, which a physical hub finishes within a
+    client's default 10 continuation rounds while still running past 10 seconds."""
+    settings = os.environ if environ is None else environ
+    if settings.get("E2E_MRTR_ACTION_COUNT"):
+        return native_mrtr_changes(prefix, temperature_id, environ)
+    return native_mrtr_changes(prefix, temperature_id, {"E2E_MRTR_ACTION_COUNT": "20"}, total=30, max_waits=0)
+
+
+def native_mrtr_changes(
+    prefix: str, temperature_id: str, environ: Mapping[str, str] | None = None, total: int = 100,
+    max_waits: int = 40,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Build a native mutation batch of `total` changes; every condition and log persists real work."""
+    if not isinstance(temperature_id, str) or re.fullmatch(r"[0-9]+", temperature_id) is None:
+        raise ValueError("The temperature fixture ID must be decimal")
+    if not isinstance(total, int) or not 10 <= total <= 100:
+        raise ValueError("A native MRTR batch has 10 through 100 changes")
+    count = mrtr_action_count(environ)
+    if count > total - 1:
+        raise ValueError(f"Native MRTR proof supports at most {total - 1} log actions in its {total}-change batch")
+    wait_count = max(0, min(max_waits, total - 1 - count))
+    # Keep the lighter default; fewer wait rows carry more real compilation work each.
+    events_per_wait = 4 if wait_count == 40 else 8
+    condition_count = total - count - wait_count
+    messages = [f"{prefix} {index}" for index in range(1, count + 1)]
+    conditions = [{"part": "condition", "value": {"capability": "Temperature", "fields": [
+        {"name": "rDev_#", "type": "capability.temperatureMeasurement", "value": [temperature_id]},
+        {"name": "RelrDev_#", "type": "enum", "value": ">"},
+        {"name": "state_#", "type": "decimal", "value": 60 + index},
+    ]}} for index in range(condition_count)]
+    actions = [{"part": "action", "value": {"type": "messageActs", "subtype": "getLogMsg", "fields": [
+        {"name": "logmsg.#", "type": "textarea", "value": message},
+    ]}} for message in messages]
+    waits = [{"part": "action", "value": {"type": "delayActs", "subtype": "getWaitEvents", "fields": [],
+        "events": [{"capability": "Temperature", "fields": [
+            {"name": "tDev#", "type": "capability.temperatureMeasurement", "value": [temperature_id]},
+            {"name": "ReltDev#", "type": "enum", "value": ">"},
+            {"name": "tstate#", "type": "decimal", "value": 1000 + index * events_per_wait + event},
+        ]} for event in range(events_per_wait)]}} for index in range(wait_count)]
+    return [*conditions, *waits, *actions], messages
 
 
 def write_cap_variable_count(environ: Mapping[str, str] | None = None) -> int:
@@ -121,61 +163,187 @@ def _indexed_settings(settings: dict[str, Any], prefix: str) -> dict[int, Any]:
     return indexed
 
 
-def assert_exact_rule_log_messages(
-    config: Any,
-    expected_messages: list[str],
-    *,
-    operation: str,
-) -> list[str]:
-    """Assert an empty RM fixture persisted every requested log action exactly."""
-    assert isinstance(config, dict), f"{operation} returned no config object"
-    assert config.get("success") is not False, (
-        f"{operation} failed: {config.get('error')!r}"
-    )
+def _assert_typed_value(saved: dict[str, Any], field_type: str, value: Any, label: str) -> None:
+    """Compare one typed native setting with the value a change requested."""
+    if field_type.startswith("capability."):
+        assert sorted(map(str, saved.get("device_ids") or [])) == sorted(map(str, value)), f"{label} device differs"
+    elif field_type == "decimal":
+        assert float(saved["value"]) == float(value), f"{label} threshold differs"
+    else:
+        assert saved["value"] == value, f"{label} selector differs"
+
+
+def assert_exact_native_conditions(config: Any, document: Any, changes: list[dict[str, Any]]) -> None:
+    """Check independent persisted state for every condition, including replay duplicates."""
     settings = config.get("settings")
-    assert isinstance(settings, dict), (
-        f"{operation} did not return raw settings; includeSettings=true is required"
-    )
-    expected_count = len(expected_messages)
-    assert all(isinstance(message, str) and message.strip() for message in expected_messages), (
-        "the MRTR proof must request nonempty text log messages"
-    )
-    assert 6 <= expected_count <= 120 and len(set(expected_messages)) == expected_count, (
-        "the MRTR proof must request 6 through 120 distinct log messages"
-    )
+    assert isinstance(settings, dict), "Condition verification requires raw persisted settings"
+    expected = [row["value"] for row in changes if row["part"] == "condition"]
+    columns = {prefix: _indexed_settings(settings, prefix)
+               for prefix in ("rCapab_", "rDev_", "RelrDev_", "state_")}
+    indices = set(columns["rCapab_"])
+    assert len(indices) == len(expected), "Persisted condition count differs from the requested batch"
+    assert all(set(column) == indices for column in columns.values()), "Condition field indices differ"
+    conditions = document.get("conditions")
+    assert isinstance(conditions, dict), "Independent document read returned no conditions map"
+    assert {str(index) for index in indices} == set(map(str, conditions)), "Condition document IDs differ"
+    typed_rows = document.get("settings")
+    assert isinstance(typed_rows, list), "Condition verification requires typed native settings"
+    typed = {row["name"]: row for row in typed_rows}
+    assert len(typed) == len(typed_rows), "Typed condition setting names repeat"
+    for index, requested in zip(sorted(indices), expected, strict=True):
+        fields = {row["name"]: row["value"] for row in requested["fields"]}
+        assert columns["rCapab_"][index] == requested["capability"], "Condition capability differs"
+        actual_devices = columns["rDev_"][index]
+        assert isinstance(actual_devices, dict), "Persisted condition device selector is not a native map"
+        assert sorted(map(str, actual_devices)) == sorted(fields["rDev_#"]), "Condition device selection differs"
+        for field in [{"name": "rCapab_#", "type": "enum", "value": requested["capability"]}, *requested["fields"]]:
+            saved = typed.get(field["name"].replace("#", str(index)))
+            assert saved is not None and saved["type"] == field["type"], "Condition input type differs"
+            _assert_typed_value(saved, field["type"], field["value"], "Typed condition")
+        assert columns["RelrDev_"][index] == fields["RelrDev_#"], "Condition comparator differs"
+        assert float(columns["state_"][index]) == float(fields["state_#"]), "Condition threshold/order differs"
 
-    action_types = _indexed_settings(settings, "actType.")
-    action_subtypes = _indexed_settings(settings, "actSubType.")
-    log_messages = _indexed_settings(settings, "logmsg.")
-    assert len(action_types) == expected_count, (
-        f"{operation} must contain exactly {expected_count} action rows; saw indices "
-        f"{sorted(action_types)}"
-    )
-    action_indices = set(action_types)
-    assert set(action_subtypes) == action_indices, (
-        f"{operation} action-subtype indices do not match action rows: "
-        f"actions={sorted(action_indices)}, subtypes={sorted(action_subtypes)}"
-    )
-    assert set(log_messages) == action_indices, (
-        f"{operation} log-message indices do not match action rows: "
-        f"actions={sorted(action_indices)}, messages={sorted(log_messages)}"
-    )
-    assert all(action_types[index] == "messageActs" for index in action_indices), (
-        f"{operation} contains a non-log action type: {action_types}"
-    )
-    assert all(action_subtypes[index] == "getLogMsg" for index in action_indices), (
-        f"{operation} contains a non-log action subtype: {action_subtypes}"
-    )
 
-    actual = [log_messages[index] for index in sorted(action_indices)]
-    assert len(set(actual)) == expected_count, (
-        f"{operation} log messages are not distinct: {actual}"
-    )
-    assert actual == expected_messages, (
-        f"{operation} did not persist the exact messages: "
-        f"expected={expected_messages}, actual={actual}"
-    )
-    return actual
+def assert_exact_native_actions(config: Any, document: Any, changes: list[dict[str, Any]], messages: list[str]) -> None:
+    """Verify compiled action order and each independently persisted typed wait input."""
+    settings = config["settings"]
+    rows = document.get("actions")
+    expected = [row["value"] for row in changes if row["part"] == "action"]
+    assert isinstance(rows, list) and len(rows) == len(expected), "Persisted action count differs"
+    action_ids = [str(row["id"]) for row in rows]
+    assert len(set(action_ids)) == len(action_ids), "Persisted action IDs repeat"
+    types = _indexed_settings(settings, "actType.")
+    subtypes = _indexed_settings(settings, "actSubType.")
+    assert set(map(str, types)) == set(action_ids) == set(map(str, subtypes)), "Action setting IDs differ"
+    typed_rows = document.get("settings")
+    assert isinstance(typed_rows, list), "Typed native settings are required"
+    typed = {row["name"]: row for row in typed_rows}
+    assert len(typed) == len(typed_rows), "Typed setting names repeat"
+    event_ids, log_ids = [], []
+    for row, requested in zip(rows, expected, strict=True):
+        action_id = str(row["id"])
+        assert types[int(action_id)] == requested["type"], "Action category/order differs"
+        assert subtypes[int(action_id)] == requested["subtype"], "Action subtype/order differs"
+        assert row["value"]["method"] == requested["subtype"], "Compiled action method differs"
+        if requested["subtype"] == "getLogMsg":
+            log_ids.append(int(action_id))
+            continue
+        wait_ids = [str(value) for value in row["value"].get("wait", [])]
+        assert len(wait_ids) == len(requested["events"]), "Wait event count differs"
+        event_ids.extend(wait_ids)
+        for event_id, event in zip(wait_ids, requested["events"], strict=True):
+            fields = [{"name": "tCapab#", "type": "enum", "value": event["capability"]}, *event["fields"]]
+            for field in fields:
+                name = field["name"].replace("#", "-" + event_id)
+                saved = typed.get(name)
+                assert saved is not None and saved["type"] == field["type"], "Wait input type differs"
+                value = field["value"]
+                _assert_typed_value(saved, field["type"], value, "Wait")
+                if field["type"].startswith("capability."):
+                    assert isinstance(settings.get(name), dict) and sorted(map(str, settings[name])) == sorted(value), "Raw wait device differs"
+                elif field["type"] == "decimal":
+                    assert float(value) == float(settings[name]), "Raw wait threshold/order differs"
+                else:
+                    assert value == settings[name], "Raw wait selector/comparator differs"
+    assert len(event_ids) == len(set(event_ids)), "Wait event IDs repeat across actions"
+    for prefix in ("tCapab-", "tDev-", "ReltDev-", "tstate-"):
+        assert set(map(str, _indexed_settings(settings, prefix))) == set(event_ids), "Orphan or missing wait settings"
+    logs = _indexed_settings(settings, "logmsg.")
+    assert set(logs) == set(log_ids), "Unexpected or missing log rows"
+    actual = [logs[index] for index in log_ids]
+    assert actual == messages and len(set(actual)) == len(messages), "Persisted log messages differ or repeat"
+
+
+async def discover_rule_machine_parent(
+    fetch: Callable[[str, str], Awaitable[dict[str, Any]]],
+) -> int:
+    """Identify the built-in parent by app type, independently of label or child count."""
+    inventories = {}
+    for scope in ("types", "instances"):
+        cursor, seen, rows = "", set(), []
+        while True:
+            result = await fetch(scope, cursor)
+            assert isinstance(result, dict) and result.get("success") is not False, result
+            page = result.get("apps")
+            assert isinstance(page, list), "App inventory returned no app list"
+            rows.extend(page)
+            following = result.get("nextCursor")
+            if following is None:
+                break
+            assert isinstance(following, str) and following and following != cursor and following not in seen, "App inventory cursor repeated or invalid"
+            seen.add(following)
+            cursor = following
+        inventories[scope] = rows
+    types = [row for row in inventories["types"] if row.get("system") is True and row.get("name") == "Rule Machine"]
+    assert len(types) == 1, f"Expected one built-in Rule Machine app type: {types}"
+    type_id = str(types[0].get("id", ""))
+    assert type_id.isdecimal(), "Rule Machine app type ID is not decimal"
+    parents = [row for row in inventories["instances"] if str(row.get("appTypeId")) == type_id and row.get("parentId") is None]
+    assert len(parents) == 1, f"Expected one Rule Machine parent: {parents}"
+    parent_id = str(parents[0].get("id", ""))
+    assert parent_id.isdecimal(), "Rule Machine parent ID is not decimal"
+    return int(parent_id)
+
+
+async def read_native_document_sections(
+    fetch: Callable[[str, str, int], Awaitable[dict[str, Any]]],
+) -> dict[str, Any]:
+    """Assemble independent bounded reads without accepting a torn or incomplete section."""
+    document = {}
+    for section in ("conditions", "actions", "settings"):
+        merged = {} if section == "conditions" else []
+        seen, offset, total, revision = set(), 0, None, None
+        last_identity = None
+        cursor, seen_cursors = "", set()
+        while True:
+            result = await fetch(section, cursor, 50)
+            assert isinstance(result, dict), "Native section page is not an object"
+            page = result.get("page")
+            assert isinstance(page, dict), "Native section page metadata is missing"
+            assert type(page.get("offset")) is int and page["offset"] == offset, "Native page offset differs"
+            assert type(page.get("limit")) is int and page["limit"] == 50, "Native page limit differs"
+            page_total = page.get("total")
+            assert type(page_total) is int and page_total >= 0, "Native page total is invalid"
+            page_revision = page.get("revision")
+            assert isinstance(page_revision, str) and page_revision, "Native page revision is missing"
+            if total is None:
+                total, revision = page_total, page_revision
+            assert page_total == total and page_revision == revision, "Native section changed between pages"
+            rows = result.get(section)
+            if section == "conditions":
+                assert isinstance(rows, dict), "Native conditions page is not a map"
+                identities = list(map(str, rows))
+            else:
+                assert isinstance(rows, list) and all(isinstance(row, dict) for row in rows), "Native page rows are invalid"
+                key = "id" if section == "actions" else "name"
+                assert all(key in row and row[key] is not None for row in rows), "Native page row identity is missing"
+                identities = [str(row[key]) for row in rows]
+            assert all(identities) and len(set(identities)) == len(identities), "Native page contains duplicate row identities"
+            assert not seen.intersection(identities), "Native row identity repeats across pages"
+            seen.update(identities)
+            if section != "actions" and identities:
+                assert identities == sorted(identities), "Native section page order differs"
+                assert last_identity is None or last_identity < identities[0], "Native section page order regressed"
+                last_identity = identities[-1]
+            assert len(rows) <= 50 and offset + len(rows) <= total, "Native page exceeds declared bounds"
+            if section == "conditions":
+                merged.update(rows)
+            else:
+                merged.extend(rows)
+            assert "nextCursor" in result, "Native page continuation metadata is missing"
+            following = result["nextCursor"]
+            if following is None:
+                assert offset + len(rows) == total, "Native section ended before its declared total"
+                break
+            assert isinstance(following, str) and following, "Native continuation cursor is invalid"
+            assert following != cursor and following not in seen_cursors, "Native continuation cursor repeats"
+            assert rows and offset + len(rows) < total, "Native page cursor advances without remaining rows"
+            seen_cursors.add(following)
+            cursor = following
+            offset += len(rows)
+        assert len(merged) == total, "Native section row count differs from its declared total"
+        document[section] = merged
+    return document
 
 
 async def find_exact_fixture_id_with_settle(

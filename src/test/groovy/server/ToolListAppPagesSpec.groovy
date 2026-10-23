@@ -661,7 +661,8 @@ class ToolListAppPagesSpec extends ToolSpecBase {
         result.success == true
         result.pages*.name == ['mainPage', 'onDevicesPage', 'onMeansPage', 'offMeansPage']
         result.pages[2] == [name: 'onMeansPage', title: 'Select Means to Activate Lights', role: 'sub-page']
-        result.note.contains('walkStep')
+        result.note.contains('hub_set_rule')
+        result.note.contains('hub_set_native_app walkStep (navigate, write, done)')
         !result.note.toLowerCase().contains('single')
     }
 

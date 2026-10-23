@@ -2932,7 +2932,9 @@ def toolDeleteCapturedState(args) {
 }
 
 def _getAllToolDefinitions_partDiagnostics() {
-    return [
+    // The list builds in a closure so its strings live in the closure's own class: the app class is
+    // near the JVM 65,535 constant-pool limit.
+    def defs = { [
         [
             name: "hub_get_logs",
             description: """Read log history and MCP logging status. mode='hub' (default) returns native hub logs; mode='mcp' returns structured MCP entries with component/rule filters; mode='status' returns MCP log level, counts, and capacity.[[FLAT_TRIM]] MCP history recovers from native Past Logs after reload; retention follows the hub's shared log limit.[[/FLAT_TRIM]][[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]""",
@@ -3167,7 +3169,8 @@ Requires Write master.""",
                 ]
             ]
         ],
-    ]
+    ] }
+    return defs()
 }
 
 def _readOnlyToolNames_partDiagnostics() {

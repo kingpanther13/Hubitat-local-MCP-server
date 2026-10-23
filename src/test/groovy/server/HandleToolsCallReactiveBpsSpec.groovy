@@ -90,12 +90,12 @@ class HandleToolsCallReactiveBpsSpec extends ToolSpecBase {
         !mcpDriver.parseInner(response).error.contains('best_practice_reference')
     }
 
-    def "a thrown hub_set_rule error points at set_rule_reference (a DIFFERENT tool -> different section)"() {
+    def "a thrown native document error points at set_rule_reference (a DIFFERENT tool -> different section)"() {
         given:
-        script.metaClass.toolSetRule = { a -> throw new IllegalArgumentException("trigger is required") }
+        script.metaClass.toolUpdateRuleDocument = { a -> throw new IllegalArgumentException("trigger is required") }
 
         when:
-        def response = mcpDriver.callTool('hub_set_rule', [appId: 1, addTrigger: [:]])
+        def response = mcpDriver.callTool('hub_set_rule', [operation: 'update', rule_id: 1, confirm: true, args: [changes: []]])
 
         then:
         response.result.isError == true
@@ -259,7 +259,7 @@ class HandleToolsCallReactiveBpsSpec extends ToolSpecBase {
         script._guideSectionForTool('hub_manage_virtual_device') == 'virtual_devices'
 
         and: "where the section splits, the hint names the SUB-key holding that tool's own block -- the error is where an agent is most likely to follow the pointer, so it must not cost the whole parent"
-        script._guideSectionForTool('hub_set_native_app') == 'builtin_app_tools_crud'
+        script._guideSectionForTool('hub_clone_native_app') == 'builtin_app_tools_crud'
         script._guideSectionForTool('hub_call_rule') == 'builtin_app_tools_rules'
         script._guideSectionForTool('hub_delete_device') == 'hub_admin_write_destructive'
         script._guideSectionForTool('hub_call_zwave') == 'hub_admin_write_radios'
@@ -271,7 +271,7 @@ class HandleToolsCallReactiveBpsSpec extends ToolSpecBase {
         def served = (script.getToolGuideSections().keySet() as Set) +
                      (script.getToolGuideSubSections().values().collectMany { it.keySet().toList() } as Set)
         ['hub_set_rule', 'hub_set_visual_rule', 'hub_create_custom_rule', 'hub_update_device',
-         'hub_manage_virtual_device', 'hub_call_device_command', 'hub_set_native_app',
+         'hub_manage_virtual_device', 'hub_call_device_command', 'hub_clone_native_app',
          'hub_call_rule', 'hub_delete_device', 'hub_call_zwave', 'hub_call_device_swap',
          'hub_delete_native_app', 'hub_clone_native_app', 'hub_export_native_app',
          'hub_import_native_app', 'hub_set_app_disabled', 'hub_set_rule_paused',
@@ -315,6 +315,6 @@ class HandleToolsCallReactiveBpsSpec extends ToolSpecBase {
         expect:
         script._reactiveBpsWarning('hub_delete_room', [:], "Unknown tool 'hub_delete_room' in hub_manage_devices") == null
         script._reactiveBpsWarning('hub_call_device_command', [:], "Missing required parameter: command") == null
-        script._reactiveBpsWarning('hub_set_native_app', [:], "Gateway arg 'args' was a String but not valid JSON.") == null
+        script._reactiveBpsWarning('hub_clone_native_app', [:], "Gateway arg 'args' was a String but not valid JSON.") == null
     }
 }

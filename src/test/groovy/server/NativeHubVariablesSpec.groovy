@@ -511,12 +511,13 @@ class NativeHubVariablesSpec extends ToolSpecBase {
 
     def 'unreadable Hub Variables model is reported (#label)'() {
         given:
+        seed('Counter')
         modelBody = body
         when:
-        def result = script.toolCreateVariable([confirm: true, name: 'Counter', type: 'Number', value: 3])
+        def result = script.toolCreateConnector([confirm: true, name: 'Counter'])
         then:
         !result.success
-        result.error == "hub_create_variable: Could not read the Hub Variables model: ${expected}".toString()
+        result.error == "hub_create_connector: Could not read the Hub Variables model: ${expected}".toString()
         posts().isEmpty()
 
         where:
@@ -524,6 +525,34 @@ class NativeHubVariablesSpec extends ToolSpecBase {
         'malformed JSON' | '{"variables": ['       | 'Could not read the Hub Variables JSON model'
         'JSON array'     | '[1, 2]'                | 'Hub Variables returned an unexpected JSON model'
         'no variables'   | '{"variables": "none"}' | 'Hub Variables returned an unexpected JSON model'
+    }
+
+    def 'a create reads the model once and validates none of its rows'() {
+        given:
+        modelBody = '{"variables": [{"name": "Counter"}, "not-a-row", 7]}'
+        when:
+        def result = script.toolCreateVariable([confirm: true, name: 'Counter', type: 'Number', value: 3])
+        then:
+        result.success
+        requests.count { it.method == 'GET' && it.path == '/hub2/variables' } == 1
+        posts()*.path == ['/hub2/variables/create']
+    }
+
+    def 'a page that is not the variables model is not the native endpoint (#label)'() {
+        given:
+        modelBody = body
+        when:
+        def result = script.toolCreateVariable([confirm: true, name: 'Counter', type: 'Number', value: 3])
+        then: 'the create reads the model the connector path reads, and reports it the same way'
+        !result.success
+        result.error == "hub_create_variable: Could not read the Hub Variables model: ${expected}".toString()
+        posts().isEmpty()
+
+        where:
+        label          | body                                 | expected
+        'login page'   | '<html><title>Login</title></html>'  | 'Could not read the Hub Variables JSON model'
+        'JSON array'   | '[1, 2]'                             | 'Hub Variables returned an unexpected JSON model'
+        'no variables' | '{"variables": "none"}'              | 'Hub Variables returned an unexpected JSON model'
     }
 
     def 'endpoint 404 creates through existing wizard primitives'() {

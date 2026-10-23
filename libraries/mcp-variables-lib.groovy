@@ -307,18 +307,6 @@ private List getHubVarForbiddenChars() {
     return ["'", '"', '\\', '~', '[', ':', ']', '<', '>']
 }
 
-// Sentinel appended to the IllegalStateException message thrown by
-// _rmClearActions on the retry-window-expired path. The action-mutation
-// dispatcher catches the throw, detects this token, and routes to the
-// structured eventual-consistency response shape (asyncCommitLikely:true).
-// Centralized so the throw site and every strip site share a single source
-// of truth -- a typo or drift would silently fall back to the legacy flat
-// error shape and lose the data-loss-protection contract. Leading space is
-// intentional: stripping " [asyncCommitLikely]" removes the separator too.
-private String getAsyncCommitMarker() {
-    return " [asyncCommitLikely]"
-}
-
 private List getHubVarTypes() {
     return ["Number", "Decimal", "String", "Boolean", "DateTime"]
 }
@@ -454,6 +442,11 @@ def _hubVarsNativeModel() {
     return model
 }
 
+boolean _hubVarsNativeAvailable() {
+    // A create needs only a valid native variables model, not a login or error page.
+    _hubVarsNativeModel() != null
+}
+
 private Map _hubVarsNativeRow(Map model, String name) {
     def row = model.variables.find { it instanceof Map && it.name?.toString() == name }
     if (row == null) throw new IllegalStateException("Hub Variables JSON model does not list '${name}'")
@@ -556,10 +549,10 @@ def toolCreateVariable(args) {
         mcpLog("debug", "hub-vars", "hub_create_variable: getGlobalVar('${name}') threw ${e.class.simpleName}: ${e.message}")
     }
 
-    def nativeModel
-    try { nativeModel = _hubVarsNativeModel() }
+    boolean hasNative
+    try { hasNative = _hubVarsNativeAvailable() }
     catch (Exception e) { return _hubVarsNativeFailure("hub_create_variable", _hubVarsModelError(e), true) }
-    if (nativeModel == null) return _createOneVariable(_findHubVariablesAppId(), name, type, value)
+    if (!hasNative) return _createOneVariable(_findHubVariablesAppId(), name, type, value)
     try { return _createOneVariable(null, name, type, value) }
     catch (IllegalArgumentException e) { throw e }
     catch (Exception e) { return _hubVarsNativeFailure("hub_create_variable", e.message ?: e.class.simpleName) }
@@ -726,10 +719,10 @@ private Map _createVariablesBulk(variables) {
         throw new IllegalArgumentException("variables must be a non-empty array of {name, type, value} objects.")
     }
 
-    def nativeModel
-    try { nativeModel = _hubVarsNativeModel() }
+    boolean hasNative
+    try { hasNative = _hubVarsNativeAvailable() }
     catch (Exception e) { return _hubVarsNativeFailure("hub_create_variable", _hubVarsModelError(e), true) }
-    def appId = nativeModel != null ? null : _findHubVariablesAppId()
+    def appId = hasNative ? null : _findHubVariablesAppId()
     def results = []
     int createdCount = 0
     int failedCount = 0
@@ -1399,6 +1392,7 @@ def toolDeleteHubVariable(args) {
     String registryError = null
     def linkedMirrorRow = null
     def nativeModel = null
+    boolean nativeRead = false
     if (isHubVar) {
         // A linked mirror's display name is DECORATED ("<sourceVar> on <peer>") -- the caller passes that,
         // so match localLinkedHubVariables[].name against varName (the create/link read-back instead keys
@@ -1412,6 +1406,7 @@ def toolDeleteHubVariable(args) {
         }
         try {
             nativeModel = _hubVarsNativeModel()
+            nativeRead = true
             if (nativeModel != null) {
                 registryApps = _hubVarsNativeAppsUsing(_hubVarsNativeRow(nativeModel, varName)).all
                 platformInUse = !registryApps.isEmpty()
@@ -1469,7 +1464,7 @@ def toolDeleteHubVariable(args) {
         def previousValue = hubVar.value
         def previousType  = hubVar.type
         def hadConnector  = hubVar.deviceId != null
-        if (nativeModel == null) {
+        if (!nativeRead) {
             try { nativeModel = _hubVarsNativeModel() }
             catch (Exception e) { return _hubVarsNativeFailure("hub_delete_variable", _hubVarsModelError(e), true) }
         }
@@ -1726,7 +1721,9 @@ private String _hubVarRevealHtml(String raw) {
 }
 
 def _getAllToolDefinitions_partVariables() {
-    return [
+    // The list builds in a closure so its strings live in the closure's own class: the app class is
+    // near the JVM 65,535 constant-pool limit.
+    def defs = { [
         [
             name: "hub_list_variables",
             description: "List all hub variables and rule-engine variables.[[FLAT_TRIM]] Includes every type, even ones without connectors.[[/FLAT_TRIM]]",
@@ -1840,7 +1837,8 @@ def _getAllToolDefinitions_partVariables() {
                 ]
             ]
         ],
-    ]
+    ] }
+    return defs()
 }
 
 def _readOnlyToolNames_partVariables() {

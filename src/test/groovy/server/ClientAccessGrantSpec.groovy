@@ -250,13 +250,13 @@ class ClientAccessGrantSpec extends ToolSpecBase {
 
     def "a client cannot point an app tool at the MCP Rule Server app itself"() {
         given:
-        settingsMap['clientTools_1'] = ['hub_get_app_config', 'hub_set_native_app', 'hub_export_native_app', 'hub_clone_native_app', 'hub_call_rule']
+        settingsMap['clientTools_1'] = ['hub_get_app_config', 'hub_set_rule', 'hub_export_native_app', 'hub_clone_native_app', 'hub_call_rule']
         asClient('1')
 
         expect: 'reads and writes on this app are refused; other apps are not'
         script._clientToolDenial('hub_get_app_config', [appId: 7, pageName: 'mainPage']).contains('cannot target the MCP Rule Server app itself')
         script._clientToolDenial('hub_get_app_config', [appId: '7']) != null
-        script._clientToolDenial('hub_set_native_app', [appId: [12, 7]]) != null
+        script._clientToolDenial('hub_set_rule', [operation: 'form', rule_id: 7, confirm: true, args: [steps: [[kind: 'open']]]]) != null
         script._clientToolDenial('hub_get_app_config', [appId: 12]) == null
 
         and: 'through the aliases too: the cloner sourceAppId and the rule tools ruleId'
@@ -360,15 +360,15 @@ class ClientAccessGrantSpec extends ToolSpecBase {
         script._clientToolDenial('hub_manage_mode') == null
     }
 
-    def "a write-off client may still run hub_set_rule's schema-only probe, like the Write master allows"() {
+    def "a write-off client may read a rule document but cannot render native forms"() {
         given:
         settingsMap['clientTools_1'] = ['hub_set_rule']
         settingsMap['clientWrite_1'] = false
         asClient('1')
 
         expect:
-        script._clientToolDenial('hub_set_rule', [operation: 'guide']) == null
-        script._clientToolDenial('hub_set_rule', [operation: 'update', confirm: true]) != null
+        script._clientToolDenial('hub_set_rule', [operation: 'read', rule_id: 12, args: [:]]) == null
+        script._clientToolDenial('hub_set_rule', [operation: 'form', rule_id: 12, confirm: true, args: [steps: [[kind: 'open']]]]) != null
     }
 
     def "the guide and tool search are always available to a client, even with its Read switch off"() {

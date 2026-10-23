@@ -8,9 +8,7 @@ import groovy.json.JsonOutput
  * issue #254: the rule's compiled atomicState (GET /app/ruleBuilderJson) becomes
  * the PREFERRED source for the `broken` verdict, with the HTML configure-json
  * render scan RETAINED as a cross-check and as the fallback when the JSON source
- * is unavailable. Also guards the error-response integration: every RM mutation
- * failure envelope (_rmBuildUpdateErrorResponse) now carries the compiled-state
- * health, not just the pre-flight-refusal path.
+ * is unavailable.
  *
  * Mocking: hubInternalGet is routed to hubGet.register(path) by HarnessSpec, and
  * the closure return value MUST be a JSON STRING (production parses it with
@@ -62,7 +60,58 @@ class ToolRuleHealthSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "public health preserves a literal pause suffix without positive state evidence (useGateways=#useGateways)"() {
+    def "native compiled pause defaults only for an absent flag on a recognizable RM state (#stored)"() {
+        given:
+        seedHealthy(100)
+        hubGet.register('/app/ruleBuilderJson/100') { ruleBuilderJson(stored) }
+
+        when:
+        def health = script.toolCheckRuleHealth([appId: 100, source: 'ruleBuilderJson'])
+
+        then:
+        health.paused == expected
+        hubGet.calls.count { it.path == '/app/ruleBuilderJson/100' } == 1
+        hubGet.calls.every { !it.path.startsWith('/installedapp/configure/json/') }
+
+        where:
+        stored            | expected
+        [:]               | false
+        [paused: true]    | true
+        [paused: false]   | false
+        [paused: null]    | null
+        [paused: 'invalid']| null
+        [capabstrue: null] | null
+        [broken: 'invalid']| null
+    }
+
+    def "an unrelated compiled map with a broken flag does not establish native pause absence"() {
+        given:
+        seedHealthy(100)
+        hubGet.register('/app/ruleBuilderJson/100') { JsonOutput.toJson([broken: false]) }
+
+        when:
+        def health = script.toolCheckRuleHealth([appId: 100, source: 'ruleBuilderJson'])
+
+        then:
+        health.paused == null
+    }
+
+    def "unreadable native pause state remains unknown"() {
+        given:
+        seedHealthy(100)
+        hubGet.register('/app/ruleBuilderJson/100') { throw new IOException('compiled state unavailable') }
+        hubGet.register('/installedapp/statusJson/100') { throw new IOException('status unavailable') }
+
+        when:
+        def health = script.toolCheckRuleHealth([appId: 100, source: 'ruleBuilderJson'])
+
+        then:
+        health.paused == null
+        health.ok == false
+    }
+
+    @spock.lang.Unroll
+    def "public health reports never-paused native state and preserves a literal pause suffix (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         seedHealthy(100)
@@ -75,7 +124,7 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         then:
         response.error == null
         health.ok == true
-        health.paused == null
+        health.paused == false
         health.label == 'Living Room (Paused)'
 
         where:
@@ -172,7 +221,7 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { throw new IOException('status unavailable') }
 
         when:
-        def health = script.toolCheckRuleHealth([appId: 100])
+        def health = script.toolCheckRuleHealth([appId: 100, source: 'configPage'])
 
         then:
         health.label == expected
@@ -223,7 +272,7 @@ class ToolRuleHealthSpec extends ToolSpecBase {
 
         then:
         health.stopped == expected
-        health.paused == null
+        health.paused == false
         health.label == 'Literal (Stopped)'
 
         where:
@@ -516,7 +565,7 @@ class ToolRuleHealthSpec extends ToolSpecBase {
     }
 
     def "auto: a LONE configPage fetch failure is a non-gating checkErrors diagnostic when ruleBuilderJson read clean"() {
-        given: 'the compiled source reads clean; the HTML leg alone fails -- issues must stay empty, or the fetch hiccup fails every committed-work gate AND set-diffs as a new issue that fires the replace/patches auto-restore'
+        given: 'the compiled source reads clean; the HTML leg alone fails, so the fetch error must remain distinct from evidence of a broken rule'
         settingsMap.enableRead = true
         hubGet.register('/app/ruleBuilderJson/100') { ruleBuilderJson([broken: false]) }
         // configure/json unregistered -> _rmFetchConfigJson throws inside the HTML path
@@ -531,9 +580,6 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         h.issues.isEmpty()
         h.checkErrors.any { it.contains("configPage read failed") }
 
-        and: 'the committed-work gate passes and the regression differ attributes nothing'
-        script._rmHealthGatePass(h)
-        script._rmHealthRegressionNewIssues([issues: [], structuralIssues: [], brokenMarkerCounts: [:]], h).isEmpty()
     }
 
     def "auto: a LONE compiled-state read failure is surfaced in checkErrors when the HTML leg read clean (was silently discarded)"() {
@@ -823,45 +869,6 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         h.issues.any { it.contains("appId is null") }
         h.brokenMarkerCounts == [:]   // faithful subset of the normal shape (the gate reads this key)
         hubGet.calls.isEmpty()   // no /app/ruleBuilderJson/null or /installedapp/configure/json/null
-    }
-
-    def "_rmHealthGatePass: only a checked-and-broken verdict fails committed work (the no-evidence polarity table)"() {
-        expect: 'ONE definition, pinned as a truth table so no gate site can silently invert either no-evidence state'
-        script._rmHealthGatePass([ok: true, unreadable: false])       // healthy
-        script._rmHealthGatePass([ok: true, skipped: true])           // probe shed under the time budget
-        script._rmHealthGatePass([ok: false, unreadable: true])       // couldn't check -- no evidence either way
-        !script._rmHealthGatePass([ok: false, unreadable: false])     // checked and broken -- the ONLY failing verdict
-        !script._rmHealthGatePass(null)                               // no verdict object at all is not a pass
-    }
-
-    // ---------- error-response integration (issue #254, task: fold health into RM error replies) ----------
-
-    def "_rmBuildUpdateErrorResponse attaches compiled-state health on a non-preflight mutation failure"() {
-        given:
-        seedHealthy(100, [broken: true])
-
-        when:
-        def r = script._rmBuildUpdateErrorResponse(100, "addAction failed: relay 504", [backupKey: "rm-rule_100_x"])
-
-        then:
-        r.success == false
-        r.health != null
-        r.health.broken == true
-        r.health.source.contains("ruleBuilderJson")
-        r.health.issues.any { it.contains("broken:true") }
-    }
-
-    def "_rmBuildUpdateErrorResponse still attaches health on a pre-flight refusal"() {
-        given:
-        seedHealthy(100)
-
-        when:
-        def r = script._rmBuildUpdateErrorResponse(100, "addAction would create imbalance -- RM is not touched", [backupKey: "k"])
-
-        then:
-        r.restoreHint.contains("Pre-flight refusal")
-        r.health != null
-        r.health.broken == false
     }
 
     // ---------- dispatch envelope ----------
