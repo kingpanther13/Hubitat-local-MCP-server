@@ -1716,8 +1716,11 @@ def getToolGuideSections() {
     return [
         best_practice_reference: '''If you are calling one of these tools, you must read its section for that section's key:
 native Rule Machine.''',
-        set_rule_reference: '''setVariable modeName discrete events Variable comparison lowercase
-Extended per-capability spec shapes selectTriggers nested subExpression expressionNotLive subscriptionsNotLive''',
+        set_rule_reference: '''hub_set_rule changes in order
+Reads use native state and typed settings without rendering its editor.
+A partial update can leave preceding changes committed; not every capability-specific variant is supported.
+expect_page Even open renders execute app code
+dependent fields require another submit; success means returned, not that the app's intended runtime behavior was independently verified.''',
         device_authorization: '''## Device Authorization (CRITICAL)
 Body.''',
         virtual_devices: _virtualDevicesGuideSection(),
@@ -1780,9 +1783,12 @@ def test_check_tool_guide_generated_unresolvable_section_method_flagged(monkeypa
 @pytest.mark.parametrize("anchor", [
     "If you are calling one of these tools, you must read its section for that section's key:",
     "native Rule Machine",
-    "setVariable", "modeName", "discrete events", "Variable comparison", "lowercase",
-    "Extended per-capability spec shapes", "selectTriggers", "nested subExpression",
-    "expressionNotLive", "subscriptionsNotLive",
+    "hub_set_rule", "changes in order",
+    "Reads use native state and typed settings without rendering its editor.",
+    "A partial update can leave preceding changes committed", "not every capability-specific variant is supported",
+    "expect_page", "Even open renders execute app code",
+    "dependent fields require another submit",
+    "not that the app's intended runtime behavior was independently verified",
 ])
 def test_regenerating_guide_cannot_hide_missing_served_api_guidance(monkeypatch, tmp_path, anchor):
     _write_generated_tree(monkeypatch, tmp_path)
@@ -2437,3 +2443,10 @@ def test_retired_key_property_variants_report_once(target):
 ])
 def test_inventory_property_variants_preserve_documented_exemptions(source):
     assert sl._scan_persisted_state_inventory('hubitat-mcp-server.groovy', source) == []
+
+
+def test_native_form_post_path_is_anchored_for_request_analysis():
+    source = 'private Map _nfPost(String path, Map values) {\n    return hubInternalPostFormRaw(path, values.toString())\n}\n'
+    assert sl.check_native_request_wrappers({"libraries/forms.groovy": source}) == []
+    call = '_nfPost("/installedapp/update/json", fields)'
+    assert re.search(sl.NATIVE_REQUEST_PATH_CALL + r'[\'"](/installedapp/update/json)', call)

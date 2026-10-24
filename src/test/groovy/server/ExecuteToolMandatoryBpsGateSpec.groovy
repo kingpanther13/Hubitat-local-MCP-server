@@ -24,14 +24,16 @@ class ExecuteToolMandatoryBpsGateSpec extends ToolSpecBase {
         // Representative writes; stubbed so a past-the-gate dispatch returns a sentinel instead
         // of touching the hub. The base setup() wiped the metaClass first, so stubs are fresh.
         script.metaClass.toolSetHsm = { m -> [success: true, stubbed: true] }
-        script.metaClass.toolSetRule = { m -> [success: true, stubbed: true] }
+        script.metaClass.toolUpdateRuleDocument = { Map m -> [success: true, stubbed: true] }
+        script.metaClass.getAppByAppId = { Long id -> [id: id, appType: [namespace: 'hubitat', name: 'Rule-5.1']] }
         settingsMap.enableWrite = true
         settingsMap.enableRead = true
+        stateMap.lastBackupTimestamp = script.now()
     }
 
     private String key(String section) { script.hubBpsGuideKey(section) as String }
 
-    private static final Map SET_RULE_ARGS = [appId: 5, addTrigger: [capability: 'Switch'], confirm: true]
+    private static final Map SET_RULE_ARGS = [operation: 'update', rule_id: 5, args: [changes: [[part: 'required', value: [tokens: ['1']]]]], confirm: true]
 
     def "gate ON + missing key blocks a write tool with a guide-pointer message and never leaks the key"() {
         given:
@@ -92,14 +94,14 @@ class ExecuteToolMandatoryBpsGateSpec extends ToolSpecBase {
         where:
         tool                 | args                                     || section
         'hub_set_rule'       | SET_RULE_ARGS                            || 'set_rule_reference'
-        'hub_set_native_app' | [appType: 'rule_machine', name: 'X']     || 'builtin_app_tools_crud'
+        'hub_set_rule' | [operation: 'form', rule_id: 42, args: [steps: [[kind: 'open']]], confirm: true]     || 'set_rule_reference'
         'hub_set_hsm'        | [armCommand: 'armHome']                  || 'best_practice_reference'
     }
 
     def "the calling tool's section key passes; another section's key is refused -- #tool"() {
         given:
         settingsMap.enableMandatoryBPS = true
-        script.metaClass.toolSetNativeApp = { m -> [success: true, stubbed: true] }
+        script.metaClass.toolCallAppForm = { Map m -> [success: true, stubbed: true] }
 
         when: 'the right section key'
         def ok = script.executeTool(tool, args + [bestPracticeKey: key(own)])
@@ -118,7 +120,7 @@ class ExecuteToolMandatoryBpsGateSpec extends ToolSpecBase {
         tool                 | args                                 | own                       | other
         'hub_set_rule'       | SET_RULE_ARGS                        | 'set_rule_reference'      | 'best_practice_reference'
         'hub_set_hsm'        | [armCommand: 'armHome']              | 'best_practice_reference' | 'set_rule_reference'
-        'hub_set_native_app' | [appType: 'rule_machine', name: 'X'] | 'builtin_app_tools_crud'  | 'builtin_app_tools_rules'
+        'hub_set_rule' | [operation: 'form', rule_id: 42, args: [steps: [[kind: 'open']]], confirm: true] | 'set_rule_reference' | 'builtin_app_tools_rules'
     }
 
     /** The value a caller offers for each refusal variant; the clock is the harness default T0. */
@@ -311,18 +313,15 @@ class ExecuteToolMandatoryBpsGateSpec extends ToolSpecBase {
         !e.message.startsWith("Mandatory best-practice")
     }
 
-    def "hub_set_rule schema-only probe is exempt (mirrors the Write master exemption)"() {
+    def "native document schema probes bypass mandatory write acknowledgment"() {
         given:
         settingsMap.enableMandatoryBPS = true
-        script.metaClass._isSetRuleSchemaOnlyCall = { a -> true }
-        script.metaClass.toolSetRule = { a -> [success: true, schemaOnly: true] }
-
         when:
-        def result = script.executeTool("hub_set_rule", [:])
-
+        def probe = script.executeTool('hub_set_rule', [operation: 'update', args: [:]])
         then:
-        noExceptionThrown()
-        result.schemaOnly == true
+        probe.operation == 'update'
+        probe.confirm_required
+        probe.inputSchema
     }
 
     def "hub_update_package dryRun is exempt; a real deploy is still gated: dryRun=#dryRun"() {
@@ -347,31 +346,6 @@ class ExecuteToolMandatoryBpsGateSpec extends ToolSpecBase {
         true   || true
         false  || false
         'true' || false
-    }
-
-    def "hub_set_native_app schema-only discover probe is exempt (mirrors the hub_set_rule exemption)"() {
-        given:
-        settingsMap.enableMandatoryBPS = true
-
-        when: "edit-shaped discover meta-call, no key -- static schema return, no mutation"
-        def result = script.executeTool("hub_set_native_app", [appId: 123, addTrigger: [discover: true]])
-
-        then: "the gate does not fire; the real static discovery schema comes back"
-        noExceptionThrown()
-        result.discriminator == 'capability'
-        result.capabilities instanceof List
-    }
-
-    def "hub_set_native_app CREATE-shaped call with a stray guide flag is still gated (no key -> blocked)"() {
-        given:
-        settingsMap.enableMandatoryBPS = true
-
-        when: "no appId -> the create arm would really execute; the schema-only exemption must not apply"
-        script.executeTool("hub_set_native_app", [guide: true, appType: "rule_machine", name: "X"])
-
-        then:
-        def e = thrown(IllegalArgumentException)
-        e.message.startsWith("Mandatory best-practice")
     }
 
     def "gateway name is not gated -- sub-tools gate on re-entry"() {
@@ -460,9 +434,9 @@ class ExecuteToolMandatoryBpsGateSpec extends ToolSpecBase {
         given:
         settingsMap.enableMandatoryBPS = true
 
-        when: 'another section key on a gateway-routed hub_set_rule'
+        when: 'another section key on a gateway-routed document update'
         script._mrtrValidateAccess('hub_manage_rule_machine', 'hub_set_rule',
-            [tool: 'hub_set_rule', args: [bestPracticeKey: key('best_practice_reference')]])
+            [tool: 'hub_set_rule', args: SET_RULE_ARGS + [bestPracticeKey: key('best_practice_reference')]])
 
         then: 'the same block text as executeTool, naming the leaf section'
         def e = thrown(IllegalArgumentException)
@@ -470,7 +444,7 @@ class ExecuteToolMandatoryBpsGateSpec extends ToolSpecBase {
 
         when: 'the leaf section key'
         script._mrtrValidateAccess('hub_manage_rule_machine', 'hub_set_rule',
-            [tool: 'hub_set_rule', args: [bestPracticeKey: key('set_rule_reference')]])
+            [tool: 'hub_set_rule', args: SET_RULE_ARGS + [bestPracticeKey: key('set_rule_reference')]])
 
         then:
         noExceptionThrown()

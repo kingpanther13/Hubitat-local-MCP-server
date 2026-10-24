@@ -794,6 +794,25 @@ class WatchdogV31ManualSpec extends WatchdogSpec {
         'HTTP success without change' | 200        | false
     }
 
+    def "hub_update_mcp_settings writes the pre-edit backup toggle as a bool"() {
+        given:
+        def posts = []
+        def landed = false
+        script.metaClass.hubGet = { String path, Map query ->
+            groovy.json.JsonOutput.toJson(mcpSettingsConfig([backupBeforeRuleEdits: landed ? 'false' : 'true']))
+        }
+        script.metaClass.hubPostForm = { String path, Map body -> posts << body; landed = true; [status: 200, data: ''] }
+
+        when:
+        def result = script.adminUpdateMcpSettings([appId: '194', confirm: true, settings: [backupBeforeRuleEdits: 'false']])
+
+        then:
+        result.success
+        posts.size() == 1
+        posts[0]['settings[backupBeforeRuleEdits]'] == 'false'
+        posts[0]['backupBeforeRuleEdits.type'] == 'bool'
+    }
+
     def "hub_update_mcp_settings is a no-op when every value already holds"() {
         given:
         def posts = []
@@ -844,7 +863,13 @@ class WatchdogV31ManualSpec extends WatchdogSpec {
                  [appId: '194', settings: [enableWrite: false], confirm: true],
                  [appId: '194', settings: [mcpLogLevel: 'info'], confirm: true],
                  [appId: '194', settings: [enableCloudAccess: 'yes'], confirm: true],
-                 [appId: '194', settings: [loopGuardMax: 'many'], confirm: true]]
+                 [appId: '194', settings: [loopGuardMax: 'many'], confirm: true],
+                 // the server's own ranges: a value it refuses is never written through the watchdog
+                 [appId: '194', settings: [backupBudgetMb: 0], confirm: true],
+                 [appId: '194', settings: [backupBudgetMb: 2.5], confirm: true],
+                 [appId: '194', settings: [backupBudgetMb: 1000001], confirm: true],
+                 [appId: '194', settings: [maxConcurrentWrites: 101], confirm: true],
+                 [appId: '194', settings: [maxConcurrentWrites: 1.5], confirm: true]]
     }
 
     @Unroll

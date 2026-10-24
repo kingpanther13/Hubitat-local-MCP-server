@@ -164,31 +164,29 @@ class MrtrTerminalStorageSpec extends ToolSpecBase {
     }
 
     def "continuation cap keeps its merged outcome inside terminalResult without a second record copy"() {
-        given: 'a bulk edit at the final owner slice with prior actions already banked'
+        given: 'a driver-install ledger fixture at the final owner slice'
         String stateId = 'mrtr-terminal-capped-0001'
-        Map originalArgs = [appId: 77, addActions: [[deviceId: 1], [deviceId: 2], [deviceId: 3]], confirm: true]
+        Map originalArgs = [installs: [[name: 'one'], [name: 'two'], [name: 'three']], confirm: true]
         Map prior = [
-            kind: 'bulk_edit',
-            triggers: [],
-            actions: [[deviceId: 1, success: true]],
+            kind: 'driver_installs',
+            installs: [[name: 'one', success: true]],
             anyPartial: true
         ]
-        Map rec = claimedRecord('hub_set_rule', 'hub_set_rule', originalArgs,
+        Map rec = claimedRecord('hub_create_driver', 'hub_create_driver', originalArgs,
             'claim-terminal-capped', 4, [
                 rounds: (script._mrtrMaxContinuationSlices() as Integer) - 1,
                 aggregate: prior,
-                nextArguments: [appId: 77, addActions: [[deviceId: 2], [deviceId: 3]], confirm: true],
-                checkpoint: [page: 'actions']
+                nextArguments: [installs: [[name: 'two'], [name: 'three']], confirm: true],
+                checkpoint: [cursor: 1]
             ])
         installRecord(stateId, rec)
         Map slice = [
             success: true,
             status: 'in_progress',
-            triggers: [],
-            actions: [[deviceId: 2, success: true]],
-            addActionsRemaining: [[deviceId: 3]],
+            installs: [[name: 'two', success: true]],
+            installsRemaining: [[name: 'three']],
             partial: true,
-            resume: [operation: 'addActions']
+            resume: [operation: 'installs']
         ]
 
         when:
@@ -200,17 +198,17 @@ class MrtrTerminalStorageSpec extends ToolSpecBase {
         outcome.outcome == 'terminal'
         outcome.isError == true
         outcome.result.status == 'continuation_limit'
-        outcome.result.aggregate.actions*.deviceId == [1, 2]
-        outcome.result.addActionsRemaining*.deviceId == [3]
+        outcome.result.aggregate.installs*.name == ['one', 'two']
+        outcome.result.installsRemaining*.name == ['three']
 
         and: 'only active-only fields and the redundant record aggregate are discarded'
         !terminal.containsKey('aggregate')
         !terminal.containsKey('nextArguments')
         !terminal.containsKey('checkpoint')
         terminal.terminalResult == outcome.result
-        terminal.outerTool == 'hub_set_rule'
-        terminal.leafTool == 'hub_set_rule'
-        terminal.argDigest == script._mrtrBinding('hub_set_rule', 'hub_set_rule', originalArgs).argDigest
+        terminal.outerTool == 'hub_create_driver'
+        terminal.leafTool == 'hub_create_driver'
+        terminal.argDigest == script._mrtrBinding('hub_create_driver', 'hub_create_driver', originalArgs).argDigest
     }
 
     def "loading a legacy terminal compacts only that record and saves the representative bytes"() {
@@ -242,11 +240,11 @@ class MrtrTerminalStorageSpec extends ToolSpecBase {
         ]
         Map active = [
             schemaVersion: 1, status: 'active',
-            outerTool: 'hub_set_rule', leafTool: 'hub_set_rule', argDigest: 'active-binding',
+            outerTool: 'hub_create_driver', leafTool: 'hub_create_driver', argDigest: 'active-binding',
             startedAt: at - 2000L, updatedAt: at, expiresAt: at + 60000L,
             rounds: 2, generation: 2, claimId: 'active-claim', claimedGeneration: 2,
-            aggregate: [kind: 'bulk_edit', actions: [[deviceId: 9, success: true]]],
-            nextArguments: [appId: 99, addActions: [[deviceId: 10]], confirm: true],
+            aggregate: [kind: 'driver_installs', installs: [[name: 'one', success: true]]],
+            nextArguments: [installs: [[name: 'two']], confirm: true],
             checkpoint: [phase: 'actions', cursor: 2]
         ]
         Map activeBefore = script._mrtrCopyMap(active) as Map

@@ -612,6 +612,84 @@ class ToolNativeDeviceInventorySpec extends ToolSpecBase {
         hubGet.calls.findAll { it.path.startsWith('/device/fullJson/') }*.path == ['/device/fullJson/1']
     }
 
+    def 'onlyOn reads a switch listed twice the way the page reads it: the last entry wins'() {
+        given: 'device 1 lists switch on then off, device 2 off then on; fullJson keeps the last of each'
+        settingsMap.selectedDevices = (1..2).collect { sdkIdentity(it) }
+        def listed = ['1': ['on', 'off'], '2': ['off', 'on']]
+        hubGet.register('/device/listWithCapabilities/json') { throw new IOException('removed') }
+        hubGet.register('/hub2/devicesList') {
+            JsonOutput.toJson([devices: (1..2).collect { id -> [data: [id: id, name: "Native ${id}", roomName: 'Den',
+                lastActivity: '2026-09-10T10:00:00+0000', disabled: false,
+                currentStates: listed[id.toString()].collect { [key: 'switch', value: it] }]] }])
+        }
+        hubGet.register('/hub2/vrb/devices') { JsonOutput.toJson((1..2).collect { [id: it, label: "Native ${it}", capabilities: ['Switch']] }) }
+        (1..2).each { id ->
+            hubGet.register("/device/fullJson/${id}") {
+                JsonOutput.toJson([device: [id: id, name: "Native ${id}", label: "Native ${id}", roomName: 'Den',
+                    capabilities: ['Switch'], currentStates: [switch: [value: listed[id.toString()].last(), dataType: 'ENUM']]], commands: [[name: 'on']]])
+            }
+        }
+
+        when:
+        def result = script.toolListDevices(false, 0, 0, null, null, null, 'summary', null, null, null, null, true)
+
+        then: 'the device whose last switch entry is off is excluded; the other is kept and reads on'
+        result.total == 1
+        result.devices*.id == ['2']
+        result.devices[0].currentStates.switch == 'on'
+
+        and: 'the bulk-read projection reports the same last entry'
+        script._buildContextJson().devices.collectEntries { [(it.id): it.attributes.switch] } == ['1': 'off', '2': 'on']
+    }
+
+    def 'onlyOn drops a page device whose switch is off or unavailable and reports missing metadata'() {
+        given: 'the bulk read lists both switches on; the page read finds device 1 off or unavailable'
+        settingsMap.selectedDevices = (1..2).collect { sdkIdentity(it) }
+        hubGet.register('/device/listWithCapabilities/json') { throw new IOException('removed') }
+        hubGet.register('/hub2/devicesList') {
+            JsonOutput.toJson([devices: (1..2).collect { id -> [data: [id: id, name: "Native ${id}", roomName: 'Den',
+                lastActivity: '2026-09-10T10:00:00+0000', disabled: false, currentStates: [[key: 'switch', value: 'on']]]] }])
+        }
+        hubGet.register('/hub2/vrb/devices') { JsonOutput.toJson((1..2).collect { [id: it, label: "Native ${it}", capabilities: ['Switch']] }) }
+        (1..2).each { id ->
+            hubGet.register("/device/fullJson/${id}") {
+                JsonOutput.toJson([device: [id: id, name: "Native ${id}", label: "Native ${id}", roomName: 'Den',
+                    capabilities: ['Switch'], currentStates: id == 1 && missingStates ? null : [switch: [value: id == 1 ? 'off' : 'on', dataType: 'ENUM']]], commands: [[name: 'on']]])
+            }
+        }
+
+        when:
+        def result = script.toolListDevices(false, 0, 0, null, null, null, 'summary', null, null, null, null, true)
+
+        then:
+        result.devices*.id == ['2']
+        result.devices.every { it.currentStates.switch == 'on' }
+        result.total == 1
+        (result.partial == true) == missingStates
+        (result.metadataUnavailableIds ?: []) == (missingStates ? ['1'] : [])
+
+        when: 'the same read is paged one device at a time'
+        def first = script.toolListDevices(false, 0, 1, null, null, null, 'summary', null, '', null, null, true)
+
+        then: 'the page that dropped the device keeps the total its cursor counts through'
+        first.devices == []
+        first.total == 2
+        first.nextCursor == '1'
+        (first.partial == true) == missingStates
+        (first.metadataUnavailableIds ?: []) == (missingStates ? ['1'] : [])
+
+        when: 'the same page is read as a context summary'
+        def context = script.toolListDevices(false, 0, 1, null, null, null, 'context', null, '', null, null, true)
+
+        then:
+        context.count == 0
+        (context.partial == true) == missingStates
+        (context.metadataUnavailableIds ?: []) == (missingStates ? ['1'] : [])
+
+        where:
+        missingStates << [false, true]
+    }
+
     def 'a device whose filter inputs cannot be read is excluded from the filtered list and named'() {
         given:
         nativeFixture()

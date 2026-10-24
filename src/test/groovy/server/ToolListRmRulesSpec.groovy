@@ -26,6 +26,83 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         rmUtils?.uninstall()
     }
 
+    @spock.lang.Unroll
+    def "filtered rule dispatch reports native type and version from its existing inventory read (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        rmUtils.stubRuleList4 = [[id: 413, label: 'Living Room Relax', type: 'Rule-4.1']]
+        rmUtils.stubRuleList5 = [[413: 'Living Room Relax'], [832: 'Kitchen']]
+        registerRmAppsList([
+            [data: [id: 413, name: 'Living Room Relax', type: 'Rule-5.1', disabled: false], children: []],
+            [data: [id: 832, name: 'Kitchen', type: 'Rule-5.1', disabled: false], children: []]
+        ])
+        hubGet.calls.clear()
+
+        when:
+        def response = mcpDriver.callTool('hub_list_rules', [labelFilter: 'ROOM reLAX'])
+
+        then:
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.rules*.id == [413]
+        inner.count == 1
+        inner.rules[0].type == 'Rule-5.1'
+        inner.rules[0].rmVersion == '5.x'
+        inner.rules[0].status == 'active'
+        hubGet.calls*.path == ['/hub2/appsList']
+        script._getAllToolDefinitions_partNativeRM().find { it.name == 'hub_list_rules' }
+            .inputSchema.properties.labelFilter.type == 'string'
+
+        where:
+        useGateways << [true, false]
+    }
+
+    def "label filtering precedes pagination and an empty filter preserves the full list"() {
+        given:
+        rmUtils.stubRuleList5 = (1..110).collect { id ->
+            [(id): id <= 50 ? "Alpha ${id}" : "Target ${id.toString().padLeft(3, '0')}"]
+        }
+
+        when:
+        def first = script.toolListRmRules([labelFilter: 'tArGeT', cursor: ''])
+        def second = script.toolListRmRules([labelFilter: 'tArGeT', cursor: first.nextCursor])
+        def missing = script.toolListRmRules([labelFilter: 'No matching rule', cursor: ''])
+        def all = script.toolListRmRules([labelFilter: ''])
+
+        then:
+        first.count == 50
+        first.total == 60
+        first.rules*.id == (51..100).toList()
+        second.count == 10
+        second.total == 60
+        second.rules*.id == (101..110).toList()
+        !second.nextCursor
+        missing.count == 0
+        missing.total == 0
+        !missing.nextCursor
+        all.count == 110
+    }
+
+    def "absent native type keeps the RMUtils type and never guesses a 5.1 type"() {
+        given:
+        rmUtils.stubRuleList4 = [[id: 100, label: 'Older', type: 'Rule-4.1']]
+        rmUtils.stubRuleList5 = [[200: 'Newer']]
+        registerRmAppsList([
+            [data: [id: 100, name: 'Older', disabled: false], children: []],
+            [data: [id: 200, name: 'Newer', disabled: false], children: []]
+        ])
+
+        when:
+        def result = script.toolListRmRules([:])
+
+        then:
+        result.rules.find { it.id == 100 }.type == 'Rule-4.1'
+        result.rules.find { it.id == 100 }.rmVersion == '4.x'
+        result.rules.find { it.id == 200 }.type == null
+        result.rules.find { it.id == 200 }.rmVersion == '5.x'
+        result.rules.every { it.status == 'active' }
+    }
+
     def "throws when Read master is disabled"() {
         given:
         settingsMap.enableRead = false
@@ -631,8 +708,8 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         }
     }
 
-    private static Map ruleNode(int id, String name, boolean disabled = false) {
-        [data: [id: id, name: name, type: 'Rule Machine', user: true, hidden: false, disabled: disabled], children: []]
+    private static Map ruleNode(int id, String name, boolean disabled = false, String type = 'Rule-5.1') {
+        [data: [id: id, name: name, type: type, user: true, hidden: false, disabled: disabled], children: []]
     }
 
     def "flags a paused rule from the appsList (Paused) decoration the RMUtils label lacks (plain + HTML-span, RM 4.x + 5.x)"() {
@@ -644,7 +721,7 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         registerRmAppsList([
             ruleNode(401, 'Play room toggle (Paused)'),
             ruleNode(402, 'Hall motion <span style="color:red">(Paused)</span>'),
-            ruleNode(403, 'Garden lights (Paused)')
+            ruleNode(403, 'Garden lights (Paused)', false, 'Rule-4.1')
         ])
 
         when:
@@ -963,5 +1040,34 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         then:
         result.rules instanceof List
         result.count instanceof Integer
+    }
+
+    def "labelFilter narrows to rules whose label contains the text, case-insensitively"() {
+        given:
+        rmUtils.stubRuleList5 = [
+            ['413': 'Living Room Relax'],
+            [832: 'Auto - Living Room TV Lights'],
+            [900: 'Porch Light']
+        ]
+
+        when:
+        def result = script.toolListRmRules([labelFilter: 'living ROOM'])
+
+        then:
+        result.rules*.id.sort() == [413, 832]
+        result.count == 2
+    }
+
+    def "RM 5.x entries take their type from the hub's app list"() {
+        given:
+        rmUtils.stubRuleList5 = [['413': 'Living Room Relax']]
+        registerRmAppsList([ruleNode(413, 'Living Room Relax')])
+
+        when:
+        def result = script.toolListRmRules([:])
+
+        then:
+        result.rules[0].type == 'Rule-5.1'
+        result.rules[0].rmVersion == '5.x'
     }
 }

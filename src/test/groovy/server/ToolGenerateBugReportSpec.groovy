@@ -239,8 +239,8 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
 
         where:
         label            | toolName                   | arguments
-        'flat call'      | 'hub_set_rule'             | [appId: 777, operation: 'addTrigger']
-        'gateway call'   | 'hub_manage_rule_machine'  | [tool: 'hub_set_rule', args: [appId: 777, operation: 'addTrigger']]
+        'flat call'      | 'hub_set_rule'             | [rule_id: 777, operation: 'update', confirm: true, args: [changes: [[part: 'trigger', value: [:]]]]]
+        'gateway call'   | 'hub_manage_rule_machine'  | [tool: 'hub_set_rule', args: [rule_id: 777, operation: 'update', confirm: true, args: [changes: [[part: 'trigger', value: [:]]]]]]
     }
 
     @Unroll

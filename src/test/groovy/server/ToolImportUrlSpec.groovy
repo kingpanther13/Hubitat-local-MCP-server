@@ -523,7 +523,9 @@ class ToolImportUrlSpec extends ToolSpecBase {
         result.committed == false
         result.instanceAppId == 8888
         result.error.contains("sw (Switch): required but empty")
-        result.error.contains("hub_set_native_app(appId:8888")
+        result.error.contains('hub_set_native_app(appId:8888, settings:{...})')
+        result.error.contains('write the listed settings')
+        result.error.contains('Done')
         !result.error.contains("delete")
     }
 

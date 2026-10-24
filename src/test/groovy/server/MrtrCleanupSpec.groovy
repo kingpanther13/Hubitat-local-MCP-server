@@ -201,7 +201,7 @@ class MrtrCleanupSpec extends ToolSpecBase {
             checkpoint: [clonerAppId: 77]]]
         script._writeStateCacheInvalidate()
         (scriptStaticField('MRTR_WORK_ITEMS') as Map).put('worker',
-            [stateId: 'active', generation: 1, started: false, arguments: [:]])
+            [stateId: 'active', generation: 1, started: false, arguments: [rule_id: 77, confirm: true, changes: [[part: 'order', value: [ids: []]]]]])
         List paths = []
         script.metaClass.hubInternalGetRaw = { String path, Map params = null, Integer timeout = 30 ->
             paths << path

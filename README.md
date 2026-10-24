@@ -599,7 +599,7 @@ Write/delete require the Write master + confirm + a recent backup.
 
 | Tool | Description |
 |------|-------------|
-| `hub_set_rule` | Create or edit a Rule Machine rule (RM 5.1) — the full authoring surface (omit `appId` to create). Structured shortcuts: addTrigger / addAction / addRequiredExpression / replaceRequiredExpression / walkStep / patches and more. Existing-rule edits ensure a rollback baseline; by default, later edits to that rule reuse it for one hour. |
+| `hub_set_rule` | Read, create, update or use native RM editor forms. Omit operation for help; unconfirmed writes return argument schemas. |
 | `hub_list_rules` | List all Rule Machine rules (RM 4.x + 5.x) via official `hubitat.helper.RMUtils` API (also in `hub_read_rules`) |
 | `hub_call_rule` | Trigger one or more RM rules (`ruleId` takes an id or an array; `action`: "rule"/"actions"/"stop"/"start") |
 | `hub_set_rule_paused` | Pause or resume one or more RM rules (`paused=true` pauses, `paused=false` resumes; `ruleId` takes an id or an array; reversible) |
@@ -608,15 +608,15 @@ Write/delete require the Write master + confirm + a recent backup.
 | `hub_list_rule_local_variables` | List a Rule Machine rule's local variables (name/type/value) from `state.allLocalVars`; distinct from `hub_list_variables` (hub globals). (also in `hub_read_rules`) |
 | `hub_delete_native_app` | Delete any classic native app incl. RM rules (auto-snapshot first; `force=true` for hard delete; also in `hub_manage_native_rules_and_apps`) |
 | `hub_get_visual_rule` | List Visual Rules Builder rules (omit `appId`) or read one rule's full JSON definition + format (also in `hub_read_rules`) |
-| `hub_set_visual_rule` | Create or update a Visual Rules Builder rule — VRB is the primary rule engine; one JSON write with if/then/else gating. Use `hub_set_rule` only for complex automations (nested logic/loops/variables). |
+| `hub_set_visual_rule` | Create or update a Visual Rules Builder rule — VRB is the primary rule engine; one JSON write with if/then/else gating. Use native document tools for supported RM structures. |
 | `hub_delete_visual_rule` | Delete a Visual Rules Builder rule (type-gated; returns the pre-delete definition for recovery) |
 
-Reads (`hub_list_rules`, `hub_get_rule_health`, `hub_get_visual_rule`) are gated by the Read master; the writes by the Write master (both ON by default). `hub_set_rule`, `hub_delete_native_app`, `hub_set_visual_rule`, and `hub_delete_visual_rule` additionally require `confirm=true` + a backup within 24h.
+Reads (`hub_list_rules`, `hub_get_rule_health`, `hub_get_visual_rule`) are gated by the Read master; the writes by the Write master (both ON by default). Confirmed `hub_set_rule` writes, `hub_delete_native_app`, `hub_set_visual_rule`, and `hub_delete_visual_rule` additionally require `confirm=true` + a backup within 24h.
 
 </details>
 
 <details>
-<summary><b>hub_manage_native_rules_and_apps</b> (11) — Rule Machine interop (RMUtils) + native CRUD on any classic SmartApp (RM, Room Lighting, Button Controllers, Basic Rules, Notifier, etc.)</summary>
+<summary><b>hub_manage_native_rules_and_apps</b> (12) — Rule Machine interop (RMUtils) + native CRUD on any classic SmartApp (RM, Room Lighting, Button Controllers, Basic Rules, Notifier, etc.)</summary>
 
 | Tool | Description |
 |------|-------------|
@@ -624,15 +624,16 @@ Reads (`hub_list_rules`, `hub_get_rule_health`, `hub_get_visual_rule`) are gated
 | `hub_call_rule` | Trigger one or more RM rules (`ruleId` takes an id or an array; `action`: "rule"/"actions"/"stop"/"start") |
 | `hub_set_rule_paused` | Pause or resume one or more RM rules (`paused=true` pauses, `paused=false` resumes; `ruleId` takes an id or an array; reversible) |
 | `hub_set_rule_private_boolean` | Set the private boolean of one or more RM rules (`ruleId` takes an id or an array) |
-| `hub_set_native_app` | Create or edit any classic native app (omit `appId` to create; `appType` enum covers Button Controllers / Notifier / Groups+Scenes / Basic Rules / Room Lighting; default `rule_machine`). Visual Rules are edit/delete-only by `appId` — create them with `hub_set_visual_rule`. Create a Button Rule under its controller via `buttonRule`. Returns `appId`. Generic upsert; `walkStep` (generic classic-page walker) also works here. |
-| `hub_set_rule` | Author a Rule Machine rule by appId (omit `appId` to create) — triggers, actions, required expressions, settings, structured shortcuts. Existing-rule edits ensure a rollback baseline; by default the same rule reuses that baseline for one hour, so restoring it undoes the whole later edit chain. Enable strict per-write backups in Advanced settings when each call needs its own rollback point. `clearActions` / `replaceActions` commit the delete synchronously via a full selectActions page-form submit (runs RM's trashActs handler in-band), so the actions are gone when the call returns. A thin defensive verify-retry remains: on the rare residual it returns `partial:true, asyncCommitLikely:true` with `stage` + `safeRecovery` -- verify via `hub_get_app_config` rather than rolling back. |
+| `hub_set_rule` | Read, create, update or use native RM editor forms. Omit operation for help; unconfirmed writes return argument schemas. |
+| `hub_set_native_app` | Generic native-app create/edit escape hatch: appType + name to create; appId with settings, buttons or walkStep to edit. |
+| `hub_set_app_disabled` | Enable or disable an installed app without deleting it. |
 | `hub_delete_native_app` | Delete a classic native app (auto-snapshot to File Manager before deleting). |
 | `hub_clone_native_app` | Clone an existing classic SmartApp via Hubitat's `appCloner` endpoint (deep: child apps + pause state copy; `stageDisabled` lands it disabled). Returns the new `appId`. |
 | `hub_export_native_app` | Export a classic SmartApp to JSON and persist it to File Manager (round-trippable with `hub_import_native_app`). |
 | `hub_import_native_app` | Import previously-exported app JSON into a new instance (lands ACTIVE; `stageDisabled` lands it disabled). Returns the new `appId`. |
 | `hub_get_rule_health` | Read-only health check on any installed app — surfaces broken markers, multiple-flag poison, configPage errors. (also in `hub_read_rules`) |
 
-Reads are gated by the Read master; create/update/delete by the Write master (with `confirm=true` + a recent backup). Both masters are ON by default.
+Reads are gated by the Read master; create/update/delete by the Write master (with `confirm=true` + a recent backup). Both masters are ON by default. Native editor operations use returned controls; unsupported app variants remain explicit capability gaps. The generic `hub_set_native_app` escape hatch remains available for classic-app settings, buttons and wizard navigation. RM actions, triggers, expressions and local variables use `hub_set_rule` rather than generic shortcut fields.
 
 </details>
 

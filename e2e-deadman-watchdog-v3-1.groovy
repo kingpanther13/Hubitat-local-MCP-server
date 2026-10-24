@@ -1906,7 +1906,7 @@ def adminUpdateMcpSettings(args) {
     }
     Map types = [debugLogging: "bool", maxCapturedStates: "number", loopGuardMax: "number", loopGuardWindowSec: "number",
                  enableRead: "bool", enableCustomRuleEngine: "bool", useGateways: "bool", enableMandatoryBPS: "bool",
-                 bypassDeviceAllowlist: "bool", maxConcurrentWrites: "number", backupEveryRuleWrite: "bool",
+                 bypassDeviceAllowlist: "bool", maxConcurrentWrites: "number", backupBeforeRuleEdits: "bool", backupEveryRuleWrite: "bool", backupBudgetMb: "number", redactAccessTokens: "bool",
                  enableLocalAccess: "bool", enableCloudAccess: "bool"]
     Map wanted = [:]
     args.settings.each { key, value ->
@@ -1916,6 +1916,15 @@ def adminUpdateMcpSettings(args) {
         if (types[k] == "bool" && !(s in ["true", "false"])) throw new IllegalArgumentException("Setting '${k}' expects a boolean")
         if (types[k] == "number" && !s?.isBigDecimal()) throw new IllegalArgumentException("Setting '${k}' expects a number")
         wanted[k] = (types[k] == "bool") ? (s == "true") : s.toBigDecimal()
+        // The server's own range checks, so a value it refuses is never written here.
+        BigDecimal n = types[k] == "number" ? wanted[k] : null
+        boolean whole = n != null && n.remainder(BigDecimal.ONE) == BigDecimal.ZERO
+        if (k == "maxConcurrentWrites" && !(whole && n >= 0 && n <= 100)) {
+            throw new IllegalArgumentException("Setting 'maxConcurrentWrites' must be an integer between 0 and 100 (0 disables the cap), got: ${s}")
+        }
+        if (k == "backupBudgetMb" && !(whole && n >= 1 && n <= 1000000)) {
+            throw new IllegalArgumentException("Setting 'backupBudgetMb' must be a whole number of MB from 1 to 1000000, got: ${s}")
+        }
     }
     return setMcpServerSettings(id.toInteger(), wanted, types, "MCP server settings")
 }
@@ -2662,7 +2671,7 @@ def getManualToolDefinitions() {
          description: "Enable Developer Mode on the test hub's MCP server instance for E2E setup. Verifies the app code identity and reads the setting back. Only enabled:true is accepted; confirm:true required.",
          inputSchema: [type: "object", properties: [appId: [type: "string"], enabled: [type: "boolean", enum: [true]], confirm: [type: "boolean"]], required: ["appId", "enabled", "confirm"]]],
         [name: "hub_update_mcp_settings", annotations: [title: "Update MCP Settings", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false],
-         description: "Update the test hub MCP server's own settings -- the main server's hub_update_mcp_settings, for when its endpoint is unreachable (e.g. enableCloudAccess off). Allowed: debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableRead, enableCustomRuleEngine, useGateways, enableMandatoryBPS, bypassDeviceAllowlist, maxConcurrentWrites, backupEveryRuleWrite, enableLocalAccess, enableCloudAccess. Verifies the app identity and reads the settings back. confirm:true required.",
+         description: "Update the test hub MCP server's own settings -- the main server's hub_update_mcp_settings, for when its endpoint is unreachable (e.g. enableCloudAccess off). Allowed: debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableRead, enableCustomRuleEngine, useGateways, enableMandatoryBPS, bypassDeviceAllowlist, maxConcurrentWrites, backupBeforeRuleEdits, backupEveryRuleWrite, backupBudgetMb, redactAccessTokens, enableLocalAccess, enableCloudAccess. Verifies the app identity and reads the settings back. confirm:true required.",
          inputSchema: [type: "object", properties: [appId: [type: "string", description: "The MCP server's installed-app ID."], settings: [type: "object", description: "Map of setting key to new value."], confirm: [type: "boolean"]], required: ["appId", "settings", "confirm"]]],
         [name: "hub_update_app", annotations: [title: "Update App", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true], description: "Update an Apps Code class source (deploy). One of source/sourceFile/importUrl/resave; confirm:true required. Updating this watchdog's own code is refused unless the MCP server's endpoint answers, because that server is the only path that could repair a bad watchdog update.",
          inputSchema: [type: "object", properties: [

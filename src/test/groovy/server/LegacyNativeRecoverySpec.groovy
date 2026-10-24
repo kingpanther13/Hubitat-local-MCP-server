@@ -1,0 +1,239 @@
+package server
+
+import groovy.json.JsonOutput
+import groovy.json.JsonSlurper
+import spock.lang.Shared
+import support.TestChildApp
+import support.ToolSpecBase
+
+class LegacyNativeRecoverySpec extends ToolSpecBase {
+    @Shared TestChildApp serverApp = new TestChildApp(id: 7L, label: 'MCP')
+    Map snapshot
+    void setupSpec() { appExecutor.getApp() >> serverApp }
+    void setup() {
+        snapshot = [ruleId: 42, appId: 42, appType: 'rule_machine', appLabel: 'Original',
+            configJson: [app: [id: 42, parentAppId: 28, appType: [namespace: 'hubitat', name: 'Rule-5.1']], settings: [origLabel: 'Original']],
+            statusJson: [installedApp: [id: 42], appState: [[name: 'actions', value: [:]],
+                [name: 'capabstrue', value: ['2': 'Original trigger']],
+                [name: 'capabsfalse', value: ['1': 'Original condition']], [name: 'eval', value: ['0': ['1']]],
+                [name: 'lv_counter', value: [type: 'integer', value: 7]]],
+                appSettings: [[name: 'enabled', type: 'bool', value: false],
+                    [name: 'rDev_1', type: 'capability.switch', deviceList: ['591': 'Switch'], multiple: true]],
+                eventSubscriptions: []]]
+    }
+
+    def 'complete legacy state and typed settings become the strict recovery format without reading current state'() {
+        given:
+        script.metaClass.hubInternalGet = { Object... ignored -> throw new AssertionError('adapter must use only saved data') }
+        when:
+        def adapted = script._rmLegacyNativeRecovery(snapshot)
+        def payload = new JsonSlurper().parseText(adapted.nativeExport)
+        then:
+        adapted.captureFormat == 'native-rule-edit-v1'
+        payload.appData['42'].state.capabsfalse == ['1': 'Original condition']
+        payload.appData['42'].state.eval == ['0': ['1']]
+        payload.appData['42'].state.lv_counter.value == 7
+        payload.appData['42'].appSettings == snapshot.statusJson.appSettings
+        payload.appReplacements['42'].parentAppInstalledAppId == '28'
+        !snapshot.containsKey('captureFormat')
+    }
+
+    def 'legacy recovery uses strict same ID state replacement settings removal undo and native rebuild'() {
+        given:
+        script.callerClient = null
+        stateMap.lastBackupTimestamp = script.now()
+        List events = []
+        def child = new RestoreNativeChild(events)
+        child.backing = [actions: ['9': [method: 'getLogMsg']], actionList: ['9'], capabstrue: ['9': 'added trigger'],
+            capabsfalse: ['9': 'added condition'], eval: ['0': ['9']], stopped: false, paused: false, lv_added: [type: 'string', value: 'extra']]
+        child.typed = [comments: [type: 'text', value: 'added comments', multiple: false]]
+        child.rebuild = { events << 'rebuild'; child.label = installedLabel }
+        snapshot.configJson.app.label = installedLabel
+        snapshot.statusJson.appSettings = [[name: 'enabled', type: 'bool', value: false], [name: 'origLabel', type: 'text', value: 'Original']]
+        snapshot.appLabel = 'Original (Required Expression false)'
+        script.metaClass.getAppByAppId = { Long id -> [id: id, parentAppId: 28L, appType: [namespace: 'hubitat', name: 'Rule-5.1']] }
+        script.metaClass._nrHandle = { Long id -> child }
+        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason, boolean strict, String protectedKey ->
+            events << ['undo', strict, protectedKey]
+            [backupKey: 'undo']
+        }
+        hubGet.register('/installedapp/settings/42') { q -> JsonOutput.toJson([settings: child.typed.collect { name, row -> [name: name] + row }]) }
+        hubGet.register('/app/ruleBuilderJson/42') { q -> JsonOutput.toJson([broken: false, stopped: child.backing.stopped == true, paused: false]) }
+        hubGet.register('/installedapp/statusJson/42') { q -> JsonOutput.toJson([eventSubscriptions: [[name: 'switch.on', typeId: 591]], scheduledJobs: []]) }
+        script.metaClass.hubInternalPostFormRaw = { String path, String body, int timeout = 420, boolean retry = false -> [status: 200] }
+        when:
+        def result = script._rmRestoreFromBackup([fileName: 'old.json'], snapshot, true, 'source')
+        then:
+        result.success
+        result.restoredVia == 'nativeStateReplay'
+        result.ruleId == 42L
+        result.stateVerified && result.settingsVerified && result.localVariablesVerified
+        events[0] == ['undo', true, 'source']
+        child.backing.capabstrue == ['2': 'Original trigger']
+        child.backing.capabsfalse == ['1': 'Original condition']
+        child.backing.eval == ['0': ['1']]
+        child.backing.lv_added == null
+        child.backing.lv_counter.value == 7
+        !child.typed.containsKey('comments')
+        child.label == installedLabel
+        child.typed.origLabel.value == 'Original'
+        where:
+        installedLabel << ['Original', "Original<span style='color:red'> (Required Expression false)</span>"]
+    }
+
+    def 'a legacy snapshot of a rule with no subscriptions adapts with an empty subscription list'() {
+        given:
+        snapshot.statusJson.eventSubscriptions = null
+        when:
+        def adapted = script._rmLegacyNativeRecovery(snapshot)
+        then:
+        adapted.captureFormat == 'native-rule-edit-v1'
+        new JsonSlurper().parseText(adapted.nativeExport).appData['42'].subscriptions == []
+    }
+
+    def 'a device row without a deviceList map plans its devices from deviceIdsForDeviceList'() {
+        when:
+        def plan = script._rmNativeSettingPlan([[name: 'tDev1', type: 'capability.switch', deviceList: null, deviceIdsForDeviceList: [16], multiple: true]])
+        then:
+        plan == [[name: 'tDev1', type: 'capability.switch', multiple: true, value: ['16']]]
+    }
+
+    def 'a legacy export indent escaped as backslash-t adapts to the tab Rule Machine stores'() {
+        given:
+        snapshot.nativeExport = JsonOutput.toJson([appReplacements: ['42': [appTypeNamespace: 'hubitat', appTypeName: 'Rule-5.1', parentAppInstalledAppId: '28']],
+            deviceReplacements: [:],
+            appData: ['42': [state: [actions: ['1': [method: 'getLogMsg', indent: '\\t']], actionList: ['1'], actLabelIndent: '\\t'],
+                appSettings: [[name: 'enabled', type: 'bool', value: false]], subscriptions: []]]])
+        when:
+        def adapted = script._rmLegacyNativeRecovery(snapshot)
+        def state = new JsonSlurper().parseText(adapted.nativeExport).appData['42'].state
+        then:
+        state.actions['1'].indent == '\t'
+        state.actLabelIndent == '\t'
+    }
+
+    private static String legacyExport(Map actions) {
+        JsonOutput.toJson([appReplacements: ['42': [appTypeNamespace: 'hubitat', appTypeName: 'Rule-5.1', parentAppInstalledAppId: '28']],
+            deviceReplacements: [:],
+            appData: ['42': [state: [actions: actions, actionList: actions.keySet().toList()],
+                appSettings: [[name: 'enabled', type: 'bool', value: false]], subscriptions: []]]])
+    }
+
+    def 'a legacy export unescapes multi-level indents and passes other action records through unchanged'() {
+        given:
+        snapshot.nativeExport = legacyExport(['1': [method: 'getLogMsg', indent: '\\t\\t'], '2': [method: 'getLogMsg'], '3': 'not a record'])
+        String exported = snapshot.nativeExport
+        Map before = new JsonSlurper().parseText(JsonOutput.toJson(snapshot)) as Map
+        when:
+        def adapted = script._rmLegacyNativeRecovery(snapshot)
+        def actions = new JsonSlurper().parseText(adapted.nativeExport).appData['42'].state.actions
+        then:
+        actions['1'].indent == '\t\t'
+        actions['2'] == [method: 'getLogMsg']
+        actions['3'] == 'not a record'
+        snapshot.nativeExport == exported
+        new JsonSlurper().parseText(JsonOutput.toJson(snapshot)) == before
+    }
+
+    def 'a legacy snapshot without a native export keeps its statusJson indents as saved'() {
+        given:
+        snapshot.statusJson.appState[0] = [name: 'actions', value: ['1': [method: 'getLogMsg', indent: '\\t']]]
+        when:
+        def adapted = script._rmLegacyNativeRecovery(snapshot)
+        then:
+        new JsonSlurper().parseText(adapted.nativeExport).appData['42'].state.actions['1'].indent == '\\t'
+    }
+
+    def 'legacy subscriptions adapt from whichever list is present'() {
+        given:
+        snapshot.statusJson.remove('eventSubscriptions')
+        if (app != 'absent') snapshot.statusJson.appSubscriptions = app
+        if (event != 'absent') snapshot.statusJson.eventSubscriptions = event
+        when:
+        def adapted = script._rmLegacyNativeRecovery(snapshot)
+        then:
+        new JsonSlurper().parseText(adapted.nativeExport).appData['42'].subscriptions == expected
+        where:
+        app                  | event                | expected
+        [[name: 'switch']]   | 'absent'             | [[name: 'switch']]
+        null                 | [[name: 'contact']]  | [[name: 'contact']]
+    }
+
+    def 'conflicting or malformed legacy subscriptions refuse'() {
+        given:
+        snapshot.statusJson.appSubscriptions = app
+        snapshot.statusJson.eventSubscriptions = event
+        when:
+        script._rmLegacyNativeRecovery(snapshot)
+        then:
+        def error = thrown(IllegalArgumentException)
+        error.message.contains('invalid native subscriptions')
+        where:
+        app                  | event
+        [[name: 'switch']]   | [[name: 'contact']]
+        'not a list'         | []
+    }
+
+    def 'setting-plan refusals name the setting and keep device rules'() {
+        when:
+        script._rmNativeSettingPlan(rows)
+        then:
+        def error = thrown(IllegalArgumentException)
+        error.message.endsWith(suffix)
+        where:
+        rows                                                                                                     | suffix
+        [[name: 'tDev1', type: 'capability.switch', deviceList: ['1': 'A', '2': 'B'], multiple: false]]          | 'for tDev1'
+        [[name: 'tDev1', type: 'capability.switch', deviceIdsForDeviceList: [0], multiple: true]]                | 'for tDev1'
+        [[name: 'flag', type: 'bool', value: true], [name: 'flag', type: 'bool', value: false]]                  | 'for flag'
+        ['not a row']                                                                                            | 'for an unnamed setting'
+        [[name: 'modes', type: 'enum', multiple: true, value: '[1, 2']]                                          | 'for modes'
+    }
+
+    def 'a deviceList map wins over a differing deviceIdsForDeviceList'() {
+        when:
+        def plan = script._rmNativeSettingPlan([[name: 'tDev1', type: 'capability.switch', deviceList: ['5': 'Lamp'], deviceIdsForDeviceList: [16], multiple: true]])
+        then:
+        plan[0].value == ['5']
+    }
+
+    def 'incomplete historical status keeps the legacy compatibility path'() {
+        given:
+        snapshot.statusJson.remove('appState')
+        expect:
+        script._rmLegacyNativeRecovery(snapshot) == null
+    }
+
+    def 'claimed complete malformed recovery refuses before native reads or writes'() {
+        given:
+        corrupt.call(snapshot)
+        script.metaClass.getAppByAppId = { Long id -> throw new AssertionError('invalid snapshot must refuse before target access') }
+        when:
+        script._rmRestoreFromBackup([fileName: 'old.json'], snapshot, true, 'source')
+        then:
+        thrown(Exception)
+        where:
+        corrupt << [
+            { s -> s.configJson.app.id = 43 },
+            { s -> s.statusJson.installedApp.id = 43 },
+            { s -> s.statusJson.appState << [name: 'eval', value: [:]] },
+            { s -> s.statusJson.appState = 'not state' },
+            { s -> s.statusJson.appSettings << [name: 'enabled', type: 'bool', value: true] },
+            { s -> s.statusJson.eventSubscriptions = 'not a list' },
+            { s -> s.nativeExport = '{}' }
+        ]
+    }
+
+    def 'legacy adapter preserves strict device preflight and does not capture undo for missing devices'() {
+        given:
+        script.metaClass.getAppByAppId = { Long id -> [id: id, parentAppId: 28L, appType: [namespace: 'hubitat', name: 'Rule-5.1']] }
+        hubGet.register('/device/fullJson/591') { q -> JsonOutput.toJson([:]) }
+        script.metaClass._rmBackupRuleSnapshot = { Object... ignored -> throw new AssertionError('no undo before device preflight') }
+        when:
+        def result = script._rmRestoreFromBackup([fileName: 'old.json'], snapshot, true, 'source')
+        then:
+        !result.success
+        !result.partial
+        result.failedStep == 'devicePreflight'
+        result.missingDeviceIds == ['591']
+    }
+}

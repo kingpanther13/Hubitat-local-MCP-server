@@ -4,14 +4,15 @@ import support.ToolSpecBase
 
 /**
  * Size-budget guard for the issue #299 best-practice gate. The bestPracticeKey argument the
- * enableMandatoryBPS gate reads is INTENTIONALLY undeclared in every tool inputSchema: declaring
+ * enableMandatoryBPS gate reads is normally undeclared in tool inputSchema: declaring
  * a property on every write tool would inflate the flat tools/list toward the 120KB cap. The LLM
  * learns the param from the block-message contract + the best_practice_reference guide instead.
- * This fails if a future edit declares bestPracticeKey on any schema (re-introducing the bloat).
+ * hub_set_rule is the exception: its strict top-level schema must declare the accepted key.
+ * This guards against spreading that property across the remaining catalog.
  */
 class BpsSchemaSizeGuardSpec extends ToolSpecBase {
 
-    def "no tool inputSchema declares the bestPracticeKey property (undeclared by design)"() {
+    def "only the strict consolidated rule schema declares bestPracticeKey"() {
         when:
         def offenders = script.getAllToolDefinitions().findAll { tool ->
             tool?.inputSchema?.properties instanceof Map &&
@@ -19,7 +20,7 @@ class BpsSchemaSizeGuardSpec extends ToolSpecBase {
         }*.name
 
         then:
-        offenders == []
+        offenders == ['hub_set_rule']
     }
 
     // Issue #518: a client that drops undeclared top-level arguments loses the key on a direct

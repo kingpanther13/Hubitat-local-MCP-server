@@ -1123,8 +1123,8 @@ private Map _vrbNotVisualRuleError(Integer appId) {
     return [success: false, appId: appId, appName: info.name, appType: info.type,
             error: "App ${appId} ('${info.name}') is type '${info.type}', not a Visual Rules Builder rule.",
             note: info.type?.toString()?.startsWith("Rule") ?
-                "For Rule Machine rules use hub_set_rule / hub_delete_native_app instead." :
-                "Use hub_set_native_app / hub_delete_native_app for classic apps."]
+                "For Rule Machine rules use hub_set_rule; use hub_delete_native_app to delete." :
+                "Use the native app editor to edit classic apps or hub_delete_native_app to delete."]
 }
 
 def toolGetVisualRule(args) {
@@ -1188,7 +1188,7 @@ def toolGetVisualRule(args) {
 
 def toolSetVisualRule(args) {
     // Attach the unified rule-health report to every response (success AND failure) that
-    // resolves to a concrete rule id, mirroring hub_set_rule (issue #254 follow-up). For a
+    // resolves to a concrete rule id, matching installed-app rule IDs (issue #254 follow-up). For a
     // graph Visual Rule _rmCheckRuleHealth reads validationErrors as the broken verdict; the
     // confirm pre-flight throw is left to propagate (it must go through the shared validation renderer, not a hand-built result).
     // We re-call _rmCheckRuleHealth (one or two extra localhost GETs for a graph rule) rather
@@ -1804,7 +1804,7 @@ private Map _vrbRestoreFromSnapshot(Map snapshot, String fileName) {
 private String _vrbGuideSection() {
     return '''## Visual Rules Builder reference (`hub_get_visual_rule` / `hub_set_visual_rule` / `hub_delete_visual_rule`)
 
-Visual Rules Builder (VRB) is the PRIMARY rule engine for new automations; each rule is stored as ONE clean JSON definition (no wizard, no settings[] protocol). A VRB rule is: one or more trigger events (OR semantics — any one of them fires the rule), a condition gate, and then/else action branches; VRB 2.0 adds AND **or** OR condition gates and a common action tail that runs after whichever branch was taken. Pretty much everything can be done with it; use `hub_set_rule` (Rule Machine) when something complex is needed — nested or multiple condition blocks, loops, variables and expressions, capture/restore, waiting on a device-state expression (VRB's `wait` waits a fixed duration), or device commands outside the action catalog below.
+Visual Rules Builder (VRB) is the PRIMARY rule engine for new automations; each rule is stored as ONE clean JSON definition (no wizard, no settings[] protocol). A VRB rule is: one or more trigger events (OR semantics — any one of them fires the rule), a condition gate, and then/else action branches; VRB 2.0 adds AND **or** OR condition gates and a common action tail that runs after whichever branch was taken. For Rule Machine structures and native editor controls use hub_set_rule. Inspect unsupported complex variants in the native editor before authoring them.
 
 One installed VRB app holds exactly ONE connected rule; independent workflows go in separate rules.
 
@@ -2024,7 +2024,7 @@ def _getAllToolDefinitions_partVisualRules() {
         ],
         [
             name: "hub_set_visual_rule",
-            description: "Create or update a Visual Rules Builder rule.[[FLAT_TRIM]] VRB is the PRIMARY rule engine for new automations; VRB 2.0 adds AND/OR condition gates, then/else branches and a shared action tail. Most automations fit it; use hub_set_rule (Rule Machine) only for complex ones (nested logic, loops, variables, custom device commands). On create the definition's shape picks the builder version (editor/graph -> 2.0, classic -> 1.0). Editor and graph definitions are structurally pre-flight validated before anything is created or saved, so a malformed 2.0 rule never strands an empty shell; a classic definition is saved as-is and validated by the hub.[[/FLAT_TRIM]] Omit appId to create (name + definition required). On EDIT two refusals (isError validation results, nothing written): a 2.0 type name this build does not know unless the rule already uses it, and a classic key outside whenNodes/thenNodes/elseNodes. Pre-flight: backup within 24h + confirm=true. Schemas + worked example: hub_get_tool_guide(section='visual_rule_reference').",
+            description: "Create or update a Visual Rules Builder rule.[[FLAT_TRIM]] VRB is the PRIMARY rule engine for new automations; VRB 2.0 adds AND/OR condition gates, then/else branches and a shared action tail. Most automations fit it; use hub_set_rule for Rule Machine structures and native editor controls. On create the definition's shape picks the builder version (editor/graph -> 2.0, classic -> 1.0). Editor and graph definitions are structurally pre-flight validated before anything is created or saved, so a malformed 2.0 rule never strands an empty shell; a classic definition is saved as-is and validated by the hub.[[/FLAT_TRIM]] Omit appId to create (name + definition required). On EDIT two refusals (isError validation results, nothing written): a 2.0 type name this build does not know unless the rule already uses it, and a classic key outside whenNodes/thenNodes/elseNodes. Pre-flight: backup within 24h + confirm=true. Schemas + worked example: hub_get_tool_guide(section='visual_rule_reference').",
             inputSchema: [
                 type: "object",
                 properties: [

@@ -20,6 +20,14 @@ SDK call continues across several cloud-relay requests, and removes only that ex
 
 Configuration is shared with tests/e2e_test.py — `tests/e2e_config.json` (gitignored) or
 HUBITAT_HUB_URL / HUBITAT_APP_ID / HUBITAT_ACCESS_TOKEN.
+The MRTR scenario discovers the existing suite's permanent virtual temperature fixture,
+or accepts NATIVE_RULE_PARENT_ID and NATIVE_RULE_FIXTURES (a JSON object with temperature).
+E2E_MRTR_ACTION_COUNT selects 6..99 logs in a 100-change native batch, as the ephemeral
+lanes set it: up to 40 Wait for Events actions each contain four distinct temperature events,
+or eight when additional configured logs displace wait rows, and the remaining changes are
+distinct temperature conditions. Unset (the physical hub), the batch is 20 logs and 10
+conditions with no Wait rows, which a physical hub finishes within the default 10 rounds. This is a continuation proof,
+not a speed comparison with the former log-only authoring API.
 
 Usage:
     pip install -r tests/sdk-conformance-requirements.txt
@@ -31,6 +39,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sys
 import time
 import uuid
@@ -61,13 +70,16 @@ from sdk_conformance_helpers import (  # noqa: E402  (import guard above supplie
     DEFAULT_SDK_INPUT_REQUIRED_MAX_ROUNDS,
     MODERN_PROTOCOL_VERSION,
     RequestTrace,
-    assert_exact_rule_log_messages,
+    assert_exact_native_actions,
+    assert_exact_native_conditions,
     assert_mrtr_owner_rounds,
     build_capacity_recovery,
     cleanup_preserving_primary,
+    discover_rule_machine_parent,
     extract_bps_acknowledgment_key,
     find_exact_fixture_id_with_settle,
-    mrtr_log_actions,
+    lane_mrtr_changes,
+    read_native_document_sections,
     summarize_modern_posts,
     summarize_mrtr_proof,
 )
@@ -372,6 +384,9 @@ def _tool_payload(result: CallToolResult, operation: str) -> dict[str, Any]:
     assert text_blocks, f"{operation} returned no text content"
     payload = json.loads(text_blocks[0])
     assert isinstance(payload, dict), f"{operation} payload is {type(payload).__name__}, not object"
+    assert payload.get("response_too_large") is not True, (
+        f"{operation} exceeded the response-size guard: {json.dumps(payload, sort_keys=True)}"
+    )
     assert payload.get("success") is not False, (
         f"{operation} returned success=false: error={payload.get('error')!r}"
     )
@@ -447,8 +462,55 @@ class ModernMrtrScenario:
                   "on a fresh fixture")
         await self._prove_once(client, bps_keys)
 
+    async def _native_inputs(self, client: Client) -> tuple[int, str]:
+        """Use explicit fixtures or the existing suite's exact permanent sensor label."""
+        parent_id = os.environ.get("NATIVE_RULE_PARENT_ID")
+        if not parent_id:
+            async def inventory(scope: str, cursor: str) -> dict[str, Any]:
+                listed = await client.call_tool("hub_read_apps_code", {
+                    "tool": "hub_list_apps", "args": {"scope": scope, "cursor": cursor},
+                })
+                return _tool_payload(listed, f"Rule Machine {scope} discovery")
+
+            parent_id = str(await discover_rule_machine_parent(inventory))
+        # An empty value (a workflow env entry mapping an unset variable) means no explicit fixtures.
+        fixtures = json.loads(os.environ.get("NATIVE_RULE_FIXTURES") or "{}")
+        if not isinstance(fixtures, dict):
+            raise AssertionError("NATIVE_RULE_FIXTURES must be a JSON object, e.g. {\"temperature\": \"123\"}")
+        temperature_id = str(fixtures.get("temperature") or "")
+        if not temperature_id:
+            for label in ("E2E_PERM_Omni",):
+                listed = await client.call_tool("hub_read_devices", {
+                    "tool": "hub_list_devices", "args": {
+                        "scope": "all", "labelFilter": label, "capabilityFilter": "TemperatureMeasurement",
+                    },
+                })
+                rows = _tool_payload(listed, "temperature fixture discovery").get("devices", [])
+                matches = [row for row in rows if row.get("label") == label]
+                assert len(matches) <= 1, f"Ambiguous permanent fixture label: {label}"
+                if matches:
+                    temperature_id = str(matches[0]["id"])
+                    details = await client.call_tool("hub_read_devices", {
+                        "tool": "hub_get_device", "args": {
+                            "deviceId": temperature_id, "mode": "details", "sections": ["identity"],
+                        },
+                    })
+                    identity = _tool_payload(details, "permanent fixture identity")["sections"]["identity"]
+                    expected_driver = "Virtual Omni Sensor" if label == "E2E_PERM_Omni" else "Virtual Temperature Sensor"
+                    assert str(identity.get("id")) == temperature_id and identity.get("label") == label, identity
+                    assert identity.get("virtual") is True or identity.get("virtual") == "true", identity
+                    assert identity.get("driver", {}).get("name") == expected_driver, identity
+                    break
+        assert str(parent_id).isdecimal(), "Native MRTR proof requires a decimal Rule Machine parent ID"
+        assert temperature_id.isdecimal(), (
+            "Native MRTR proof requires the suite's permanent virtual temperature fixture or "
+            "explicit NATIVE_RULE_FIXTURES.temperature"
+        )
+        return int(parent_id), temperature_id
+
     async def _prove_once(self, client: Client, bps_keys: dict[str, str]) -> None:
         """One full pass: fixture create -> slow MRTR edit -> readback -> exact cleanup."""
+        parent_id, temperature_id = await self._native_inputs(client)
         fixture_name = f"BAT_E2E_SDK_MRTR_{uuid.uuid4().hex[:12]}"
         fixture_id: str | None = None
         primary_error: BaseException | None = None
@@ -456,24 +518,26 @@ class ModernMrtrScenario:
             created = await client.call_tool(self.GATEWAY, {
                 "tool": "hub_set_rule",
                 "args": {
-                    "name": fixture_name,
+                    "operation": "create",
+                    "args": {"parent_id": parent_id, "name": fixture_name, "changes": []},
                     "confirm": True,
                     "bestPracticeKey": bps_keys["hub_set_rule"],
                 },
             })
             create_payload = _tool_payload(created, "fixture create")
-            fixture_id = str(create_payload.get("appId") or "") or None
-            assert fixture_id, "fixture create returned no appId"
+            fixture_id = str(create_payload.get("rule_id") or "") or None
+            assert fixture_id, "fixture create returned no rule_id"
 
-            requested_actions = mrtr_log_actions("SDK MRTR proof")
-            print(f"         MRTR workload: {len(requested_actions)} real log actions")
+            changes, messages = lane_mrtr_changes("SDK MRTR proof", temperature_id)
+            print(f"         MRTR workload: {len(changes)} native changes, {len(messages)} log actions")
             trace_mark = self.trace.mark()
             started = time.monotonic()
             result = await client.call_tool(self.GATEWAY, {
                 "tool": "hub_set_rule",
                 "args": {
-                    "appId": fixture_id,
-                    "addActions": requested_actions,
+                    "operation": "update",
+                    "rule_id": int(fixture_id),
+                    "args": {"changes": changes},
                     "confirm": True,
                     "bestPracticeKey": bps_keys["hub_set_rule"],
                 },
@@ -481,13 +545,20 @@ class ModernMrtrScenario:
             logical_elapsed = time.monotonic() - started
             payload = _tool_payload(result, "slow fixture edit")
             assert not payload.get("partial"), f"slow fixture edit was partial: {payload}"
-            action_results = payload.get("actions") or []
-            assert len(action_results) == len(requested_actions), (
-                "slow fixture edit did not return every requested mutation result: "
-                f"requested={len(requested_actions)}, returned={len(action_results)}"
+            assert not payload.get("remaining"), f"Unapplied native changes: {payload}"
+            action_results = payload.get("results") or []
+            assert [row.get("part") for row in action_results] == [row["part"] for row in changes], (
+                f"Native mutation result order or kinds differ: {action_results}"
             )
-            assert all(isinstance(action, dict) and action.get("success") is not False
-                       for action in action_results), (
+            assert len(action_results) == len(changes), (
+                "slow fixture edit did not return every requested mutation result: "
+                f"requested={len(changes)}, returned={len(action_results)}"
+            )
+            assert all(
+                isinstance(action, dict) and isinstance(action.get("result"), dict)
+                and action["result"].get("success") is True
+                for action in action_results
+            ), (
                 f"slow fixture edit contained a failed mutation: {action_results}"
             )
             legs = self.trace.tool_call_legs(trace_mark, self.GATEWAY)
@@ -512,11 +583,20 @@ class ModernMrtrScenario:
                 "args": {"appId": fixture_id, "includeSettings": True},
             })
             readback_payload = _tool_payload(readback, "slow fixture persisted-state readback")
-            assert_exact_rule_log_messages(
-                readback_payload,
-                [action["message"] for action in requested_actions],
-                operation="SDK MRTR proof readback",
-            )
+            async def fetch_section(section: str, cursor: str, limit: int) -> dict[str, Any]:
+                result = await client.call_tool(self.GATEWAY, {
+                    "tool": "hub_set_rule", "args": {
+                        "operation": "read", "rule_id": int(fixture_id),
+                        "args": {"sections": [section], "cursor": cursor, "limit": limit},
+                    },
+                })
+                page = _tool_payload(result, f"independent persisted {section} readback")
+                assert str(page.get("rule_id")) == fixture_id, "Native section read returned another rule"
+                return page
+
+            document = await read_native_document_sections(fetch_section)
+            assert_exact_native_conditions(readback_payload, document, changes)
+            assert_exact_native_actions(readback_payload, document, changes, messages)
         except BaseException as exc:
             primary_error = exc
             raise

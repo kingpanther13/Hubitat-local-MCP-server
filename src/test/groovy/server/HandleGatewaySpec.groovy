@@ -122,18 +122,6 @@ class HandleGatewaySpec extends ToolSpecBase {
         gwEx.message.contains('All parameters:')
     }
 
-    def "hub_set_native_app schema-only meta-call bypasses the required-param pre-check (mirrors hub_set_rule)"() {
-        given:
-        script.metaClass.toolGetToolGuide = { s, c = null -> [section: s, stubbed: true] }
-
-        when: "guide meta-call routed through the gateway WITHOUT confirm (its only required param)"
-        def result = script.handleGateway('hub_manage_native_rules_and_apps', 'hub_set_native_app', [appId: 123, guide: true])
-
-        then: 'the pre-check does not reject for missing confirm; the guide short-circuit answers'
-        notThrown(IllegalArgumentException)
-        result.stubbed == true
-    }
-
     def "missing-param pre-check falls through to the canonical refusal for a master-hidden sub-tool"() {
         given: 'Write master OFF hides hub_delete_room'
         settingsMap.enableWrite = false

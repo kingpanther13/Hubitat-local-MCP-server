@@ -399,10 +399,13 @@ private String findRuleAppRedirect(ruleId, String verb) {
             if (verb != "write") {
                 mcpLog("debug", "rules", "findRuleAppRedirect: unrecognized verb '${verb}', defaulting to write-verb message")
             }
+            String editor = isRmRule ? "hub_manage_rule_machine -> hub_set_rule(rule_id=${idStr})" :
+                (appTypeNameLower.contains('visual rule') ? "hub_manage_rule_machine -> hub_set_visual_rule(appId=${idStr})" :
+                    "hub_manage_native_rules_and_apps -> hub_set_native_app(appId=${idStr})")
             return "Rule ${idStr} is a Hubitat built-in ${appTypeName} app. " +
                 "Use `hub_read_apps_code -> hub_get_app_config(appId=${idStr})` for read-only inspection. " +
                 "`hub_update_custom_rule` only handles MCP's own rule engine, not Hubitat built-in apps. " +
-                "Use `hub_manage_rule_machine -> hub_set_rule(appId=${idStr})` to modify it programmatically " +
+                "Use `${editor}` to modify it programmatically " +
                 "(requires the Write master)."
         }
     } catch (Exception e) {

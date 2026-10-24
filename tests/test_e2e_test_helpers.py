@@ -752,6 +752,7 @@ def test_run_one_paces_once_after_terminal_result(monkeypatch, outcome, pace):
     runner.results = []
     runner._soft_passes = []
     runner.pace_seconds = pace
+    runner._backups_on = None
     sleeps = []
     monkeypatch.setattr(et.time, "sleep", sleeps.append)
     runner._settle_before_504_retry = lambda name: None
@@ -833,6 +834,7 @@ def test_a_test_rerun_deletes_its_deferred_variables_first(monkeypatch):
     runner.results = []
     runner._soft_passes = []
     runner.pace_seconds = 0
+    runner._backups_on = None
     runner._settle_before_504_retry = lambda name: None
     monkeypatch.setattr(et.time, "sleep", lambda s: None)
     seen = []
@@ -1719,14 +1721,14 @@ def test_regular_e2e_mrtr_summary_accepts_one_safe_transport_replay():
 def test_continuation_telemetry_aggregates_and_ranks_zero_one_and_multi_round_calls():
     rows = et._summarize_continuation_telemetry([
         ("hub_get_info", 0.4, 0, [0.4]),
-        ("hub_set_rule:edit", 4.5, 1, [0.2, 4.0]),
-        ("hub_set_rule:edit", 6.0, 2, [0.1, 2.5, 3.0]),
+        ("hub_set_rule:update", 4.5, 1, [0.2, 4.0]),
+        ("hub_set_rule:update", 6.0, 2, [0.1, 2.5, 3.0]),
         ("hub_call_rule", 1.2, 1, [0.3, 0.7]),
     ])
 
     assert rows == [
         {
-            "operation": "hub_set_rule:edit",
+            "operation": "hub_set_rule:update",
             "logical_calls": 2,
             "logical_seconds": 10.5,
             "physical_legs": 5,
@@ -1884,7 +1886,7 @@ def test_call_tool_retains_physical_leg_telemetry_when_a_continuation_504s():
 
     with pytest.raises(et.RelayLostResponseError):
         client.call_tool(
-            "hub_set_rule", {"appId": 42, "confirm": True}, flat=True,
+            "hub_set_rule", {"operation": "update", "rule_id": 42, "args": {"changes": []}, "confirm": True}, flat=True,
         )
 
     assert client._last_continuation_rounds == 1
@@ -1984,7 +1986,6 @@ def test_call_tool_paces_ten_same_state_contention_rounds_and_still_completes(mo
     assert all(call[1].get("requestState") == "state-busy" for call in calls[1:])
 
 
-
 def test_settle_before_504_retry_probes_without_a_fixed_minute(monkeypatch):
     sleeps = []
     probes = []
@@ -2009,303 +2010,61 @@ def _native_rule_runner(client):
     runner.client = client
     runner.created_native_app_ids = []
     runner._native_rule_fixture_seq = 0
+    runner._native_rule_parent_id = lambda: 28
     return runner
 
 
 def test_create_native_rule_defaults_to_scalar_app_id(monkeypatch):
-    class FakeClient:
-        def call_tool(self, name, arguments):
-            assert name == "hub_manage_rule_machine"
-            assert arguments == {
-                "tool": "hub_set_rule",
-                "args": {"name": "BAT_E2E_ScalarCreate_run_1_1", "confirm": True},
-            }
-            return {"success": True, "appId": 41, "ruleId": 41}
-
-    runner = _native_rule_runner(FakeClient())
+    calls = []
+    runner = _native_rule_runner(SimpleNamespace(call_tool=lambda name, args:
+        calls.append((name, args)) or {"success": True, "rule_id": 41}))
     monkeypatch.setattr(et, "_run_artifact_suffix", lambda: "run_1")
-
-    result = runner._create_native_rule("ScalarCreate")
-
-    assert result == 41
+    assert runner._create_native_rule("ScalarCreate") == 41
     assert runner.created_native_app_ids == ["41"]
+    assert calls == [("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": {
+        "operation": "create", "args": {"parent_id": 28, "name": "BAT_E2E_ScalarCreate_run_1_1", "changes": []},
+        "confirm": True}})]
 
 
 def test_create_native_rule_return_result_preserves_create_envelope():
-    envelope = {
-        "success": True,
-        "appId": 42,
-        "ruleId": 42,
-        "actions": [{"success": True, "actionIndex": 3}],
-    }
-
-    class FakeClient:
-        def call_tool(self, name, arguments):
-            assert name == "hub_manage_rule_machine"
-            assert arguments["args"]["addActions"] == [
-                {"capability": "log", "message": "fixture"},
-            ]
-            return envelope
-
-    runner = _native_rule_runner(FakeClient())
-
-    result = runner._create_native_rule(
-        "TupleCreate",
-        {"addActions": [{"capability": "log", "message": "fixture"}]},
-        return_result=True,
-    )
-
-    assert result == (42, envelope)
+    envelope = {"success": True, "rule_id": 42, "results": [{"part": "action", "result": {"success": True}}]}
+    changes = [et.native_log("fixture")]
+    def call_tool(name, args):
+        assert name == "hub_manage_rule_machine"
+        assert args["args"]["args"]["changes"] == changes
+        return envelope
+    runner = _native_rule_runner(SimpleNamespace(call_tool=call_tool))
+    assert runner._create_native_rule("TupleCreate", changes, return_result=True) == (42, envelope)
     assert runner.created_native_app_ids == ["42"]
 
 
-def test_patch_rule_returns_all_checkpointed_entries_from_one_logical_call():
+@pytest.mark.parametrize("response", [
+    {"success": False, "partial": True, "results": [{"result": {"success": True}}]},
+    {"success": True, "partial": True},
+    {"success": False, "error": "Native rule health is broken or unverified"},
+])
+def test_native_document_update_never_passes_partial_or_unverified_activation(response):
+    runner = _native_rule_runner(SimpleNamespace(call_tool=lambda *_args: response))
+    with pytest.raises(AssertionError):
+        runner._set_rule(42, [et.native_log("must verify")])
+
+
+def test_native_document_update_uses_direct_public_operation():
     calls = []
-
-    rows = [{"op": "addAction", "success": True, "actionIndex": 3},
-            {"op": "addAction", "success": False, "error": "refused"},
-            {"op": "addAction", "success": False, "notAttempted": True,
-             "error": "not attempted: bulk stopped after patches[1] failed or was partial"}]
-
-    class FakeClient:
-        def call_tool(self, name, arguments):
-            calls.append((name, arguments))
-            # The continued terminal carries every slice in patchResults and mirrors it in patches.
-            return {
-                "success": False,
-                "partial": True,
-                "bulkStoppedAfter": "patches[1]",
-                "finalisationNotAttempted": True,
-                "error": "Stopped after patches[1] failed: refused. Later items were not attempted and finalisation was not fired.",
-                "patchResults": rows,
-                "patches": list(rows),
-                "health": {"ok": True},
-            }
-
-    runner = _native_rule_runner(FakeClient())
-    patches = [
-        {"addAction": {"capability": "log", "message": "land"}},
-        {"addAction": {"capability": "switch", "state": "on"}},
-        {"addAction": {"capability": "log", "message": "skipped"}},
-    ]
-
-    entries = runner._patch_rule(42, patches, expected_refusals=1)
-
-    assert entries == [
-        {"op": "addAction", "success": True, "actionIndex": 3},
-        {"op": "addAction", "success": False, "error": "refused"},
-        {"op": "addAction", "success": False, "notAttempted": True,
-         "error": "not attempted: bulk stopped after patches[1] failed or was partial"},
-    ]
-    assert calls == [("hub_manage_rule_machine", {
-        "tool": "hub_set_rule",
-        "args": {"appId": 42, "patches": patches, "confirm": True},
-    })]
-    assert runner._last_write_health == ("42", {"ok": True})
-
-
-def test_patch_rule_rejects_terminal_activation_failure():
-    class FakeClient:
-        def call_tool(self, _name, _arguments):
-            return {
-                "success": False,
-                "partial": True,
-                "patches": [{"op": "addAction", "success": True}],
-                "updateRuleFailed": True,
-                "patchesNotLive": True,
-            }
-
-    runner = _native_rule_runner(FakeClient())
-
-    with pytest.raises(AssertionError, match="terminal activation"):
-        runner._patch_rule(42, [{"addAction": {"capability": "log", "message": "x"}}])
-
-
-def _stop_envelope(**overrides):
-    envelope = {
-        "success": False,
-        "partial": True,
-        "bulkStoppedAfter": "addActions[1]",
-        "finalisationNotAttempted": True,
-        "error": "Stopped after addActions[1] failed: refused. Later items were not attempted and finalisation was not fired.",
-    }
-    envelope.update(overrides)
-    return envelope
-
-
-def test_assert_bulk_stop_accepts_the_fail_closed_contract():
-    tail = [{"success": False, "notAttempted": True}]
-    et.TestRunner._assert_bulk_stop(_stop_envelope(), "addActions[1]", tail)
-    et.TestRunner._assert_bulk_stop(
-        _stop_envelope(error="Stopped after addActions[1] reported partial. Later items were not attempted."),
-        "addActions[1]", tail, partial_item=True)
-
-
-@pytest.mark.parametrize("override, tail, message", [
-    ({"bulkStoppedAfter": "addActions[0]"}, [], "bulkStoppedAfter"),
-    ({"finalisationNotAttempted": None}, [], "finalisationNotAttempted"),
-    ({"error": "One or more items failed"}, [], "name the stopping item"),
-    ({}, [{"success": False}], "notAttempted"),
-    ({"addActionsRemaining": [{"capability": "log"}]}, [], "skipped tail"),
-    ({"success": True}, [], "success:false"),
-])
-def test_assert_bulk_stop_rejects_a_broken_stop(override, tail, message):
-    with pytest.raises(AssertionError, match=message):
-        et.TestRunner._assert_bulk_stop(_stop_envelope(**override), "addActions[1]", tail)
-
-
-def test_patch_rule_rejects_a_refusal_without_the_stop_contract():
-    class FakeClient:
-        def call_tool(self, _name, _arguments):
-            return {
-                "success": False,
-                "partial": True,
-                "patches": [{"op": "addAction", "success": False, "error": "refused"},
-                            {"op": "addAction", "success": True}],
-                "health": {"ok": True},
-            }
-
-    runner = _native_rule_runner(FakeClient())
-
-    with pytest.raises(AssertionError, match="bulkStoppedAfter"):
-        runner._patch_rule(42, [{"addAction": {"capability": "switch", "state": "on"}},
-                                {"addAction": {"capability": "log", "message": "x"}}],
-                           expected_refusals=1)
-
-
-@pytest.mark.parametrize("outcome", [
-    "continuation", "recovered", "failed", "success_false", "missing_status",
-    "still_running", "incomplete_actions", "partial_result",
-])
-def test_math_create_waits_for_its_terminal_write_before_readback(monkeypatch, outcome):
-    """A visible shell and another write's completion must never end recovery."""
-    client = et.HubitatMcpClient("http://hub.invalid", "1", "unused")
-    client._gateway_members = {
-        "hub_manage_rule_machine": {"hub_set_rule"},
-        "hub_read_apps_code": {"hub_get_app_config"},
-        "hub_read_rules": {"hub_list_rules"},
-        "hub_manage_variables": {"hub_create_variable"},
-    }
-    client._gateway_route = {leaf: gateway for gateway, leaves in client._gateway_members.items()
-                             for leaf in leaves}
-    runner = _native_rule_runner(client)
-    runner.created_variable_names = []
-    var_name = et.TestRunner.PERM_VARIABLES["sv_number"][0]
-    clock = [0.0]
-    monkeypatch.setattr(et.time, "monotonic", lambda: clock[0])
-    monkeypatch.setattr(et.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
-    monkeypatch.setattr(runner, "get_test_temperature_ids", lambda: [88], raising=False)
-    monkeypatch.setattr(runner, "get_test_switch_id", lambda: 89, raising=False)
-    monkeypatch.setattr(runner, "_ensure_perm_variables",
-                        lambda *keys: {k: et.TestRunner.PERM_VARIABLES[k][0] for k in keys})
-    deleted, healthy, writes, config_reads = [], [], [], []
-    monkeypatch.setattr(runner, "_delete_native", deleted.append)
-    monkeypatch.setattr(runner, "_assert_rule_healthy", healthy.append)
-
-    class ReachedRuleC(Exception):
-        pass
-
-    def other_fixture(suffix, *args, **kwargs):
-        # Stop after the real Rule B scenario; the unrelated device/unary/copy cases
-        # have their own coverage. A call to the old helper for Rule B is a failure.
-        if suffix == "SetVarMathUnaryStr":
-            raise ReachedRuleC
-        assert suffix == "SetVarFromDev"
-        return 41, {"actions": [{"actionIndex": "1", "success": True,
-                                 "settingsApplied": ["customDev.1", "tCustomAttr.1"]}]}
-
-    monkeypatch.setattr(runner, "_create_native_rule", other_fixture)
-    polls = 0
-    label = None
-    terminal_seen = False
-    settings = {
-        "xVar3.1": var_name, "valMathOp.1": "+", "valConst2.1": "10",
-        "xVar3.2": var_name, "valMathOp.2": "-", "xVar4.2": var_name,
-        "xVar3.3": var_name, "valMathOp.3": "+", "valConst2.3": "5.5",
-    }
-    if outcome == "incomplete_actions":
-        del settings["valConst2.3"]
-
-    def send(method, params=None, **kwargs):
-        nonlocal polls, label, terminal_seen
-        assert method == "tools/call"
-        tool = params["arguments"].get("tool", params["name"])
-        args = params["arguments"].get("args", params["arguments"])
-        if tool == "hub_create_variable":
-            return _raw_tool_body({"success": True})
-        if tool == "hub_set_rule":
-            writes.append(dict(params))
-            label = args["name"]
-            assert params["name"] == "hub_manage_rule_machine"
-            assert len(args["addActions"]) == 3
-            if outcome not in ("continuation", "partial_result"):
-                raise et.RelayLostResponseError("504 Gateway Timeout")
-            if len(writes) == 1:
-                return {"resultType": "input_required", "requestState": "opaque-state"}
-            assert params["requestState"] == "opaque-state"
-            terminal_seen = True
-            return _raw_tool_body({
-                "success": True, "partial": outcome == "partial_result", "appId": 42, "ruleId": 42,
-                "actions": [
-                    {"actionIndex": "1", "success": True, "settingsApplied": ["valMathOp.1", "valConst2.1"]},
-                    {"actionIndex": "2", "success": True, "settingsApplied": ["xVar4.2"]},
-                    {"actionIndex": "3", "success": True},
-                ],
-            })
-        if tool == "hub_get_info":
-            assert clock[0] >= 15.0
-            polls += 1
-            # The server omits appId from active records. A different finished create
-            # is present throughout; only this fixture's terminal row is authoritative.
-            status = "running" if polls == 1 else "paused_resuming"
-            row = {"tool": "hub_set_rule", "status": status, "startedAt": 1000,
-                   "updatedAt": 2000 + polls, "slices": polls}
-            if polls >= 3 and outcome not in ("missing_status", "still_running"):
-                row.update(status="finished_with_error" if outcome == "failed" else "finished",
-                           appId=42, ruleId=42, success=outcome not in ("failed", "success_false"))
-                terminal_seen = True
-            rows = [{"tool": "hub_set_rule", "status": "finished", "appId": 99,
-                     "success": True, "startedAt": 900, "updatedAt": 1000, "slices": 1}]
-            if outcome != "missing_status":
-                rows.append(row)
-            return _raw_tool_body({"recentWrites": rows})
-        if tool == "hub_list_rules":
-            return _raw_tool_body({"rules": [] if polls == 1 else [{"id": 42, "label": label}]})
-        if tool == "hub_get_app_config":
-            if args["appId"] == 41:
-                return _raw_tool_body({"settings": {"tCustomAttr.1": "temperature", "customDev.1": "88"}})
-            assert args["appId"] == 42 and terminal_seen, "read a still-running rule"
-            config_reads.append(42)
-            return _raw_tool_body({"settings": settings})
-        raise AssertionError(f"unexpected tool: {tool}")
-
-    monkeypatch.setattr(client, "_send", send)
-    expected = {
-        "failed": "finished with an error", "success_false": "finished with an error",
-        "missing_status": "completion unresolved", "still_running": "completion unresolved",
-        "incomplete_actions": "did not persist one exact", "partial_result": "did not fully commit",
-    }
-    if outcome in expected:
-        with pytest.raises(AssertionError, match=expected[outcome]):
-            runner.test_set_rule_setvariable_from_device_and_math()
-        assert 42 not in healthy
-    else:
-        with pytest.raises(ReachedRuleC):
-            runner.test_set_rule_setvariable_from_device_and_math()
-        assert healthy == [41, 42]
-    assert len(writes) == (2 if outcome in ("continuation", "partial_result") else 1)
-    assert config_reads == ([42] if outcome in ("continuation", "recovered", "incomplete_actions") else [])
-    assert (42 in deleted) == terminal_seen
-    assert "42" in runner.created_native_app_ids
+    runner = _native_rule_runner(SimpleNamespace(call_tool=lambda *args:
+        calls.append(args) or {"success": True, "results": []}))
+    changes = [et.native_log("once")]
+    runner._set_rule(42, changes)
+    assert calls == [("hub_set_rule", {"operation": "update", "rule_id": 42,
+                                     "args": {"changes": changes}, "confirm": True})]
 
 
 def test_create_native_rule_relay_lost_adoption_marks_bundled_fixture_for_readback(
     monkeypatch,
 ):
     calls = []
-    fixture = {"conditions": [
-        {"capability": "Switch", "deviceIds": [88], "state": "on"},
-    ]}
+    fixture = [et.native_change("condition", capability="Switch", fields=[
+        et.native_field("rDev_#", "capability.switch", ["88"]), et.native_field("state_#", "enum", "on")])]
 
     class FakeClient:
         def call_tool(self, name, arguments):
@@ -2331,14 +2090,14 @@ def test_create_native_rule_relay_lost_adoption_marks_bundled_fixture_for_readba
 
     result = runner._create_native_rule(
         "AdoptedCreate",
-        {"addRequiredExpression": fixture},
+        fixture,
         return_result=True,
     )
 
     assert result == (43, None)
     attempted_args = calls[0][1]["args"]
-    assert attempted_args["name"] == "BAT_E2E_AdoptedCreate_run_1_1"
-    assert attempted_args["addRequiredExpression"] == fixture
+    assert attempted_args["args"]["name"] == "BAT_E2E_AdoptedCreate_run_1_1"
+    assert attempted_args["args"]["changes"] == fixture
     runner._assert_switch_required_expression(43, 88)
     assert runner.created_native_app_ids == ["43"]
 
@@ -2360,8 +2119,6 @@ def test_create_native_rule_relay_lost_refuses_ambiguous_exact_label(monkeypatch
 
     with pytest.raises(AssertionError, match="ambiguous"):
         runner._create_native_rule("Ambiguous", return_result=True)
-
-
 
 
 def test_create_native_rule_relay_lost_waits_for_delayed_exact_match(monkeypatch):
@@ -2444,7 +2201,7 @@ def test_create_native_rule_never_reissues_after_bounded_absence(monkeypatch):
                 create_calls += 1
                 if create_calls == 1:
                     raise et.RelayLostResponseError("504 Gateway Timeout")
-                return {"success": True, "appId": 44, "ruleId": 44}
+                return {"success": True, "rule_id": 44}
             assert name == "hub_read_rules"
             return {"rules": []}
 
@@ -2457,8 +2214,8 @@ def test_create_native_rule_never_reissues_after_bounded_absence(monkeypatch):
 
     result = runner._create_native_rule("LateCommit", return_result=True)
 
-    assert result == (44, {"success": True, "appId": 44, "ruleId": 44})
-    attempted_creates = [arguments["args"]["name"] for name, arguments in calls
+    assert result == (44, {"success": True, "rule_id": 44})
+    attempted_creates = [arguments["args"]["args"]["name"] for name, arguments in calls
                          if name == "hub_manage_rule_machine"]
     assert attempted_creates == [
         "BAT_E2E_LateCommit_run_1_1",
@@ -2542,7 +2299,6 @@ def test_assert_switch_required_expression_rejects_shell_without_expression():
         runner._assert_switch_required_expression(43, 88, "on")
 
 
-
 @pytest.mark.parametrize("value,wanted,expected", [
     ({"88": "Switch"}, 88, True),
     ([{"id": 88}], 88, True),
@@ -2600,7 +2356,6 @@ def test_driver_lifecycle_uses_logical_write_helper_for_create():
     create_args = write_calls[0][2]
     assert create_args["confirm"] is True
     assert "DRIVER-LEG-MARKER-V1" in create_args["source"]
-
 
 
 def test_backup_gate_retries_when_an_async_state_write_replaces_the_fallback_stamp():
@@ -2752,13 +2507,19 @@ def test_inject_device_id_recurses_into_else_actions():
 # ---------------------------------------------------------------------------
 
 def test_op_key_gateway_set_rule_create():
-    """Gateway-wrapped hub_set_rule with no inner appId resolves to a :create op."""
-    assert et._op_key("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": {}}) == "hub_set_rule:create"
+    """Gateway-wrapped native create keeps its explicit operation timing key."""
+    assert et._op_key("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": {"operation": "create"}}) == "hub_set_rule:create"
+
+
+def test_op_key_set_rule_unknown_operation_never_echoes_the_argument():
+    # The key is printed in the run summary, so caller-supplied text must not reach it.
+    for operation in ("secret-token-value", {"x": 1}, 7):
+        assert et._op_key("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": {"operation": operation}}) == "hub_set_rule:other"
 
 
 def test_op_key_gateway_set_rule_edit():
-    """An inner appId marks an :edit (mutation), so fixture-create cost stays separable in the summary."""
-    assert et._op_key("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": {"appId": "5"}}) == "hub_set_rule:edit"
+    """Native update timing stays separate from native create timing."""
+    assert et._op_key("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": {"operation": "update", "rule_id": 5}}) == "hub_set_rule:update"
 
 
 def test_op_key_gateway_other_subtool_uses_sub_tool():
@@ -2767,11 +2528,11 @@ def test_op_key_gateway_other_subtool_uses_sub_tool():
 
 
 def test_op_key_decodes_stringified_inner_args_before_classifying_edit():
-    """A stringified appId must still classify the operation as an edit."""
+    """Stringified gateway arguments retain the explicit update operation."""
     assert et._op_key(
         "hub_manage_rule_machine",
-        {"tool": "hub_set_rule", "args": json.dumps({"appId": "5"})},
-    ) == "hub_set_rule:edit"
+        {"tool": "hub_set_rule", "args": json.dumps({"operation": "update", "rule_id": 5})},
+    ) == "hub_set_rule:update"
 
 
 def test_op_key_flat_tool_uses_name():
@@ -3376,16 +3137,6 @@ def test_redaction_is_inert_outside_the_ephemeral_lane(monkeypatch):
     assert sys.stdout is out
 
 
-def test_rule_patch_rows_reads_one_key_so_continued_rows_are_not_doubled():
-    slices = [{"op": "addActions", "results": [{}, {}]}, {"op": "addAction"}]
-    # Continued terminal: patchResults holds every slice and patches mirrors it.
-    assert et._rule_patch_rows({"patchResults": slices, "patches": list(slices)}) == slices
-    assert et._rule_patch_rows({"patches": slices}) == slices
-    assert et._rule_patch_rows({"patchResults": slices}) == slices
-    assert et._rule_patch_rows({"patchResults": [], "patches": slices}) == slices
-    assert et._rule_patch_rows({"success": False}) == []
-
-
 @pytest.mark.parametrize("details,offline", [
     ({"zwaveData": {"enabled": False, "healthy": True}}, True),
     ({"zwaveData": {"enabled": True, "healthy": False}}, True),
@@ -3422,3 +3173,161 @@ def test_accepted_skip_passes_only_documented_ephemeral_reasons(monkeypatch, lan
     else:
         monkeypatch.delenv("E2E_LANE", raising=False)
     assert et.accepted_skip(message) is expected
+
+
+def _native_parent_client(pages, calls=None):
+    inventory = iter(pages)
+    def call_tool(name, arguments):
+        if calls is not None:
+            calls.append((name, arguments))
+        if arguments["scope"] == "types":
+            return {"apps": [{"id": 18, "name": "Rule Machine", "system": True}]}
+        return next(inventory)
+    return SimpleNamespace(call_tool=call_tool)
+
+
+def test_native_parent_discovery_matches_native_type_id_across_all_pages():
+    calls = []
+    client = _native_parent_client([
+        {"apps": [{"id": 1, "name": "Rule Machine", "appTypeId": 99, "parentId": None}], "nextCursor": "page-two"},
+        {"apps": [{"id": 28, "name": "My Automations", "appTypeId": 18, "parentId": None, "hasChildren": False}]},
+    ], calls)
+    assert et._discover_native_rule_parent_id(client) == 28
+    assert calls == [
+        ("hub_list_apps", {"scope": "types"}),
+        ("hub_list_apps", {"scope": "instances", "cursor": ""}),
+        ("hub_list_apps", {"scope": "instances", "cursor": "page-two"}),
+    ]
+
+
+def test_native_parent_discovery_checks_later_pages_for_ambiguous_exact_types():
+    client = _native_parent_client([
+        {"apps": [{"id": 28, "name": "First", "appTypeId": 18, "parentId": None}], "nextCursor": "next"},
+        {"apps": [{"id": 29, "name": "Second", "appTypeId": 18, "parentId": None}]},
+    ])
+    with pytest.raises(AssertionError, match="Expected one Rule Machine parent"):
+        et._discover_native_rule_parent_id(client)
+
+
+@pytest.mark.parametrize("row", [
+    {"id": 28, "name": "Rule Machine", "appTypeId": 19, "parentId": None},
+    {"id": 28, "name": "Rule Machine", "appTypeId": 18, "parentId": 9},
+    {"id": "bad-id", "name": "Rule Machine", "appTypeId": 18, "parentId": None},
+])
+def test_native_parent_discovery_rejects_wrong_type_or_invalid_id(row):
+    with pytest.raises(AssertionError):
+        et._discover_native_rule_parent_id(_native_parent_client([{"apps": [row]}]))
+
+
+def test_native_parent_discovery_refuses_repeated_inventory_cursor():
+    client = _native_parent_client([{"apps": [], "nextCursor": "same"}] * 2)
+    with pytest.raises(AssertionError, match="cursor repeated"):
+        et._discover_native_rule_parent_id(client)
+
+
+@pytest.mark.parametrize("types", [
+    [], [{"id": 18, "name": "Rule Machine", "system": False}],
+    [{"id": 18, "name": "Rule Machine", "system": True}] * 2,
+])
+def test_native_parent_discovery_requires_unique_builtin_type(types):
+    client = SimpleNamespace(call_tool=lambda *_args: {"apps": types})
+    with pytest.raises(AssertionError, match="built-in Rule Machine app type"):
+        et._discover_native_rule_parent_id(client)
+
+
+def test_missing_native_parent_is_installed_once_then_independently_rediscovered():
+    installs = []
+    client = _native_parent_client([
+        {"apps": []},
+        {"apps": [{"id": 28, "appTypeId": 18, "parentId": None}]},
+    ])
+    assert et._discover_native_rule_parent_id(client, install_missing=installs.append) == 28
+    assert installs == [18]
+
+
+def test_existing_native_parent_never_installs_another():
+    client = _native_parent_client([{"apps": [{"id": 28, "appTypeId": 18, "parentId": None}]}])
+    assert et._discover_native_rule_parent_id(client, install_missing=lambda *_args: pytest.fail("unexpected install")) == 28
+
+
+def test_ambiguous_native_parent_does_not_install():
+    client = _native_parent_client([{"apps": [
+        {"id": 28, "appTypeId": 18, "parentId": None},
+        {"id": 29, "appTypeId": 18, "parentId": None},
+    ]}])
+    with pytest.raises(AssertionError, match="Expected one Rule Machine parent"):
+        et._discover_native_rule_parent_id(client, install_missing=lambda *_args: pytest.fail("unexpected install"))
+
+
+def test_native_parent_install_does_not_repeat_when_rediscovery_fails():
+    installs = []
+    client = _native_parent_client([{"apps": []}, {"apps": []}])
+    with pytest.raises(AssertionError, match="Expected one Rule Machine parent"):
+        et._discover_native_rule_parent_id(client, install_missing=installs.append)
+    assert installs == [18]
+
+
+def test_edited_snapshot_copy_retargets_only_explicit_device_references_and_labels():
+    payload = {"deviceReplacements": {"7": {"deviceLabel": "Old fixture", "deviceId": "7"}},
+               "appReplacements": {"42": {"appLabel": "Rule"}},
+               "appData": {"42": {"appSettings": [
+                   {"name": "pick.7", "type": "capability.switch", "deviceList": {"7": "Old fixture"},
+                    "value": ["7"], "deviceIdsForDeviceList": ["7"]},
+                   {"name": "Counter", "type": "number", "value": 7}],
+                   "state": {"actions": {"7": {"method": "getOnOffSwitch"}}, "actionList": ["7"],
+                             "eval": {"0": ["7"]}, "capabsfalse": {"7": "Old fixture is on"},
+                             "deviceIdsForDeviceList": {"pick.7": ["7"]}},
+                   "subscriptions": [{"deviceId": 7}]}}}
+    snapshot = {"captureFormat": "native-rule-edit-v1", "ruleId": 42,
+                "nativeExport": json.dumps(payload),
+                "configJson": {"settings": {"pick.7": {"7": "Old fixture"}, "Counter": 7}},
+                "statusJson": {"appSettings": payload["appData"]["42"]["appSettings"]}}
+    original = json.dumps(snapshot, indent=2)
+    edited = json.loads(et.TestRunner._rm_edited_snapshot(original, 7, "Old fixture", 9, "New fixture"))
+    native = json.loads(edited["nativeExport"])
+    data = native["appData"]["42"]
+    assert data["appSettings"][0]["deviceList"] == {"9": "New fixture"}
+    assert data["appSettings"][0]["value"] == ["9"]
+    assert data["state"]["deviceIdsForDeviceList"] == {"pick.7": ["9"]}
+    assert data["subscriptions"] == [{"deviceId": 9}]
+    assert native["deviceReplacements"] == {"9": {"deviceLabel": "New fixture", "deviceId": "9"}}
+    assert data["state"]["capabsfalse"] == {"7": "New fixture is on"}
+    assert data["state"]["actions"] == payload["appData"]["42"]["state"]["actions"]
+    assert data["state"]["actionList"] == ["7"]
+    assert data["state"]["eval"] == {"0": ["7"]}
+    assert data["appSettings"][1]["value"] == 7
+    assert edited["configJson"]["settings"] == {"pick.7": {"9": "New fixture"}, "Counter": 7}
+    assert edited["statusJson"]["appSettings"][0]["deviceIdsForDeviceList"] == ["9"]
+    assert original == json.dumps(snapshot, indent=2)
+
+
+def test_run_one_sets_pre_edit_backups_per_test_for_any_caller(monkeypatch):
+    # The ephemeral provider calls _run_one directly, so the per-test backup toggle lives there.
+    writes = []
+
+    def call_tool(name, args):
+        assert name == "hub_update_mcp_settings"
+        writes.append(args["settings"]["backupBeforeRuleEdits"])
+        return {"success": True, "updated": {"backupBeforeRuleEdits": args["settings"]["backupBeforeRuleEdits"]}}
+
+    runner = et.TestRunner(SimpleNamespace(call_tool=call_tool))
+    monkeypatch.setattr(et.TestRunner, "BACKUP_PROVING_TESTS", frozenset({"test_proves"}))
+    ran = []
+    monkeypatch.setattr(runner, "_run_one_attempts", lambda group, name, method: ran.append((method, runner._backups_on)))
+    for method in ("test_plain", "test_proves", "test_plain", "test_plain"):
+        runner._run_one("native_apps", method, method)
+    assert ran == [("test_plain", None), ("test_proves", True), ("test_plain", False), ("test_plain", False)]
+    assert writes == [True, False]
+    # A test that turns them on itself leaves that state for the next one to correct.
+    runner._rule_edit_backups(True)
+    runner._run_one("native_apps", "test_plain", "test_plain")
+    assert writes[-2:] == [True, False]
+
+
+def test_run_one_records_one_failure_when_the_backup_toggle_fails(monkeypatch):
+    runner = et.TestRunner(SimpleNamespace(call_tool=lambda name, args: {"success": False}))
+    monkeypatch.setattr(et.TestRunner, "BACKUP_PROVING_TESTS", frozenset({"test_proves"}))
+    monkeypatch.setattr(runner, "_run_one_attempts", lambda *a: pytest.fail("the test must not run"))
+    runner._run_one("native_apps", "test_proves", "test_proves")
+    assert [(r["name"], r["status"]) for r in runner.results] == [("test_proves", "fail")]
+    assert "could not turn pre-edit backups on" in runner.results[0]["message"]

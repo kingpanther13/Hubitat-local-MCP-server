@@ -19,7 +19,9 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import asyncio
 import base64
+import html
 import json
 import os
 import random
@@ -36,8 +38,10 @@ from zoneinfo import ZoneInfo
 import requests
 from device_configuration_helpers import assert_native_preferences
 from sdk_conformance_helpers import (
-    assert_exact_rule_log_messages,
-    mrtr_log_actions,
+    assert_exact_native_actions,
+    assert_exact_native_conditions,
+    lane_mrtr_changes,
+    read_native_document_sections,
     write_cap_holder_retry_blocker,
     write_cap_variable_items,
 )
@@ -230,6 +234,7 @@ class McpToolError(McpError):
 
     def __init__(self, tool_name: str, message: str):
         self.tool_name = tool_name
+        self.content_text = message
         super().__init__(f"Tool '{tool_name}' error: {message}")
 
 
@@ -338,10 +343,22 @@ def _radio_unavailable_error(error: Any) -> bool:
     return isinstance(error, str) and ("503" in error or "unavailable" in error.lower())
 
 
-def _rule_patch_rows(result: dict) -> list:
-    """hub_set_rule patch rows. A continued call's patchResults already holds every slice and
-    patches mirrors it, so read one key, never both."""
-    return result.get("patchResults") or result.get("patches") or []
+def native_field(name: str, type_name: str, value: Any) -> dict:
+    """A typed native RM input for a hub_set_rule change; # stands for the row id RM allocates."""
+    return {"name": name, "type": type_name, "value": value}
+
+
+def native_change(part: str, **value: Any) -> dict:
+    return {"part": part, "value": value}
+
+
+def native_log(message: str, **extra: Any) -> dict:
+    return native_change("action", type="messageActs", subtype="getLogMsg",
+                         fields=[native_field("logmsg.#", "textarea", message)], **extra)
+
+
+def native_delete(part: str, row_id: Any) -> dict:
+    return {"part": "delete", "value": {"part": part, "id": str(row_id)}}
 
 
 def _decode_mcp1_envelope(raw_message: str) -> dict | None:
@@ -439,22 +456,23 @@ def _tool_error_payload(exc: McpError) -> dict:
 # ---------------------------------------------------------------------------
 
 
+_SET_RULE_OPERATION_KEYS = {"help": "help", "read": "read", "create": "create", "update": "update", "form": "form"}
+
+
 def _op_key(name: str, arguments: dict | None) -> str:
-    """Resolve the per-op timing key for the run summary: the gateway sub-tool (args['tool']) when present,
-    else the flat tool name; hub_set_rule is split into :create (no inner appId) vs :edit so fixture cost is
-    separable from mutation cost. Pure dict logic (unit-tested in test_e2e_test_helpers.py)."""
+    """Group continuation timing by the public operation, including schema and read calls."""
     args = arguments or {}
     key = args.get("tool", name)
     if key == "hub_set_rule":
-        # Inner args may arrive as a JSON STRING (a serialization some clients use, and one
-        # the server parses); decode that shape before splitting create from edit.
-        inner = args.get("args")
+        inner = args.get("args", {}) if args.get("tool") else args
         if isinstance(inner, str):
             try:
                 inner = json.loads(inner)
             except (json.JSONDecodeError, TypeError):
-                inner = None
-        key += ":create" if not (inner.get("appId") if isinstance(inner, dict) else None) else ":edit"
+                inner = {}
+        operation = inner.get("operation", "help") if isinstance(inner, dict) else "help"
+        # Fixed names only: the key is printed, so it never carries a caller's argument text.
+        key += ":" + _SET_RULE_OPERATION_KEYS.get(operation if isinstance(operation, str) else "", "other")
     return key
 
 
@@ -928,7 +946,7 @@ class HubitatMcpClient:
             gateway = self._route_for(name)
             if gateway:
                 wire_name, wire_args = gateway, {"tool": name, "args": args}
-        op_key = _op_key(wire_name, wire_args)   # gateway sub-tool / flat name; hub_set_rule split create-vs-edit
+        op_key = _op_key(wire_name, wire_args)   # gateway sub-tool / flat name; hub_set_rule keyed by its explicit operation
         headers = {
             "MCP-Protocol-Version": MODERN_PROTOCOL_VERSION,
             "Mcp-Method": "tools/call",
@@ -1253,6 +1271,39 @@ def _is_stranded_button_controller(app: dict) -> bool:
             and bool(str(app.get("id") or "")) and (PREFIX in name or "E2E_PERM_" in name))
 
 
+def _discover_native_rule_parent_id(client, *, install_missing=None) -> int:
+    """Resolve the built-in app type, then identify its root instance across all pages."""
+    catalog = client.call_tool("hub_list_apps", {"scope": "types"})
+    assert isinstance(catalog, dict) and catalog.get("success") is not False, catalog
+    types = [row for row in catalog.get("apps", []) if isinstance(row, dict)
+             and row.get("system") is True and row.get("name") == "Rule Machine"]
+    assert len(types) == 1, f"Expected one built-in Rule Machine app type, found {types}"
+    type_id = str(types[0].get("id", ""))
+    assert type_id.isdecimal(), f"Rule Machine app type ID is not decimal: {types[0]}"
+    parents, cursor, seen = [], "", set()
+    while True:
+        result = client.call_tool("hub_list_apps", {"scope": "instances", "cursor": cursor})
+        assert isinstance(result, dict) and result.get("success") is not False, result
+        rows = result.get("apps", result.get("installedApps", []))
+        assert isinstance(rows, list), "Parent inventory returned no app list"
+        parents.extend(row for row in rows if isinstance(row, dict)
+                       and str(row.get("appTypeId")) == type_id
+                       and row.get("parentId") is None)
+        next_cursor = result.get("nextCursor")
+        if not next_cursor:
+            break
+        assert next_cursor not in seen and next_cursor != cursor, "Parent inventory cursor repeated"
+        seen.add(next_cursor)
+        cursor = next_cursor
+    if not parents and install_missing is not None:
+        install_missing(int(type_id))
+        return _discover_native_rule_parent_id(client)
+    assert len(parents) == 1, f"Expected one Rule Machine parent, found {parents}"
+    parent_id = str(parents[0].get("id", ""))
+    assert parent_id.isdecimal(), f"Rule Machine parent ID is not decimal: {parents[0]}"
+    return int(parent_id)
+
+
 class TestRunner:
     def __init__(self, client: HubitatMcpClient, verbose: bool = False):
         self.client = client
@@ -1261,6 +1312,8 @@ class TestRunner:
         # (app_id, health) the last RM write returned, so _assert_rule_healthy can assert on it without
         # a second hub_get_rule_health round-trip. Keyed by app; cleared on a relay-dropped/soft write.
         self._last_write_health: tuple[str, dict] | None = None
+        # The pre-edit backup toggle as this runner last set it; None until it sets it.
+        self._backups_on: bool | None = None
 
         # Read-round-trip stashes -- each lets a downstream test reuse an UPSTREAM test's identical
         # immutable read instead of re-fetching. EVERY one falls back to a live fetch when unset or
@@ -1706,7 +1759,61 @@ class TestRunner:
         "button":   ("E2E_PERM_Button",   "Virtual Button"),
         "motion":   ("E2E_PERM_Motion",   "Virtual Motion Sensor"),
         "omni":     ("E2E_PERM_Omni",     "Virtual Omni Sensor"),
+        "garage":   ("E2E_PERM_Garage",   "Virtual Garage Door Controller"),
+        "valve":    ("E2E_PERM_Valve",    "Virtual Valve"),
+        "blind":    ("E2E_PERM_Blind",    "Virtual Blind"),
+        "player":   ("E2E_PERM_Player",   "Virtual Player"),
+        "color":    ("E2E_PERM_Color",    "Virtual RGBW Light"),
+        "thermostat_a": ("E2E_PERM_Thermostat_A", "Virtual Thermostat"),
+        "thermostat_b": ("E2E_PERM_Thermostat_B", "Virtual Thermostat"),
+        "tone":     ("E2E_PERM_Tone",     "BAT_E2E_KEEP Virtual Tone"),
+        # The scene fixture's only member: no test commands it, so the scene's activator switch
+        # (on while its members match the captured scene) never flips under other tests.
+        "scene_member": ("E2E_PERM_Scene_Member", "Virtual Switch"),
     }
+
+    # User drivers for the fixtures no built-in virtual driver covers (none has Tone): installed from
+    # tests/fixtures before their first device, never deleted (the purge reclaims only throwaway code).
+    PERM_FIXTURE_DRIVERS: ClassVar[dict[str, str]] = {
+        "BAT_E2E_KEEP Virtual Tone": "e2e-tone-driver.groovy",
+    }
+
+    # Built-in apps that RM's app-backed actions drive (label, app type name, hub_set_native_app
+    # appType). RM lists those actions only while an instance of the app type exists. Found by label,
+    # else created and configured on first use, never deleted.
+    BUILTIN_APP_FIXTURES: ClassVar[dict[str, tuple[str, str, str]]] = {
+        "room_lights": (f"{SCAFFOLD_PREFIX}RoomLights", "Room Lights", "room_lighting"),
+        "scene": (f"{SCAFFOLD_PREFIX}Scene", "Scene-1.2", "scene"),
+        "therm_ctl": (f"{SCAFFOLD_PREFIX}ThermCtl", "Thermostat Controller 2.0", "thermostat_controller"),
+        "sched_time": (f"{SCAFFOLD_PREFIX}ThermSched_Time", "Thermostat Scheduler 2.0", "thermostat_scheduler"),
+        "sched_modes": (f"{SCAFFOLD_PREFIX}ThermSched_Modes", "Thermostat Scheduler 2.0", "thermostat_scheduler"),
+    }
+
+    # Scenarios that assert on an edit's recovery point or restore from it run with pre-edit backups
+    # on; every other scenario runs without the snapshot a protected edit pays for.
+    BACKUP_PROVING_TESTS: ClassVar[frozenset[str]] = frozenset({
+        "test_set_rule_self_gateway_envelope_edit",
+        "test_set_native_app_basic_rule_lifecycle",
+        "test_set_native_app_walk_keeps_the_pending_page",
+        "test_rm_rule_restore_in_place_with_device_picker",
+        "test_rm_rule_restore_skips_a_deleted_device",
+        "test_rm_rule_restore_brings_back_a_removed_trigger",
+        "test_rm_rule_restore_of_a_deleted_rule_uses_the_exact_copy",
+        "test_rm_rule_restore_puts_actions_back_in_order",
+        "test_rm_rule_restore_expression_by_device_name",
+        "test_legacy_export_backup_restores_in_place",
+        "test_complex_edit_recovers_deleted_rows_and_existing_payloads",
+        "test_rule_edit_backups_capture_once_per_edit",
+    })
+
+    def _rule_edit_backups(self, on: bool) -> None:
+        """Set the pre-edit backup toggle and confirm the server now reads it that way."""
+        self._backups_on = None
+        result = self.client.call_tool("hub_update_mcp_settings", {"settings": {"backupBeforeRuleEdits": on}, "confirm": True})
+        assert isinstance(result, dict) and result.get("success") is True \
+            and (result.get("updated") or {}).get("backupBeforeRuleEdits") is on, \
+            f"setting backupBeforeRuleEdits={on} did not take: {result}"
+        self._backups_on = on
 
     # PERMANENT hub variables for tests that only need a variable to exist (create/delete is not their
     # subject). Created on a fresh hub, reset to their starting value per use, never deleted; the
@@ -1745,12 +1852,17 @@ class TestRunner:
             except (TypeError, ValueError):
                 return str(value).lower() == wanted.lower()
 
+        def same_type(reported, wanted: str) -> bool:
+            # The hub lists a Number variable as integer and a Decimal one as bigdecimal.
+            got = str(reported or "").lower()
+            return {"integer": "number", "bigdecimal": "decimal"}.get(got, got) == wanted.lower()
+
         existing = self._hub_variables_by_name()
         create, reset = [], []
         for key in keys:
             name, var_type, value = self.PERM_VARIABLES[key]
             row = existing.get(name)
-            if row is not None and str(row.get("type", "")).lower() != var_type.lower():
+            if row is not None and not same_type(row.get("type"), var_type):
                 self._delete_variable_safe(name, inline=True)
                 row = None
             if row is None:
@@ -1815,6 +1927,8 @@ class TestRunner:
         if key in self._perm_fixture_ids:
             return self._perm_fixture_ids[key]
 
+        if driver_name in self.PERM_FIXTURE_DRIVERS:
+            self._ensure_fixture_driver(driver_name)
         type_id = self._driver_type_id(driver_name)
         created = self.client.call_tool("hub_manage_devices", {
             "tool": "hub_create_device",
@@ -1833,6 +1947,22 @@ class TestRunner:
               "permanent, non-child; it will be reused by every later run")
         self._perm_fixture_ids[key] = str(dev_id)
         return self._perm_fixture_ids[key]
+
+    def _ensure_fixture_driver(self, name: str) -> None:
+        """Install a permanent fixture's user driver from tests/fixtures unless the hub already has it."""
+        listed = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_drivers", "args": {}})
+        # An unreadable list is not "absent": installing then would add a duplicate permanent driver.
+        assert isinstance(listed.get("drivers"), list), \
+            f"user driver list unreadable -- refusing to install '{name}' a second time: {listed}"
+        if any(d.get("name") == name and d.get("namespace") == "mcptest" for d in listed["drivers"]):
+            return
+        source = (Path(__file__).resolve().parent / "fixtures" / self.PERM_FIXTURE_DRIVERS[name]).read_text(encoding="utf-8")
+        created = self.client.call_tool("hub_manage_code", {"tool": "hub_create_driver", "args": {"source": source, "confirm": True}})
+        assert created.get("success") is True and created.get("driverId"), f"installing the '{name}' fixture driver failed: {created}"
+        # The type-id cache predates the driver; the next lookup reloads the catalog.
+        self._driver_type_ids.clear()
+        self._driver_buckets.clear()
+        print(f"    [PERM FIXTURE] installed driver '{name}' (id {created['driverId']}) -- reused by later runs")
 
     def _driver_type_id(self, driver_name: str) -> str:
         """Resolve a built-in driver's type id by name (hub-specific, so never hardcoded)."""
@@ -2110,6 +2240,19 @@ class TestRunner:
 
     def _run_one(self, group: str, name: str, method_name: str) -> None:
         print(f"  [TEST] {datetime.now(UTC).isoformat(timespec='seconds')} {group}/{name}", flush=True)
+        self._test_started = time.time()
+        # Pre-edit backups are on for the tests that prove them and off after one. Set here, not in
+        # the run loop, because the ephemeral provider calls this method directly; a test that toggles
+        # them itself leaves the tracked state for the next one. An unknown state is left alone for
+        # an ordinary test.
+        proving = method_name in self.BACKUP_PROVING_TESTS
+        current = self._backups_on
+        if (proving and current is not True) or (not proving and current is True):
+            try:
+                self._rule_edit_backups(proving)
+            except Exception as exc:
+                self._record(name, group, "fail", message=f"could not turn pre-edit backups {'on' if proving else 'off'}: {exc}")
+                return
         capture_load = getattr(self, "_load_diagnostics", False)
         matrix = method_name == "test_device_configuration_matrix"
         if capture_load and (matrix or method_name == "test_set_rule_native_lifecycle"):
@@ -2382,40 +2525,6 @@ class TestRunner:
                  if str(value) == var_name and re.search(r"(?:Var[A-Za-z]*|varName)_\d+$", str(key))]
         return [str(settings.get(f"state_{slot}")).lower() for slot in slots]
 
-    def _walk_setup_step(self, app_id: Any, step: dict, allow_open_block: bool) -> dict:
-        """One single-step walkStep used as setup.
-
-        A single step runs its own health check without the drive's pre-existing-issue exemption, so on a rule
-        with a deliberately open block it reports success:false. With allow_open_block, accept only that
-        verdict: every structural issue is an unclosed block and nothing else is wrong."""
-        if not allow_open_block:
-            return self._set_rule(app_id, {"walkStep": step}, strict=True)
-        result = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": {
-            "appId": app_id, "confirm": True, "walkStep": step}})
-        self._last_write_health = None
-        if result.get("success") is not False:
-            return result
-        health = result.get("health") or {}
-        issues = [str(issue) for issue in (health.get("structuralIssues") or [])]
-        assert (issues and all("never closed" in issue for issue in issues)
-                and not result.get("pageError") and not result.get("silentRejection")
-                and health.get("broken") is not True and not health.get("brokenMarkers")
-                and not health.get("validationErrors") and not health.get("configPageError")), \
-            f"setup step failed for a reason other than the expected open block: {result}"
-        return result
-
-    def _navigate_new_action(self, app_id: Any, *, allow_open_block: bool = False) -> str:
-        """Open a new action editor and return its RM-assigned index.
-
-        The editor is opened the way RM's own New Action button does (N with doActN). Navigating to doActPage by
-        name on a rule with no pending action state renders RM's startsWith-on-null page error."""
-        self._walk_setup_step(app_id, {"page": "selectActions", "operation": "click",
-                                       "click": {"name": "N", "stateAttribute": "doActN"}}, allow_open_block)
-        page = self._walk_setup_step(app_id, {"page": "doActPage", "operation": "introspect"}, allow_open_block)
-        act_field = next((i.get("name") for i in ((page.get("after") or {}).get("inputs") or [])
-                          if str(i.get("name")).startswith("actType.")), None)
-        assert act_field, f"doActPage should reveal an actType.<n> picker: {page}"
-        return act_field.split(".", 1)[1]
 
     def _flush_deferred_variables(self) -> None:
         """Delete deferred fixture variables now, so a re-run can recreate its fixed names."""
@@ -2876,36 +2985,6 @@ class TestRunner:
         assert data.get("status") == "ok", f"Health status != ok: {data.get('status')}"
         assert "version" in data, "Health response missing version"
 
-    @test("infrastructure")
-    def test_set_rule_guide_param(self) -> None:
-        # guide:true returns the hub_set_rule capability reference inline (no
-        # separate hub_get_tool_guide call) and makes NO rule change -- a pure static
-        # early-return alongside the discover-mode short-circuit. Pins the new param.
-        result = self.client.call_tool("hub_manage_rule_machine", {
-            "tool": "hub_set_rule", "args": {"guide": True},
-        })
-        blob = str(result)
-        assert "addTrigger" in blob and "walkStep" in blob, \
-            f"guide:true response missing the capability reference content: {blob[:200]}"
-
-    @test("infrastructure")
-    def test_set_rule_self_gateway_meta(self) -> None:
-        # The flat self-gateway {operation, ...} envelope is re-keyed by toolSetRule
-        # regardless of mode, so its no-mutation paths are exercisable through the
-        # gateway here. guide / discover / probe must return schema and change NOTHING.
-        guide = self.client.call_tool("hub_manage_rule_machine", {
-            "tool": "hub_set_rule", "args": {"operation": "guide"}})
-        assert "addTrigger" in str(guide) and "walkStep" in str(guide), \
-            f"operation=guide did not return the capability reference: {str(guide)[:200]}"
-        disc = self.client.call_tool("hub_manage_rule_machine", {
-            "tool": "hub_set_rule", "args": {"operation": "discover", "args": {"kind": "action"}}})
-        assert "capability" in str(disc).lower(), \
-            f"operation=discover did not return a live schema: {str(disc)[:200]}"
-        # PROBE: operation set, NO confirm -> returns the arg schema, mutates nothing.
-        probe = self.client.call_tool("hub_manage_rule_machine", {
-            "tool": "hub_set_rule", "args": {"operation": "addAction"}})
-        assert "no rule was changed" in str(probe), \
-            f"operation probe (no confirm) should return schema, not execute: {str(probe)[:200]}"
 
     # -----------------------------------------------------------------------
     # GROUP 2: devices (4 tests)
@@ -3586,23 +3665,22 @@ class TestRunner:
 
     @test("native_apps")
     def test_set_native_app_guide_meta_call_via_gateway(self) -> None:
-        """Issue #319 latent-bug fix: hub_set_native_app's guide/discover meta-calls are
-        schema-only (static reference content, no mutation) and must clear the gateway
-        required-param pre-check WITHOUT confirm -- exactly like hub_set_rule's. Before
-        the fix the pre-check refused them for the missing confirm on the gateway path
-        while the identical flat call succeeded. The appId only shapes the call as an
-        edit; the guide short-circuit never dereferences it, so a bogus id is safe."""
+        """Static generic help clears gateway validation without confirmation or hub reads.
+
+        appId shapes an edit request but is never dereferenced for guide-only calls.
+        """
         result = self.client.call_tool("hub_manage_native_rules_and_apps", {
             "tool": "hub_set_native_app", "args": {"appId": 999999999, "guide": True}})
         blob = str(result)
-        assert "addTrigger" in blob and "walkStep" in blob, \
-            f"guide meta-call did not return the capability reference: {blob[:200]}"
+        assert result.get("success") is True and result.get("section") == "builtin_app_tools_crud", \
+            f"guide meta-call did not return the generic native guide: {blob[:200]}"
+        assert all(name in blob for name in ("settings", "walkStep", "buttonRule")), \
+            f"generic native guide is missing retained operations: {blob[:200]}"
 
     @test("native_apps")
     def test_set_app_disabled_roundtrip(self) -> None:
         # Own the fixture: a user's existing app may intentionally be protected.
-        app_id = self._create_native_rule("DisableRoundtrip", {
-            "addActions": [{"capability": "log", "message": "disable roundtrip fixture"}]})
+        app_id = self._create_native_rule("DisableRoundtrip", [native_log("disable roundtrip fixture")])
         try:
             for disabled in (True, False):
                 result = self.client.call_tool("hub_manage_native_rules_and_apps", {
@@ -5640,160 +5718,6 @@ class TestRunner:
     # SmartApp surface that appears in Hubitat's own UI.
     # -----------------------------------------------------------------------
 
-    @test("native_apps")
-    def test_set_rule_self_gateway_envelope_edit(self) -> None:
-        # EXECUTE via the flat self-gateway envelope: {operation, appId, args, confirm}
-        # re-keys to the canonical edit and bakes a real action on the live hub. A
-        # confirm-less probe in the middle must NOT mutate.
-        app_id = self._create_native_rule("SelfGwEnv", {
-            "addActions": [{"capability": "log", "message": "first"}]})
-        backup_policy_touched = False
-        try:
-            # The normal E2E policy is recent-baseline reuse. Set it explicitly so a
-            # prior interrupted strict-policy proof cannot make this run needlessly
-            # upload a new rule backup before every edit.
-            backup_policy_touched = True
-            self.client.call_tool("hub_manage_mcp", {
-                "tool": "hub_update_mcp_settings",
-                "args": {"settings": {"backupEveryRuleWrite": False}, "confirm": True},
-            })
-            probe = self.client.call_tool("hub_manage_rule_machine", {
-                "tool": "hub_set_rule", "args": {"operation": "addAction", "appId": app_id}})
-            assert "no rule was changed" in str(probe), \
-                f"envelope probe (no confirm) mutated or did not return schema: {str(probe)[:200]}"
-            res = self._rm_call_soft({"operation": "addAction", "appId": app_id,
-                                      "args": {"capability": "log", "message": "via-envelope"},
-                                      "confirm": True}, strict=True)
-            assert res.get("success") is not False, f"envelope-form addAction failed: {res}"
-            self._assert_rule_healthy(app_id)
-            # List-op tolerance: addActions wants a BARE array; an array accidentally wrapped
-            # under a single key ({actions:[...]}) must be unwrapped and baked, not rejected.
-            wrapped = self._rm_call_soft({"operation": "addActions", "appId": app_id,
-                                          "args": {"actions": [{"capability": "log", "message": "wrapped-list"}]},
-                                          "confirm": True}, strict=True)
-            assert wrapped.get("success") is not False, f"wrapped-array addActions (list-op unwrap) failed: {wrapped}"
-            self._assert_rule_healthy(app_id)
-
-            default_first_key = (res.get("backup") or {}).get("backupKey")
-            default_second_key = (wrapped.get("backup") or {}).get("backupKey")
-            assert default_first_key and default_second_key == default_first_key, \
-                f"same-rule edits should reuse one recent baseline by default: first={res}, second={wrapped}"
-            # The session baseline is pinned, and the response says when it can be evicted.
-            default_backup = res.get("backup") or {}
-            assert default_backup.get("retention") == "pinned" \
-                and str(default_backup.get("retentionNote", "")).startswith("Pinned baseline"), \
-                f"the default edit baseline should be reported as pinned: {default_backup}"
-
-            # The baseline file keeps the app type record minus its OAuth client credentials and
-            # passwords. The message names keys only, so a failure cannot print a secret.
-            backup_file = (res.get("backup") or {}).get("fileName")
-            assert backup_file, f"addAction result names no backup file: {res.get('backup')}"
-            raw = self.client.call_tool("hub_manage_files", {
-                "tool": "hub_read_file", "args": {"fileName": backup_file}})
-            snapshot = json.loads(raw.get("content") or "{}")
-            app_type = ((snapshot.get("configJson") or {}).get("app") or {}).get("appType")
-            leaked = {"oauthClientId", "oauthClientSecret", "encryptedPassword", "sourcePassword"} & set(app_type or {})
-            assert isinstance(app_type, dict) and app_type.get("name") and not leaked, \
-                f"rule backup appType still carries credential fields {sorted(leaked)}; keys={sorted(app_type or {})}"
-
-            # One live rule proves the opt-in strict mode without making the rest of
-            # E2E pay the per-write File Manager cost. Restore OFF in finally.
-            self.client.call_tool("hub_manage_mcp", {
-                "tool": "hub_update_mcp_settings",
-                "args": {"settings": {"backupEveryRuleWrite": True}, "confirm": True},
-            })
-            # Retention is proven by listing, so the shared budget must have headroom: near the
-            # limit a publish would evict the very backups asserted on below.
-            budget = (self.client.call_tool("hub_read_apps_code", {
-                "tool": "hub_list_backups", "args": {"cursor": ""}}) or {}).get("storageBudget") or {}
-            assert int(budget.get("limitBytes") or 0) - int(budget.get("usedBytes") or 0) > 1_000_000, \
-                f"backup storage budget has no headroom for this test; eviction would hide retention: {budget}"
-            strict_first = self._rm_call_soft({"appId": app_id,
-                "button": "updateRule", "confirm": True}, strict=True)
-            strict_second = self._rm_call_soft({"appId": app_id,
-                "button": "updateRule", "confirm": True}, strict=True)
-            strict_first_key = (strict_first.get("backup") or {}).get("backupKey")
-            strict_second_key = (strict_second.get("backup") or {}).get("backupKey")
-            assert strict_first_key and strict_second_key \
-                and strict_first_key != strict_second_key \
-                and strict_first_key != default_first_key \
-                and strict_second_key != default_first_key, \
-                f"backupEveryRuleWrite should produce distinct baselines: first={strict_first}, second={strict_second}"
-            # Inside the editing session the per-write snapshots are rolling steps. Eviction is
-            # by the storage budget only, so the pinned baseline and both steps stay listed.
-            for strict in (strict_first, strict_second):
-                strict_backup = strict.get("backup") or {}
-                note = str(strict_backup.get("retentionNote", ""))
-                assert strict_backup.get("retention") == "rolling" and note.startswith("Rolling step") \
-                    and "removed only when" in note and "MB budget" in note, \
-                    f"a strict-mode write inside the session should be a budget-evicted rolling step: {strict_backup}"
-            kinds: dict = {}
-            page = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_backups", "args": {"cursor": ""}}) or {}
-            for _ in range(20):
-                for entry in page.get("backups") or []:
-                    kinds[entry.get("backupKey")] = entry.get("retention")
-                if not page.get("nextCursor"):
-                    break
-                page = self.client.call_tool("hub_read_apps_code", {
-                    "tool": "hub_list_backups", "args": {"cursor": page["nextCursor"]}}) or {}
-            assert kinds.get(default_first_key) == "pinned" and kinds.get(strict_first_key) == "rolling" \
-                and kinds.get(strict_second_key) == "rolling", \
-                f"hub_list_backups should list the pinned baseline and both rolling steps: {kinds}"
-        finally:
-            unwinding = sys.exc_info()[0] is not None
-            cleanup_errors: list[Exception] = []
-            if backup_policy_touched:
-                try:
-                    self.client.call_tool("hub_manage_mcp", {
-                        "tool": "hub_update_mcp_settings",
-                        "args": {"settings": {"backupEveryRuleWrite": False}, "confirm": True},
-                    })
-                except Exception as exc:
-                    cleanup_errors.append(exc)
-            try:
-                self._delete_native(app_id)
-            except Exception as exc:
-                cleanup_errors.append(exc)
-            if cleanup_errors:
-                if unwinding:
-                    print("  [WARN] cleanup failed while preserving the primary test error: " +
-                          " | ".join(str(exc) for exc in cleanup_errors))
-                else:
-                    raise cleanup_errors[0]
-
-    @test("native_apps")
-    def test_set_rule_self_gateway_envelope_create(self) -> None:
-        # CREATE via the flat self-gateway envelope: operation='create' lifts name + the
-        # bundle from args and routes to the create arm, baking a real rule on the live hub.
-        # The label carries < and &, which the hub stores HTML-escaped; hub_list_rules lists it as typed.
-        label = f"{PREFIX}SelfGwCreate <67 & go"
-        env = {"operation": "create",
-               "args": {"name": label,
-                        "addActions": [{"capability": "log", "message": "envelope-create"}]},
-               "confirm": True}
-        created = None
-        try:
-            created = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": env})
-            app_id = created.get("appId")
-        except (McpError, McpToolError, requests.HTTPError) as exc:
-            if "504" not in str(exc):
-                raise
-            time.sleep(3.0)
-            app_id = self._find_app_id_by_label(label)
-            assert app_id, f"envelope create '{label}' lost to relay 504 and not found by label"
-        assert app_id, f"envelope create did not return an appId: {created}"
-        self.created_native_app_ids.append(str(app_id))
-        try:
-            if created is not None:
-                assert created.get("success") is not False and not created.get("partial"), \
-                    f"envelope create did not fully bake: {created}"
-            self._assert_rule_healthy(app_id)
-            listed = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_list_rules", "args": {}})
-            row = next((x for x in (listed.get("rules") or []) if str(x.get("id")) == str(app_id)), None)
-            assert row is not None and row.get("label") == label, \
-                f"hub_list_rules must list the rule label as typed ({label!r}): {row}"
-        finally:
-            self._delete_native(app_id)
 
     def _untrack_native_app(self, app_id) -> None:
         if str(app_id) in self.created_native_app_ids:
@@ -5894,509 +5818,6 @@ class TestRunner:
               f"over {time.monotonic() - started:.1f}s, last status {status}")
         return status
 
-    @test("native_apps")
-    def test_set_rule_native_lifecycle(self) -> None:
-        # CREATE a native RM rule in ONE call: hub_set_rule with no appId, bundling
-        # a (device-free) Time trigger + a log action -- the headline new capability.
-        # The bundled create is the suite's heaviest single create; route it through
-        # _create_native_rule so a dropped relay response gets verified by label lookup
-        # instead of hard-failing the whole lifecycle.
-        certain_time_cap = "Certain Time (and optional date)"
-        app_id = self._create_native_rule("NativeRule", {
-            "addTrigger": {
-                "capability": certain_time_cap,
-                "time": "A specific time", "atTime": "17:00",
-            },
-            "addActions": [{"capability": "log", "message": "E2E native rule fired"}],
-        }, name_suffix=" (Paused)")
-
-        # VERIFY: the new rule shows up in the NATIVE RM rule list (RMUtils).
-        rules = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_list_rules", "args": {}})
-        rule_list = rules if isinstance(rules, list) else rules.get("rules", [])
-        found = any(
-            str(r.get("id")) == str(app_id) or f"{PREFIX}NativeRule" in (r.get("name") or r.get("label") or "")
-            for r in rule_list
-        )
-        assert found, f"created native rule {app_id} not found in hub_list_rules"
-        fixture_entry = next(r for r in rule_list if str(r.get("id")) == str(app_id))
-        expected_label = fixture_entry.get("name") or fixture_entry.get("label")
-        assert isinstance(expected_label, str) and expected_label.endswith(" (Paused)"), fixture_entry
-
-        # STATUS (issue #359): hub_list_rules surfaces each rule's live status. The freshly-
-        # created, enabled rule reads "active"; pausing via hub_set_rule_paused flips it to
-        # "paused" (+ paused:true), and resuming returns it to "active". Reuses THIS rule --
-        # no new rule created (keeps the RM e2e rule budget small).
-        def _rule_status(target_id):
-            listed = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_list_rules", "args": {}})
-            entries = listed if isinstance(listed, list) else (listed.get("rules") or [])
-            match = next((r for r in entries if str(r.get("id")) == str(target_id)), None)
-            assert match is not None, f"rule {target_id} not found in hub_list_rules: {listed}"
-            return match
-
-        def _rule_status_when(target_id, predicate, attempts: int = 8, gap: float = 2.0):
-            """Read the rule's status until `predicate` holds, then return it (last read on
-            timeout). RM decorates its appsList entry ("(Paused)") asynchronously after the
-            write commits, so a fixed sleep + single read is a timing bet: it lost on a slow
-            run where hub_set_rule:create took 9.4s and hub_set_rule:edit p95 hit the relay
-            ceiling. Same fix as _poll_switch above -- short retried reads instead of one
-            long wait, each well inside the ~10s relay budget."""
-            status = {}
-            started = time.monotonic()
-            for _ in range(attempts):
-                status = _rule_status(target_id)
-                if predicate(status):
-                    return status
-                time.sleep(gap)
-            # Say so on the timeout path: otherwise "waited the full budget and never converged"
-            # and "read the wrong value once, immediately" reach the caller's assertion looking
-            # identical -- the confusion this helper was added to end.
-            print(f"    [STATUS] rule {target_id} never satisfied the predicate: {attempts} reads "
-                  f"over {time.monotonic() - started:.1f}s, last status {status}")
-            return status
-
-        def _rule_health_when(target_id, predicate, attempts: int = 8, gap: float = 1.5):
-            """Read hub_get_rule_health until `predicate` holds (last read on timeout).
-            Health is the AUTHORITATIVE stop/start readback: hub_list_rules only reports a
-            rule as stopped when the hub decorates its label, which verified firmware does
-            not do -- polling the list for it can never converge on a landed stop. The
-            budget is deliberately tight: stopRuleAct is synchronous on the hub, so the
-            flag is already true on the first read and a generous budget only buys
-            wall-clock on the failure path."""
-            health = {}
-            t0 = time.monotonic()
-            for _ in range(attempts):
-                read = self.client.call_tool("hub_manage_rule_machine", {
-                    "tool": "hub_get_rule_health", "args": {"appId": target_id}})
-                health = read if isinstance(read, dict) else {}
-                if predicate(health):
-                    return health
-                time.sleep(gap)
-            print(f"    [HEALTH] rule {target_id} never satisfied the predicate: {attempts} reads "
-                  f"over {time.monotonic() - t0:.1f}s, last health {health}")
-            return health
-
-        active = _rule_status(app_id)
-        assert active.get("status") == "active", f"new rule should read status active, got: {active}"
-        assert active.get("paused") is False and active.get("disabled") is False, \
-            f"new rule should be neither paused nor disabled, got: {active}"
-
-        health = self.client.call_tool("hub_manage_rule_machine", {
-            "tool": "hub_get_rule_health", "args": {"appId": app_id}})
-        for count_key in ("eventSubscriptionCount", "scheduledJobCount"):
-            assert isinstance(health.get(count_key), int) and health[count_key] >= 0, \
-                f"hub_get_rule_health should expose a live non-negative {count_key}, got: {health}"
-
-        # Every status write goes through _status_write so an "excessive hub load" limiter trip
-        # bounces the app and retries once -- the same contract the mode-lifecycle and
-        # system-settings tests use. The limiter is sticky: retrying alone cannot clear it (it
-        # tripped here on a full-lane run at ~43 minutes in), and a bounce clears only the app
-        # instance's block, so even the bounced retry can hit it again.
-        def _status_write(tool: str, args: dict, label: str) -> Any:
-            gateway = "hub_manage_rule_machine" if tool == "hub_set_rule_paused" else "hub_manage_native_rules_and_apps"
-            res, limited = self._call_with_limiter_bounce(gateway, tool, args, label)
-            if limited:
-                # An app bounce clears the app INSTANCE; the limiter that blocks RMUtils lives on
-                # the platform's load counters, so the retry above can hit it again (observed: the
-                # full lane trips the limiter several times per run, and bounce+retry still failed
-                # here). POLL the read side before believing the failure envelope: the limiter can
-                # abort the reply to a write that already COMMITTED, and RM decorates its appsList
-                # entry asynchronously -- exactly the lag _rule_status_when exists to absorb -- so
-                # a converged read means the write landed and the envelope is stale.
-                axis = "paused" if tool == "hub_set_rule_paused" else "disabled"
-                want = bool(args.get(axis))
-                converged = _rule_status_when(app_id, lambda s: bool(s.get(axis)) == want)
-                if bool(converged.get(axis)) == want:
-                    print(f"    [LIMITER] {label} answered with the limiter envelope, but the rule "
-                          f"now reads {axis}={want} -- the write landed; counting it as success.")
-                    return converged
-                if tool == "hub_set_rule_paused":
-                    # hub_set_rule_paused's own note documents the load-immune route -- drive the RM
-                    # page button, which bypasses RMUtils entirely. pausRule is a TOGGLE, so clicking
-                    # it on an already-converged rule would UNDO the write; the poll above is what
-                    # makes "has not converged" a demonstrated fact rather than one stale read.
-                    print(f"    [LIMITER] {label} blocked by the platform limiter -- "
-                          "falling back to the load-immune pausRule button drive.")
-                    res, limited = self._set_rule(app_id, {"button": "pausRule"}), None
-            # Assert the write's OWN outcome before polling the read side: without it a genuine
-            # failure and a slow status decoration produce the same symptom (that is how the
-            # limiter trip first presented -- as an unexplained 'paused: False' read-back).
-            assert not limited, (
-                f"{label} stayed blocked by the platform load limiter and the rule never reached the "
-                f"target state: {limited}"
-            )
-            assert not (isinstance(res, dict) and res.get("success") is False), \
-                f"{label} reported failure: {res}"
-            return res
-
-        def _lifecycle_write(action: str, want_stopped: bool, label: str) -> None:
-            """hub_call_rule stop/start under the same limiter contract _status_write uses.
-            Differs only in the converged-read axis: stop/start is authoritative in
-            hub_get_rule_health's `stopped`, not in the appsList status the paused/disabled
-            writes poll."""
-
-            res, limited = self._call_with_limiter_bounce(
-                "hub_manage_rule_machine", "hub_call_rule", {"ruleId": app_id, "action": action}, label)
-            if limited:
-                # The limiter can abort the reply to a write that already committed, so a
-                # converged health read means the envelope is stale, not the write failed.
-                converged = _rule_health_when(app_id, lambda h: h.get("stopped") is want_stopped)
-                if converged.get("stopped") is want_stopped:
-                    print(f"    [LIMITER] {label} answered with the limiter envelope, but health "
-                          f"now reads stopped={want_stopped} -- the write landed; counting it as success.")
-                    return
-            assert not limited, (
-                f"{label} stayed blocked by the platform load limiter and the rule never reached the "
-                f"target state: {limited}"
-            )
-            assert not (isinstance(res, dict) and res.get("success") is False), \
-                f"{label} reported failure: {res}"
-
-        _status_write("hub_set_rule_paused", {"ruleId": app_id, "paused": True},
-                      "hub_set_rule_paused(paused=True)")
-        paused = _rule_status_when(app_id, lambda s: s.get("status") == "paused" and s.get("paused") is True)
-        assert paused.get("status") == "paused" and paused.get("paused") is True, \
-            f"paused rule should read status paused + paused:true, got: {paused}"
-        paused_health = _rule_health_when(app_id, lambda h: h.get("paused") is True)
-        assert paused_health.get("paused") is True, f"health lost the live pause state: {paused_health}"
-        assert paused_health.get("label") == expected_label, \
-            f"health must strip only the runtime decoration: {paused_health}"
-
-        _status_write("hub_set_rule_paused", {"ruleId": app_id, "paused": False},
-                      "hub_set_rule_paused(paused=False)")
-        resumed = _rule_status_when(app_id, lambda s: s.get("status") == "active" and s.get("paused") is False)
-        assert resumed.get("status") == "active" and resumed.get("paused") is False, \
-            f"resumed rule should read status active again, got: {resumed}"
-        resumed_health = _rule_health_when(app_id, lambda h: h.get("paused") is False)
-        assert resumed_health.get("paused") is False, f"health guessed from a literal suffix: {resumed_health}"
-        assert resumed_health.get("label") == expected_label, \
-            f"health removed a literal part of the rule name: {resumed_health}"
-
-        _lifecycle_write("stop", True, "hub_call_rule(action=stop)")
-        stopped_health = _rule_health_when(app_id, lambda h: h.get("stopped") is True)
-        assert stopped_health.get("stopped") is True, \
-            f"stopped rule should read stopped=true from hub_get_rule_health, got: {stopped_health}"
-        stopped_subs = stopped_health.get("eventSubscriptionCount")
-        assert not (isinstance(stopped_subs, int) and stopped_subs > 0), \
-            f"a stopped rule must not report a positive eventSubscriptionCount, got: {stopped_health}"
-        # The list source is best-effort here: it shows "stopped" only when the hub decorates
-        # the label, so the decoration-stripping assertions run only when it actually does.
-        stopped = _rule_status(app_id)
-        if stopped.get("status") == "stopped":
-            assert not str(stopped.get("label", "")).endswith(" (Stopped)") \
-                and not str(stopped.get("name", "")).endswith(" (Stopped)"), \
-                f"runtime (Stopped) decoration should be stripped from label/name, got: {stopped}"
-
-        _lifecycle_write("start", False, "hub_call_rule(action=start)")
-        started_health = _rule_health_when(app_id, lambda h: h.get("stopped") is False)
-        assert started_health.get("stopped") is False, \
-            f"started rule should read stopped=false from hub_get_rule_health, got: {started_health}"
-        # This rule's only trigger is a Certain Time -- start re-arms its SCHEDULE, not an
-        # event subscription (a schedule-only rule legitimately reads eventSubscriptionCount 0).
-        started_sched = started_health.get("scheduledJobCount")
-        assert isinstance(started_sched, int) and started_sched >= 1, \
-            f"a started time-triggered rule should re-arm its schedule (scheduledJobCount >= 1), got: {started_health}"
-        assert isinstance(started_health.get("eventSubscriptionCount"), int), \
-            f"a running rule's eventSubscriptionCount should read as an integer, got: {started_health}"
-        started = _rule_status_when(app_id, lambda s: s.get("status") == "active")
-        assert started.get("status") == "active", f"started rule should return to active, got: {started}"
-
-        # DISABLED (issue #359): the red-X disabled flag is the other status axis. Disable the
-        # SAME rule via hub_set_app_disabled and confirm hub_list_rules reports status "disabled"
-        # + disabled:true, then re-enable and confirm it returns to "active" -- BEFORE the EDIT
-        # step below so the edit runs against an enabled rule. (No live requiredExpressionFalse
-        # scenario: the decoration-refresh timing on a fresh rule is unverified; Spock covers its
-        # parsing.)
-        _status_write("hub_set_app_disabled", {"appId": app_id, "disabled": True},
-                      "hub_set_app_disabled(disabled=True)")
-        disabled = _rule_status_when(app_id, lambda s: s.get("status") == "disabled" and s.get("disabled") is True)
-        assert disabled.get("status") == "disabled" and disabled.get("disabled") is True, \
-            f"disabled rule should read status disabled + disabled:true, got: {disabled}"
-
-        # While it IS disabled: every edit shape must be REFUSED, not silently no-op'd. Hubitat
-        # renders no configuration page for a disabled app, so the wizard has nothing to drive.
-        # Verified live on fw 2.5.1.177 that the unguarded paths were worse than a refusal --
-        # walkStep and a settings write both returned success:true having done nothing, and
-        # removeAction burned ~8s of clicks then told the caller it was safe to retry. Two shapes
-        # here (one wizard shortcut, one raw settings write) so a gate that covers only the
-        # shortcut family cannot pass this.
-        for shape, label in ((
-            {"addAction": {"capability": "log", "message": "must not land"}}, "addAction"),
-            ({"settings": {"logmsg.1": "must not land"}}, "settings"),
-        ):
-            # Envelope, not a raise: the gate throws IllegalArgumentException but
-            # _applyNativeAppEdit's pre-flight catch converts it to the structured refusal
-            # response, which is what the live hub returned on 2.5.1.177.
-            refused = self.client.call_tool("hub_manage_rule_machine", {
-                "tool": "hub_set_rule", "args": {"appId": app_id, "confirm": True, **shape}})
-            assert refused.get("success") is False, \
-                f"editing a DISABLED rule via {label} must be refused, got: {refused}"
-            assert "DISABLED" in str(refused.get("error", "")), \
-                f"the {label} refusal must name the disabled app as the cause, got: {refused}"
-
-        _status_write("hub_set_app_disabled", {"appId": app_id, "disabled": False},
-                      "hub_set_app_disabled(disabled=False)")
-        reenabled = _rule_status_when(app_id, lambda s: s.get("status") == "active" and s.get("disabled") is False)
-        assert reenabled.get("status") == "active" and reenabled.get("disabled") is False, \
-            f"re-enabled rule should read status active again, got: {reenabled}"
-
-        # EDIT: hub_set_rule WITH appId routes to the edit engine -- add a second action.
-        # _set_rule carries the relay-504 soft contract (verify health, don't hard-fail).
-        edited = self._set_rule(app_id, {"addAction": {"capability": "log", "message": "second action"}})
-        assert edited.get("success") is not False, f"hub_set_rule edit reported failure: {edited}"
-
-        # modifyTrigger on the Certain Time trigger has no state to change: refused before the
-        # editor opens. The old path opened it, found no tstate, and left it open on selectTriggers.
-        lifecycle_settings = self._get_persisted_rule_config(app_id).get("settings") or {}
-        time_tidx = next((str(k)[len("tCapab"):] for k, v in lifecycle_settings.items()
-                          if str(k).startswith("tCapab") and str(k)[len("tCapab"):].isdigit()
-                          and v == certain_time_cap), None)
-        assert time_tidx is not None, f"no tCapab<N> holds the Certain Time trigger: {lifecycle_settings}"
-        no_state = self._refusal_call("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": {
-            "appId": app_id, "modifyTrigger": {"index": int(time_tidx), "mods": {"state": "on"}},
-            "confirm": True}})
-        assert no_state.get("success") is False \
-            and "has no 'state' value to change" in str(no_state.get("error", "")) \
-            and "RM is not touched" in str(no_state.get("error", "")), \
-            f"modifyTrigger on a Certain Time trigger should be refused up front: {no_state}"
-        trig_page = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config",
-            "args": {"appId": app_id, "pageName": "selectTriggers"}})
-        assert trig_page.get("success") is True, f"selectTriggers read failed: {trig_page}"
-        trig_inputs = {str(i.get("name")) for s in ((trig_page.get("page") or {}).get("sections") or [])
-                       for i in (s.get("inputs") or [])}
-        # tCapab<N>/tstate<N>/isCondTrig.<N> are the open-editor scaffold; hasAll is its Done button.
-        open_editor = trig_inputs & {f"tCapab{time_tidx}", f"tstate{time_tidx}",
-                                     f"isCondTrig.{time_tidx}", "hasAll"}
-        assert not open_editor, \
-            f"the refused modifyTrigger left trigger {time_tidx}'s editor open ({sorted(open_editor)}): {trig_page}"
-        # Mode reaches the no-state fallback after opening its editor. Verify that a normal
-        # refusal closes it and the next real edit can complete without a phantom trigger.
-        modes = self.client.call_tool("hub_list_modes").get("modes") or []
-        assert modes, "No mode available for trigger cleanup regression"
-        mode_name = modes[0]["name"]
-        self._set_rule(app_id, {"addTrigger": {"capability": "Mode", "state": mode_name}}, strict=True)
-        mode_settings = self._get_persisted_rule_config(app_id).get("settings") or {}
-        mode_index = next((str(k)[len("tCapab"):] for k, v in mode_settings.items()
-                           if str(k).startswith("tCapab") and str(k)[len("tCapab"):].isdigit()
-                           and v == "Mode"), None)
-        assert mode_index is not None, f"Mode trigger did not persist: {mode_settings}"
-        mode_refusal = self._refusal_call("hub_set_rule", {
-            "appId": app_id, "modifyTrigger": {"index": int(mode_index), "mods": {"state": mode_name}},
-            "confirm": True})
-        assert "does not expose a plain state field" in str(mode_refusal.get("error", "")), \
-            f"Mode trigger should refuse plain-state edit: {mode_refusal}"
-        assert mode_refusal.get("wizardStuck") is not True, f"Mode editor cleanup failed: {mode_refusal}"
-        mode_page = self.client.call_tool("hub_get_app_config", {
-            "appId": app_id, "pageName": "selectTriggers"})
-        mode_inputs = {str(i.get("name")) for section in ((mode_page.get("page") or {}).get("sections") or [])
-                       for i in (section.get("inputs") or [])}
-        assert not (mode_inputs & {f"tCapab{mode_index}", "hasAll"}), \
-            f"refused Mode edit left its editor open: {mode_page}"
-        self._set_rule(app_id, {"removeTrigger": {"index": int(mode_index)}}, strict=True)
-        after_cleanup = self._get_persisted_rule_config(app_id).get("settings") or {}
-        remaining = {str(k): v for k, v in after_cleanup.items()
-                     if str(k).startswith("tCapab") and str(k)[len("tCapab"):].isdigit() and v}
-        expected = {str(k): v for k, v in lifecycle_settings.items()
-                    if str(k).startswith("tCapab") and str(k)[len("tCapab"):].isdigit() and v}
-        assert remaining == expected, f"cleanup or the following edit altered other triggers: {remaining} != {expected}"
-        self._last_write_health = None
-        self._assert_rule_healthy(app_id)
-
-        # DELETE via the cross-listed hub_delete_native_app -- this IS the lifecycle
-        # assertion, so it stays binding: on a relay 504 the response is lost but the
-        # delete may still have committed, so verify by listing rules (absent => the
-        # delete committed). Only a rule still PRESENT after a non-504 path is a failure.
-        try:
-            self.client.call_tool("hub_manage_rule_machine", {
-                "tool": "hub_delete_native_app", "args": {"appId": app_id, "confirm": True},
-            })
-        except (McpError, McpToolError, requests.HTTPError) as exc:
-            if "504" not in str(exc):
-                raise
-            print(f"    delete of native rule {app_id} response lost to relay 504 -- verifying deletion by listing rules")
-            time.sleep(3.0)
-            listed = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_list_rules", "args": {}})
-            remaining = listed if isinstance(listed, list) else (listed.get("rules") or [])
-            still_present = any(str(r.get("id")) == str(app_id) for r in remaining)
-            assert not still_present, \
-                f"native rule {app_id} still present after a relay-504 delete (deletion did not commit): {listed}"
-        self._untrack_native_app(app_id)
-
-    @test("native_apps")
-    def test_set_rule_failloud_wrong_trigger_shape(self) -> None:
-        # Fail-loud validation: a plausible-but-wrong addTrigger OR addAction shape must return
-        # a clear error steering to the correct field, NOT silently commit a broken rule. The
-        # edit engine CATCHES the guard's IllegalArgumentException and returns a structured
-        # {success:false, error:...} map (no isError), so call_tool returns NORMALLY -- assert
-        # on the RETURNED ENVELOPE, not a raised exception. confirm:True is required: a
-        # confirm-less edit returns only a schema probe ("no rule was changed"), so the guard
-        # never runs. Throwaway rule: a rejected spec never mutates, so nothing orphans.
-        app_id = self._create_native_rule("FailLoud", {
-            "addActions": [{"capability": "log", "message": "E2E fail-loud base"}],
-        })
-        try:
-            # Periodic Schedule needs periodic:{frequency,everyN}; a bare `minutes` is unrecognized.
-            periodic = self._refusal_call("hub_manage_rule_machine", {"tool": "hub_set_rule",
-                "args": {"appId": app_id, "addTrigger": {"capability": "Periodic Schedule", "minutes": 1},
-                         "confirm": True}})
-            assert periodic.get("success") is False and "periodic" in str(periodic.get("error", "")).lower(), \
-                f"Periodic Schedule minutes:1 should fail loud steering to periodic, got: {periodic}"
-            # The pre-flight refusal mutated nothing, so the edit-path restoreHint must report
-            # that the app was not touched -- NOT the misleading "Backup saved before write; call
-            # hub_restore_backup" prompt for a write that never ran.
-            assert "not touched" in str(periodic.get("restoreHint", "")).lower() \
-                and "backup saved before write" not in str(periodic.get("restoreHint", "")).lower(), \
-                f"periodic pre-flight refusal should carry a not-touched restoreHint, got: {periodic.get('restoreHint')!r}"
-            # A periodic key the walker does not read would be dropped silently; it is refused by name.
-            unknown_key = self._refusal_call("hub_manage_rule_machine", {"tool": "hub_set_rule",
-                "args": {"appId": app_id, "addTrigger": {"capability": "Periodic Schedule",
-                         "periodic": {"frequency": "Daily", "everyN": 1, "time": "08:00"}}, "confirm": True}})
-            assert unknown_key.get("success") is False and "unknown periodic key(s) [time]" in str(unknown_key.get("error", "")), \
-                f"an unknown periodic key should be refused by name, got: {unknown_key}"
-            # A Certain Time trigger's time is its mode picker; a clock value there is refused.
-            bad_time = self._refusal_call("hub_manage_rule_machine", {"tool": "hub_set_rule",
-                "args": {"appId": app_id, "addTrigger": {"capability": "Certain Time (and optional date)",
-                         "time": "17:30"}, "confirm": True}})
-            assert bad_time.get("success") is False and "addTrigger.time must be one of" in str(bad_time.get("error", "")), \
-                f"a Certain Time time outside its options should be refused, got: {bad_time}"
-            # The remaining handler-level validators run as ordered patches in one logical
-            # continuation-aware call. Each is pre-write, so the batch may continue after a
-            # refusal without accumulating mutations; the final config read below is binding.
-            missing_file = f"{PREFIX}no_such_file.txt"
-            refusal_specs = [
-                ({"addTrigger": {"capability": "Temperature", "state": "changed"}}, ("comparator",)),
-                ({"addTrigger": {"capability": "Temperature", "value": "increased"}}, ("comparator",)),
-                ({"addTrigger": {"capability": "Periodic Schedule",
-                                  "periodic": {"frequency": "Hourly"}}}, ("everyn",)),
-                ({"addAction": {"capability": "runRule", "ruleIds": [999999999]}},
-                 ("'999999999'", "hub_list_rules")),
-                # RM's "this rule" sentinel is a privateBoolean-only target; elsewhere it is
-                # refused by name rather than as an unparseable rule id.
-                ({"addAction": {"capability": "runRule", "ruleIds": ["*"]}},
-                 ('"this rule" target', "privateBoolean")),
-                ({"addRequiredExpression": {"conditions": [{"capability": "Days of week"}]}},
-                 ("structured condition shortcut",)),
-                ({"addRequiredExpression": {"conditions": [{"capability": "Lock codes"}]}},
-                 ("lock device", "code name")),
-                ({"addRequiredExpression": {"conditions": [{"capability": "Switch",
-                    "deviceIds": [int(self.get_test_switch_id())], "comparator": "*changed*"}]}},
-                 ("not valid as a condition", "trigger row")),
-                ({"addRequiredExpression": {"conditions": [{"capability": "Water Sensor",
-                    "comparator": "*changed*"}]}}, ("not valid as a condition", "trigger row")),
-                ({"addTrigger": {"capability": "Switch",
-                    "deviceIds": [int(self.get_test_switch_id())], "state": "on",
-                    "condition": {"capability": "Lock codes"}}}, ("lock device",)),
-                ({"addAction": {"capability": "hsm", "command": "armEverything"}},
-                 ("armaway", "armrules")),
-                ({"addAction": {"capability": "colorTemp", "action": "setColorTemp"}},
-                 ("kelvin",)),
-                # Not pre-write: the row opens, the picker check refuses, and the row is rolled back
-                # (asserted below). RM would otherwise store the name and mark the rule broken.
-                ({"addAction": {"capability": "fileAppend", "fileName": missing_file, "content": "x"}},
-                 ("is not a file on the hub",)),
-                ({"addAction": {"capability": "fileDelete", "fileName": missing_file}},
-                 ("is not a file on the hub",)),
-                ({"addAction": {"capability": "ifThen", "expression": {
-                    "conditions": [{"capability": "Last Event Device"}]}}},
-                 ("not usable as a condition",)),
-                ({"replaceRequiredExpression": {"conditions": [{"capability": "Switch",
-                    "deviceIds": [int(self.get_test_switch_id())], "state": "on"}]}},
-                 ("addrequiredexpression",)),
-                ({"addAction": {"capability": "switch", "state": "on"}},
-                 ("action:",)),
-                ({"addRequiredExpression": {"conditions": [{"capability": "Last Event Device"}]}},
-                 ("not usable as a condition", "in actions")),
-            ]
-            # One batch per refusal: the first refused op stops a patches batch, so a combined batch
-            # would only ever validate its first spec.
-            refusal_entries = []
-            for spec, _ in refusal_specs:
-                refusal_entries += self._patch_rule(app_id, [spec], expected_refusals=1)
-            assert len(refusal_entries) == len(refusal_specs), \
-                f"batched refusal results were incomplete: {refusal_entries}"
-            for entry, (_, needles) in zip(refusal_entries, refusal_specs, strict=True):
-                error = str(entry.get("error", "")).lower()
-                assert entry.get("success") is False and all(n.lower() in error for n in needles), \
-                    f"batched fail-loud validator returned the wrong result: {entry}"
-            missing_re = next(entry for entry in refusal_entries
-                              if entry.get("op") == "replaceRequiredExpression")
-            assert missing_re.get("requiredExpressionMissing") is True \
-                and missing_re.get("requiredExpressionRestored") is None, \
-                f"no-RE replace refusal lost its structured no-delete contract: {missing_re}"
-            action_state = refusal_entries[-2]
-            assert action_state.get("success") is False \
-                and "action:" in str(action_state.get("error", "")).lower(), \
-                f"switch addAction with state: should fail loud steering to action:, got: {action_state}"
-            last_event_cond = refusal_entries[-1]
-            assert last_event_cond.get("success") is False \
-                and "not usable as a condition" in str(last_event_cond.get("error", "")).lower() \
-                and "in actions" in str(last_event_cond.get("error", "")).lower(), \
-                f"Last Event Device condition should fail loud as a non-condition, got: {last_event_cond}"
-            # The refused fileAppend/fileDelete rows were rolled back: the rule still renders, no row
-            # names the file, and none is orphaned. Checked before the runRule accept below adds a row.
-            assert missing_file not in self._rule_page_text(app_id), \
-                f"a refused file action left a row naming {missing_file}"
-            file_health = self.client.call_tool("hub_manage_rule_machine", {
-                "tool": "hub_get_rule_health", "args": {"appId": app_id}})
-            assert file_health.get("ok") is not False and not file_health.get("orphanedActionRows"), \
-                f"refused file actions left the rule unhealthy or with orphaned rows: {file_health}"
-            # Mixed EDIT shortcuts used to apply only the first branch while reporting success.
-            # The guard must reject the full call before the backup snapshot or any wizard write.
-            try:
-                self._refusal_call("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": {
-                    "appId": app_id,
-                    "addAction": {"capability": "log", "message": "must not land"},
-                    "addLocalVariable": {"name": "mustNotExist", "type": "String", "value": "x"},
-                    "settings": {"comments": "must not land"},
-                    "confirm": True,
-                }})
-                raise AssertionError("mixed EDIT operation families should be rejected as -32602")
-            except McpError as exc:
-                mixed_error = str(exc)
-                for needle in ("addAction", "addLocalVariable", "settings", "patches"):
-                    assert needle in mixed_error, \
-                        f"mixed EDIT refusal should name {needle!r}, got: {mixed_error}"
-            # Accept-path parity (both-ways companion to the reject above): the existence guard must
-            # ADMIT a valid target, not merely reject bogus ones. Target a SECOND real rule (not this
-            # rule itself -- RM's runRule picker excludes the current rule, which would render broken)
-            # and confirm the runRule action commits success:true. Kept small per the RM e2e budget:
-            # the target rule holds one log action, and this rule gains one runRule action.
-            runrule_target_id = self._create_native_rule("FailLoudRunRuleTarget", {
-                "addActions": [{"capability": "log", "message": "E2E runRule accept target"}],
-            })
-            try:
-                # NOT _refusal_call: this one COMMITS. That helper blind-re-issues on a 504,
-                # which here would add a second runRule action to the rule the rest of the test
-                # keeps asserting on. The modern call follows requestState continuations,
-                # so the logical write is never blindly re-sent.
-                runrule_ok = self._rm_call_soft(
-                    {"appId": app_id, "addAction": {"capability": "runRule", "ruleIds": [runrule_target_id]},
-                     "confirm": True},
-                    strict=True)
-                assert runrule_ok.get("success") is True, \
-                    f"runRule targeting an existing rule id ({runrule_target_id}) should be accepted and commit, got: {runrule_ok}"
-            finally:
-                self._delete_native(runrule_target_id)
-            # The rejected condition mutated nothing, so the rule must still have zero committed RE --
-            # verify via the config read that no broken condition was left behind.
-            after_reject = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config",
-                "args": {"appId": app_id}})
-            # Positive precondition: the read must actually have returned THIS rule's config. A read that
-            # degrades to an error/empty envelope under load carries no BROKEN marker either, so the
-            # absence check below would pass vacuously -- assert success plus the app-id round-trip so a
-            # degraded read fails loud instead of green-passing.
-            after_app = after_reject.get("app") or {}
-            assert after_reject.get("success") is True and str(after_app.get("id")) == str(app_id), \
-                f"post-reject config read did not return rule {app_id}'s config (degraded/empty?), cannot verify broken-marker absence: {after_reject}"
-            assert "*BROKEN*" not in str(after_reject) and "Broken Condition" not in str(after_reject), \
-                f"Last Event Device reject must not leave a broken condition on the rule, got: {after_reject}"
-            # (The addAction IF-EXPRESSION unwalkable-cap rejects -- ifThen Lock codes / Last Event Device --
-            # live in their own small per-concern test, test_set_rule_action_expression_reject_is_pre_write,
-            # so no single rule's per-call wizard budget grows. They are now PRE-WRITE: the top-of-function
-            # hoist rejects the unwalkable condition capability before any opener commit, so there is no
-            # open -> reject -> rollback cycle to cross the cloud relay's per-call timeout.)
-
-        finally:
-            self._delete_native(app_id)
 
     @staticmethod
     def _normalize_ruleact_ids(value: Any) -> list[str] | None:
@@ -6417,384 +5838,6 @@ class TestRunner:
         reposition has NOT landed. Shared by the recovered504 and moveSoftFail probes."""
         return 0 <= page_json_text.find(sentinel_msg) < page_json_text.find("Run Actions:")
 
-    def _finish_move_up(self, app_id: int, idx: int, sentinel_msg: str) -> None:
-        """Reposition action `idx` one row up, following the moveAction envelope's own
-        verifyHint protocol: probe the rendered order FIRST (a soft-failed arrow click
-        usually COMMITTED LATE), move only when the row provably still sits below the
-        sentinel, and tolerate a moveSoftFail envelope on the move itself by re-probing
-        instead of raising -- a raw strict _set_rule would hard-fail on the soft
-        contract's success:false, which is exactly the envelope's "verify before
-        retrying" instruction telling us NOT to. Bounded at one verified retry."""
-        for _ in range(2):
-            cfg = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config",
-                "args": {"appId": app_id}})
-            if not self._sentinel_precedes_run_actions(json.dumps(cfg.get("page", {})), sentinel_msg):
-                print("    [MOVE-VERIFY] order readback shows the row already above the "
-                      "sentinel -- committed (possibly late), no move issued")
-                return
-            print("    [MOVE-VERIFY] row still below the sentinel -- issuing verified move-up")
-            env = self._rm_call_soft(
-                {"appId": app_id, "moveAction": {"index": idx, "direction": "up"}, "confirm": True},
-                strict=True)
-            if env.get("success") is not False:
-                return
-            assert env.get("verifyHint") or env.get("asyncCommitLikely"), \
-                f"moveAction(up) hard-failed with a non-soft envelope: {env}"
-            # soft-fail: loop back to the probe -- if this click committed late the
-            # next readback sees the shift and returns without a blind second move
-        cfg = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config",
-            "args": {"appId": app_id}})
-        assert not self._sentinel_precedes_run_actions(json.dumps(cfg.get("page", {})), sentinel_msg), \
-            "moveAction(up) never landed: the row still renders below the sentinel after verified retries"
-
-    @test("native_apps")
-    def test_set_rule_modifyaction_retarget(self) -> None:
-        # modifyAction retargets a rule-targeting action in ONE op -- the staged-migration
-        # caller-retarget shape -- via a position-preserving rebuild (remove + re-add + walk
-        # the row back up). Its own tiny rules per AGENTS.md: the classic wizard re-sends the
-        # whole rule page on every submitOnChange POST, so per-edit cost grows with rule size,
-        # and this test runs several edits plus a two-id pause batch. Targets A and B are empty
-        # shells -- a runRule target only has to EXIST, and a pause target only has to be a rule.
-        target_a = self._create_native_rule("MaTargetA")
-        target_b = None
-        caller_id = None
-        try:
-            target_b = self._create_native_rule("MaTargetB")
-            # The runRule row and its order sentinel are setup for modifyAction, so create
-            # them in the rule-create envelope. The returned per-action results retain the
-            # actionIndex contract; a relay-dropped create response falls back to the
-            # authoritative persisted settings, never a guessed counter.
-            sentinel_msg = "E2E order sentinel post-action"
-            caller_id, caller_create = self._create_native_rule("MaCaller", {
-                "addActions": [
-                    {"capability": "runRule", "ruleIds": [target_a]},
-                    {"capability": "log", "message": sentinel_msg},
-                ],
-            }, return_result=True)
-            if caller_create is not None:
-                setup_actions = caller_create.get("actions") or []
-                assert len(setup_actions) == 2 and all(a.get("success") is not False for a in setup_actions), \
-                    f"create must report two successful setup action results: {caller_create}"
-                assert not any(a.get("partial") for a in setup_actions), \
-                    f"create reported a partial modifyAction setup row: {setup_actions}"
-                ma_idx = setup_actions[0].get("actionIndex")
-                sentinel_idx = setup_actions[1].get("actionIndex")
-                assert ma_idx is not None and sentinel_idx is not None and ma_idx != sentinel_idx, \
-                    f"create must report two distinct setup action indices: {caller_create}"
-            else:
-                setup_cfg = self.client.call_tool("hub_read_apps_code", {
-                    "tool": "hub_get_app_config",
-                    "args": {"appId": caller_id, "includeSettings": True}})
-                setup_settings = setup_cfg.get("settings") or {}
-                ma_idx = next((int(k.split(".")[1]) for k, v in setup_settings.items()
-                               if k.startswith("ruleAct.")
-                               and self._normalize_ruleact_ids(v) == [str(target_a)]), None)
-                sentinel_idx = next((int(k.split(".")[1]) for k, v in setup_settings.items()
-                                     if k.startswith("logmsg.") and v == sentinel_msg), None)
-                assert ma_idx is not None and sentinel_idx is not None and ma_idx != sentinel_idx, \
-                    f"create did not persist two distinct modifyAction setup rows: {setup_settings}"
-
-            # The sentinel follows the runRule row so the retargeted action is NOT last:
-            # the rebuild must walk the re-added row back up (movesUp=1), which is the
-            # reposition leg the position-preservation claim rests on.
-
-            ma = self._rm_call_soft(
-                {"appId": caller_id, "modifyAction": {"index": ma_idx, "mods": {"ruleIds": [target_b]}},
-                 "confirm": True}, strict=True, recover_504=True)
-            if ma.get("recovered504"):
-                # Replay came up empty and the helper fell back to config-verify: the
-                # composite committed hub-side but its envelope is gone. Recover the rebuilt
-                # action's index from the committed settings (the ruleAct key now holding
-                # target_b), finish one move-up only if the order readback proves the row
-                # sits below the sentinel, and re-initialize. The order assertions below
-                # then judge the final state exactly like every other branch.
-                cfg = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config",
-                    "args": {"appId": caller_id, "includeSettings": True}})
-                new_idx = next((k.split(".")[1] for k, v in (cfg.get("settings") or {}).items()
-                                if k.startswith("ruleAct.")
-                                and self._normalize_ruleact_ids(v) == [str(target_b)]),
-                               None)
-                assert new_idx is not None, \
-                    f"recovered504: no committed ruleAct.<N> holds [{target_b}] -- the retarget did not land: {cfg.get('settings')}"
-                ma = dict(ma)
-                ma["newActionIndex"] = int(new_idx)
-                self._finish_move_up(caller_id, int(new_idx), sentinel_msg)
-                self._set_rule(caller_id, {"button": "updateRule"}, strict=True)
-            assert ma.get("newActionIndex") is not None, \
-                f"modifyAction retarget should carry a newActionIndex on every outcome, got: {ma}"
-            if ma.get("budgetPaused"):
-                # The composite's documented slow-hub contract: delete+add consumed the
-                # response budget, so the reposition was deliberately NOT started and the
-                # envelope hands back finish-up steps. Follow them exactly as a real client
-                # would -- this branch IS the recovery path the contract exists for, and the
-                # order readback below then proves the finished result either way.
-                print(f"    [BUDGET-PAUSED] modifyAction paused with {ma.get('movesRemaining')} "
-                      "move(s) remaining -- finishing per the envelope's own guidance")
-                assert ma.get("success") is False and ma.get("partial") is True, \
-                    f"budgetPaused must never ride under success:true, got: {ma}"
-                assert ma.get("subscriptionsNotLive") is True, \
-                    f"a paused composite skipped updateRule, so subscriptionsNotLive must be true, got: {ma}"
-                for _ in range(int(ma.get("movesRemaining") or 0)):
-                    self._finish_move_up(caller_id, ma["newActionIndex"], sentinel_msg)
-                self._set_rule(caller_id, {"button": "updateRule"}, strict=True)
-            elif ma.get("moveSoftFail"):
-                # The arrow click's shift couldn't be confirmed in the verify window
-                # (asyncCommitLikely) -- live-verified on fw 2.5.1.135 that this usually
-                # means the click COMMITTED LATE. Follow the envelope's own verifyHint:
-                # verify order first, retry the single move ONLY if it genuinely dropped.
-                assert ma.get("success") is False and ma.get("verifyHint"), \
-                    f"moveSoftFail must ride success:false with a verifyHint, got: {ma}"
-                self._finish_move_up(caller_id, ma["newActionIndex"], sentinel_msg)
-            elif not ma.get("recovered504"):
-                # Full envelope, no pause, no soft-fail: the composite finished in-budget.
-                assert ma.get("success") is True, \
-                    f"modifyAction retarget should succeed with a newActionIndex, got: {ma}"
-                assert ma.get("movesUp") == 1 and ma.get("movesDone") == 1, \
-                    f"retarget of a non-last action should reposition with exactly one confirmed move-up, got: {ma}"
-
-            ma_cfg = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config",
-                "args": {"appId": caller_id, "includeSettings": True}})
-            committed = (ma_cfg.get("settings") or {}).get(f"ruleAct.{ma.get('newActionIndex')}")
-            # Shared shape normalization (list / scalar / CSV) -- iterating a bare string
-            # would compare CHARACTERS and turn a shape change into a misleading failure.
-            committed_ids = self._normalize_ruleact_ids(committed)
-            assert committed_ids == [str(target_b)], \
-                f"retargeted runRule action should commit ruleAct.{ma.get('newActionIndex')}=[{target_b}], got: {committed!r}"
-
-            # Ground-truth ORDER readback: the rendered page lists actions in display order,
-            # so the retargeted Run-Rule row must render BEFORE the sentinel log. Serialize
-            # ONLY the page -- the settings blob carries ruleAct.<N> keys whose text would
-            # shift both offsets and make the comparison meaningless. Each marker gets its own
-            # assert first, because find() returns -1 when absent and -1 < anything, so a
-            # renamed RM label would otherwise turn "not rendered at all" into a green compare.
-            page_text = json.dumps(ma_cfg.get("page", {}))
-            run_pos = page_text.find("Run Actions:")
-            sentinel_pos = page_text.find(sentinel_msg)
-            assert run_pos != -1, \
-                f"the retargeted Run-Rule row did not render on the page at all: {page_text[:400]}"
-            assert sentinel_pos != -1, \
-                f"the order sentinel did not render on the page at all: {page_text[:400]}"
-            assert run_pos < sentinel_pos, \
-                f"position not preserved: Run Actions at {run_pos}, sentinel at {sentinel_pos}"
-
-            # RM's own "this rule" target: it must write verbatim and survive a modifyAction
-            # that changes only the boolean value (issue #434). The rebuild lands a NEW index,
-            # so the old privateT/pvTF keys must be gone and the new pair must hold "*" + the
-            # flipped value -- re-reading the old index would pass on a no-op.
-            pb_added = self._set_rule(caller_id, {
-                "addAction": {"capability": "privateBoolean", "ruleIds": ["*"], "value": False}},
-                strict=True)
-            pb_idx = pb_added.get("actionIndex")
-            pb_settings = self._get_persisted_rule_config(caller_id).get("settings") or {}
-            if pb_idx is None:
-                pb_idx = next((str(k).split(".", 1)[1] for k in pb_settings if str(k).startswith("privateT.")), None)
-            assert pb_idx is not None, f"privateBoolean '*' action reported no index: {pb_added}"
-            assert self._normalize_ruleact_ids(pb_settings.get(f"privateT.{pb_idx}")) == ["*"], \
-                f"privateT.{pb_idx} did not persist RM's this-rule target: {pb_settings}"
-            # pvTF is inverted: value False stores "true".
-            assert str(pb_settings.get(f"pvTF.{pb_idx}")).lower() == "true", \
-                f"pvTF.{pb_idx} did not store the requested value: {pb_settings}"
-
-            pb_mod = self._set_rule(caller_id, {
-                "modifyAction": {"index": int(pb_idx), "mods": {"value": True}}}, strict=True)
-            pb_new_idx = pb_mod.get("newActionIndex")
-            assert pb_new_idx is not None, f"privateBoolean modifyAction carried no newActionIndex: {pb_mod}"
-            assert pb_mod.get("verifiedTargets") == ["*"], \
-                f"modifyAction did not verify the this-rule target through the rebuild: {pb_mod}"
-            pb_after = self._get_persisted_rule_config(caller_id).get("settings") or {}
-            assert self._normalize_ruleact_ids(pb_after.get(f"privateT.{pb_new_idx}")) == ["*"], \
-                f"the rebuilt action lost the this-rule target: {pb_after}"
-            assert str(pb_after.get(f"pvTF.{pb_new_idx}")).lower() == "false", \
-                f"modifyAction did not flip pvTF on the rebuilt action: {pb_after}"
-            assert f"privateT.{pb_idx}" not in pb_after, \
-                f"the pre-rebuild privateBoolean row survived the retarget: {pb_after}"
-
-            # The same rebuild as a patches op, finalised by the batch's one updateRule.
-            pb_patch = self._patch_rule(caller_id, [
-                {"modifyAction": {"index": int(pb_new_idx), "mods": {"value": False}}}])
-            assert [e.get("op") for e in pb_patch] == ["modifyAction"] and pb_patch[0].get("success") is True, \
-                f"patches modifyAction did not succeed: {pb_patch}"
-            pb_patched_idx = pb_patch[0].get("newActionIndex")
-            pb_patched = self._get_persisted_rule_config(caller_id).get("settings") or {}
-            assert pb_patched_idx is not None \
-                and str(pb_patched.get(f"pvTF.{pb_patched_idx}")).lower() == "true" \
-                and f"privateT.{pb_new_idx}" not in pb_patched, \
-                f"patches modifyAction did not rebuild the action with value False: {pb_patch} / {pb_patched}"
-
-            # Keep one live >1 ruleId request: a successful call proves the batch envelope and
-            # exact echoed ids; a platform load-limiter refusal proves the parsed array reached
-            # RMUtils. Do not converge or resume here -- pause/resume behavior is covered by the
-            # dedicated lifecycle test, and extra recovery writes overwhelmed this unrelated test.
-            batch_ids = [target_a, target_b]
-            batch_committed = False
-            try:
-                batch = self.client.call_tool("hub_manage_rule_machine", {
-                    "tool": "hub_set_rule_paused",
-                    "args": {"ruleId": batch_ids, "paused": True},
-                })
-            except McpToolError as exc:
-                assert "excessive hub load" in str(exc), \
-                    f"two-id pause request failed before the recognized platform limiter path: {exc}"
-                batch_committed = False
-            else:
-                if batch.get("success") is False:
-                    assert "excessive hub load" in str(batch.get("error", "")), \
-                        f"two-id pause returned an unexpected failure: {batch}"
-                    batch_committed = False
-                else:
-                    assert "rmAction" in batch, f"two-id batch envelope is missing rmAction: {batch}"
-                    assert sorted(str(x) for x in batch.get("ruleIds", [])) == \
-                        sorted(str(x) for x in batch_ids), \
-                        f"two-id batch should echo both ruleIds, got: {batch}"
-                    batch_committed = True
-            if batch_committed:
-                observed = self._rm_rule_statuses_when(
-                    batch_ids, lambda state: state.get("paused") is True)
-            else:
-                # A platform limiter can interrupt between ids. Poll the pair as one list
-                # read for a short bounded settle window; accept only a uniform terminal
-                # outcome (both committed or neither committed), never a mixed half-write.
-                observed = {}
-                stable_uniform = None
-                stable_reads = 0
-                for _ in range(5):
-                    observed = self._rm_rule_statuses_when(
-                        batch_ids, lambda _state: True, attempts=1, gap=0)
-                    pause_values = {observed[str(rule_id)].get("paused") for rule_id in batch_ids}
-                    uniform = next(iter(pause_values)) if len(pause_values) == 1 else None
-                    stable_reads = stable_reads + 1 if uniform is stable_uniform and uniform is not None else 1
-                    stable_uniform = uniform
-                    if uniform is not None and stable_reads >= 2:
-                        break
-                    time.sleep(1.0)
-            pause_values = {observed[str(rule_id)].get("paused") for rule_id in batch_ids}
-            if batch_committed:
-                assert pause_values == {True}, \
-                    f"successful two-id pause did not pause both rules: {observed}"
-            else:
-                assert stable_reads >= 2 and pause_values in ({True}, {False}), \
-                    f"limiter did not reach two consecutive uniform pair reads " \
-                    f"(mixed or unsettled partial commit): {observed}"
-        finally:
-            if caller_id:
-                self._delete_native(caller_id)
-            if target_b:
-                self._delete_native(target_b)
-            self._delete_native(target_a)
-
-    @test("native_apps")
-    def test_clone_stage_disabled(self) -> None:
-        # stageDisabled disables the new subtree after the clone commits: the cloner copies
-        # pause state, so a clone of an ACTIVE rule lands ACTIVE and starts reacting to live
-        # events the moment it exists. One tiny source rule -- the clone copies whatever the
-        # source holds, so a big source would double the wizard cost of this test.
-        src_id = self._create_native_rule("StageSrc")
-        staged_id = None
-        imported_id = None
-        try:
-            # The appCloner wizard routinely runs longer than one cloud-relay request;
-            # the modern client follows the server's requestState checkpoints.
-            clone_args = {"appId": src_id, "newName": f"{PREFIX}StagedClone",
-                          "stageDisabled": True, "confirm": True}
-            staged_clone = self.client.call_tool("hub_manage_native_rules_and_apps",
-                {"tool": "hub_clone_native_app", "args": clone_args})
-            staged_id = staged_clone.get("newAppId")
-            # Track it before asserting: the clone is a real installed app now, so a failure
-            # below must not orphan it on the test hub.
-            if staged_id:
-                self.created_native_app_ids.append(str(staged_id))
-            assert staged_clone.get("success") is True and staged_id, \
-                f"stageDisabled clone should succeed, got: {staged_clone}"
-            assert str(staged_id) in [str(x) for x in (staged_clone.get("stagedDisabled") or [])], \
-                f"stagedDisabled should list the new app, got: {staged_clone}"
-            st = self._rm_rule_status_when(staged_id, lambda s: s.get("disabled") is True)
-            assert st.get("disabled") is True and st.get("status") == "disabled", \
-                f"staged clone should read disabled in hub_list_rules, got: {st}"
-            src = self._rm_rule_status(src_id)
-            assert src.get("disabled") is False, \
-                f"stageDisabled must not touch the SOURCE rule, got: {src}"
-            exported = self.client.call_tool("hub_manage_native_rules_and_apps", {
-                "tool": "hub_export_native_app", "args": {"appId": src_id}})
-            assert exported.get("success") is True and exported.get("jsonContent"), \
-                f"source export failed: {exported}"
-            before_import = self.client.call_tool("hub_read_rules", {"tool": "hub_list_rules", "args": {}})
-            before_ids = {str(r.get("id")) for r in (before_import.get("rules") or [])}
-            imported = self.client.call_tool("hub_manage_native_rules_and_apps", {
-                "tool": "hub_import_native_app", "args": {
-                    "parentHintAppId": src_id, "jsonContent": exported["jsonContent"],
-                    "newName": f"{PREFIX}StagedImport", "stageDisabled": True, "confirm": True}})
-            imported_id = imported.get("newAppId")
-            if imported_id:
-                self.created_native_app_ids.append(str(imported_id))
-            assert imported.get("success") is True and imported_id, f"staged import failed: {imported}"
-            assert str(imported_id) in [str(x) for x in (imported.get("stagedDisabled") or [])], imported
-            status = self._rm_rule_status_when(imported_id, lambda s: s.get("disabled") is True)
-            assert status.get("disabled") is True, f"staged import is enabled: {status}"
-            after_import = self.client.call_tool("hub_read_rules", {"tool": "hub_list_rules", "args": {}})
-            added_rules = [r for r in (after_import.get("rules") or []) if str(r.get("id")) not in before_ids]
-            for rule in added_rules:
-                # Keep any unexpected test duplicate available to the final cleanup sweep.
-                if str(rule.get("name") or rule.get("label") or "").startswith(PREFIX):
-                    rule_id = str(rule.get("id"))
-                    if rule_id not in self.created_native_app_ids:
-                        self.created_native_app_ids.append(rule_id)
-            assert {str(r.get("id")) for r in added_rules} == {str(imported_id)}, \
-                f"import must create exactly one rule, got: {added_rules}"
-            assert self._rm_rule_status(src_id).get("disabled") is False, "import disabled its source"
-        finally:
-            if imported_id:
-                self._delete_native(imported_id)
-            if staged_id:
-                self._delete_native(staged_id)
-            self._delete_native(src_id)
-
-
-    @test("native_apps")
-    def test_set_rule_action_expression_reject_is_pre_write(self) -> None:
-        # An unwalkable condition capability inside an addAction IF-expression (ifThen / elseIf /
-        # repeatWhile / waitExpression) is rejected PRE-WRITE by the top-of-function hoist: the reject is
-        # decidable from the raw requested capability name, so it fires BEFORE any IF-block opener is
-        # committed. There is no open -> reject -> rollback cycle -- that cycle is enough sequential wizard
-        # round-trips (each POST re-renders the full rule page) to cross the cloud relay's per-call timeout,
-        # so this is split into its own small rule to keep every per-call budget well under the ceiling.
-        # Lock codes is unconfigurable on every surface; Last Event Device is a non-condition action-side
-        # reference. On current firmware the doActPage picker does not even LIST these caps, so the tailored
-        # steer (not the generic "not in doActPage option list") also proves the reject is FIRMWARE-
-        # INDEPENDENT: the guard matches the raw requested name before picker resolution. Because nothing is
-        # written, the reject leaves NO orphan IF block -- structuralIssues must stay empty on a clean rule.
-        app_id = self._create_native_rule("ActExprReject", {
-            "addActions": [{"capability": "log", "message": "E2E act-expr base"}],
-        })
-        try:
-            # Lock codes: tailored unconfigurable-condition steer, not the generic picker miss, and a
-            # not-touched restoreHint (pre-write: no opener committed, so nothing to restore).
-            if_lock = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule",
-                "args": {"appId": app_id, "addAction": {"capability": "ifThen",
-                         "expression": {"conditions": [{"capability": "Lock codes"}]}}, "confirm": True}})
-            assert if_lock.get("success") is False \
-                and "lock device" in str(if_lock.get("error", "")).lower() \
-                and "code name" in str(if_lock.get("error", "")).lower() \
-                and "not in doactpage option list" not in str(if_lock.get("error", "")).lower(), \
-                f"ifThen Lock codes condition should fail loud with the tailored unconfigurable steer, got: {if_lock}"
-            assert "not touched" in str(if_lock.get("restoreHint", "")).lower(), \
-                f"ifThen Lock codes pre-write reject should carry a not-touched restoreHint, got: {if_lock.get('restoreHint')!r}"
-            # Truly pre-write: the dispatcher rejects the unwalkable cap BEFORE the pre-write snapshot,
-            # so the refusal envelope carries NO backup (nothing was snapshotted -- no opener, no
-            # rollback). A non-null backup here would mean the reject still round-tripped a snapshot.
-            assert if_lock.get("backup") is None, \
-                f"ifThen Lock codes pre-write reject must take NO backup (snapshot is post-reject), got: {if_lock.get('backup')!r}"
-            # Pre-write proof: the rejected call must leave NO orphan IF block. ruleBuilderJson health reports
-            # ok:true even with an orphan (it does not see the imbalance), so the configPage-derived
-            # structuralIssues list is the load-bearing signal -- it must be empty, with no missing-END-IF /
-            # never-closed marker anywhere in the health.
-            health_after_if = self.client.call_tool("hub_manage_rule_machine", {
-                "tool": "hub_get_rule_health", "args": {"appId": app_id}})
-            assert not health_after_if.get("structuralIssues"), \
-                f"ifThen Lock codes reject left an orphan block opener (structuralIssues not empty): {health_after_if}"
-            assert "never closed" not in str(health_after_if).lower() and "end-if" not in str(health_after_if).lower(), \
-                f"ifThen Lock codes reject left a missing-END-IF structural marker: {health_after_if}"
-        finally:
-            self._delete_native(app_id)
 
     @test("devices")
     def test_button_rule_command_provenance(self) -> None:
@@ -6808,10 +5851,12 @@ class TestRunner:
         switch = self._ensure_perm_fixture("switch_b")
         cur = self.client.call_tool("hub_get_device_attribute", {"deviceId": switch, "attribute": "switch"})
         target = "off" if (cur.get("value") if isinstance(cur, dict) else None) == "on" else "on"
-        app_id = self._create_native_rule("BtnProvenance", {
-            "addTrigger": {"capability": "Button", "deviceIds": [int(button)], "buttonNumber": 1, "state": "pushed"},
-            "addActions": [{"capability": "switch", "action": target, "deviceIds": [int(switch)]}],
-        })
+        app_id = self._create_native_rule("BtnProvenance", [native_change("trigger", capability="Button", fields=[
+            native_field("tDev#", "capability.pushableButton", [str(button)]),
+            native_field("tstate#", "enum", "pushed"), native_field("ButtontDev#", "number", 1)]),
+            native_change("action", type="switchActs", subtype="getOnOffSwitch", fields=[
+                native_field("onOffSwitch.#", "capability.switch", [str(switch)]),
+                native_field("onOff.#", "bool", target == "on")])])
         try:
             rule_label = self.client.call_tool("hub_read_apps_code", {
                 "tool": "hub_get_app_config", "args": {"appId": int(app_id)}}).get("app", {}).get("label")
@@ -6850,242 +5895,18 @@ class TestRunner:
         finally:
             self._delete_native(app_id)
 
-    @test("native_apps")
-    def test_call_rule_multi_id_aggregates_per_rule(self) -> None:
-        # A multi-ruleId hub_call_rule is MRTR-eligible from its first request (the
-        # server's _mrtrEligibleCall gate), so this proves the envelope a live client
-        # actually receives for the multi-rule contract: one row per rule, no duplicates, and
-        # success/partial/failedRuleIds agreeing with those rows.
-        #
-        # Scope, stated honestly: these rules are tiny, so the write will normally
-        # finish inside the relay budget and return WITHOUT continuing. That means this
-        # asserts the contract as the client sees it, but does NOT by itself exercise
-        # the cross-slice collapse -- forcing a real pause needs a batch big enough to
-        # blow the budget, which is exactly the load this suite's limiter guidance says
-        # to keep out of the RM family. The collapse across slices is pinned in
-        # MrtrContinuationSpec, where a banked-then-retried rule can be constructed
-        # deterministically. Both layers are needed; neither substitutes for the other.
-        rule_a = self._create_native_rule("CallRuleAggA")
-        rule_b = None
-        try:
-            rule_b = self._create_native_rule("CallRuleAggB")
-            ids = [int(rule_a), int(rule_b)]
-
-            # hub_call_rule stop/start is limiter-susceptible, the same as the sibling lifecycle
-            # test documents. _run_one's generic retry only matches a 50[0-3] status, which an
-            # "excessive hub load" McpToolError never carries -- so without this the test fails
-            # outright rather than flake-retrying.
-            # Two bounce rounds, not one. The sibling lifecycle test's own comments record
-            # that a single bounce+retry was NOT enough there and it needed a further
-            # converged-read fallback -- so one round here would inherit a failure mode that
-            # test already demonstrated. This test's subject is the ENVELOPE, and a limiter
-            # refusal produces no envelope to assert, so it cannot fall back to a read the way
-            # the sibling does; it retries harder instead, then reports the limiter error if both
-            # bounce+retry rounds are exhausted.
-            res, limited = self._call_with_limiter_bounce(
-                "hub_manage_rule_machine", "hub_call_rule", {"ruleId": ids, "action": "stop"},
-                "multi-id hub_call_rule", bounces=2)
-            assert not limited, (
-                "multi-id hub_call_rule stayed blocked by the platform load limiter after "
-                f"two bounce+retry rounds: {limited}"
-            )
-            assert isinstance(res, dict), f"multi-id hub_call_rule should return an envelope: {res}"
-            # Whether this took one slice or several, the client sees ONE terminal
-            # envelope with no continuation bookkeeping left in it.
-            assert res.get("status") != "in_progress", \
-                f"the client should receive a terminal envelope, not a pause: {res}"
-            # remainingRuleIds must not survive a COMPLETED batch. It is legitimate on the
-            # continuation-limit terminal, which deliberately names the rules it never
-            # reached -- so scope the check to the completed case rather than the shape.
-            if res.get("status") != "continuation_limit":
-                assert "remainingRuleIds" not in res, \
-                    f"continuation bookkeeping leaked into a completed envelope: {res}"
-            # Exactly one result row per rule -- a rule re-queued across slices must not
-            # appear twice, which is what the per-rule collapse exists to guarantee.
-            results = res.get("results") or []
-            # Do NOT filter out rows with a missing ruleId -- an unattributable row is
-            # itself a defect here, and silently dropping it would hide exactly the
-            # scalar-tail shape (outcome reported top-level, no results[] row) that
-            # makes a rule vanish from the ledger.
-            assert all(isinstance(r, dict) and r.get("ruleId") is not None for r in results), \
-                f"every result row must name its ruleId: {res}"
-            seen = [str(r.get("ruleId")) for r in results]
-            assert sorted(seen) == sorted(str(i) for i in ids), \
-                f"expected exactly one result row per requested rule, got {seen}: {res}"
-            assert len(seen) == len(set(seen)), f"a rule appears twice in results[]: {res}"
-            assert sorted(str(i) for i in (res.get("ruleIds") or [])) == sorted(str(i) for i in ids), \
-                f"ruleIds should echo the requested set exactly once each: {res}"
-            # success/partial/failedRuleIds must agree with the collapsed rows rather
-            # than with any single slice's view of them.
-            failed = [r for r in results if isinstance(r, dict) and r.get("success") is not True]
-            if failed:
-                assert res.get("success") is False, \
-                    f"a failed row must make the envelope unsuccessful: {res}"
-                # partial means SOME actioned and some not -- an all-failed batch is a
-                # failure, not a partial one, matching the leaf result.
-                assert res.get("partial") is (len(failed) < len(results)), \
-                    f"partial must mean some-actioned-some-not, not merely any-failure: {res}"
-                assert sorted(str(x) for x in (res.get("failedRuleIds") or [])) == \
-                    sorted(str(r.get("ruleId")) for r in failed), \
-                    f"failedRuleIds must match the failing rows: {res}"
-            else:
-                assert res.get("success") is True, f"all rows succeeded but envelope did not: {res}"
-                assert res.get("partial") in (False, None), \
-                    f"an all-success batch must not report partial -- a budget pause is not a partial result: {res}"
-                assert not res.get("failedRuleIds"), f"no rows failed but failedRuleIds is set: {res}"
-            # The action really landed on BOTH rules, not just the first slice's. Polled,
-            # not read once: the hub decorates the stopped label asynchronously, and the
-            # read itself can hit the same limiter as the write above.
-            def _health_stopped(target_id, attempts: int = 8, gap: float = 1.5):
-                last: dict = {}
-                for _ in range(attempts):
-                    try:
-                        last = self.client.call_tool("hub_manage_rule_machine", {
-                            "tool": "hub_get_rule_health", "args": {"appId": target_id}})
-                    except McpToolError as exc:
-                        if "excessive hub load" not in str(exc):
-                            raise
-                        last = {"error": str(exc)}
-                    if isinstance(last, dict) and last.get("stopped") is True:
-                        return last
-                    time.sleep(gap)
-                return last
-
-            for rid in ids:
-                health = _health_stopped(rid)
-                assert health.get("stopped") is True, \
-                    f"rule {rid} reported success but is not stopped: {health}"
-        finally:
-            if rule_b is not None:
-                self._delete_native(rule_b)
-            self._delete_native(rule_a)
-
-    @test("native_apps")
-    def test_set_rule_waitevents_on_offset_action_slot(self) -> None:
-        # The first Wait-Event capability field does NOT reliably render at tCapab-1, and its
-        # slot number is NOT the action index -- a Required Expression (and/or prior actions)
-        # advances an internal wizard counter with no predictable relationship to actType.<N>,
-        # so the field can render at tCapab-2 (etc.). The event walker reads the exposed base
-        # slot from the schema; pre-fix it hardcoded tCapab-1 and threw ("tCapab-1 not in
-        # doActPage schema") whenever the slot was offset. Here a seed log action plus a
-        # Required Expression push the waitEvents toward a later slot -- but WHICH slot RM
-        # exposes is RM's decision, not the tool's: the same fixture rendered at tCapab-2 on
-        # one run and at tCapab-1 on the next (after the hub had rebooted), both healthy. So
-        # the contract pinned here is slot-consistency, not a slot number: the write binds
-        # exactly one tstate-<N>, the tCapab/tDev of that same N ride along, and that N is
-        # the one the rule persists. Its own small throwaway rule (a Required Expression
-        # conflicts with any other per-concern rule's state), deleted in the finally. A
-        # relay-dropped create is adopted only after an authoritative config/settings read
-        # proves its RE fixture; failed proof raises so _run_one re-runs the whole test on a
-        # fresh rule.
-        switch_id = int(self.get_test_switch_id())
-        app_id, created = self._create_native_rule("WaitEvtOffset", {
-            "addActions": [
-                {"capability": "log", "message": "E2E waitEvents offset base"},
-                {"capability": "waitEvents", "events": [
-                    {"capability": "Switch", "deviceIds": [switch_id], "state": "on"}]},
-            ],
-            "addRequiredExpression": {"conditions": [
-                {"capability": "Switch", "deviceIds": [switch_id], "state": "on"}]},
-        }, return_result=True)
-        try:
-            # The Required Expression is fixture state for the later offset-slot write.
-            # Keep its create-envelope result contract when available; after a dropped
-            # create response the rendered-config readback below remains authoritative.
-            if created is not None:
-                re_res = created.get("requiredExpression")
-                assert isinstance(re_res, dict) and re_res.get("success") is not False, \
-                    f"bundled addRequiredExpression should commit, got: {created}"
-            else:
-                self._assert_switch_required_expression(app_id, switch_id)
-
-            # THE fix: the bundled wait-event action binds the slot RM exposes rather than
-            # hardcoding tCapab-1. Retain response-field proof when the relay delivered it; a
-            # 504-adopted create is proved by exact persisted settings below.
-            bound_slot = None
-            if created is not None:
-                created_actions = created.get("actions") or []
-                assert len(created_actions) == 2, f"create did not return both bundled actions: {created}"
-                we_res = created_actions[1]
-                assert we_res.get("success") is True, \
-                    f"waitEvents add on an offset action slot should commit, got: {we_res}"
-                # Exact membership in settingsApplied, not substring-in-JSON: the whole
-                # serialized envelope also carries schema key lists and hint strings where
-                # "tstate-2" matches "tstate-20".."tstate-29", so a substring search could
-                # pass on a response that never wrote the slot at all.
-                applied_keys = [str(k) for k in (we_res.get("settingsApplied") or [])]
-                state_keys = [k for k in applied_keys if re.fullmatch(r"tstate-\d+", k)]
-                assert len(state_keys) == 1, \
-                    f"the wait event response should bind exactly one tstate-<N> slot: {we_res}"
-                bound_slot = int(state_keys[0].split("-")[1])
-                assert f"tCapab-{bound_slot}" in applied_keys and f"tDev-{bound_slot}" in applied_keys, \
-                    f"the wait event's capability/device fields should ride the same slot {bound_slot}: {we_res}"
-
-            # The committed rule is structurally sound (no broken markers from a half-written event row).
-            health = self.client.call_tool("hub_manage_rule_machine", {
-                "tool": "hub_get_rule_health", "args": {"appId": app_id}})
-            assert health.get("ok") is True and not health.get("structuralIssues"), \
-                f"waitEvents offset-slot rule should be healthy, got: {health}"
-
-            cfg = self._get_persisted_rule_config(app_id)
-            settings = cfg.get("settings") or {}
-            persisted_on = sorted(k for k, v in settings.items()
-                                  if re.fullmatch(r"tstate-\d+", str(k)) and str(v).lower() == "on")
-            assert len(persisted_on) == 1, \
-                f"exactly one wait-event state should persist as 'on', got {persisted_on}: {settings}"
-            if bound_slot is not None:
-                assert persisted_on == [f"tstate-{bound_slot}"], \
-                    f"the persisted wait-event slot {persisted_on} is not the one the response bound ({bound_slot}): {settings}"
-            # Prove the Wait-for-events ACTION committed, by its persisted subtype. The
-            # old check ("wait" in the config JSON) was vacuous: the seed log action's
-            # message is "E2E waitEvents offset base", so it matched whether or not the
-            # wait action landed.
-            assert any(self._setting_holds_exact(v, "getWaitEvents") for v in settings.values()), \
-                f"the committed rule config should show the Wait-for-events action, got: {cfg}"
-        finally:
-            self._delete_native(app_id)
 
     @test("native_apps")
     def test_set_native_app_lifecycle(self) -> None:
-        # hub_set_native_app: the GENERIC create-or-edit upsert. Create via the
-        # registry-driven create path, rename via a raw settings write, then delete.
-        # Each leg is relay-504-hardened: a dropped CREATE response is resolved by a
-        # label lookup, a dropped EDIT/DELETE by reading back the field / the listing.
-        create_label = f"{PREFIX}NativeApp"
-        cw = self._soft_write(
-            lambda: self.client.call_tool("hub_manage_native_rules_and_apps", {
-                "tool": "hub_set_native_app",
-                "args": {"appType": "rule_machine", "name": create_label, "confirm": True}}),
-            lambda: self._find_app_id_by_label(create_label),
-            "hub_set_native_app create",
-        )
-        if cw["relayDropped"]:
-            assert cw["committed"], f"hub_set_native_app create lost to relay 504 and never committed ({create_label})"
-            app_id = cw["evidence"]
-        else:
-            created = cw["response"]
-            app_id = created.get("appId")
-            assert app_id, f"hub_set_native_app create did not return an appId: {created}"
-        self.created_native_app_ids.append(str(app_id))
-
-        # EDIT: generic settings write (rename via origLabel) -- the lean edit path.
-        # On a 504 the response (settingsApplied etc.) is gone; verify the rename via
-        # hub_get_app_config below regardless, so the EDIT-success assertion only binds
-        # on the normal path.
-        ew = self._soft_write(
-            lambda: self.client.call_tool("hub_manage_native_rules_and_apps", {
-                "tool": "hub_set_native_app",
-                "args": {"appId": app_id, "settings": {"origLabel": f"{PREFIX}NativeApp_Renamed"}, "confirm": True}}),
-            lambda: True,  # the rename is verified by the read-back below, not here
-            "hub_set_native_app edit (rename)",
-        )
-        if ew["relayDropped"]:
-            print("    hub_set_native_app edit: response-field assertions skipped (relay 504); "
-                  "rename verified via hub_get_app_config below")
-        else:
-            assert ew["response"].get("success") is not False, \
-                f"hub_set_native_app edit reported failure: {ew['response']}"
-
+        app_id = self._create_native_rule("NativeApp")
+        opened = self.client.call_tool("hub_set_rule", {"operation": "form", "rule_id": int(app_id),
+            "args": {"steps": [{"kind": "open"}]}, "confirm": True})
+        assert opened.get("success") is True, opened
+        renamed = f"{PREFIX}NativeApp_Renamed"
+        edited = self.client.call_tool("hub_set_rule", {"operation": "form", "rule_id": int(app_id),
+            "args": {"steps": [{"kind": "submit", "expect_page": opened["page"]["name"],
+                                  "fields": {"origLabel": renamed}}]}, "confirm": True})
+        assert edited.get("success") is True, edited
         # VERIFY the RENAME actually applied via the read-only hub_get_app_config.
         # Identity (label/name) is nested under the `app` object (toolGetAppConfig
         # shape). Asserting the post-rename token (not just PREFIX, which the create
@@ -7438,16 +6259,17 @@ class TestRunner:
             # createchild produces).
             assert (br.get("health") or {}).get("ok") is not False, f"new button rule is unhealthy: {br}"
             acted = self._write_once("hub_manage_rule_machine", "hub_set_rule",
-                {"appId": rule_id, "addAction": {"capability": "log", "message": "E2E button rule"}, "confirm": True},
+                {"operation": "update", "rule_id": int(rule_id),
+                 "args": {"changes": [native_log("E2E button rule")]}, "confirm": True},
                 "button rule action")
-            assert acted.get("success") is not False, f"authoring the button rule's action failed: {acted}"
-            # The trailing main-page Done commit must target the Button Rule's real commit page
-            # (selectActions), not a hardcoded 'mainPage' -- a 404 there sets mainPageDoneFailed/Error
-            # (the page-graph fix). With the hardcode bug this fails; after the fix these hold.
-            assert acted.get("mainPageDoneFailed") is not True, \
-                f"button rule Done commit hit a missing page (mainPage hardcode regression): {acted}"
-            assert not acted.get("mainPageDoneError"), \
-                f"button rule Done commit errored: {acted.get('mainPageDoneError')}"
+            assert acted.get("success") is True and not acted.get("partial"), acted
+            document = self._native_rule_document(rule_id)
+            assert len(document["actions"]) == 1 and document["actions"][0]["value"]["method"] == "getLogMsg", document
+            assert document["nativeHealth"]["available"] and not document["nativeHealth"]["broken"], document
+            # Reading the actual Button Rule page also detects a wrong mainPage commit.
+            page = self.client.call_tool("hub_get_app_config", {
+                "appId": rule_id, "pageName": "selectActions"})
+            assert page.get("success") is True and "E2E button rule" in json.dumps(page), page
         except (McpError, McpToolError, requests.HTTPError) as exc:
             if "504" not in str(exc):
                 raise
@@ -7476,31 +6298,2343 @@ class TestRunner:
                 except (McpToolError, McpError, requests.HTTPError) as exc:
                     print(f"  [WARN] button-rule e2e cleanup: delete controller {controller_id} failed: {exc}")
 
+    # ---- native rule document helpers (hub_set_rule read/create/update/form) ----
+    #
+    # A successful create/update already returns the compiled document and has proven native
+    # health, structure and activation, so tests assert on that response and read typed
+    # settings once per check instead of re-reading after every row.
+
+    def _native_rule_parent_id(self) -> int:
+        if getattr(self, "_rm_parent_id", None) is None:
+            self._rm_parent_id = _discover_native_rule_parent_id(
+                self.client, install_missing=self._bootstrap_rule_machine_parent)
+        return self._rm_parent_id
+
+    def _bootstrap_rule_machine_parent(self, _type_id: int) -> None:
+        # A hub without the Rule Machine parent gets it the way the UI does: by creating a first rule.
+        label = f"{PREFIX}RM_ParentBootstrap_{_run_artifact_suffix()}"
+        created = self.client.call_tool("hub_set_native_app", {
+            "appType": "rule_machine", "name": label, "confirm": True})
+        assert created.get("success") is True and created.get("appId"), created
+        self.created_native_app_ids.append(str(created["appId"]))
+        self._delete_native(created["appId"])
+
+    def _native_rule_document(self, app_id: Any) -> dict:
+        doc = self.client.call_tool("hub_set_rule", {"operation": "read", "rule_id": int(app_id)})
+        assert str(doc.get("rule_id")) == str(app_id), doc
+        return doc
+
+    def _rm_rule(self, suffix: str, changes: list[dict] | None = None, **options: Any) -> tuple[int, dict]:
+        """Create a rule; returns its id and compiled document (read back after a relay-adopted create)."""
+        app_id, created = self._create_native_rule(suffix, changes, return_result=True, **options)
+        doc = created.get("document") if created else None
+        return int(app_id), doc or self._native_rule_document(app_id)
+
+    def _rm_update(self, app_id: Any, changes: list[dict]) -> dict:
+        result = self._set_rule(app_id, changes)
+        assert str(result.get("rule_id")) == str(app_id), result
+        return result
+
+    def _rm_ids(self, result: dict) -> list[str]:
+        """Native row ids of a write's changes, in request order."""
+        return [str((row.get("result") or {}).get("id")) for row in result.get("results", [])]
+
+    def _rm_settings(self, app_id: Any) -> dict[str, dict]:
+        doc = self._rm_call({"operation": "read", "rule_id": int(app_id),
+                             "args": {"sections": ["settings"]}})
+        assert str(doc.get("rule_id")) == str(app_id) and isinstance(doc.get("settings"), list), doc
+        return {row["name"]: row for row in doc["settings"]}
+
+    def _rm_values(self, app_id: Any) -> dict[str, Any]:
+        """Typed settings as plain values: device pickers as their sorted device ids."""
+        values = {}
+        for name, row in self._rm_settings(app_id).items():
+            value = row.get("value")
+            if str(row.get("type", "")).startswith("capability"):
+                value = row.get("device_ids") or []
+            elif row.get("multiple") and isinstance(value, str):
+                try:
+                    value = json.loads(value)
+                except ValueError:
+                    pass
+            values[name] = value
+        return values
+
+    def _rm_snapshot(self, app_id: Any) -> dict:
+        doc = self._native_rule_document(app_id)
+        return {"document": {key: doc.get(key) for key in ("actions", "conditions", "triggers", "expressions", "variables")},
+                "settings": self._rm_settings(app_id)}
+
+    def _rm_call(self, args: dict) -> dict:
+        """hub_set_rule, with a validation refusal (an isError result) returned as its payload."""
+        try:
+            return self.client.call_tool("hub_set_rule", args)
+        except McpToolError as exc:
+            try:
+                payload = json.loads(exc.content_text)
+            except (TypeError, ValueError):
+                payload = None
+            return dict(payload if isinstance(payload, dict) else {"error": exc.content_text}, success=False)
+
+    @staticmethod
+    def _rm_refused(result: dict) -> str:
+        assert result.get("success") is False, result
+        errors = [str(result.get("error") or "")] + [str((row.get("result") or {}).get("error") or "")
+                                                     for row in result.get("results", [])]
+        assert any(errors), f"a refused write carried no error: {result}"
+        return " ".join(errors)
+
+    def _rm_refuse(self, app_id: Any, changes: list[dict]) -> str:
+        return self._rm_refused(self._rm_call({
+            "operation": "update", "rule_id": int(app_id), "args": {"changes": changes}, "confirm": True}))
+
+    def _rm_refuse_all(self, app_id: Any, cases: list[list[dict]]) -> None:
+        """Each case is refused, and together they leave the rule exactly as it was."""
+        before = self._rm_snapshot(app_id)
+        for changes in cases:
+            self._rm_refuse(app_id, changes)
+        assert self._rm_snapshot(app_id) == before, "a refused edit changed the rule"
+
+    def _rm_form(self, app_id: Any, *steps: dict) -> dict:
+        result = self._rm_call({"operation": "form", "rule_id": int(app_id),
+                                "args": {"steps": list(steps)}, "confirm": True})
+        assert result.get("success") is True, result
+        return result
+
+    def _rm_open(self, app_id: Any, page: str | None = None) -> dict:
+        return self._rm_form(app_id, {"kind": "open", **({"page": page} if page else {})})
+
+    @staticmethod
+    def _rm_step(form: dict, fields: dict | None = None, control: dict | None = None) -> dict:
+        step = {"kind": "submit", "expect_page": form["page"]["name"]}
+        if fields is not None:
+            step["fields"] = fields
+        if control is not None:
+            step["activate"] = control["control_id"]
+        return step
+
+    def _rm_submit(self, app_id: Any, form: dict, fields: dict | None = None, control: dict | None = None) -> dict:
+        return self._rm_form(app_id, self._rm_step(form, fields, control))
+
+    @staticmethod
+    def _rm_control(form: dict, name: str | None = None, title: str | None = None, **match: Any) -> dict:
+        rows = [row for row in form["controls"]
+                if (name is None or row.get("name") == name) and (title is None or title in str(row.get("title", "")))
+                and all(row.get(key) == value for key, value in match.items())]
+        assert len(rows) == 1, {"name": name, "title": title, "match": match, "controls": form["controls"]}
+        return rows[0]
+
+    def _rm_new_action_editor(self, app_id: Any) -> tuple[dict, str]:
+        """Open a new action row in the native editor; returns the form and the row's allocated id."""
+        form = self._rm_open(app_id, "selectActions")
+        form = self._rm_submit(app_id, form, control=self._rm_control(form, kind="button", control_id="N||doAct"))
+        form = self._rm_submit(app_id, form, control=self._rm_control(form, kind="href", page="doActPage"))
+        names = [row["name"] for row in form["fields"] if row["name"].startswith("actType.")]
+        assert len(names) == 1, form
+        return form, names[0].split(".", 1)[1]
+
+    def _rm_new_trigger_editor(self, app_id: Any) -> tuple[dict, str]:
+        form = self._rm_open(app_id, "selectTriggers")
+        if not any(row["name"].startswith("tCapab") for row in form["fields"]):
+            form = self._rm_submit(app_id, form, control=self._rm_control(form, control_id="true||moreCond"))
+        names = [row["name"] for row in form["fields"] if row["name"].startswith("tCapab")]
+        assert len(names) == 1, form
+        return form, names[0].removeprefix("tCapab")
+
+    def _rm_health(self, app_id: Any, **extra: Any) -> dict:
+        health = self.client.call_tool("hub_get_rule_health", {"appId": int(app_id), **extra})
+        assert health.get("success") is not False, health
+        return health
+
+    def _rm_page(self, app_id: Any, page: str | None = None) -> str:
+        """The rule's rendered page as text, read without opening the editor."""
+        args = {"appId": str(app_id), **({"pageName": page} if page else {})}
+        cfg = self.client.call_tool("hub_get_app_config", args)
+        assert cfg.get("success") is True, cfg
+        # Only real tags: RM's own text carries comparators such as "< 80" and ">= 65".
+        return html.unescape(re.sub(r"</?[A-Za-z][^<>]*>", "", json.dumps(cfg.get("page") or {})))
+
+    def _rm_listed(self, app_id: Any) -> dict:
+        rows = self.client.call_tool("hub_list_rules", {}).get("rules", [])
+        return next(row for row in rows if str(row.get("id")) == str(app_id))
+
+    def _rm_wait(self, predicate, timeout: float = 10.0, what: str = "native state") -> None:
+        deadline = time.monotonic() + timeout
+        while not predicate():
+            assert time.monotonic() < deadline, f"{what} did not arrive within {timeout}s"
+            time.sleep(0.5)
+
+    @staticmethod
+    def _rm_switch_fields(device: Any, state: str = "on", trigger: bool = False, custom: bool = False) -> list[dict]:
+        prefix = "tDev" if trigger else "rDev_"
+        fields = [native_field(prefix + "#", "capability.*" if custom else "capability.switch",
+                               str(device) if custom else [str(device)])]
+        if custom:
+            fields.append(native_field("tCustomAttr#" if trigger else "rCustomAttr_#", "enum", "switch"))
+        fields.append(native_field("tstate#" if trigger else "state_#", "enum", state))
+        return fields
+
+    @staticmethod
+    def _rm_switch_condition(device: Any, state: str = "on", **extra: Any) -> dict:
+        return native_change("condition", capability="Switch", fields=TestRunner._rm_switch_fields(device, state), **extra)
+
+    @staticmethod
+    def _rm_switch_trigger(device: Any, state: str = "on", **extra: Any) -> dict:
+        return native_change("trigger", capability="Switch", fields=TestRunner._rm_switch_fields(device, state, trigger=True), **extra)
+
+    @staticmethod
+    def _rm_switch_action(device: Any, on: bool = True, **extra: Any) -> dict:
+        return native_change("action", type="switchActs", subtype="getOnOffSwitch", fields=[
+            native_field("onOffSwitch.#", "capability.switch", [str(device)]), native_field("onOff.#", "bool", on)], **extra)
+
+    @staticmethod
+    def _rm_action(type_name: str, subtype: str, fields: list[tuple], **extra: Any) -> dict:
+        return native_change("action", type=type_name, subtype=subtype, fields=[
+            native_field(name + ".#", type_, value) for name, type_, value in fields], **extra)
+
+    @staticmethod
+    def _rm_variable_action(name: str, operation: str, fields: list[dict]) -> dict:
+        return native_change("action", type="modeActs", subtype="getSetVariable", fields=[
+            native_field("xVarV.#", "enum", name), native_field("numOp.#", "enum", operation), *fields])
+
+    @staticmethod
+    def _rm_temperature_fields(device: Any, comparator: str, value: float, trigger: bool = False,
+                               relative_to: Any = None) -> list[dict]:
+        rows = [native_field("tDev#" if trigger else "rDev_#", "capability.temperatureMeasurement", [str(device)]),
+                native_field("ReltDev#" if trigger else "RelrDev_#", "enum", comparator)]
+        if relative_to is not None:
+            rows += [native_field("istDev#" if trigger else "isDev_#", "bool", True),
+                     native_field("reltDevice#" if trigger else "relDevice_#", "capability.temperatureMeasurement",
+                                  str(relative_to))]
+        return [*rows, native_field("tstate#" if trigger else "state_#", "decimal", value)]
+
+    @staticmethod
+    def _rm_equal(actual: Any, wanted: Any) -> bool:
+        if isinstance(wanted, bool):
+            return str(actual).lower() == str(wanted).lower()
+        if isinstance(wanted, (int, float)):
+            return float(actual) == float(wanted)
+        if isinstance(wanted, list):
+            return sorted(map(str, actual or [])) == sorted(map(str, wanted))
+        return str(actual) == str(wanted)
+
+    def _rm_assert_stored(self, values: dict, row_id: Any, expected: dict, sep: str = ".") -> None:
+        for name, wanted in expected.items():
+            key = f"{name}{sep}{row_id}"
+            assert key in values and self._rm_equal(values[key], wanted), \
+                f"{key} should be {wanted!r}, got {values.get(key)!r}"
+
+    def _rm_backup_keys(self, app_id: Any) -> set[str]:
+        # The list is newest first and the rule is this test's, so paging stops at backups older than
+        # the test (with ten minutes of clock skew) instead of walking a long-lived hub's whole history.
+        cutoff_ms = (getattr(self, "_test_started", 0) - 600) * 1000
+        keys, args = set(), {"scope": "source"}
+        while True:
+            result = self.client.call_tool("hub_list_backups", args)
+            assert result.get("success") is not False, result
+            rows = result.get("backups", [])
+            keys.update(row["backupKey"] for row in rows if str(row.get("ruleId", row.get("id"))) == str(app_id))
+            if not result.get("nextCursor") or (rows and int(rows[-1].get("timestampEpoch") or 0) < cutoff_ms):
+                return keys
+            args["cursor"] = result["nextCursor"]
+
+    def _rm_restore(self, key: str, **options: Any) -> dict:
+        return self.client.call_tool("hub_restore_backup", {"scope": "source", "backupKey": key, "confirm": True, **options})
+
+    def _rm_read_file(self, file_name: str) -> str:
+        chunks, offset = [], 0
+        while True:
+            page = self.client.call_tool("hub_read_file", {"fileName": file_name, "offset": offset, "length": 60000})
+            assert page.get("success") is True and page.get("offset") == offset, page
+            chunks.append(page["content"])
+            if not page.get("hasMore"):
+                return "".join(chunks)
+            assert page["nextOffset"] > offset, page
+            offset = page["nextOffset"]
+
+    def _rm_disposable_switch(self, name: str) -> tuple[str, str, str]:
+        label = f"{PREFIX}{name}_{_run_artifact_suffix()}"
+        device_id = self._create_virtual_switch_device(label)
+        assert device_id, f"could not create the disposable switch {label}"
+        dni = self._last_created_dni or label
+        self.created_device_dnis.append(dni)
+        return device_id, dni, label
+
+    def _rm_delete_device(self, dni: str) -> None:
+        result = self.client.call_tool("hub_manage_virtual_device", {"action": "delete", "deviceNetworkId": dni, "confirm": True})
+        assert result.get("success") is True, result
+        if dni in self.created_device_dnis:
+            self.created_device_dnis.remove(dni)
+
+    def _rm_command(self, device_id: Any, command: str, *values: Any) -> None:
+        result = self.client.call_tool("hub_call_device_command", {
+            "deviceId": str(device_id), "command": command,
+            **({"parameters": [str(value) for value in values]} if values else {})})
+        assert result.get("success") is True, result
+
+    def _rm_attribute(self, device_id: Any, attribute: str) -> Any:
+        result = self.client.call_tool("hub_get_device_attribute", {"deviceId": str(device_id), "attribute": attribute})
+        assert "value" in result, result
+        return result["value"]
+
+    # ---- hub_set_rule surface: help, catalog, confirmation envelope ----
+
+    @test("infrastructure")
+    def test_set_rule_guide_param(self) -> None:
+        # hub_set_rule without an operation is its own help; the served guide section carries the
+        # part vocabulary. Neither touches a rule.
+        help_text = json.dumps(self.client.call_tool("hub_set_rule", {}))
+        assert "operation" in help_text and "read" in help_text and "form" in help_text, help_text[:400]
+        guide = json.dumps(self.client.call_tool("hub_get_tool_guide", {"section": "set_rule_reference"}))
+        for word in ("hub_set_rule", "condition", "trigger", "action", "fields"):
+            assert word in guide, f"set_rule_reference does not mention {word!r}"
+
+    @test("infrastructure")
+    def test_set_rule_self_gateway_meta(self) -> None:
+        # hub_set_rule is the one native RM authoring tool, behind hub_manage_rule_machine; the
+        # earlier per-operation document/form tools are gone from the catalog.
+        self.client._ensure_catalog_maps()
+        members = self.client._gateway_members
+        assert "hub_set_rule" in members.get("hub_manage_rule_machine", set()), members.get("hub_manage_rule_machine")
+        retired = {"hub_get_rule_document", "hub_create_rule_document", "hub_update_rule_document", "hub_call_app_form"}
+        listed = set().union(*members.values()) | set(members)
+        assert not retired & listed, f"retired rule tools are still listed: {sorted(retired & listed)}"
+
+    @test("native_apps")
+    def test_set_rule_self_gateway_envelope_edit(self) -> None:
+        # Through the gateway envelope: an unconfirmed write returns its schema and changes nothing;
+        # a confirmed update takes one pre-edit snapshot for the whole batch and lands every change.
+        app_id, _ = self._rm_rule("EnvEdit", [native_log("first")])
+        try:
+            probe = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": {
+                "operation": "update", "rule_id": app_id, "args": {"changes": [native_log("unconfirmed")]}}})
+            assert probe.get("confirm_required") is True, probe
+            result = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": {
+                "operation": "update", "rule_id": app_id, "confirm": True,
+                "args": {"changes": [native_log("via-envelope"), native_log("wrapped-list")]}}})
+            assert result.get("success") is True and not result.get("partial"), result
+            assert (result.get("backup") or {}).get("backupKey"), f"the update took no pre-edit snapshot: {result}"
+            assert len(result["document"]["actions"]) == 3, result["document"]
+            messages = [v for k, v in self._rm_values(app_id).items() if k.startswith("logmsg.")]
+            assert sorted(messages) == ["first", "via-envelope", "wrapped-list"], messages
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_self_gateway_envelope_create(self) -> None:
+        app_id, doc = self._rm_rule("EnvCreate", [native_log("envelope-create")])
+        try:
+            assert str(doc.get("rule_id")) == str(app_id), doc
+            assert [row["value"]["method"] for row in doc["actions"]] == ["getLogMsg"], doc
+            assert doc["validation"]["structuralIssues"] == [] and doc["nativeHealth"]["broken"] is False, doc
+        finally:
+            self._delete_native(app_id)
+
+    # ---- native lifecycle, runtime controls, deletion ----
+
+    @test("native_apps")
+    def test_set_rule_native_lifecycle(self) -> None:
+        clock = native_change("trigger", capability="Certain Time (and optional date)", fields=[
+            native_field("time#", "enum", "A specific time"),
+            native_field("atTime#", "time", "2026-01-01T17:00:00.000-0500")])
+        # A label that already ends in RM's own " (Paused)" decoration must not read as paused.
+        app_id, created = self._rm_rule("Lifecycle", [clock, native_log("native lifecycle")], name_suffix=" (Paused)")
+        deleted_inline = False
+        try:
+            listed = self._rm_listed(app_id)
+            assert listed.get("status") == "active" and listed.get("paused") is False, listed
+            label = listed.get("name") or listed.get("label")
+            assert str(label).endswith(" (Paused)"), listed
+            for paused in (True, False):
+                result = self.client.call_tool("hub_set_rule_paused", {"ruleId": app_id, "paused": paused})
+                if result.get("success") is False and "excessive hub load" in str(result.get("error", "")):
+                    # RMUtils is refused once the hub's load limiter trips; the rule's own Pause button
+                    # (a toggle) is the UI's route and is never limited.
+                    print("    [LIMITER] hub_set_rule_paused refused; toggling the pausRule button instead")
+                    form = self._rm_open(app_id)
+                    self._rm_submit(app_id, form, control=self._rm_control(form, name="pausRule"))
+                else:
+                    assert result.get("success") is not False, result
+                self._rm_wait(lambda paused=paused: self._rm_health(app_id).get("paused") is paused, what=f"paused={paused}")
+                assert self._rm_health(app_id).get("label") == label
+            result = self.client.call_tool("hub_call_rule", {"ruleId": app_id, "action": "stop"})
+            assert result.get("success") is not False, result
+            self._rm_wait(lambda: self._rm_health(app_id).get("stopped") is True, what="stopped")
+            assert self._rm_health(app_id)["eventSubscriptionCount"] == 0
+            # An edit keeps the rule stopped, and restoring its recovery point brings back the original
+            # time with the rule still stopped.
+            before = self._rm_snapshot(app_id)
+            self._rule_edit_backups(True)
+            try:
+                edited = self._rm_update(app_id, [native_change(
+                    "trigger", id=next(iter(created["triggers"])), capability="Certain Time (and optional date)", fields=[
+                        native_field("time#", "enum", "A specific time"), native_field("atTime#", "time", "2026-01-01T18:00:00.000-0500")]),
+                    native_log("edit while stopped")])
+            finally:
+                self._rule_edit_backups(False)
+            assert edited.get("stopped") is True and not edited["scheduledJobs"], edited
+            restored = self._rm_restore(edited["backup"]["backupKey"])
+            assert restored.get("success") is True and restored.get("restoredVia") == "nativeStateReplay", restored
+            assert self._rm_snapshot(app_id) == before and self._rm_health(app_id).get("stopped") is True
+            result = self.client.call_tool("hub_call_rule", {"ruleId": app_id, "action": "start"})
+            assert result.get("success") is not False, result
+            self._rm_wait(lambda: self._rm_health(app_id).get("stopped") is False, what="started")
+            assert self._rm_health(app_id)["scheduledJobCount"] >= 1, "the started time trigger has no schedule"
+            # A disabled rule refuses document and form edits until it is enabled again.
+            self.client.call_tool("hub_set_app_disabled", {"appId": app_id, "disabled": True})
+            try:
+                self._rm_wait(lambda: self._rm_listed(app_id).get("disabled") is True, what="disabled")
+                self._rm_refuse(app_id, [native_log("disabled must not land")])
+                self._rm_refused(self._rm_call({
+                    "operation": "form", "rule_id": app_id, "confirm": True, "args": {"steps": [{"kind": "open"}]}}))
+            finally:
+                self.client.call_tool("hub_set_app_disabled", {"appId": app_id, "disabled": False})
+            self._rm_wait(lambda: self._rm_listed(app_id).get("status") == "active", what="enabled")
+            mode = self._rm_update(app_id, [native_change("trigger", capability="Mode", fields=[
+                native_field("modesX#", "enum", [self._mode_ids("Day")[0]])])])
+            mode_id = self._rm_ids(mode)[0]
+            removed = self._rm_update(app_id, [native_delete("trigger", mode_id)])
+            assert mode_id not in removed["document"]["triggers"] and len(removed["document"]["triggers"]) == 1, removed
+            deleted = self.client.call_tool("hub_delete_native_app", {"appId": app_id, "confirm": True})
+            assert deleted.get("success") is True, deleted
+            deleted_inline = True
+            self._untrack_native_app(app_id)
+            rules = self.client.call_tool("hub_list_rules", {}).get("rules", [])
+            assert str(app_id) not in [str(row.get("id")) for row in rules], "the deleted rule is still listed"
+        finally:
+            if not deleted_inline:
+                self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_failloud_wrong_trigger_shape(self) -> None:
+        # Malformed or semantically wrong rows are refused and leave the rule exactly as it was. The
+        # baseline compiles one valid row of each kind the edits below target, so an edit refusal
+        # cannot pass merely because the row or its device was wrong to begin with. Every refusal is
+        # its own write; one snapshot before and after proves none of them landed.
+        switch = self._ensure_perm_fixture("switch_a")
+        blind, player, omni = (self._ensure_perm_fixture(key) for key in ("blind", "player", "omni"))
+        temperature = self.get_test_temperature_ids()[0]
+        text_var = self._ensure_perm_variables("sv_string")["sv_string"]
+        number_var = self._ensure_perm_variables("sv_number")["sv_number"]
+        day = self._mode_ids("Day")[0]
+        referenced, _ = self._rm_rule("FailLoudRef", [native_log("referenced rule")])
+        app_id = None
+        try:
+            app_id, _ = self._rm_rule("FailLoud", [native_log("fail-loud baseline")])
+            built = self._rm_update(app_id, [
+                native_change("trigger", capability="Location Event", fields=[native_field("tstate#", "enum", "systemStart")]),
+                native_change("trigger", capability="Variable", fields=[
+                    native_field("xVar#", "enum", text_var), native_field("ReltDev#", "enum", "*is empty*")]),
+                native_change("condition", capability="Days of week", fields=[native_field("days#", "enum", ["Monday"])]),
+                native_change("condition", capability="Water sensor", fields=[
+                    native_field("rDev_#", "capability.waterSensor", [str(omni)]), native_field("state_#", "enum", "wet")]),
+                native_change("condition", capability="Mode", fields=[native_field("modes#", "enum", [day])]),
+                native_change("condition", capability="Rule paused", fields=[native_field("rDev_#", "enum", [str(referenced)])]),
+                self._rm_action("rulesActs", "getRuleActions", [
+                    ("runRuleType", "enum", "Rule Machine"), ("ruleAct", "enum", [str(referenced)])]),
+                self._rm_action("modeActs", "getDefinedAction", [
+                    ("myCapab", "enum", "Switch"), ("devices", "capability.switch", [str(switch)]), ("cCmd", "enum", "off")]),
+                self._rm_action("sceneActs", "getBlindTilt", [
+                    ("blindTilt", "capability.windowBlind", [str(blind)]), ("tiltLevel", "number", 30)]),
+                self._rm_action("soundActs", "getSetMusicPlayer", [
+                    ("player", "capability.musicPlayer", [str(player)]), ("playerCommand", "enum", "set volume"),
+                    ("playerLevel", "number", 30)]),
+            ])
+            location, variable, days, water, mode, paused, run_rule, custom, tilt, music = self._rm_ids(built)
+            # The native inline-condition creator leaves Mode out, but an existing Mode condition is a
+            # legitimate Simple Conditional Action condition.
+            attached = self._rm_update(app_id, [native_change("required", tokens=[days, "AND", water]),
+                                                native_log("mode conditional action", condition=mode)])
+            conditional = attached["document"]["actions"][-1]["value"]
+            assert str(conditional.get("cond")) == mode, conditional
+            page = self._rm_page(app_id)
+            assert "off() on" in page and "mode conditional action" in page, page[:600]
+
+            missing_file = f"{PREFIX}no_such_file_{_run_artifact_suffix()}.txt"
+            sw = [str(switch)]
+            action = self._rm_action
+            cases = [
+                [native_change("trigger", capability="Periodic Schedule", minutes=1, fields=[])],
+                [native_change("trigger", capability="Certain Time (and optional date)",
+                               fields=[native_field("time#", "enum", "17:30")])],
+                [native_change("action", type="messageActs", subtype="notAnAction", fields=[])],
+                [action("lockActs", "getOCGarage", [("garageOpenClose", "capability.garageDoorControl", sw)])],
+                [action("lockActs", "getOCValve", [("valveOpenClose", "capability.valve", sw)])],
+                [action("soundActs", "getTone", [("toner", "capability.tone", sw)])],
+                [action("sceneActs", "getBlindTilt", [("tiltLevel", "number", "forty")])],
+                [action("sceneActs", "getBlindTilt", [])],
+                [action("soundActs", "getSetMusicPlayer", [("playerCommand", "enum", "noSuchMusicCommand")])],
+                [action("soundActs", "getSetMusicPlayer", [("playerLevel", "number", "loud")])],
+                [action("modeActs", "getDefinedAction", [("myCapab", "enum", "Initialize")])],
+                [action("modeActs", "getDefinedAction", [
+                    ("myCapab", "enum", "Switch"), ("devices", "capability.switch", sw), ("cCmd", "enum", "noSuchCommandE2E")])],
+                [action("modeActs", "getDefinedAction", [("useLastDev", "bool", True), ("cCmd", "enum", "off")])],
+                [action("modeActs", "getAppendLocalFile", [("localFile", "enum", missing_file), ("fileContents", "textarea", "x")])],
+                [action("modeActs", "getDeleteLocalFile", [("deleteFile", "enum", missing_file)])],
+                [action("lockActs", "getSetHSM", [("alarm", "enum", "armEverything")])],
+                [native_log("conditional must not land", condition=999999999)],
+                [native_change("action", type="condActs", subtype="getIfThen", fields=[], expression=["999999999"],
+                               condition=999999999)],
+                [native_change("required", tokens=["999999999"])],
+                [native_change("required", tokens=["AND"])],
+                [native_change("trigger", capability="Temperature", fields=[
+                    native_field("tDev#", "capability.temperatureMeasurement", [str(temperature)]),
+                    native_field("ReltDev#", "enum", "increased")])],
+                [self._rm_switch_trigger(switch, "purple")],
+                [native_change("trigger", capability="Switch", fields=[
+                    native_field("tDev#", "capability.switch", [-1]), native_field("tstate#", "enum", "on")])],
+                [native_change("trigger", capability="Switch", fields=[native_field("tstate#", "enum", {"state": "on"})])],
+                [native_change("condition", capability="Switch", fields=[
+                    native_field("rDev_#", "capability.switch", sw), native_field("RelrDev_#", "enum", "*changed*")])],
+                [native_change("condition", capability="Last Event Device", fields=[])],
+                [native_change("condition", capability="Lock codes", fields=[])],
+                # Edits of the compiled baseline rows.
+                [action("sceneActs", "getBlindTilt", [
+                    ("blindTilt", "capability.windowBlind", [str(blind)]), ("uVar", "bool", True),
+                    ("xVar", "enum", number_var), ("tiltLevel", "number", 30)], id=tilt)],
+                [action("soundActs", "getSetMusicPlayer", [
+                    ("player", "capability.musicPlayer", [str(player)]), ("playerCommand", "enum", "set volume"),
+                    ("uVar", "bool", True), ("xVar", "enum", number_var), ("playerLevel", "number", 30)], id=music)],
+                [native_change("trigger", id=location, capability="Location Event", fields=[native_field("tstate#", "enum", "")])],
+                [native_change("trigger", id=variable, capability="Variable", fields=[
+                    native_field("stays#", "bool", True), native_field("SMins#", "number", 5)])],
+                [native_change("condition", id=paused, capability="Rule paused",
+                               fields=[native_field("RelrDev_#", "enum", "*changed*")])],
+                *[[action("rulesActs", "getRuleActions", [("ruleAct", "enum", targets)], id=run_rule)]
+                  for targets in (["999999999"], ["*"], [])],
+                [native_change("condition", id=days, capability="Days of week", fields=[native_field("days#", "enum", [])])],
+                [native_change("condition", id=water, capability="Water sensor",
+                               fields=[native_field("RelrDev_#", "enum", "*changed*")])],
+                [action("modeActs", "getDefinedAction", [
+                    ("myCapab", "enum", "Initialize"), ("devices", "capability.switch", sw), ("cCmd", "enum", "off")], id=custom)],
+            ]
+            self._rm_refuse_all(app_id, cases)
+            health = self._rm_health(app_id)
+            assert health.get("ok") is not False and not health.get("orphanedActionRows"), health
+            assert missing_file not in self._rm_page(app_id), "a refused file action left a row naming the file"
+        finally:
+            if app_id:
+                self._delete_native(app_id)
+            self._delete_native(referenced)
+
+    @test("native_apps")
+    def test_clone_stage_disabled(self) -> None:
+        # Clone and import can stage the copy disabled; the source stays enabled.
+        source, _ = self._rm_rule("StageSrc", [native_log("stage source")])
+        copies = []
+        try:
+            clone = self.client.call_tool("hub_clone_native_app", {
+                "appId": source, "newName": f"{PREFIX}StagedClone_{_run_artifact_suffix()}", "stageDisabled": True, "confirm": True})
+            if clone.get("newAppId"):
+                copies.append(str(clone["newAppId"]))
+                self.created_native_app_ids.append(copies[-1])
+            assert clone.get("success") is True and copies[-1] in map(str, clone.get("stagedDisabled", [])), clone
+            exported = self.client.call_tool("hub_export_native_app", {"appId": source})
+            assert exported.get("success") is True and exported.get("jsonContent"), exported
+            imported = self.client.call_tool("hub_import_native_app", {
+                "parentHintAppId": source, "jsonContent": exported["jsonContent"],
+                "newName": f"{PREFIX}StagedImport_{_run_artifact_suffix()}", "stageDisabled": True, "confirm": True})
+            if imported.get("newAppId"):
+                copies.append(str(imported["newAppId"]))
+                self.created_native_app_ids.append(copies[-1])
+            assert imported.get("success") is True and copies[-1] in map(str, imported.get("stagedDisabled", [])), imported
+            def states() -> dict:
+                rows = self.client.call_tool("hub_list_rules", {}).get("rules", [])
+                return {str(row.get("id")): row.get("disabled") for row in rows}
+            self._rm_wait(lambda: all(states().get(c) is True for c in copies), what="staged copies disabled")
+            assert states().get(str(source)) is False, "staging a copy disabled its source"
+        finally:
+            for app in [source, *copies]:
+                self._delete_native(app)
+
+    @test("native_apps")
+    def test_call_rule_multi_id_aggregates_per_rule(self) -> None:
+        ids = [self._rm_rule("AggA", [native_log("aggregate A")])[0], self._rm_rule("AggB", [native_log("aggregate B")])[0]]
+        try:
+            result = self.client.call_tool("hub_call_rule", {"ruleId": ids, "action": "stop"})
+            rows = result.get("results")
+            assert isinstance(rows, list) and sorted(str(r.get("ruleId")) for r in rows) == sorted(map(str, ids)), result
+            assert sorted(map(str, result.get("ruleIds", []))) == sorted(map(str, ids)), result
+            failed = [r for r in rows if r.get("success") is not True]
+            assert result.get("success") is (not failed), result
+            assert sorted(str(r["ruleId"]) for r in failed) == sorted(map(str, result.get("failedRuleIds", []))), result
+            for app_id in ids:
+                self._rm_wait(lambda app_id=app_id: self._rm_health(app_id).get("stopped") is True, what=f"rule {app_id} stopped")
+        finally:
+            for app_id in ids:
+                self._delete_native(app_id)
+
+    # ---- native forms (the walker successor) ----
+
+    @test("native_apps")
+    def test_set_rule_walkstep_introspect(self) -> None:
+        # Pages open in one ordered batch; an unknown step kind refuses the whole batch before any step.
+        app_id, _ = self._rm_rule("FormIntrospect", [native_log("introspect")])
+        try:
+            opened = self._rm_form(app_id, {"kind": "open", "page": "selectTriggers"}, {"kind": "open", "page": "mainPage"})
+            assert [row["page"] for row in opened["completed"]] == ["selectTriggers", "mainPage"], opened
+            before = self._rm_settings(app_id)
+            bad = self._rm_call({"operation": "form", "rule_id": app_id, "confirm": True, "args": {
+                "steps": [{"kind": "open", "page": "mainPage"}, {"kind": "bogus_op"},
+                          {"kind": "submit", "fields": {"comments": "must-not-land"}}]}})
+            self._rm_refused(bad)
+            assert self._rm_settings(app_id) == before, "a refused form batch changed the rule"
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_discover_meta(self) -> None:
+        # Native selectors are the authoritative catalog: the trigger capability picker, then the
+        # device and comparator inputs it reveals for the chosen capability.
+        temperature = self.get_test_temperature_ids()[0]
+        app_id, _ = self._rm_rule("Discover", [native_log("discover")])
+        try:
+            form, slot = self._rm_new_trigger_editor(app_id)
+            capability = next(row for row in form["fields"] if row["name"] == "tCapab" + slot)
+            offered = {str(option["value"]) for option in capability.get("options", [])}
+            assert {"Temperature", "Switch"} <= offered, offered
+            form = self._rm_submit(app_id, form, fields={"tCapab" + slot: "Temperature"})
+            device = next(row for row in form["fields"] if row["name"] == "tDev" + slot)
+            form = self._rm_submit(app_id, form, fields={device["name"]: [str(temperature)] if device["multiple"] else str(temperature)})
+            comparators = [row for row in form["fields"] if row["name"].startswith("Rel")]
+            assert any("*changed*" in {str(o["value"]) for o in row.get("options", [])} for row in comparators), form
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_raw_settings_and_validation(self) -> None:
+        # Form submits write native settings with their native types; a value of the wrong shape is
+        # refused before the request.
+        app_id, _ = self._rm_rule("RawSettings", [native_log("raw settings")])
+        try:
+            form = self._rm_open(app_id, "mainPage")
+            form = self._rm_submit(app_id, form, fields={"comments": "BAT_E2E raw settings", "logging": ["Triggers", "Actions"]})
+            values = self._rm_values(app_id)
+            assert values.get("comments") == "BAT_E2E raw settings", values.get("comments")
+            assert sorted(values.get("logging") or []) == ["Actions", "Triggers"], values.get("logging")
+            refused = self._rm_call({"operation": "form", "rule_id": app_id, "confirm": True, "args": {
+                "steps": [self._rm_step(form, fields={"origLabel": {"a": "b"}})]}})
+            self._rm_refused(refused)
+            assert self._rm_values(app_id) == values, "a refused form submit changed the rule"
+        finally:
+            self._delete_native(app_id)
+
+    # ---- rule health ----
+
+    @test("native_apps")
+    def test_rule_health_prefers_rulebuilderjson(self) -> None:
+        app_id, _ = self._create_native_rule("RuleHealthSrc", [native_log("health source")], return_result=True)
+        try:
+            health = self._rm_health(app_id)
+            assert health.get("ok") is True and health.get("broken") is False and health.get("paused") is False, health
+            assert "ruleBuilderJson" in str(health.get("source")), health
+            listed = self.client.call_tool("hub_list_rules", {"labelFilter": f"{PREFIX}RuleHealthSrc".lower()}).get("rules", [])
+            row = next(r for r in listed if str(r.get("id")) == str(app_id))
+            assert row.get("type") == "Rule-5.1" and row.get("rmVersion") == "5.x", row
+            page = self._rm_health(app_id, source="configPage")
+            assert page.get("source") == "configPage" and page.get("broken") is None, page
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_rule_health_broken_true_on_dangling_trigger(self) -> None:
+        # Deleting a trigger's device leaves RM's compiled rule broken; health reports it from RM's own flag.
+        device_id, dni, _ = self._rm_disposable_switch("RHBrokenDev")
+        app_id, _ = self._rm_rule("RHBroken", [self._rm_switch_trigger(device_id), native_log("dangling trigger")])
+        try:
+            assert self._rm_health(app_id).get("broken") is False
+            self._rm_delete_device(dni)
+            self._rm_open(app_id, "mainPage")
+            health = self._rm_health(app_id)
+            assert health.get("broken") is True and health.get("ok") is False and health.get("ruleFormat") == "rm", health
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_rule_health_ui_shaped_else_endif_rows(self) -> None:
+        # Rules saved by the UI can carry ELSE/END-IF rows without an actType, and a stray action row
+        # the action list does not reference. Health reads those shapes without a false imbalance, and
+        # deleting the END-IF a block needs is refused. An action deleted earlier in a batch stays refused
+        # for a later edit after an append, and the IF block and its condition delete in one batch.
+        app_id, doc = self._rm_rule("UiShape", [self._rm_switch_condition(self._ensure_perm_fixture("switch_a"))])
+        try:
+            condition = next(iter(doc["conditions"]))
+            self._rm_update(app_id, [native_change("action", type="condActs", subtype="getIfThen", fields=[], expression=[condition]),
+                                     native_log("then-branch"), native_change("terminator", subtype="else"),
+                                     native_log("else-branch"), native_change("terminator", subtype="endIf")])
+            values = self._rm_values(app_id)
+            branches = {k.split(".", 1)[1] for k, v in values.items() if k.startswith("actSubType.") and v in ("getElse", "getEndIf")}
+            assert len(branches) == 2, values
+            exported = self.client.call_tool("hub_export_native_app", {"sourceAppId": app_id})
+            assert exported.get("success") is True, exported
+            document = json.loads(exported["jsonContent"])
+            app_data = document["appData"][str(app_id)]
+            doomed = {"actType." + row for row in branches}
+            app_data["appSettings"] = [row for row in app_data["appSettings"] if row.get("name") not in doomed]
+            app_data["appSettings"].append({"name": "actSubType.99", "type": "enum", "multiple": False,
+                                            "deviceList": {}, "value": "getIfThen"})
+            imported = self.client.call_tool("hub_import_native_app", {
+                "parentHintAppId": app_id, "jsonContent": json.dumps(document),
+                "newName": f"{PREFIX}UIShapeImport_{_run_artifact_suffix()}", "confirm": True})
+            copy_id = imported.get("newAppId")
+            if copy_id:
+                self.created_native_app_ids.append(str(copy_id))
+            assert imported.get("success") is True and copy_id, imported
+            try:
+                health = self._rm_health(copy_id)
+                assert health.get("ok") is True and health.get("structuralIssues") == [] and not health.get("checkErrors"), health
+                assert any("action 99" in str(row) and "getIfThen" in str(row) for row in health.get("orphanedActionRows", [])), health
+                copied = self._rm_values(copy_id)
+                endif = next(k.split(".", 1)[1] for k, v in copied.items() if k.startswith("actSubType.") and v == "getEndIf")
+                self._rm_refuse_all(copy_id, [[native_delete("action", endif)]])
+            finally:
+                self._delete_native(copy_id)
+            actions = self._native_rule_document(app_id)["actions"]
+            ids = [str(row["id"]) for row in actions]
+            branch = next(str(row["id"]) for row in actions if row["value"]["method"] == "getLogMsg")
+            before = self._rm_snapshot(app_id)
+            error = self._rm_refuse(app_id, [native_log("appended"), native_delete("action", branch), native_log("x", id=branch)])
+            assert "does not exist" in error, error
+            assert self._rm_snapshot(app_id) == before, "a refused edit changed the rule"
+            cleared = self._rm_update(app_id, [*[native_delete("action", i) for i in ids], native_delete("condition", condition)])
+            assert cleared["document"]["actions"] == [] and condition not in cleared["document"]["conditions"], cleared["document"]
+        finally:
+            self._delete_native(app_id)
+
+    # ---- trigger forms: periodic schedule ----
+
+    @test("native_apps")
+    def test_periodic_trigger_deletion_preserves_other_rows(self) -> None:
+        # A Periodic Schedule trigger built through the native form (no document contract exists for
+        # it): a frequency's time input disappears when another frequency is chosen and is refused if
+        # submitted anyway; the trigger schedules a job; deleting it keeps the other rows and leaves
+        # the Switch trigger subscribed.
+        switch = self._ensure_perm_fixture("switch_a")
+        app_id, before = self._rm_rule("Periodic", [self._rm_switch_trigger(switch), native_log("periodic deletion baseline")])
+        try:
+            form, slot = self._rm_new_trigger_editor(app_id)
+            form = self._rm_submit(app_id, form, fields={"tCapab" + slot: "Periodic Schedule"})
+            form = self._rm_submit(app_id, form, control=self._rm_control(form, kind="href", page="periodic"))
+            frequency = next(row for row in form["fields"] if row["name"].startswith("whichPeriod"))
+            assert {"Daily", "Hourly", "Cron String"} <= {row["value"] for row in frequency["options"]}, frequency
+            form = self._rm_submit(app_id, form, fields={frequency["name"]: "Daily"})
+            daily = next(row for row in form["fields"] if row["name"].startswith("startingDC") and row["type"] == "time")
+            form = self._rm_submit(app_id, form, fields={frequency["name"]: "Hourly"})
+            assert daily["name"] not in {row["name"] for row in form["fields"]}, form
+            stale = self._rm_call({"operation": "form", "rule_id": app_id, "confirm": True, "args": {
+                "steps": [self._rm_step(form, fields={daily["name"]: "2026-01-01T08:00:00.000-0500"})]}})
+            assert daily["name"] in self._rm_refused(stale) and not stale.get("partial"), stale
+            form = self._rm_submit(app_id, form, fields={frequency["name"]: "Cron String"})
+            cron = next(row for row in form["fields"] if row["name"].startswith("cronStr"))
+            form = self._rm_form(app_id, self._rm_step(form, fields={cron["name"]: "0 0/5 * * * ?"}))
+            form = self._rm_submit(app_id, form, control=self._rm_control(form, name="_action_previous"))
+            self._rm_submit(app_id, form, control=self._rm_control(form, name="hasAll"))
+            finalized = self._rm_update(app_id, [native_log("periodic deletion baseline", id=before["actions"][0]["id"])])
+            periodic = set(finalized["document"]["triggers"]) - set(before["triggers"])
+            assert len(periodic) == 1 and finalized["scheduledJobs"], finalized
+            deleted = self._rm_update(app_id, [native_delete("trigger", periodic.pop())])
+            assert deleted["document"]["triggers"] == before["triggers"] and deleted["document"]["actions"] == before["actions"], deleted
+            assert not deleted["scheduledJobs"] and deleted["eventSubscriptions"], deleted
+            assert cron["name"] not in self._rm_settings(app_id), "the deleted periodic trigger left its cron setting"
+        finally:
+            self._delete_native(app_id)
+
+    # ---- create: refusal before the child, stop on the first failed change ----
+
+    @test("native_apps")
+    def test_set_rule_create_refusal_and_fail_closed_stop(self) -> None:
+        # Shape and missing-variable errors are refused before a child exists. A native option failure stops the
+        # create at that change: earlier changes stay, later ones never run.
+        switch = self._ensure_perm_fixture("switch_a")
+        def rule_ids() -> set[str]:
+            return {str(r["id"]) for r in self.client.call_tool("hub_list_rules", {}).get("rules", [])}
+        before = rule_ids()
+        for bad in (native_change("trigger", capability="Temperature", value="increased", fields=[]),
+                    native_change("action", type="dimmerActs", subtype="getSetLevel", missingLevel=True, fields=[]),
+                    native_change("variable", operation="set", name="MissingCreateVariable", value=1)):
+            result = self._rm_call({"operation": "create", "confirm": True, "args": {
+                "parent_id": self._native_rule_parent_id(), "name": f"{PREFIX}CreateRefused_{_run_artifact_suffix()}",
+                "changes": [native_log("first"), bad]}})
+            if result.get("rule_id"):
+                self.created_native_app_ids.append(str(result["rule_id"]))
+            self._rm_refused(result)
+        assert rule_ids() == before, "a refused create left a child rule"
+        result = self._rm_call({"operation": "create", "confirm": True, "args": {
+            "parent_id": self._native_rule_parent_id(), "name": f"{PREFIX}CreateStop_{_run_artifact_suffix()}",
+            "changes": [self._rm_switch_trigger(switch), self._rm_switch_trigger(switch, "purple"),
+                        self._rm_switch_condition(switch), native_change("required", tokens=["3"]),
+                        native_log("skipped action")]}})
+        app_id = result.get("rule_id")
+        if app_id:
+            self.created_native_app_ids.append(str(app_id))
+        try:
+            assert app_id and result.get("partial") is True, result
+            self._rm_refused(result)
+            completed = result.get("results", [])
+            assert completed[0]["result"].get("success") is True and completed[-1]["result"].get("success") is False, result
+            values = self._rm_values(app_id)
+            assert any(k.startswith("tstate") and v == "on" for k, v in values.items()), values
+            assert not any(k.startswith("rCapab_") for k in values) and "skipped action" not in values.values(), values
+            assert str(values.get("useST")).lower() != "true", values.get("useST")
+        finally:
+            if app_id:
+                self._delete_native(app_id)
+
+    # ---- actions: waits ----
+
+    @staticmethod
+    def _rm_wait_event(device: Any, state: str = "on", stays: tuple | None = None) -> dict:
+        fields = TestRunner._rm_switch_fields(device, state, trigger=True)
+        if stays is not None:
+            fields += [native_field("stays#", "bool", True),
+                       *[native_field(name + "#", "number", value) for name, value in zip(("SHours", "SMins", "SSecs"), stays, strict=True)]]
+        return {"capability": "Switch", "fields": fields}
+
+    @staticmethod
+    def _rm_wait_slots(doc: dict) -> tuple[dict, list[str]]:
+        rows = [row for row in doc["actions"] if row["value"]["method"] == "getWaitEvents"]
+        assert len(rows) == 1, rows
+        events = [str(value) for value in rows[0]["value"]["wait"]]
+        assert events and len(events) == len(set(events)), rows[0]
+        return rows[0], ["-" + value for value in events]
+
+    @test("native_apps")
+    def test_set_rule_waitevents_on_offset_action_slot(self) -> None:
+        # A Wait for Events added after a Required Expression and another action gets its own action
+        # slot and negative event slots; its "and stays" duration is stored on the event slot.
+        switch = self._ensure_perm_fixture("switch_a")
+        app_id, created = self._rm_rule("WaitOffset", [self._rm_switch_condition(switch)])
+        try:
+            condition = next(iter(created["conditions"]))
+            result = self._rm_update(app_id, [native_change("required", tokens=[condition]), native_log("offset base"),
+                                              native_change("action", type="delayActs", subtype="getWaitEvents", fields=[],
+                                                            events=[self._rm_wait_event(switch, stays=(0, 5, 0))])])
+            doc = result["document"]
+            assert doc["expressions"]["0"] == [condition], doc["expressions"]
+            wait, slots = self._rm_wait_slots(doc)
+            assert len(slots) == 1 and str(wait["id"]) != str(doc["actions"][0]["id"]), doc["actions"]
+            values = self._rm_values(app_id)
+            slot = slots[0]
+            assert values["tCapab" + slot] == "Switch" and values["tstate" + slot] == "on", values
+            assert values["tDev" + slot] == [str(switch)] and values["actSubType." + str(wait["id"])] == "getWaitEvents", values
+            assert [k for k, v in values.items() if re.fullmatch(r"tstate-\d+", k) and v == "on"] == ["tstate" + slot], values
+            assert str(values["stays" + slot]).lower() == "true", values
+            assert [int(values[name + slot]) for name in ("SHours", "SMins", "SSecs")] == [0, 5, 0], values
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_wait_events_mode_event(self) -> None:
+        # The native editor adds a Mode event to an existing Wait for Events in place: same action id,
+        # same order, the original Switch event kept.
+        switch = self._ensure_perm_fixture("switch_a")
+        day = self._mode_ids("Day")[0]
+        app_id, created = self._rm_rule("WaitMode", [native_change("action", type="delayActs", subtype="getWaitEvents",
+                                                                   fields=[], events=[self._rm_wait_event(switch)])])
+        try:
+            original, original_slots = self._rm_wait_slots(created)
+            action_id = str(original["id"])
+            form = self._rm_open(app_id, "selectActions")
+            edit = [row for row in form["controls"] if row.get("kind") == "button"
+                    and row.get("name", "").split(".")[0] == action_id and row.get("control_id", "").endswith("||doAct")]
+            assert len(edit) == 1, form
+            form = self._rm_submit(app_id, form, control=edit[0])
+            form = self._rm_submit(app_id, form, control=self._rm_control(form, kind="href", page="doActPage"))
+            form = self._rm_submit(app_id, form, control=self._rm_control(form, name="anotherWait"))
+            # anotherWait requests a same-page render to expose its new slot.
+            form = self._rm_open(app_id, "doActPage")
+            added = [row["name"] for row in form["fields"] if re.fullmatch(r"tCapab-\d+", row["name"])
+                     and row["name"].removeprefix("tCapab") not in original_slots]
+            assert len(added) == 1, form
+            slot = added[0].removeprefix("tCapab")
+            form = self._rm_submit(app_id, form, fields={added[0]: "Mode"})
+            form = self._rm_submit(app_id, form, fields={"modesX" + slot: [day]})
+            for name in ("hasAll", "doneWaits"):
+                if not any(row.get("name") == name for row in form["controls"]):
+                    form = self._rm_open(app_id, "doActPage")
+                form = self._rm_submit(app_id, form, control=self._rm_control(form, name=name))
+            # The native editor compiles the added event on a following doActPage render.
+            for _ in range(3):
+                doc = self._native_rule_document(app_id)
+                if len(self._rm_wait_slots(doc)[1]) == 2:
+                    break
+                self._rm_open(app_id, "doActPage")
+            self._rm_open(app_id, "selectActions")
+            doc = self._native_rule_document(app_id)
+            wait, slots = self._rm_wait_slots(doc)
+            assert str(wait["id"]) == action_id and [str(r["id"]) for r in doc["actions"]] == [action_id], doc["actions"]
+            assert slots == [*original_slots, slot], slots
+            settings = self._rm_settings(app_id)
+            assert settings["tCapab" + slot]["value"] == "Mode" and settings["modesX" + slot]["value"] in ([day], [int(day)], f'["{day}"]'), settings
+            assert "tstate" + slot not in settings and settings["tstate" + original_slots[0]]["value"] == "on", settings
+            assert doc["nativeHealth"]["broken"] is False and doc["validation"]["structuralIssues"] == [], doc
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_action_expression_reject_is_pre_write(self) -> None:
+        # IF, ELSE-IF, While and Wait for Expression refuse a missing condition or a malformed
+        # expression before any row is opened.
+        app_id, _ = self._rm_rule("ExprReject", [native_log("unchanged expression baseline")])
+        try:
+            self._rm_refuse_all(app_id, [
+                [native_change("action", type=type_name, subtype=subtype, fields=[], expression=tokens)]
+                for (type_name, subtype), tokens in zip(
+                    (("condActs", "getIfThen"), ("condActs", "getElseIf"), ("repeatActs", "getWhile"), ("delayActs", "getWaitRule")),
+                    (["999999"], ["("], ["AND", "999999"], ["999999"]), strict=True)])
+            assert "Broken Condition" not in self._rm_page(app_id)
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_enum_doactpage(self) -> None:
+        # A Custom Attribute condition (an enum attribute picked on the action editor page) drives an IF block.
+        switch = self._ensure_perm_fixture("switch_a")
+        app_id, created = self._rm_rule("EnumDoAct", [native_change("condition", capability="Custom Attribute",
+                                                                    fields=self._rm_switch_fields(switch, custom=True))])
+        try:
+            condition = next(iter(created["conditions"]))
+            doc = self._rm_update(app_id, [native_change("action", type="condActs", subtype="getIfThen", fields=[], expression=[condition]),
+                                           native_log("fired"), native_change("terminator", subtype="endIf")])["document"]
+            assert [row["value"]["method"] for row in doc["actions"]] == ["getIfThen", "getLogMsg", "getEndIf"], doc["actions"]
+            assert doc["expressions"][str(doc["actions"][0]["value"]["rule"])] == [condition], doc["expressions"]
+            values = self._rm_values(app_id)
+            self._rm_assert_stored(values, condition, {"rDev": [switch], "rCustomAttr": "switch", "state": "on"}, sep="_")
+            page = self._rm_page(app_id)
+            assert "fired" in page and "Broken Condition" not in page, page[:600]
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_move_action(self) -> None:
+        # order reorders native action ids without touching their settings; it must be an exact permutation.
+        app_id, created = self._rm_rule("MoveAct", [native_log(m) for m in ("a", "b", "c")])
+        try:
+            ids = [str(row["id"]) for row in created["actions"]]
+            before = self._rm_settings(app_id)
+            wanted = [ids[1], ids[0], ids[2]]
+            moved = self._rm_update(app_id, [native_change("order", ids=wanted)])
+            assert [str(row["id"]) for row in moved["document"]["actions"]] == wanted, moved["document"]["actions"]
+            assert self._rm_settings(app_id) == before, "reordering changed action settings"
+            self._rm_refuse(app_id, [native_change("order", ids=[ids[0], ids[0], ids[2]])])
+            assert [str(row["id"]) for row in self._native_rule_document(app_id)["actions"]] == wanted
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_trigger_mutations(self) -> None:
+        # Edit a trigger in place, refuse an unknown id, delete and re-add in one batch, stop a batch
+        # at its first invalid trigger, and bind a Conditional Trigger to a condition.
+        switch = self._ensure_perm_fixture("switch_a")
+        app_id, created = self._rm_rule("TrigMut", [self._rm_switch_trigger(switch), self._rm_switch_action(switch)])
+        try:
+            original = set(created["triggers"])
+            added = self._rm_update(app_id, [self._rm_switch_trigger(switch)])
+            trigger = self._rm_ids(added)[0]
+            self._rm_update(app_id, [self._rm_switch_trigger(switch, "off", id=trigger)])
+            assert self._rm_values(app_id)["tstate" + trigger] == "off"
+            self._rm_refuse(app_id, [self._rm_switch_trigger(switch, id="999999")])
+            swapped = self._rm_update(app_id, [native_delete("trigger", trigger), self._rm_switch_trigger(switch)])
+            assert [row["part"] for row in swapped["results"]] == ["delete", "trigger"] \
+                and swapped["results"][0]["result"].get("deleted"), swapped
+            deleted_row = swapped["results"][0]["result"]
+            assert isinstance(deleted_row.get("remainingSettingCount"), int) and "remainingSettings" not in deleted_row, deleted_row
+            replacement = self._rm_ids(swapped)[1]
+            removed = self._rm_update(app_id, [native_delete("trigger", replacement)])
+            assert set(removed["document"]["triggers"]) == original, removed["document"]["triggers"]
+            settings = self._rm_settings(app_id)
+            assert not any(prefix + replacement in settings for prefix in ("tCapab", "tDev", "tstate")), settings
+            states = [row["value"] for name, row in settings.items() if re.fullmatch(r"tstate\d+", name)]
+            stopped = self._rm_call({"operation": "update", "rule_id": app_id, "confirm": True, "args": {
+                "changes": [self._rm_switch_trigger(switch, "off"), self._rm_switch_trigger(switch, "purple"),
+                            self._rm_switch_trigger(switch), native_log("trigger-stop-skipped")]}})
+            assert "tstate" in self._rm_refused(stopped) and stopped.get("partial") is True, stopped
+            assert len(stopped["results"]) == 2 and len(stopped["remaining"]) == 2, stopped
+            after = self._rm_values(app_id)
+            now = [v for k, v in after.items() if re.fullmatch(r"tstate\d+", k)]
+            assert now.count("off") == states.count("off") + 1 and now.count("on") == states.count("on") and "purple" not in now, now
+            assert "trigger-stop-skipped" not in after.values()
+            bound = self._rm_ids(self._rm_update(app_id, [self._rm_switch_condition(switch, "off")]))[0]
+            conditional = self._rm_update(app_id, [native_change("trigger", capability="Switch", fields=[
+                *self._rm_switch_fields(switch, trigger=True), native_field("isCondTrig.#", "bool", True),
+                native_field("condTrig.#", "enum", bound)])])
+            assert str(self._rm_values(app_id)["condTrig." + self._rm_ids(conditional)[0]]) == bound
+        finally:
+            self._delete_native(app_id)
+
+    def _rm_stop(self, app_id: Any, changes: list[dict], kept: list[str], absent: list[str]) -> str:
+        """A batch stopped at a failed change: the prefix landed, the rest did not run."""
+        result = self._rm_call({"operation": "update", "rule_id": int(app_id), "confirm": True,
+                                                        "args": {"changes": changes}})
+        error = self._rm_refused(result)
+        rows = result.get("results", [])
+        assert result.get("partial") is True and rows[0]["result"].get("success") and rows[-1]["result"].get("success") is False \
+            and result.get("remaining"), result
+        messages = [v for k, v in self._rm_values(app_id).items() if k.startswith("logmsg.")]
+        assert all(m in messages for m in kept) and not any(m in messages for m in absent), messages
+        return error
+
+    @test("native_apps")
+    def test_set_rule_action_mutations(self) -> None:
+        # Add and delete actions, stop a batch at a native refusal, and refuse a malformed replacement
+        # before the deletes that precede it in the same batch.
+        switch = self._ensure_perm_fixture("switch_a")
+        app_id, created = self._rm_rule("ActMut", [native_log("remove-me-marker")])
+        try:
+            marker = str(created["actions"][0]["id"])
+            added = self._rm_update(app_id, [native_log("one"), native_log("two")])
+            assert len(added["document"]["actions"]) == 3, added["document"]["actions"]
+            removed = self._rm_update(app_id, [native_delete("action", marker)])
+            ids = [str(row["id"]) for row in removed["document"]["actions"]]
+            assert marker not in ids and "logmsg." + marker not in self._rm_settings(app_id)
+            cleared = self._rm_update(app_id, [native_delete("action", i) for i in ids] + [native_log("final")])
+            ids = [str(row["id"]) for row in cleared["document"]["actions"]]
+            assert len(ids) == 1, cleared["document"]["actions"]
+            bad_custom = self._rm_action("modeActs", "getDefinedAction", [
+                ("myCapab", "enum", "E2E Not A Capability"), ("devices", "capability.switch", [str(switch)]), ("cCmd", "enum", "on")])
+            error = self._rm_stop(app_id, [native_log("bulk-kept"), bad_custom, native_log("bulk-skipped")], ["bulk-kept", "final"], ["bulk-skipped"])
+            assert "myCapab" in error, error
+            ids = [str(row["id"]) for row in self._native_rule_document(app_id)["actions"]]
+            self._rm_refuse_all(app_id, [
+                [*[native_delete("action", i) for i in ids], native_log("preclear-must-not-land"), bad]
+                for bad in (native_change("action", type="switchActs", subtype="getOnOffSwitch", fields=[{"name": "onOff.#", "type": "bool"}]),
+                            native_change("action", type="switchActs", subtype="getOnOffSwitch", fields=[native_field("onOff.#", "bool", "blink")]))])
+            missing = self._rm_action("modeActs", "getDeleteLocalFile", [("deleteFile", "enum", f"{PREFIX}missing_file.txt")])
+            self._rm_stop(app_id, [*[native_delete("action", i) for i in ids], native_log("replace-kept"), missing,
+                                   native_log("replace-skipped")], ["replace-kept"], ["bulk-kept", "final", "replace-skipped"])
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_patches(self) -> None:
+        # An unknown field on an otherwise valid action, and an unknown capability, each stop the batch
+        # at that change; changes are one flat ordered list.
+        app_id, _ = self._rm_rule("Patches")
+        try:
+            result = self._rm_update(app_id, [native_log("p1"), native_log("p2")])
+            assert [row["part"] for row in result["results"]] == ["action", "action"], result
+            self._rm_stop(app_id, [native_log("patch-kept"), native_change("action", type="messageActs", subtype="getLogMsg", fields=[
+                native_field("logmsg.#", "textarea", "partial-marker"), native_field("noSuchField.#", "number", 1)]),
+                native_log("patch-skipped")], ["patch-kept"], ["patch-skipped"])
+            self._rm_stop(app_id, [native_log("inner-kept"), self._rm_action("modeActs", "getDefinedAction", [
+                ("myCapab", "enum", "E2E Not A Capability")]), native_log("inner-skipped"), native_log("later-skipped")],
+                ["inner-kept"], ["inner-skipped", "later-skipped"])
+            assert self._rm_health(app_id).get("ok") is not False
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_walkstep_drive(self) -> None:
+        # The native editor, driven step by step: a new action committed with actionDone, invalid
+        # field names, controls and option values refused without a change, and an open Repeat block
+        # reported until its END-REPEAT is added.
+        switch, switch2 = self._ensure_perm_fixture("switch_a"), self._ensure_perm_fixture("switch_b")
+        app_id, _ = self._rm_rule("FormDrive")
+        try:
+            form, index = self._rm_new_action_editor(app_id)
+            page = form["page"]["name"]
+            result = self._rm_form(app_id, *[{"kind": "submit", "expect_page": page, "fields": {name + index: value}}
+                                             for name, value in (("actType.", "messageActs"), ("actSubType.", "getLogMsg"),
+                                                                 ("logmsg.", "drive-complete"))])
+            assert len(result["completed"]) == 3, result
+            self._rm_submit(app_id, result, control=self._rm_control(result, name="actionDone"))
+            form, slot = self._rm_new_trigger_editor(app_id)
+            form = self._rm_submit(app_id, form, fields={"tCapab" + slot: "Switch"})
+            form = self._rm_submit(app_id, form, fields={"tDev" + slot: [str(switch)]})
+            before = self._rm_settings(app_id)
+            for step in (self._rm_step(form, fields={"tCapab999999": "Switch"}),
+                         {**self._rm_step(form, fields={}), "activate": "noSuchButtonE2E"},
+                         self._rm_step(form, fields={"tstate" + slot: "E2E Not A State"})):
+                self._rm_refused(self._rm_call({"operation": "form", "rule_id": app_id,
+                                                                        "confirm": True, "args": {"steps": [step]}}))
+            assert self._rm_settings(app_id) == before, "a refused form step changed the rule"
+            form = self._rm_open(app_id, "selectTriggers")
+            form = self._rm_submit(app_id, form, fields={"tDev" + slot: [str(switch2)]})
+            form = self._rm_submit(app_id, form, fields={"tstate" + slot: "on"})
+            self._rm_submit(app_id, form, control=self._rm_control(form, name="hasAll"))
+            values = self._rm_values(app_id)
+            assert values["logmsg." + index] == "drive-complete" and values["tDev" + slot] == [str(switch2)], values
+            form, repeat = self._rm_new_action_editor(app_id)
+            page = form["page"]["name"]
+            repeated = self._rm_form(app_id, *[{"kind": "submit", "expect_page": page, "fields": {name + repeat: value}}
+                                               for name, value in (("actType.", "repeatActs"), ("actSubType.", "getRepeat"),
+                                                                   ("repeatMinute.", 5))])
+            self._rm_submit(app_id, repeated, control=self._rm_control(repeated, name="actionDone"))
+            health = self._rm_health(app_id)
+            assert any("repeat" in str(issue).lower() for issue in health.get("structuralIssues", [])), health
+            # The write succeeds only once the block is balanced and the rule compiles.
+            self._rm_update(app_id, [native_change("terminator", subtype="endRep")])
+            # Preflight refuses, before any write, an END-REP ordered ahead of its REPEAT and an order
+            # that follows a new action in the same batch.
+            before = self._rm_snapshot(app_id)
+            ids = [str(row["id"]) for row in before["document"]["actions"]]
+            self._rm_refuse(app_id, [native_change("order", ids=[i for i in ids if i != repeat] + [repeat])])
+            assert self._rm_snapshot(app_id) == before, "a refused order changed the rule"
+            error = self._rm_refuse(app_id, [native_log("appended"), native_change("order", ids=ids)])
+            assert "cannot follow new actions" in error, error
+            assert self._rm_snapshot(app_id) == before, "a refused append and order changed the rule"
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_walkstep_action_after_required_expression(self) -> None:
+        # An action added through the native editor after a Required Expression is an ordinary action:
+        # no condition or expression is attached to it.
+        switch = self._ensure_perm_fixture("switch_a")
+        app_id, created = self._rm_rule("FormAfterRE", [self._rm_switch_condition(switch)])
+        try:
+            condition = next(iter(created["conditions"]))
+            self._rm_update(app_id, [native_change("required", tokens=[condition])])
+            form, index = self._rm_new_action_editor(app_id)
+            for name, value in (("actType.", "messageActs"), ("actSubType.", "getLogMsg"), ("logmsg.", "walkstep-after-RE")):
+                form = self._rm_submit(app_id, form, fields={name + index: value})
+            self._rm_submit(app_id, form, control=self._rm_control(form, name="actionDone"))
+            row = next(r for r in self._native_rule_document(app_id)["actions"] if str(r["id"]) == index)
+            assert row["value"]["method"] == "getLogMsg" and not row["value"].get("cond") and not row["value"].get("rule"), row
+            page = self._rm_page(app_id)
+            assert "walkstep-after-RE" in page and "Broken Condition" not in page, page[:600]
+        finally:
+            self._delete_native(app_id)
+
+    # ---- actions: device and app-backed action rows ----
+
+    @test("native_apps")
+    def test_rm_action_device_catalog(self) -> None:
+        # Device actions RM offers only for a matching capability: each stores its native settings and
+        # renders as RM renders it. Literal and variable values are mutually exclusive inputs.
+        keys = ("garage", "valve", "blind", "tone", "player")
+        devices = {key: str(self._ensure_perm_fixture(key)) for key in keys}
+        labels = {key: self.PERM_FIXTURES[key][0] for key in keys}
+        variable = self._ensure_perm_variables("sv_number")["sv_number"]
+        track = "http://x/a.mp3"
+        action = self._rm_action
+        expected = []
+        for key, subtype, flag, picker, capability, verbs in (
+                ("garage", "getOCGarage", "garageRL", "garageOpenClose", "garageDoorControl", ("Close", "Open")),
+                ("valve", "getOCValve", "valveRL", "valveOpenClose", "valve", ("Open", "Close"))):
+            for verb in verbs:
+                expected.append((action("lockActs", subtype, [(flag, "bool", verb == "Close"), (picker, "capability." + capability, [devices[key]])]),
+                                 {flag: verb == "Close", picker: [devices[key]]}, f"{verb}: {labels[key]}"))
+        expected += [
+            (action("soundActs", "getTone", [("toner", "capability.tone", [devices["tone"]])]),
+             {"toner": [devices["tone"]]}, f"Beep: {labels['tone']}"),
+            (action("sceneActs", "getBlindTilt", [("blindTilt", "capability.windowBlind", [devices["blind"]]), ("tiltLevel", "number", 40)]),
+             {"blindTilt": [devices["blind"]], "tiltLevel": 40}, f"Tilt Blinds: {labels['blind']} to 40"),
+            (action("sceneActs", "getBlindTilt", [("blindTilt", "capability.windowBlind", [devices["blind"]]),
+                                                 ("uVar", "bool", True), ("xVar", "enum", variable)]),
+             {"uVar": True, "xVar": variable}, f"Tilt Blinds: {labels['blind']} to {variable}"),
+            *[(action("soundActs", "getSetMusicPlayer", [("player", "capability.musicPlayer", [devices["player"]]),
+                                                         ("playerCommand", "enum", command), (name, type_, value)]),
+               {"playerCommand": command, name: value}, labels["player"] + suffix)
+              for command, name, type_, value, suffix in (
+                  ("set volume", "playerLevel", "number", 30, " --> Set Level to 30"),
+                  ("play track", "playerTrack", "text", track, f": Play Track: '{track}'"),
+                  ("play text", "playerText", "text", "hello", ": Play Text: 'hello'"))],
+            (action("soundActs", "getSetMusicPlayer", [("player", "capability.musicPlayer", [devices["player"]]),
+                                                      ("playerCommand", "enum", "set volume"), ("uVar", "bool", True), ("xVar", "enum", variable)]),
+             {"playerCommand": "set volume", "uVar": True, "xVar": variable}, f"{labels['player']} --> Set Level to {variable}"),
+        ]
+        app_id, created = self._rm_rule("DeviceCatalog", [row[0] for row in expected])
+        try:
+            rows = created["actions"]
+            assert len(rows) == len(expected), rows
+            values = self._rm_values(app_id)
+            page = self._rm_page(app_id)
+            for row, (_, stored, text) in zip(rows, expected, strict=True):
+                self._rm_assert_stored(values, row["id"], stored)
+                assert text in page, f"RM does not render {text!r}: {page[:800]}"
+            assert str(values.get("uVar." + str(rows[5]["id"]))).lower() not in ("true", "on"), "a literal tilt is marked as a variable"
+            self._rm_refuse_all(app_id, [[action("soundActs", "getSetMusicPlayer", [
+                ("player", "capability.musicPlayer", [devices["player"]]), ("playerCommand", "enum", "play track and restore"),
+                ("playerTrack", "text", track)])]])
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_rm_action_return_value(self) -> None:
+        # Return values exist only on a function rule (isFunction): refused before, then each value
+        # type stores and renders.
+        number, text = (self._ensure_perm_variables(key)[key] for key in ("sv_number", "sv_string"))
+        action = self._rm_action
+        app_id, _ = self._rm_rule("ReturnValue")
+        try:
+            self._rm_refuse(app_id, [action("modeActs", "getReturnValue", [("valType", "enum", "Integer"), ("valInt", "number", 5)])])
+            form = self._rm_open(app_id)
+            assert any(row["name"] == "isFunction" for row in form["fields"]), form
+            self._rm_submit(app_id, form, fields={"isFunction": True})
+            expected = [
+                ([("valType", "enum", "Integer"), ("valInt", "number", 5)], {"valType": "Integer", "valInt": 5}, "Return '5'"),
+                ([("valType", "enum", "String"), ("valString", "textarea", "done")], {"valType": "String", "valString": "done"}, "Return 'done'"),
+                ([("valType", "enum", "Decimal"), ("valDec", "decimal", 2.5)], {"valType": "Decimal", "valDec": 2.5}, None),
+                ([("valType", "enum", "Boolean"), ("valBool", "enum", "false")], {"valType": "Boolean", "valBool": "false"}, "Return 'false'"),
+                ([("valType", "enum", "Integer"), ("useVar", "bool", True), ("valVar", "enum", number)],
+                 {"useVar": True, "valVar": number}, f"Return '{number}'"),
+            ]
+            result = self._rm_update(app_id, [action("modeActs", "getReturnValue", fields) for fields, _, _ in expected])
+            values = self._rm_values(app_id)
+            page = self._rm_page(app_id)
+            for row, (_, stored, rendered) in zip(result["document"]["actions"], expected, strict=True):
+                self._rm_assert_stored(values, row["id"], stored)
+                assert rendered is None or rendered in page, f"RM does not render {rendered!r}"
+            # Refused: a string variable for an Integer return (RM offers only number variables) and malformed values.
+            self._rm_refuse_all(app_id, [
+                [action("modeActs", "getReturnValue", [("valType", "enum", "Integer"), ("useVar", "bool", True), ("valVar", "enum", text)])],
+                [action("modeActs", "getReturnValue", [("valType", "enum", "Boolean"), ("valBool", "enum", "maybe")])],
+                [action("modeActs", "getReturnValue", [("valType", "enum", "Integer"), ("valInt", "number", 0)])],
+                [action("modeActs", "getReturnValue", [("valType", "enum", "UnknownType")])],
+            ])
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_modifyaction_retarget(self) -> None:
+        # Edit actions in place by native id: retargets and value changes touch only that row's
+        # settings and keep the order; invalid edits leave the row as it was.
+        dimmer, button, blind, color = (self._ensure_perm_fixture(k) for k in ("dimmer", "button", "blind", "color"))
+        switch = self._ensure_perm_fixture("switch_a")
+        variable = self._ensure_perm_variables("sv_number")["sv_number"]
+        day = self._mode_ids("Day")[0]
+        action = self._rm_action
+        target_a, _ = self._rm_rule("RetargetA")
+        target_b, _ = self._rm_rule("RetargetB")
+        caller = None
+
+        def edit(app_id, row_id, type_name, subtype, fields, expected):
+            before = self._rm_settings(app_id)
+            result = self._rm_update(app_id, [action(type_name, subtype, fields, id=row_id)])
+            after = self._rm_settings(app_id)
+            changed = {n for n in set(before) | set(after) if before.get(n) != after.get(n)}
+            assert all(n.endswith("." + str(row_id)) for n in changed), changed
+            self._rm_assert_stored({n: r.get("device_ids") if str(r.get("type", "")).startswith("capability") else r.get("value")
+                                    for n, r in after.items()}, row_id, expected)
+            return result
+
+        try:
+            caller, created = self._rm_rule("RetargetCaller", [
+                action("rulesActs", "getRuleActions", [("runRuleType", "enum", "Rule Machine"), ("ruleAct", "enum", [str(target_a)])]),
+                native_log("order sentinel")])
+            order = [str(r["id"]) for r in created["actions"]]
+            moved = edit(caller, order[0], "rulesActs", "getRuleActions", [("ruleAct", "enum", [str(target_b)])], {"ruleAct": [str(target_b)]})
+            assert [str(r["id"]) for r in moved["document"]["actions"]] == order, moved["document"]["actions"]
+            private = self._rm_ids(self._rm_update(caller, [action("rulesActs", "getSetPrivateBoolean", [
+                ("pvRuleType", "enum", "Rule Machine"), ("pvTF", "bool", True), ("privateT", "enum", ["*"])])]))[0]
+            edit(caller, private, "rulesActs", "getSetPrivateBoolean", [("pvTF", "bool", False)], {"privateT": ["*"], "pvTF": False})
+            # Authoring only: no mode, button or bulb command runs.
+            rows = self._rm_ids(self._rm_update(target_b, [
+                action("modeActs", "getSetMode", [("mode", "enum", day)]),
+                action("modeActs", "getSetVariable", [("xVarV", "enum", variable), ("numOp", "enum", "number"), ("valNumber", "number", 1)]),
+                action("switchActs", "getPushButton", [("pushButton", "capability.pushableButton", str(button)),
+                                                       ("pushButNo", "number", 1), ("pushButOp", "enum", "hold")]),
+                action("sceneActs", "getBlindTilt", [("blindTilt", "capability.windowBlind", [str(blind)]), ("tiltLevel", "number", 40)]),
+                action("dimmerActs", "getSetDimmer", [("dimA", "capability.switchLevel", [str(dimmer)]), ("dimLA", "number", 50)]),
+                action("dimmerActs", "getSetColor", [("bulbs", "capability.colorControl", [str(color)]), ("color", "enum", "Red")])]))
+            mode, var, push, tilt, dim, bulb = rows
+            self._rm_refuse_all(target_b, [
+                [action("modeActs", "getSetMode", [("mode", "enum", "999999")], id=mode)],
+                [action("modeActs", "getSetVariable", [("xVarV", "enum", f"{PREFIX}missing_var")], id=var)],
+                [action("switchActs", "getPushButton", [("pushButton", "capability.pushableButton", str(switch))], id=push)],
+                [action("switchActs", "getPushButton", [("pushButOp", "enum", "squeeze")], id=push)]])
+            edit(target_b, push, "switchActs", "getPushButton", [("pushButOp", "enum", "push")], {"pushButOp": "push"})
+            for row_id, type_name, subtype, literal, value in ((tilt, "sceneActs", "getBlindTilt", "tiltLevel", 55),
+                                                               (dim, "dimmerActs", "getSetDimmer", "dimLA", 30)):
+                edit(target_b, row_id, type_name, subtype, [("uVar", "bool", True), ("xVar", "enum", variable)], {"uVar": True, "xVar": variable})
+                edit(target_b, row_id, type_name, subtype, [("uVar", "bool", False), (literal, "number", value)], {"uVar": False, literal: value})
+            edit(target_b, bulb, "dimmerActs", "getSetColor", [("color", "enum", "Custom HSB color"), ("colorHex", "number", 120),
+                                                             ("colorSat", "number", 80)], {"color": "Custom HSB color", "colorHex": 120, "colorSat": 80})
+            edit(target_b, bulb, "dimmerActs", "getSetColor", [("color", "enum", "Custom RGB color"), ("colorH", "text", "#00ff00")],
+                 {"color": "Custom RGB color", "colorH": "#00ff00"})
+            self._rm_refuse_all(target_b, [[action("dimmerActs", "getSetColor", [("colorLevel", "number", 40)], id=bulb)]])
+            paused = self.client.call_tool("hub_set_rule_paused", {"ruleId": [target_a, target_b], "paused": True})
+            if paused.get("success") is False:
+                # The hub's load limiter may refuse a batch outright; it then pauses neither rule.
+                assert "excessive hub load" in str(paused.get("error", "")), paused
+                return
+            assert sorted(map(str, paused.get("ruleIds", []))) == sorted(map(str, (target_a, target_b))), paused
+            self._rm_wait(lambda: all(self._rm_health(r).get("paused") is True for r in (target_a, target_b)), what="both rules paused")
+        finally:
+            for app_id in (caller, target_a, target_b):
+                if app_id:
+                    self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_switch_only_on_and_device_list_no_false_partial(self) -> None:
+        # "Command only switches that are off/on" (optSwitch) is revealed after the device picker, so it
+        # must persist with the device and the on/off choice in one row, and edit in place. A shade
+        # action built through the native editor, whose last input is its device picker, commits
+        # without a false partial. The rule has no trigger, so nothing runs.
+        switches = [str(self._ensure_perm_fixture(key)) for key in ("switch_a", "switch_b")]
+        def switch_action(on: bool, only: bool, **extra) -> dict:
+            return self._rm_action("switchActs", "getOnOffSwitch", [
+                ("onOffSwitch", "capability.switch", switches), ("onOff", "bool", on), ("optSwitch", "bool", only)], **extra)
+        app_id, created = self._rm_rule("OnlyIfChanged", [switch_action(False, True)])
+        shade_rule = None
+        try:
+            action_id = str(created["actions"][0]["id"])
+            for on, only in ((False, True), (True, False)):
+                if (on, only) != (False, True):
+                    edited = self._rm_update(app_id, [switch_action(on, only, id=action_id)])
+                    assert [str(r["id"]) for r in edited["document"]["actions"]] == [action_id], edited["document"]["actions"]
+                values = self._rm_values(app_id)
+                assert sorted(map(str, values["onOffSwitch." + action_id])) == sorted(switches), values
+                assert str(values["onOff." + action_id]).lower() == str(on).lower(), values
+                assert str(values["optSwitch." + action_id]).lower() == str(only).lower(), values
+            shade = self.get_test_shade_id()
+            if not shade:
+                return
+            shade_rule, _ = self._rm_rule("ShadeDeviceList")
+            form, index = self._rm_new_action_editor(shade_rule)
+            category = next(row for row in form["fields"] if row["name"] == "actType." + index)
+            scene = [row["value"] for row in category.get("options", []) if "shades/blinds" in row.get("label", "").lower()]
+            assert scene == ["sceneActs"], category
+            form = self._rm_submit(shade_rule, form, fields={"actType." + index: "sceneActs"})
+            form = self._rm_submit(shade_rule, form, fields={"actSubType." + index: "getRLShade"})
+            form = self._rm_submit(shade_rule, form, fields={"shadeRL." + index: True})
+            form = self._rm_submit(shade_rule, form, fields={"shadeOpenClose." + index: [str(shade)]})
+            committed = self._rm_submit(shade_rule, form, control=self._rm_control(form, name="actionDone"))
+            assert not committed.get("partial"), committed
+            values = self._rm_values(shade_rule)
+            assert values["shadeOpenClose." + index] == [str(shade)] and str(values["shadeRL." + index]).lower() == "true", values
+        finally:
+            self._delete_native(app_id)
+            if shade_rule:
+                self._delete_native(shade_rule)
+
+    # ---- conditions, triggers, expressions, variables ----
+
+    @test("native_apps")
+    def test_set_rule_enum_custom_attribute(self) -> None:
+        # Custom Attribute rows over an enum attribute (switch): a trigger, a condition that also gates
+        # a Required Expression, and a Conditional Trigger bound to that condition.
+        switch = self._ensure_perm_fixture("switch_a")
+        # RM offers a Conditional Trigger only conditions outside the Required Expression.
+        app_id, created = self._rm_rule("EnumCustom", [
+            native_change("trigger", capability="Custom Attribute", fields=self._rm_switch_fields(switch, trigger=True, custom=True)),
+            native_change("condition", capability="Custom Attribute", fields=self._rm_switch_fields(switch, custom=True)),
+            native_change("condition", capability="Custom Attribute", fields=self._rm_switch_fields(switch, custom=True))])
+        try:
+            trigger = next(iter(created["triggers"]))
+            condition, gate = sorted(created["conditions"], key=int)
+            result = self._rm_update(app_id, [native_change("required", tokens=[gate]), native_change("trigger", capability="Switch", fields=[
+                *self._rm_switch_fields(switch, trigger=True), native_field("isCondTrig.#", "bool", True),
+                native_field("condTrig.#", "enum", condition)])])
+            conditional = self._rm_ids(result)[1]
+            assert result["document"]["expressions"]["0"] == [gate], result["document"]["expressions"]
+            values = self._rm_values(app_id)
+            self._rm_assert_stored(values, trigger, {"tCustomAttr": "switch", "tstate": "on", "tDev": [switch]}, sep="")
+            self._rm_assert_stored(values, condition, {"rCustomAttr": "switch", "state": "on", "rDev": [switch]}, sep="_")
+            assert str(values["condTrig." + conditional]) == condition and str(values.get("useST")).lower() == "true", values
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_trigger_state_change_comparator(self) -> None:
+        switch = self._ensure_perm_fixture("switch_a")
+        app_id, created = self._rm_rule("StateChange", [
+            self._rm_switch_trigger(switch, "*changed*"),
+            native_change("trigger", capability="Mode", fields=[native_field("modesX#", "enum", ["0"])])])
+        try:
+            switch_slot, mode_slot = sorted(created["triggers"], key=int)
+            values = self._rm_values(app_id)
+            self._rm_assert_stored(values, switch_slot, {"tstate": "*changed*", "tDev": [switch]}, sep="")
+            assert list(map(str, values["modesX" + mode_slot])) == ["0"], values
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_trigger_custom_attribute_enum_changed_routes(self) -> None:
+        # *changed* on an enum Custom Attribute is a trigger state, not a comparator; as a condition
+        # it has no native representation and is refused.
+        switch = self._ensure_perm_fixture("switch_a")
+        app_id, created = self._rm_rule("CustomChanged", [native_change("trigger", capability="Custom Attribute",
+                                                                        fields=self._rm_switch_fields(switch, "*changed*", trigger=True, custom=True))])
+        try:
+            trigger = next(iter(created["triggers"]))
+            values = self._rm_values(app_id)
+            self._rm_assert_stored(values, trigger, {"tCustomAttr": "switch", "tstate": "*changed*", "tDev": [switch]}, sep="")
+            assert "ReltDev" + trigger not in values, values
+            self._rm_refuse_all(app_id, [[native_change("condition", capability="Custom Attribute",
+                                                        fields=self._rm_switch_fields(switch, "*changed*", custom=True))]])
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_required_expression_and_local_var(self) -> None:
+        switch = self._ensure_perm_fixture("switch_a")
+        app_id, _ = self._rm_rule("LocalVars", [self._rm_switch_action(switch)])
+        try:
+            self._rm_refuse_all(app_id, [
+                [native_change("condition", fields=self._rm_switch_fields(switch))],
+                [native_change("required", tokens=["999999999"])],
+                [native_change("condition", capability="Switch", fields=[*self._rm_switch_fields(switch), native_field("RelrDev_#", "enum", ">")])]])
+            built = self._rm_update(app_id, [
+                native_change("variable", operation="create", name="fields", type="integer", value=0),
+                self._rm_variable_action("fields", "number", [native_field("valNumber.#", "number", 0)]),
+                self._rm_switch_condition(switch)])
+            _, action, condition = self._rm_ids(built)
+            required = self._rm_update(app_id, [native_change("required", tokens=[condition])])["document"]
+            assert required["expressions"]["0"] == [condition] and required["variables"]["fields"]["value"] == 0, required
+            values = self._rm_values(app_id)
+            assert values["xVarV." + action] == "fields" and float(values["valNumber." + action]) == 0, values
+            assert str(values.get("useST")).lower() == "true", values.get("useST")
+            timestamp = "2026-01-01T12:30:00.000-0500"
+            self._rm_refuse_all(app_id, [
+                [native_change("variable", operation="create", name="fields", type="integer", value=10)],
+                *[[native_change("variable", operation="create", name="badValue", type=t, value=v)]
+                  for t, v in (("integer", 1.5), ("integer", "abc"), ("bigdecimal", "1.2.3"), ("datetime", 1767270600000),
+                               ("datetime", "2026-02-30T12:30:00.000-0500"), ("datetime", "tomorrow"))]])
+            typed = self._rm_update(app_id, [
+                native_change("variable", operation="create", name="integerProof", type="integer", value=5),
+                native_change("variable", operation="create", name="decimalProof", type="bigdecimal", value=2.5),
+                native_change("variable", operation="create", name="seenAt", type="datetime", value=timestamp),
+                native_change("variable", operation="set", name="integerProof", value=7),
+                native_change("variable", operation="set", name="decimalProof", value=3.75)])["document"]["variables"]
+            assert (typed["integerProof"]["type"], float(typed["integerProof"]["value"])) == ("integer", 7), typed
+            assert (typed["decimalProof"]["type"], float(typed["decimalProof"]["value"])) == ("bigdecimal", 3.75), typed
+            assert (typed["seenAt"]["type"], typed["seenAt"]["value"]) == ("datetime", timestamp), typed
+            assert "seenAt" in self._rm_page(app_id)
+            removed = self._rm_update(app_id, [native_delete("action", action),
+                                               native_change("variable", operation="delete", name="fields")])
+            assert "fields" not in removed["document"]["variables"], removed["document"]["variables"]
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_contains_comparator(self) -> None:
+        # String *contains* and Boolean variable conditions, in a Required Expression and an IF; and a
+        # variable compared to another variable, whose value slot is the offset, so a second literal
+        # right-hand side is refused rather than silently replacing it.
+        names = self._ensure_perm_variables("contains_msg", "bool_flag", "sv_number", "sv_num_src")
+        variable = self._rm_variable_condition
+        left, right = names["sv_number"], names["sv_num_src"]
+        app_id, created = self._rm_rule("Contains", [
+            variable(names["contains_msg"], "*contains*", "error"),
+            variable(names["bool_flag"], value="true", value_type="enum"),
+            variable(names["bool_flag"], value="false", value_type="enum"),
+            variable(left, ">", 0, "number", rhs=right)])
+        try:
+            contains, yes, no, relative = sorted(created["conditions"], key=int)
+            self._rm_update(app_id, [native_change("required", tokens=[contains, "AND", yes]),
+                                     native_change("action", type="condActs", subtype="getIfThen", fields=[], expression=[no]),
+                                     native_log("boolean branch"), native_change("terminator", subtype="endIf")])
+            values = self._rm_values(app_id)
+            self._rm_assert_stored(values, contains, {"RelrDev": "*contains*", "state": "error"}, sep="_")
+            assert sorted(str(values["state_" + slot]).lower() for slot in (yes, no)) == ["false", "true"], values
+            assert values["xVarR_" + relative] == right, values
+            self._rm_refuse_all(app_id, [[native_change("condition", id=relative, capability="Variable", fields=[
+                *variable(left, ">", 0, "number", rhs=right)["value"]["fields"], native_field("state_#", "number", 0)])]])
+        finally:
+            self._delete_native(app_id)
+
+    @staticmethod
+    def _rm_variable_condition(name: str, comparator: str | None = None, value: Any = None, value_type: str = "text",
+                               rhs: str | None = None, **extra: Any) -> dict:
+        fields = [native_field("xVar_#", "enum", name)]
+        if comparator is not None:
+            fields.append(native_field("RelrDev_#", "enum", comparator))
+        if rhs is not None:
+            fields += [native_field("isVar_#", "bool", True), native_field("xVarR_#", "enum", rhs)]
+        if value is not None:
+            fields.append(native_field("state_#", value_type, value))
+        return native_change("condition", capability="Variable", fields=fields, **extra)
+
+    @test("native_apps")
+    def test_set_rule_remove_referenced_local_breaks_rule(self) -> None:
+        # Deleting a local variable an action still uses is applied (RM allows it) but reported as
+        # leaving the rule broken, and the editor shows it broken.
+        app_id, _ = self._rm_rule("RefLocal", [
+            native_change("variable", operation="create", name="refLocal", type="integer", value=0),
+            self._rm_variable_action("refLocal", "number", [native_field("valNumber.#", "number", 9)])])
+        try:
+            ran = self.client.call_tool("hub_call_rule", {"ruleId": app_id, "action": "actions"})
+            assert ran.get("success") is not False, ran
+            self._rm_wait(lambda: self._native_rule_document(app_id)["variables"]["refLocal"]["value"] == 9, what="refLocal=9")
+            result = self._rm_call({"operation": "update", "rule_id": app_id, "confirm": True, "args": {
+                "changes": [native_change("variable", operation="delete", name="refLocal")]}})
+            assert result.get("success") is False and result.get("partial") is True and "broken" in str(result).lower(), result
+            assert "refLocal" not in self._native_rule_document(app_id)["variables"]
+            assert "broken" in self._rm_page(app_id).lower()
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_replace_required_expression(self) -> None:
+        # Replacing the Required Expression; invalid condition edits and unknown modes leave it as it was.
+        switch = self._ensure_perm_fixture("switch_a")
+        text = self._ensure_perm_variables("sv_string")["sv_string"]
+        app_id, created = self._rm_rule("ReplaceRE", [self._rm_switch_condition(switch), self._rm_switch_condition(switch, "off")])
+        try:
+            on, off = sorted(created["conditions"], key=int)
+            self._rm_update(app_id, [native_change("required", tokens=[on])])
+            replaced = self._rm_update(app_id, [native_change("required", tokens=[off])])
+            assert replaced["document"]["expressions"]["0"] == [off], replaced["document"]["expressions"]
+            assert "is off" in self._rm_page(app_id).lower()
+            self._rm_refuse_all(app_id, [
+                [self._rm_switch_condition(switch, "definitely_not_a_valid_state", id=off)],
+                *[[native_change("condition", capability="Mode", fields=[native_field("modes#", "enum", [mode])])]
+                  for mode in ("NoSuchMode", "999999999")]])
+            changed = self._rm_ids(self._rm_update(app_id, [self._rm_variable_condition(text, "*changed*")]))[0]
+            final = self._rm_update(app_id, [native_change("required", tokens=[changed])])
+            assert final["document"]["expressions"]["0"] == [changed], final["document"]["expressions"]
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_setvariable_from_device_and_math(self) -> None:
+        # Set Variable from a device attribute, variable math, string copy and offsets; a numeric
+        # source cannot fill a String or Boolean target; running the actions computes the value.
+        temperature = self.get_test_temperature_ids()[0]
+        switch = self._ensure_perm_fixture("switch_a")
+        names = self._ensure_perm_variables("sv_number", "sv_num_src", "sv_string", "sv_str_src", "sv_bool")
+        target, source, text, text_source, flag = (names[k] for k in ("sv_number", "sv_num_src", "sv_string", "sv_str_src", "sv_bool"))
+        def math(operator, operand):
+            numeric = isinstance(operand, (int, float))
+            fields = [native_field("xVar3.#", "enum", target), native_field("valMathOp.#", "enum", operator)]
+            if operator != "absolute":
+                fields.append(native_field("xVar4.#", "enum", "(constant)" if numeric else operand))
+            if numeric:
+                fields.append(native_field("valConst2.#", "number", operand))
+            return self._rm_variable_action(target, "variable math", fields)
+        app_id, created = self._rm_rule("SetVarMath", [
+            self._rm_variable_action(target, "device attribute", [
+                native_field("customDev.#", "capability.*", str(temperature)), native_field("tCustomAttr.#", "enum", "temperature")]),
+            math("+", 10), math("-", target), math("+", 5.5), math("absolute", None),
+            native_change("action", type="modeActs", subtype="getSetVariable", fields=[
+                native_field("xVarV.#", "enum", text), native_field("valStringOp.#", "enum", "Copy variable"),
+                native_field("xVar3.#", "enum", text_source)])])
+        runner = None
+        try:
+            device, plus, minus, plus_dec, absolute, copied = [str(r["id"]) for r in created["actions"]]
+            values = self._rm_values(app_id)
+            self._rm_assert_stored(values, device, {"tCustomAttr": "temperature", "customDev": [temperature]})
+            self._rm_assert_stored(values, plus, {"xVar3": target, "valMathOp": "+", "valConst2": 10})
+            self._rm_assert_stored(values, minus, {"valMathOp": "-", "xVar4": target})
+            self._rm_assert_stored(values, plus_dec, {"valConst2": 5.5})
+            assert "xVar4." + absolute not in values and "valConst2." + absolute not in values, values
+            self._rm_assert_stored(values, copied, {"xVar3": text_source, "valStringOp": "Copy variable"})
+            assert "numOp." + copied not in values and "customDev." + copied not in values, values
+            self._rm_refuse_all(app_id, [[self._rm_variable_action(bad, "device attribute", [
+                native_field("customDev.#", "capability.*", str(switch)), native_field("tCustomAttr.#", "enum", "switch")])]
+                for bad in (text, flag)])
+            runner, _ = self._rm_rule("SetVarRun", [
+                self._rm_variable_action(target, "variable", [native_field("xVar3.#", "enum", source), native_field("valOffset.#", "number", 0)]),
+                self._rm_variable_action(target, "add number", [native_field("valNumber.#", "number", 3)])])
+            ran = self.client.call_tool("hub_call_rule", {"ruleId": runner, "action": "actions"})
+            assert ran.get("success") is not False, ran
+            self._rm_wait(lambda: float(self.client.call_tool("hub_get_variable", {"name": target})["value"]) == 10,
+                          timeout=15, what=f"{target}=10")
+        finally:
+            for rule in (app_id, runner):
+                if rule:
+                    self._delete_native(rule)
+
+    @test("native_apps")
+    def test_set_rule_walker_compare_to_device(self) -> None:
+        # Device-relative comparisons (one sensor against another, with an offset) as a condition, a
+        # trigger, and a Conditional Trigger; a second literal for the offset slot is refused.
+        temp_a, temp_b = self.get_test_temperature_ids()
+        fields = self._rm_temperature_fields
+        app_id, created = self._rm_rule("CompareDevice", [
+            native_change("condition", capability="Temperature", fields=fields(temp_a, ">", -2, relative_to=temp_b)),
+            native_change("condition", capability="Temperature", fields=fields(temp_a, "<", 1, relative_to=temp_b)),
+            native_change("trigger", capability="Temperature", fields=fields(temp_a, ">", 2, trigger=True, relative_to=temp_b))])
+        try:
+            condition, extra = sorted(created["conditions"], key=int)
+            trigger = next(iter(created["triggers"]))
+            conditional = self._rm_ids(self._rm_update(app_id, [native_change("required", tokens=[condition]),
+                native_change("trigger", capability="Temperature", fields=[*fields(temp_a, ">", 50, trigger=True),
+                    native_field("isCondTrig.#", "bool", True), native_field("condTrig.#", "enum", extra)])]))[1]
+            values = self._rm_values(app_id)
+            self._rm_assert_stored(values, condition, {"rDev": [temp_a], "relDevice": [temp_b], "state": -2}, sep="_")
+            self._rm_assert_stored(values, extra, {"RelrDev": "<"}, sep="_")
+            self._rm_assert_stored(values, trigger, {"reltDevice": [temp_b], "tstate": 2}, sep="")
+            assert str(values["condTrig." + conditional]) == extra, values
+            assert "temperature of" in self._rm_page(app_id).lower()
+            self._rm_refuse_all(app_id, [[native_change("condition", id=condition, capability="Temperature", fields=[
+                *fields(temp_a, ">", -2, relative_to=temp_b), native_field("state_#", "decimal", 70)])]])
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_required_expression_multi_condition(self) -> None:
+        # Flat AND and grouped (A OR B) AND C Required Expressions over three conditions render as RM renders them.
+        temp_a, temp_b = self.get_test_temperature_ids()
+        rows = [native_change("condition", capability="Temperature", fields=self._rm_temperature_fields(device, op, value))
+                for device, op, value in ((temp_a, ">", 70), (temp_b, "<", 80), (temp_a, ">=", 65))]
+        for grouped in (False, True):
+            app_id, created = self._rm_rule("MultiRE", rows)
+            try:
+                ids = sorted(created["conditions"], key=int)
+                tokens = ["(", ids[0], "OR", ids[1], ")", "AND", ids[2]] if grouped else [ids[0], "AND", ids[1], "AND", ids[2]]
+                result = self._rm_update(app_id, [native_change("required", tokens=tokens)])
+                assert result["document"]["expressions"]["0"] == tokens, result["document"]["expressions"]
+                page = self._rm_page(app_id)
+                assert page.lower().count("temperature of") >= 3 and ("OR" if grouped else "AND") in page and "< 80" in page, page[:800]
+            finally:
+                self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_action_after_required_expression(self) -> None:
+        # Actions added after a Required Expression carry no condition unless given one; a Simple
+        # Conditional Action uses an existing condition, and a refused conditional action leaves its
+        # separately created condition for the caller to delete.
+        switch = self._ensure_perm_fixture("switch_a")
+        app_id, created = self._rm_rule("ActAfterRE", [self._rm_switch_condition(switch), self._rm_switch_condition(switch)])
+        try:
+            required, condition = sorted(created["conditions"], key=int)
+            built = self._rm_update(app_id, [native_change("required", tokens=[required]), native_log("after-RE"),
+                                             self._rm_switch_action(switch, condition=condition)])
+            log_id, action = self._rm_ids(built)[1:]
+            rows = {str(r["id"]): r["value"] for r in built["document"]["actions"]}
+            assert not rows[log_id].get("cond") and not rows[log_id].get("rule"), rows[log_id]
+            edited = self._rm_update(app_id, [self._rm_switch_action(switch, False, id=action)])
+            assert str({str(r["id"]): r["value"] for r in edited["document"]["actions"]}[action]["cond"]) == condition
+            defined = native_log("defined condition")
+            defined["value"]["condition"] = condition
+            defined_id = self._rm_ids(self._rm_update(app_id, [defined]))[0]
+            values = self._rm_values(app_id)
+            assert str(values["onOff." + action]).lower() in ("false", "off"), values
+            assert str(values["useCondNdx." + defined_id]) == condition and str(values["useCond." + defined_id]).lower() == "true", values
+            page = self._rm_page(app_id)
+            assert "IF (" in page and "Broken Condition" not in page, page[:600]
+            before = self._native_rule_document(app_id)
+            unused = self._rm_ids(self._rm_update(app_id, [self._rm_switch_condition(switch, "off")]))[0]
+            bad = lambda cond: self._rm_action("modeActs", "getDefinedAction", [  # noqa: E731
+                ("myCapab", "enum", "Switch"), ("devices", "capability.switch", [str(switch)]), ("cCmd", "enum", "noSuchCommandE2E")], condition=cond)
+            self._rm_refuse_all(app_id, [[bad(condition)], [bad(unused)]])
+            after = self._rm_update(app_id, [native_delete("condition", unused)])["document"]
+            for section in ("conditions", "actions", "expressions"):
+                assert after[section] == before[section], section
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_update_with_false_required_expression_is_suppressed(self) -> None:
+        # With the Required Expression false, RM removes the trigger subscriptions; an edit reports that
+        # as suppressed rather than as missing activation.
+        switch = self._ensure_perm_fixture("switch_a")
+        app_id, created = self._rm_rule("FalseRE", [self._rm_switch_trigger(switch), native_change(
+            "condition", capability="Private Boolean", fields=[native_field("state_#", "enum", "true")])])
+        try:
+            condition = next(iter(created["conditions"]))
+            self._rm_update(app_id, [native_change("required", tokens=[condition]), native_log("gated trigger")])
+            # RMUtils is the only way this app can set another rule's Private Boolean, and the hub's
+            # per-app load limiter refuses it once tripped. A helper rule's Set Private Boolean action,
+            # run through the Run Actions button, is the UI's route and is never limited. Its "Set True
+            # or False?" toggle sets False when on.
+            setter, _ = self._rm_rule("FalseRESetter", [self._rm_action("rulesActs", "getSetPrivateBoolean", [
+                ("pvRuleType", "enum", "Rule Machine"), ("privateT", "enum", [str(app_id)]), ("pvTF", "bool", True)])])
+            try:
+                ran = self.client.call_tool("hub_call_rule", {"ruleId": setter, "action": "actions"})
+                assert ran.get("success") is True, ran
+            finally:
+                self._delete_native(setter)
+            self._rm_wait(lambda: self._rm_health(app_id)["eventSubscriptionCount"] == 0, what="subscriptions removed")
+            edited = self._rm_update(app_id, [native_log("edit while required expression is false")])
+            assert "SUPPRESSED" in str(edited.get("subscriptionSettle", "")).upper(), edited
+            assert not edited["eventSubscriptions"] and not edited["scheduledJobs"], edited
+            assert edited["document"]["expressions"]["0"] == [condition]
+        finally:
+            self._delete_native(app_id)
+
+    def _ensure_wizard_walk_fixture(self) -> int:
+        """The permanent wizard-walk app's instance id, installing what the hub lacks: the code, the instance, or both."""
+        name = "BAT_E2E_KEEP_Wizard_Walk"
+
+        def listed(scope: str) -> list[dict]:
+            page = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_apps", "args": {"scope": scope}})
+            assert isinstance(page, dict) and isinstance(page.get("apps"), list), f"hub_list_apps({scope}) failed: {page}"
+            return [a for a in page["apps"] if isinstance(a, dict)]
+
+        instance = next((a for a in listed("instances") if str(a.get("name") or a.get("type") or "") == name), None)
+        if instance is not None:
+            return int(instance["id"])
+        code = next((a for a in listed("types") if str(a.get("name") or "") == name and a.get("namespace") == "mcptest"), None)
+        if code is None:
+            source = (Path(__file__).resolve().parent / "fixtures" / "e2e-wizard-walk-app.groovy").read_text(encoding="utf-8")
+            created = self.client.call_tool("hub_manage_code", {"tool": "hub_create_app", "args": {"source": source, "confirm": True}})
+            assert created.get("success") is True and created.get("appId"), f"installing the wizard fixture's code failed: {created}"
+            code_id = int(created["appId"])
+        else:
+            code_id = int(code["id"])
+        inst = self.client.call_tool("hub_manage_code", {"tool": "hub_create_app", "args": {"codeAppId": code_id, "confirm": True}})
+        assert inst.get("success") is True and inst.get("instanceAppId"), f"creating the wizard fixture failed: {inst}"
+        print(f"    [PERM FIXTURE] installed {name} -- reused by later runs")
+        return int(inst["instanceAppId"])
+
+    @test("native_apps")
+    def test_set_native_app_walk_keeps_the_pending_page(self) -> None:
+        # A multi-page wizard walk reads and writes on the page it is on; rendering the app's default
+        # page between steps resets it. The fixture app is Hubitat Package Manager's install-from-URL
+        # flow in miniature (its main page clears a pending install URL): a permanent BAT_E2E_KEEP_
+        # scaffold, installed from the repo once per hub and never removed. The walk also exposes the
+        # page's Next target.
+        app_id = self._ensure_wizard_walk_fixture()
+
+        def walk(step: dict) -> dict:
+            return self.client.call_tool("hub_manage_native_rules_and_apps", {
+                "tool": "hub_set_native_app", "args": {"appId": app_id, "walkStep": step, "confirm": True}})
+
+        passed = False
+        try:
+            to_install = walk({"page": "prefOptions", "operation": "navigate", "navigate": {"targetPage": "prefPkgInstall"}})
+            assert to_install.get("success") is True, f"navigate to prefPkgInstall failed: {to_install}"
+            # This test runs with pre-edit backups on: the backup's own config read is the one that
+            # must stay on the walk's page (#543), so a key must come back and the page must survive.
+            assert (to_install.get("backup") or {}).get("backupKey"), f"the walk took no pre-edit backup: {to_install}"
+            to_url = walk({"page": "prefPkgInstall", "operation": "navigate", "navigate": {"targetPage": "prefPkgInstallUrl"}})
+            assert to_url.get("success") is True and (to_url.get("after") or {}).get("nextPage"), \
+                f"the walk did not expose the page's Next target: {to_url}"
+            url = "https://example.invalid/e2e-manifest.json"
+            wrote = walk({"page": "prefPkgInstallUrl", "operation": "write", "write": {"pkgInstall": url}})
+            assert wrote.get("success") is True, f"writing pkgInstall failed: {wrote}"
+            stored = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config", "args": {
+                "appId": app_id, "pageName": "prefPkgInstallUrl", "includeSettings": True}})
+            assert str((stored.get("settings") or {}).get("pkgInstall")) == url, \
+                f"the pending install URL was reset between steps: {stored.get('settings')}"
+            passed = True
+        finally:
+            # The fixture's default page clears its pending install state, so the next run starts clean.
+            reset = walk({"page": "prefPkgInstallUrl", "operation": "navigate", "navigate": {"targetPage": "prefOptions"}})
+            if passed:
+                assert reset.get("success") is True, f"the fixture was not reset to its default page: {reset}"
+            elif reset.get("success") is not True:
+                print(f"    [WARN] the wizard fixture was not reset to its default page: {reset}")
+
+    @test("virtual_device_lifecycle")
+    def test_create_virtual_leak_sensor_and_garage_door_controller(self) -> None:
+        # The supported type list uses the hub's own built-in driver names; each creates a device
+        # with that driver and deletes cleanly.
+        for driver in ("Virtual Leak Sensor", "Virtual Garage Door Controller"):
+            label = f"{PREFIX}{driver.replace(' ', '')}_{_run_artifact_suffix()}"
+            cw = self._soft_write(
+                lambda driver=driver, label=label: self.client.call_tool("hub_manage_virtual_device", {
+                    "action": "create", "deviceType": driver, "deviceLabel": label, "confirm": True}),
+                lambda label=label: self._find_device_dni_by_label(label),
+                f"create {driver}",
+            )
+            if cw["relayDropped"]:
+                assert cw["committed"], f"create {driver} lost to relay 504 and never committed"
+                dni = str(cw["evidence"])
+            else:
+                result = cw["response"]
+                device = result.get("device") or {}
+                assert result.get("success") is True and device.get("driverType") == driver, \
+                    f"create {driver} did not return a device with that driver: {result}"
+                dni = str(device.get("deviceNetworkId"))
+            self.created_device_dnis.append(dni)
+            dw = self._soft_write(
+                lambda dni=dni: self.client.call_tool("hub_manage_virtual_device", {
+                    "action": "delete", "deviceNetworkId": dni, "confirm": True}),
+                lambda dni=dni, label=label: not self._device_dni_present(dni, label),
+                f"delete {driver}",
+            )
+            if dw["relayDropped"]:
+                assert dw["committed"], f"{label} still present after a relay-504 delete"
+            assert not self._device_dni_present(dni, label), f"{label} ({dni}) still present after deletion"
+            self.created_device_dnis.remove(dni)
+
+    # ---- actions backed by other built-in apps ----
+
+    def _installed_app_rows(self) -> list[dict]:
+        rows: list[dict] = []
+        cursor: str | None = ""
+        while cursor is not None:
+            page = self.client.call_tool("hub_list_apps", {"scope": "instances", "cursor": cursor})
+            assert isinstance(page.get("apps"), list), f"hub_list_apps(instances) failed: {page}"
+            rows += [a for a in page["apps"] if isinstance(a, dict)]
+            cursor = page.get("nextCursor")
+        return rows
+
+    @staticmethod
+    def _app_row_by_label(rows: list[dict], label: str) -> dict | None:
+        # The listing can append the app's status decoration, e.g. " (Paused)".
+        return next((r for r in rows if str(r.get("name") or "") == label
+                     or str(r.get("name") or "").startswith(f"{label} (")), None)
+
+    def _mode_ids(self, *names: str) -> list[str]:
+        modes = {str(m.get("name")): str(m.get("id")) for m in (self.client.call_tool("hub_list_modes", {}).get("modes") or [])}
+        missing = [n for n in names if n not in modes]
+        assert not missing, f"this hub has no {missing} mode: {modes}"
+        return [modes[n] for n in names]
+
+    def _ensure_builtin_app_fixture(self, rows: list[dict], key: str, configure: list[dict]) -> str:
+        """A BUILTIN_APP_FIXTURES app's id: found by label, else created by appType and configured with
+        `configure` (hub_set_native_app edits, in order). A half-built instance is deleted, not kept,
+        so the next run does not find a fixture missing part of its setup."""
+        label, _, app_type = self.BUILTIN_APP_FIXTURES[key]
+        found = self._app_row_by_label(rows, label)
+        if found is not None:
+            return str(found["id"])
+        created = self.client.call_tool("hub_set_native_app", {"appType": app_type, "name": label, "confirm": True})
+        app_id = created.get("appId")
+        # The thermostat apps take their name only once a thermostat is set, so their create reports
+        # the label unverified; configure ends by writing it.
+        assert app_id and created.get("appType") == app_type and created.get("parentAppId") is not None, created
+        try:
+            for step in configure:
+                done = self.client.call_tool("hub_set_native_app", {"appId": int(app_id), "confirm": True, **step})
+                assert done.get("success") is True, f"configuring the {label} fixture: {step} failed: {done}"
+        except BaseException:
+            try:
+                self.client.call_tool("hub_delete_native_app", {"appId": int(app_id), "force": True, "confirm": True})
+            except (McpError, McpToolError, requests.HTTPError) as exc:
+                print(f"    [WARN] could not delete the half-built {label} fixture (app {app_id}): {exc}")
+            raise
+        print(f"    [PERM FIXTURE] created '{label}' ({app_type}, app {app_id}) -- reused by later runs")
+        return str(app_id)
+
+    def _rm_app_actions(self, app_id: Any, actions: list[tuple[dict, dict, list[str]]]) -> dict:
+        """Add app-backed actions in one write; each stores its inputs and renders the given fragments."""
+        result = self._rm_update(app_id, [row[0] for row in actions])
+        ids = self._rm_ids(result)
+        values = self._rm_values(app_id)
+        page = " ".join(self._rm_page(app_id, "selectActions").split()).lower()
+        for row_id, (_, stored, rendered) in zip(ids, actions, strict=True):
+            self._rm_assert_stored(values, row_id, stored)
+            for fragment in rendered:
+                assert " ".join(fragment.split()).lower() in page, f"action {row_id} does not render {fragment!r}"
+        return dict(zip((str(i) for i in range(len(ids))), ids, strict=True))
+
+    @test("native_apps")
+    def test_rm_action_room_lights(self) -> None:
+        label = self.BUILTIN_APP_FIXTURES["room_lights"][0]
+        rows = self._installed_app_rows()
+        app_id, _ = self._rm_rule("RmActRoomLights")
+        try:
+            if not any(r.get("type") == "Room Lights" for r in rows):
+                # RM lists these actions only while a Room Lights instance exists.
+                self._rm_refuse(app_id, [self._rm_action("rulesActs", "getRLTurnOff", [("actOffRL", "enum", ["999999999"])])])
+            room = self._ensure_builtin_app_fixture(rows, "room_lights", [])
+            action = self._rm_action
+            self._rm_app_actions(app_id, [
+                (action("rulesActs", "getRLActivate", [("actRL", "enum", room), ("modeRL", "enum", "X")]),
+                 {"actRL": room, "modeRL": "X"}, ["Activate", label, "Force"]),
+                (action("rulesActs", "getRLActivate", [("actRL", "enum", room), ("modeRL", "enum", "X"), ("forceRL", "bool", True)]),
+                 {"actRL": room, "forceRL": True}, ["Conditions"]),
+                (action("rulesActs", "getRLTurnOff", [("actOffRL", "enum", [room])]), {"actOffRL": [room]}, ["Turn Off Room Lights"]),
+            ])
+            self._rm_refuse_all(app_id, [
+                [action("rulesActs", "getRLActivate", [("actRL", "enum", room), ("modeRL", "enum", "999999999")])],
+                [action("rulesActs", "getRLTurnOff", [("actOffRL", "enum", [room, "999999999"])])]])
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_rm_action_scene(self) -> None:
+        # Scene actions pick the scene's activator device, not the scene app.
+        label, app_type, _ = self.BUILTIN_APP_FIXTURES["scene"]
+        member = self._ensure_perm_fixture("scene_member")
+        day, night = self._mode_ids("Day", "Night")
+        rows = self._installed_app_rows()
+        app_id, _ = self._rm_rule("RmActScene")
+        try:
+            if not any(r.get("type") == app_type for r in rows):
+                self._rm_refuse(app_id, [self._rm_action("sceneActs", "getActivateScene", [("sceneAct", "enum", ["999999999"])])])
+            capture = [{"settings": {"switches": [int(member)]}}, {"button": "captureBtn"}]
+            scene_app = self._ensure_builtin_app_fixture(rows, "scene", capture)
+            # A scene fixture from an earlier run may still capture a shared, often-toggled switch.
+            members = self.client.call_tool("hub_get_app_config", {"appId": scene_app, "includeSettings": True}).get("settings", {}).get("switches")
+            if not self._setting_holds_exact(members, member) or len(members or []) != 1:
+                for step in capture:
+                    done = self.client.call_tool("hub_set_native_app", {"appId": int(scene_app), "confirm": True, **step})
+                    assert done.get("success") is True, f"re-capturing the scene fixture on its own member failed: {done}"
+            listed = self.client.call_tool("hub_list_devices", {"scope": "all", "labelFilter": label})
+            activators = [str(d["id"]) for d in (listed.get("devices") or []) if d.get("label") == label]
+            assert len(activators) == 1, f"expected one activator device labelled {label}: {listed}"
+            scene = activators[0]
+            action = self._rm_action
+            self._rm_app_actions(app_id, [
+                (action("sceneActs", "getActivateScene", [("sceneAct", "enum", [scene])]), {"sceneAct": [scene]}, ["Activate scenes", label]),
+                (action("sceneActs", "getActivateScenePerMode", [("sceneModes", "enum", [day, night]), (f"scene{day}", "enum", [scene]),
+                                                                (f"scene{night}", "enum", [scene])]),
+                 {"sceneModes": [day, night]}, ["Scenes per mode", "Day", "Night", label]),
+            ])
+            self._rm_refuse_all(app_id, [[action("sceneActs", "getActivateScene", [("sceneAct", "enum", [scene_app])])]])
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_rm_action_thermostat_apps(self) -> None:
+        # Thermostat Controller and Thermostat Scheduler actions over permanent controller/scheduler
+        # fixtures. The scheduler is picked by its thermostat (RM fills the scheduler) or by the
+        # scheduler (RM fills the thermostat); a by-mode scheduler offers only the modes it has rows for.
+        t1, t2 = self._ensure_perm_fixture("thermostat_a"), self._ensure_perm_fixture("thermostat_b")
+        t1_name, t2_name = self.PERM_FIXTURES["thermostat_a"][0], self.PERM_FIXTURES["thermostat_b"][0]
+        temp_a, temp_b = self.get_test_temperature_ids()
+        var = self._ensure_perm_variables("sv_number")["sv_number"]
+        day, night = self._mode_ids("Day", "Night")
+        rows = self._installed_app_rows()
+        app_id, _ = self._rm_rule("RmActTherm")
+        try:
+            types = {r.get("type") for r in rows}
+            if "Thermostat Controller 2.0" not in types:
+                self._rm_refuse(app_id, [self._rm_action("lockActs", "getSetThermController", [("thisApp", "enum", "999999999")])])
+            if not types & {"Thermostat Scheduler 2.0", "Thermostat Scheduler Legacy"}:
+                self._rm_refuse(app_id, [self._rm_action("lockActs", "getSetThermostatScheduler", [
+                    ("thisTherm", "capability.thermostat", [str(t1)])])])
+            def label(key: str) -> dict:
+                return {"settings": {"origLabel": self.BUILTIN_APP_FIXTURES[key][0]}}
+            # The sensors are a separate write: written together with therm they are skipped.
+            controller = self._ensure_builtin_app_fixture(rows, "therm_ctl", [
+                {"settings": {"therm": [int(t1)]}}, {"settings": {"tempSensors": [int(temp_a)]}}, label("therm_ctl")])
+            scheduler = self._ensure_builtin_app_fixture(rows, "sched_time", [
+                {"settings": {"therm": [int(t1)]}}, {"settings": {"schedTypeL": "Time Periods"}}, label("sched_time")])
+            # A Day row through the scheduler's own table editor, as the UI fills it.
+            self._ensure_builtin_app_fixture(rows, "sched_modes", [
+                {"settings": {"therm": [int(t2)]}}, {"settings": {"schedTypeL": "Hub Modes"}},
+                {"button": "addMode", "stateAttribute": "addMode"}, {"settings": {"perX": [day]}},
+                {"button": day, "stateAttribute": "tsH"}, {"settings": {"tempX": 68}}, {"button": "update"}, label("sched_modes")])
+            on_t1 = ["Thermostat Scheduler for", t1_name]
+            ctl_name = self.BUILTIN_APP_FIXTURES["therm_ctl"][0]
+            sched = self._rm_action
+            th = ("thisTherm", "capability.thermostat", [str(t1)])
+            ids = self._rm_app_actions(app_id, [
+                (sched("lockActs", "getSetThermController", [("thisApp", "enum", controller),
+                                                             ("tcSensors", "capability.temperatureMeasurement", [str(temp_a), str(temp_b)])]),
+                 {"thisApp": controller, "tcSensors": [str(temp_a), str(temp_b)]}, ["Set Sensors for", ctl_name]),
+                (sched("lockActs", "getSetThermostatScheduler", [th, ("thermSched", "enum", "setEcoMode"), ("ecoMode", "enum", "on")]),
+                 {"thermSched": "setEcoMode", "thisApp": scheduler}, [*on_t1, "EcoMode on"]),
+                (sched("lockActs", "getSetThermostatScheduler", [("tMethod", "bool", True), ("thisApp", "enum", scheduler),
+                                                                 ("thermSched", "enum", "setEcoOffset"), ("ecoOffset", "decimal", 2.5)]),
+                 {"thisTherm": [str(t1)], "ecoOffset": 2.5}, [*on_t1, "EcoMode Offset 2.5"]),
+                (sched("lockActs", "getSetThermostatScheduler", [th, ("thermSched", "enum", "setEcoOffset"), ("uVar", "bool", True),
+                                                                 ("xVar", "enum", var)]), {"uVar": True, "xVar": var}, []),
+                (sched("lockActs", "getSetThermostatScheduler", [("tMethod", "bool", True), ("thisApp", "enum", scheduler),
+                                                                 ("thermSched", "enum", "setHold"), ("setHold", "enum", "off")]),
+                 {"setHold": "off"}, [*on_t1, "Set Hold off"]),
+                (sched("lockActs", "getSetThermostatScheduler", [th, ("thermSched", "enum", "setSchedDay"), ("dayN", "enum", "0")]),
+                 {"dayN": "0"}, [*on_t1, "Activate Scheduled Setpoints", "Monday"]),
+                (sched("lockActs", "getSetThermostatScheduler", [th, ("thermSched", "enum", "setTimeAway"), ("timeAwayHeat", "decimal", 60),
+                                                                 ("uVar3", "bool", True), ("xVar3", "enum", var)]),
+                 {"timeAwayHeat": 60, "xVar3": var}, [*on_t1, "Days/Times Away", "Heat 60"]),
+                (sched("lockActs", "getSetThermostatScheduler", [("thisTherm", "capability.thermostat", [str(t2)]),
+                                                                 ("thermSched", "enum", "setSched4Mode"), ("modN", "enum", day)]),
+                 {"modN": day}, ["Thermostat Scheduler for", t2_name, "Activate Scheduled Setpoints for", "Day"]),
+            ])
+            assert len(ids) == 8, ids
+            self._rm_refuse_all(app_id, [
+                [sched("lockActs", "getSetThermController", [("thisApp", "enum", "999999999"),
+                                                             ("tcSensors", "capability.temperatureMeasurement", [str(temp_a)])])],
+                [sched("lockActs", "getSetThermostatScheduler", [("tMethod", "bool", True), ("thisApp", "enum", "999999999"),
+                                                                 ("thermSched", "enum", "setHold"), ("setHold", "enum", "off")])],
+                # The by-mode scheduler has a Day row only, and no Days/Times Away setpoints.
+                [sched("lockActs", "getSetThermostatScheduler", [("thisTherm", "capability.thermostat", [str(t2)]),
+                                                                 ("thermSched", "enum", "setSched4Mode"), ("modN", "enum", night)])],
+            ])
+        finally:
+            self._delete_native(app_id)
+
+    # ---- pre-edit recovery points and restore ----
+    #
+    # These run with pre-edit backups on (BACKUP_PROVING_TESTS); every other test runs with them off.
+
+    @staticmethod
+    def _rm_edited_snapshot(source: str, old_id: Any, old_label: str, new_id: Any, new_label: str) -> str:
+        """Mechanically retarget one device in a native-rule-edit-v1 snapshot; the replacement is the caller's choice."""
+        snapshot = json.loads(source)
+        assert snapshot.get("captureFormat") == "native-rule-edit-v1", snapshot.get("captureFormat")
+        old_id, new_id = str(old_id), str(new_id)
+
+        def device_value(value):
+            if isinstance(value, dict):
+                return {new_id if str(k) == old_id else k: new_label if str(k) == old_id else device_value(v) for k, v in value.items()}
+            if isinstance(value, list):
+                return [device_value(v) for v in value]
+            if str(value) == old_id:
+                return int(new_id) if isinstance(value, int) else new_id
+            return value
+
+        def projections(value):
+            if isinstance(value, list):
+                return [projections(v) for v in value]
+            if isinstance(value, dict):
+                copied = {k: projections(v) for k, v in value.items()}
+                for key in ("deviceId", "deviceIds", "deviceList", "deviceIdsForDeviceList"):
+                    if key in copied:
+                        copied[key] = device_value(copied[key])
+                if str(copied.get("type", "")).startswith("capability") and "value" in copied:
+                    copied["value"] = device_value(copied["value"])
+                return copied
+            return value.replace(old_label, new_label) if isinstance(value, str) else value
+
+        payload = json.loads(snapshot["nativeExport"])
+        replacements = payload["deviceReplacements"]
+        assert old_id in replacements and new_id not in replacements, sorted(replacements)
+        replacement = projections(replacements.pop(old_id))
+        for key in ("id", "deviceId"):
+            if key in replacement and str(replacement[key]) == old_id:
+                replacement[key] = device_value(replacement[key])
+        replacement["deviceLabel"] = new_label
+        replacements[new_id] = replacement
+        payload = projections(payload)
+        snapshot = projections(snapshot)
+        for key, value in snapshot["configJson"]["settings"].items():
+            if isinstance(value, dict) and old_id in value:
+                snapshot["configJson"]["settings"][key] = device_value(value)
+        snapshot["nativeExport"] = json.dumps(payload, separators=(",", ":"))
+        return json.dumps(snapshot, separators=(",", ":"))
+
+    def _rm_recovery_file(self, key: str) -> tuple[str, str]:
+        meta = self.client.call_tool("hub_get_backup", {"backupKey": key})
+        assert "error" not in meta and meta.get("fileName"), meta
+        content = self._rm_read_file(meta["fileName"])
+        assert json.loads(content)["captureFormat"] == "native-rule-edit-v1"
+        return meta["fileName"], content
+
+    @test("native_apps")
+    def test_rm_rule_restore_in_place_with_device_picker(self) -> None:
+        # Restoring an edit's recovery point keeps the rule id and puts back its pre-edit actions,
+        # Required Expression state and device pickers.
+        switch = self._ensure_perm_fixture("switch_a")
+        app_id, created = self._rm_rule("RestorePicker", [self._rm_switch_action(switch), self._rm_switch_condition(switch)])
+        try:
+            added = self._rm_update(app_id, [native_log("post-snapshot marker")])
+            key = added["backup"]["backupKey"]
+            self._rm_update(app_id, [native_change("required", tokens=[next(iter(created["conditions"]))])])
+            restored = self._rm_restore(key, preserveRuleId=True)
+            assert restored.get("success") is True and str(restored["ruleId"]) == str(app_id) and not restored.get("recreated"), restored
+            doc = self._native_rule_document(app_id)
+            assert "post-snapshot marker" not in json.dumps(doc) and not doc["expressions"].get("0"), doc
+            values = self._rm_values(app_id)
+            assert str(values.get("useST", "false")).lower() != "true", values.get("useST")
+            pickers = [v for k, v in values.items() if k.startswith("onOffSwitch.")]
+            assert pickers == [[str(switch)]], pickers
+            assert doc["nativeHealth"]["broken"] is False
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_rm_rule_restore_skips_a_deleted_device(self) -> None:
+        # A recovery point that references a deleted device is refused before any change. The caller
+        # can copy the snapshot, point it at another device, and restore that edited copy in place.
+        gone, gone_dni, gone_label = self._rm_disposable_switch("RestoreGone")
+        replacement, _, replacement_label = self._rm_disposable_switch("RestoreReplacement")
+        labels = {gone: gone_label, replacement: replacement_label}
+        app_id, created = self._rm_rule("RestoreGoneRule", [self._rm_switch_action(gone), native_log("unrelated saved action"),
+                                                           native_change("variable", operation="create", name="Counter", type="integer", value=17)])
+        try:
+            key = self._rm_update(app_id, [native_log("post-snapshot marker")])["backup"]["backupKey"]
+            file_name, original = self._rm_recovery_file(key)
+            self._rm_delete_device(gone_dni)
+            before = self._rm_snapshot(app_id)
+            refused = self._rm_restore(key, preserveRuleId=True)
+            assert refused.get("success") is False and refused.get("partial") is False \
+                and refused.get("failedStep") == "devicePreflight" and str(gone) in map(str, refused.get("missingDeviceIds", [])), refused
+            assert self._rm_snapshot(app_id) == before, "a refused restore changed the rule"
+            edited = self._rm_edited_snapshot(original, gone, labels[gone], replacement, labels[replacement])
+            copy_name = f"{PREFIX}backup_edited_recovery_{_run_artifact_suffix()}.json"
+            written = self.client.call_tool("hub_write_file", {"fileName": copy_name, "content": edited, "confirm": True})
+            assert written.get("success") is True, written
+            try:
+                restored = self.client.call_tool("hub_restore_backup", {"scope": "source", "sourceFile": copy_name,
+                                                                        "preserveRuleId": True, "confirm": True})
+                assert restored.get("success") is True and not restored.get("partial") and str(restored["ruleId"]) == str(app_id) \
+                    and restored.get("restoredVia") == "nativeStateReplay", restored
+                assert self._rm_read_file(file_name) == original, "restoring an edited copy changed the original recovery file"
+            finally:
+                self.client.call_tool("hub_delete_file", {"fileName": copy_name, "confirm": True})
+            doc = self._native_rule_document(app_id)
+            assert [r["id"] for r in doc["actions"]] == [r["id"] for r in created["actions"]] and doc["variables"] == created["variables"], doc
+            values = self._rm_values(app_id)
+            assert [v for k, v in values.items() if k.startswith("logmsg.")] == ["unrelated saved action"], values
+            assert [v for k, v in values.items() if k.startswith("onOffSwitch.")] == [[str(replacement)]], values
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_rm_rule_restore_brings_back_a_removed_trigger(self) -> None:
+        # In place, a deleted trigger comes back; as a copy (preserveRuleId false) the backup builds a
+        # new rule; a repeated restore reports the copy it already made.
+        switch = self._ensure_perm_fixture("switch_a")
+        app_id, created = self._rm_rule("RestoreTrigger", [self._rm_switch_trigger(switch, "on"), self._rm_switch_trigger(switch, "off"),
+                                                          native_log("trigger recovery")])
+        copy_id = None
+        try:
+            removed = self._rm_update(app_id, [native_delete("trigger", max(created["triggers"], key=int))])
+            key = removed["backup"]["backupKey"]
+            restored = self._rm_restore(key, preserveRuleId=True)
+            assert restored.get("success") is True, restored
+            assert self._native_rule_document(app_id)["triggers"] == created["triggers"]
+            copied = self._rm_restore(key, preserveRuleId=False)
+            assert copied.get("success") is True and str(copied.get("ruleId")) != str(app_id), copied
+            copy_id = str(copied["ruleId"])
+            self.created_native_app_ids.append(copy_id)
+            assert len(self._native_rule_document(copy_id)["triggers"]) == 2
+            again = self._rm_restore(key)
+            assert again.get("alreadyRestored") is True and str(again.get("ruleId")) == copy_id, again
+        finally:
+            for rule in (app_id, copy_id):
+                if rule:
+                    self._delete_native(rule)
+
+    @test("native_apps")
+    def test_rm_rule_restore_of_a_deleted_rule_uses_the_exact_copy(self) -> None:
+        # Deleting a rule captures it; restoring that backup imports it as a new rule with its rows and settings.
+        switch = self._ensure_perm_fixture("switch_a")
+        app_id, _ = self._rm_rule("RestoreDeleted", [self._rm_switch_trigger(switch), native_log("deleted-rule marker")])
+        deleted = self.client.call_tool("hub_delete_native_app", {"appId": app_id, "force": True, "confirm": True})
+        assert deleted.get("success") is True, deleted
+        self._untrack_native_app(app_id)
+        restored = self._rm_restore(deleted["backup"]["backupKey"])
+        copy_id = restored.get("ruleId")
+        if copy_id:
+            self.created_native_app_ids.append(str(copy_id))
+        try:
+            assert restored.get("success") is True and restored.get("restoredVia") == "nativeImport" \
+                and str(copy_id) != str(app_id), restored
+            doc = self._native_rule_document(copy_id)
+            assert len(doc["triggers"]) == 1 and [r["value"]["method"] for r in doc["actions"]] == ["getLogMsg"], doc
+            assert self._rm_values(copy_id)["logmsg." + str(doc["actions"][0]["id"])] == "deleted-rule marker"
+            assert doc["nativeHealth"]["broken"] is False, doc
+        finally:
+            if copy_id:
+                self._delete_native(copy_id)
+
+    @test("native_apps")
+    def test_rm_rule_restore_puts_actions_back_in_order(self) -> None:
+        app_id, created = self._rm_rule("RestoreOrder", [native_log("order first"), native_log("order second")])
+        try:
+            before = [str(r["id"]) for r in created["actions"]]
+            moved = self._rm_update(app_id, [native_change("order", ids=list(reversed(before)))])
+            assert [str(r["id"]) for r in moved["document"]["actions"]] == list(reversed(before))
+            restored = self._rm_restore(moved["backup"]["backupKey"])
+            assert restored.get("success") is True, restored
+            assert [str(r["id"]) for r in self._native_rule_document(app_id)["actions"]] == before
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_rm_rule_restore_expression_by_device_name(self) -> None:
+        # With a recovery point per write, the chosen one restores its own Required Expression device;
+        # once that device is deleted the restore is refused until an edited copy names another.
+        switches = {name: self._rm_disposable_switch(f"Lamp_{name}") for name in ("Gone", "Kitchen", "Den")}
+        labels = {name: label for name, (_, _, label) in switches.items()}
+        self._rule_edit_backups(False)
+        app_id, created = self._rm_rule("RestoreExpr", [self._rm_switch_condition(switches["Gone"][0]), native_log("expression unrelated"),
+                                                       native_change("variable", operation="create", name="Counter", type="integer", value=23)])
+        try:
+            condition = next(iter(created["conditions"]))
+            self._rm_update(app_id, [native_change("required", tokens=[condition])])
+            self._rule_edit_backups(True)
+            self._mcp_settings({"backupEveryRuleWrite": True})
+            try:
+                keys = {name: self._rm_update(app_id, [self._rm_switch_condition(switches[name][0], id=condition)])["backup"]["backupKey"]
+                        for name in ("Kitchen", "Den")}
+            finally:
+                self._mcp_settings({"backupEveryRuleWrite": False})
+            assert self._rm_restore(keys["Den"]).get("success") is True
+            assert labels["Kitchen"] in json.dumps(self._native_rule_document(app_id)["conditions"])
+            _, original = self._rm_recovery_file(keys["Kitchen"])
+            self._rm_delete_device(switches["Gone"][1])
+            refused = self._rm_restore(keys["Kitchen"], preserveRuleId=True)
+            assert refused.get("success") is False and refused.get("failedStep") == "devicePreflight", refused
+            edited = self._rm_edited_snapshot(original, switches["Gone"][0], labels["Gone"], switches["Den"][0], labels["Den"])
+            copy_name = f"{PREFIX}backup_edited_expr_{_run_artifact_suffix()}.json"
+            assert self.client.call_tool("hub_write_file", {"fileName": copy_name, "content": edited, "confirm": True}).get("success") is True
+            try:
+                restored = self.client.call_tool("hub_restore_backup", {"scope": "source", "sourceFile": copy_name,
+                                                                        "preserveRuleId": True, "confirm": True})
+                assert restored.get("success") is True and str(restored["ruleId"]) == str(app_id), restored
+            finally:
+                self.client.call_tool("hub_delete_file", {"fileName": copy_name, "confirm": True})
+            doc = self._native_rule_document(app_id)
+            assert doc["expressions"]["0"] == [condition] and doc["variables"] == created["variables"], doc
+            assert self._rm_values(app_id)["rDev_" + condition] == [str(switches["Den"][0])]
+        finally:
+            self._delete_native(app_id)
+
+    def _mcp_settings(self, settings: dict) -> None:
+        result = self.client.call_tool("hub_update_mcp_settings", {"settings": settings, "confirm": True})
+        assert result.get("success") is True, result
+
+    @test("native_apps")
+    def test_complex_edit_recovers_deleted_rows_and_existing_payloads(self) -> None:
+        # One recovery point covers a whole edit batch: restoring it rebuilds deleted rows, the
+        # Required Expression, IF expressions and local variables, and the rule is subscribed again.
+        # Its own trigger switch, which nothing commands: an event from another test's switch would
+        # race the edit's state checks. The output is only authored, never commanded.
+        trigger_switch, _, _ = self._rm_disposable_switch("RecoveryTrigger")
+        out = self._ensure_perm_fixture("switch_b")
+        def output(on: bool) -> dict:
+            return self._rm_switch_action(out, on)
+        self._rule_edit_backups(False)
+        app_id, created = self._rm_rule("ComplexRecovery", [
+            self._rm_switch_condition(trigger_switch), self._rm_switch_condition(trigger_switch, "off"),
+            self._rm_switch_condition(trigger_switch), self._rm_switch_trigger(trigger_switch, "on"),
+            self._rm_switch_trigger(trigger_switch, "off"),
+            native_change("variable", operation="create", name="Counter", type="integer", value=7),
+            native_log("recovery original"), native_log("recover deleted action")])
+        try:
+            a, b, unused = sorted(created["conditions"], key=int)
+            built = self._rm_update(app_id, [
+                native_change("required", tokens=[a, "OR", b]),
+                native_change("action", type="condActs", subtype="getIfThen", fields=[], expression=[a, "OR", b]), output(True),
+                native_change("terminator", subtype="endIf"),
+                native_change("action", type="delayActs", subtype="getWaitEvents", fields=[],
+                              events=[self._rm_wait_event(trigger_switch, "off")]), output(False)])["document"]
+            ids = [str(r["id"]) for r in built["actions"]]
+            expression = str(next(r["value"]["rule"] for r in built["actions"] if r["value"]["method"] == "getIfThen"))
+            before = self._rm_snapshot(app_id)
+            self._rule_edit_backups(True)
+            keys = self._rm_backup_keys(app_id)
+            edited = self._rm_update(app_id, [
+                native_log("changed same ID", id=ids[0]), native_delete("action", ids[1]),
+                native_delete("trigger", next(iter(built["triggers"]))), native_delete("condition", unused),
+                self._rm_switch_condition(trigger_switch, "off", id=a), native_change("required", tokens=[b]),
+                native_change("expression", id=expression, tokens=[b]),
+                native_change("variable", operation="set", name="Counter", value=99),
+                native_change("variable", operation="create", name="Added", type="string", value="remove me"),
+                native_log("new action must disappear"), self._rm_switch_trigger(trigger_switch, "*changed*")])
+            key = edited["backup"]["backupKey"]
+            assert self._rm_backup_keys(app_id) - keys == {key}, "one batch took more than one recovery point"
+            restored = self._rm_restore(key)
+            assert restored.get("success") is True and str(restored["ruleId"]) == str(app_id) \
+                and restored.get("restoredVia") == "nativeStateReplay", restored
+            assert self._rm_snapshot(app_id) == before, "the restore did not recover the pre-edit rule"
+            health = self._rm_health(app_id)
+            assert health.get("broken") is False and health["eventSubscriptionCount"] > 0, health
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_rule_edit_backups_capture_once_per_edit(self) -> None:
+        # Reads, help and unconfirmed probes take no recovery point; with backups off an edit reports
+        # the skip; back on, an update takes exactly one, and a form workflow takes one before its
+        # first render and reuses it. After that restore the workflow's context is gone and a stale
+        # submit is refused.
+        app_id, _ = self._rm_rule("CaptureControl", [native_log("capture control")])
+        try:
+            keys = self._rm_backup_keys(app_id)
+            self._native_rule_document(app_id)
+            self._rm_call({})
+            self._rm_call({"operation": "update", "rule_id": app_id})
+            self._rule_edit_backups(False)
+            try:
+                skipped = self._rm_update(app_id, [native_log("unprotected edit")])
+                assert skipped["backup"].get("skipped") is True, skipped["backup"]
+            finally:
+                self._rule_edit_backups(True)
+            assert self._rm_backup_keys(app_id) == keys, "a read or a skipped edit took a recovery point"
+            protected = self._rm_update(app_id, [native_log("protected edit")])["backup"]["backupKey"]
+            page = self._rm_open(app_id)
+            key = page["backup"]["backupKey"]
+            for value in ("first form edit", "second form edit"):
+                page = self._rm_submit(app_id, page, fields={"comments": value})
+                assert page["backup"]["backupKey"] == key, page["backup"]
+            assert self._rm_backup_keys(app_id) - keys == {protected, key}
+            assert self._rm_restore(key).get("success") is True
+            assert self._rm_values(app_id).get("comments") in (None, "")
+            self._rm_refused(self._rm_call({"operation": "form", "rule_id": app_id, "confirm": True, "args": {
+                "steps": [self._rm_step(page, fields={"comments": "stale edit must not apply"})]}}))
+            assert self._rm_values(app_id).get("comments") in (None, "")
+        finally:
+            self._delete_native(app_id)
+
+    def _rm_legacy_in_place_recovery(self, required: bool) -> None:
+        # A recovery point taken by the generic native-app write path (the older snapshot format,
+        # without captureFormat) still restores a rule edited through hub_set_rule. With a Required
+        # Expression that format carries no native export, so the settings replay alone recovers it.
+        # Its own switches: rules other tests leave behind command the shared ones, and this rule
+        # firing mid-edit would race the edit's state checks.
+        switch, _, _ = self._rm_disposable_switch("LegacyTrigger")
+        gate, _, _ = self._rm_disposable_switch("LegacyGate")
+        self._rule_edit_backups(False)
+        app_id, created = self._rm_rule("LegacyRestore", [
+            self._rm_switch_condition(gate), self._rm_switch_condition(gate, "off"), self._rm_switch_trigger(switch),
+            self._rm_switch_action(switch, False)])
+        try:
+            conditions = sorted(created["conditions"], key=int)
+            # The log action sits inside an IF so the snapshot carries a nested (tab) indent.
+            doc = self._rm_update(app_id, [
+                native_change("action", type="condActs", subtype="getIfThen", fields=[], expression=[conditions[0]]),
+                native_log("legacy baseline"), native_change("terminator", subtype="endIf")])["document"]
+            methods = {str(r["id"]): r["value"]["method"] for r in doc["actions"]}
+            actions = [next(i for i, m in methods.items() if m == "getOnOffSwitch"), next(i for i, m in methods.items() if m == "getLogMsg")]
+            if required:
+                self._rm_update(app_id, [native_change("required", tokens=[conditions[0]])])
+            before = self._rm_snapshot(app_id)
+            assert any("\t" in str(r["value"].get("indent") or "") for r in before["document"]["actions"]), before["document"]["actions"]
+            self._rule_edit_backups(True)
+            self._mcp_settings({"backupEveryRuleWrite": True})
+            # The rule stays running for the capture: Hubitat's App Cloner exports nothing for a stopped rule.
+            try:
+                captured = self.client.call_tool("hub_set_native_app", {"appId": app_id, "confirm": True,
+                                                                        "settings": {"comments": "legacy capture compatibility"}})
+            finally:
+                self._mcp_settings({"backupEveryRuleWrite": False})
+            assert captured.get("success") is True and (captured.get("backup") or {}).get("backupKey"), captured
+            key = captured["backup"]["backupKey"]
+            meta = self.client.call_tool("hub_get_backup", {"backupKey": key})
+            snapshot = json.loads(self._rm_read_file(meta["fileName"]))
+            assert "captureFormat" not in snapshot and isinstance(snapshot.get("configJson"), dict), sorted(snapshot)
+            if required:
+                assert not snapshot.get("nativeExport") and "Required Expression" in snapshot.get("nativeExportSkipped", ""), sorted(snapshot)
+            else:
+                assert snapshot.get("nativeExport"), sorted(snapshot)
+            edits = [self._rm_switch_condition(gate, "off", id=conditions[0]),
+                     self._rm_switch_trigger(switch, "off", id=next(iter(created["triggers"]))),
+                     self._rm_switch_action(switch, True, id=actions[0]), native_log("legacy changed", id=actions[1])]
+            edits += [native_change("required", tokens=[conditions[1]])] if required else \
+                [native_change("required", tokens=[conditions[0]]), native_log("legacy extra row must disappear")]
+            self._rule_edit_backups(False)
+            self._rm_update(app_id, edits)
+            restored = self._rm_restore(key, preserveRuleId=True)
+            assert restored.get("success") is True and str(restored["ruleId"]) == str(app_id) \
+                and restored.get("restoredVia") == "nativeStateReplay", restored
+            after = self._rm_snapshot(app_id)
+            after["settings"].pop("comments", None)
+            before["settings"].pop("comments", None)
+            assert after == before, "the legacy restore did not recover the pre-edit rule"
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_legacy_export_backup_restores_in_place(self) -> None:
+        # The Required Expression variant of the older format is covered by LegacyNativeRecoverySpec.
+        self._rm_legacy_in_place_recovery(required=False)
+
+
+    def _native_form_control(self, app_id: Any, page: str, name: str) -> dict:
+        opened = self.client.call_tool("hub_set_rule", {"operation": "form", "rule_id": int(app_id),
+            "args": {"steps": [{"kind": "open", "page": page}]}, "confirm": True})
+        assert opened.get("success") is True, opened
+        controls = [row for row in opened["controls"] if row.get("name") == name]
+        assert len(controls) == 1, opened
+        result = self.client.call_tool("hub_set_rule", {"operation": "form", "rule_id": int(app_id),
+            "args": {"steps": [{"kind": "submit", "expect_page": opened["page"]["name"],
+                                  "activate": controls[0]["control_id"]}]}, "confirm": True})
+        assert result.get("success") is True, result
+        return result
+
+
     # ---- shared helpers for the native-authoring coverage below ----
 
-    def _create_native_rule(self, suffix: str, extra: dict | None = None,
-                            return_result: bool = False, *, name_suffix: str = "") -> Any:
-        """Create a native RM rule via hub_set_rule (no appId), track it.
+    def _create_native_rule(self, suffix: str, changes: list[dict] | None = None,
+                            return_result: bool = False, *, name_suffix: str = "",
+                            best_practice_key: str | None = None) -> Any:
+        """Create a native RM rule with explicit native changes and track it.
 
-        With no `extra` this creates an empty shell; pass `extra` to BUNDLE create-time
-        args (e.g. a trigger + actions) into the same single create call.
+        Omitting changes creates an empty rule; supplied changes use the same public
+        create operation as the standalone native acceptance suites.
 
         Verify-after-504: writes are never transport-replayed (duplicate-commit risk), so a
         relay 504 here means the CREATE may or may not have committed. Look the rule up by
         its invocation-unique label: found -> adopt it; unresolved -> fail closed so the
         whole-test retry uses a different label and never reissues the uncertain write."""
+        assert changes is None or isinstance(changes, list), "Supply native document changes as a list"
         self._native_rule_fixture_seq = getattr(self, "_native_rule_fixture_seq", 0) + 1
         label = (f"{PREFIX}{suffix}_{_run_artifact_suffix()}_"
                  f"{self._native_rule_fixture_seq}{name_suffix}")
-        args = {"name": label, "confirm": True}
-        if extra:
-            args.update(extra)
+        args = {"operation": "create", "args": {"parent_id": self._native_rule_parent_id(),
+                "name": label, "changes": changes or []}, "confirm": True}
+        if best_practice_key is not None:
+            args["bestPracticeKey"] = best_practice_key
         created = None  # the fresh-create envelope (stays None on the 504 adopt-by-label path, which has none)
         try:
             created = self.client.call_tool("hub_manage_rule_machine", {
                 "tool": "hub_set_rule", "args": args,
             })
-            app_id = created.get("appId")
+            app_id = created.get("rule_id")
         except (McpError, McpToolError, requests.HTTPError) as exc:
             if "504" not in str(exc):
                 raise
@@ -7538,15 +8672,9 @@ class TestRunner:
         # this check that envelope is discarded, so a partial-but-ok shortcut would pass silently --
         # restore the strict success/not-partial contract the old separate _set_rule write provided. Only
         # on the fresh-create path (created stays None on the 504 adopt-by-label path, which has no envelope).
-        if created is not None and extra and any(k in extra for k in (
-                "addTrigger", "addTriggers", "addAction", "addActions", "addRequiredExpression")):
-            assert created.get("success") is not False and not created.get("partial"), \
-                f"create-time authoring shortcut did not fully commit (partial or failed): {created}"
-        # A native RM create surfaces ruleId under the ruleId-taking downstream tools' name; for a
-        # rule_machine app it equals appId so a create can chain straight into hub_call_rule etc.
         if created is not None:
-            assert created.get("ruleId") == app_id, \
-                f"native create did not surface ruleId==appId (got ruleId={created.get('ruleId')}, appId={app_id})"
+            assert created.get("success") is True and not created.get("partial"), created
+            assert str(created.get("rule_id")) == str(app_id), created
         self.created_native_app_ids.append(str(app_id))
 
         if return_result:
@@ -7622,97 +8750,12 @@ class TestRunner:
                 f"(appId={app_id}, switchId={switch_id}, state={state!r}): {cfg}"
             )
 
-    def _set_rule(self, app_id: Any, extra: dict, strict: bool = False) -> Any:
-        """Edit a Rule Machine rule through the modern continuation-aware client."""
-        args = {"appId": app_id, "confirm": True}
-        args.update(extra)
-        try:
-            result = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": args})
-        except (McpError, McpToolError, requests.HTTPError) as exc:
-            if "504" not in str(exc):
-                raise
-            if strict:
-                raise
-            print(f"    hub_set_rule({list(extra)}) response lost unexpectedly after MRTR -- "
-                  "verifying the committed rule before returning the legacy soft sentinel")
-            self._assert_rule_renders(app_id)
-            self._last_write_health = None
-            return {"success": True, "asyncCommitLikely": True, "relayDropped": True}
-        assert result.get("success") is not False, f"hub_set_rule({list(extra)}) reported failure: {result}"
-        self._cache_write_health(app_id, result)
-        return result
-
-    def _patch_rule(self, app_id: Any, patches: list[dict],
-                    expected_refusals: int = 0) -> list[dict]:
-        """Apply ordered RM edits in one logical MRTR call and return every op result, so live
-        tests can assert each operation without one cloud request per wizard operation."""
-        result = self.client.call_tool("hub_manage_rule_machine", {
-            "tool": "hub_set_rule",
-            "args": {"appId": app_id, "patches": patches, "confirm": True},
-        })
-        self._cache_write_health(app_id, result)
-        entries = [entry for entry in _rule_patch_rows(result) if isinstance(entry, dict)]
-        assert len(entries) == len(patches), \
-            f"patch response omitted operation results: expected {len(patches)}, got {entries}; outer={result}"
-        assert result.get("updateRuleFailed") is not True \
-            and result.get("patchesNotLive") is not True, \
-            f"patch terminal activation failed; mutations are not safely live: {result}"
-        # The first refused op stops the batch, so later ops come back notAttempted rather than refused.
-        refused = [entry for entry in entries
-                   if entry.get("success") is False and entry.get("notAttempted") is not True]
-        assert len(refused) == expected_refusals, \
-            f"patch refusal count mismatch (expected {expected_refusals}): entries={entries}; outer={result}"
-        if expected_refusals:
-            assert expected_refusals == 1, "a patches batch stops at its first refusal; issue one refusal per batch"
-            assert all(entry.get("error") for entry in refused), \
-                f"outer patch failure was not attributable to explicit refused entries: {result}"
-            stop_at = entries.index(refused[0])
-            self._assert_bulk_stop(result, f"patches[{stop_at}]", entries[stop_at + 1:])
-        else:
-            assert result.get("error") is None, \
-                f"patch batch had an outer application error unrelated to per-op results: {result}"
-            assert result.get("success") is True and not result.get("partial"), \
-                f"patch batch did not fully activate: {result}"
-        return entries
-
-    @staticmethod
-    def _assert_bulk_stop(result: Any, stopped_after: str, not_attempted: list,
-                          *, partial_item: bool = False) -> None:
-        """Assert the fail-closed bulk contract on one envelope.
-
-        The stopping item is named in bulkStoppedAfter and the top-level error, finalisation is
-        skipped, every later row is notAttempted, and no skipped tail is handed back for resumption.
-        """
-        assert isinstance(result, dict), f"a stopped batch returned no envelope: {result!r}"
-        assert result.get("success") is False and result.get("partial") is True, \
-            f"a stopped batch must report success:false + partial:true: {result}"
-        assert result.get("bulkStoppedAfter") == stopped_after, \
-            f"expected bulkStoppedAfter={stopped_after!r}, got {result.get('bulkStoppedAfter')!r}: {result}"
-        assert result.get("finalisationNotAttempted") is True, \
-            f"a stopped batch must report finalisationNotAttempted:true: {result}"
-        reason = "reported partial" if partial_item else "failed"
-        assert str(result.get("error", "")).startswith(f"Stopped after {stopped_after} {reason}"), \
-            f"the top-level error must name the stopping item and why it stopped: {result.get('error')!r}"
-        assert all(isinstance(row, dict) and row.get("notAttempted") is True for row in not_attempted), \
-            f"every item after the stop must be reported notAttempted: {not_attempted}"
-        assert result.get("status") != "in_progress" and not any(
-                key in result for key in ("addTriggersRemaining", "addActionsRemaining", "patchesRemaining")), \
-            f"a stopped batch must not hand back its skipped tail: {result}"
-
-    def _rm_stop_call(self, app_id: Any, extra: dict) -> dict:
-        """Issue an edit expected to stop fail-closed; its envelope is the assertion subject."""
-        args = {"appId": app_id, "confirm": True}
-        args.update(extra)
-        try:
-            result = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": args})
-        except (McpError, McpToolError, requests.HTTPError) as exc:
-            if "504" not in str(exc):
-                raise
-            raise RelayLostResponseError(
-                f"504 relay response loss erased the fail-closed stop envelope for {list(extra)}; "
-                "retry this test with its run-unique fixture"
-            ) from exc
-        # A stopped batch skipped the trailing updateRule, so its health is not a finished rule's.
+    def _set_rule(self, app_id: Any, changes: list[dict], strict: bool = False) -> Any:
+        """Apply native document changes once; a lost write response requires verification."""
+        result = self.client.call_tool("hub_set_rule", {
+            "operation": "update", "rule_id": int(app_id),
+            "args": {"changes": changes}, "confirm": True})
+        assert result.get("success") is True and not result.get("partial"), result
         self._last_write_health = None
         return result
 
@@ -7721,32 +8764,6 @@ class TestRunner:
         because a removed action's settings are not guaranteed to be purged."""
         return json.dumps(self._get_persisted_rule_config(app_id).get("page") or {})
 
-    def _rm_call_soft(self, args: dict, strict: bool = False, recover_504: bool = False) -> Any:
-        """Direct hub_set_rule call preserving its full response contract."""
-        try:
-            result = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": args})
-            self._cache_write_health(args.get("appId"), result)
-            return result
-        except (McpError, McpToolError, requests.HTTPError) as exc:
-            if "504" not in str(exc):
-                raise
-            if strict and not recover_504:
-                raise
-            app_id = args.get("appId")
-            if strict:
-                op_keys = [k for k in args if k not in ("appId", "confirm")]
-                print(f"    [RECOVER-504] hub_set_rule(appId={app_id}, ops={op_keys}): "
-                      "response lost unexpectedly after MRTR -- "
-                      "wire format will be verified from the committed config")
-                time.sleep(3.0)   # settle: hub serializes the committed rule right at the ceiling
-                self._assert_rule_renders(app_id)
-                self._last_write_health = None   # sentinel has no health -> live fetch downstream
-                return {"success": True, "recovered504": True}
-            print(f"    hub_set_rule(appId={app_id}) response lost to relay 504 -- "
-                  "soft contract: verifying rule health instead of hard-failing")
-            self._assert_rule_renders(app_id)
-            self._last_write_health = None
-            return {"success": True, "asyncCommitLikely": True, "relayDropped": True}
 
     def _write_once(self, gateway: str | None, tool: str, args: dict, label: str) -> Any:
         """Issue one logical write; call_tool handles any standard MRTR rounds."""
@@ -7779,12 +8796,6 @@ class TestRunner:
                 print("    [RECOVER-504] pre-flight refusal re-issued -- the refused call "
                       "committed nothing, so a re-send cannot double-apply")
 
-    def _call_slow_rule(self, args: dict) -> Any:
-        """Run one slow rule edit through standard MCP requestState continuation."""
-        work = dict(args)
-        work.setdefault("confirm", True)
-        return self.client.call_tool(
-            "hub_manage_rule_machine", {"tool": "hub_set_rule", "args": work})
 
     def _assert_rule_renders(self, app_id: Any) -> None:
         """Lenient health check for relay-504 soft paths: a dropped response may have committed
@@ -7826,17 +8837,6 @@ class TestRunner:
         h = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_get_rule_health", "args": {"appId": app_id}})
         assert h.get("ok") is not False, f"hub_get_rule_health reports the rule broken: {h}"
 
-    def _add_action_or_raise_504(self, app_id: Any, action: dict) -> Any:
-        """Add a block closer through the continuation-aware modern call path."""
-        result = self.client.call_tool("hub_manage_rule_machine", {
-            "tool": "hub_set_rule",
-            "args": {"appId": app_id, "addAction": action, "confirm": True},
-        })
-        assert result.get("success") is not False, f"addAction({action}) reported failure: {result}"
-        # Block CLOSERS land here -- the cache MUST reflect the now-closed (healthy) rule, else a
-        # following _assert_rule_healthy reads the stale mid-build "missing END-IF" health from the opener.
-        self._cache_write_health(app_id, result)
-        return result
 
     def _delete_native(self, app_id: Any, gateway: str = "hub_manage_rule_machine") -> None:
         # Fixture-teardown delete. When deferral is on, skip it (rule stays tracked) so it's reaped by
@@ -7880,218 +8880,6 @@ class TestRunner:
     #      - The docstring knowledge from the former standalone tests is preserved in
     #        the comments -- those pin wire-format regressions; do not drop them.
 
-    @test("native_apps")
-    def test_set_rule_walkstep_introspect(self) -> None:
-        # hub_set_rule edit -> walkStep (schema-aware single-step walker), read-only op;
-        # then the same walkStep routed through the GENERIC native-app tool
-        # (hub_set_native_app). The rmOnly reject on walkStep was removed: it's a generic
-        # classic-dynamicPage walker that routes to the shared edit engine and works on
-        # any classic app. The introspect op itself doesn't modify the app (a
-        # pre-walkStep backup snapshot is still written).
-        app_id = self._create_native_rule("WalkIntro")
-        try:
-            ws = self._set_rule(app_id, {"walkStep": {"page": "selectTriggers", "operation": "introspect"}}, strict=True)
-            assert isinstance(ws, dict), f"walkStep introspect returned non-dict: {ws}"
-            wsn = self.client.call_tool("hub_manage_native_rules_and_apps", {
-                "tool": "hub_set_native_app",
-                "args": {"appId": app_id, "walkStep": {"page": "mainPage", "operation": "introspect"}, "confirm": True},
-            })
-            assert wsn.get("page") == "mainPage", \
-                f"walkStep should route through the native-app tool, got: {wsn}"
-
-            # Compose the trigger-editor setup click and write in one drive request.
-            # The distinct five-call manual single-step/resume sequence remains pinned by
-            # test_set_rule_walkstep_action_after_required_expression.
-            driven = self._set_rule(app_id, {"walkStep": {"operation": "drive", "steps": [
-                {"page": "selectTriggers", "operation": "click",
-                 "click": {"name": "true", "stateAttribute": "moreCond"}},
-                {"page": "selectTriggers", "operation": "write",
-                 "write": {"tCapab1": "Switch"}},
-            ]}}, strict=True)
-            write_step = next((step for step in (driven.get("steps") or [])
-                               if step.get("operation") == "write"), None)
-            assert write_step is not None \
-                and (write_step.get("valueEcho") or {}).get("match") is True, \
-                f"driven single write should still round-trip as before: {driven}"
-        finally:
-            self._delete_native(app_id)
-
-    @test("native_apps")
-    def test_set_rule_walkstep_drive(self) -> None:
-        # issue #258: walkStep operation='drive' runs an ordered steps[] sequence in ONE
-        # call -- the progressive flow that replaces the manual introspect -> ... -> finalize
-        # loop the LLM used to issue as N separate calls. This pins the drive orchestration
-        # surface end-to-end against a live hub across four facets:
-        #   (1) read composition  -- multi-page introspect returns the aggregate
-        #                            {operation:'drive', steps:[...], stepsRun, success} with
-        #                            each step's page + fail-loud health snapshot;
-        #   (2) WRITE composition -- a click (open trigger editor) + a capability write in one
-        #                            call, with the write proven to land live via valueEcho;
-        #   (3) failure halt      -- a bad step aborts the drive (success:false) without
-        #                            corrupting the rule;
-        #   (4-6) structural outcomes on a second rule -- a complete four-step action drive, a drive
-        #                            that leaves its own Repeat open (fails), and a later valid drive
-        #                            inside that open block (passes, naming the pre-existing issue).
-        # Each step does its own page reads, so the four-step drives rely on the standard continuation
-        # when the relay budget is reached. The stopOnError step-success=false branch is covered
-        # deterministically by the Spock unit tests; here we prove the drive layer against the real wizard.
-        app_id = self._create_native_rule("WalkDrive")
-        try:
-            # (1) read composition + page-carry + per-step health
-            res = self._set_rule(app_id, {"walkStep": {"operation": "drive", "steps": [
-                {"page": "selectTriggers", "operation": "introspect"},
-                {"page": "mainPage", "operation": "introspect"},
-            ]}}, strict=True)
-            assert isinstance(res, dict), f"walkStep drive returned non-dict: {res}"
-            assert res.get("operation") == "drive", f"drive should echo operation='drive': {res}"
-            steps = res.get("steps")
-            assert isinstance(steps, list) and len(steps) == 2, f"drive should report 2 per-step results: {res}"
-            assert res.get("stepsRun") == 2, f"both steps should run on a healthy rule: {res}"
-            assert steps[0].get("operation") == "introspect" and steps[0].get("page") == "selectTriggers", \
-                f"step 1 should introspect selectTriggers: {steps[0]}"
-            assert steps[1].get("page") == "mainPage", f"step 2 should land on mainPage: {steps[1]}"
-            assert all(isinstance(s.get("health"), dict) for s in steps), \
-                f"each drive step should carry its health snapshot: {steps}"
-            self._assert_rule_healthy(app_id)
-
-            # (2) WRITE composition: open the trigger editor then pick a capability, in ONE
-            #     drive call. Mirrors _rmAddTrigger's proven wire format (click name='true'/
-            #     stateAttribute='moreCond' opens the editor; tCapab1 is the capability picker).
-            #     The drive's own valueEcho proves the write round-tripped on the live hub.
-            wr = self._set_rule(app_id, {"walkStep": {"operation": "drive", "steps": [
-                {"page": "selectTriggers", "operation": "click", "click": {"name": "true", "stateAttribute": "moreCond"}},
-                {"page": "selectTriggers", "operation": "write", "write": {"tCapab1": "Switch"}},
-            ]}}, strict=True)
-            assert wr.get("stepsRun") == 2, f"both drive steps should run (click + write): {wr}"
-            write_step = next((s for s in (wr.get("steps") or []) if s.get("operation") == "write"), None)
-            assert write_step is not None, f"the write step should be reported in the aggregate: {wr}"
-            assert (write_step.get("valueEcho") or {}).get("match") is True, \
-                f"the driven tCapab1='Switch' write should round-trip live (valueEcho.match): {write_step}"
-            # A half-built (uncommitted) trigger is scratch wizard state, not a broken rule.
-            self._assert_rule_renders(app_id)
-
-            # (3) failure halt: an invalid step operation aborts the drive (success:false,
-            #     the step throws) and must NOT corrupt the rule.
-            bad = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": {
-                "appId": app_id, "confirm": True,
-                "walkStep": {"operation": "drive", "steps": [
-                    {"page": "mainPage", "operation": "introspect"},
-                    {"page": "mainPage", "operation": "bogus_op"},
-                ]},
-            }})
-            assert bad.get("success") is False, \
-                f"a drive with an invalid step operation must halt with success:false: {bad}"
-            assert "operation" in str(bad.get("error") or "").lower(), \
-                f"the halt error should name the bad operation: {bad}"
-            self._assert_rule_renders(app_id)
-        finally:
-            self._delete_native(app_id)
-
-        # Structural outcomes on a second rule, so the half-built trigger above does not affect them.
-        # These drives run four steps and rely on the standard continuation when the budget is reached.
-        block_app = self._create_native_rule("WalkDriveBlock")
-        try:
-            def _log_action_steps(idx: str, message: str) -> list[dict]:
-                return [
-                    {"page": "doActPage", "operation": "write", "write": {f"actType.{idx}": "messageActs"}},
-                    {"page": "doActPage", "operation": "write", "write": {f"actSubType.{idx}": "getLogMsg"}},
-                    {"page": "doActPage", "operation": "write", "write": {f"logmsg.{idx}": message}},
-                    {"page": "doActPage", "operation": "click", "click": {"name": "actionDone"}},
-                ]
-
-            # (4) a complete drive builds a whole action and passes on a healthy rule.
-            done = self._set_rule(block_app, {"walkStep": {"operation": "drive",
-                "steps": _log_action_steps(self._navigate_new_action(block_app), "drive-complete")}}, strict=True)
-            assert done.get("success") is True and not done.get("structuralIssues"), \
-                f"a complete log-action drive should pass cleanly: {done}"
-
-            # (5) a drive that leaves a Repeat it opened without its End-Repeat is incomplete.
-            rep_idx = self._navigate_new_action(block_app)
-            opened = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": {
-                "appId": block_app, "confirm": True, "walkStep": {"operation": "drive", "steps": [
-                    {"page": "doActPage", "operation": "write", "write": {f"actType.{rep_idx}": "repeatActs"}},
-                    {"page": "doActPage", "operation": "write", "write": {f"actSubType.{rep_idx}": "getRepeat"}},
-                    {"page": "doActPage", "operation": "write", "write": {f"repeatMinute.{rep_idx}": 5}},
-                    {"page": "doActPage", "operation": "click", "click": {"name": "actionDone"}},
-                ]}}})
-            self._last_write_health = None
-            assert all(step.get("success") is not False for step in (opened.get("steps") or [])), \
-                f"every step of the Repeat drive should commit: {opened}"
-            assert opened.get("success") is False \
-                and any("never closed" in str(issue) for issue in (opened.get("structuralIssues") or [])) \
-                and not opened.get("preExistingStructuralIssues"), \
-                f"a drive that leaves its own Repeat open must fail with that structural issue: {opened}"
-
-            # (6) a later valid drive inside that existing open block passes and names the old issue.
-            inside = self._set_rule(block_app, {"walkStep": {"operation": "drive",
-                "steps": _log_action_steps(self._navigate_new_action(block_app, allow_open_block=True),
-                                          "inside-open-repeat")}}, strict=True)
-            assert inside.get("success") is True \
-                and any("never closed" in str(issue) for issue in (inside.get("preExistingStructuralIssues") or [])), \
-                f"a valid drive inside an already-open block should pass and report the pre-existing issue: {inside}"
-            page = json.dumps(self._get_persisted_rule_config(block_app).get("page") or {})
-            assert "drive-complete" in page and "inside-open-repeat" in page, \
-                f"both driven log actions should render on the rule: {page}"
-
-            self._set_rule(block_app, {"addAction": {"capability": "stopRepeat"}}, strict=True)
-            self._last_write_health = None
-            self._assert_rule_healthy(block_app)
-        finally:
-            self._delete_native(block_app)
-
-    @test("native_apps")
-    def test_set_rule_walkstep_action_after_required_expression(self) -> None:
-        # P2c regression: an action authored ENTIRELY via SINGLE-STEP walkStep (not
-        # _rmAddAction, not operation='drive') AFTER a Required Expression must land
-        # TOP-LEVEL, never wrapped under IF(Broken Condition). RM leaves
-        # atomicState.predCapabs dirty after an RE commit; the deferred predClear runs on
-        # the FIRST action-page op (the navigate into doActPage), so the slot is created
-        # with predCapabs already cleared. test_set_rule_action_after_required_expression
-        # proves the same guard for _rmAddAction; this one proves the single-step walker
-        # path -- _rmWalkStep's own deferred-clear hook -- which _rmAddAction's flow never
-        # exercises. A relay-dropped create is accepted only after authoritative RE
-        # settings/readback proof; a failed proof raises into the whole-test retry.
-        sw = int(self.get_test_switch_id())
-        app_id, created = self._create_native_rule("WalkActRE", {
-            "addRequiredExpression": {"conditions": [
-                {"capability": "Switch", "deviceIds": [sw], "state": "on"}]},
-        }, return_result=True)
-        try:
-            # RE first: create commits it and leaves the same predClearPending/predCapabs
-            # state that the later manual walkStep sequence is specifically testing.
-            if created is not None:
-                re_res = created.get("requiredExpression")
-                assert isinstance(re_res, dict) and re_res.get("success") is not False, \
-                    f"bundled addRequiredExpression reported failure: {created}"
-            else:
-                self._assert_switch_required_expression(app_id, sw)
-            # Single-step navigate into the action editor -- this is the op that fires the
-            # deferred predCapabs clear, BEFORE the new action slot is created.
-            nav = self._set_rule(app_id, {"walkStep": {"page": "selectActions", "operation": "navigate",
-                                                       "navigate": {"targetPage": "doActPage"}}}, strict=True)
-            assert nav.get("page") == "doActPage", f"navigate should land on doActPage: {nav}"
-            act_field = next((i.get("name") for i in ((nav.get("after") or {}).get("inputs") or [])
-                              if str(i.get("name")).startswith("actType.")), None)
-            assert act_field, f"doActPage should reveal an actType.<n> picker: {nav}"
-            n = act_field.split(".", 1)[1]
-            self._set_rule(app_id, {"walkStep": {"page": "doActPage", "operation": "write",
-                                                 "write": {f"actType.{n}": "messageActs"}}}, strict=True)
-            self._set_rule(app_id, {"walkStep": {"page": "doActPage", "operation": "write",
-                                                 "write": {f"actSubType.{n}": "getLogMsg"}}}, strict=True)
-            wr = self._set_rule(app_id, {"walkStep": {"page": "doActPage", "operation": "write",
-                                                      "write": {f"logmsg.{n}": "walkstep-after-RE"}}}, strict=True)
-            assert (wr.get("valueEcho") or {}).get("match") is True, \
-                f"single-step logmsg write should round-trip live (valueEcho.match): {wr}"
-            self._set_rule(app_id, {"walkStep": {"page": "doActPage", "operation": "click",
-                                                 "click": {"name": "actionDone"}}}, strict=True)
-            cfg = self.client.call_tool("hub_read_apps_code", {
-                "tool": "hub_get_app_config", "args": {"appId": app_id}})
-            assert "Broken Condition" not in str(cfg), \
-                f"predCapabs leaked -- the walkStep-authored post-RE action is wrapped under IF(Broken Condition): {str(cfg)[:800]}"
-            assert "walkstep-after-RE" in str(cfg), \
-                f"the walkStep-authored log action did not commit top-level: {str(cfg)[:800]}"
-        finally:
-            self._delete_native(app_id)
 
     @test("native_apps")
     def test_set_native_app_walkstep_button_controller(self) -> None:
@@ -8146,2681 +8934,78 @@ class TestRunner:
             if controller_id:
                 self._delete_native(controller_id, gateway="hub_manage_native_rules_and_apps")
 
-    @test("native_apps")
-    def test_rule_health_prefers_rulebuilderjson(self) -> None:
-        # issue #254: hub_get_rule_health now reads the rule's compiled atomicState
-        # (GET /app/ruleBuilderJson) for an authoritative `broken` boolean, with the
-        # HTML configure-json render scan RETAINED as a cross-check + fallback. A
-        # freshly-created healthy rule must report broken:false from the JSON source,
-        # and `source` must show the preferred path contributed under default auto mode.
-        app_id = self._create_native_rule("RuleHealthSrc")
-        try:
-            auto = self.client.call_tool("hub_manage_rule_machine", {
-                "tool": "hub_get_rule_health", "args": {"appId": app_id},
-            })
-            assert auto.get("ok") is True, f"fresh rule should be healthy: {auto}"
-            assert auto.get("broken") is False, \
-                f"ruleBuilderJson should report broken:false for a healthy rule: {auto}"
-            assert "ruleBuilderJson" in str(auto.get("source") or ""), \
-                f"auto mode should read the preferred ruleBuilderJson source: {auto}"
-
-            # The retained legacy path stays selectable and must NOT read the JSON source.
-            html = self.client.call_tool("hub_manage_rule_machine", {
-                "tool": "hub_get_rule_health", "args": {"appId": app_id, "source": "configPage"},
-            })
-            assert html.get("source") == "configPage", \
-                f"source=configPage must force the HTML-only path: {html}"
-            assert html.get("broken") is None, \
-                f"the HTML path does not produce the compiled-state boolean: {html}"
-        finally:
-            self._delete_native(app_id)
-
-    @test("native_apps")
-    def test_rule_health_broken_true_on_dangling_trigger(self) -> None:
-        # issue #254 headline: the compiled-state `broken` boolean must fire TRUE on a genuinely
-        # broken rule, not only false on healthy ones. Build a rule whose trigger references a
-        # virtual switch, delete the switch so the trigger dangles, render the config page to force
-        # RM to re-validate (the boolean lags the *BROKEN* label until a render), then assert the
-        # authoritative broken:true verdict from /app/ruleBuilderJson. Proves the marquee path live.
-        dev_id = self._create_virtual_switch_device(f"{PREFIX}RHBrokenDev")
-        assert dev_id, "could not create the trigger device"
-        dni = self._last_created_dni
-        if not dni:
-            vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": f"{PREFIX}RHBrokenDev"})
-            for d in (vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])):
-                if str(d.get("id")) == str(dev_id):
-                    dni = str(d.get("deviceNetworkId") or d.get("dni") or "")
-                    break
-        assert dni, f"could not resolve DNI for trigger device {dev_id}"
-        self.created_device_dnis.append(dni)  # teardown safety net (harmless if already deleted mid-test)
-
-        app_id = self._create_native_rule(
-            "RHBroken",
-            extra={"addTrigger": {"capability": "Switch", "deviceIds": [int(dev_id)], "state": "on"}},
-        )
-        try:
-            # Sanity: healthy while the trigger device exists.
-            pre = self.client.call_tool("hub_manage_rule_machine", {
-                "tool": "hub_get_rule_health", "args": {"appId": app_id}})
-            assert pre.get("broken") is False, f"rule should start healthy before we break it: {pre}"
-
-            # Break it: delete the trigger device so the trigger reference dangles.
-            self.client.call_tool("hub_manage_virtual_device", {
-                "action": "delete", "deviceNetworkId": dni, "confirm": True})
-            if dni in self.created_device_dnis:
-                self.created_device_dnis.remove(dni)
-
-            # The compiled `broken` boolean lags the *BROKEN* label until the rule re-validates;
-            # rendering the config page forces that re-validation.
-            self.client.call_tool("hub_read_apps_code", {
-                "tool": "hub_get_app_config", "args": {"appId": app_id}})
-
-            h = self.client.call_tool("hub_manage_rule_machine", {
-                "tool": "hub_get_rule_health", "args": {"appId": app_id}})
-            assert h.get("broken") is True, \
-                f"compiled-state broken must fire True on a dangling-trigger rule: {h}"
-            assert h.get("ruleFormat") == "rm", f"expected ruleFormat 'rm': {h}"
-            assert h.get("ok") is False, f"a broken rule must report ok:false: {h}"
-            assert "ruleBuilderJson" in str(h.get("source") or ""), \
-                f"the broken verdict should come from the compiled-state source: {h}"
-        finally:
-            self._delete_native(app_id)
-
-    @test("native_apps")
-    def test_rm_rule_restore_in_place_with_device_picker(self) -> None:
-        # In-place hub_restore_backup on a Rule Machine rule that carries a device picker. The
-        # snapshot stores a picker as the {id: label} map configure/json renders, and the replay
-        # used to post that map's toString as the device list: the hub answered 500 and every
-        # such restore reported "applied partially". No other e2e restores an RM rule with a
-        # device in it, so this was invisible until a live home hub showed it. The log action added
-        # after the snapshot lives in RM state, which the replay cannot touch: the restore must
-        # remove it rather than report success over a rule that still has it. preserveRuleId keeps
-        # this on the in-place replay path (the default restores through the App Cloner import).
-        sw = int(self.get_test_switch_id())
-        app_id = self._create_native_rule("RestorePicker", {
-            "addActions": [{"capability": "switch", "action": "off", "deviceIds": [sw]}],
-        })
-        try:
-            added = self.client.call_tool("hub_manage_rule_machine", {
-                "tool": "hub_set_rule",
-                "args": {"appId": int(app_id), "confirm": True,
-                         "addAction": {"capability": "log", "message": "restore-picker probe"}}})
-            assert added.get("success") is True, f"addAction that takes the snapshot failed: {added}"
-            backup_key = (added.get("backup") or {}).get("backupKey")
-            assert backup_key, f"addAction returned no backupKey: {added}"
-
-            # "Use Required Expression" switched on with nothing committed runs the rule ungated.
-            on = self.client.call_tool("hub_manage_rule_machine", {
-                "tool": "hub_set_rule",
-                "args": {"appId": int(app_id), "confirm": True, "settings": {"useST": True}}})
-            # The write reports success:false because its own health check flags the ungated rule.
-            assert "useST" in (on.get("settingsApplied") or []), f"switching useST on did not land: {on}"
-            health = self.client.call_tool("hub_read_rules", {
-                "tool": "hub_get_rule_health", "args": {"appId": int(app_id)}})
-            assert health.get("ok") is False and any("UNGATED" in str(i) for i in (health.get("issues") or [])), \
-                f"health did not flag useST on with no committed expression: {health}"
-            # An expression added after the snapshot is removed by the restore, since the snapshot had none.
-            gate = self._call_slow_rule({
-                "appId": app_id,
-                "addRequiredExpression": {"conditions": [
-                    {"capability": "Switch", "deviceIds": [sw], "state": "on"}]},
-            })
-            assert gate.get("success") is True, f"addRequiredExpression after the snapshot failed: {gate}"
-
-            restored = self.client.call_tool("hub_manage_backup", {
-                "tool": "hub_restore_backup",
-                "args": {"scope": "source", "backupKey": backup_key, "confirm": True, "preserveRuleId": True}})
-            assert restored.get("success") is True, \
-                f"in-place restore of a rule with a device picker failed: {restored}"
-            assert restored.get("restoredVia") == "settingsReplay", restored
-            assert restored.get("requiredExpressionRemoved") is True, \
-                f"the expression added after the snapshot was not removed: {restored}"
-            assert restored.get("recreated") is False and str(restored.get("ruleId")) == str(app_id), \
-                f"in-place restore unexpectedly created a replacement rule: {restored}"
-            assert restored.get("failedStep") is None, restored
-            applied = restored.get("settingsApplied") or []
-            assert any(str(k).startswith("onOffSwitch.") for k in applied), \
-                f"the switch picker was not part of the replay: {restored}"
-            cfg = self._get_persisted_rule_config(app_id).get("settings") or {}
-            picker = next((v for k, v in cfg.items() if str(k).startswith("onOffSwitch.")), None)
-            assert isinstance(picker, dict) and str(sw) in {str(k) for k in picker}, \
-                f"the switch picker does not carry the test switch after the restore: {picker!r}"
-            health = self.client.call_tool("hub_read_rules", {
-                "tool": "hub_get_rule_health", "args": {"appId": int(app_id)}})
-            assert health.get("ok") is True, f"rule unhealthy after restore: {health}"
-            assert str(added.get("actionIndex")) in [str(i) for i in (restored.get("removedActions") or [])], \
-                f"the action added after the snapshot was not removed by the restore: {restored}"
-            blob = str(self.client.call_tool("hub_read_apps_code", {
-                "tool": "hub_get_app_config", "args": {"appId": app_id}}))
-            assert "restore-picker probe" not in blob, \
-                f"the post-snapshot log action is still on the rule after the restore: {blob[:600]}"
-        finally:
-            self._delete_native(app_id)
-
-    @test("native_apps")
-    def test_rm_rule_restore_skips_a_deleted_device(self) -> None:
-        # A device deleted since the backup cannot be replayed: Rule Machine stops rendering a rule
-        # whose picker names a missing device. The restore leaves it out, names it in
-        # settingsSkipped and reports partial, instead of failing the whole replay.
-        label = f"{PREFIX}RestoreGone"
-        dev_id = self._create_virtual_switch_device(label)
-        assert dev_id, "failed to create the throwaway switch"
-        dni = self._last_created_dni
-        if dni:
-            self.created_device_dnis.append(dni)
-        app_id = self._create_native_rule("RestoreGone", {
-            "addActions": [{"capability": "switch", "action": "off", "deviceIds": [int(dev_id)]}],
-        })
-        try:
-            added = self.client.call_tool("hub_manage_rule_machine", {
-                "tool": "hub_set_rule",
-                "args": {"appId": int(app_id), "confirm": True,
-                         "addAction": {"capability": "log", "message": "restore-gone probe"}}})
-            backup_key = (added.get("backup") or {}).get("backupKey")
-            assert added.get("success") is True and backup_key, f"addAction that takes the snapshot failed: {added}"
-            assert dni, f"no network id recorded for the throwaway switch {dev_id}"
-            gone = self._soft_write(
-                lambda: self.client.call_tool("hub_manage_virtual_device", {
-                    "action": "delete", "deviceNetworkId": dni, "confirm": True}),
-                lambda: not self._device_dni_present(dni, label),
-                f"delete throwaway switch {dni}")
-            assert gone["committed"] if gone["relayDropped"] else gone["response"].get("success") is True, \
-                f"the throwaway switch was not deleted: {gone}"
-            if dni in self.created_device_dnis:
-                self.created_device_dnis.remove(dni)
-
-            restored = self.client.call_tool("hub_manage_backup", {
-                "tool": "hub_restore_backup",
-                "args": {"scope": "source", "backupKey": backup_key, "confirm": True, "preserveRuleId": True}})
-            assert restored.get("partial") is True and restored.get("failedStep") is None, \
-                f"a restore naming a deleted device should replay the rest and report partial: {restored}"
-            skipped = [s for s in (restored.get("settingsSkipped") or []) if "no longer exist" in str(s.get("reason"))]
-            assert skipped and any(str(dev_id) in str(s.get("reason")) for s in skipped), \
-                f"the deleted device was not named in settingsSkipped: {restored}"
-        finally:
-            self._delete_native(app_id)
-
-    @test("native_apps")
-    def test_rm_rule_restore_brings_back_a_removed_trigger(self) -> None:
-        # Triggers live in RM state (capabstrue), so replaying a removed trigger's settings cannot
-        # bring it back. In place (the default) the restore must NAME the missing trigger rather
-        # than report success; with preserveRuleId:false it restores through Hubitat's App Cloner
-        # import, an exact copy as a new rule that has the trigger again, and deletes the old rule.
-        sw = int(self.get_test_switch_id())
-        app_id = self._create_native_rule("RestoreTrig", {
-            "addTriggers": [{"capability": "Switch", "deviceIds": [sw], "state": "on"},
-                            {"capability": "Switch", "deviceIds": [sw], "state": "off"}],
-        })
-        new_id = None
-        try:
-            removed = self.client.call_tool("hub_manage_rule_machine", {
-                "tool": "hub_set_rule",
-                "args": {"appId": int(app_id), "confirm": True, "removeTrigger": {"index": 2}}})
-            assert removed.get("success") is True, f"removeTrigger that takes the snapshot failed: {removed}"
-            backup_key = (removed.get("backup") or {}).get("backupKey")
-            assert backup_key, f"removeTrigger returned no backupKey: {removed}"
-
-            in_place = self.client.call_tool("hub_manage_backup", {
-                "tool": "hub_restore_backup",
-                "args": {"scope": "source", "backupKey": backup_key, "confirm": True}})
-            assert in_place.get("restoredVia") == "settingsReplay" and str(in_place.get("ruleId")) == str(app_id), \
-                f"the default restore did not stay in place: {in_place}"
-            assert in_place.get("success") is False and in_place.get("partial") is True, \
-                f"an in-place restore that could not bring the removed trigger back reported success: {in_place}"
-            assert any("turns off" in str(m.get("text")) for m in (in_place.get("missingTriggers") or [])), \
-                f"the in-place restore did not name the missing 'turns off' trigger: {in_place}"
-
-            # The import, the old rule's delete and the re-enable outrun the cloud relay, so a lost
-            # response is resolved by reading the hub: the old rule gone and a same-label rule present.
-            label = ((self.client.call_tool("hub_read_apps_code", {
-                "tool": "hub_get_app_config", "args": {"appId": int(app_id)}}) or {}).get("app") or {}).get("label")
-            assert label, f"rule {app_id} has no readable label to find its restored copy by"
-
-            def _replaced() -> str | None:
-                for _ in range(20):
-                    found = self._find_app_id_by_label(label) if label else None
-                    if found and str(found) != str(app_id) and not self._app_still_present(app_id):
-                        return found
-                    time.sleep(3.0)
-                return None
-
-            rw = self._soft_write(
-                lambda: self.client.call_tool("hub_manage_backup", {
-                    "tool": "hub_restore_backup",
-                    "args": {"scope": "source", "backupKey": backup_key, "confirm": True, "preserveRuleId": False}}),
-                _replaced, "native rule restore")
-            if rw["relayDropped"]:
-                assert rw["committed"], f"the native restore left no replacement for rule {app_id} after a relay 504"
-                new_id = rw["evidence"]
-            else:
-                restored = rw["response"]
-                new_id = restored.get("ruleId")
-                assert restored.get("success") is True and restored.get("restoredVia") == "nativeImport", \
-                    f"preserveRuleId:false did not go through the App Cloner import: {restored}"
-                assert new_id and str(new_id) != str(app_id) and str(restored.get("originalRuleId")) == str(app_id), \
-                    f"the native restore should create a new rule in place of {app_id}: {restored}"
-            blob = str(self.client.call_tool("hub_read_apps_code", {
-                "tool": "hub_get_app_config", "args": {"appId": int(new_id)}})).lower()
-            assert "turns on" in blob and "turns off" in blob, \
-                f"the restored rule does not carry both triggers: {blob[:600]}"
-            assert not self._app_still_present(app_id), \
-                f"the old rule {app_id} is still installed after the native restore"
-            # The same backup restored again, here with the default preserveRuleId, returns the copy
-            # instead of creating a second rule.
-            again = self.client.call_tool("hub_manage_backup", {
-                "tool": "hub_restore_backup",
-                "args": {"scope": "source", "backupKey": backup_key, "confirm": True}})
-            assert again.get("alreadyRestored") is True and str(again.get("ruleId")) == str(new_id), \
-                f"a repeated native restore did not return the existing copy {new_id}: {again}"
-        finally:
-            if new_id:
-                self._delete_native(new_id)
-            self._delete_native(app_id)
-
-    @test("native_apps")
-    def test_rm_rule_restore_of_a_deleted_rule_uses_the_exact_copy(self) -> None:
-        # A deleted rule gets a new id either way, so the default restore brings it back through the
-        # App Cloner copy, triggers included, rather than a replay that cannot rebuild them.
-        sw = int(self.get_test_switch_id())
-        app_id = self._create_native_rule("RestoreDeleted", {
-            "addTriggers": [{"capability": "Switch", "deviceIds": [sw], "state": "on"}],
-            "addActions": [{"capability": "log", "message": "E2E restore deleted probe"}],
-        })
-        new_id = None
-        try:
-            label = ((self.client.call_tool("hub_read_apps_code", {
-                "tool": "hub_get_app_config", "args": {"appId": int(app_id)}}) or {}).get("app") or {}).get("label")
-            assert label, f"rule {app_id} has no readable label to find its restored copy by"
-            dele = self.client.call_tool("hub_manage_rule_machine", {
-                "tool": "hub_delete_native_app", "args": {"appId": int(app_id), "force": True, "confirm": True}})
-            backup_key = (dele.get("backup") or {}).get("backupKey")
-            assert dele.get("success") is True and backup_key, f"deleting the rule returned no backup: {dele}"
-            self._untrack_native_app(app_id)
-
-            # The import outlasts the cloud relay, so the restore continues through requestState
-            # (MRTR) rather than a single response; a 504 here is a regression, not a flake.
-            restored = self.client.call_tool("hub_manage_backup", {
-                "tool": "hub_restore_backup", "args": {"scope": "source", "backupKey": backup_key, "confirm": True}})
-            new_id = restored.get("ruleId")
-            if new_id:
-                self.created_native_app_ids.append(str(new_id))
-            assert restored.get("success") is True and restored.get("restoredVia") == "nativeImport", \
-                f"the deleted rule was not restored through the App Cloner copy: {restored}"
-            blob = str(self.client.call_tool("hub_read_apps_code", {
-                "tool": "hub_get_app_config", "args": {"appId": int(new_id)}})).lower()
-            assert "turns on" in blob, f"the restored rule does not carry its trigger: {blob[:600]}"
-        finally:
-            if new_id:
-                self._delete_native(new_id)
-
-    @test("native_apps")
-    def test_rm_rule_restore_puts_actions_back_in_order(self) -> None:
-        # Action order is RM state (actionList). A restore in place moves the backup's actions back
-        # into its order rather than reporting a reordered rule as restored.
-        first, second = "E2E restore order first", "E2E restore order second"
-        app_id = self._create_native_rule("RestoreOrder", {
-            "addActions": [{"capability": "log", "message": first}, {"capability": "log", "message": second}],
-        })
-
-        def _first_before_second() -> bool:
-            page = json.dumps(self.client.call_tool("hub_read_apps_code", {
-                "tool": "hub_get_app_config", "args": {"appId": int(app_id)}}).get("page", {}))
-            return 0 <= page.find(first) < page.find(second)
-
-        try:
-            moved = self.client.call_tool("hub_manage_rule_machine", {
-                "tool": "hub_set_rule",
-                "args": {"appId": int(app_id), "confirm": True, "moveAction": {"index": 2, "direction": "up"}}})
-            backup_key = (moved.get("backup") or {}).get("backupKey")
-            assert backup_key, f"moveAction returned no backupKey: {moved}"
-            for _ in range(5):
-                if not _first_before_second():
-                    break
-                time.sleep(2.0)
-            assert not _first_before_second(), f"the move never landed, so there is no order to restore: {moved}"
-
-            restored = self.client.call_tool("hub_manage_backup", {
-                "tool": "hub_restore_backup",
-                "args": {"scope": "source", "backupKey": backup_key, "confirm": True}})
-            assert restored.get("success") is True and restored.get("structureRestored") is True, \
-                f"the restore did not report the action order restored: {restored}"
-            assert _first_before_second(), f"the actions are still out of the backup's order: {restored}"
-        finally:
-            self._delete_native(app_id)
-
-    @test("native_apps")
-    def test_rm_rule_restore_expression_by_device_name(self) -> None:
-        # A restored Required Expression is compared by condition text without the device's current
-        # value, which RM renders in parentheses. Devices whose names end in a parenthesis must still
-        # tell apart, and a backup whose expression names a deleted device is not rebuilt.
-        sw = {}
-        for key, name in (("gone", "Lamp (Gone)"), ("kitchen", "Lamp (Kitchen)"), ("den", "Lamp (Den)")):
-            dev = self._create_virtual_switch_device(f"{PREFIX}{name}")
-            assert dev, f"failed to create the {name} switch"
-            sw[key] = (int(dev), self._last_created_dni)
-            if self._last_created_dni:
-                self.created_device_dnis.append(self._last_created_dni)
-        app_id = self._create_native_rule("RestoreParen", {
-            "addRequiredExpression": {"conditions": [{"capability": "Switch", "deviceIds": [sw["gone"][0]], "state": "on"}]},
-        })
-
-        def _blob() -> str:
-            return str(self.client.call_tool("hub_read_apps_code", {
-                "tool": "hub_get_app_config", "args": {"appId": int(app_id)}})).lower()
-
-        try:
-            keys = {}
-            for key in ("kitchen", "den"):
-                rep = self._call_slow_rule({"appId": int(app_id), "replaceRequiredExpression": {
-                    "conditions": [{"capability": "Switch", "deviceIds": [sw[key][0]], "state": "on"}]}})
-                assert rep.get("success") is True and (rep.get("backup") or {}).get("backupKey"), \
-                    f"replacing the expression with the {key} switch failed: {rep}"
-                keys[key] = rep["backup"]["backupKey"]
-            # keys["den"] holds the Kitchen expression, keys["kitchen"] the Gone one.
-            restored = self.client.call_tool("hub_manage_backup", {
-                "tool": "hub_restore_backup",
-                "args": {"scope": "source", "backupKey": keys["den"], "confirm": True}})
-            assert restored.get("success") is True and restored.get("requiredExpressionRestored") is True, \
-                f"the Kitchen expression was not restored: {restored}"
-            blob = _blob()
-            assert "lamp (kitchen)" in blob and "lamp (den)" not in blob, \
-                f"the restored expression does not read Lamp (Kitchen): {blob[:600]}"
-
-            gone_dni = sw["gone"][1]
-            assert gone_dni, "no network id recorded for the Gone switch"
-            self.client.call_tool("hub_manage_virtual_device", {"action": "delete", "deviceNetworkId": gone_dni, "confirm": True})
-            if gone_dni in self.created_device_dnis:
-                self.created_device_dnis.remove(gone_dni)
-            refused = self.client.call_tool("hub_manage_backup", {
-                "tool": "hub_restore_backup",
-                "args": {"scope": "source", "backupKey": keys["kitchen"], "confirm": True}})
-            assert refused.get("requiredExpressionRestored") is False and refused.get("preRestoreExpressionKept") is True, \
-                f"an expression naming a deleted device should be left as it was: {refused}"
-            assert "no longer exist" in str(refused.get("requiredExpressionError")), refused
-            assert "lamp (kitchen)" in _blob(), "the Kitchen expression did not survive the refused rebuild"
-        finally:
-            self._delete_native(app_id)
-
-    @test("native_apps")
-    def test_rule_health_ui_shaped_else_endif_rows(self) -> None:
-        # Structural balance on a rule whose ELSE / END-IF rows carry ONLY actSubType.<N>
-        # and no actType.<N> -- the settings shape Rule Machine's own UI leaves behind for
-        # a branch keyword and a block closer. Every other health test builds its rule
-        # through OUR writer, which always writes BOTH keys, so this shape was never
-        # exercised live: while the structural walker discovered action rows from the
-        # actType.<N> keys alone, a UI-authored ELSE/END-IF was invisible to it and the
-        # balanced IF it belongs to read as "opened a block that was never closed".
-        #
-        # The shape is produced through the documented edit-as-text round trip
-        # (hub_export_native_app -> mutate the exported JSON -> hub_import_native_app).
-        # It cannot be produced any other way through the tool surface: the writer never
-        # emits an actType-less row, and nothing DELETES an app setting -- a raw `settings`
-        # write only writes, and only the keys the current page schema already carries.
-        sw = int(self.get_test_switch_id())
-        app_id = self._create_native_rule("RuleHealthUIShape", {
-            "addActions": [
-                {"capability": "ifThen", "expression": {"conditions": [
-                    {"capability": "Switch", "deviceIds": [sw], "state": "on"}]}},
-                {"capability": "log", "message": "then-branch"},
-                {"capability": "else"},
-                {"capability": "log", "message": "else-branch"},
-                {"capability": "endIf"},
-            ],
-        })
-        imported_id = None
-        try:
-            source_settings = self._get_persisted_rule_config(app_id).get("settings") or {}
-            branch_rows = sorted(str(key).split(".", 1)[1] for key, value in source_settings.items()
-                                 if str(key).startswith("actSubType.")
-                                 and str(value) in ("getElse", "getEndIf"))
-            assert len(branch_rows) == 2, \
-                f"fixture should carry exactly one ELSE and one END-IF row: {source_settings}"
-
-            exported = self.client.call_tool("hub_manage_native_rules_and_apps", {
-                "tool": "hub_export_native_app", "args": {"sourceAppId": int(app_id)}})
-            assert exported.get("success") is True and exported.get("jsonContent"), \
-                f"appCloner export did not return the rule JSON: {exported}"
-            document = json.loads(exported["jsonContent"])
-
-            doomed_names = {f"actType.{idx}" for idx in branch_rows}
-
-            def _drop_named_settings(node: Any) -> int:
-                """Remove appSettings entries named in doomed_names, wherever they sit.
-
-                A canonical appCloner export carries them as
-                appData.<sourceId>.appSettings[] = [{name, type, multiple, value}, ...].
-                The walk is shape-agnostic on purpose: a nesting change then surfaces as
-                the removal-count mismatch below instead of a silent no-op that would
-                health-check an unmutated rule and pass green."""
-                removed = 0
-                if isinstance(node, dict):
-                    for value in node.values():
-                        removed += _drop_named_settings(value)
-                elif isinstance(node, list):
-                    doomed = [item for item in node if isinstance(item, dict)
-                              and str(item.get("name")) in doomed_names]
-                    for item in doomed:
-                        node.remove(item)
-                    removed += len(doomed)
-                    for item in node:
-                        removed += _drop_named_settings(item)
-                return removed
-
-            dropped = _drop_named_settings(document)
-            assert dropped == len(doomed_names), \
-                (f"expected to strip {sorted(doomed_names)} from the export, removed {dropped} "
-                 f"entries -- the export's settings shape is not what the mutation targets")
-
-            # Also plant a LEFTOVER row: an actSubType for an action index the rule does not
-            # have. Health must report it in orphanedActionRows and must NOT count it toward
-            # block structure -- a stale IF was previously reported unclosed forever (#393).
-            def _inject_orphan(node: Any) -> int:
-                if isinstance(node, list):
-                    if any(isinstance(i, dict) and str(i.get("name", "")).startswith("actSubType.") for i in node):
-                        node.append({"name": "actSubType.99", "type": "enum", "multiple": False,
-                                     "value": "getIfThen"})
-                        return 1
-                    return sum(_inject_orphan(i) for i in node)
-                if isinstance(node, dict):
-                    return sum(_inject_orphan(v) for v in node.values())
-                return 0
-            assert _inject_orphan(document) == 1, "could not find the appSettings list to plant the orphan row"
-
-            imported = self.client.call_tool("hub_manage_native_rules_and_apps", {
-                "tool": "hub_import_native_app",
-                "args": {"jsonContent": json.dumps(document), "parentHintAppId": int(app_id),
-                         "newName": f"{PREFIX}RuleHealthUIShapeImp_{_run_artifact_suffix()}",
-                         "confirm": True}})
-            imported_id = imported.get("newAppId")
-            assert imported.get("success") is True and imported_id, \
-                f"importing the mutated rule did not create a new app: {imported}"
-            self.created_native_app_ids.append(str(imported_id))
-
-            # The imported rule must actually be UI-shaped, else an all-clear health verdict
-            # below would prove nothing. Re-derive the rows from the IMPORT (the cloner owns
-            # the indices), then pin actSubType present / actType absent on exactly those.
-            imported_settings = self._get_persisted_rule_config(imported_id).get("settings") or {}
-            ui_rows = sorted(str(key).split(".", 1)[1] for key, value in imported_settings.items()
-                             if str(key).startswith("actSubType.")
-                             and str(value) in ("getElse", "getEndIf"))
-            assert len(ui_rows) == len(branch_rows), \
-                f"the import did not carry the ELSE/END-IF rows over: {imported_settings}"
-            assert not any(f"actType.{idx}" in imported_settings for idx in ui_rows), \
-                ("the import re-materialized actType.<N> on the branch/closer rows, so the "
-                 f"UI-authored settings shape never reached the hub: {imported_settings}")
-            assert any(str(key).startswith("actType.") for key in imported_settings), \
-                f"the strip took more than the branch/closer rows: {imported_settings}"
-
-            health = self.client.call_tool("hub_manage_rule_machine", {
-                "tool": "hub_get_rule_health", "args": {"appId": imported_id}})
-            # An unread configPage leg leaves structuralIssues vacuously empty -- assert the
-            # structural walk actually ran before trusting its all-clear.
-            assert not health.get("checkErrors") and "configPage" in str(health.get("source") or ""), \
-                f"the structural walk did not run, so an empty verdict proves nothing: {health}"
-            assert health.get("structuralIssues") == [], \
-                f"UI-shaped ELSE/END-IF rows were flagged as a structural imbalance: {health}"
-            assert "never closed" not in str(health).lower(), \
-                f"a balanced UI-authored IF block was reported as missing its END-IF: {health}"
-
-            # The planted leftover is reported as an orphan, and only as an orphan.
-            orphans = health.get("orphanedActionRows")
-            assert isinstance(orphans, list), f"orphanedActionRows must always be present: {health}"
-            assert any("action 99" in str(row) and "getIfThen" in str(row) for row in orphans), \
-                f"the planted actSubType.99=getIfThen row was not reported as an orphan: {health}"
-            assert health.get("ok") is True, f"an orphan row must not fail health: {health}"
-
-            # Deleting the rule's only END-IF would unbalance it. That refusal never fired on a
-            # UI-shaped closer before (no actType on the row), and a leftover closer elsewhere
-            # could suppress it; both are fixed, so it must refuse here.
-            endif_idx = next(idx for idx in ui_rows
-                             if str(imported_settings.get(f"actSubType.{idx}")) == "getEndIf")
-            refused = self.client.call_tool("hub_manage_rule_machine", {
-                "tool": "hub_set_rule", "args": {"appId": imported_id, "confirm": True,
-                                                 "removeAction": {"index": int(endif_idx)}}})
-            assert refused.get("success") is False and "blocked" in str(refused.get("error", "")), \
-                f"removing the only END-IF of a UI-shaped rule must be refused: {refused}"
-            after = self.client.call_tool("hub_manage_rule_machine", {
-                "tool": "hub_get_rule_health", "args": {"appId": imported_id}})
-            assert after.get("structuralIssues") == [], \
-                f"the refused delete must leave the rule balanced: {after}"
-        finally:
-            if imported_id:
-                self._delete_native(imported_id)
-            self._delete_native(app_id)
-
-    @test("native_apps")
-    def test_set_rule_trigger_mutations(self) -> None:
-        # hub_set_rule edit -> the device-state addTrigger + addAction wizard paths, then
-        # modifyTrigger (state) + removeTrigger driven by the RETURNED triggerIndex
-        # (never a hardcoded index -- RM action/trigger indices are persistent per-rule
-        # counters that survive removals).
-        sw = int(self.get_test_switch_id())
-        # Fold the first (non-index) addTrigger into the create -- one fewer round-trip; the
-        # index-returning addTrigger below still gets its own call so its triggerIndex is read.
-        app_id, created = self._create_native_rule("TrigMut", extra={
-            "addTrigger": {"capability": "Switch", "deviceIds": [sw], "state": "on"},
-            "addActions": [{"capability": "switch", "action": "on", "deviceIds": [sw]}],
-        }, return_result=True)
-        try:
-            if created is not None:
-                assert len(created.get("triggers") or []) == 1 \
-                    and len(created.get("actions") or []) == 1, \
-                    f"TrigMut create did not return both bundled mutations: {created}"
-            fixture_cfg = self._get_persisted_rule_config(app_id)
-            fixture_settings = fixture_cfg.get("settings") or {}
-            trigger_slots = [str(key)[4:] for key, value in fixture_settings.items()
-                             if str(key).startswith("tDev")
-                             and self._setting_holds_exact(value, sw)]
-            assert trigger_slots and any(
-                str(fixture_settings.get(f"tstate{slot}")).lower() == "on"
-                for slot in trigger_slots), \
-                f"bundled trigger did not persist with exact switch/state: {fixture_settings}"
-            action_slots = [str(key).split(".", 1)[1] for key, value in fixture_settings.items()
-                            if str(key).startswith("onOffSwitch.")
-                            and self._setting_holds_exact(value, sw)]
-            assert action_slots and any(
-                str(fixture_settings.get(f"onOff.{slot}")).lower() in ("true", "on")
-                for slot in action_slots), \
-                f"bundled switch action did not persist exact device/state: {fixture_settings}"
-            self._assert_rule_healthy(app_id)
-
-            added = self._set_rule(app_id, {"addTrigger": {"capability": "Switch", "deviceIds": [sw], "state": "on"}}, strict=True)
-            tidx = added.get("triggerIndex")
-            assert tidx is not None, \
-                f"addTrigger did not return a triggerIndex (contract regression): {added}"
-            mod = self._set_rule(app_id, {"modifyTrigger": {"index": tidx, "mods": {"state": "off"}}}, strict=True)
-            # modifyTrigger reads the PERSISTED tstate (configure/json), so verifiedState
-            # echoes the new value instead of always being null (the old readback hit the
-            # closed selectTriggers wizard page).
-            if mod.get("verificationFetchFailed") is not True:
-                assert mod.get("verifiedState") == "off", \
-                    (f"modifyTrigger verifiedState should echo the persisted new state 'off', "
-                     f"got {mod.get('verifiedState')!r}: {mod}")
-            rejected = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule",
-                "args": {"appId": app_id, "modifyTrigger": {"index": tidx, "mods": {"state": "changed"}},
-                         "confirm": True}})
-            assert rejected.get("success") is False \
-                and "removetrigger" in str(rejected.get("error", "")).lower() \
-                and "not touched" in str(rejected.get("restoreHint", "")).lower(), \
-                f"modifyTrigger state-change token should refuse pre-write: {rejected}"
-            # Retarget in ONE patches call: removeTrigger + addTrigger both run under the single
-            # trailing updateRule. The replacement uses state "on" so it cannot be confused with the
-            # removed trigger (modified to "off" above) if RM hands the freed index back.
-            retarget = self._patch_rule(app_id, [
-                {"removeTrigger": {"index": tidx}},
-                {"addTrigger": {"capability": "Switch", "deviceIds": [sw], "state": "on"}},
-            ])
-            assert [e.get("op") for e in retarget] == ["removeTrigger", "addTrigger"] \
-                and all(e.get("success") is True for e in retarget), \
-                f"patches retarget did not run both sub-ops successfully: {retarget}"
-            new_tidx = retarget[1].get("triggerIndex")
-            assert new_tidx is not None, \
-                f"patches addTrigger did not return a triggerIndex: {retarget}"
-            assert str(tidx) not in [str(i) for i in retarget[0].get("afterIndices") or []], \
-                f"patches removeTrigger left trigger {tidx} in the rule: {retarget}"
-            retarget_settings = self._get_persisted_rule_config(app_id).get("settings") or {}
-            assert self._setting_holds_exact(retarget_settings.get(f"tDev{new_tidx}"), sw) \
-                and str(retarget_settings.get(f"tstate{new_tidx}")).lower() == "on", \
-                f"patches addTrigger settings did not land on trigger {new_tidx}: {retarget_settings}"
-            # patches modifyTrigger: the same single-op helper, finalised by the batch's one updateRule.
-            patched_mod = self._patch_rule(app_id, [{"modifyTrigger": {"index": new_tidx, "mods": {"state": "off"}}}])
-            assert [e.get("op") for e in patched_mod] == ["modifyTrigger"] \
-                and patched_mod[0].get("success") is True and patched_mod[0].get("partial") is not True, \
-                f"patches modifyTrigger did not succeed cleanly: {patched_mod}"
-            patched_settings = self._get_persisted_rule_config(app_id).get("settings") or {}
-            assert str(patched_settings.get(f"tstate{new_tidx}")).lower() == "off", \
-                f"patches modifyTrigger did not persist state 'off' on trigger {new_tidx}: {patched_settings}"
-            self._set_rule(app_id, {"removeTrigger": {"index": new_tidx}}, strict=True)
-            self._assert_rule_healthy(app_id)
-
-            # Fail-closed bulk triggers: a clean Switch-off trigger lands, the refused state-change
-            # token stops the batch, and the later trigger and the action are never written.
-            def _switch_trigger_states() -> list[str]:
-                settings = self._get_persisted_rule_config(app_id).get("settings") or {}
-                return [str(settings.get(f"tstate{str(key)[4:]}")).lower()
-                        for key, value in settings.items()
-                        if str(key).startswith("tDev") and self._setting_holds_exact(value, sw)]
-            states_before = _switch_trigger_states()
-            skipped_msg = "E2E trigger stop skipped action"
-            stopped = self._rm_stop_call(app_id, {
-                "addTriggers": [
-                    {"capability": "Switch", "deviceIds": [sw], "state": "off"},
-                    {"capability": "Temperature", "value": "increased"},
-                    {"capability": "Switch", "deviceIds": [sw], "state": "on"},
-                ],
-                "addActions": [{"capability": "log", "message": skipped_msg}],
-            })
-            triggers = stopped.get("triggers") or []
-            actions = stopped.get("actions") or []
-            assert len(triggers) == 3 and len(actions) == 1 \
-                and triggers[0].get("success") is not False and not triggers[0].get("partial") \
-                and triggers[1].get("success") is False, \
-                f"expected a clean trigger, then the refusal, then the skipped tail: {stopped}"
-            self._assert_bulk_stop(stopped, "addTriggers[1]", triggers[2:] + actions)
-            states_after = _switch_trigger_states()
-            assert states_after.count("off") == states_before.count("off") + 1 \
-                and states_after.count("on") == states_before.count("on"), \
-                f"the clean prefix trigger must remain and the skipped trigger must never land: " \
-                f"before={states_before} after={states_after}"
-            assert skipped_msg not in self._rule_page_text(app_id), \
-                "the action after a stopped trigger batch was written"
-        finally:
-            self._delete_native(app_id)
-
-    @test("native_apps")
-    def test_set_rule_enum_custom_attribute(self) -> None:
-        # hub_set_rule edit -> addTrigger Custom Attribute on an ENUM-recognized
-        # attribute. A virtual switch's 'switch' attribute is the canonical enum case:
-        # picking it reveals the enum value picker (tstate<N>) and HIDES the free
-        # comparator field (ReltDev<N>). The value must land in tstate<N>, and the
-        # now-absent ReltDev<N> must NOT be written -- an unconditional comparator write
-        # there is rejected not_in_schema and spuriously flips partial=true even though
-        # the trigger built correctly. This pins the no-false-partial contract the Spock
-        # regression specs guard, end-to-end against a live hub. Covers BOTH the trigger
-        # row (_rmAddTrigger, ReltDev<N>) and the conditional-trigger condition
-        # (_rmBuildCondition, RelrDev_<N>) -- the two share the enum bug.
-        sw = int(self.get_test_switch_id())
-        app_id = self._create_native_rule("EnumTrig")
-        try:
-            # --- trigger row: tCustomAttr<N> / tstate<N> / ReltDev<N> ---
-            entries = self._patch_rule(app_id, [
-                {"addTrigger": {"capability": "Custom Attribute", "deviceIds": [sw],
-                                "attribute": "switch", "comparator": "=", "state": "on"}},
-                {"addTrigger": {"capability": "Switch", "deviceIds": [sw], "state": "on",
-                                "condition": {"capability": "Custom Attribute",
-                                              "deviceIds": [sw], "attribute": "switch",
-                                              "comparator": "=", "state": "on"}}},
-            ])
-            assert len(entries) == 2, f"enum trigger patches were incomplete: {entries}"
-            result, cond_result = entries
-            assert result.get("success") is not False, \
-                f"enum Custom Attribute addTrigger reported failure: {result}"
-            # The enum value landed in the value picker (tstate<N>) ...
-            applied = result.get("settingsApplied") or []
-            assert any(str(k).startswith("tstate") for k in applied), \
-                f"enum value did not land in a tstate field; settingsApplied={applied}"
-            # ... and the hidden comparator was NOT written, so no ReltDev not_in_schema
-            # skip was produced -- the false-positive not_in_schema partial this guards.
-            skipped = result.get("settingsSkipped") or []
-            bad = [s for s in skipped if isinstance(s, dict)
-                   and (s.get("key") or "").startswith("ReltDev")
-                   and s.get("reason") == "not_in_schema"]
-            assert not bad, \
-                f"unexpected ReltDev not_in_schema skip (the enum false-partial bug): {bad}"
-            # The contract discriminator: partial stays falsy.
-            assert not result.get("partial"), \
-                f"trigger falsely flagged partial despite building correctly: {result}"
-
-            # --- condition path: a conditional trigger whose condition is the same
-            #     enum Custom Attribute (rCustomAttr_<N> / state_<N> / RelrDev_<N>) ---
-            assert cond_result.get("success") is not False, \
-                f"conditional addTrigger reported failure: {cond_result}"
-            cond_applied = cond_result.get("settingsApplied") or []
-            assert any(str(k).startswith("state_") for k in cond_applied), \
-                f"condition enum value did not land in a state_<N> field; settingsApplied={cond_applied}"
-            cond_skipped = cond_result.get("settingsSkipped") or []
-            cond_bad = [s for s in cond_skipped if isinstance(s, dict)
-                        and (s.get("key") or "").startswith("RelrDev_")
-                        and s.get("reason") == "not_in_schema"]
-            assert not cond_bad, \
-                f"unexpected RelrDev_<N> not_in_schema skip on the condition path: {cond_bad}"
-            assert not cond_result.get("partial"), \
-                f"conditional trigger falsely flagged partial: {cond_result}"
-            persisted = self._get_persisted_rule_config(app_id).get("settings") or {}
-            enum_trigger_slots = [str(key)[11:] for key, value in persisted.items()
-                                  if str(key).startswith("tCustomAttr") and value == "switch"]
-            assert any(str(persisted.get(f"tstate{slot}")) == "on"
-                       and self._setting_holds_exact(persisted.get(f"tDev{slot}"), sw)
-                       for slot in enum_trigger_slots), \
-                f"enum trigger attribute/device/value did not persist together: {persisted}"
-            enum_cond_slots = [str(key).split("_", 1)[1] for key, value in persisted.items()
-                               if str(key).startswith("rCustomAttr_") and value == "switch"]
-            assert any(str(persisted.get(f"state_{slot}")) == "on"
-                       and self._setting_holds_exact(persisted.get(f"rDev_{slot}"), sw)
-                       for slot in enum_cond_slots), \
-                f"conditional enum attribute/device/value did not persist together: {persisted}"
-            self._assert_rule_healthy(app_id)
-        finally:
-            self._delete_native(app_id)
-
-    @test("native_apps")
-    def test_set_rule_trigger_state_change_comparator(self) -> None:
-        # A device-state trigger (Switch/Motion/Contact/Lock/...) has NO comparator field: the
-        # value picker tstate<N> carries the state enum AND a change option. A
-        # comparator:'*changed*' therefore has to ride the value picker -- writing the (absent)
-        # ReltDev<N> comparator field instead lands not_in_schema and the trigger renders "turns
-        # null" (fires on any event). This proves, end-to-end against a live hub, that the change
-        # token ROUTES into tstate<N>: the write echoes a tstate<N> key in settingsApplied, no
-        # ReltDev skip is produced (so partial stays false), and the persisted setting reads back
-        # as the change token with the rule healthy -- the "Switch changed" render, not the broken
-        # "turns null" orphan.
-        sw = int(self.get_test_switch_id())
-        app_id, created = self._create_native_rule("ChangedTrig", {
-            "addTriggers": [
-                {"capability": "Switch", "deviceIds": [sw], "comparator": "*changed*"}],
-        }, return_result=True)
-        try:
-            if created is not None:
-                created_triggers = created.get("triggers") or []
-                assert len(created_triggers) == 1, \
-                    f"create did not return the bundled trigger: {created}"
-                result = created_triggers[0]
-                assert result.get("success") is True, \
-                    f"device-state *changed* addTrigger did not cleanly succeed: {result}"
-                applied = result.get("settingsApplied") or []
-                assert any(str(k).startswith("tstate") for k in applied), \
-                    f"the *changed* token did not land in a tstate value picker: {applied}"
-                skipped = result.get("settingsSkipped") or []
-                bad = [s for s in skipped if isinstance(s, dict)
-                       and (s.get("key") or "").startswith("ReltDev")]
-                assert not bad and not result.get("partial"), \
-                    f"device-state *changed* trigger was partial or wrote ReltDev: {result}"
-
-            # The test also owns the response-metadata contract; readback cannot replace it.
-            created = self._require_create_envelope(created, "ChangedTrig")
-            # Read the PERSISTED settings back via the read-only hub_get_app_config: the change
-            # token is stored in tstate<N> (asterisk-wrapped live), the behavioural proof it
-            # renders as a change trigger rather than the "turns null" orphan.
-            cfg = self._get_persisted_rule_config(app_id)
-            settings = cfg.get("settings") or {}
-            switch_slots = [str(key)[4:] for key, value in settings.items()
-                            if str(key).startswith("tDev")
-                            and self._setting_holds_exact(value, sw)]
-            assert any(str(settings.get(f"tCapab{slot}")).lower() == "switch"
-                       and str(settings.get(f"tstate{slot}")) == "*changed*"
-                       for slot in switch_slots), \
-                f"persisted Switch device and *changed* state are not correlated in one trigger slot: {settings}"
-            self._assert_rule_healthy(app_id)
-        finally:
-            self._delete_native(app_id)
-
-    @test("native_apps")
-    def test_set_rule_required_expression_and_local_var(self) -> None:
-        # hub_set_rule edit -> addLocalVariable + addRequiredExpression (STPage) wizards,
-        # plus the local-variable surface: setLocalVariable action, the
-        # hub_list_rule_local_variables read, and the removeLocalVariable shortcut.
-        sw = int(self.get_test_switch_id())
-        app_id = self._create_native_rule("ReqExpr")
-        try:
-            built = self._patch_rule(app_id, [
-                {"addLocalVariable": {"name": "fields", "type": "Number", "value": 0}},
-                {"addAction": {"capability": "setLocalVariable", "variable": "fields", "value": 0}},
-                {"addRequiredExpression": {"conditions": [
-                    {"capability": "Switch", "deviceIds": [sw], "state": "on"}]}},
-            ])
-            assert len(built) == 3 and all(entry.get("success") is not False for entry in built), \
-                f"local/action/Required Expression patches did not all commit: {built}"
-            set_local_idx = built[1].get("actionIndex")
-            assert set_local_idx is not None, \
-                f"patch addAction setLocalVariable did not return an actionIndex: {built[1]}"
-
-            persisted = self._get_persisted_rule_config(app_id).get("settings") or {}
-            assert persisted.get(f"xVarV.{set_local_idx}") == "fields" \
-                and str(persisted.get(f"valNumber.{set_local_idx}")) == "0", \
-                f"setLocalVariable target/value did not persist: {persisted}"
-            re_slots = [str(key).split("_", 1)[1] for key, value in persisted.items()
-                        if str(key).startswith("rCapab_")
-                        and str(value).lower() == "switch"]
-            assert any(str(persisted.get(f"state_{slot}")).lower() == "on"
-                       and self._setting_holds_exact(persisted.get(f"rDev_{slot}"), sw)
-                       for slot in re_slots), \
-                f"initial Required Expression did not persist exact switch/state: {persisted}"
-
-            # hub_list_rule_local_variables (read, via the pure-read hub_read_rules gateway)
-            # sees the freshly created local with its type/value.
-            listed = self.client.call_tool("hub_read_rules", {
-                "tool": "hub_list_rule_local_variables", "args": {"appId": app_id}})
-            names = [lv.get("name") for lv in (listed.get("localVariables") or [])]
-            assert "fields" in names, f"hub_list_rule_local_variables missing fields: {listed}"
-
-            self._assert_rule_healthy(app_id)
-
-            # removeLocalVariable clean path: the referencing action is removed first (using
-            # the index the addAction returned -- RM does not guarantee index 0) so the rule
-            # stays healthy after the delete, then verify it left state.allLocalVars via the
-            # read tool. NOTE: RM does NOT refuse a referenced-local delete -- removing the
-            # reference first is to keep the rule HEALTHY, not because RM would block it (the
-            # broken-after-delete behaviour is covered by its own scenario).
-            removed = self._patch_rule(app_id, [
-                {"removeAction": {"index": set_local_idx}},
-                {"removeLocalVariable": {"name": "fields"}},
-            ])
-            assert len(removed) == 2 and all(entry.get("success") is not False for entry in removed), \
-                f"ordered reference/local removal patches did not both commit: {removed}"
-            assert removed[1].get("deleted") is True \
-                and removed[1].get("name") == "fields", \
-                f"removeLocalVariable did not confirm deletion: {removed[1]}"
-            relisted = self.client.call_tool("hub_read_rules", {
-                "tool": "hub_list_rule_local_variables", "args": {"appId": app_id}})
-            assert "fields" not in [lv.get("name") for lv in (relisted.get("localVariables") or [])], \
-                f"fields still present after removeLocalVariable: {relisted}"
-        finally:
-            self._delete_native(app_id)
-
-    @test("native_apps")
-    def test_set_rule_wait_events_mode_event(self) -> None:
-        # Wire-format invariant: a Mode event inside a waitEvents action must write
-        # RM's mode picker (modesX-<N> family, keyed by mode ID), NOT tstate-<N> (mode
-        # name). Writing the mode NAME to tstate-<N> is silently
-        # ignored, leaving the wait event with no mode selected -- a dangling OR that
-        # drops the event. Spock proves the routing against a mocked schema; only this
-        # live run confirms the REAL firmware mode-picker field name and that both events
-        # commit without a dangling OR.
-        sw = int(self.get_test_switch_id())
-        modes = self.client.call_tool("hub_list_modes").get("modes") or []
-        assert modes, "hub_list_modes returned no modes -- cannot exercise a Mode wait event"
-        mode = modes[0]
-        mode_name = mode.get("name")
-        mode_id = str(mode.get("id"))
-        assert mode_name and mode_id, f"first mode missing name/id: {mode}"
-
-        wait_mode_action = {"capability": "waitEvents", "events": [
-            {"capability": "Switch", "deviceIds": [sw], "state": "on"},
-            {"capability": "Mode", "state": mode_name},
-        ]}
-        app_id, created = self._create_native_rule("WaitEventsMode", {
-            "addActions": [wait_mode_action],
-        }, return_result=True)
-        try:
-            # Two events: a device event (Switch) THEN a Mode event. The device event
-            # exercises the unchanged tstate-<N> path; the Mode event exercises the fix.
-            res = ((created or {}).get("actions") or [{}])[0]
-            # On a recovered 504 the response is lost, so these two response-level asserts
-            # pass against the sentinel; the config readback below is the authoritative
-            # wire-format proof and runs on BOTH paths (a skipped/failed mode write would
-            # leave the mode-picker setting missing there and fail loudly).
-            assert res.get("success") is not False, f"addAction waitEvents reported failure: {res}"
-            # A dropped Mode event would flag the write partial (mode field skipped) -- the
-            # fix writes the discovered mode picker so the action commits cleanly.
-            if created is not None:
-                assert not res.get("partial"), f"waitEvents action falsely flagged partial: {res}"
-
-            # Read the committed settings back: the mode-picker field (modesX-<N> family,
-            # discovered live) carries the mode ID, and NO tstate field holds the mode
-            # NAME (the old-bug signature / dangling OR).
-            cfg = self.client.call_tool("hub_read_apps_code", {
-                "tool": "hub_get_app_config", "args": {"appId": app_id, "includeSettings": True}})
-            settings = cfg.get("settings") or {}
-            mode_setting_keys = [k for k in settings if k.startswith("modes") and "-" in k]
-            assert mode_setting_keys, \
-                f"no mode-picker setting persisted for the Mode wait event (mode written to tstate instead of the picker drops the event): {sorted(settings)}"
-
-            # Exact per-value match, not a substring of a joined string: a loose
-            # `mode_id in " ".join(...)` would let id "1" pass on a picker holding
-            # "11"/"12". Normalize each modes*-<N> value (a JSON-list like ["3"] or a
-            # bare scalar) to a list of string ids and require an exact element match.
-            def _mode_id_values(raw: Any) -> list[str]:
-                if isinstance(raw, list):
-                    return [str(x) for x in raw]
-                s = str(raw).strip()
-                if s.startswith("["):
-                    try:
-                        parsed = json.loads(s)
-                    except (ValueError, TypeError):
-                        parsed = None
-                    if isinstance(parsed, list):
-                        return [str(x) for x in parsed]
-                return [s]
-
-            switch_slots = [str(key).split("-", 1)[1] for key, value in settings.items()
-                            if str(key).startswith("tCapab-")
-                            and str(value).lower() == "switch"]
-            assert any(self._setting_holds_exact(settings.get(f"tDev-{slot}"), sw)
-                       and str(settings.get(f"tstate-{slot}")).lower() == "on"
-                       for slot in switch_slots), \
-                f"bundled Switch wait event did not persist exact device/state in one slot: {settings}"
-            created = self._require_create_envelope(created, "WaitEventsMode")
-
-            mode_id_carried = any(
-                mode_id in _mode_id_values(settings[k]) for k in mode_setting_keys)
-            assert mode_id_carried, \
-                f"no mode-picker setting exactly carries the selected mode id {mode_id}: " \
-                f"{ {k: settings[k] for k in mode_setting_keys} }"
-            tstate_holds_mode_name = [k for k in settings
-                                      if k.startswith("tstate-") and str(settings[k]) == mode_name]
-            assert not tstate_holds_mode_name, \
-                f"mode name leaked into a tstate field (a Mode event must write the mode picker, never tstate): {tstate_holds_mode_name}"
-
-            # Both events committed with no dangling OR / broken marker.
-            self._assert_rule_healthy(app_id)
-        finally:
-            self._delete_native(app_id)
-
-    @test("native_apps")
-    def test_set_rule_switch_only_on_and_device_list_no_false_partial(self) -> None:
-        # switch off with onlyOn=true writes optSwitch.<N> (revealed only AFTER the device
-        # picker, so it must be written last). NOTE: a switch action does NOT exercise the
-        # device-list partial re-tag -- its device picker (onOffSwitch.<N>) is followed by
-        # onOff/optSwitch, so it advances the schema and never gets a cosmetic silent_rejection.
-        # The re-tag is exercised by the shade portion below, whose LAST write IS the picker.
-        sw = int(self.get_test_switch_id())
-        app_id, created = self._create_native_rule("SwitchOnlyOn", {
-            "addActions": [
-                {"capability": "switch", "action": "off", "deviceIds": [sw], "onlyOn": True}],
-        }, return_result=True)
-        try:
-            if created is not None:
-                actions = created.get("actions") or []
-                assert len(actions) == 1, f"create did not return the bundled switch action: {created}"
-                assert actions[0].get("success") is not False, \
-                    f"switch onlyOn addAction reported failure: {actions[0]}"
-
-            cfg = self._get_persisted_rule_config(app_id)
-            settings = cfg.get("settings") or {}
-            switch_slots = [str(key).split(".", 1)[1] for key, value in settings.items()
-                            if str(key).startswith("onOffSwitch.")
-                            and self._setting_holds_exact(value, sw)]
-            assert any(str(settings.get(f"onOff.{slot}")).lower() in ("false", "off")
-                       and str(settings.get(f"optSwitch.{slot}")).lower() in ("true", "on")
-                       for slot in switch_slots), \
-                f"switch device/off/onlyOn did not persist together in one action slot: {settings}"
-            self._assert_rule_healthy(app_id)
-        finally:
-            self._delete_native(app_id)
-
-        # Device-list partial re-tag (the load-bearing check): a shade close's LAST write is the
-        # device picker (shadeOpenClose.<N>), stored in the hub's deviceIdsForDeviceList side-
-        # structure with no further schema revealed. The write cannot be seen to "advance", but
-        # since the IDs actually committed it must NOT report a cosmetic partial; the skip (if the
-        # firmware surfaces one) must be re-tagged device_list_committed_schema_unchanged, NOT
-        # silent_rejection. Confirmed live: without the fix a shade close is partial:true.
-        shade = self.get_test_shade_id()
-        if not shade:
-            return  # no Virtual Shade driver on this hub -- skip the re-tag leg cleanly
-        shade_id = int(shade)
-        shade_app, shade_created = self._create_native_rule("ShadeDeviceList", {
-            "addActions": [
-                {"capability": "shade", "action": "close", "deviceIds": [shade_id]}],
-        }, return_result=True)
-        try:
-            if shade_created is not None:
-                shade_actions = shade_created.get("actions") or []
-                assert len(shade_actions) == 1, \
-                    f"create did not return the bundled shade action: {shade_created}"
-                sres = shade_actions[0]
-                assert sres.get("success") is not False and not sres.get("partial"), \
-                    f"shade close action failed or falsely reported partial: {sres}"
-                shade_skips = [s for s in (sres.get("settingsSkipped") or [])
-                               if isinstance(s, dict)
-                               and str(s.get("key", "")).startswith("shadeOpenClose")]
-                assert all(s.get("reason") == "device_list_committed_schema_unchanged"
-                           for s in shade_skips), \
-                    f"shadeOpenClose skip not re-tagged: {shade_skips}"
-            shade_cfg = self._get_persisted_rule_config(shade_app)
-            shade_settings = shade_cfg.get("settings") or {}
-            shade_slots = [str(key).split(".", 1)[1] for key, value in shade_settings.items()
-                           if str(key).startswith("shadeOpenClose.")
-                           and self._setting_holds_exact(value, shade_id)]
-            assert shade_slots and any(
-                str(shade_settings.get(f"shadeRL.{slot}")).lower() in ("true", "on")
-                for slot in shade_slots), \
-                f"shade close device/action did not persist together: {shade_settings}"
-            shade_created = self._require_create_envelope(shade_created, "ShadeDeviceList")
-            self._assert_rule_healthy(shade_app)
-        finally:
-            self._delete_native(shade_app)
-
-    @test("native_apps")
-    def test_set_rule_wait_events_and_stays_duration(self) -> None:
-        # a waitEvents per-event andStays Map writes the stays-<N> toggle AND the
-        # DASH-indexed SHours-/SMins-/SSecs-<N> duration triple (the trigger uses no-dash
-        # SHours<N>). One waitEvents action per rule (RM 5.1), so this needs its own rule.
-        sw = int(self.get_test_switch_id())
-        stays_action = {"capability": "waitEvents", "events": [
-            {"capability": "Switch", "deviceIds": [sw], "state": "on",
-             "andStays": {"minutes": 5}},
-        ]}
-        app_id, created = self._create_native_rule("WaitStays", {
-            "addActions": [stays_action],
-        }, return_result=True)
-        try:
-            res = ((created or {}).get("actions") or [{}])[0]
-            # No relayDropped bail here: strict never returns a relayDropped envelope, and a
-            # recovered-504 sentinel must FALL THROUGH to the config readback below -- returning
-            # early would soft-skip the stays-/SMins- wire-format proof, which the readback
-            # asserts from the committed config on both the clean and recovered paths.
-            assert res.get("success") is not False, f"waitEvents andStays addAction reported failure: {res}"
-            if created is not None:
-                assert not res.get("partial"), f"waitEvents andStays action falsely flagged partial: {res}"
-
-            cfg = self.client.call_tool("hub_read_apps_code", {
-                "tool": "hub_get_app_config", "args": {"appId": app_id, "includeSettings": True}})
-            settings = cfg.get("settings") or {}
-            stays_slots = [str(key).split("-", 1)[1] for key, value in settings.items()
-                           if str(key).startswith("stays-")
-                           and str(value).lower() in ("true", "on")]
-            assert any(str(settings.get(f"tCapab-{slot}")).lower() == "switch"
-                       and self._setting_holds_exact(settings.get(f"tDev-{slot}"), sw)
-                       and str(settings.get(f"tstate-{slot}")).lower() == "on"
-                       and str(settings.get(f"SHours-{slot}")) in ("0", "0.0")
-                       and str(settings.get(f"SMins-{slot}")) == "5"
-                       and str(settings.get(f"SSecs-{slot}")) in ("0", "0.0")
-                       for slot in stays_slots), \
-                f"Switch event and exact andStays duration did not persist in one slot: {settings}"
-            created = self._require_create_envelope(created, "WaitStays")
-            self._assert_rule_healthy(app_id)
-        finally:
-            self._delete_native(app_id)
-
 
     @test("mrtr")
     def test_mrtr_rule_edit_uses_standard_continuation(self) -> None:
+        changes, messages = lane_mrtr_changes("MRTR regular E2E proof", str(self.get_test_temperature_ids()[0]))
         app_id = self._create_native_rule("MrtrContinuation")
         try:
-            requested_actions = mrtr_log_actions("MRTR regular E2E proof")
-            print(f"    MRTR workload: {len(requested_actions)} real log actions")
-            args = {
-                "appId": app_id,
-                # The tool schema permits extension properties. These inert values
-                # bind the continuation without being written to native settings.
-                "Fields": _sandbox_map_key_controls(),
-                "patches": [
-                    {"addActions": requested_actions[:3]},
-                    *[{"addAction": action} for action in requested_actions[3:]],
-                ],
-                "confirm": True,
-            }
-            result = self._call_slow_rule(args)
-            rounds = self.client._last_continuation_rounds
+            args = {"operation": "update", "rule_id": int(app_id), "args": {"changes": changes}, "confirm": True}
+            gateway = "hub_manage_rule_machine"
+            result = self.client.call_tool(gateway, {"tool": "hub_set_rule", "args": args})
             request_state = self.client._last_request_state
-            result_type = self.client._last_result_type
-            http_legs = self.client._last_http_legs
-            leg_evidence = ", ".join(
-                f"{duration:.3f}s/{status if status is not None else 'network'}/"
-                f"{'decoded' if decoded else 'replayed'}"
-                for duration, status, decoded in http_legs
-            )
-            print("    observed regular MRTR transport before assertions: "
-                  f"physical_legs={len(http_legs)} continuation_rounds={rounds} "
-                  f"leg_evidence=[{leg_evidence}]")
-            assert result.get("success") is not False, \
-                f"MRTR rule edit failed: {result}"
-            assert not result.get("partial"), f"MRTR rule edit was partial: {result}"
-            patch_results = _rule_patch_rows(result)
-            assert all(isinstance(patch, dict) and patch.get("success") is not False
-                       for patch in patch_results), (
-                f"MRTR rule edit contained a failed patch: {patch_results}"
-            )
-            action_results = [
-                action
-                for patch in patch_results
-                for action in (patch.get("results", []) if patch.get("op") == "addActions"
-                               else [patch])
-            ]
-            assert len(action_results) == len(requested_actions), (
-                "MRTR rule edit did not return every requested mutation result: "
-                f"requested={len(requested_actions)}, returned={len(action_results)}, "
-                f"result={result}"
-            )
-            assert all(isinstance(action, dict) and action.get("success") is not False
-                       for action in action_results), (
-                f"MRTR rule edit contained a failed mutation: {action_results}"
-            )
+            assert result.get("success") is True and not result.get("partial") and not result.get("remaining"), result
+            rows = result.get("results", [])
+            assert len(rows) == len(changes), f"Missing mutation results: {result}"
+            assert [row.get("part") for row in rows] == [row["part"] for row in changes], result
+            assert all(row.get("result", {}).get("success") is True for row in rows), result
             proof = _summarize_mrtr_e2e_proof(
-                continuation_rounds=rounds,
-                result_type=result_type,
+                continuation_rounds=self.client._last_continuation_rounds,
+                result_type=self.client._last_result_type,
                 logical_elapsed=self.client._last_logical_elapsed,
-                http_legs=http_legs,
+                http_legs=self.client._last_http_legs,
                 server_rounds=(result.get("mrtr") or {}).get("rounds"),
             )
-            print(
-                "    regular MRTR proof: "
-                f"legs={proof['legs']} "
-                f"decoded_responses={proof['successful_decoded_responses']} "
-                f"replayed_legs={proof['replayed_legs']} "
-                f"relay_dropped_legs={proof['relay_dropped_legs']} "
-                f"continuation_rounds={proof['continuation_rounds']} "
-                f"logical={proof['logical_elapsed']:.3f}s "
-                f"max_answered_leg={proof['max_answered_leg_elapsed']:.3f}s "
-                f"leg_evidence=[{leg_evidence}]"
-            )
+            print(f"    regular MRTR proof: {json.dumps(proof, sort_keys=True)} "
+                  f"owner_rounds={(result.get('mrtr') or {}).get('rounds')} "
+                  f"physical_legs={self.client._last_http_legs}")
             assert isinstance(request_state, str) and request_state, "MRTR proof returned no continuation state"
-            # A completed request still binds the exact original arguments. Each
-            # type-changing replay must refuse before it can repeat a rule edit.
             for index, replacement in enumerate((None, False, 0)):
                 altered = json.loads(json.dumps(args))
-                altered["Fields"]["fields"]["Fields"]["getClass"][index] = replacement
+                altered["args"]["changes"][-1]["value"]["fields"][0]["value"] = replacement
                 response = self.client.raw_request({
-                    "jsonrpc": "2.0", "id": 41600 + index, "method": "tools/call",
-                    "params": {
-                        "name": "hub_manage_rule_machine",
-                        "arguments": {"tool": "hub_set_rule", "args": altered},
+                    "jsonrpc": "2.0", "id": 41600 + index, "method": "tools/call", "params": {
+                        "name": gateway, "arguments": {"tool": "hub_set_rule", "args": altered},
                         "requestState": request_state,
                     },
-                }, headers={
-                    "MCP-Protocol-Version": MODERN_PROTOCOL_VERSION,
-                    "Mcp-Method": "tools/call", "Mcp-Name": "hub_manage_rule_machine",
-                })
-                assert response.status_code == 200, f"argument-mismatch replay HTTP status: {response.status_code}"
+                }, headers={"MCP-Protocol-Version": MODERN_PROTOCOL_VERSION,
+                            "Mcp-Method": "tools/call", "Mcp-Name": gateway})
+                assert response.status_code == 200, f"Argument-mismatch replay HTTP status: {response.status_code}"
                 error = response.json().get("error") or {}
-                assert error.get("code") == -32602 and "original arguments" in error.get("message", ""), (
-                    f"continuation accepted a changed nested value at index {index}: {response.text[:500]}"
-                )
-            # Read traffic with cleanup already armed must leave this still-valid
-            # completed write available for exact replay.
+                assert error.get("code") == -32602 and "original arguments" in error.get("message", ""), error
             pong = self.client._send("ping")
-            assert pong.get("resultType") == "complete", f"ping before terminal replay failed: {pong}"
+            assert pong.get("resultType") == "complete", pong
             replay = self.client._send("tools/call", {
-                "name": "hub_manage_rule_machine",
-                "arguments": {"tool": "hub_set_rule", "args": args},
+                "name": gateway, "arguments": {"tool": "hub_set_rule", "args": args},
                 "requestState": request_state,
             })
-            assert replay.get("resultType") == "complete" and not replay.get("isError"), (
-                f"exact-argument continuation replay did not complete: {replay}"
-            )
-            replay_text = next(item["text"] for item in replay.get("content", []) if item.get("type") == "text")
-            assert json.loads(replay_text) == result, "terminal replay changed the public mutation result"
+            assert replay.get("resultType") == "complete" and not replay.get("isError"), replay
+            replay_value = replay.get("structuredContent")
+            if replay_value is None:
+                replay_value = json.loads(next(row["text"] for row in replay.get("content", []) if row.get("type") == "text"))
+            assert replay_value == result, "Terminal replay changed the public mutation result"
             info = self.client.call_tool("hub_get_info", {})
-            recent = [row for row in info.get("recentWrites", [])
-                      if row.get("tool") == "hub_set_rule" and str(row.get("appId")) == str(app_id)]
-            assert recent and recent[0].get("status") == "finished" and recent[0].get("success") is True, (
-                f"completed MRTR rule edit missing from recentWrites: {info.get('recentWrites')}"
-            )
-            # Independent persisted-state proof, deliberately after the measured
-            # logical call and through the ordinary repository client's read gateway.
-            config = self.client.call_tool("hub_read_apps_code", {
-                "tool": "hub_get_app_config",
-                "args": {"appId": app_id, "includeSettings": True},
-            })
-            assert_exact_rule_log_messages(
-                config,
-                [action["message"] for action in requested_actions],
-                operation="regular MRTR proof readback",
-            )
+            recent = [row for row in info.get("recentWrites", []) if row.get("tool") == "hub_set_rule"
+                      and str(row.get("rule_id")) == str(app_id)]
+            assert recent and recent[0].get("status") == "finished" and recent[0].get("success") is True, recent
+            config = self.client.call_tool("hub_get_app_config", {"appId": str(app_id), "includeSettings": True})
+
+            async def fetch_section(section: str, cursor: str, limit: int) -> dict:
+                page = self.client.call_tool("hub_set_rule", {"operation": "read", "rule_id": int(app_id),
+                    "args": {"sections": [section], "cursor": cursor, "limit": limit}})
+                assert str(page.get("rule_id")) == str(app_id), page
+                return page
+
+            document = asyncio.run(read_native_document_sections(fetch_section))
+            assert_exact_native_conditions(config, document, changes)
+            assert_exact_native_actions(config, document, changes, messages)
             self._assert_rule_healthy(app_id)
         finally:
             self._delete_native(app_id)
 
-    @test("native_apps")
-    def test_set_rule_contains_comparator(self) -> None:
-        # a String variable Required Expression with comparator '*contains*' writes the
-        # comparator VERBATIM (asterisks kept, not stripped or mapped to a glyph). A non-empty
-        # initial value avoids the empty-String-var-never-persists bug.
-        str_var = self._ensure_perm_variables("contains_msg")["contains_msg"]
-        # A Variable condition's xVar picker lists HUB variables only, hence a permanent hub variable.
-        contains_spec = {"conditions": [
-            {"capability": "Variable", "variable": str_var,
-             "comparator": "*contains*", "value": "error"}]}
-        app_id, created = self._create_native_rule("ContainsCmp", {
-            "addRequiredExpression": contains_spec,
-        }, return_result=True)
-        try:
-            res = (created or {}).get("requiredExpression") or {}
-            assert res.get("success") is not False, f"*contains* required expression reported failure: {res}"
-
-            cfg = self.client.call_tool("hub_read_apps_code", {
-                "tool": "hub_get_app_config", "args": {"appId": app_id, "includeSettings": True}})
-            settings = cfg.get("settings") or {}
-            # The comparator must be stored EXACTLY as '*contains*' -- not 'contains', not a glyph.
-            assert any(str(v) == "*contains*" for v in settings.values()), \
-                f"comparator '*contains*' was not written verbatim (stripped or mapped?): { {k: v for k, v in settings.items() if 'contain' in str(v).lower()} }"
-            self._assert_rule_healthy(app_id)
-        finally:
-            self._delete_native(app_id)
-
-        # A Boolean variable has no comparator field: both the Required Expression (STPage) and an
-        # IF action (doActPage) write its true/false value directly. A second small rule keeps the
-        # String fixture above untouched.
-        bool_var = self._ensure_perm_variables("bool_flag")["bool_flag"]
-        bool_app, bool_created = self._create_native_rule("BoolVarCond", {
-            "addRequiredExpression": {"conditions": [{"capability": "Variable", "variable": bool_var, "value": True}]},
-            "addActions": [
-                {"capability": "ifThen", "expression": {"conditions": [
-                    {"capability": "Variable", "variable": bool_var, "value": False}]}},
-                {"capability": "log", "message": "E2E boolean branch"},
-                {"capability": "endIf"},
-            ],
-        }, return_result=True)
-        try:
-            if bool_created is not None:
-                assert (bool_created.get("requiredExpression") or {}).get("success") is not False, \
-                    f"Boolean Required Expression reported failure: {bool_created}"
-                assert all(a.get("success") is not False for a in (bool_created.get("actions") or [])), \
-                    f"Boolean IF action reported failure: {bool_created}"
-            bool_settings = self._get_persisted_rule_config(bool_app).get("settings") or {}
-            states = self._variable_condition_states(bool_settings, bool_var)
-            assert sorted(states) == ["false", "true"], \
-                f"the Boolean RE (true) and IF (false) values did not persist on their variable slots: {bool_settings}"
-            self._assert_rule_healthy(bool_app)
-        finally:
-            self._delete_native(bool_app)
-
-    @test("native_apps")
-    def test_set_rule_remove_referenced_local_breaks_rule(self) -> None:
-        # removeLocalVariable broken-after-delete contract: RM does NOT refuse to delete a
-        # local that an action still references -- it DELETES the local and leaves the
-        # referencing action Broken. The tool must surface that as a SELF-CONSISTENT failure:
-        # deleted=true + success=false + a specific error naming the broken outcome + a
-        # repairHint pointing at the backup restore (NOT a contradictory clean "removed").
-        app_id = self._create_native_rule("RmRefLocal")
-        try:
-            # The local and its referencing action are one setup transaction; the behavior
-            # under test is the later top-level delete that leaves the reference broken.
-            setup = self._patch_rule(app_id, [
-                {"addLocalVariable": {"name": "refLocal", "type": "Number", "value": 0}},
-                {"addAction": {
-                    "capability": "setLocalVariable", "variable": "refLocal", "value": 9}},
-            ])
-            assert len(setup) == 2 and all(entry.get("success") is not False for entry in setup), \
-                f"referenced-local setup patches did not commit: {setup}"
-
-            # hub_list_rule_local_variables reports the value the running rule set (0 -> 9). No page
-            # render in between on purpose: rendering syncs allLocalVars, which hid the stale read.
-            run, limited = self._call_with_limiter_bounce(
-                "hub_manage_rule_machine", "hub_call_rule", {"ruleId": app_id, "action": "actions"},
-                "hub_call_rule(action=actions)")
-            local_value = None
-            deadline = time.time() + 10.0
-            while time.time() < deadline:
-                listed = self.client.call_tool("hub_read_rules", {
-                    "tool": "hub_list_rule_local_variables", "args": {"appId": app_id}})
-                local_value = next((lv.get("value") for lv in (listed.get("localVariables") or [])
-                                    if lv.get("name") == "refLocal"), None)
-                if str(local_value) in ("9", "9.0"):
-                    break
-                time.sleep(1.0)
-            if str(local_value) not in ("9", "9.0"):
-                assert not limited, \
-                    f"hub_call_rule(action=actions) stayed limiter-blocked and refLocal is {local_value!r}: {limited}"
-                assert not (isinstance(run, dict) and run.get("success") is False), \
-                    f"hub_call_rule(action=actions) failed and refLocal is {local_value!r}: {run}"
-            assert str(local_value) in ("9", "9.0"), \
-                f"hub_list_rule_local_variables did not report the run's value 9 for refLocal (got {local_value!r})"
-
-            # Delete the still-referenced local. The delete succeeds; the rule goes broken.
-            rm = self._rm_call_soft({"appId": app_id, "removeLocalVariable": {"name": "refLocal"}, "confirm": True}, strict=True)
-            if rm.get("relayDropped"):
-                return  # response lost to relay; the strict path re-runs the small test
-            assert rm.get("variable", {}).get("deleted") is True, \
-                f"the local should have been deleted even though it was referenced: {rm}"
-            assert rm.get("success") is False, \
-                f"removing a referenced local that breaks the rule must report success=false: {rm}"
-            assert rm.get("error"), \
-                f"broken-after-delete must carry a specific error (not null): {rm}"
-            assert "broke" in str(rm.get("error")) or "broken" in str(rm.get("error")).lower(), \
-                f"the error must name the broken-after-delete outcome: {rm}"
-            assert (rm.get("health") or {}).get("ok") is False, \
-                f"health must report the rule broken after the delete: {rm}"
-            hints = rm.get("repairHints") or []
-            assert any("hub_restore_backup" in str(h) for h in hints), \
-                f"a repairHint must point at the backup restore: {rm}"
-            # The local really is gone (delete committed), confirming the deleted=true is honest.
-            relisted = self.client.call_tool("hub_read_rules", {
-                "tool": "hub_list_rule_local_variables", "args": {"appId": app_id}})
-            assert "refLocal" not in [lv.get("name") for lv in (relisted.get("localVariables") or [])], \
-                f"refLocal should be gone after the (broken-making) delete: {relisted}"
-        finally:
-            self._delete_native(app_id)
-
-    @test("native_apps")
-    def test_set_rule_trigger_custom_attribute_enum_changed_routes(self) -> None:
-        # hub_set_rule edit -> addTrigger Custom Attribute on an ENUM-recognized
-        # attribute with a no-value state-change comparator ('*changed*'). A virtual
-        # switch's 'switch' attribute is enum-recognized: RM reveals the value picker
-        # (tstate<N>) and HIDES the free comparator field (ReltDev<N>). On the TRIGGER
-        # surface, the live hub's tstate<N> picker DOES offer a change-equivalent option,
-        # so the fix routes '*changed*' into the value picker: the change token lands in
-        # tstate<N>, the trigger renders "<device> reports switch *changed*", and it is a
-        # healthy trigger with no skip and partial:false. This proves the original
-        # "switch null" silent-drop bug is fixed -- the change token actually landed --
-        # pinned end-to-end against a live hub. (The unrepresentable-skip branch fires on
-        # the Required Expression surface instead, where the picker has no change option;
-        # see the sibling RE scenario.)
-        sw = int(self.get_test_switch_id())
-        app_id, created = self._create_native_rule("CustEnumChangedTrig", {
-            "addTriggers": [
-                {"capability": "Custom Attribute", "deviceIds": [sw],
-                 "attribute": "switch", "comparator": "*changed*"}],
-        }, return_result=True)
-        try:
-            if created is not None:
-                created_triggers = created.get("triggers") or []
-                assert len(created_triggers) == 1, \
-                    f"create did not return the bundled trigger: {created}"
-                result = created_triggers[0]
-                assert result.get("success") is not False, f"addTrigger reported failure: {result}"
-                applied = result.get("settingsApplied") or []
-                assert any(str(k).startswith("tstate") for k in applied), \
-                    f"change token did not land in a tstate field: {applied}"
-                skipped = result.get("settingsSkipped") or []
-                not_repr = [s for s in skipped if isinstance(s, dict)
-                            and s.get("reason") == "comparator_not_representable_for_enum_attribute"]
-                assert not not_repr and not result.get("partial"), \
-                    f"trigger surface did not cleanly route the change token: {result}"
-            # Persisted settings are authoritative both normally and after create-response loss.
-            cfg = self._get_persisted_rule_config(app_id)
-            settings = cfg.get("settings") or {}
-            enum_slots = [str(key)[4:] for key, value in settings.items()
-                          if str(key).startswith("tDev")
-                          and self._setting_holds_exact(value, sw)]
-            assert any(str(settings.get(f"tCustomAttr{slot}")) == "switch"
-                       and str(settings.get(f"tstate{slot}")) == "*changed*"
-                       for slot in enum_slots), \
-                f"Custom Attribute device/attribute/change token did not persist together " \
-                f"in one trigger slot: {settings}"
-            created = self._require_create_envelope(created, "CustEnumChangedTrig")
-            self._assert_rule_healthy(app_id)
-        finally:
-            self._delete_native(app_id)
-
-    @test("native_apps")
-    def test_set_rule_re_custom_attribute_enum_changed_not_representable(self) -> None:
-        # hub_set_rule edit -> addRequiredExpression with an ENUM-recognized Custom
-        # Attribute condition and a no-value state-change comparator ('*changed*'). On
-        # the Required Expression surface, the live hub's value picker offers on/off only
-        # (NO change-equivalent option), so '*changed*' is genuinely unrepresentable: the
-        # fix records a comparator_not_representable_for_enum_attribute skip, flips
-        # partial:true, and emits an actionable repairHint, never silently dropping the
-        # comparator as a clean success. The comparator field (RelrDev_<N>) is never
-        # falsely claimed applied. This is the client-observable not-representable
-        # behaviour, pinned end-to-end against a live hub. (The TRIGGER surface routes
-        # instead, because its picker has a change option; see the sibling trigger scenario.)
-        sw = int(self.get_test_switch_id())
-        app_id = self._create_native_rule("CustEnumChangedRE")
-        try:
-            result = self._call_slow_rule({
-                "appId": app_id,
-                "addRequiredExpression": {"conditions": [
-                    {"capability": "Custom Attribute", "deviceIds": [sw],
-                     "attribute": "switch", "comparator": "*changed*"}]},
-            })
-            # The add still commits the rest of the condition (success is not a hard failure) ...
-            assert result.get("success") is not False, f"addRequiredExpression reported failure: {result}"
-            # ... but the unrepresentable comparator must NOT be falsely claimed applied.
-            applied = result.get("settingsApplied") or []
-            assert not any(str(k).startswith("RelrDev") for k in applied), \
-                f"unrepresentable comparator was falsely claimed applied: settingsApplied={applied}"
-            # The discriminating contract: a genuine not-representable skip flips partial.
-            skipped = result.get("settingsSkipped") or []
-            not_repr = [s for s in skipped if isinstance(s, dict)
-                        and s.get("reason") == "comparator_not_representable_for_enum_attribute"]
-            assert not_repr, \
-                f"missing comparator_not_representable_for_enum_attribute skip (the silent-drop bug): {result}"
-            assert result.get("partial") is True, \
-                f"unrepresentable comparator did not flip partial=true (silent false-success): {result}"
-            # An actionable repair hint must be present and name the cause.
-            hints = result.get("repairHints") or []
-            assert any("cannot be represented" in str(h) for h in hints), \
-                f"missing actionable repairHint for the unrepresentable comparator: hints={hints}"
-        finally:
-            self._delete_native(app_id)
-
-    @test("native_apps")
-    def test_set_rule_replace_required_expression(self) -> None:
-        # hub_set_rule edit -> replaceRequiredExpression: change a committed Required
-        # Expression IN PLACE (same appId, no clone) through RM's token editor. Then (issue #503)
-        # a replace with a state the Switch capability does not offer must back out and leave the
-        # committed expression in place, and (issue #504) restoring the pre-replace backup must
-        # bring the ORIGINAL expression back -- the settings replay alone cannot, since RM keeps
-        # the expression in app state.
-        sw = int(self.get_test_switch_id())
-        app_id, created = self._create_native_rule("ReplRE", {
-            "addRequiredExpression": {"conditions": [
-                {"capability": "Switch", "deviceIds": [sw], "state": "on"}]},
-        }, return_result=True)
-        try:
-            if created is not None:
-                add = created.get("requiredExpression") or {}
-                assert add.get("conditionIndices"), \
-                    f"initial addRequiredExpression produced no conditionIndices: {add}"
-            else:
-                self._assert_switch_required_expression(app_id, sw)
-            # Replace it in place with a DIFFERENT condition: Switch is off.
-            # This edit sits at the relay ceiling and exercises bounded MRTR slices.
-            result = self._call_slow_rule({
-                "appId": app_id,
-                "replaceRequiredExpression": {"conditions": [
-                    {"capability": "Switch", "deviceIds": [sw], "state": "off"}]},
-            })
-            # The replace committed a new live expression in place.
-            assert result.get("success") is True, \
-                f"replaceRequiredExpression reported failure: {result}"
-            assert result.get("requiredExpressionReplaced") is True, \
-                f"replaceRequiredExpression did not flag requiredExpressionReplaced: {result}"
-            assert result.get("conditionIndices"), \
-                f"replaceRequiredExpression produced no conditionIndices -- the new expression did not land: {result}"
-            # A successful replace never reports a restore (the new RE is live, the old
-            # one was cleanly superseded, not deleted-and-rolled-back).
-            assert result.get("requiredExpressionRestored") is None, \
-                f"a successful replace should not report a restore: {result}"
-            # The rendered RE now shows the NEW condition (Switch ... off), not the old
-            # (Switch ... on). The rule paragraph renders the active formula only.
-            cfg = self.client.call_tool("hub_read_apps_code", {
-                "tool": "hub_get_app_config", "args": {"appId": app_id},
-            })
-            blob = str(cfg).lower()
-            assert "is off" in blob, \
-                f"rendered Required Expression does not show the new 'is off' condition: {str(cfg)[:600]}"
-            # The direct replace call bypasses the caching write helpers, so seed the cache with its own
-            # post-replace health -- else _assert_rule_healthy reads the stale pre-replace health and passes.
-            self._cache_write_health(app_id, result)
-            self._assert_rule_healthy(app_id)
-            pre_replace_key = (result.get("backup") or {}).get("backupKey")
-
-            # A condition the live page rejects backs out: nothing is replaced and the "is off"
-            # expression stays committed (the rule is never left ungated).
-            bad = self._call_slow_rule({
-                "appId": app_id,
-                "replaceRequiredExpression": {"conditions": [
-                    {"capability": "Switch", "deviceIds": [sw], "state": "definitely_not_a_valid_state"}]},
-            })
-            assert bad.get("success") is False and bad.get("requiredExpressionReplaced") is False, \
-                f"a replace with an invalid state should fail without replacing: {bad}"
-            assert bad.get("originalPreserved") is True, \
-                f"the failed replace did not confirm the original expression was left in place: {bad}"
-            # The build fails before the original's tokens go, so no rollback ran.
-            assert bad.get("requiredExpressionRestored") is None, \
-                f"the failed replace rolled back instead of trimming its appended tokens: {bad}"
-            blob = str(self.client.call_tool("hub_read_apps_code", {
-                "tool": "hub_get_app_config", "args": {"appId": app_id}})).lower()
-            assert "is off" in blob, \
-                f"the committed 'is off' expression did not survive the failed replace: {blob[:600]}"
-            health = self.client.call_tool("hub_read_rules", {
-                "tool": "hub_get_rule_health", "args": {"appId": int(app_id)}})
-            assert health.get("ok") is True and (health.get("predicate") or {}).get("hasPredicate") is True, \
-                f"rule is not healthy and gated after the failed replace: {health}"
-
-            # An unknown mode name is refused before any click, so the rule stays exactly as it was.
-            refused = self.client.call_tool("hub_manage_rule_machine", {
-                "tool": "hub_set_rule",
-                "args": {"appId": int(app_id), "confirm": True, "replaceRequiredExpression": {
-                    "conditions": [{"capability": "Mode", "state": f"{PREFIX}NoSuchMode"}]}}})
-            assert refused.get("success") is False and "NoSuchMode" in str(refused.get("error")), \
-                f"a replace naming an unknown mode was not refused by name: {refused}"
-            assert "No changes were made" in str(refused.get("restoreHint")), refused
-            blob = str(self.client.call_tool("hub_read_apps_code", {
-                "tool": "hub_get_app_config", "args": {"appId": app_id}})).lower()
-            assert "is off" in blob, f"the refused replace changed the expression: {blob[:600]}"
-
-            # Restoring the pre-replace backup brings the original "is on" expression back.
-            assert pre_replace_key, f"the replace returned no backup handle: {result}"
-            restored = self.client.call_tool("hub_manage_backup", {
-                "tool": "hub_restore_backup",
-                "args": {"scope": "source", "backupKey": pre_replace_key, "confirm": True, "preserveRuleId": True}})
-            assert restored.get("success") is True and restored.get("requiredExpressionRestored") is True, \
-                f"restoring the pre-replace backup did not bring the Required Expression back: {restored}"
-            blob = str(self.client.call_tool("hub_read_apps_code", {
-                "tool": "hub_get_app_config", "args": {"appId": app_id}})).lower()
-            assert "is on" in blob and "is off" not in blob, \
-                f"the restored rule does not render the original 'is on' expression: {blob[:600]}"
-        finally:
-            self._delete_native(app_id)
-
-    @test("native_apps")
-    def test_set_rule_setvariable_from_device_and_math(self) -> None:
-        # hub_set_rule edit -> addAction setVariable in the two schema-gated source modes
-        # added alongside value/sourceVariable: fromDevice (numOp="device attribute",
-        # reveals customDev.<N> then a device-FILTERED tCustomAttr.<N>) and math
-        # (numOp="variable math", reveals xVar3/valMathOp, a binary op reveals xVar4, a
-        # numeric operand becomes (constant)+valConst/valConst2). The unit Spock suite proves
-        # the reveal logic in isolation; this pins it end-to-end on a live hub, where the
-        # gated field names are RM-assigned and discovered from the live schema, not hardcoded.
-        # STRICT: the matrix is split across several small pristine rules (each created + deleted in
-        # its own finally) to stay under the per-app load limiter; _run_one re-runs on a 504 so no
-        # wire-format assertion is ever skipped on a soft envelope.
-        # fromDevice/math are NUMERIC-TARGET-ONLY (verified live on the hub): RM renders the numOp
-        # source-mode picker only for a Number/Decimal target var, so fromDevice/math into a String
-        # var is rejected up-front (Rule C). For a Number target, fromDevice's tCustomAttr is further
-        # filtered to attributes compatible with the var's type, so a Number target offers only
-        # numeric attributes -- an enum-only attribute like a switch's on/off is filtered out (the
-        # negative case, Rule D). Use a virtual temperature sensor for the numeric happy path.
-        temp_id = int(self.get_test_temperature_ids()[0])
-        switch_id = int(self.get_test_switch_id())
-        # Permanent variables, reset to their starting values: Number target, String and Boolean
-        # targets (numeric-target-only rejects), String copy source, Number copy source (Rule D).
-        perm = self._ensure_perm_variables("sv_number", "sv_string", "sv_bool", "sv_str_src", "sv_num_src")
-        var_name, str_var_name, bool_var_name = perm["sv_number"], perm["sv_string"], perm["sv_bool"]
-        str_src_name, num_src_name = perm["sv_str_src"], perm["sv_num_src"]
-
-        # The matrix is split across SMALL rules (<=3 setVariable actions each): the classic wizard
-        # re-POSTs the FULL rule page per submitOnChange, so piling many actions into one rule trips
-        # the hub's per-app load limiter (a 5th action lands numOp.<N> as not_in_schema). Each rule
-        # below is pristine (created + deleted in its own try/finally); the shared variables are
-        # permanent fixtures reset above.
-        # Rule A: fromDevice (temperature -> Number var) + value read-back.
-        from_device_spec = {"capability": "setVariable", "variable": var_name,
-                            "fromDevice": {"deviceId": temp_id, "attribute": "temperature"}}
-        app_a, created_a = self._create_native_rule("SetVarFromDev", {
-            "addActions": [from_device_spec],
-        }, return_result=True)
-        try:
-            fd = ((created_a or {}).get("actions") or [{}])[0]
-            assert fd.get("success") is not False, \
-                f"setVariable fromDevice hard-errored: {fd}"
-            fd_applied = fd.get("settingsApplied") or []
-            # Value read-back: assert the actual VALUE that landed, not just key presence -- a
-            # wrong-value write that still lands the key would pass a key-prefix-only check.
-            # The tCustomAttr key is namespaced by the RM-assigned action index.
-            settings_a = (self.client.call_tool("hub_read_apps_code", {
-                "tool": "hub_get_app_config", "args": {"appId": app_a, "includeSettings": True}}).get("settings") or {})
-            fd_idx = fd.get("actionIndex") or next((str(k).split(".", 1)[1]
-                for k, value in settings_a.items()
-                if str(k).startswith("tCustomAttr.") and value == "temperature"), None)
-            assert fd_idx is not None, f"fromDevice action index was not returned or persisted: {settings_a}"
-            if created_a is not None:
-                assert any(str(k).startswith("customDev.") for k in fd_applied), \
-                    f"fromDevice device picker (customDev.<N>) did not land; settingsApplied={fd_applied}"
-                assert any(str(k).startswith("tCustomAttr.") for k in fd_applied), \
-                    f"fromDevice attribute enum (tCustomAttr.<N>) did not land; settingsApplied={fd_applied}"
-                assert not fd.get("partial"), f"fromDevice action falsely flagged partial: {fd}"
-            assert settings_a.get(f"tCustomAttr.{fd_idx}") == "temperature", \
-                f"fromDevice attribute persisted with the wrong value; settings={settings_a}"
-            # Read back the device-id VALUE too (customDev stores the selected device id), not
-            # just key presence -- a wrong device would still land the key. RM may serialize the
-            # capability picker as a bare id or an id-keyed map, so assert the id appears in the
-            # persisted value's string form rather than pinning one serialization.
-            customdev_val = str(settings_a.get(f"customDev.{fd_idx}"))
-            assert str(temp_id) in customdev_val, \
-                f"fromDevice device id {temp_id} not in persisted customDev value {customdev_val!r}; settings={settings_a}"
-            self._assert_rule_healthy(app_a)
-        finally:
-            self._delete_native(app_a)
-
-        # Rule B: math binary '+' (constant second operand) + math var-minus-var (xVar4=varname)
-        # + value read-backs.
-        math_specs = [
-            {"capability": "setVariable", "variable": var_name,
-             "math": {"left": var_name, "op": "+", "right": 10}},
-            {"capability": "setVariable", "variable": var_name,
-             "math": {"left": var_name, "op": "-", "right": var_name}},
-            {"capability": "setVariable", "variable": var_name,
-             "math": {"left": var_name, "op": "+", "right": 5.5}},
-        ]
-        # Use the real client continuation loop, without the fixture helper's early
-        # adopt-by-label fallback. A visible shell is not a completed multi-action write.
-        self._native_rule_fixture_seq = getattr(self, "_native_rule_fixture_seq", 0) + 1
-        math_label = (f"{PREFIX}SetVarMathBin_{_run_artifact_suffix()}_"
-                      f"{self._native_rule_fixture_seq}")
-        app_b, created_b = None, None
-        math_write_terminal = False
-        try:
-            try:
-                created_b = self.client.call_tool("hub_set_rule", {
-                    "name": math_label, "confirm": True, "addActions": math_specs,
-                })
-                app_b = created_b.get("appId")
-                math_write_terminal = True
-                if app_b:
-                    self.created_native_app_ids.append(str(app_b))
-                assert app_b, f"math create returned no appId: {created_b}"
-                assert created_b.get("ruleId") == app_b, \
-                    f"math create returned a different ruleId: {created_b}"
-                assert created_b.get("success") is True and not created_b.get("partial"), \
-                    f"math create did not fully commit: {created_b}"
-            except RelayLostResponseError:
-                # The initial relay response can disappear before requestState arrives.
-                # Follow the server's client-error instructions: wait about 15 seconds,
-                # inspect recentWrites, then read the target. Do not resend the create.
-                print("    math create response lost -- waiting for server write status")
-                deadline = time.monotonic() + 120.0
-                time.sleep(15.0)
-                recent = []
-                while time.monotonic() < deadline:
-                    info = self.client.call_tool("hub_get_info", {})
-                    recent = [row for row in info.get("recentWrites", [])
-                              if row.get("tool") == "hub_set_rule"]
-                    if app_b is None:
-                        listed = self.client.call_tool("hub_list_rules", {})
-                        matches = [rule for rule in listed.get("rules", [])
-                                   if rule.get("label") == math_label or rule.get("name") == math_label]
-                        assert len(matches) <= 1, f"ambiguous math rule label: {matches}"
-                        if matches:
-                            app_b = matches[0].get("id")
-                            assert app_b, f"math rule has no id: {matches[0]}"
-                            self.created_native_app_ids.append(str(app_b))
-                    # Active records have no target id. Only a terminal record for THIS
-                    # app proves that configuration readback can begin. Other writes,
-                    # missing/evicted records, and a visible shell cannot prove completion.
-                    terminal = next((row for row in recent
-                                     if app_b is not None and str(row.get("appId")) == str(app_b)
-                                     and row.get("status") in ("finished", "finished_with_error")), None)
-                    if terminal is not None:
-                        math_write_terminal = True
-                        assert terminal.get("status") == "finished" and terminal.get("success") is True, \
-                            f"math create finished with an error: {terminal}"
-                        break
-                    time.sleep(5.0)
-                else:
-                    raise AssertionError(
-                        f"math create completion unresolved for {math_label!r}, appId={app_b}; "
-                        f"recentWrites={recent}")
-            settings_b = (self.client.call_tool("hub_read_apps_code", {
-                "tool": "hub_get_app_config",
-                "args": {"appId": app_b, "includeSettings": True}}).get("settings") or {})
-            if created_b is not None:
-                math_entries = created_b.get("actions") or []
-                assert len(math_entries) == 3, \
-                    f"math create results were incomplete: {created_b}"
-                mb, mb2, md = math_entries
-                mb_idx = mb.get("actionIndex")
-                mb2_idx = mb2.get("actionIndex")
-                md_idx = md.get("actionIndex")
-            else:
-                def _math_index(op: str, *, constant: str | None = None,
-                                right_variable: bool = False) -> str:
-                    matches = []
-                    for key, value in settings_b.items():
-                        if not str(key).startswith("valMathOp.") or str(value) != op:
-                            continue
-                        idx = str(key).split(".", 1)[1]
-                        if settings_b.get(f"xVar3.{idx}") != var_name:
-                            continue
-                        if constant is not None \
-                                and str(settings_b.get(f"valConst2.{idx}")) != constant:
-                            continue
-                        if right_variable and settings_b.get(f"xVar4.{idx}") != var_name:
-                            continue
-                        matches.append(idx)
-                    assert len(matches) == 1, \
-                        f"completed math create did not persist one exact {op!r} action: {settings_b}"
-                    return matches[0]
-
-                mb_idx = _math_index("+", constant="10")
-                mb2_idx = _math_index("-", right_variable=True)
-                md_idx = _math_index("+", constant="5.5")
-            # math binary: variable + 10 (numeric right operand becomes (constant)+valConst2).
-            if created_b is not None:
-                assert mb.get("success") is not False, f"setVariable math binary hard-errored: {mb}"
-                mb_applied = mb.get("settingsApplied") or []
-                assert any(str(k).startswith("valMathOp.") for k in mb_applied), \
-                    f"math operator (valMathOp.<N>) did not land; settingsApplied={mb_applied}"
-                assert any(str(k).startswith("valConst2.") for k in mb_applied), \
-                    f"math binary second constant (valConst2.<N>) did not land; settingsApplied={mb_applied}"
-                assert not mb.get("partial"), f"math binary action falsely flagged partial: {mb}"
-
-            # math binary, second operator + var-operand combo: var - var (exercises a binary op
-            # OTHER than '+', and an xVar4=<varname> second operand instead of a (constant)).
-            if created_b is not None:
-                assert mb2.get("success") is not False, f"setVariable math var-minus-var hard-errored: {mb2}"
-                mb2_applied = mb2.get("settingsApplied") or []
-                assert any(str(k).startswith("xVar4.") for k in mb2_applied), \
-                    f"var second operand (xVar4.<N>) did not land; settingsApplied={mb2_applied}"
-                assert not any(str(k).startswith("valConst2.") for k in mb2_applied), \
-                    f"a var second operand must NOT write a constant slot; settingsApplied={mb2_applied}"
-                assert not mb2.get("partial"), f"math var-minus-var action falsely flagged partial: {mb2}"
-
-            # math binary with a DECIMAL constant operand (var + 5.5): proves decimal-constant
-            # serialization end-to-end -- the constant must persist verbatim as "5.5", never
-            # integer-stripped (which would corrupt the intended value).
-            if created_b is not None:
-                assert md.get("success") is not False, f"setVariable math decimal-constant hard-errored: {md}"
-                assert not md.get("partial"), f"math decimal-constant action falsely flagged partial: {md}"
-            assert len({str(mb_idx), str(mb2_idx), str(md_idx)}) == 3, \
-                f"math actions must persist under three distinct indices: {settings_b}"
-            assert settings_b.get(f"xVar3.{mb_idx}") == var_name, \
-                f"math first-operand variable persisted with the wrong value; settings={settings_b}"
-            assert settings_b.get(f"valMathOp.{mb_idx}") == "+", \
-                f"math binary operator persisted with the wrong value; settings={settings_b}"
-            assert str(settings_b.get(f"valConst2.{mb_idx}")) == "10", \
-                f"math binary constant operand persisted with the wrong value; settings={settings_b}"
-            assert settings_b.get(f"valMathOp.{mb2_idx}") == "-", \
-                f"math var-minus-var operator persisted with the wrong value; settings={settings_b}"
-            assert settings_b.get(f"xVar4.{mb2_idx}") == var_name, \
-                f"math var second operand persisted with the wrong value; settings={settings_b}"
-            # The decimal constant must persist verbatim -- "5.5", not "5" or "6".
-            assert str(settings_b.get(f"valConst2.{md_idx}")) == "5.5", \
-                f"math decimal constant persisted with the wrong value (expected 5.5); settings={settings_b}"
-            self._assert_rule_healthy(app_b)
-        finally:
-            # Do not race an unresolved server write with deletion; suite teardown
-            # retains the tracked id and run prefix for later cleanup.
-            if app_b is not None and math_write_terminal:
-                self._delete_native(app_b)
-
-        # Rule C: math unary (no second operand) plus the three pre-write type-filter
-        # refusals. Refusals do not add action rows, so this stays a one-action rule.
-        unary_spec = {"capability": "setVariable", "variable": var_name,
-                      "math": {"left": var_name, "op": "absolute"}}
-        app_c, created_c = self._create_native_rule(
-            "SetVarMathUnaryStr", {"addActions": [unary_spec]}, return_result=True)
-        try:
-            unary_settings = self._get_persisted_rule_config(app_c).get("settings") or {}
-            if created_c is not None:
-                unary_actions = created_c.get("actions") or []
-                assert len(unary_actions) == 1, \
-                    f"unary create result was incomplete: {created_c}"
-                mu = unary_actions[0]
-                mu_idx = mu.get("actionIndex")
-                assert mu.get("success") is not False, f"setVariable math unary hard-errored: {mu}"
-                mu_applied = mu.get("settingsApplied") or []
-                assert any(str(k).startswith("valMathOp.") for k in mu_applied), \
-                    f"math unary operator (valMathOp.<N>) did not land; settingsApplied={mu_applied}"
-                assert not any(str(k).startswith("xVar4.") or str(k).startswith("valConst2.")
-                               for k in mu_applied), \
-                    f"math unary wrongly wrote a second operand; settingsApplied={mu_applied}"
-                assert not mu.get("partial"), f"math unary action falsely flagged partial: {mu}"
-            else:
-                unary_indices = [str(key).split(".", 1)[1]
-                                 for key, value in unary_settings.items()
-                                 if str(key).startswith("valMathOp.") and value == "absolute"]
-                assert len(unary_indices) == 1, \
-                    f"relay-adopted unary create did not persist one absolute action: {unary_settings}"
-                mu_idx = unary_indices[0]
-
-            # One batch per refusal: the first refused op stops a patches batch.
-            c_entries = []
-            for target in (str_var_name, bool_var_name, var_name):
-                c_entries += self._patch_rule(app_c, [
-                    {"addAction": {"capability": "setVariable", "variable": target,
-                                   "fromDevice": {"deviceId": switch_id, "attribute": "switch"}}},
-                ], expected_refusals=1)
-            assert len(c_entries) == 3, f"rejection patches were incomplete: {c_entries}"
-            str_reject, bool_reject, neg = c_entries
-            assert mu_idx is not None, f"math unary action index was not returned or persisted: {unary_settings}"
-            assert unary_settings.get(f"xVarV.{mu_idx}") == var_name \
-                and unary_settings.get(f"valMathOp.{mu_idx}") == "absolute", \
-                f"math unary target/operator did not persist: {unary_settings}"
-            assert f"xVar4.{mu_idx}" not in unary_settings \
-                and f"valConst2.{mu_idx}" not in unary_settings, \
-                f"math unary persisted an illegal second operand: {unary_settings}"
-
-            # String-TARGET rejection: the device-attribute (fromDevice) and variable-math (math)
-            # source modes are Number/Decimal-target-only -- RM renders the numOp source-mode
-            # picker only for a numeric target var, so fromDevice/math into a String var is not an
-            # RM-supported operation and is rejected up-front (success=false) with the clear
-            # numeric-target requirement, NOT the cryptic deep not-in-schema reveal failure.
-            # (The "filter INCLUDES valid attributes" point is already proven by the Rule A
-            # happy-path fd: Number var + temperature -> tCustomAttr offered and lands.)
-            assert str_reject.get("success") is False, \
-                f"fromDevice into a String var should be rejected (numeric-target-only mode), got: {str_reject}"
-            assert "requires a Number or Decimal target variable" in (str_reject.get("error") or ""), \
-                f"String-target rejection did not name the Number/Decimal requirement: {str_reject}"
-            assert bool_reject.get("success") is False \
-                and "requires a Number or Decimal target variable" in (bool_reject.get("error") or ""), \
-                f"Boolean-target rejection did not name the Number/Decimal requirement: {bool_reject}"
-            assert neg.get("success") is False, \
-                f"numeric var + enum 'switch' attribute should fail the type filter, got: {neg}"
-            neg_err = neg.get("error") or ""
-            # The type filter rejects 'switch' for a numeric var one of two ways, depending on
-            # whether the device exposes ANY numeric attribute: if some remain, 'switch' is "not
-            # in the device's attribute enum" (with the available list); if none do, the filtered
-            # enum is empty ("no enumerable options"). Both are the correct fail-loud verdict for
-            # the excluded attribute -- accept either, and confirm the requested attribute is named.
-            assert ("not in the device's attribute enum" in neg_err
-                    or "no enumerable options" in neg_err), \
-                f"negative type-filter rejection did not name a filtered-attribute-enum frame: {neg}"
-            assert "tCustomAttr" in neg_err or "switch" in neg_err, \
-                f"negative rejection should name the attribute field or the requested attribute; error={neg_err}"
-
-            # sourceVariable into a String target: a String var renders no numOp, so the copy
-            # goes through valStringOp="Copy variable", which reveals xVar3.<N>. The persisted
-            # settings are the proof, not the envelope.
-            copy_entry = self._patch_rule(app_c, [
-                {"addAction": {"capability": "setVariable", "variable": str_var_name,
-                               "sourceVariable": str_src_name}},
-            ])[0]
-            assert copy_entry.get("success") is not False, \
-                f"String-target sourceVariable copy failed: {copy_entry}"
-            copy_settings = self._get_persisted_rule_config(app_c).get("settings") or {}
-            copy_idx = copy_entry.get("actionIndex") or next(
-                (str(k).split(".", 1)[1] for k, v in copy_settings.items()
-                 if str(k).startswith("valStringOp.") and v == "Copy variable"), None)
-            assert copy_idx is not None, \
-                f"no valStringOp.<N>='Copy variable' persisted for the String copy: {copy_settings}"
-            assert copy_settings.get(f"valStringOp.{copy_idx}") == "Copy variable" \
-                and copy_settings.get(f"xVarV.{copy_idx}") == str_var_name \
-                and copy_settings.get(f"xVar3.{copy_idx}") == str_src_name, \
-                f"String copy selector/target/source did not persist on index {copy_idx}: {copy_settings}"
-            # The refused numeric-target fromDevice case above (the switch attribute) opened a
-            # row and wrote numOp/customDev before refusing; its actionCancel drops that row
-            # and consumes its index, so the copy must carry none of those leftovers.
-            copy_applied = [str(k) for k in (copy_entry.get("settingsApplied") or [])]
-            assert not any(k.startswith("numOp.") for k in copy_applied), \
-                f"String copy wrote a numOp field: settingsApplied={copy_applied}"
-            stale = [k for k in (f"numOp.{copy_idx}", f"customDev.{copy_idx}") if k in copy_settings]
-            assert not stale, \
-                f"String copy at index {copy_idx} inherited the refused add's fields {stale}: {copy_settings}"
-            # The cancelled rows themselves must be GONE: a refusal that left its actType
-            # behind would show up as an orphaned settings row in rule health, and its mode
-            # fields (numOp/customDev) must not linger at any index outside the rule's two
-            # real actions (the math unary owns its numOp; the String copy owns neither).
-            health_c = self.client.call_tool("hub_manage_rule_machine", {
-                "tool": "hub_get_rule_health", "args": {"appId": app_c}})
-            assert not health_c.get("orphanedActionRows"), \
-                f"refused adds left orphaned action rows behind: {health_c.get('orphanedActionRows')}"
-            known_c = {str(mu_idx), str(copy_idx)}
-            stray_c = [k for k in copy_settings
-                       if str(k).startswith(("numOp.", "customDev."))
-                       and str(k).split(".", 1)[1] not in known_c]
-            assert not stray_c, \
-                f"refused adds left stale mode fields outside the real actions {known_c}: {stray_c}"
-            # A Boolean target's copy picker is uncaptured, so it is refused before any write.
-            bool_copy = self._patch_rule(app_c, [
-                {"addAction": {"capability": "setVariable", "variable": bool_var_name,
-                               "sourceVariable": bool_var_name}},
-            ], expected_refusals=1)[0]
-            assert "not supported yet" in (bool_copy.get("error") or ""), \
-                f"Boolean-target copy should be refused by name, got: {bool_copy}"
-            self._assert_rule_healthy(app_c)
-        finally:
-            self._delete_native(app_c)
-
-        # Rule D: Number copy, then numOp "add number", then RUN the actions. The persisted
-        # settings alone do not prove it: without valOffset.<N> RM throws "Ambiguous method
-        # overloading ... Long#plus" at run time and leaves the target unchanged, although the
-        # rule saves and reads healthy. The run lands 7 + 3 = 10 only if both actions execute.
-        self.client.call_tool("hub_manage_variables", {
-            "tool": "hub_set_variable", "args": {"name": var_name, "value": 0}})
-        copy_spec = {"capability": "setVariable", "variable": var_name,
-                     "sourceVariable": num_src_name}
-        add_spec = {"capability": "setVariable", "variable": var_name,
-                    "numOp": "add number", "value": 3}
-        app_d = self._create_native_rule("SetVarNumCopy", {"addActions": [copy_spec, add_spec]})
-        try:
-            d_settings = self._get_persisted_rule_config(app_d).get("settings") or {}
-            d_idx = next((str(k).split(".", 1)[1] for k, v in d_settings.items()
-                          if str(k).startswith("numOp.") and v == "variable"), None)
-            assert d_idx is not None, f"no numOp.<N>='variable' persisted: {d_settings}"
-            assert d_settings.get(f"xVar3.{d_idx}") == num_src_name \
-                    and str(d_settings.get(f"valOffset.{d_idx}")) in ("0", "0.0"), \
-                f"Number copy source/offset did not persist on index {d_idx}: {d_settings}"
-            add_idx = next((str(k).split(".", 1)[1] for k, v in d_settings.items()
-                            if str(k).startswith("numOp.") and v == "add number"), None)
-            assert add_idx is not None, f"no numOp.<N>='add number' persisted: {d_settings}"
-            assert str(d_settings.get(f"valNumber.{add_idx}")) in ("3", "3.0"), \
-                f"add-number constant did not persist on index {add_idx}: {d_settings}"
-            self._assert_rule_healthy(app_d)
-            run, limited = self._call_with_limiter_bounce(
-                "hub_manage_rule_machine", "hub_call_rule", {"ruleId": app_d, "action": "actions"},
-                "hub_call_rule(action=actions)")
-            got = None
-            deadline = time.time() + 15.0
-            while time.time() < deadline:
-                got = self.client.call_tool("hub_manage_variables", {
-                    "tool": "hub_get_variable", "args": {"name": var_name}}).get("value")
-                if str(got) in ("10", "10.0"):
-                    break
-                time.sleep(1.0)
-            # The limiter can abort the reply to a run that already happened, so the variable
-            # read above is the verdict; the run's own outcome explains a miss.
-            if str(got) not in ("10", "10.0"):
-                assert not limited, (
-                    f"hub_call_rule(action=actions) stayed blocked by the platform load limiter "
-                    f"and {var_name} never reached 10 (got {got!r}): {limited}")
-                assert not (isinstance(run, dict) and run.get("success") is False), \
-                    f"hub_call_rule(action=actions) reported failure and {var_name} is {got!r}: {run}"
-            assert str(got) in ("10", "10.0"), \
-                f"running copy (7) then add number (3) did not set {var_name} to 10 (got {got!r}; run result {run})"
-        finally:
-            self._delete_native(app_d)
-
-    @test("native_apps")
-    def test_set_rule_walker_enum_required_expression(self) -> None:
-        # hub_set_rule edit -> addRequiredExpression (STPage reveal walker) with an
-        # ENUM-recognized Custom Attribute condition. The walker pre-fix THREW
-        # ("RelrDev_<N> not revealed") because the enum re-render hides the comparator
-        # and reveals state_<N> directly. The fix branches to the enum path: it writes
-        # the value to state_<N>, skips the comparator, does NOT throw, and does NOT
-        # flag partial. This pins the walker enum contract end-to-end on a live hub.
-        # Needs a pristine rule: RM cannot replace an existing Required Expression
-        # (requiredExpressionAlreadyExists), so the rule must carry zero REs.
-        sw = int(self.get_test_switch_id())
-        enum_re = {"conditions": [
-            {"capability": "Custom Attribute", "deviceIds": [sw],
-             "attribute": "switch", "comparator": "=", "state": "on"}]}
-        stp_app_id, created = self._create_native_rule("WalkerStp", {
-            "addRequiredExpression": enum_re,
-        }, return_result=True)
-        try:
-            result = (created or {}).get("requiredExpression") or {}
-            # The whole point: the walker no longer hard-errors on the enum attribute.
-            assert result.get("success") is not False, \
-                f"addRequiredExpression hard-errored on an enum Custom Attribute (the walker bug): {result}"
-            if created is not None:
-                applied = result.get("settingsApplied") or []
-                assert any(str(k).startswith("state_") for k in applied), \
-                    f"walker enum value did not land in a state_<N> field; settingsApplied={applied}"
-                skipped = result.get("settingsSkipped") or []
-                bad = [s for s in skipped if isinstance(s, dict)
-                       and (s.get("key") or "").startswith("RelrDev_")
-                       and s.get("reason") == "not_in_schema"]
-                assert not bad, \
-                    f"unexpected RelrDev_<N> not_in_schema skip on the walker enum path: {bad}"
-                assert not result.get("partial"), \
-                    f"walker enum condition falsely flagged partial: {result}"
-            persisted = self.client.call_tool("hub_read_apps_code", {
-                "tool": "hub_get_app_config",
-                "args": {"appId": stp_app_id, "includeSettings": True},
-            }).get("settings") or {}
-            enum_slots = [str(key).split("_", 1)[1] for key, value in persisted.items()
-                          if str(key).startswith("rCustomAttr_") and value == "switch"]
-            assert any(str(persisted.get(f"state_{slot}")) == "on"
-                       and self._setting_holds_exact(persisted.get(f"rDev_{slot}"), sw)
-                       for slot in enum_slots), \
-                f"enum Required Expression device/attribute/value did not persist " \
-                f"together in one slot: {persisted}"
-            created = self._require_create_envelope(created, "WalkerStp")
-            self._assert_rule_healthy(stp_app_id)
-        finally:
-            self._delete_native(stp_app_id)
-
-    @test("native_apps")
-    def test_set_rule_walker_compare_to_device(self) -> None:
-        # hub_set_rule edit -> addRequiredExpression (STPage reveal walker) with a
-        # device-relative compareToDevice condition. This is the only automated guard
-        # against wire-format drift for two client-observable behaviours this feature
-        # changes: (1) the device-relative RHS now actually lands (isDev_<N> toggles,
-        # relDevice_<N> is written, the rule renders "Temperature of A is > B - 2.0"),
-        # and (2) a literal RHS (state/value) combined with compareToDevice is now a hard
-        # reject, not a silent literal fallback. The unit Spock suite proves the logic in
-        # isolation; this proves it end-to-end against a live hub, where the feature was
-        # unit-green but live-wrong before the wire-up fix.
-        dev_a, dev_b = self.get_test_temperature_ids()
-        ctd_app_id, created = self._create_native_rule("CtdLand", {
-            "addRequiredExpression": {"conditions": [
-                {"capability": "Temperature", "deviceIds": [int(dev_a)],
-                 "comparator": ">",
-                 "compareToDevice": {"deviceId": int(dev_b),
-                                     "attribute": "temperature", "offset": -2}}]},
-        }, return_result=True)
-        try:
-            if created is not None:
-                result = created.get("requiredExpression") or {}
-                assert result.get("success") is not False and not result.get("partial"), \
-                    f"compareToDevice addRequiredExpression did not cleanly commit: {result}"
-                applied = result.get("settingsApplied") or []
-                assert any(str(k).startswith("isDev_") for k in applied), \
-                    f"isDev_<N> toggle did not land: {applied}"
-                assert any(str(k).startswith("relDevice_") for k in applied), \
-                    f"relDevice_<N> reference picker did not land: {applied}"
-                skipped = result.get("settingsSkipped") or []
-                bad = [s for s in skipped if isinstance(s, dict)
-                       and s.get("key") == "compareToDevice-validation"]
-                assert not bad, f"unexpected compareToDevice validation skip: {bad}"
-            # The rule renders device-relative text, NOT a literal threshold / "A > 0".
-            cfg = self._get_persisted_rule_config(ctd_app_id)
-            settings = cfg.get("settings") or {}
-            slots = [str(key).split("_", 1)[1] for key, value in settings.items()
-                     if str(key).startswith("relDevice_")
-                     and self._setting_holds_exact(value, dev_b)]
-            assert slots and any(
-                str(settings.get(f"isDev_{slot}")).lower() in ("true", "on")
-                and self._setting_holds_exact(settings.get(f"rDev_{slot}"), dev_a)
-                and str(settings.get(f"state_{slot}")) in ("-2", "-2.0")
-                for slot in slots), \
-                f"device-relative RHS/offset did not persist together: {settings}"
-            created = self._require_create_envelope(created, "CtdLand")
-            blob = str(cfg)
-            assert ("Temperature of" in blob) or ("temperature of" in blob.lower()), \
-                f"rule paragraph does not render a device-relative Temperature comparison: {blob[:600]}"
-        finally:
-            self._delete_native(ctd_app_id)
-
-        # (2) compareToDevice + a literal state RHS is now a HARD reject (fail-loud),
-        # not a silent literal fallback. The mutual-exclusion guard is a pre-write
-        # check inside the walker, so it must be exercised on a FRESH rule: adding a
-        # second Required Expression to a rule that already has one takes a different
-        # path that never reaches the per-condition walker check, masking the guard's
-        # error behind the second-RE failure.
-        reject_app_id = self._create_native_rule("CtdReject")
-        try:
-            try:
-                rej = self.client.call_tool("hub_manage_rule_machine", {
-                    "tool": "hub_set_rule",
-                    "args": {
-                        "appId": reject_app_id,
-                        "addRequiredExpression": {"conditions": [
-                            {"capability": "Temperature", "deviceIds": [int(dev_a)],
-                             "comparator": ">", "state": 70,
-                             "compareToDevice": {"deviceId": int(dev_b),
-                                                 "attribute": "temperature"}}]},
-                        "confirm": True,
-                    },
-                })
-                assert rej.get("success") is False, \
-                    f"compareToDevice + literal state should hard-reject (not partial/success): {rej}"
-                assert "cannot be combined with 'state'/'value'" in str(rej.get("error", "")), \
-                    f"reject error should name the mutual-exclusion: {rej}"
-            except (McpToolError, McpError, requests.HTTPError) as exc:
-                # A relay 504 drops the response, so the expected-failure check can't be
-                # evaluated -- raise it so the test-level retry re-runs on a fresh rule
-                # (never soft-pass a reject contract).
-                if "504" in str(exc):
-                    raise
-                assert "cannot be combined with 'state'/'value'" in str(exc), \
-                    f"compareToDevice + literal state fail-loud should name the mutual-exclusion: {exc}"
-        finally:
-            self._delete_native(reject_app_id)
-
-    @test("native_apps")
-    def test_set_rule_required_expression_multi_condition(self) -> None:
-        # hub_set_rule edit -> addRequiredExpression with THREE conditions joined by AND, then a
-        # sub-expression. Regression guard for the multi-condition gap-operator bug (root-caused
-        # 2026-06-21 via the native RM wizard + claude-in-chrome): each `oper=AND` written BETWEEN
-        # conditions returns a POST echo that lags one render behind ([oper, doneST] instead of the
-        # settled [cond, doneST]); the request-scoped page cache consumed that lagged echo, so the
-        # next condition's `cond=a` built its body from a schema missing `cond`, dropped the
-        # `cond.type=enum` sidecar, RM silently no-op'd the write, and the walker failed with
-        # "rCapab_<N> not in STPage schema after cond=a; got cond, doneST". THREE conditions exercise
-        # BOTH gap-operators (the 2nd one's lag differs from the 1st), and the sub-expression
-        # exercises the close-sub-expression `oper`. The fix emits `cond`/`oper`'s known enum type
-        # explicitly so the write lands regardless of the lagged cache -- no invalidation, no extra
-        # re-fetch (the round-trip budget that keeps this build under the relay is preserved).
-        # Single-condition REs never hit this (no gap-oper). strict=True: a relay 504 re-runs the
-        # small test once, then is an honest red (a persistent 504 means the build is still too
-        # heavy -- a tool problem to fix, not a test to weaken).
-        dev_a, dev_b = self.get_test_temperature_ids()
-        re_spec = {
-                    "operator": "AND",
-                    "conditions": [
-                        {"capability": "Temperature", "deviceIds": [int(dev_a)], "comparator": ">", "state": 70},
-                        {"capability": "Temperature", "deviceIds": [int(dev_b)], "comparator": "<", "state": 80},
-                        {"capability": "Temperature", "deviceIds": [int(dev_a)], "comparator": ">=", "state": 65},
-                    ],
-            }
-        app_id, created = self._create_native_rule("MultiCondRE", {
-            "addRequiredExpression": re_spec,
-        }, return_result=True)
-        try:
-            if created is None:
-                result = {"recovered504": True}
-            else:
-                result = created.get("requiredExpression")
-                assert isinstance(result, dict), \
-                    f"multi-condition create omitted a requiredExpression result object: {created}"
-            assert result.get("success") is not False, \
-                f"multi-condition addRequiredExpression reported failure (the gap-oper cache regression): {result}"
-            # ALL THREE condition slots must have allocated -- before the fix a `cond=a` after a
-            # gap-operator no-op'd, so the walker threw and not every slot landed. On a recovered
-            # 504 the response (and its conditionIndices) is lost -- the same len-3 fact is then
-            # proven from the committed config below: three rendered Temperature conditions means
-            # three allocated slots (a no-op'd cond=a would have dropped one from the render).
-            if not result.get("recovered504"):
-                cidx = result.get("conditionIndices") or []
-                assert len(cidx) == 3, \
-                    f"multi-condition RE did not allocate all three condition slots (expected 3 conditionIndices): {result}"
-            self._assert_rule_healthy(app_id)
-            # The rule renders all THREE Temperature conditions joined by AND.
-            cfg = self.client.call_tool("hub_read_apps_code", {
-                "tool": "hub_get_app_config", "args": {"appId": app_id},
-            })
-            blob = str(cfg)
-            assert blob.lower().count("temperature of") >= 3, \
-                f"rule does not render all three Temperature conditions: {blob[:800]}"
-            assert "AND" in blob, \
-                f"rule does not render the AND joining operator: {blob[:800]}"
-            # RM renders the less-than comparator as a raw `<` inside span markup; the tag
-            # stripper must keep it (issue #508).
-            assert "< 80" in blob, \
-                f"the rendered config dropped the '< 80' comparator: {blob[:800]}"
-        finally:
-            self._delete_native(app_id)
-
-        # Sub-expression shape: (A > 70 OR B < 80) AND A >= 65. Exercises the close-sub-expression
-        # operator (oper="end-sub-expression )") followed by the outer gap-operator -- an `oper`
-        # echo that ADDS the expression-management buttons while still lagging. The outer cond=a
-        # no-op'd before the fix. Proves the paren/sub-expression path builds live.
-        sub_spec = {
-                    "operator": "AND",
-                    "conditions": [
-                        {"subExpression": {"operator": "OR", "conditions": [
-                            {"capability": "Temperature", "deviceIds": [int(dev_a)], "comparator": ">", "state": 70},
-                            {"capability": "Temperature", "deviceIds": [int(dev_b)], "comparator": "<", "state": 80},
-                        ]}},
-                        {"capability": "Temperature", "deviceIds": [int(dev_a)], "comparator": ">=", "state": 65},
-                    ],
-            }
-        sub_app_id, sub_created = self._create_native_rule("SubExprRE", {
-            "addRequiredExpression": sub_spec,
-        }, return_result=True)
-        try:
-            if sub_created is None:
-                sub = {"recovered504": True}
-            else:
-                sub = sub_created.get("requiredExpression")
-                assert isinstance(sub, dict), \
-                    f"sub-expression create omitted a requiredExpression result object: {sub_created}"
-            assert sub.get("success") is not False, \
-                f"sub-expression addRequiredExpression reported failure (close-paren/outer-oper cache regression): {sub}"
-            # Two inner + one outer condition slot must all allocate. On a recovered 504 the
-            # response (and its conditionIndices) is lost -- the same len-3 fact is then proven
-            # by the committed-config readback below.
-            if not sub.get("recovered504"):
-                scidx = sub.get("conditionIndices") or []
-                assert len(scidx) == 3, \
-                    f"sub-expression RE did not allocate all three condition slots (2 inner + 1 outer): {sub}"
-            self._assert_rule_healthy(sub_app_id)
-            # Committed-config proof (both paths): all three Temperature conditions render
-            # (2 inner + 1 outer -- a no-op'd outer cond=a would drop one) and the inner OR
-            # join is present.
-            sub_cfg = self.client.call_tool("hub_read_apps_code", {
-                "tool": "hub_get_app_config", "args": {"appId": sub_app_id},
-            })
-            sub_blob = str(sub_cfg)
-            assert sub_blob.lower().count("temperature of") >= 3, \
-                f"sub-expression rule does not render all three Temperature conditions: {sub_blob[:800]}"
-            assert "OR" in sub_blob, \
-                f"sub-expression rule does not render the inner OR joining operator: {sub_blob[:800]}"
-        finally:
-            self._delete_native(sub_app_id)
-
-    @test("native_apps")
-    def test_set_rule_action_after_required_expression(self) -> None:
-        # predCapabs-clearing guard for the ghost-ifThen (Step 4b of addRequiredExpression).
-        # RM leaves atomicState.predCapabs dirty after an RE commit; without the ghost-ifThen
-        # clear the NEXT non-expression action opens doActPage with that stale predCapabs and RM
-        # wraps the action under "IF (Broken Condition)". NO other e2e adds an action AFTER an RE,
-        # so the ghost-ifThen -- and the page-cache threading that optimizes it -- had no live
-        # guard: a silent predCapabs leak passes every other RE test (none add a trailing action).
-        # Build an RE, add a plain log action, and assert it lands as a top-level action, NOT a
-        # Broken-Condition wrap. A relay-dropped create is accepted only after authoritative
-        # RE settings/readback proof; a failed proof raises into the whole-test retry.
-        sw = int(self.get_test_switch_id())
-        app_id, created = self._create_native_rule("ActAfterRE", {
-            "addRequiredExpression": {"conditions": [
-                {"capability": "Switch", "deviceIds": [sw], "state": "on"}]},
-        }, return_result=True)
-        try:
-            if created is not None:
-                re_res = created.get("requiredExpression")
-                assert isinstance(re_res, dict) and re_res.get("success") is not False, \
-                    f"bundled addRequiredExpression reported failure: {created}"
-            else:
-                self._assert_switch_required_expression(app_id, sw)
-            # The action added AFTER the RE must NOT be wrapped under a Broken Condition IF --
-            # that wrap is exactly the stale-predCapabs symptom the ghost-ifThen clears.
-            self._add_action_or_raise_504(app_id, {"capability": "log", "message": "after-RE"})
-            self._assert_rule_healthy(app_id)
-            cfg = self.client.call_tool("hub_read_apps_code", {
-                "tool": "hub_get_app_config", "args": {"appId": app_id}})
-            assert "Broken Condition" not in str(cfg), \
-                f"ghost-ifThen failed to clear predCapabs -- the post-RE action is wrapped under IF(Broken Condition): {str(cfg)[:800]}"
-        finally:
-            self._delete_native(app_id)
-
-    @test("native_apps")
-    def test_set_rule_action_mutations(self) -> None:
-        # hub_set_rule edit -> addActions (bulk) + removeAction + clearActions +
-        # replaceActions -- the index-bearing action-list mutations on one small rule.
-        # (moveAction and patches each have their own test: together the three were the
-        # heaviest test in the family, and a 504 on any op forced a full re-run of all
-        # ~10 wizard ops -- both retry attempts then ride the same overload.)
-        marker = "remove-me-marker"
-        app_id, created = self._create_native_rule("ActMut", {
-            "addActions": [{"capability": "log", "message": marker}],
-        }, return_result=True)
-        try:
-            # The removable marker is setup; keep the addActions mutation-under-test as
-            # its own request. Derive the marker index from the create action result or
-            # the authoritative persisted logmsg setting after a dropped create response.
-            if created is not None:
-                setup_actions = created.get("actions") or []
-                assert len(setup_actions) == 1 and setup_actions[0].get("success") is not False, \
-                    f"create must report one successful marker action: {created}"
-                idx = setup_actions[0].get("actionIndex")
-                assert idx is not None, \
-                    f"create marker action result carried no actionIndex: {created}"
-            else:
-                setup_cfg = self.client.call_tool("hub_read_apps_code", {
-                    "tool": "hub_get_app_config",
-                    "args": {"appId": app_id, "includeSettings": True}})
-                setup_settings = setup_cfg.get("settings") or {}
-                idx = next((int(k.split(".")[1]) for k, v in setup_settings.items()
-                            if k.startswith("logmsg.") and v == marker), None)
-                assert idx is not None, \
-                    f"create did not persist the action-mutation marker: {setup_settings}"
-            self._set_rule(app_id, {"addActions": [
-                {"capability": "log", "message": "one"},
-                {"capability": "log", "message": "two"},
-            ]}, strict=True)
-            # removeAction is the one wizard op measured ABOVE the ~10s cloud-relay
-            # ceiling on a QUIET hub (10.4s direct-timed 2026-06-12), so a 504 on it is
-            # the op's normal completion mode, not weather -- strict-raising would make
-            # this test permanently red. Verified-by-readback instead of skipped: on a
-            # 504, read the rule config back; marker gone = the removal committed
-            # (assertion holds via readback); marker still present = verified
-            # NON-commit, re-issue once (the only duplicate-safe retry point) and
-            # re-verify. Either way the removal is ASSERTED, never assumed.
-            def _marker_present() -> bool:
-                cfg = self.client.call_tool("hub_read_apps_code", {
-                    "tool": "hub_get_app_config", "args": {"appId": app_id},
-                })
-                return marker in str(cfg)
-            try:
-                self._set_rule(app_id, {"removeAction": {"index": idx}}, strict=True)
-            except (McpError, McpToolError, requests.HTTPError) as exc:
-                if "504" not in str(exc):
-                    raise
-                print("    removeAction response lost to relay 504 (the op runs ~10s hub-side) -- "
-                      "verifying the removal by config readback")
-                time.sleep(3.0)
-                if _marker_present():
-                    print("    removal verified NOT committed -- one safe re-issue")
-                    try:
-                        self._set_rule(app_id, {"removeAction": {"index": idx}})
-                    except (McpError, McpToolError, requests.HTTPError, AssertionError):
-                        # The re-issue's response is not load-bearing (it may 504 the same
-                        # way, or hit a missing index if the FIRST remove committed late);
-                        # the final readback below is the binding assertion either way.
-                        pass
-                    time.sleep(3.0)
-                assert not _marker_present(), \
-                    "removeAction did not remove the action (marker still renders after readback-verified retry)"
-            self._set_rule(app_id, {"clearActions": True}, strict=True)
-            self._set_rule(app_id, {"replaceActions": [{"capability": "log", "message": "final"}]}, strict=True)
-            self._assert_rule_healthy(app_id)
-
-            # Fail-closed bulk actions: the clean first action lands, the switch state: steer refuses
-            # the second, and the third is never written. The refusal is decided per item inside the
-            # add, so it stops the batch rather than refusing the call up front.
-            refused_spec = {"capability": "switch", "state": "on", "deviceIds": [int(self.get_test_switch_id())]}
-            bulk_kept, bulk_skipped = "E2E bulk stop kept", "E2E bulk stop skipped"
-            bulk_stop = self._rm_stop_call(app_id, {"addActions": [
-                {"capability": "log", "message": bulk_kept},
-                refused_spec,
-                {"capability": "log", "message": bulk_skipped},
-            ]})
-            bulk_rows = bulk_stop.get("actions") or []
-            assert len(bulk_rows) == 3 and bulk_rows[0].get("success") is not False \
-                and not bulk_rows[0].get("partial") and bulk_rows[1].get("success") is False \
-                and "action:" in str(bulk_rows[1].get("error", "")), \
-                f"expected a clean action, then the state: refusal, then the skipped tail: {bulk_stop}"
-            self._assert_bulk_stop(bulk_stop, "addActions[1]", bulk_rows[2:])
-            page = self._rule_page_text(app_id)
-            assert bulk_kept in page and bulk_skipped not in page, \
-                f"addActions stop must keep the clean prefix and never write the tail: {page}"
-
-            # A replacement item that any single add would refuse is caught before the clear: the call
-            # is refused whole and the existing list survives.
-            repl_kept, repl_skipped = "E2E replace stop kept", "E2E replace stop skipped"
-            pre_clear = self._rm_stop_call(app_id, {"replaceActions": [
-                {"capability": "log", "message": repl_kept},
-                refused_spec,
-                {"capability": "log", "message": repl_skipped},
-            ]})
-            assert pre_clear.get("success") is False and not pre_clear.get("addedActions") \
-                and "replaceActions[1]:" in str(pre_clear.get("error", "")) \
-                and "action:" in str(pre_clear.get("error", "")), \
-                f"expected a whole-call refusal naming replaceActions[1] before anything was cleared: {pre_clear}"
-            page = self._rule_page_text(app_id)
-            assert bulk_kept in page and repl_kept not in page, \
-                f"a replaceActions refused before the clear must leave the existing list intact: {page}"
-
-            # An argument the builder alone checked (an unknown switch verb) is refused before the clear
-            # too, so the existing list survives.
-            verb_refused = self._rm_stop_call(app_id, {"replaceActions": [
-                {"capability": "log", "message": repl_kept},
-                {"capability": "switch", "action": "blink", "deviceIds": [int(self.get_test_switch_id())]},
-            ]})
-            assert verb_refused.get("success") is False and not verb_refused.get("removedIndices") \
-                and "replaceActions[1]: Unknown switch action 'blink'" in str(verb_refused.get("error", "")), \
-                f"an unknown verb must be refused before anything is cleared: {verb_refused}"
-            page = self._rule_page_text(app_id)
-            assert bulk_kept in page and repl_kept not in page, \
-                f"a replaceActions refused for its arguments must leave the existing list intact: {page}"
-
-            # Fail-closed replacement: an item refused only inside its add (a fileDelete whose file the
-            # hub does not have is checked against the editor's live file list) stops the batch after
-            # the clear, so only the clean first replacement item remains; skipping finalisation is not
-            # a rollback.
-            repl_stop = self._rm_stop_call(app_id, {"replaceActions": [
-                {"capability": "log", "message": repl_kept},
-                {"capability": "fileDelete", "fileName": f"{PREFIX}missing_file.txt"},
-                {"capability": "log", "message": repl_skipped},
-            ]})
-            added = repl_stop.get("addedActions") or []
-            assert len(added) == 3 and added[0].get("success") is not False \
-                and not added[0].get("partial") and added[1].get("success") is False \
-                and "is not a file on the hub" in str(added[1].get("error", "")), \
-                f"expected a clean replacement item, then the refusal, then the skipped tail: {repl_stop}"
-            self._assert_bulk_stop(repl_stop, "replaceActions[1]", added[2:])
-            page = self._rule_page_text(app_id)
-            assert repl_kept in page and repl_skipped not in page and bulk_kept not in page, \
-                f"a stopped replaceActions must leave only its clean prefix (old list cleared, tail skipped): {page}"
-        finally:
-            self._delete_native(app_id)
-
-    @test("native_apps")
-    def test_set_rule_move_action(self) -> None:
-        # hub_set_rule edit -> moveAction. RM action indices are PERSISTENT per-rule
-        # counters (clearActions removes the actions but never renumbers), so move
-        # whatever index the addActions response reports -- never a hardcoded 1.
-        setup_messages = ["a", "b", "c"]
-        app_id, created = self._create_native_rule("MoveAct", {
-            "addActions": [{"capability": "log", "message": msg}
-                           for msg in setup_messages],
-        }, return_result=True)
-        try:
-            # All three rows are setup for the later moveAction request. Preserve each
-            # index via the create envelope, with persisted logmsg keys as the fallback
-            # when the create response is lost.
-            if created is not None:
-                setup_actions = created.get("actions") or []
-                assert len(setup_actions) == 3 and all(a.get("success") is not False for a in setup_actions), \
-                    f"create must report three successful moveAction setup rows: {created}"
-                move_indices = [a.get("actionIndex") for a in setup_actions]
-                assert all(idx is not None for idx in move_indices) \
-                    and len(set(move_indices)) == len(move_indices), \
-                    f"create must report three distinct moveAction setup indices: {created}"
-            else:
-                cfg = self.client.call_tool("hub_read_apps_code", {
-                    "tool": "hub_get_app_config",
-                    "args": {"appId": app_id, "includeSettings": True}})
-                settings = cfg.get("settings") or {}
-                move_indices = [next((int(k.split(".")[1]) for k, v in settings.items()
-                                      if k.startswith("logmsg.") and v == msg), None)
-                                for msg in setup_messages]
-                assert all(idx is not None for idx in move_indices) \
-                    and len(set(move_indices)) == len(move_indices), \
-                    f"create did not persist three distinct moveAction setup rows: {settings}"
-            # The move-arrow click is the suite's heaviest single wizard op and rides the
-            # ~10s cloud-relay ceiling even on a healthy hub. On a slow hub it can commit
-            # late; the tool does one short re-check then returns a soft asyncCommitLikely
-            # envelope instead of a hard false-negative. Accept a confirmed shift OR the
-            # soft envelope; a relay 504 on the click is the same unknown-commit state the
-            # envelope models, and this test never asserts the resulting ORDER -- rule
-            # health below is the real assertion -- so a 504 here verifies health rather
-            # than raising (the one deliberate, documented non-strict op in this family;
-            # NOT a skipped assertion). Call hub_set_rule directly since _set_rule would
-            # raise on success=False.
-            try:
-                result = self.client.call_tool("hub_manage_rule_machine", {
-                    "tool": "hub_set_rule",
-                    "args": {"appId": app_id, "moveAction": {"index": move_indices[0], "direction": "down"}, "confirm": True},
-                })
-                assert result.get("success") is True or result.get("asyncCommitLikely") is True, \
-                    (f"moveAction must confirm the shift OR report asyncCommitLikely "
-                     f"(never a hard false-negative): {result}")
-            except requests.HTTPError as exc:
-                if "504" not in str(exc):
-                    raise
-                print("    moveAction response lost to relay 504 -- same unknown-commit contract as "
-                      "asyncCommitLikely; rule health below is the binding assertion")
-            # The DIRECT moveAction (and its soft/504 paths) bypasses the caching helpers and its commit
-            # may be uncertain, so clear the stale pre-move cache to FORCE a live post-move health fetch --
-            # this assert is the sole verification the reorder didn't corrupt the rule.
-            self._last_write_health = None
-            self._assert_rule_healthy(app_id)
-        finally:
-            self._delete_native(app_id)
-
-    @test("native_apps")
-    def test_set_rule_patches(self) -> None:
-        # hub_set_rule edit -> patches (several ops in one call).
-        app_id = self._create_native_rule("Patch")
-        try:
-            self._set_rule(app_id, {"patches": [
-                {"addAction": {"capability": "log", "message": "p1"}},
-                {"addAction": {"capability": "log", "message": "p2"}},
-            ]}, strict=True)
-            self._assert_rule_healthy(app_id)
-
-            # An object value for a non-device input is refused, as top-level settings are;
-            # it used to be saved as its text ("{a=b}") and reported success.
-            label_before = (self._get_persisted_rule_config(app_id).get("app") or {}).get("label")
-            obj_refused = self._patch_rule(app_id, [{"settings": {"origLabel": {"a": "b"}}}],
-                                           expected_refusals=1)[0]
-            assert "only device inputs accept" in str(obj_refused.get("error", "")), \
-                f"patches settings object should be refused naming device inputs: {obj_refused}"
-            label_after = (self._get_persisted_rule_config(app_id).get("app") or {}).get("label")
-            assert label_before and label_after == label_before, \
-                f"refused origLabel object changed the rule label: {label_before!r} -> {label_after!r}"
-
-            sw = int(self.get_test_switch_id())
-            # A success:true + partial:true op stops the batch too. The enum Custom Attribute
-            # '*changed*' Required Expression is the live-proven partial (see
-            # test_set_rule_re_custom_attribute_enum_changed_not_representable).
-            op_kept, op_skipped = "E2E patch stop kept", "E2E patch stop skipped"
-            partial_stop = self._rm_stop_call(app_id, {"patches": [
-                {"addAction": {"capability": "log", "message": op_kept}},
-                {"addRequiredExpression": {"conditions": [
-                    {"capability": "Custom Attribute", "deviceIds": [sw],
-                     "attribute": "switch", "comparator": "*changed*"}]}},
-                {"addAction": {"capability": "log", "message": op_skipped}},
-            ]})
-            op_rows = _rule_patch_rows(partial_stop)
-            assert len(op_rows) == 3 and op_rows[0].get("success") is not False \
-                and op_rows[1].get("op") == "addRequiredExpression" \
-                and op_rows[1].get("success") is not False and op_rows[1].get("partial") is True \
-                and op_rows[2].get("op") == "addAction", \
-                f"expected a clean op, then the partial Required Expression, then the skipped op: {partial_stop}"
-            self._assert_bulk_stop(partial_stop, "patches[1]", op_rows[2:], partial_item=True)
-
-            # An op's inner list stops at its own failed item and names the inner position; the later
-            # inner item and the later op are both skipped.
-            inner_kept, inner_skipped, later_skipped = \
-                "E2E inner stop kept", "E2E inner stop skipped", "E2E later op skipped"
-            inner_stop = self._rm_stop_call(app_id, {"patches": [
-                {"addActions": [
-                    {"capability": "log", "message": inner_kept},
-                    {"capability": "switch", "state": "on", "deviceIds": [sw]},
-                    {"capability": "log", "message": inner_skipped},
-                ]},
-                {"addAction": {"capability": "log", "message": later_skipped}},
-            ]})
-            inner_rows = _rule_patch_rows(inner_stop)
-            # A checkpoint inside the inner list splits that op across rows; read its items in order.
-            inner_items = [item for row in inner_rows if row.get("op") == "addActions"
-                           for item in (row.get("results") or [])]
-            later_rows = [row for row in inner_rows if row.get("op") == "addAction"]
-            assert len(inner_items) == 3 and len(later_rows) == 1 \
-                and inner_items[0].get("success") is not False and inner_items[1].get("success") is False, \
-                f"expected a clean inner item, then the refusal, then the skipped tail: {inner_stop}"
-            self._assert_bulk_stop(inner_stop, "patches[0].addActions[1]", inner_items[2:] + later_rows)
-
-            page = self._rule_page_text(app_id)
-            assert op_kept in page and inner_kept in page \
-                and not any(marker in page for marker in (op_skipped, inner_skipped, later_skipped)), \
-                f"stopped patches must keep their clean prefixes and never write the skipped items: {page}"
-        finally:
-            self._delete_native(app_id)
-
-    @test("native_apps")
-    def test_set_rule_raw_settings_and_validation(self) -> None:
-        # hub_set_rule edit -> the generic raw settings + button (page-transition) path,
-        # then read the value back via hub_get_app_config. (BAT-confirmed shapes.)
-        app_id = self._create_native_rule("RawBtn")
-        try:
-            self._set_rule(app_id, {"settings": {"comments": "BAT_E2E raw settings", "logging": ["Triggers", "Actions"]}}, strict=True)
-            cfg = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config", "args": {"appId": app_id, "includeSettings": True}})
-            settings = cfg.get("settings") or {}
-            assert settings.get("comments") == "BAT_E2E raw settings", \
-                f"comments did not round-trip: {settings.get('comments')!r}"
-
-            # A raw sub-page write is applied one key at a time with page context and reports only
-            # the keys that landed. Open the trigger editor, then write its capability picker.
-            self._set_rule(app_id, {"button": "true", "stateAttribute": "moreCond", "pageName": "selectTriggers"}, strict=True)
-            sub = self._set_rule(app_id, {"pageName": "selectTriggers", "settings": {"tCapab1": "Switch"}}, strict=True)
-            assert sub.get("settingsApplied") == ["tCapab1"] and not sub.get("settingsNotLanded") \
-                and not sub.get("partial"), \
-                f"the sub-page capability write should be reported applied and landed: {sub}"
-            self._assert_rule_renders(app_id)
-
-        finally:
-            self._delete_native(app_id)
-
-    @test("native_apps")
-    def test_set_rule_enum_doactpage(self) -> None:
-        # Same shared walker (_rmWalkConditionReveal) as the STPage enum test, but
-        # reached via the doActPage surface (addAction ifThen) rather than STPage
-        # (addRequiredExpression). The 4th of the four wizard surfaces that carry the
-        # enum-recognized Custom Attribute bug. The enum re-render hides the comparator
-        # RelrDev_<N> and reveals state_<N> directly; the fix branches to the enum path
-        # (writes state_<N>, skips the comparator, does NOT throw, does NOT flag
-        # partial). The IF block is closed (THEN + endIf) before the final whole-rule
-        # health check so the rule ends structurally balanced.
-        sw = int(self.get_test_switch_id())
-        app_id, created = self._create_native_rule("DoActEnum", {
-            "addActions": [
-                {"capability": "ifThen", "expression": {"conditions": [
-                    {"capability": "Custom Attribute", "deviceIds": [sw],
-                     "attribute": "switch", "comparator": "=", "state": "on"}]}},
-                {"capability": "log", "message": "fired"},
-                {"capability": "endIf"},
-            ],
-        }, return_result=True)
-        try:
-            if created is not None:
-                entries = created.get("actions") or []
-                assert len(entries) == 3 and all(entry.get("success") is not False for entry in entries), \
-                    f"balanced enum IF actions did not all commit: {entries}"
-                result = entries[0]
-                applied = result.get("settingsApplied") or []
-                assert any(str(k).startswith("state_") for k in applied), \
-                    f"doActPage enum value did not land in state_<N>: {applied}"
-                skipped = result.get("settingsSkipped") or []
-                bad = [s for s in skipped if isinstance(s, dict)
-                       and (s.get("key") or "").startswith("RelrDev_")
-                       and s.get("reason") == "not_in_schema"]
-                assert not bad and not result.get("partial"), \
-                    f"doActPage enum condition was partial or wrote hidden comparator: {result}"
-            cfg = self._get_persisted_rule_config(app_id)
-            settings = cfg.get("settings") or {}
-            enum_slots = [str(key).split("_", 1)[1] for key, value in settings.items()
-                          if str(key).startswith("rCustomAttr_") and value == "switch"]
-            assert any(str(settings.get(f"state_{slot}")) == "on"
-                       and self._setting_holds_exact(settings.get(f"rDev_{slot}"), sw)
-                       for slot in enum_slots), \
-                f"doActPage enum attribute/device/value did not persist together: {settings}"
-            page_blob = json.dumps(cfg.get("page") or {}).lower()
-            assert "fired" in page_blob and "broken condition" not in page_blob, \
-                f"balanced IF/log/END-IF did not persist cleanly: {cfg}"
-            created = self._require_create_envelope(created, "DoActEnum")
-            self._assert_rule_healthy(app_id)
-        finally:
-            self._delete_native(app_id)
 
     # ---- tests that keep their OWN rule (create/delete/lifecycle contracts) ----
 
-    @test("native_apps")
-    def test_set_rule_create_refusal_and_fail_closed_stop(self) -> None:
-        # hub_set_rule CREATE argument handling. The bundled-Required-Expression create itself
-        # (requiredExpression result, conditionIndices, health) is proven by
-        # test_set_rule_required_expression_multi_condition's create.
-        sw = int(self.get_test_switch_id())
-
-        # An argument the checks can refuse up front is refused BEFORE the rule is created: no rule
-        # with the label may exist afterwards.
-        self._native_rule_fixture_seq = getattr(self, "_native_rule_fixture_seq", 0) + 1
-        refused_label = f"{PREFIX}CreateRefused_{_run_artifact_suffix()}_{self._native_rule_fixture_seq}"
-        try:
-            refused = self.client.call_tool("hub_manage_rule_machine", {
-                "tool": "hub_set_rule",
-                "args": {
-                    "name": refused_label,
-                    "addTriggers": [
-                        {"capability": "Switch", "deviceIds": [sw], "state": "on"},
-                        {"capability": "Temperature", "value": "increased"},
-                    ],
-                    "confirm": True,
-                }})
-            raise AssertionError(f"a create with an argument-refused trigger must be refused, got: {refused}")
-        except McpToolError as exc:
-            assert "No rule was created" in str(exc) and "triggers[1]" in str(exc), \
-                f"the create refusal must name the item and say no rule was created: {exc}"
-        leftover = self._find_app_id_by_label(refused_label)
-        if leftover:
-            self._delete_native(leftover)
-            raise AssertionError(f"an argument-refused create left rule {leftover} behind")
-
-        # The same holds for an action argument only the action builder used to check (a dimmer level).
-        self._native_rule_fixture_seq = getattr(self, "_native_rule_fixture_seq", 0) + 1
-        act_label = f"{PREFIX}CreateRefusedAct_{_run_artifact_suffix()}_{self._native_rule_fixture_seq}"
-        try:
-            act_refused = self.client.call_tool("hub_manage_rule_machine", {
-                "tool": "hub_set_rule",
-                "args": {
-                    "name": act_label,
-                    "addActions": [
-                        {"capability": "log", "message": "E2E create refused action"},
-                        {"capability": "dimmer", "action": "setLevel"},
-                    ],
-                    "confirm": True,
-                }})
-            raise AssertionError(f"a create with an argument-refused action must be refused, got: {act_refused}")
-        except McpToolError as exc:
-            assert "No rule was created" in str(exc) and "actions[1]" in str(exc), \
-                f"the action-argument refusal must name the item and say no rule was created: {exc}"
-        leftover = self._find_app_id_by_label(act_label)
-        if leftover:
-            self._delete_native(leftover)
-            raise AssertionError(f"an action-argument-refused create left rule {leftover} behind")
-
-        # Fail-closed create across sections: the clean trigger lands, a trigger only the live wizard
-        # can refuse (a capability outside its picker) stops the create, and the Required Expression
-        # and action sections are never written. A new rule has no pre-operation backup, so this
-        # fixture is deleted rather than restored.
-        self._native_rule_fixture_seq = getattr(self, "_native_rule_fixture_seq", 0) + 1
-        stop_label = f"{PREFIX}CreateStop_{_run_artifact_suffix()}_{self._native_rule_fixture_seq}"
-        skipped_msg = "E2E create stop skipped action"
-        sw_stop = self._soft_write(
-            lambda: self.client.call_tool("hub_manage_rule_machine", {
-                "tool": "hub_set_rule",
-                "args": {
-                    "name": stop_label,
-                    "addTriggers": [
-                        {"capability": "Switch", "deviceIds": [sw], "state": "on"},
-                        {"capability": "E2E Not A Trigger Capability"},
-                    ],
-                    "addRequiredExpression": {"conditions": [
-                        {"capability": "Switch", "deviceIds": [sw], "state": "on"}]},
-                    "addActions": [{"capability": "log", "message": skipped_msg}],
-                    "confirm": True,
-                }}),
-            lambda: self._find_app_id_by_label(stop_label),
-            "fail-closed create",
-        )
-        if sw_stop["relayDropped"]:
-            if not sw_stop["committed"]:
-                # Never re-issue an uncertain create; the whole-test retry uses a fresh fixture label.
-                raise RelayLostResponseError(
-                    f"504 relay response loss on the fail-closed create {stop_label!r} left no committed rule; "
-                    "retry this test with a fresh fixture")
-            stop_app_id = sw_stop["evidence"]
-            stopped = None
-        else:
-            stopped = sw_stop["response"]
-            stop_app_id = stopped.get("appId")
-            assert stop_app_id, f"fail-closed create did not return appId: {stopped}"
-        self.created_native_app_ids.append(str(stop_app_id))
-        try:
-            if stopped is not None:
-                triggers = stopped.get("triggers") or []
-                actions = stopped.get("actions") or []
-                assert len(triggers) == 2 and len(actions) == 1 \
-                    and triggers[0].get("success") is not False and not triggers[0].get("partial") \
-                    and triggers[1].get("success") is False, \
-                    f"expected a clean trigger, then the refusal, on the stopped create: {stopped}"
-                self._assert_bulk_stop(stopped, "triggers[1]", [stopped.get("requiredExpression"), *actions])
-            stop_settings = self._get_persisted_rule_config(stop_app_id).get("settings") or {}
-            assert any(str(key).startswith("tDev") and self._setting_holds_exact(value, sw)
-                       and str(stop_settings.get(f"tstate{str(key)[4:]}")).lower() == "on"
-                       for key, value in stop_settings.items()), \
-                f"the clean trigger before the stop must remain on the created rule: {stop_settings}"
-            assert not any(str(key).startswith("rCapab_") for key in stop_settings), \
-                f"the Required Expression after the stop was written: {stop_settings}"
-            assert not any(skipped_msg in str(value) for value in stop_settings.values()), \
-                f"the action after the stop was written: {stop_settings}"
-        finally:
-            self._delete_native(stop_app_id)
-        if stopped is None:
-            # The persisted state checked out, but the lost response means the stop metadata was never
-            # asserted. Retry with a fresh fixture rather than passing on state alone.
-            raise RelayLostResponseError(
-                f"504 relay response loss erased the fail-closed create stop envelope for {stop_label!r}; "
-                "the committed rule was verified and deleted, retry this test with a fresh fixture")
-
-    @test("native_apps")
-    def test_set_rule_discover_meta(self) -> None:
-        # hub_set_rule meta-call routing: {addTrigger:{discover:true}} returns the live
-        # schema with NO appId / NO mutation (routed to the edit engine's short-circuit).
-        result = self.client.call_tool("hub_manage_rule_machine", {
-            "tool": "hub_set_rule", "args": {"addTrigger": {"discover": True}},
-        })
-        blob = str(result)
-        assert "capability" in blob, f"addTrigger discover did not return a schema: {blob[:200]}"
-        # The discover payload exposes a top-level conditionFields list carrying the `not` negation
-        # flag -- the machine-readable place an agent learns a condition can be negated. Assert it in
-        # BOTH the trigger and action discover schemas (parse conditionFields, not a loose substring).
-        trig_cond_fields = result.get("conditionFields") or []
-        assert any(f.get("name") == "not" for f in trig_cond_fields), \
-            f"addTrigger discover conditionFields missing the 'not' field: {trig_cond_fields}"
-        act = self.client.call_tool("hub_manage_rule_machine", {
-            "tool": "hub_set_rule", "args": {"addAction": {"discover": True}},
-        })
-        act_cond_fields = act.get("conditionFields") or []
-        assert any(f.get("name") == "not" for f in act_cond_fields), \
-            f"addAction discover conditionFields missing the 'not' field: {act_cond_fields}"
 
     @test("native_apps")
     def test_delete_native_app_from_native_gateway(self) -> None:
@@ -10846,41 +9031,13 @@ class TestRunner:
 
     @test("native_apps")
     def test_set_native_app_button_edit(self) -> None:
-        # hub_set_native_app edit path also drives a page-transition button (generic).
-        create_label = f"{PREFIX}GenericButton"
-        cw = self._soft_write(
-            lambda: self.client.call_tool("hub_manage_native_rules_and_apps", {
-                "tool": "hub_set_native_app",
-                "args": {"appType": "rule_machine", "name": create_label, "confirm": True}}),
-            lambda: self._find_app_id_by_label(create_label),
-            "hub_set_native_app create (button-edit fixture)",
-        )
-        if cw["relayDropped"]:
-            assert cw["committed"], f"hub_set_native_app create lost to relay 504 and never committed ({create_label})"
-            app_id = cw["evidence"]
-        else:
-            created = cw["response"]
-            app_id = created.get("appId")
-            assert app_id, f"hub_set_native_app create did not return appId: {created}"
-        self.created_native_app_ids.append(str(app_id))
-
-        # EDIT via a page-transition button. On a 504 the success field is gone; the
-        # button is a benign page transition (no destructive payload), and the rule
-        # still rendering is the recoverable evidence, so skip the success assertion
-        # with a printed line rather than hard-failing.
-        ew = self._soft_write(
-            lambda: self.client.call_tool("hub_manage_native_rules_and_apps", {
-                "tool": "hub_set_native_app", "args": {"appId": app_id, "button": "updateRule", "confirm": True}}),
-            lambda: self._app_still_present(app_id),
-            "hub_set_native_app button edit",
-        )
-        if ew["relayDropped"]:
-            assert ew["committed"], f"app {app_id} vanished after the dropped button-edit response: not recoverable"
-            print("    hub_set_native_app button edit: success assertion skipped (relay 504); app still renders")
-        else:
-            assert ew["response"].get("success") is not False, \
-                f"hub_set_native_app button edit failed: {ew['response']}"
-        self._delete_native(app_id, gateway="hub_manage_native_rules_and_apps")
+        app_id = self._create_native_rule("ButtonEdit", [native_log("button edit fixture")])
+        try:
+            self._native_form_control(app_id, "mainPage", "updateRule")
+            self._assert_rule_healthy(app_id)
+            assert "button edit fixture" in str(self._native_rule_document(app_id))
+        finally:
+            self._delete_native(app_id, gateway="hub_manage_native_rules_and_apps")
 
     # -----------------------------------------------------------------------
     # GROUP 4b2: visual_rules -- the Visual Rules Builder tools
@@ -12354,11 +10511,7 @@ class TestRunner:
         # throwaway RM rule so the identity fields are deterministic. The same rule then
         # carries the disabled-action marking checks (three actions, index 2 removed, so
         # the rows are indices 1 and 3 and disable<N> is pinned to the index, not the row).
-        app_id = self._create_native_rule("CfgSummary", {"addActions": [
-            {"capability": "log", "message": "disabled-mark one"},
-            {"capability": "log", "message": "disabled-mark two"},
-            {"capability": "log", "message": "disabled-mark three"},
-        ]})
+        app_id = self._create_native_rule("CfgSummary", [native_log("disabled-mark one"), native_log("disabled-mark two"), native_log("disabled-mark three")])
         try:
             result = self.client.call_tool("hub_read_apps_code", {
                 "tool": "hub_get_app_config",
@@ -12410,7 +10563,7 @@ class TestRunner:
             assert str(rm_types[0].get("id")) == str(parent_row["appTypeId"]), \
                 f"Rule Machine appTypeId {parent_row['appTypeId']} != its scope='types' id {rm_types[0].get('id')}"
 
-            self._set_rule(app_id, {"removeAction": {"index": 2}}, strict=True)
+            self._set_rule(app_id, [{"part": "delete", "value": {"part": "action", "id": self._native_rule_document(app_id)["actions"][1]["id"]}}], strict=True)
 
             def read(page: str | None = None) -> dict:
                 args = {"appId": str(app_id)}
@@ -12444,8 +10597,7 @@ class TestRunner:
             assert "disable2" not in buttons, f"disable2 present after removing action index 2: {sorted(buttons)}"
 
             # (b) RM's own per-row Disable button for action index 3. It is a toggle, so click once.
-            self._walk_setup_step(app_id, {"page": "selectActions", "operation": "click",
-                                           "click": {"name": "disable3"}}, False)
+            self._native_form_control(app_id, "selectActions", "disable3")
 
             # (c) mainPage: the span is the only carrier there.
             main = read()
@@ -12712,8 +10864,8 @@ class TestRunner:
                 assert created.get("deviceId"), f"could not create the swap fixture: {created}"
                 made.append(str(created["deviceId"]))
             src, tgt = made
-            app_id = self._create_native_rule("SwapRule", {
-                "addTriggers": [{"capability": "Switch", "deviceIds": [int(src)], "state": "on"}]})
+            app_id = self._create_native_rule("SwapRule", [native_change("trigger", capability="Switch", fields=[
+                native_field("tDev#", "capability.switch", [str(src)]), native_field("tstate#", "enum", "on")])])
             try:
                 before = {d: self.client.call_tool("hub_read_devices", {
                     "tool": "hub_get_device", "args": {"deviceId": d, "mode": "configuration",
@@ -13080,8 +11232,9 @@ class TestRunner:
         # A Rule Machine rule is not a child of this server, so only the hub's own in-use
         # registry can see it. Without force the delete must refuse and leave both intact.
         var_name = self._ensure_perm_variables("in_use")["in_use"]
-        app_id = self._create_native_rule("VarConsumer", {
-            "addActions": [{"capability": "setVariable", "variable": var_name, "value": 5}]})
+        app_id = self._create_native_rule("VarConsumer", [native_change("action", type="modeActs", subtype="getSetVariable", fields=[
+            native_field("xVarV.#", "enum", var_name), native_field("numOp.#", "enum", "number"),
+            native_field("valNumber.#", "number", 5)])])
         try:
             refused = None
             try:
@@ -13111,9 +11264,9 @@ class TestRunner:
         unused_var = f"{PREFIX}DepVarUnused"
         self._create_hub_variable_visible(used_var, "Number", "0")
         self._create_hub_variable_visible(unused_var, "Number", "0")
-        app_id = self._create_native_rule("VarDependent", {
-            "addTriggers": [{"capability": "Variable", "variable": used_var, "comparator": "*changed*"}],
-            "addActions": [{"capability": "log", "message": "var dependent fixture"}]})
+        app_id = self._create_native_rule("VarDependent", [native_change("trigger", capability="Variable", fields=[
+            native_field("xVar#", "enum", used_var), native_field("ReltDev#", "enum", "*changed*")]),
+            native_log("var dependent fixture")])
         try:
             # The referencing rule appears in appsUsing as {id, label}.
             dep = self.client.call_tool("hub_read_variables", {
@@ -13307,52 +11460,6 @@ class TestRunner:
                 continue
             raise AssertionError(f"{label}: hub_create_device({args}) must be rejected, got: {detail}")
 
-    @test("native_apps")
-    def test_set_rule_update_with_false_required_expression_is_suppressed(self) -> None:
-        # RM drops trigger subscriptions while the Required Expression is false. updateRule must
-        # report that as SUPPRESSED, not as an incomplete trigger.
-        app_id = self._create_native_rule("GatedTrigger", {
-            "addTrigger": {"capability": "Switch", "deviceIds": [int(self.get_test_switch_id())], "state": "on"},
-            "addRequiredExpression": {"conditions": [{"capability": "Private Boolean", "state": "true"}]},
-            "addActions": [{"capability": "log", "message": "E2E gated"}],
-        })
-        try:
-            pb, limited = self._call_with_limiter_bounce(
-                "hub_manage_rule_machine", "hub_set_rule_private_boolean",
-                {"ruleId": int(app_id), "value": False}, "hub_set_rule_private_boolean(value=False)")
-            if limited:
-                # hub_set_rule_private_boolean has no page-button route (RMUtils is the only way this
-                # app can set another rule's Private Boolean), so when the limiter still refuses it
-                # after a bounce, let Rule Machine set it: a helper rule whose only action is "Set
-                # Private Boolean false" on the gated rule, run through hub_call_rule's Run Actions
-                # button (the hub UI's own route, which the limiter does not gate). The gate under
-                # test is unchanged: PB false -> RM drops the trigger subscriptions -> updateRule
-                # reports SUPPRESSED. A device-condition expression is NOT an equivalent stand-in:
-                # RM subscribes to the device to track it, and that subscription reads as OK.
-                print(f"    [LIMITER] Private Boolean write blocked ({limited}); setting it through a "
-                      "helper rule's privateBoolean action run via the Run Actions button instead.")
-                setter_id = self._create_native_rule("GatedTriggerSetter", {
-                    "addActions": [{"capability": "privateBoolean", "ruleIds": [int(app_id)], "value": False}],
-                })
-                try:
-                    run, run_limited = self._call_with_limiter_bounce(
-                        "hub_manage_rule_machine", "hub_call_rule",
-                        {"ruleId": int(setter_id), "action": "actions"}, "helper rule hub_call_rule(action=actions)")
-                    assert not run_limited, f"helper rule's Run Actions stayed blocked by the platform load limiter: {run_limited}"
-                    assert run.get("success") is True, f"helper rule's Run Actions did not succeed: {run}"
-                finally:
-                    self._delete_native(setter_id)
-            else:
-                assert pb.get("success") is not False, \
-                    f"could not set the Private Boolean false, so the Required Expression is not gated: {pb}"
-            # strict: a relay-dropped response raises instead of returning a verdict-less sentinel.
-            res = self._set_rule(app_id, {"button": "updateRule"}, strict=True)
-            settle = str((res or {}).get("subscriptionSettle") or "")
-            assert settle.startswith("SUPPRESSED"), \
-                f"a rule gated by a false Required Expression should report SUPPRESSED, got: {settle!r} ({res})"
-            assert "Required Expression is false" in settle, f"unexpected suppression reason: {settle}"
-        finally:
-            self._delete_native(app_id)
 
     # -----------------------------------------------------------------------
     # GROUP 5: trigger_types (1 batched test -- all trigger types in one rule)
@@ -15540,15 +13647,20 @@ class TestRunner:
             try:
                 result = self.client.call_tool(gateway, {
                     "tool": leaf,
-                    "args": {"appId": app_id, "settings": {"mcpLogLevel": original_level},
-                             "confirm": True}})
+                    "args": ({"appId": app_id, "settings": {"mcpLogLevel": original_level}, "confirm": True}
+                             if leaf == "hub_set_native_app" else {"operation": "form", "rule_id": int(app_id),
+                                 "args": {"steps": [{"kind": "open"}]}, "confirm": True})})
             except (McpError, McpToolError) as exc:
                 message = str(exc)
             else:
                 assert result.get("success") is False, "generic edit of protected self was accepted"
                 message = str(result.get("error") or result.get("message") or result)
-            assert "protected" in message.lower() and app_id in message, \
-                f"expected protected-app refusal, got: {message}"
+            if leaf == "hub_set_native_app":
+                assert "protected" in message.lower() and app_id in message, \
+                    f"expected protected-app refusal, got: {message}"
+            else:
+                assert "rule_id must identify native Rule-5.1, Button Rule-5.1 or Rule Machine" in message, \
+                    f"RM form must refuse the non-RM MCP app before accessing its editor: {message}"
             assert read_settings() == before, "refused generic edit changed persisted settings"
 
         # The allowlist must stay closed even with Developer Mode on and self protected.
@@ -17097,8 +15209,8 @@ class TestRunner:
         try:
             key = self._section_key_after_refusals(
                 "hub_manage_rule_machine", "hub_set_rule", "set_rule_reference",
-                {"name": f"{PREFIX}BPS_SetRule_Refused", "confirm": True})
-            app_id = self._create_native_rule("BPS_SetRule", {"bestPracticeKey": key})
+                {"operation": "create", "args": {"parent_id": self._native_rule_parent_id(), "name": f"{PREFIX}BPS_SetRule_Refused", "changes": []}, "confirm": True})
+            app_id = self._create_native_rule("BPS_SetRule", best_practice_key=key)
         finally:
             self._bps_fixture_cleanup(app_id)
 
@@ -17141,7 +15253,7 @@ class TestRunner:
         # The point of the no-section call: discover the key space. Both levels, on page one.
         assert "set_rule_reference" in (first.get("availableSections") or [])
         sub_map = first.get("availableSubSections") or {}
-        assert "set_rule_reference_conditions" in (sub_map.get("set_rule_reference") or [])
+        assert "builtin_app_tools_rules" in (sub_map.get("builtin_app_tools") or [])
 
         cursor = first.get("nextCursor")
         assert cursor, f"guide is larger than one page but no nextCursor was returned: {first.keys()}"
@@ -17170,23 +15282,22 @@ class TestRunner:
         """Issue #392: the four oversized sections split into sub-keys the same `section` parameter
         takes. Proven on the hub, not just in unit tests: the sub-key resolves, names its parent,
         carries the fact it is supposed to carry, and costs a fraction of the parent."""
-        parent = self.client.call_tool("hub_get_tool_guide", {"section": "set_rule_reference"})
+        parent = self.client.call_tool("hub_get_tool_guide", {"section": "builtin_app_tools"})
         assert isinstance(parent, dict) and parent.get("success") is True, f"parent section not reachable: {parent}"
         advertised = parent.get("subSections") or []
-        assert "set_rule_reference_conditions" in advertised, (
+        assert "builtin_app_tools_rules" in advertised, (
             f"parent response does not advertise its sub-keys: {advertised!r}"
         )
 
-        sub = self.client.call_tool("hub_get_tool_guide", {"section": "set_rule_reference_conditions"})
+        sub = self.client.call_tool("hub_get_tool_guide", {"section": "builtin_app_tools_rules"})
         assert isinstance(sub, dict) and sub.get("success") is True, f"sub-section not reachable: {sub}"
-        assert sub.get("parentSection") == "set_rule_reference", f"missing parent pointer: {sub!r}"
+        assert sub.get("parentSection") == "builtin_app_tools", f"missing parent pointer: {sub!r}"
 
         parent_len = len(parent.get("content", ""))
         sub_content = sub.get("content", "")
-        # The motivating case: learning the Mode / Variable condition shapes used to cost the
-        # whole section. The STPage capability list is where those shapes are documented.
-        assert "STPage capability list" in sub_content, f"condition reference missing: {sub_content[:200]!r}"
-        assert "`addTrigger` capability families" not in sub_content, "sub-section leaked the trigger reference"
+        # A focused rule-diagnostics slice excludes the separate native lifecycle reference.
+        assert "hub_get_rule_health" in sub_content, f"rule diagnostics reference missing: {sub_content[:200]!r}"
+        assert "### Safety model for native CRUD" not in sub_content, "sub-section leaked the native CRUD reference"
         assert len(sub_content) < parent_len / 2, (
             f"sub-section is {len(sub_content)} chars against a "
             f"{parent_len}-char parent -- the split is not paying off"
@@ -17924,82 +16035,26 @@ class TestRunner:
 
     @test("legacy_protocol")
     def test_legacy_bulk_stop_is_terminal(self) -> None:
-        """A legacy client receives a fail-closed bulk stop as a terminal envelope with no tail to re-issue.
-
-        A legacy client has no requestState: a budget checkpoint hands it the unprocessed items and it
-        re-issues them itself. That checkpoint is only reachable on a clean prefix, so the loop below
-        follows one the way a shipping client would, and the batch must still end at the failed item
-        with nothing handed back. The rule is tiny, so the call normally finishes in one round.
-        """
+        """Legacy clients receive a terminal document failure and never a resumable tail."""
         legacy = LegacyEraClient(self.client, verbose=self.verbose)
         legacy.initialize(LEGACY_PROTOCOL_VERSION)
         app_id = self._create_native_rule("LegacyStop")
         kept, skipped = "E2E legacy stop kept", "E2E legacy stop skipped"
-        specs = [
-            {"capability": "log", "message": kept},
-            {"capability": "switch", "state": "on", "deviceIds": [int(self.get_test_switch_id())]},
-            {"capability": "log", "message": skipped},
-        ]
-
-        def _legacy_add(actions: list) -> dict:
-            try:
-                return legacy.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": {
-                    "appId": app_id, "confirm": True, "addActions": actions}})
-            except (McpError, McpToolError, requests.HTTPError) as exc:
-                if "504" not in str(exc):
-                    raise
-                raise RelayLostResponseError(
-                    "504 relay response loss erased the legacy fail-closed stop envelope; "
-                    "retry this test with its run-unique fixture"
-                ) from exc
-
         try:
-            result = _legacy_add(specs)
-            rows: list = []
-            for _ in range(len(specs)):
-                if result.get("status") != "in_progress":
-                    break
-                remaining = result.get("addActionsRemaining") or []
-                slice_rows = result.get("actions") or []
-                assert result.get("success") is True and not result.get("partial") and remaining \
-                    and len(rows) + len(slice_rows) + len(remaining) == len(specs), \
-                    f"a legacy checkpoint must hand back a clean prefix and exactly the unrun items: {result}"
-                rows += slice_rows
-                result = _legacy_add(remaining)
-            offset = len(rows)
-            rows += result.get("actions") or []
-            assert len(rows) == 3 and rows[0].get("success") is not False \
-                and rows[1].get("success") is False, \
-                f"expected a clean action, then the refusal, then the skipped tail: rows={rows} final={result}"
-            # Without aggregation the stop is numbered within the round that ran it.
-            self._assert_bulk_stop(result, f"addActions[{1 - offset}]", rows[2:])
-            page = self._rule_page_text(app_id)
-            assert kept in page and skipped not in page, \
-                f"the legacy stop must keep the clean prefix and never write the tail: {page}"
-
-            # Exercise the budget boundary without changing hub-wide timeout settings or adding
-            # another rule. The gateway preserves the supplied leaf clock for legacy calls;
-            # the modern detached worker removes it and checks health normally.
-            done_args = {"appId": app_id, "confirm": True, "__reqT0": 1,
-                         "walkStep": {"page": "selectActions", "operation": "done"}}
-            unverified = legacy.call_tool("hub_manage_rule_machine",
-                                         {"tool": "hub_set_rule", "args": done_args})
-            assert unverified.get("success") is False and unverified.get("partial") is True \
-                and unverified.get("healthUnverified") is True \
-                and (unverified.get("health") or {}).get("skipped") is True, \
-                f"a committed standalone legacy Done with skipped health must report unverified: {unverified}"
-            assert unverified.get("status") != "in_progress" \
-                and "unverified" in str(unverified.get("error") or "") \
-                and any("do not re-run" in str(hint) for hint in unverified.get("repairHints") or []), \
-                f"the result must direct verification, never replay a committed step: {unverified}"
-            checked = self.client.call_tool("hub_manage_rule_machine",
-                                            {"tool": "hub_set_rule", "args": done_args})
-            assert checked.get("success") is True and checked.get("healthUnverified") is not True \
-                and (checked.get("health") or {}).get("ok") is True \
-                and (checked.get("health") or {}).get("skipped") is not True, \
-                f"modern Done must discard the stale clock and verify the committed rule: {checked}"
-            self._last_write_health = None
-            self._assert_rule_healthy(app_id)
+            result = legacy.call_tool("hub_set_rule", {"operation": "update", "rule_id": int(app_id),
+                "args": {"changes": [native_log(kept), native_change("action", type="messageActs", subtype="getLogMsg", fields=[
+                    native_field("logmsg.#", "textarea", "partial marker"),
+                    native_field("noSuchField.#", "number", 1)]),
+                                      native_log(skipped)]}, "confirm": True})
+            assert result.get("success") is False and result.get("partial") is True, result
+            rows = result.get("results", [])
+            assert len(rows) == 2 and rows[0]["result"].get("success") is True, result
+            assert rows[1]["result"].get("success") is False, result
+            assert result.get("remaining") == [native_log(skipped)], result
+            assert result.get("status") != "in_progress", result
+            assert not result.get("requestState"), result
+            document = self._native_rule_document(app_id)
+            assert kept in str(document) and skipped not in str(document), document
         finally:
             self._delete_native(app_id)
 
@@ -18623,18 +16678,27 @@ class TestRunner:
         self._restore_permanent_configuration_fixtures("pre-run")
         # Rule-engine variables live in the MCP app's state, beyond the watchdog purge: a killed run's go here.
         self._sweep_rule_engine_variables()
+        unknown = sorted(n for n in self.BACKUP_PROVING_TESTS if not callable(getattr(self, n, None)))
+        assert not unknown, f"BACKUP_PROVING_TESTS names tests that do not exist: {unknown}"
+        # Pre-edit backups stay off except around the tests that prove them (_run_one sets them per
+        # test); the default (on) comes back at the end.
+        self._rule_edit_backups(False)
 
         # Group for display
         self._load_diagnostics = True
         current_group = None
-        for group, display_name, method_name in tests_to_run:
-            if group != current_group:
-                current_group = group
-                print(f"\n[{group}]")
-            self._run_one(group, display_name, method_name)
-
-        # Always clean up
-        self.cleanup()
+        try:
+            for group, display_name, method_name in tests_to_run:
+                if group != current_group:
+                    current_group = group
+                    print(f"\n[{group}]")
+                self._run_one(group, display_name, method_name)
+        finally:
+            try:
+                self._rule_edit_backups(True)
+            finally:
+                # Always clean up
+                self.cleanup()
 
         # Print summary
         return self._print_summary()
