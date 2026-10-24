@@ -6668,9 +6668,10 @@ private Date _pastLogTime(Map entry, TimeZone zone) {
 }
 def toolDeleteLogs(args) {
     String mode = args.mode?.toString()
-    if (!(mode in ["mcp", "scheduledJobs"])) {
-        throw new IllegalArgumentException("mode must be 'mcp' (clear the MCP log) or 'scheduledJobs' (delete one scheduled job)")
+    if (!(mode in ["mcp", "scheduledJobs", "past"])) {
+        throw new IllegalArgumentException("mode must be 'mcp' (clear the MCP log), 'scheduledJobs' (delete one scheduled job) or 'past' (reboot the hub and purge its past logs)")
     }
+    if (mode == "past") return _deleteLogsPastByReboot(args)
     if (mode == "mcp") {
         def stray = ["jobId", "confirm"].findAll(this.&_argPresent.curry(args))
         if (stray) throw new IllegalArgumentException("Parameters ${stray.join(', ')} apply to mode='scheduledJobs' only")
@@ -6718,6 +6719,28 @@ def toolDeleteLogs(args) {
                 note: "A one-time job is gone once it has run, and an earlier delete of it may already have worked. Read current ids with hub_get_logs(mode='scheduledJobs')."]
     }
     return [success: false, isError: true, jobId: jobId, error: "The hub did not delete ${jobId}: ${reply ?: 'empty reply'}"]
+}
+private Map _deleteLogsPastByReboot(Map args) {
+    if (args.jobId != null) throw new IllegalArgumentException("jobId applies to mode='scheduledJobs' only")
+    if (getHiddenToolNames().contains("hub_reboot") || _clientToolDenial("hub_reboot") != null) {
+        throw new IllegalArgumentException("mode='past' reboots the hub, and hub_reboot is turned off for this connection, so past logs cannot be purged here. Purge them from the hub's Reboot dialog (Show advanced options).")
+    }
+    requireDestructiveConfirm(args.confirm)
+    mcpLog("warn", "hub-admin", "Hub reboot with past-log purge initiated by MCP")
+    try {
+        _hubRebootPurgingPastLogs()
+    } catch (Exception e) {
+        mcpLogError("hub-admin", "Hub reboot with past-log purge failed", e)
+        return [success: false, isError: true, mode: "past", error: "The reboot request failed: ${e.message ?: e.class.simpleName}",
+                note: "Nothing was purged unless the hub restarts. Purge from the hub's Reboot dialog (Show advanced options) if this keeps failing."]
+    }
+    return [success: true, mode: "past", rebooting: true,
+            message: "The hub is rebooting and its past logs are purged as it restarts. It is unreachable for 1-3 minutes, and automations stop until it is back.",
+            lastBackup: formatTimestamp(state.lastBackupTimestamp)]
+}
+def _hubRebootPurgingPastLogs() {
+    return _hubRequest('POST', '/hub/reboot', [body: groovy.json.JsonOutput.toJson([rebuildDatabase: false, purgeLogs: true]),
+                                               requestContentType: "application/json", timeout: 30, returnShape: 'text'])
 }
 def _logsJsonSnapshotTtlMs() { 30000L }
 def _logsJsonFetchStaleMs() { 45000L }
@@ -8174,13 +8197,13 @@ def _getAllToolDefinitions_partDiagnostics() {
         ],
         [
             name: "hub_delete_logs",
-            description: """Clear the MCP app's own log (mode='mcp'), or delete one scheduled job like the Logs page's Delete button (mode='scheduledJobs'). Only that timer goes; its app or device schedules it again only if its own code does. Cannot be undone.""",
+            description: """Clear the MCP app's own log (mode='mcp'), delete one scheduled job like the Logs page's Delete button (mode='scheduledJobs'; its app or device schedules it again only if its own code does), or purge the hub's past logs (mode='past'), which REBOOTS THE HUB (1-3 min downtime, all automations stop) and needs a backup under 24 h old. Cannot be undone.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    mode: [type: "string", enum: ["mcp", "scheduledJobs"]],
+                    mode: [type: "string", enum: ["mcp", "scheduledJobs", "past"], description: "past reboots the hub to purge its past logs."],
                     jobId: [type: "string", description: "Job id from hub_get_logs(mode='scheduledJobs')."],
-                    confirm: [type: "boolean", description: "Must be true to delete a job."]
+                    confirm: [type: "boolean", description: "Must be true to delete a job or to reboot for mode='past'."]
                 ],
                 required: ["mode"]
             ]
@@ -8384,7 +8407,7 @@ def _readOnlyToolNames_partDiagnostics() {
 }
 def _idempotentWriteToolNames_partDiagnostics() {
     return [
-        "hub_delete_captured_state", "hub_delete_logs",
+        "hub_delete_captured_state",
         "hub_set_zwave", "hub_set_zigbee"
     ]
 }
@@ -8397,7 +8420,7 @@ def _openWorldToolNames_partDiagnostics() {
 def _toolDisplayMeta_partDiagnostics() {
     return [
         hub_get_logs: [title: "Get Logs", summary: "Any Logs page tab (log history, stats, cloud calls, events, jobs, hub actions) or the MCP log."],
-        hub_delete_logs: [title: "Delete Logs", summary: "Clear the MCP log or delete one scheduled job, as the Logs page's Delete button does."],
+        hub_delete_logs: [title: "Delete Logs", summary: "Clear the MCP log, delete one scheduled job as the Logs page's Delete button does, or reboot the hub to purge its past logs."],
         hub_get_metrics: [title: "Get Hub Metrics", summary: "Hub metrics with CSV trend history."],
         hub_get_memory_history: [title: "Get Memory History", summary: "Free-memory and CPU-load history with summary stats."],
         hub_call_gc: [title: "Force Garbage Collection", summary: "Force JVM garbage collection and report freed memory."],
@@ -32073,12 +32096,12 @@ def getGatewayConfig() {
             tools: ["hub_get_logs", "hub_delete_logs", "hub_set_log_level"],
             summaries: [
                 hub_get_logs: "Read Logs page tabs or the MCP log. Args: mode (one tab or a list: past default, devices, apps, cloudCalls, locationEvents, hubEvents, scheduledJobs, runningJobs, hubActions, mcp, status), level, deviceId|appId, pattern/patterns, since/until, sortBy, limit, cursor",
-                hub_delete_logs: "Clear the MCP log, or delete one scheduled job like the Logs page's Delete button. Args: mode (mcp|scheduledJobs), jobId, confirm",
+                hub_delete_logs: "Clear the MCP log, delete one scheduled job like the Logs page's Delete button, or reboot the hub to purge its past logs (mode=past, DISRUPTIVE). Args: mode (mcp|scheduledJobs|past), jobId, confirm",
                 hub_set_log_level: "Set minimum log level threshold. Args: level (debug/info/warn/error)"
             ],
             searchHints: [
                 hub_get_logs: "errors warnings trace syslog recent device app regex time window since until performance stats slow cpu busy hog state size cloud calls location events mode hsm hub events reboot low memory scheduled jobs cron timer recurring running hub actions mcp internal status",
-                hub_delete_logs: "wipe reset clear mcp log remove cancel unschedule scheduled job timer",
+                hub_delete_logs: "wipe reset clear mcp log remove cancel unschedule scheduled job timer purge past logs reboot",
                 hub_set_log_level: "verbosity debug trace quiet"
             ]
         ],
