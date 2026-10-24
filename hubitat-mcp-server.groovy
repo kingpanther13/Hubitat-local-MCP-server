@@ -446,12 +446,9 @@ def mainPage() {
     }
 }
 
-// Small predicates passed as method references (this.&name) instead of inline blocks: each inline
-// block compiles to its own class, and the hub keeps every class of a saved copy loaded.
-private boolean _isMap(value) {
-    return value instanceof Map
-}
-
+// Predicates called a few times per request, passed as method references (this.&name) instead of
+// inline closures, which each compile to their own class. Never use one per row: every call through a
+// method reference is checked by the hub against all of this app's methods.
 private boolean _argPresent(Map args, key) {
     return args[key] != null
 }

@@ -20,20 +20,34 @@ def toolGetDebugLogs(args) {
 
     // Apply filters
     if (level && level != "all") {
-        logs = logs.findAll(this.&_debugLogFieldIs.curry("level", level))
+        logs = logs.findAll { it.level == level }
     }
     if (component) {
-        logs = logs.findAll(this.&_debugLogComponentHas.curry(component))
+        logs = logs.findAll { it.component?.contains(component) }
     }
     if (ruleId) {
-        logs = logs.findAll(this.&_debugLogFieldIs.curry("ruleId", ruleId))
+        logs = logs.findAll { it.ruleId == ruleId }
     }
 
     // Get most recent entries
     def count = Math.min(limit, logs.size())
     logs = logs.drop(Math.max(0, logs.size() - count))
 
-    def materialized = logs.collect(this.&_debugLogEntryOut)
+    def materialized = logs.collect { entry ->
+        def e = [
+            timestamp: entry.timestamp,
+            time: formatTimestamp(entry.timestamp),
+            level: entry.level,
+            component: entry.component,
+            message: entry.message
+        ]
+        if (entry.ruleId) e.ruleId = entry.ruleId
+        if (entry.ruleName) e.ruleName = entry.ruleName
+        if (entry.duration) e.durationMs = entry.duration
+        if (entry.stackTrace) e.stackTrace = entry.stackTrace
+        if (entry.details) e.details = entry.details
+        return e
+    }
     def cursor = args?.cursor
     def paged = _paginateList(materialized, cursor, 100, "hub_get_logs")
     def result = [
@@ -48,31 +62,6 @@ def toolGetDebugLogs(args) {
         if (paged.nextCursor != null) result.nextCursor = paged.nextCursor
     }
     return result
-}
-
-// Passed as method references: each inline block would compile to its own class.
-private boolean _debugLogFieldIs(String field, value, Map entry) {
-    return entry[field] == value
-}
-
-private boolean _debugLogComponentHas(component, Map entry) {
-    return entry.component?.contains(component) == true
-}
-
-private Map _debugLogEntryOut(Map entry) {
-    def e = [
-        timestamp: entry.timestamp,
-        time: formatTimestamp(entry.timestamp),
-        level: entry.level,
-        component: entry.component,
-        message: entry.message
-    ]
-    if (entry.ruleId) e.ruleId = entry.ruleId
-    if (entry.ruleName) e.ruleName = entry.ruleName
-    if (entry.duration) e.durationMs = entry.duration
-    if (entry.stackTrace) e.stackTrace = entry.stackTrace
-    if (entry.details) e.details = entry.details
-    return e
 }
 
 def toolSetLogLevel(args) {

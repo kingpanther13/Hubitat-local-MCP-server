@@ -622,46 +622,27 @@ private Map _logsPatterns(Map args) {
     if (patternMode != null && !(patternMode in ["any", "all"])) {
         throw new IllegalArgumentException("patternMode must be 'any' or 'all' (got '${args.patternMode}')")
     }
-    List list = []
-    (args.patterns ?: []).eachWithIndex(this.&_logsAddPattern.curry(list))
-    return [single: args.pattern != null ? _logsCompilePattern("pattern", args.pattern) : null, list: list, all: patternMode == "all"]
-}
-
-// The helpers below are passed as method references instead of inline blocks: each inline block
-// compiles to its own class, and the hub keeps every class of a saved copy loaded.
-private void _logsAddPattern(List list, p, int i) {
-    list << _logsCompilePattern("patterns[${i}]", p)
-}
-
-private java.util.regex.Pattern _logsCompilePattern(String label, p) {
-    if (p != null && !(p instanceof String)) throw new IllegalArgumentException("${label} must be a string")
-    if (!p) throw new IllegalArgumentException("${label} must not be null or empty")
-    if (p.length() > 100) throw new IllegalArgumentException("${label} exceeds 100 char limit (was ${p.length()} chars)")
-    try {
-        return java.util.regex.Pattern.compile(p, java.util.regex.Pattern.CASE_INSENSITIVE)
-    } catch (java.util.regex.PatternSyntaxException e) {
-        throw new IllegalArgumentException("Invalid regex ${label} '${p}': ${e.message}")
+    def compile = { String label, p ->
+        if (p != null && !(p instanceof String)) throw new IllegalArgumentException("${label} must be a string")
+        if (!p) throw new IllegalArgumentException("${label} must not be null or empty")
+        if (p.length() > 100) throw new IllegalArgumentException("${label} exceeds 100 char limit (was ${p.length()} chars)")
+        try {
+            return java.util.regex.Pattern.compile(p, java.util.regex.Pattern.CASE_INSENSITIVE)
+        } catch (java.util.regex.PatternSyntaxException e) {
+            throw new IllegalArgumentException("Invalid regex ${label} '${p}': ${e.message}")
+        }
     }
+    List list = []
+    (args.patterns ?: []).eachWithIndex { p, int i -> list << compile("patterns[${i}]", p) }
+    return [single: args.pattern != null ? compile("pattern", args.pattern) : null, list: list, all: patternMode == "all"]
 }
 
 private boolean _logsRowMatches(Map row, List fields, Map patterns) {
-    List texts = fields.collect(this.&_logsFieldText.curry(row))
-    if (patterns.single != null && !_logsTextsHit(texts, patterns.single)) return false
+    List texts = fields.collect { row[it] == null ? "" : row[it].toString() }
+    def hit = { java.util.regex.Pattern p -> texts.any { p.matcher(it).find() } }
+    if (patterns.single != null && !hit(patterns.single)) return false
     if (!patterns.list) return true
-    Closure hit = this.&_logsTextsHit.curry(texts)
     return patterns.all ? patterns.list.every(hit) : patterns.list.any(hit)
-}
-
-private String _logsFieldText(Map row, field) {
-    return row[field] == null ? "" : row[field].toString()
-}
-
-private boolean _logsTextsHit(List texts, java.util.regex.Pattern p) {
-    return texts.any(this.&_logsPatternFinds.curry(p))
-}
-
-private boolean _logsPatternFinds(java.util.regex.Pattern p, text) {
-    return p.matcher(text.toString()).find()
 }
 
 // since is exclusive and until inclusive, so a row's time passed back as since never returns it again.
@@ -873,7 +854,7 @@ def toolGetHubLogs(args) {
             return [success: false, isError: true, error: "Could not read ${path}: ${e.message ?: e.class.simpleName}",
                     note: "Retry once; the same endpoint feeds the hub's Logs page."]
         }
-        boolean shaped = mode == "cloudCalls" ? parsed instanceof Map : parsed instanceof List && parsed.every(this.&_isMap)
+        boolean shaped = mode == "cloudCalls" ? parsed instanceof Map : parsed instanceof List && !parsed.any { !(it instanceof Map) }
         if (!shaped) {
             return [success: false, isError: true, error: "${path} returned an unexpected shape",
                     note: "The hub's Logs page format may have changed; report it with hub_report_issue."]
@@ -887,6 +868,9 @@ def toolGetHubLogs(args) {
     return result + _logsPage(mode, rows, query)
 }
 
+// These run a few times per request, so they are passed as method references instead of inline
+// closures (one class each). Per-row work stays in inline closures: every call through a method
+// reference is checked by the hub against all of this app's methods.
 private boolean _logsUnknownArg(List allowed, String key) {
     return !(key in allowed) && key != "mode" && !key.startsWith("__")
 }
@@ -903,33 +887,16 @@ private boolean _logsTabFailed(mode, r) {
 // busiest first.
 private List _cloudCallRows(Map raw) {
     Map hoursByApp = [:]
-    (raw.hours instanceof List ? raw.hours : []).each(this.&_cloudCallAddHour.curry(hoursByApp))
-    List apps = (raw.apps instanceof List ? raw.apps : []).findAll(this.&_isMap).collect(this.&_cloudCallAppRow.curry(hoursByApp))
-    return apps.sort(this.&_cloudCallBusiestFirst)
-}
-
-private void _cloudCallAddHour(Map hoursByApp, h) {
-    if (!(h instanceof Map) || h.appId == null || h.hourStart == null) return
-    String key = h.appId.toString()
-    if (!hoursByApp.containsKey(key)) hoursByApp.put(key, [])
-    hoursByApp.get(key) << [epoch: h.hourStart as Long, count: h.count]
-}
-
-private Map _cloudCallAppRow(Map hoursByApp, Map app) {
-    List series = (hoursByApp.get(app.id?.toString()) ?: []).sort(this.&_cloudCallNewestFirst)
-    return app + [hours: series.take(48).collect(this.&_cloudCallHourRow)]
-}
-
-private long _cloudCallNewestFirst(Map hour) {
-    return -(hour.epoch as long)
-}
-
-private Map _cloudCallHourRow(Map hour) {
-    return [hourStart: formatTimestamp(hour.epoch as Long), count: hour.count]
-}
-
-private long _cloudCallBusiestFirst(Map app) {
-    return -((app.total ?: 0) as long)
+    (raw.hours instanceof List ? raw.hours : []).each { h ->
+        if (!(h instanceof Map) || h.appId == null || h.hourStart == null) return
+        String key = h.appId.toString()
+        if (!hoursByApp.containsKey(key)) hoursByApp.put(key, [])
+        hoursByApp.get(key) << [epoch: h.hourStart as Long, count: h.count]
+    }
+    return (raw.apps instanceof List ? raw.apps : []).findAll { it instanceof Map }.collect { a ->
+        List series = (hoursByApp.get(a.id?.toString()) ?: []).sort { -(it.epoch as long) }
+        a + [hours: series.take(48).collect { [hourStart: formatTimestamp(it.epoch as Long), count: it.count] }]
+    }.sort { -((it.total ?: 0) as long) }
 }
 
 // Filter, sort, limit and page one tab's native rows. Rows keep the hub's own field names; jobs,
@@ -957,8 +924,8 @@ private Map _logsPage(String mode, List rows, Map query) {
         matched << entry
     }
     if (mode in ["devices", "apps"]) {
-        if (query.sortBy == "name") matched.sort(this.&_logsSortName)
-        else matched.sort(this.&_logsSortMetricDesc.curry(query.sortBy.toString()))
+        if (query.sortBy == "name") matched.sort { (it.name ?: "").toString().toLowerCase() }
+        else matched.sort { -((it[query.sortBy] ?: 0) as double) }
     }
     Map out = [total: rows.size(), matched: matched.size()]
     if (query.limit > 0 && matched.size() > query.limit) matched = matched.take(query.limit)
@@ -966,29 +933,17 @@ private Map _logsPage(String mode, List rows, Map query) {
     // Null fields are left out of each row and named once in nullFields, so a row without a listed
     // field had it null (location events, for example, have no device fields).
     Set nullFields = new TreeSet()
-    out.entries = paged.page.collect(this.&_logsDropNulls.curry(nullFields))
+    out.entries = paged.page.collect { Map row ->
+        row.findAll { k, v ->
+            if (v == null) nullFields << k.toString()
+            v != null
+        }
+    }
     if (nullFields) out.nullFields = nullFields as List
     out.count = paged.page.size()
     if (paged.nextCursor != null) out.nextCursor = paged.nextCursor
     if (unparseable > 0) out.timeFilterUnparseable = unparseable
     return out
-}
-
-private String _logsSortName(Map row) {
-    return (row.name ?: "").toString().toLowerCase()
-}
-
-private double _logsSortMetricDesc(String key, Map row) {
-    return -((row[key] ?: 0) as double)
-}
-
-private Map _logsDropNulls(Set nullFields, Map row) {
-    return row.findAll(this.&_logsKeepValue.curry(nullFields))
-}
-
-private boolean _logsKeepValue(Set nullFields, key, value) {
-    if (value == null) nullFields << key.toString()
-    return value != null
 }
 
 // Past logs: the hub's log history, newest first. deviceId/appId scope the read on the hub, the
@@ -1043,25 +998,17 @@ private Map _pastLogs(Map args, Map query) {
     out.total = rows.size()
     if (unparseable > 0) out.timeFilterUnparseable = unparseable
     if (fetchedAt != null) out.snapshot = [fetchedAt: fetchedAt, ageMs: Math.max(0L, now() - (fetchedAt as Long))]
-    if ((out.entries.sum(0, this.&_pastLogEntrySize) as int) > _responseSizeLimitBytes()) {
-        out.entries.each(this.&_pastLogTrimMessage)
+    if ((out.entries.sum(0) { (it.message?.length() ?: 0) + (it.name?.length() ?: 0) + 120 } as int) > _responseSizeLimitBytes()) {
+        out.entries.each { it.message = it.message?.take(200) }
         out.truncated = true
         out.note = "Log messages truncated to fit response size limit"
     }
-    int noise = out.entries*.message.count(this.&_isBenignRmInternalNoise)
+    int noise = out.entries.count { _isBenignRmInternalNoise(it.message) }
     if (noise > 0) {
         out.benignRmNoiseCount = noise
         out.benignRmNoiseNote = "${noise} of these entr${noise == 1 ? 'y is' : 'ies are'} known-benign RM-internal noise (RM 5.1's own 'periodic' method logging an NPE on params.n while it renders the periodic sub-page during a periodic-trigger build). NON-FATAL, NOT an MCP-tool failure -- the trigger bakes correctly. Safe to ignore."
     }
     return out
-}
-
-private int _pastLogEntrySize(Map entry) {
-    return (entry.message?.length() ?: 0) + (entry.name?.length() ?: 0) + 120
-}
-
-private void _pastLogTrimMessage(Map entry) {
-    entry.message = entry.message?.take(200)
 }
 
 private Date _pastLogTime(Map entry, TimeZone zone) {
@@ -1163,15 +1110,7 @@ def _logsJsonUsesBackgroundFetch() { _mrtrReadContinuationActive() }
 
 // The page's formatted* columns are display copies of the raw values beside them.
 private List _logsJsonStats(List statsList) {
-    return statsList.collect(this.&_logsJsonDropFormatted)
-}
-
-private Map _logsJsonDropFormatted(Map stat) {
-    return stat.findAll(this.&_logsJsonNotFormatted)
-}
-
-private boolean _logsJsonNotFormatted(key, value) {
-    return !key.toString().startsWith("formatted")
+    return statsList.collect { stat -> stat.findAll { k, v -> !k.toString().startsWith("formatted") } }
 }
 
 // A present table that is not an array, or a table row that is not an object, is a changed
@@ -1180,7 +1119,7 @@ private List _logsJsonTable(Map data, String key) {
     def table = data[key]
     if (table == null) return []
     if (!(table instanceof List)) throw new IllegalStateException("Unexpected /logs/json response: '${key}' is not an array")
-    if (key != "hubCommands" && !table.every(this.&_isMap)) {
+    if (key != "hubCommands" && table.any { !(it instanceof Map) }) {
         throw new IllegalStateException("Unexpected /logs/json response: '${key}' contains a non-object entry")
     }
     return table
