@@ -323,7 +323,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_update_custom_rule', 'hub_delete_custom_rule',
             'hub_set_hsm', 'hub_set_mode_manager', 'hub_update_hub_mesh',
             'hub_delete_variable', 'hub_create_connector', 'hub_delete_connector',
-            'hub_set_log_level',
+            'hub_set_log_level', 'hub_delete_logs',
             'hub_delete_captured_state',
             'hub_update_device', 'hub_delete_device',
             'hub_update_room', 'hub_delete_room',
@@ -350,7 +350,6 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_set_variable', 'hub_restore_backup',
             'hub_create_backup',
             'hub_reboot', 'hub_shutdown', 'hub_update_firmware', 'hub_call_gc',
-            'hub_delete_logs',           // mode='past' reboots the hub on every call
             'hub_call_zwave', 'hub_call_zigbee', 'hub_call_matter', 'hub_call_destructive_ops',
             'hub_manage_virtual_device', 'hub_manage_mode',
             'hub_set_system_settings',
@@ -402,10 +401,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         byName.hub_manage_code.openWorldHint == true
 
         and: 'a mixed gateway whose every write converges on retry stays idempotent'
-        byName.hub_manage_files.idempotentHint == true
-
-        and: 'a gateway with a write that reboots on every call is non-idempotent'
-        byName.hub_manage_logs.idempotentHint == false
+        byName.hub_manage_logs.idempotentHint == true
         byName.hub_manage_logs.openWorldHint == false
 
         and: 'the Developer Mode self-deploy is retry-safe and reaches GitHub'

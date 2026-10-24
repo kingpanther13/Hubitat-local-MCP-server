@@ -266,9 +266,9 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
     def "hub_reboot posts to /hub/reboot and reports success"() {
         given:
         enableWrite()
-        def postedPath = null
-        script.metaClass.hubInternalPost = { String path, Map body = null ->
-            postedPath = path
+        def reboots = []
+        script.metaClass._hubReboot = { boolean rebuild, boolean purge ->
+            reboots << [rebuild, purge]
             return 'ok'
         }
 
@@ -276,7 +276,7 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
         def result = script.toolRebootHub([confirm: true])
 
         then:
-        postedPath == '/hub/reboot'
+        reboots == [[false, false]]
         result.success == true
         result.message.contains('reboot')
         result.warning.contains('automations')
@@ -421,9 +421,9 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
-        def postedPath = null
-        script.metaClass.hubInternalPost = { String path, Map body = null ->
-            postedPath = path
+        def reboots = []
+        script.metaClass._hubReboot = { boolean rebuild, boolean purge ->
+            reboots << [rebuild, purge]
             return 'ok'
         }
 
@@ -434,7 +434,7 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
         response.error == null
         !response.result.isError
         def inner = mcpDriver.parseInner(response)
-        postedPath == '/hub/reboot'
+        reboots == [[false, false]]
         inner.success == true
         inner.message.contains('reboot')
         inner.warning.contains('automations')
