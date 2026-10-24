@@ -2153,7 +2153,7 @@ class TestRunner:
                     or data.get("success") is False or data.get("error") \
                     or data.get("message") == "No log data returned from hub":
                 raise ValueError(f"log read unusable: {str(data)[:120]}")
-            entries = data.get("logs") if "logs" in data else data.get("entries")
+            entries = data.get("entries")
             if not isinstance(entries, list):
                 raise ValueError("log read returned no entries list")
             return entries

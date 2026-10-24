@@ -294,7 +294,7 @@ def test_bypass_boundary_preserves_existing_preferences_and_requires_unknown_nam
             if name == "hub_get_logs":
                 assert arguments == {"deviceId": "10", "limit": 5}
                 log_bypasses.append(bypass)
-                return {"logs": [{"deviceId": "10", "message": "Unselected device log"}]}
+                return {"entries": [{"deviceId": "10", "message": "Unselected device log"}]}
             if not bypass:
                 assert arguments["deviceId"] == "10"
                 denied_tools.append(name)
@@ -388,7 +388,7 @@ def test_bypass_boundary_restores_exact_native_label_after_a_committed_rename_fa
             if name == "hub_get_logs":
                 assert arguments == {"deviceId": "10", "limit": 5}
                 log_bypasses.append(bypass)
-                return {"logs": [{"deviceId": "10", "message": "Unselected device log"}]}
+                return {"entries": [{"deviceId": "10", "message": "Unselected device log"}]}
             if not bypass:
                 assert arguments["deviceId"] == "10"
                 denied_tools.append(name)
@@ -1089,9 +1089,9 @@ def test_capture_504_context_names_the_failed_call_and_anchors_the_window(capsys
 
         def _send(self, method, params, headers=None):
             sent.append(params)
-            if params["arguments"]["args"]["mode"] == "hub":
-                return _logs_body({"logs": [{"name": "2026-09-26 06:07:01.100", "level": "WARN",
-                                             "message": "app|38|MCP|[hubrt] slow GET"}]})
+            if params["arguments"]["args"]["mode"] == "past":
+                return _logs_body({"entries": [{"name": "2026-09-26 06:07:01.100", "level": "WARN",
+                                                "message": "app|38|MCP|[hubrt] slow GET"}]})
             return _logs_body({"entries": [{"timestamp": 1790402821000, "level": "debug",
                                             "component": "mrtr", "message": "slice scheduled"}]})
 
@@ -1105,7 +1105,7 @@ def test_capture_504_context_names_the_failed_call_and_anchors_the_window(capsys
     runner._capture_504_context("test_visual_rule_editor_form_lifecycle", exc, failed_at)
 
     out = capsys.readouterr().out
-    assert [p["arguments"]["args"]["mode"] for p in sent] == ["hub", "mcp"]
+    assert [p["arguments"]["args"]["mode"] for p in sent] == ["past", "mcp"]
     assert sent[0]["arguments"]["args"]["appId"] == 38
     assert sent[0]["arguments"]["args"]["since"] == "2026-09-26T13:03:29Z"   # failed_at - (10.3s + 120s)
     assert "failed op hub_set_visual_rule 10.3s [err]" in out
@@ -1117,7 +1117,7 @@ def test_capture_504_context_names_the_failed_call_and_anchors_the_window(capsys
 @pytest.mark.parametrize("main_reply", [
     pytest.param("raise", id="main-read-504"),
     pytest.param(_logs_body({"status": "in_progress", "retryable": True}), id="snapshot-still-loading"),
-    pytest.param(_logs_body({"logs": [], "error": "Unexpected log format from hub"}), id="error-body"),
+    pytest.param(_logs_body({"entries": [], "error": "Unexpected log format from hub"}), id="error-body"),
     pytest.param({"resultType": "input_required", "requestState": "x"}, id="continuation-not-followed"),
     pytest.param({"isError": True, "content": [{"text": "{}"}]}, id="is-error"),
 ])
@@ -1128,7 +1128,7 @@ def test_capture_504_context_falls_back_to_the_watchdog_when_the_main_read_is_un
         _last_op = None
 
         def _send(self, method, params, headers=None):
-            if params["arguments"]["args"]["mode"] == "hub":
+            if params["arguments"]["args"]["mode"] == "past":
                 if main_reply == "raise":
                     raise et.RelayLostResponseError("504 Gateway Timeout on tools/call")
                 return main_reply
@@ -3023,7 +3023,7 @@ def test_lan_fixture_identity_waits_for_its_nonce_and_never_accepts_stale_observ
             runner.client._last_op = ("hub_get_logs", 0.2, not logs_fail)
             if logs_fail:
                 raise et.McpToolError("hub_get_logs", "diagnostic unavailable")
-            return {"logs": [{"message": "fixture command rejected"}]}
+            return {"entries": [{"message": "fixture command rejected"}]}
         assert name == "hub_get_device_attribute", "identity wait must not repeat the observer command"
         runner.client._last_op = ("hub_get_device_attribute", 0.1, True)
         assert arguments == {"deviceId": "10", "attribute": "nativeDeviceInfo"}
