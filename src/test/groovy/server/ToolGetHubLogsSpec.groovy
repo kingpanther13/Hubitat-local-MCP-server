@@ -70,8 +70,21 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         def upTo = script.toolGetHubLogs([until: '2026-09-06 12:00:00.000'])
 
         then: 'since is exclusive and until inclusive, both in hub time'
-        after.entries*.message*.endsWith('newer') == [true]
+        after.entries.collect { it.message.tokenize('|')[-1] } == ['newer']
         upTo.entries.collect { it.message.tokenize('|')[-1] } == ['bookmark', 'older']
+    }
+
+    def "a zone-less since with a one-digit fraction reads it as hundreds of milliseconds"() {
+        given:
+        sharedLocation.timeZone = TimeZone.getTimeZone('UTC')
+        registerLogs(['2026-09-06 12:00:00.400\tINFO\tapp|1|A|before',
+                      '2026-09-06 12:00:00.600\tINFO\tapp|1|A|after'])
+
+        when:
+        def result = script.toolGetHubLogs([since: '2026-09-06 12:00:00.5'])
+
+        then:
+        result.entries.collect { it.message.tokenize('|')[-1] } == ['after']
     }
 
     def "deviceIdResolved is true when the scoped read returned rows"() {

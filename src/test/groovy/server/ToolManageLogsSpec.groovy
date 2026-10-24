@@ -425,11 +425,12 @@ class ToolManageLogsSpec extends ToolSpecBase {
         given:
         hubGet.register('/logs/json') { params -> logsJsonWithJobs(1) }
 
-        when:
-        script.toolGetHubLogs([mode: ['devices', 'past'], level: 'bogus'])
+        when: 'the MCP log comes first, so only the up-front check can catch the stats tab's bad pageSize'
+        script.toolGetHubLogs([mode: ['mcp', 'scheduledJobs'], pageSize: 500])
 
         then:
-        thrown(IllegalArgumentException)
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('pageSize must be a whole number from 1 to 100')
         hubGet.calls.empty
     }
 
@@ -499,6 +500,13 @@ class ToolManageLogsSpec extends ToolSpecBase {
         [mode: ['hubEvents', 'locationEvents'], cursor: '']               || 'cursor pages one mode'
         [mode: ['hubEvents', 'nope']]                                     || 'Invalid log mode: nope'
         [mode: []]                                                        || 'at least one tab'
+        [mode: ['mcp', 'status'], pageSize: 0]                            || 'pageSize must be a whole number from 1 to 100'
+        [mode: ['mcp', 'status'], pageSize: 101]                          || 'pageSize must be a whole number from 1 to 100'
+        [mode: ['mcp', 'status'], pageSize: '20']                         || 'pageSize must be a whole number from 1 to 100'
+        [mode: 'mcp', limit: -1]                                          || 'limit must be a whole number'
+        [mode: 'mcp', limit: 'abc']                                       || 'limit must be a whole number'
+        [mode: 'mcp', limit: 4294967301L]                                 || 'limit must be a whole number'
+        [mode: 'mcp', level: 'bogus']                                     || 'level must be one of'
     }
 
     @Unroll
@@ -2196,6 +2204,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         'a system job'       | [mode: 'scheduledJobs', jobId: 'system.sunJob', confirm: true]      || 'System jobs cannot be deleted'
         'no confirm'         | [mode: 'scheduledJobs', jobId: 'app12Once.run']                     || 'needs confirm=true'
         'jobId on mcp'       | [mode: 'mcp', jobId: 'app1Once.run']                                || "apply to mode='scheduledJobs' only"
+        'an owner id too long' | [mode: 'scheduledJobs', jobId: 'app99999999999Recur.x', confirm: true] || 'names no app or device on this hub'
     }
 
     def "hub_delete_logs refuses a protected app's job, and a client token the MCP app's own, before sending anything"() {
@@ -2249,7 +2258,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('Device not found: 615')
+        ex.message.contains('Job dev615Once.off belongs to device 615, which is outside this server's device access')
         hubGet.calls.empty
 
         when:
@@ -2535,6 +2544,20 @@ class ToolManageLogsSpec extends ToolSpecBase {
     }
 
     // -------- hub_delete_logs: the MCP log --------
+
+    def "hub_get_logs mode=mcp reads level in any case"() {
+        given:
+        script.mcpLog('error', 'server', 'an error')
+        script.mcpLog('warn', 'server', 'a warning')
+
+        when:
+        def lower = script.toolGetHubLogs([mode: 'mcp', level: 'error', limit: 0])
+        def upper = script.toolGetHubLogs([mode: 'mcp', level: 'ERROR', limit: 0])
+
+        then:
+        lower.entries*.message.contains('an error')
+        upper.entries*.message == lower.entries*.message
+    }
 
     def "hub_get_logs mode=mcp with limit 0 returns every stored entry"() {
         given:

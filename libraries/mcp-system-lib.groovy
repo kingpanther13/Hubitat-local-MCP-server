@@ -1312,6 +1312,12 @@ def toolSetHsm(armCommand) {
 // — is consolidated there under the hub_manage_backup gateway).
 
 def toolRebootHub(args) {
+    // A non-boolean option would reboot without it, so it is refused before the reboot.
+    ["rebuildDatabase", "purgeLogs"].each { String opt ->
+        if (args[opt] != null && !(args[opt] instanceof Boolean)) {
+            throw new IllegalArgumentException("${opt} must be true or false (got '${args[opt]}')")
+        }
+    }
     requireDestructiveConfirm(args.confirm)
 
     boolean rebuildDatabase = args.rebuildDatabase == true
@@ -1334,8 +1340,9 @@ def toolRebootHub(args) {
         mcpLogError("hub-admin", "Hub reboot failed", e)
         return [
             success: false,
+            isError: true,
             error: "Reboot failed: ${e.message}",
-            note: "The reboot command could not be sent. Check Hub Security credentials or try rebooting manually from the Hubitat web UI at Settings → Reboot Hub."
+            note: "If the request reached the hub it may already be restarting: wait 3 minutes and check hub_get_info before trying again. Otherwise check Hub Security credentials or reboot from the Hubitat web UI at Settings → Reboot Hub."
         ]
     }
 }
@@ -1695,8 +1702,8 @@ PRE-FLIGHT: 1) Ensure backup <24h old 2) Tell user 3) Get explicit confirmation 
                 type: "object",
                 properties: [
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved the reboot."],
-                    rebuildDatabase: [type: "boolean", description: "Rebuild the hub database while restarting (the Reboot dialog's advanced option)."],
-                    purgeLogs: [type: "boolean", description: "Delete the hub's past logs while restarting."]
+                    rebuildDatabase: [type: "boolean", description: "Rebuild the hub database while restarting (a Reboot dialog advanced option)."],
+                    purgeLogs: [type: "boolean", description: "Delete the hub's past logs while restarting (a Reboot dialog advanced option)."]
                 ],
                 required: ["confirm"]
             ]

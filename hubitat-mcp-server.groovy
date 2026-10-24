@@ -446,31 +446,16 @@ def mainPage() {
     }
 }
 
-// Predicates called a few times per request, passed as method references (this.&name) instead of
-// inline closures, which each compile to their own class. Never use one per row: every call through a
-// method reference is checked by the hub against all of this app's methods.
-private boolean _argPresent(Map args, key) {
-    return args[key] != null
+// Method references (this.&name) save the class an inline closure compiles to, but each call through
+// one costs far more on the hub than a closure call, so they are used only over small, fixed-size
+// lists, never per row (measured: per-row use made log-history reads 16-30x slower).
+private Long _snapshotFetchedAt(part) {
+    return part instanceof Map && part.snapshot instanceof Map && part.snapshot.fetchedAt instanceof Number ? part.snapshot.fetchedAt as Long : null
 }
 
-private String _toStringOrNull(value) {
-    return value?.toString()
-}
-
-private boolean _mrtrRowFailed(row) {
-    return row instanceof Map && row.success != true
-}
-
-private boolean _mrtrRowSucceeded(row) {
-    return row instanceof Map && row.success == true
-}
-
-private boolean _hasSnapshotFetchedAt(part) {
-    return part instanceof Map && part.snapshot instanceof Map && part.snapshot.fetchedAt instanceof Number
-}
-
-private Long _snapshotFetchedAt(Map part) {
-    return part.snapshot.fetchedAt as Long
+// A whole number (Integer or Long) between min and max inclusive.
+private boolean _isWholeNumberIn(value, long min, long max) {
+    return (value instanceof Integer || value instanceof Long) && (value as Long) >= min && (value as Long) <= max
 }
 
 def formatTimestamp(timestamp) {
@@ -4102,7 +4087,7 @@ private Map _mrtrCommitSlice(String stateId, Map rec, Map claim, Map executionAr
                 def banked = cappedBank.results
                 capped.results = banked
                 capped.ruleIds = cappedBank.ruleIds
-                def cappedFailed = banked.findAll(this.&_mrtrRowFailed)
+                def cappedFailed = banked.findAll { it instanceof Map && it.success != true }
                 if (!cappedFailed.isEmpty()) {
                     capped.failedRuleIds = (cappedFailed*.ruleId - [null]).unique()
                 }
@@ -4125,14 +4110,14 @@ private Map _mrtrCommitSlice(String stateId, Map rec, Map claim, Map executionAr
                 // success is therefore enough to make this batch some-actioned-some-not, whereas
                 // at the ordinary terminal nothing is left unreached and a mixed row set is the
                 // only way to be partial.
-                capped.partial = banked.any(this.&_mrtrRowSucceeded)
+                capped.partial = banked.any { it instanceof Map && it.success == true }
                 // Name the re-issue set explicitly. The un-done work at the cap is
                 // failedRuleIds UNION remainingRuleIds -- exactly what the continuation would
                 // have re-queued -- and note is the field an agent reads for its next move.
                 // Left generic, it leads to re-issuing only the un-reached ids and stranding
                 // the failed ones, which is what the leaf's own note exists to prevent.
                 def reissue = (((capped.failedRuleIds ?: []) as List) +
-                               ((capped.remainingRuleIds ?: []) as List)).unique(this.&_toStringOrNull)
+                               ((capped.remainingRuleIds ?: []) as List)).unique { it?.toString() }
                 if (!reissue.isEmpty()) {
                     capped.note = "The completed slices remain committed. Re-issue ${reissue} " +
                         "to finish: that is the failed rules plus the ones never reached. " +
@@ -4180,8 +4165,8 @@ private Map _mrtrCommitSlice(String stateId, Map rec, Map claim, Map executionAr
         if (stored == null) {
             throw new IllegalStateException("requestState ownership was lost before its continuation checkpoint could be stored")
         }
-        // Writes only: a slow read's background fetch already
-        // runs on its own schedule, and resuming it here would re-enter the read for no gain.
+        // Writes only: a slow read's background fetch already runs on its own schedule, and
+        // resuming it here would re-enter the read for no gain.
         if (_mrtrWriteTools().contains(stored.leafTool?.toString())) {
             _mrtrScheduleAutoContinue(stateId, stored)
         }
@@ -4301,7 +4286,7 @@ private boolean _mrtrStoreTerminal(String stateId, Map originalRec, Map claim, r
             if (!(fetchedAt instanceof Number) && readLeaf && result instanceof Map) {
                 // hub_get_logs with a list of modes carries one snapshot per tab; the oldest bounds the replay.
                 List parts = [result] + (result.modes instanceof Map ? (result.modes as Map).values().toList() : [])
-                fetchedAt = parts.findAll(this.&_hasSnapshotFetchedAt).collect(this.&_snapshotFetchedAt).min()
+                fetchedAt = (parts.collect(this.&_snapshotFetchedAt) - [null]).min()
             }
             if (fetchedAt instanceof Number) {
                 rec.expiresAt = Math.min(rec.expiresAt as Long, (fetchedAt as Long) + _logsJsonSnapshotTtlMs())
@@ -5312,8 +5297,8 @@ def getGatewayConfig() {
             description: "The hub's Logs page and MCP log settings: log history, device/app runtime stats, cloud calls, location and hub events, scheduled and running jobs, hub actions, the MCP log, deleting a scheduled job, and the MCP log level. (Device and app event history: use hub_list_device_events.)",
             tools: ["hub_get_logs", "hub_delete_logs", "hub_set_log_level"],
             summaries: [
-                hub_get_logs: "Read Logs page tabs or the MCP log. Args: mode (one tab or a list: past default, devices, apps, cloudCalls, locationEvents, hubEvents, scheduledJobs, runningJobs, hubActions, mcp, status), level, deviceId|appId, pattern/patterns, since/until, sortBy, limit, cursor",
-                hub_delete_logs: "Clear the MCP log, or delete one scheduled job like the Logs page's Delete button. Args: mode (mcp|scheduledJobs), jobId, confirm",
+                hub_get_logs: "Read Logs page tabs or the MCP log. Args: mode (one tab or a list: past default, devices, apps, cloudCalls, locationEvents, hubEvents, scheduledJobs, runningJobs, hubActions, mcp, status), level, deviceId|appId, pattern/patterns, since/until, sortBy, limit, cursor, pageSize (50 per tab when several are listed)",
+                hub_delete_logs: "Clear the MCP log, or delete one scheduled job like the Logs page's Delete button; past logs are deleted by hub_reboot(confirm=true, purgeLogs=true). Args: mode (mcp|scheduledJobs), jobId, confirm",
                 hub_set_log_level: "Set minimum log level threshold. Args: level (debug/info/warn/error)"
             ],
             searchHints: [
@@ -5384,7 +5369,7 @@ def getGatewayConfig() {
             description: "Read-only hub health, logs, and diagnostics: the Logs page (log history, runtime stats, cloud calls, location and hub events, jobs, hub actions), the MCP log, hub metrics, free-memory/CPU history, device health/staleness, Z-Wave/Zigbee radio details, and saved state snapshots. All operations are read-only; the matching writes (gc, Z-Wave repair, clear the MCP log, delete a scheduled job, set log level, delete snapshots) live in hub_manage_logs / hub_manage_diagnostics.",
             tools: ["hub_get_logs", "hub_get_metrics", "hub_get_memory_history", "hub_get_device_health", "hub_get_radio_details", "hub_list_captured_states"],
             summaries: [
-                hub_get_logs: "Read Logs page tabs or the MCP log. Args: mode (one tab or a list: past default, devices, apps, cloudCalls, locationEvents, hubEvents, scheduledJobs, runningJobs, hubActions, mcp, status), level, deviceId|appId, pattern/patterns, since/until, sortBy, limit, cursor",
+                hub_get_logs: "Read Logs page tabs or the MCP log. Args: mode (one tab or a list: past default, devices, apps, cloudCalls, locationEvents, hubEvents, scheduledJobs, runningJobs, hubActions, mcp, status), level, deviceId|appId, pattern/patterns, since/until, sortBy, limit, cursor, pageSize (50 per tab when several are listed)",
                 hub_get_metrics: "Get hub metrics (memory, temp, DB) with CSV trend history + the hub's own health alerts (radio offline, backup failures, low memory, DB bloat, safeMode). Read-only by default; pass recordSnapshot=true to also append a snapshot to the File Manager. Args: recordSnapshot?, trendPoints?",
                 hub_get_memory_history: "Get free OS memory and CPU load history with summary stats. Args: limit",
                 hub_get_device_health: "Check device staleness; run network diagnostics (ICMP-ping arbitrary IPs, traceroute to one IPv4, WAN download speedtest); and/or blink the hub identify-LED. Args: staleHours, includeHealthy, pingHosts, pingCount, tracerouteHost, speedtest, identifyHub",
@@ -12018,7 +12003,7 @@ Use after hub_list_files to fetch a named file (config, backup, exported rule/ap
 **Cursor pagination.** List tools that take `cursor` return the whole list when it is omitted, subject to the guard; `hub_list_backups` (scope=source) is the exception and always returns one page, with `hasMore: true` and `nextCursor` when more backups follow. Pass `cursor: ""` for the first page, then pass each returned `nextCursor` until it is absent. A malformed or out-of-range cursor is rejected as a validation error. Page sizes:
 - 25: `hub_list_hpm_packages`.
 - 50: `hub_list_apps` (pages the filtered set), `hub_list_drivers`, `hub_list_libraries`, `hub_list_bundles`, `hub_list_rules`, `hub_get_custom_rule` (list mode), `hub_list_captured_states`, `hub_list_backups` (scope=source, newest first), and `hub_list_devices`. For `hub_list_devices`, 50 applies when `limit` is unset (virtual filter included); the cursor is an alternative to `offset`, and the two cannot be combined.
-- 100: `hub_list_variables` (hubVariables; ruleVariables stay whole), `hub_list_files`, `hub_list_rooms`, `hub_list_device_dependents` (appsUsing), `hub_get_logs`, `hub_get_memory_history`, and `hub_get_device_health` (staleDevices).
+- 100: `hub_list_variables` (hubVariables; ruleVariables stay whole), `hub_list_files`, `hub_list_rooms`, `hub_list_device_dependents` (appsUsing), `hub_get_logs` (50 per tab when several are listed), `hub_get_memory_history`, and `hub_get_device_health` (staleDevices).
 - `hub_get_device` and `hub_get_tool_guide` page oversized responses automatically.
 
 ### hub_get_radio_details (read-only Z-Wave/Zigbee/Matter radio surface)

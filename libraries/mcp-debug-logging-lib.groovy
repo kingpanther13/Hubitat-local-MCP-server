@@ -3,12 +3,16 @@ library(name: "McpDebugLoggingLib", namespace: "mcp", author: "kingpanther13", d
 def toolGetDebugLogs(args) {
     initDebugLogs()
 
-    if (args.limit != null && (!(args.limit instanceof Integer || args.limit instanceof Long) || (args.limit as Long) < 0L)) {
+    if (args.limit != null && !_isWholeNumberIn(args.limit, 0L, Integer.MAX_VALUE)) {
         throw new IllegalArgumentException("limit must be a whole number: 0 for every entry, or the most entries to return (got '${args.limit}')")
     }
-    // 0 = every entry; the log keeps at most 100.
-    def limit = args.limit == null ? 50 : ((args.limit as Long) == 0L ? 200 : Math.min(args.limit as Integer, 200))
-    def level = args.level ?: "all"
+    if (args.level != null && !(args.level.toString().toLowerCase() in ["trace", "debug", "info", "warn", "error", "all"])) {
+        throw new IllegalArgumentException("level must be one of trace, debug, info, warn, error, all (got '${args.level}')")
+    }
+    // 0 = every entry: the log keeps at most 100, under the 200-entry cap.
+    int limit = 50
+    if (args.limit != null) limit = (args.limit as Long) == 0L ? 200 : (Math.min(args.limit as Long, 200L) as int)
+    def level = args.level?.toString()?.toLowerCase() ?: "all"
     def component = args.component
     def ruleId = args.ruleId
 

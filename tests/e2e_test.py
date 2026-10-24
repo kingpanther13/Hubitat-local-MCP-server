@@ -238,6 +238,11 @@ class McpToolError(McpError):
         super().__init__(f"Tool '{tool_name}' error: {message}")
 
 
+
+def _hub_event_time(value: str) -> datetime:
+    """An event date as the hub's event tabs give it, e.g. 2026-10-24T00:00:00.246-0400."""
+    return datetime.strptime(value, "%Y-%m-%dT%H:%M:%S.%f%z")
+
 def _validation_log_expectation(
     method: str, params: dict | None, error: Any,
 ) -> str | None:
@@ -12925,7 +12930,8 @@ class TestRunner:
     @test("system_tools")
     def test_get_logs_location_and_hub_events(self) -> None:
         """Location and hub events are their own Logs page tabs, with the hub's field names, read
-        together in one call; null fields are left out of rows and named in nullFields."""
+        together in one call; null fields are left out of rows and named in nullFields. A row's own time
+        works as a since bookmark there and in past logs."""
         both = self.client.call_tool("hub_read_diagnostics", {
             "tool": "hub_get_logs", "args": {"mode": ["locationEvents", "hubEvents"], "since": "7d", "limit": 50}})
         assert set(both.get("modes") or {}) == {"locationEvents", "hubEvents"} and "failedModes" not in both, both
@@ -12942,17 +12948,31 @@ class TestRunner:
                 bookmark = result["entries"][0]["date"]
                 after = self.client.call_tool("hub_read_diagnostics", {
                     "tool": "hub_get_logs", "args": {"mode": mode, "since": bookmark}})
-                mark = datetime.strptime(bookmark, "%Y-%m-%dT%H:%M:%S.%f%z")
-                assert all(datetime.strptime(r["date"], "%Y-%m-%dT%H:%M:%S.%f%z") > mark
+                mark = _hub_event_time(bookmark)
+                assert all(_hub_event_time(r["date"]) > mark
                            for r in after.get("entries") or [] if r.get("date")), \
                     f"{mode}: since must return only events after the bookmark: {after}"
+        # A past row's own time (hub time, no zone) works as a bookmark the same way.
+        first = self.client.call_tool("hub_read_diagnostics", {"tool": "hub_get_logs", "args": {"mode": "past", "pageSize": 1}})
+        assert first.get("entries"), f"past logs: {first}"
+        mark = first["entries"][0].get("time") or first["entries"][0].get("name")
+        after = self.client.call_tool("hub_read_diagnostics", {"tool": "hub_get_logs", "args": {"mode": "past", "since": mark, "limit": 0}})
+        assert isinstance(after.get("entries"), list), f"past logs since {mark}: {after}"
+        assert all((r.get("time") or r.get("name") or "") > mark for r in after["entries"]), \
+            f"since={mark} returned that row or an older one: {after}"
 
     @test("system_tools")
     def test_delete_logs_mcp_starts_a_new_log(self) -> None:
-        """Clearing the MCP log reads nothing first and starts a new log: no entry from before the
-        clear comes back."""
+        """Clearing the MCP log starts a new log: no entry from before the clear comes back."""
+        # A refusal writes a validation-error line, so the log holds at least one entry to clear.
+        self._expect_tool_refusal("hub_read_diagnostics", {"tool": "hub_get_logs", "args": {"mode": "mcp", "source": "x"}},
+                                  "Unknown parameter for hub_get_logs: source")
         before = self.client.call_tool("hub_read_diagnostics", {"tool": "hub_get_logs", "args": {"mode": "mcp", "limit": 0}})
-        last = max((e.get("timestamp") or 0 for e in before.get("entries") or []), default=0)
+        assert before.get("entries"), f"MCP log before the clear must hold the refusal's line: {before}"
+        # Past logs are not this tool's to delete: the refusal names hub_reboot instead of rebooting.
+        self._expect_tool_refusal("hub_manage_logs", {"tool": "hub_delete_logs", "args": {"mode": "past", "confirm": True}},
+                                  "hub_reboot(confirm=true, purgeLogs=true)")
+        last = max(e.get("timestamp") or 0 for e in before["entries"])
         cleared = self.client.call_tool("hub_manage_logs", {"tool": "hub_delete_logs", "args": {"mode": "mcp"}})
         assert cleared.get("success") is True and "clearedCount" in cleared, f"clear: {cleared}"
         after = self.client.call_tool("hub_read_diagnostics", {"tool": "hub_get_logs", "args": {"mode": "mcp", "limit": 0}})
@@ -14662,6 +14682,10 @@ class TestRunner:
                 f"{tool} failed for a reason other than the device-access boundary: {error}"
             )
         assert_device_logs_available()
+        # A job's owner is guarded like the owner: an unselected device's job is refused before any delete.
+        self._expect_tool_refusal("hub_manage_logs", {"tool": "hub_delete_logs", "args": {
+            "mode": "scheduledJobs", "jobId": f"dev{unauth}Once.x", "confirm": True}},
+            "outside this server's device access")
 
         flipped = False
         try:

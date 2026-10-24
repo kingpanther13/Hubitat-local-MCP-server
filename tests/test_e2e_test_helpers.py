@@ -295,6 +295,10 @@ def test_bypass_boundary_preserves_existing_preferences_and_requires_unknown_nam
                 assert arguments == {"deviceId": "10", "limit": 5}
                 log_bypasses.append(bypass)
                 return {"entries": [{"deviceId": "10", "message": "Unselected device log"}]}
+            if name == "hub_manage_logs":
+                assert not bypass and arguments["args"]["jobId"] == "dev10Once.x"
+                raise et.McpToolError("hub_delete_logs", "Job dev10Once.x belongs to device 10, which is outside "
+                                      "this server's device access, so it cannot be deleted here.")
             if not bypass:
                 assert arguments["deviceId"] == "10"
                 denied_tools.append(name)
@@ -389,6 +393,10 @@ def test_bypass_boundary_restores_exact_native_label_after_a_committed_rename_fa
                 assert arguments == {"deviceId": "10", "limit": 5}
                 log_bypasses.append(bypass)
                 return {"entries": [{"deviceId": "10", "message": "Unselected device log"}]}
+            if name == "hub_manage_logs":
+                assert not bypass and arguments["args"]["jobId"] == "dev10Once.x"
+                raise et.McpToolError("hub_delete_logs", "Job dev10Once.x belongs to device 10, which is outside "
+                                      "this server's device access, so it cannot be deleted here.")
             if not bypass:
                 assert arguments["deviceId"] == "10"
                 denied_tools.append(name)

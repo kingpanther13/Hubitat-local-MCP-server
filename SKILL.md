@@ -597,7 +597,7 @@ These are undocumented endpoints on the Hubitat hub at `http://127.0.0.1:8080`:
 **Write endpoints (POST):**
 | Path | Body | Purpose |
 |------|------|---------|
-| `/hub/reboot` | none | Reboot hub |
+| `/hub/reboot` | POST JSON `{rebuildDatabase, purgeLogs}` (both optional booleans, the Reboot dialog's advanced options) | Reboot hub |
 | `/hub/shutdown` | none | Shutdown hub |
 | `/hub/zwaveRepair` | none | Start Z-Wave network repair |
 | `/app/saveOrUpdateJson` | JSON: `{"id": <id\|null>, "source": "<code>", "version": <ver\|1>}` | Install (id=null) or update (id=N) app code. Returns `{success, id, message}`; compile errors ride verbatim in `message`. MUST use `Content-Type: application/json`. `version` is enforced hub-side: a save carrying a stale version is rejected with a version-mismatch error (observed live — a web-UI save after an MCP-driven update errors out). |

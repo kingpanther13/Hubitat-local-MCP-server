@@ -2715,7 +2715,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         done.result.resultType == 'complete'
         inner.modes.past.count == 1
         inner.modes.scheduledJobs.count == 2
-        rec.expiresAt == pastAt + 30000L
+        rec.expiresAt == pastAt + script._logsJsonSnapshotTtlMs()
     }
 
     def "a budgeted hub_get_logs job read continues through requestState while its background fetch runs, holding no write slot"() {

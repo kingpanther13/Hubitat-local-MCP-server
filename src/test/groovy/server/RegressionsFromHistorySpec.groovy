@@ -197,7 +197,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
 
     // --- hub_get_logs pattern matches name and message, never the time column (v0.8.5) --
     //
-    // The v0.8.5 bug matched the filter against `entry.time`, so a name like
+    // Before the v0.8.5 fix the filter matched `entry.time`, so a name like
     // 'Thermostat' never matched any log line.
 
     def "hub_get_logs pattern matches against message field, not timestamp"() {

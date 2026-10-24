@@ -30,10 +30,23 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
     // in setupSpec (the additive-stub pattern; see HarnessSpec's buildAppExecutorMock note).
     @spock.lang.Shared
     List asyncCalls = []
+    @spock.lang.Shared
+    Closure httpPostHandler = null
 
     def setupSpec() {
         appExecutor.asynchttpGet(*_) >> { args -> asyncCalls << [cb: args[0], params: args[1]] }
         appExecutor.pauseExecution(_) >> null
+        appExecutor.httpPost(_, _) >> { args -> if (httpPostHandler) httpPostHandler.call(args[0], args[1]) }
+    }
+
+    def cleanup() {
+        httpPostHandler = null
+    }
+
+    /** Records each reboot's (rebuildDatabase, purgeLogs) pair instead of sending it. */
+    private List stubReboots() {
+        def reboots = stubReboots()
+        reboots
     }
 
     private void enableWrite() {
@@ -86,8 +99,7 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
     def "hub_reboot passes the Reboot dialog's rebuild-database and purge-logs options"() {
         given:
         enableWrite()
-        def reboots = []
-        script.metaClass._hubReboot = { boolean rebuild, boolean purge -> reboots << [rebuild, purge]; 'ok' }
+        def reboots = stubReboots()
 
         when:
         def plain = script.toolRebootHub([confirm: true])
@@ -98,6 +110,63 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
         !plain.containsKey('rebuildDatabase') && !plain.containsKey('purgeLogs')
         both.rebuildDatabase == true
         both.purgeLogs == true
+    }
+
+    def "hub_reboot sends the Reboot dialog's own request: POST /hub/reboot with the two options as JSON"() {
+        given:
+        enableWrite()
+        def sent = []
+        httpPostHandler = { Map params, Closure cb ->
+            sent << [path: params.path, type: params.requestContentType, body: new groovy.json.JsonSlurper().parseText(params.body as String)]
+            cb.call([status: 200, data: '{"message":"Hub rebooting"}'])
+        }
+
+        when:
+        script.toolRebootHub([confirm: true])
+        script.toolRebootHub([confirm: true, purgeLogs: true])
+
+        then:
+        sent == [[path: '/hub/reboot', type: 'application/json', body: [rebuildDatabase: false, purgeLogs: false]],
+                 [path: '/hub/reboot', type: 'application/json', body: [rebuildDatabase: false, purgeLogs: true]]]
+    }
+
+    @spock.lang.Unroll
+    def "hub_reboot refuses #opt=#value before rebooting, since a non-boolean would reboot without it"() {
+        given:
+        enableWrite()
+        def reboots = stubReboots()
+
+        when:
+        script.toolRebootHub([confirm: true, (opt): value])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("${opt} must be true or false")
+        reboots.empty
+
+        where:
+        opt               | value
+        'purgeLogs'       | 'true'
+        'rebuildDatabase' | 1
+    }
+
+    @spock.lang.Unroll
+    def "hub_reboot via dispatch passes purgeLogs through (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableWrite()
+        def reboots = stubReboots()
+
+        when:
+        def response = mcpDriver.callTool('hub_reboot', [confirm: true, purgeLogs: true])
+
+        then:
+        !response.result.isError
+        mcpDriver.parseInner(response).purgeLogs == true
+        reboots == [[false, true]]
+
+        where:
+        useGateways << [true, false]
     }
 
     // -------- requireDestructiveConfirm backup-list fallback (issue #361) --------
@@ -111,8 +180,7 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
         // No stateMap.lastBackupTimestamp. Fixed harness now() = 1234567890000 (2009-02-13T23:31:30Z);
         // this entry is ~3.5h old -- within the 24h window.
         hubGet.register('/hub2/localBackups') { params -> '[{"name":"2009-02-13~2.5.0.159.lzf","createTimeOrig":"2009-02-13T20:00:00+0000"}]' }
-        def reboots = []
-        script.metaClass._hubReboot = { boolean rebuild, boolean purge -> reboots << [rebuild, purge]; 'ok' }
+        def reboots = stubReboots()
 
         when:
         def result = script.toolRebootHub([confirm: true])
@@ -266,11 +334,7 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
     def "hub_reboot posts to /hub/reboot and reports success"() {
         given:
         enableWrite()
-        def reboots = []
-        script.metaClass._hubReboot = { boolean rebuild, boolean purge ->
-            reboots << [rebuild, purge]
-            return 'ok'
-        }
+        def reboots = stubReboots()
 
         when:
         def result = script.toolRebootHub([confirm: true])
@@ -423,11 +487,7 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
-        def reboots = []
-        script.metaClass._hubReboot = { boolean rebuild, boolean purge ->
-            reboots << [rebuild, purge]
-            return 'ok'
-        }
+        def reboots = stubReboots()
 
         when:
         def response = mcpDriver.callTool('hub_reboot', [confirm: true])
@@ -458,9 +518,10 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
 
         then:
         result.success == false
+        result.isError == true
         result.error.contains('Reboot failed')
         result.error.contains('Connection refused')
-        result.note.contains('manually')
+        result.note.contains('hub_get_info')
     }
 
     @spock.lang.Unroll
@@ -483,7 +544,7 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_reboot via dispatch returns success=false envelope when hub POST throws (useGateways=#useGateways)"() {
+    def "hub_reboot via dispatch returns an isError result when hub POST throws (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -494,9 +555,9 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
         when:
         def response = mcpDriver.callTool('hub_reboot', [confirm: true])
 
-        then: 'tool catches the exception internally and reports success=false via the success envelope'
+        then: 'tool catches the exception internally and reports it as an isError result'
         response.error == null
-        !response.result.isError
+        response.result.isError == true
         def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.error.contains('Reboot failed')
