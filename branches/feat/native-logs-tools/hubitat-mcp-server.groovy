@@ -5082,11 +5082,15 @@ def _toolDisplayMeta_partItemBackups() {
 }
 def toolGetDebugLogs(args) {
     initDebugLogs()
-    if (args.limit != null && (!(args.limit instanceof Integer || args.limit instanceof Long) || (args.limit as Long) < 0L)) {
+    if (args.limit != null && !_isWholeNumberIn(args.limit, 0L, Integer.MAX_VALUE)) {
         throw new IllegalArgumentException("limit must be a whole number: 0 for every entry, or the most entries to return (got '${args.limit}')")
     }
-    def limit = args.limit == null ? 50 : ((args.limit as Long) == 0L ? 200 : Math.min(args.limit as Integer, 200))
-    def level = args.level ?: "all"
+    if (args.level != null && !(args.level.toString().toLowerCase() in ["trace", "debug", "info", "warn", "error", "all"])) {
+        throw new IllegalArgumentException("level must be one of trace, debug, info, warn, error, all (got '${args.level}')")
+    }
+    int limit = 50
+    if (args.limit != null) limit = (args.limit as Long) == 0L ? 200 : (Math.min(args.limit as Long, 200L) as int)
+    def level = args.level?.toString()?.toLowerCase() ?: "all"
     def component = args.component
     def ruleId = args.ruleId
     def history = getDebugLogReadResult(args)
@@ -6364,14 +6368,17 @@ private Date _logsTimeArg(String name, value) {
     def strict = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss")
     strict.setLenient(false)
     String zone = stamp.group(4)
-    strict.setTimeZone(zone ? TimeZone.getTimeZone("UTC") : (location?.timeZone ?: TimeZone.getTimeZone("UTC")))
+    strict.setTimeZone(zone ? TimeZone.getTimeZone("UTC") : _hubTimeZone())
     Date local
     try {
         local = strict.parse("${stamp.group(1)} ${stamp.group(2)}".toString())
     } catch (Exception e) {
         throw new IllegalArgumentException("Cannot parse ${name}='${s}': no such date and time")
     }
-    if (!zone) return new Date(local.time + (stamp.group(3) ? (stamp.group(3).substring(1) + "00").take(3).toLong() : 0L))
+    if (!zone) {
+        long fractionMs = stamp.group(3) ? (stamp.group(3).substring(1) + "00").take(3).toLong() : 0L
+        return new Date(local.time + fractionMs)
+    }
     Date parsed = _parseSinceArg(s)
     if (parsed == null) throw new IllegalArgumentException("Cannot parse ${name}='${s}': ${formats}")
     return parsed
@@ -6396,12 +6403,10 @@ private Map _logsQuery(Map args, String mode) {
     if (since != null && until != null && !until.after(since)) {
         throw new IllegalArgumentException("until must be later than since (relative ages count back from now, so since='2h' is earlier than until='1h')")
     }
-    if (args.limit != null && (!(args.limit instanceof Integer || args.limit instanceof Long) || (args.limit as Long) < 0L || (args.limit as Long) > Integer.MAX_VALUE)) {
+    if (args.limit != null && !_isWholeNumberIn(args.limit, 0L, Integer.MAX_VALUE)) {
         throw new IllegalArgumentException("limit must be a whole number: 0 for every row, or the most rows to return (got '${args.limit}')")
     }
-    if (args.pageSize != null && (!(args.pageSize instanceof Integer || args.pageSize instanceof Long) || (args.pageSize as Long) < 1L || (args.pageSize as Long) > 100L)) {
-        throw new IllegalArgumentException("pageSize must be a whole number from 1 to 100 (got '${args.pageSize}')")
-    }
+    _logsCheckPageSize(args.pageSize)
     int limit
     if (args.limit != null) limit = args.limit as Integer
     else if (mode in ["devices", "apps"]) limit = 20
@@ -6411,6 +6416,14 @@ private Map _logsQuery(Map args, String mode) {
             sortBy: args.sortBy ?: "pct", level: args.level?.toString()?.toLowerCase(),
             cursor: args.cursor != null ? args.cursor : (args.pageSize != null ? "" : null),
             pageSize: args.pageSize != null ? (args.pageSize as Integer) : 100]
+}
+private void _logsCheckPageSize(pageSize) {
+    if (pageSize != null && !_isWholeNumberIn(pageSize, 1L, 100L)) {
+        throw new IllegalArgumentException("pageSize must be a whole number from 1 to 100 (got '${pageSize}')")
+    }
+}
+private TimeZone _hubTimeZone() {
+    return location?.timeZone ?: TimeZone.getTimeZone("UTC")
 }
 def toolGetHubLogs(args) {
     Map modeArgs = _logsModeArgs()
@@ -6431,6 +6444,7 @@ def toolGetHubLogs(args) {
     }
     if (args.mode instanceof List) {
         if (args.cursor != null) throw new IllegalArgumentException("cursor pages one mode: each listed tab returns its first page; call that mode alone with its nextCursor")
+        _logsCheckPageSize(args.pageSize)
         (modes - ["mcp", "status"]).each(this.&_logsQuery.curry(args))
         Map results = [:]
         boolean pending = false
@@ -6470,11 +6484,13 @@ def toolGetHubLogs(args) {
             shared*.remove("snapshot")
         }
         List failed = results.findAll(this.&_logsTabFailed).keySet() as List
-        if (failed) out.failedModes = failed
-        if (failed && failed.size() == results.size()) {
-            out.success = false
-            out.isError = true
-            out.error = "Every listed tab failed: ${failed.join(', ')}"
+        if (failed) {
+            out.failedModes = failed
+            if (failed.size() == results.size()) {
+                out.success = false
+                out.isError = true
+                out.error = "Every listed tab failed: ${failed.join(', ')}"
+            }
         }
         return out
     }
@@ -6535,6 +6551,9 @@ def toolGetHubLogs(args) {
     }
     return result + _logsPage(mode, rows, query)
 }
+private boolean _argPresent(Map args, key) {
+    return args[key] != null
+}
 private boolean _logsUnknownArg(List allowed, String key) {
     return !(key in allowed) && key != "mode" && !key.startsWith("__")
 }
@@ -6563,13 +6582,16 @@ private Map _logsPage(String mode, List rows, Map query) {
     boolean timed = mode in ["locationEvents", "hubEvents"]
     int unparseable = 0
     List matched = []
+    String wantId = query.deviceId ?: query.appId
+    String wantType = query.deviceId ? "device" : "app"
+    String statType = mode == "devices" ? "device" : "app"
     for (row in rows) {
         if (!(row instanceof Map)) continue
         Map owner = owned ? _logsOwner(row.link) : null
         Map entry = owner != null ? row + [owner: owner] : row
-        if (query.deviceId || query.appId) {
-            Map scope = owned ? owner : [type: mode == "devices" ? "device" : "app", id: row.id]
-            if (scope?.type != (query.deviceId ? "device" : "app") || scope.id?.toString() != (query.deviceId ?: query.appId)) continue
+        if (wantId) {
+            Map scope = owned ? owner : [type: statType, id: row.id]
+            if (scope?.type != wantType || scope.id?.toString() != wantId) continue
         }
         if (!_logsRowMatches(entry, fields, query.patterns)) continue
         if (timed && (query.since != null || query.until != null)) {
@@ -6600,7 +6622,9 @@ private Map _logsPage(String mode, List rows, Map query) {
     return out
 }
 private Map _pastLogs(Map args, Map query) {
-    Map scope = query.deviceId ? [type: "dev", id: query.deviceId] : query.appId ? [type: "app", id: query.appId] : null
+    Map scope = null
+    if (query.deviceId) scope = [type: "dev", id: query.deviceId]
+    else if (query.appId) scope = [type: "app", id: query.appId]
     def responseText
     def fetchedAt = null
     try {
@@ -6624,7 +6648,8 @@ private Map _pastLogs(Map args, Map query) {
         }
     }
     if (!(rows instanceof List)) throw new IllegalStateException("Unexpected /logs/past/json response: expected a JSON array")
-    TimeZone hubZone = location?.timeZone ?: TimeZone.getTimeZone("UTC")
+    TimeZone hubZone = _hubTimeZone()
+    List fields = _logsSearchFields("past")
     List entries = []
     int unparseable = 0
     for (line in rows.reverse()) {
@@ -6633,7 +6658,7 @@ private Map _pastLogs(Map args, Map query) {
         boolean hubLocal = entry.remove("hubLocalTime") == true
         entry.remove("sourceId")
         if (query.level && query.level != "all" && entry.level?.toLowerCase() != query.level) continue
-        if (!_logsRowMatches(entry, _logsSearchFields("past"), query.patterns)) continue
+        if (!_logsRowMatches(entry, fields, query.patterns)) continue
         if (query.since != null || query.until != null) {
             Date at = _pastLogTime(entry, hubLocal ? hubZone : TimeZone.getTimeZone("UTC"))
             if (at == null) unparseable++
@@ -6685,9 +6710,17 @@ def toolDeleteLogs(args) {
     if (!key.matches()) throw new IllegalArgumentException("jobId '${jobId}' is not a scheduled-job id (group.name, e.g. app12Recur.poll)")
     if (jobId.startsWith("system.")) throw new IllegalArgumentException("System jobs cannot be deleted; the Logs page offers no Delete for them either")
     def ownerMatch = key.group(1) =~ /^(app|dev)(\d+)(Recur|Once)$/
+    if (ownerMatch.matches() && ownerMatch.group(2).length() > 9) {
+        throw new IllegalArgumentException("jobId '${jobId}' names no app or device on this hub; read current ids with hub_get_logs(mode='scheduledJobs')")
+    }
     Map owner = ownerMatch.matches() ? [type: ownerMatch.group(1) == "dev" ? "device" : "app", id: ownerMatch.group(2) as Integer] : null
-    if (owner?.type == "device") _requireDeviceToolAccess(owner.id.toString())
-    if (owner?.type == "app") {
+    if (owner?.type == "device") {
+        try {
+            _requireDeviceToolAccess(owner.id.toString())
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("Job ${jobId} belongs to device ${owner.id}, which is outside this server's device access, so it cannot be deleted here.")
+        }
+    } else if (owner?.type == "app") {
         String ownerId = owner.id.toString()
         if (callerClient != null && ownerId == app.id?.toString()) {
             throw new IllegalArgumentException("A per-client access token cannot delete the MCP Rule Server app's own scheduled jobs.")
@@ -8154,11 +8187,11 @@ def _getAllToolDefinitions_partDiagnostics() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    mode: [anyOf: [[type: "string", enum: ["past", "devices", "apps", "cloudCalls", "locationEvents", "hubEvents", "scheduledJobs", "runningJobs", "hubActions", "mcp", "status"]], [type: "array", items: [type: "string", enum: ["past", "devices", "apps", "cloudCalls", "locationEvents", "hubEvents", "scheduledJobs", "runningJobs", "hubActions", "mcp", "status"]]]], default: "past", description: "A Logs page tab, or a list of them. past = log history; devices/apps = runtime stats; locationEvents = mode, HSM and variable changes; hubEvents = reboots and low memory; mcp = this app's own log; status = its level."],
+                    mode: [anyOf: [[type: "string", enum: _logsModeArgs().keySet() as List], [type: "array", items: [type: "string", enum: _logsModeArgs().keySet() as List]]], default: "past", description: "A Logs page tab, or a list of them. past = log history; devices/apps = runtime stats; locationEvents = mode, HSM and variable changes; hubEvents = reboots and low memory; mcp = this app's own log; status = its level."],
                     level: [type: "string", enum: ["trace", "debug", "info", "warn", "error", "all"], description: "past and mcp."],
                     deviceId: [type: "string", description: "Numeric device id to scope past logs, stats or jobs to."],
                     appId: [type: "string", description: "Numeric app id, the same way."],
-                    pattern: [type: "string", description: "Case-insensitive regex over the row's name, and its message, methodName or description where it has one."],
+                    pattern: [type: "string", description: "Case-insensitive regex over the row's name, and its message, methodName, descriptionText or value where it has one."],
                     patterns: [type: "array", items: [type: "string"], description: "More regexes, combined by patternMode."],
                     patternMode: [type: "string", enum: ["any", "all"], description: "Default any."],
                     since: [type: ["string", "integer"], description: "past and events: rows after this time, so a returned time never repeats. '30m', '2h', '7d', a time as rows show it (no zone = hub time), ISO-8601 with a zone, or epoch ms."],
@@ -8174,7 +8207,7 @@ def _getAllToolDefinitions_partDiagnostics() {
         ],
         [
             name: "hub_delete_logs",
-            description: """Clear the MCP app's own log (mode='mcp'), or delete one scheduled job like the Logs page's Delete button (mode='scheduledJobs'). Only that timer goes; its app or device schedules it again only if its own code does. Cannot be undone. The hub's past logs are deleted only by a reboot: hub_reboot(purgeLogs=true).""",
+            description: """Clear the MCP app's own log (mode='mcp'), or delete one scheduled job like the Logs page's Delete button (mode='scheduledJobs'). Only that timer goes; its app or device schedules it again only if its own code does. Cannot be undone. The hub's past logs are deleted only by a reboot: hub_reboot(confirm=true, purgeLogs=true).""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -9373,6 +9406,11 @@ def toolSetHsm(armCommand) {
     ]
 }
 def toolRebootHub(args) {
+    ["rebuildDatabase", "purgeLogs"].each { String opt ->
+        if (args[opt] != null && !(args[opt] instanceof Boolean)) {
+            throw new IllegalArgumentException("${opt} must be true or false (got '${args[opt]}')")
+        }
+    }
     requireDestructiveConfirm(args.confirm)
     boolean rebuildDatabase = args.rebuildDatabase == true
     boolean purgeLogs = args.purgeLogs == true
@@ -9393,8 +9431,9 @@ def toolRebootHub(args) {
         mcpLogError("hub-admin", "Hub reboot failed", e)
         return [
             success: false,
+            isError: true,
             error: "Reboot failed: ${e.message}",
-            note: "The reboot command could not be sent. Check Hub Security credentials or try rebooting manually from the Hubitat web UI at Settings → Reboot Hub."
+            note: "If the request reached the hub it may already be restarting: wait 3 minutes and check hub_get_info before trying again. Otherwise check Hub Security credentials or reboot from the Hubitat web UI at Settings → Reboot Hub."
         ]
     }
 }
@@ -9705,8 +9744,8 @@ PRE-FLIGHT: 1) Ensure backup <24h old 2) Tell user 3) Get explicit confirmation 
                 type: "object",
                 properties: [
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved the reboot."],
-                    rebuildDatabase: [type: "boolean", description: "Rebuild the hub database while restarting (the Reboot dialog's advanced option)."],
-                    purgeLogs: [type: "boolean", description: "Delete the hub's past logs while restarting."]
+                    rebuildDatabase: [type: "boolean", description: "Rebuild the hub database while restarting (a Reboot dialog advanced option)."],
+                    purgeLogs: [type: "boolean", description: "Delete the hub's past logs while restarting (a Reboot dialog advanced option)."]
                 ],
                 required: ["confirm"]
             ]
@@ -28487,23 +28526,11 @@ def mainPage() {
         }
     }
 }
-private boolean _argPresent(Map args, key) {
-    return args[key] != null
+private Long _snapshotFetchedAt(part) {
+    return part instanceof Map && part.snapshot instanceof Map && part.snapshot.fetchedAt instanceof Number ? part.snapshot.fetchedAt as Long : null
 }
-private String _toStringOrNull(value) {
-    return value?.toString()
-}
-private boolean _mrtrRowFailed(row) {
-    return row instanceof Map && row.success != true
-}
-private boolean _mrtrRowSucceeded(row) {
-    return row instanceof Map && row.success == true
-}
-private boolean _hasSnapshotFetchedAt(part) {
-    return part instanceof Map && part.snapshot instanceof Map && part.snapshot.fetchedAt instanceof Number
-}
-private Long _snapshotFetchedAt(Map part) {
-    return part.snapshot.fetchedAt as Long
+private boolean _isWholeNumberIn(value, long min, long max) {
+    return (value instanceof Integer || value instanceof Long) && (value as Long) >= min && (value as Long) <= max
 }
 def formatTimestamp(timestamp) {
     if (!timestamp) return "Never"
@@ -31190,7 +31217,7 @@ private Map _mrtrCommitSlice(String stateId, Map rec, Map claim, Map executionAr
                 def banked = cappedBank.results
                 capped.results = banked
                 capped.ruleIds = cappedBank.ruleIds
-                def cappedFailed = banked.findAll(this.&_mrtrRowFailed)
+                def cappedFailed = banked.findAll { it instanceof Map && it.success != true }
                 if (!cappedFailed.isEmpty()) {
                     capped.failedRuleIds = (cappedFailed*.ruleId - [null]).unique()
                 }
@@ -31198,9 +31225,9 @@ private Map _mrtrCommitSlice(String stateId, Map rec, Map claim, Map executionAr
                         && !(result.remainingRuleIds as List).isEmpty()) {
                     capped.remainingRuleIds = result.remainingRuleIds
                 }
-                capped.partial = banked.any(this.&_mrtrRowSucceeded)
+                capped.partial = banked.any { it instanceof Map && it.success == true }
                 def reissue = (((capped.failedRuleIds ?: []) as List) +
-                               ((capped.remainingRuleIds ?: []) as List)).unique(this.&_toStringOrNull)
+                               ((capped.remainingRuleIds ?: []) as List)).unique { it?.toString() }
                 if (!reissue.isEmpty()) {
                     capped.note = "The completed slices remain committed. Re-issue ${reissue} " +
                         "to finish: that is the failed rules plus the ones never reached. " +
@@ -31337,7 +31364,7 @@ private boolean _mrtrStoreTerminal(String stateId, Map originalRec, Map claim, r
             def fetchedAt = readLeaf ? originalRec.readSnapshotFetchedAt : null
             if (!(fetchedAt instanceof Number) && readLeaf && result instanceof Map) {
                 List parts = [result] + (result.modes instanceof Map ? (result.modes as Map).values().toList() : [])
-                fetchedAt = parts.findAll(this.&_hasSnapshotFetchedAt).collect(this.&_snapshotFetchedAt).min()
+                fetchedAt = (parts.collect(this.&_snapshotFetchedAt) - [null]).min()
             }
             if (fetchedAt instanceof Number) {
                 rec.expiresAt = Math.min(rec.expiresAt as Long, (fetchedAt as Long) + _logsJsonSnapshotTtlMs())
@@ -32138,8 +32165,8 @@ def getGatewayConfig() {
             description: "The hub's Logs page and MCP log settings: log history, device/app runtime stats, cloud calls, location and hub events, scheduled and running jobs, hub actions, the MCP log, deleting a scheduled job, and the MCP log level. (Device and app event history: use hub_list_device_events.)",
             tools: ["hub_get_logs", "hub_delete_logs", "hub_set_log_level"],
             summaries: [
-                hub_get_logs: "Read Logs page tabs or the MCP log. Args: mode (one tab or a list: past default, devices, apps, cloudCalls, locationEvents, hubEvents, scheduledJobs, runningJobs, hubActions, mcp, status), level, deviceId|appId, pattern/patterns, since/until, sortBy, limit, cursor",
-                hub_delete_logs: "Clear the MCP log, or delete one scheduled job like the Logs page's Delete button. Args: mode (mcp|scheduledJobs), jobId, confirm",
+                hub_get_logs: "Read Logs page tabs or the MCP log. Args: mode (one tab or a list: past default, devices, apps, cloudCalls, locationEvents, hubEvents, scheduledJobs, runningJobs, hubActions, mcp, status), level, deviceId|appId, pattern/patterns, since/until, sortBy, limit, cursor, pageSize (50 per tab when several are listed)",
+                hub_delete_logs: "Clear the MCP log, or delete one scheduled job like the Logs page's Delete button; past logs are deleted by hub_reboot(confirm=true, purgeLogs=true). Args: mode (mcp|scheduledJobs), jobId, confirm",
                 hub_set_log_level: "Set minimum log level threshold. Args: level (debug/info/warn/error)"
             ],
             searchHints: [
@@ -32210,7 +32237,7 @@ def getGatewayConfig() {
             description: "Read-only hub health, logs, and diagnostics: the Logs page (log history, runtime stats, cloud calls, location and hub events, jobs, hub actions), the MCP log, hub metrics, free-memory/CPU history, device health/staleness, Z-Wave/Zigbee radio details, and saved state snapshots. All operations are read-only; the matching writes (gc, Z-Wave repair, clear the MCP log, delete a scheduled job, set log level, delete snapshots) live in hub_manage_logs / hub_manage_diagnostics.",
             tools: ["hub_get_logs", "hub_get_metrics", "hub_get_memory_history", "hub_get_device_health", "hub_get_radio_details", "hub_list_captured_states"],
             summaries: [
-                hub_get_logs: "Read Logs page tabs or the MCP log. Args: mode (one tab or a list: past default, devices, apps, cloudCalls, locationEvents, hubEvents, scheduledJobs, runningJobs, hubActions, mcp, status), level, deviceId|appId, pattern/patterns, since/until, sortBy, limit, cursor",
+                hub_get_logs: "Read Logs page tabs or the MCP log. Args: mode (one tab or a list: past default, devices, apps, cloudCalls, locationEvents, hubEvents, scheduledJobs, runningJobs, hubActions, mcp, status), level, deviceId|appId, pattern/patterns, since/until, sortBy, limit, cursor, pageSize (50 per tab when several are listed)",
                 hub_get_metrics: "Get hub metrics (memory, temp, DB) with CSV trend history + the hub's own health alerts (radio offline, backup failures, low memory, DB bloat, safeMode). Read-only by default; pass recordSnapshot=true to also append a snapshot to the File Manager. Args: recordSnapshot?, trendPoints?",
                 hub_get_memory_history: "Get free OS memory and CPU load history with summary stats. Args: limit",
                 hub_get_device_health: "Check device staleness; run network diagnostics (ICMP-ping arbitrary IPs, traceroute to one IPv4, WAN download speedtest); and/or blink the hub identify-LED. Args: staleHours, includeHealthy, pingHosts, pingCount, tracerouteHost, speedtest, identifyHub",
@@ -36828,7 +36855,7 @@ Use after hub_list_files to fetch a named file (config, backup, exported rule/ap
 **Cursor pagination.** List tools that take `cursor` return the whole list when it is omitted, subject to the guard; `hub_list_backups` (scope=source) is the exception and always returns one page, with `hasMore: true` and `nextCursor` when more backups follow. Pass `cursor: ""` for the first page, then pass each returned `nextCursor` until it is absent. A malformed or out-of-range cursor is rejected as a validation error. Page sizes:
 - 25: `hub_list_hpm_packages`.
 - 50: `hub_list_apps` (pages the filtered set), `hub_list_drivers`, `hub_list_libraries`, `hub_list_bundles`, `hub_list_rules`, `hub_get_custom_rule` (list mode), `hub_list_captured_states`, `hub_list_backups` (scope=source, newest first), and `hub_list_devices`. For `hub_list_devices`, 50 applies when `limit` is unset (virtual filter included); the cursor is an alternative to `offset`, and the two cannot be combined.
-- 100: `hub_list_variables` (hubVariables; ruleVariables stay whole), `hub_list_files`, `hub_list_rooms`, `hub_list_device_dependents` (appsUsing), `hub_get_logs`, `hub_get_memory_history`, and `hub_get_device_health` (staleDevices).
+- 100: `hub_list_variables` (hubVariables; ruleVariables stay whole), `hub_list_files`, `hub_list_rooms`, `hub_list_device_dependents` (appsUsing), `hub_get_logs` (50 per tab when several are listed), `hub_get_memory_history`, and `hub_get_device_health` (staleDevices).
 - `hub_get_device` and `hub_get_tool_guide` page oversized responses automatically.
 
 ### hub_get_radio_details (read-only Z-Wave/Zigbee/Matter radio surface)
