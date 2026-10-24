@@ -461,6 +461,42 @@ class WatchdogV31ManualSpec extends WatchdogSpec {
         'valid update'                | 200    | '{"success":true,"id":119,"version":6}' || true
     }
 
+    def "hub_get_metrics and hub_get_info report readings as numbers, the database size in MB"() {
+        given:
+        script.metaClass.hubGet = { String p, Map q ->
+            [('/hub/advanced/freeOSMemory'): '456232\n', ('/hub/advanced/internalTempCelsius'): '42.5',
+             ('/hub/advanced/databaseSize'): '25'][p]
+        }
+
+        when:
+        def metrics = script.adminGetMetrics([:])
+        def info = script.adminGetInfo([:])
+
+        then:
+        metrics.current.freeMemoryKB == 456232L
+        metrics.current.internalTempC == 42.5G
+        metrics.current.databaseSizeMB == 25L
+        !metrics.current.containsKey('databaseSizeKB')
+        info.freeMemoryKB == 456232L
+    }
+
+    def "hub_get_source and hub_read_file read 30000 characters by default"() {
+        given:
+        String big = 'x' * 70000
+        script.metaClass.hubGet = { String p, Map q -> '{"status":"ok","source":"' + big + '","version":3}' }
+        script.metaClass.uploadHubFile = { String fn, byte[] bytes -> }
+        script.metaClass.downloadHubFile = { String fn -> big.getBytes('UTF-8') }
+
+        when:
+        def src = script.adminGetSource([type: 'app', id: '178', noSave: true])
+        def file = script.adminReadFile([fileName: 'big.txt'])
+
+        then:
+        src.chunkLength == 30000
+        src.hasMore == true
+        file.content.length() == 30000
+    }
+
     @Unroll
     def "adminGetSource auto-saves to the cache only when noSave is not set (noSave=#noSave -> saved=#saved)"() {
         given:

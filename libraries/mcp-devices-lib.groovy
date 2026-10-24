@@ -9,7 +9,9 @@ private List _capabilityNames(def caps) {
     }.findAll { it != null }
 }
 
-def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, capabilityFilter = null, format = null, fields = null, cursor = null, scope = null, roomFilter = null, onlyOn = null, changedSince = null, attributeNames = null) {
+def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, capabilityFilter = null, format = null, fields = null, cursor = null, scope = null, roomFilter = null, onlyOn = null, changedSince = null, attributeNames = null, reqT0 = null) {
+    // Only the server injects a numeric clock; anything else a client sent is ignored.
+    Long clockT0 = reqT0 instanceof Number ? reqT0 as Long : null
     // Opt-in cursor pagination decodes onto the existing offset/limit mechanics. The
     // real range check against the filtered total happens further down (the
     // offset-exceeds early return) because we don't have the filtered count yet; pass
@@ -22,7 +24,7 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
             throw new IllegalArgumentException("cursor and offset are mutually exclusive (got cursor=${cursor}, offset=${offset}); pick one")
         }
         offset = _parseListCursor(cursor, Integer.MAX_VALUE, "hub_list_devices")
-        // Default page size in cursor mode so nextCursor arithmetic is deterministic.
+        // Default page size in cursor mode so nextCursor is offset + limit unless the page is budget-cut.
         // Callers who want a different page size set limit explicitly (cursor still wins
         // on offset; limit just sizes the page).
         if (!limit || limit <= 0) limit = 50
@@ -328,7 +330,12 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
     // like format='ids'.
     if (resolvedFormat == "context") {
         def pagedDevices = totalCount > 0 ? allDevices.subList(startIndex, endIndex) : []
-        _hydrateNativeInventory(pagedDevices, ['currentStates', 'capabilities'], true)
+        int hydrated = _hydrateNativeInventory(pagedDevices, ['currentStates', 'capabilities'], true, clockT0)
+        boolean budgetCut = hydrated < pagedDevices.size()
+        if (budgetCut) {
+            pagedDevices = pagedDevices.subList(0, hydrated)
+            endIndex = startIndex + hydrated
+        }
         def attrNames = (attributeNames && !attributeNames.isEmpty()) ? attributeNames.collect { it.toString() } : _contextAttributeNames()
         def lines = pagedDevices.collect { d -> _contextDeviceLine(d, attrNames) }
         def header = _contextHeaderLines()
@@ -359,6 +366,7 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
                 result.nextCursor = endIndex.toString()
             }
         }
+        if (budgetCut) _applyListBudgetCut(result, startIndex, endIndex, totalCount, limit, cursor != null)
         return result
     }
 
@@ -392,6 +400,7 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
     // (id + metadataUnavailable) so the caller can enumerate around it, and the response says
     // partial. Failing the whole page for one device would hide every other device with it.
     def requiredCollections = []
+    boolean budgetCut = false
     boolean labelOnlyProjection = fieldSet != null && !useDetailed && fieldSet.contains("label") &&
         fieldSet.every { it in ["id", "mcpManaged", "label"] }
     if (labelOnlyProjection) {
@@ -409,7 +418,12 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
         } else if (fieldSet == null || fieldSet.contains('currentStates')) {
             requiredCollections << 'currentStates'
         }
-        _hydrateNativeInventory(pagedDevices, requiredCollections, true)
+        int hydrated = _hydrateNativeInventory(pagedDevices, requiredCollections, true, clockT0)
+        budgetCut = hydrated < pagedDevices.size()
+        if (budgetCut) {
+            pagedDevices = pagedDevices.subList(0, hydrated)
+            endIndex = startIndex + hydrated
+        }
     }
 
     def devices = pagedDevices.collect { device ->
@@ -479,8 +493,24 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
         }
         if (cursor != null && endIndex < totalCount) result.nextCursor = endIndex.toString()
     }
+    // A budget cut adds the pagination fields even to a call that did not paginate.
+    if (budgetCut) _applyListBudgetCut(result, startIndex, endIndex, totalCount, limit, cursor != null)
 
     return result
+}
+
+// A legacy client has no request-to-request continuation, so a page whose per-device reads reach
+// the request budget ends early and says where the next page starts.
+private void _applyListBudgetCut(Map result, int startIndex, int endIndex, int totalCount, limit, boolean cursorMode) {
+    result.offset = startIndex
+    result.limit = limit ?: 0
+    result.hasMore = true
+    result.nextOffset = endIndex
+    result.nextCursor = endIndex.toString()
+    result.budgetLimited = true
+    result.note = ("Partial page: devices ${startIndex + 1}-${endIndex} of ${totalCount}. It stopped early to answer within the " +
+        "request time limit and ${totalCount - endIndex} more device(s) remain. Repeat the call with " +
+        (cursorMode ? "cursor '${endIndex}'" : "offset ${endIndex}") + " (other arguments unchanged) to continue.").toString()
 }
 
 private Boolean isDeviceDisabled(device) {
@@ -653,15 +683,20 @@ private List _mcpVisibleDevices(List childDevs = null, Map meta = null) {
     return byId.values() as List
 }
 
-private void _hydrateNativeInventory(List records, List requiredCollections, boolean allowPartial = false) {
-    records.each { record ->
+// Returns how many records it processed. With reqT0 it stops before the next record that needs a
+// read once the request budget is spent, never before the first record.
+private int _hydrateNativeInventory(List records, List requiredCollections, boolean allowPartial = false, Long reqT0 = null) {
+    int processed = 0
+    for (record in records) {
+        if (processed > 0 && reqT0 != null && record._nativeLoaded != true && _timeBudgetExceeded(reqT0)) return processed
+        processed++
         if (record._nativeLoaded != true) {
             def fj = _fetchDeviceFullJson(record.id)
             if (!(fj?.device instanceof Map)) {
                 if (!allowPartial) throw new IllegalStateException("Native device metadata is unavailable for device ${record.id}; no SDK fallback was used.")
                 record.putAll([_nativeLoaded: true, _nativeReadError: true,
                     _nativeUnavailableCollections: ['currentStates', 'capabilities', 'commands']])
-                return
+                continue
             }
             def d = fj.device
             def states = d.currentStates instanceof Map ? [] : null
@@ -686,6 +721,7 @@ private void _hydrateNativeInventory(List records, List requiredCollections, boo
             throw new IllegalStateException("Native device collections are unavailable for device ${record.id}: ${unavailable.join(', ')}.")
         }
     }
+    return processed
 }
 
 // Seed identity, room, activity, disabled flag and current states for a whole population from
@@ -2142,7 +2178,7 @@ private Map _deviceReadFragment(Map snapshot, String token, int start) {
 }
 
 private String _deviceReadSelection(deviceId, String mode, sections, fields) {
-    return _mrtrSha256(groovy.json.JsonOutput.toJson([app?.id?.toString(), deviceId.toString(), mode, sections, fields]))
+    return _mrtrSha256(groovy.json.JsonOutput.toJson([app?.id?.toString(), callerClient?.id?.toString(), deviceId.toString(), mode, sections, fields]))
 }
 
 private Map _deviceReadContinuation(String cursor, String selection) {
@@ -2298,6 +2334,9 @@ def toolSendCommand(deviceId, command, parameters, waitFor = null, commands = nu
     // would block a legitimate command. A mistyped name therefore fires the command and then
     // times out with neverReported -- do not restore a pre-fire attribute-existence check here.
     def pollArgs = (waitFor != null) ? _buildWaitForPollArgs(deviceId, deviceLabel, waitFor) : null
+    // A waitFor that cannot settle in the request time left is refused before the command fires.
+    String stableRefusal = (pollArgs != null) ? _pollStableRefusal(pollArgs, reqT0) : null
+    if (stableRefusal) throw new IllegalArgumentException("waitFor.${stableRefusal}")
     if (parameters instanceof String && !parameters.trim()) parameters = null
     if (parameters && parameters.size() > 0) {
         def declaration = fullJson.commands?.find { it?.name == command }
@@ -2322,7 +2361,8 @@ def toolSendCommand(deviceId, command, parameters, waitFor = null, commands = nu
             expected : (pollArgs.containsKey("expectedValues") ? pollArgs.expectedValues : pollArgs.expectedValue)
         ]
         try {
-            def poll = toolPollUntilAttribute(pollArgs)
+            // The request clock ends the confirmation poll by the request deadline.
+            def poll = toolPollUntilAttribute(reqT0 instanceof Number ? pollArgs + [__reqT0: reqT0] : pollArgs)
             waitForBlock.converged  = poll.success == true
             waitForBlock.finalValue = poll.finalValue
             // poll.polledCount is intentionally NOT surfaced into the waitFor block: elapsedMs
@@ -2342,6 +2382,10 @@ def toolSendCommand(deviceId, command, parameters, waitFor = null, commands = nu
             // transitioning is present on the timeout path as true OR false (both meaningful),
             // so copy it whenever the engine emitted the key -- not only when true.
             if (poll.containsKey("transitioning")) waitForBlock.transitioning = poll.transitioning
+            if (poll.budgetLimited == true) {
+                waitForBlock.budgetLimited = true
+                waitForBlock.budgetNote = poll.budgetNote
+            }
         } catch (Throwable e) {
             // The command already fired; a poll-loop failure (e.g. a malformed numeric
             // attribute) must not lose the response. Catch Throwable -- not just Exception --
@@ -2927,7 +2971,50 @@ def _evalAttrCondition(value, comparator, matchSet, numericThreshold, betweenLow
     return [matched, true]
 }
 
+// A poll on a budgeted transport (the cloud relay; LAN only when a LAN budget is set) ends by the
+// request's deadline, device reads included, so the relay never drops the answer; the result then
+// says so. The request clock rides in as __reqT0 and never reaches the engine's arg check.
 def toolPollUntilAttribute(args) {
+    if (!(args instanceof Map) || !args.containsKey("__reqT0")) return _pollUntilAttributeCore(args)
+    Map pollArgs = [:] + (args as Map)
+    def t0 = pollArgs.remove("__reqT0")
+    long budget = _isCloudRequest() ? _relayBudgetMs() : _lanBudgetMs()
+    def asked = pollArgs.containsKey("timeoutMs") ? pollArgs.timeoutMs : 5000
+    if (!(t0 instanceof Number) || budget <= 0L || !(asked instanceof Number) || asked < 100 || asked > 60000) return _pollUntilAttributeCore(pollArgs)
+    long deadline = (t0 as long) + budget
+    long left = deadline - now()
+    String why = _isCloudRequest() ? 'the cloud relay drops a request that runs much longer' : 'the LAN time budget is set'
+    String refusal = _pollStableRefusal(pollArgs, t0)
+    if (refusal) throw new IllegalArgumentException(refusal)
+    if (left < 100L) {
+        return [success: false, timedOut: true, budgetLimited: true, requestedTimeoutMs: asked, timeoutMs: 0,
+                budgetNote: "Not polled: the request had ${Math.max(0L, left)} ms left (${why}). Poll again in a new call.".toString()]
+    }
+    if (left < (asked as long)) pollArgs.timeoutMs = left as Integer
+    def result = _pollUntilAttributeCore(pollArgs, deadline)
+    // A poll that converged is reported as it is; only one that stopped short says so.
+    if (result instanceof Map && (result.remove("budgetStopped") == true || left < (asked as long)) && result.success != true) {
+        result.requestedTimeoutMs = asked
+        result.timeoutMs = Math.min(left, asked as long)
+        result.budgetLimited = true
+        result.budgetNote = "The poll stopped after ${result.elapsedMs ?: 0} ms instead of waiting ${asked} ms: ${why}. Poll again to keep waiting.".toString()
+    }
+    return result
+}
+
+// The refusal a budgeted poll gives a stableForMs that cannot settle in the request time left, else null.
+private String _pollStableRefusal(Map pollArgs, t0) {
+    long budget = _isCloudRequest() ? _relayBudgetMs() : _lanBudgetMs()
+    def asked = pollArgs.containsKey("timeoutMs") ? pollArgs.timeoutMs : 5000
+    def stable = pollArgs.stableForMs
+    if (!(t0 instanceof Number) || budget <= 0L || !(asked instanceof Number) || !(stable instanceof Number)) return null
+    long left = (t0 as long) + budget - now()
+    if (left >= (asked as long) || (stable as long) < left) return null
+    String why = _isCloudRequest() ? 'the cloud relay drops a request that runs much longer' : 'the LAN time budget is set'
+    return "stableForMs ${stable} cannot settle in the ${Math.max(0L, left)} ms this request has left (${why}); use a shorter stableForMs.".toString()
+}
+
+def _pollUntilAttributeCore(args, Long deadlineMs = null) {
     // 0. Reject unknown args early to surface caller mistakes (e.g., timeoutSeconds vs timeoutMs).
     def validArgKeys = ["deviceId", "deviceIds", "mode", "attribute", "expectedValue", "expectedValues", "timeoutMs", "pollIntervalMs", "comparator", "stableForMs"] as Set
     if (args instanceof Map) {
@@ -3178,6 +3265,12 @@ def toolPollUntilAttribute(args) {
     }
     // Single-path label kept for the existing single-device return shape and the read-fault log.
     def deviceLabel = deviceLabels[0]
+    // A request deadline covers the identity reads above: the window is what is left of it.
+    boolean budgetCut = false
+    if (deadlineMs != null && deadlineMs - now() < timeoutMs) {
+        timeoutMs = Math.max(0L, deadlineMs - now()) as Integer
+        budgetCut = true
+    }
 
     // 6. Build the expected-value set for match checking (eq/ne comparators only). Exactly one
     //    of the two is present (enforced above), so this populates from whichever was supplied;
@@ -3194,7 +3287,7 @@ def toolPollUntilAttribute(args) {
     if (multiDevice) {
         return _pollMultiDevice(args, devices, deviceLabels, deviceIdList, mode, comparator,
                                 matchSet, numericThreshold, betweenLow, betweenHigh,
-                                timeoutMs, pollIntervalMs, stableForMs)
+                                timeoutMs, pollIntervalMs, stableForMs, deadlineMs, budgetCut)
     }
 
     // 7. Poll loop.
@@ -3294,7 +3387,8 @@ def toolPollUntilAttribute(args) {
             conditionTrueSince = null
         }
 
-        if (elapsedMs >= timeoutMs || polledCount >= maxPolls) {
+        boolean pastDeadline = deadlineMs != null && now() + (now() - tickStartMs) >= deadlineMs
+        if (elapsedMs >= timeoutMs || polledCount >= maxPolls || pastDeadline) {
             def response = [
                 success     : false,
                 finalValue  : finalValue,
@@ -3314,6 +3408,7 @@ def toolPollUntilAttribute(args) {
             // Attribute exists in supportedAttributes but never reported a value during
             // the entire poll window -- driver has not yet emitted a reading.
             if (!everNonNull) response.neverReported = true
+            if (budgetCut || pastDeadline) response.budgetStopped = true
             // Numeric comparator on an attribute that DID report but never parsed numeric:
             // the comparator can never match it (e.g. gt 5 on switch="on"). Distinct from
             // neverReported (a numeric comparator on a never-reported attribute is neverReported,
@@ -3387,11 +3482,11 @@ private _readPollValue(dev, deviceId, attribute) {
 // are pre-validated there.
 def _pollMultiDevice(args, devices, deviceLabels, deviceIdList, mode, comparator,
                      matchSet, numericThreshold, betweenLow, betweenHigh,
-                     timeoutMs, pollIntervalMs, stableForMs) {
+                     timeoutMs, pollIntervalMs, stableForMs, Long deadlineMs = null, boolean budgetCut = false) {
     // Defense-in-depth for this private helper: the caller already validates these, so this is
     // a no-op for valid input -- it just guards against a 0/null reaching the maxPolls divide.
     // Defaults match the single-device path.
-    timeoutMs      = (timeoutMs && timeoutMs > 0) ? timeoutMs : 5000
+    timeoutMs      = (timeoutMs != null && (timeoutMs > 0 || deadlineMs != null)) ? timeoutMs : 5000
     pollIntervalMs = (pollIntervalMs && pollIntervalMs > 0) ? pollIntervalMs : 200
     stableForMs    = (stableForMs && stableForMs > 0) ? stableForMs : 0
     def n           = devices.size()
@@ -3476,7 +3571,8 @@ def _pollMultiDevice(args, devices, deviceLabels, deviceIdList, mode, comparator
             conditionTrueSince = null
         }
 
-        if (elapsedMs >= timeoutMs || polledCount >= maxPolls) {
+        boolean pastDeadline = deadlineMs != null && now() + (now() - tickStartMs) >= deadlineMs
+        if (elapsedMs >= timeoutMs || polledCount >= maxPolls || pastDeadline) {
             def numericComparator = (comparator != "eq" && comparator != "ne")
             def nonNumericCount = 0
             def anyTransitioning = false
@@ -3521,6 +3617,7 @@ def _pollMultiDevice(args, devices, deviceLabels, deviceIdList, mode, comparator
             if (nonNumericCount > 0) {
                 response.note = "comparator '${comparator}' can never match attribute '${args.attribute}' on ${nonNumericCount} device(s) that reported a non-numeric value the whole window (use eq/ne for a string attribute)"
             }
+            if (budgetCut || pastDeadline) response.budgetStopped = true
             return response
         }
 
@@ -3701,32 +3798,58 @@ def toolGetDeviceHistory(args) {
                     note: "Retry; if persistent, firmware may have changed the /logs/eventsJson format -- report with hub_report_issue."]
         }
 
+        // The Logs page's Hub events tab (/hub/eventsJson: reboots, lowMemory, startup) shares
+        // the row shape; those rows are merged in newest first and carry kind:'hub'. A failed
+        // read of it leaves the location events intact and says so.
+        def hubRows = []
+        String hubEventsError = null
+        try {
+            String hubText = hubInternalGet("/hub/eventsJson")?.toString()
+            def parsedHub = hubText?.trim() ? new groovy.json.JsonSlurper().parseText(hubText) : null
+            if (parsedHub == null) hubEventsError = "the hub returned an empty response"
+            else if (parsedHub instanceof List) hubRows = parsedHub
+            else hubEventsError = "the hub events list was not a JSON array"
+        } catch (Exception e) {
+            hubEventsError = (e.message ?: e.toString()).take(200)
+        }
+
         def locResults = []
         def timeFilterUnparseable = 0
-        for (evt in rows) {
-            if (!(evt instanceof Map)) continue
-            if (attributeFilter && evt.name != attributeFilter) continue
-            // Strictly-after window: drop events at or before sinceDate when the
-            // ISO+offset date parses (so re-passing a returned `date` as `since` never
-            // replays that same event); keep rows whose date doesn't parse (don't
-            // silently lose history), counting them. The numeric offset (e.g. -0400)
-            // parses via the 'Z' pattern.
-            def evtDate = null
-            try { evtDate = Date.parse("yyyy-MM-dd'T'HH:mm:ss.SSSZ", evt.date?.toString()) }
-            catch (Exception ignored) { timeFilterUnparseable++ }
-            if (evtDate != null && !evtDate.after(sinceDate)) continue
-            if (untilDate != null && evtDate != null && evtDate.after(untilDate)) continue
-            locResults << [
-                name: evt.name,
-                value: evt.value,
-                unit: evt.unit,
-                description: evt.descriptionText,
-                date: evt.date,
-                type: evt.type,
-                isStateChange: evt.isStateChange
-            ]
-            if (locResults.size() >= limit) break
+        def addRows = { List source, String kind ->
+            for (evt in source) {
+                if (!(evt instanceof Map)) continue
+                if (attributeFilter && evt.name != attributeFilter) continue
+                // Strictly-after window: drop events at or before sinceDate when the
+                // ISO+offset date parses (so re-passing a returned `date` as `since` never
+                // replays that same event); keep rows whose date doesn't parse (don't
+                // silently lose history), counting them. The numeric offset (e.g. -0400)
+                // parses via the 'Z' pattern.
+                def evtDate = null
+                try { evtDate = Date.parse("yyyy-MM-dd'T'HH:mm:ss.SSSZ", evt.date?.toString()) }
+                catch (Exception ignored) { timeFilterUnparseable++ }
+                if (evtDate != null && !evtDate.after(sinceDate)) continue
+                if (untilDate != null && evtDate != null && evtDate.after(untilDate)) continue
+                locResults << [
+                    name: evt.name,
+                    value: evt.value,
+                    unit: evt.unit,
+                    description: evt.descriptionText,
+                    date: evt.date,
+                    type: evt.type,
+                    isStateChange: evt.isStateChange,
+                    kind: kind,
+                    _at: evtDate?.time
+                ]
+            }
         }
+        addRows(rows, "location")
+        int hubCount = locResults.size()
+        addRows(hubRows, "hub")
+        hubCount = locResults.size() - hubCount
+        if (hubCount > 0) locResults = locResults.sort { a, b -> (b._at ?: 0L) <=> (a._at ?: 0L) }
+        locResults.each { it.remove("_at") }
+        int matchedCount = locResults.size()
+        if (matchedCount > limit) locResults = locResults.take(limit)
 
         mcpLog("info", "monitoring", "Retrieved ${locResults.size()} location history event${locResults.size() == 1 ? '' : 's'} (${sinceMode} window since ${sinceDate.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ")}) from /logs/eventsJson")
         def locResult = [
@@ -3740,9 +3863,14 @@ def toolGetDeviceHistory(args) {
         if (sinceMode == "relative") locResult.hoursBack = effectiveHoursBack
         else locResult.since = sinceEcho
         if (untilEcho) locResult.untilTimestamp = untilEcho
+        if (matchedCount > locResults.size()) {
+            locResult.truncated = true
+            locResult.matchedCount = matchedCount
+        }
         // Mirror the hub-log path: surface rows that escaped the always-active
         // time window because their date would not parse.
         if (timeFilterUnparseable > 0) locResult.timeFilterUnparseable = timeFilterUnparseable
+        if (hubEventsError != null) locResult.hubEventsError = "Hub events (reboots, low memory) could not be read: ${hubEventsError}".toString()
         return locResult
     }
 
@@ -4726,6 +4854,9 @@ def toolCreateDevice(args) {
         warnings << "This is a radio-type driver. Creating it here makes a non-functional orphan shell (no paired node). Add real Z-Wave/Zigbee/Matter devices by PAIRING (hub_call_zwave / hub_call_zigbee / hub_call_matter), then delete this shell with hub_delete_device."
     }
 
+    def selectWarning = _selectCreatedDevice(newId)
+    if (selectWarning) warnings << selectWarning
+
     mcpLog("info", "device", "hub_create_device: created device ${newId} from driver-type ${typeId}${appliedLabel ? " labeled '${appliedLabel}'" : ''}")
     return [
         success: true,
@@ -4738,8 +4869,20 @@ def toolCreateDevice(args) {
         capabilities: info?.capabilities,
         warnings: warnings ?: null,
         message: "Created device ${newId} from driver-type ${typeId}${appliedLabel ? " labeled '${appliedLabel}'" : ''}." + (warnings ? " WARNING: see warnings." : ""),
-        note: "Set room/preferences/showOnHome with hub_update_device once the device is selectable, or delete it with hub_delete_device."
+        note: "Set room/preferences/showOnHome with hub_update_device, or delete it with hub_delete_device."
     ]
+}
+
+// A device this app creates joins its device selection, so the device tools reach it at once.
+private String _selectCreatedDevice(String deviceId) {
+    try {
+        def ids = (settings.selectedDevices ?: []).collect { it.id.toString() }
+        if (!ids.contains(deviceId)) app.updateSetting("selectedDevices", [type: "capability.*", value: ids + [deviceId]])
+        return null
+    } catch (Exception e) {
+        mcpLog("warn", "device", "Could not add device ${deviceId} to the selected devices: ${e.message}")
+        return "Device ${deviceId} was created but could not be added to this app's selected devices (${e.message}); add it in the app's device picker.".toString()
+    }
 }
 
 // Hub Mesh: create a LOCAL linked device from a device a peer hub shares (GET
@@ -4818,6 +4961,7 @@ private Map _createLinkedMeshDevice(String meshHubId, String meshDeviceId) {
     Boolean linked = null
     String newId = null
     String newName = null
+    boolean newIdFromSource = false
     for (int attempt = 0; attempt < 3; attempt++) {
         Map j = _meshJson()
         def after = (j?.localLinkedDevices instanceof List) ? j.localLinkedDevices : null
@@ -4826,7 +4970,7 @@ private Map _createLinkedMeshDevice(String meshHubId, String meshDeviceId) {
             def added = after.findAll { !before.contains(it.id?.toString()) }
             def fromSource = added.findAll { it.sourceHubId?.toString() == meshHubId }
             def pick = (fromSource.size() == 1) ? fromSource[0] : (added.size() == 1 ? added[0] : null)
-            if (pick != null) { newId = pick.id?.toString(); newName = pick.name?.toString() }
+            if (pick != null) { newId = pick.id?.toString(); newName = pick.name?.toString(); newIdFromSource = fromSource.size() == 1 }
         }
         if (avail != null) {
             // The source's own row is authoritative: still present-and-unlinked means the link did
@@ -4879,6 +5023,13 @@ private Map _createLinkedMeshDevice(String meshHubId, String meshDeviceId) {
         warnings << "Linked the shared device, but could not resolve its new local id from hub_get_hub_mesh localLinkedDevices (read-back lag or an ambiguous diff). Find it with hub_get_hub_mesh."
     }
 
+    // Only a local link the read-back ties to the requested source joins the device selection.
+    if (newId != null && newIdFromSource) {
+        def selectWarning = _selectCreatedDevice(newId)
+        if (selectWarning) warnings << selectWarning
+    } else if (newId != null) {
+        warnings << "Linked as local device ${newId}, but the read-back could not tie it to hub ${meshHubId}, so it was not added to this app's selected devices; add it in the app's device picker once confirmed with hub_get_hub_mesh.".toString()
+    }
     mcpLog("info", "device", "hub_create_device: linked Hub Mesh device (hub ${meshHubId}, device ${meshDeviceId})${newId ? " as local ${newId}" : ''}")
     return [
         success: true,
@@ -5419,8 +5570,10 @@ def toolCallDeviceReplace(args) {
             def allowedIds = _bypassEnabled() ? null : (((selectedDevices ?: []) + (getChildDevices() ?: [])).collect { it.id?.toString() } as Set)
             def candidates = allowedIds == null ? parsed : parsed.findAll { it instanceof Map && allowedIds.contains(it.id?.toString()) }
             def options = candidates.collect { [id: it?.id?.toString(), name: it?.name, deviceTypes: it?.deviceTypes] }
-            return [success: true, listOptions: true, oldDeviceId: oldId, options: options, optionCount: options.size(),
+            def out = [success: true, listOptions: true, oldDeviceId: oldId, options: options, optionCount: options.size(),
                     note: options ? "Pick an option's id as new_device_id, then call again with confirm=true to replace." : "No compatible replacement devices found within current MCP device access."]
+            if (newId) out.compatible = options.any { it.id == newId }
+            return out
         } catch (Exception e) {
             mcpLogError("device-replace", "getReplacementOptions for ${oldId} failed", e)
             return [success: false, error: "Could not read replacement options: ${e.message}",
@@ -5442,7 +5595,7 @@ def toolCallDeviceReplace(args) {
         }
         def errText = (parsed instanceof Map) ? (parsed.message ?: parsed.error) : null
         return [success: false, error: errText ?: "/device/replace did not report success", response: raw?.take(300),
-                note: "new_device_id must be capability-compatible -- list valid candidates with list_options=true. Nothing was replaced."]
+                note: "Nothing was replaced. The hub answers \"Incompatible devices\" when the two share no device type, which list_options already checks (with new_device_id it reports compatible); \"Failed to replace device\" is its answer when its own swap of the two devices failed, with no reason given. Its Replace is built for newly paired hardware taking over an existing device."]
     } catch (Exception e) {
         mcpLogError("device-replace", "replace ${oldId} -> ${newId} failed", e)
         return [success: false, error: "Device replace failed: ${e.message}",
@@ -5579,7 +5732,7 @@ Call `hub_get_tool_guide(section='performance_devices')` for response-shape deta
                     attributeNames: [type: "array", items: [type: "string"], description: "format='context' only (rejected on other formats): which attributes to show per device line[[FLAT_TRIM]], replacing the default set. Empty array = the default set[[/FLAT_TRIM]]."],
                     format: [type: "string", enum: ["summary", "detailed", "ids", "context"], description: "Response shape. 'summary' (default) = standard fields + currentStates. 'detailed' = capabilities/attributes/commands. 'ids' = flat array of device ID integers (cheapest, ignores fields arg). 'context' = plain-text house snapshot in `summary`[[FLAT_TRIM]] (mode + 'Label (id, room) - capabilities; attr=value' lines; page size 50 unless limit set; ignores fields arg)[[/FLAT_TRIM]]."],
                     fields: [type: "array", items: [type: "string"], description: "Field projection: only include named fields in each device object. Call `hub_get_tool_guide(section='performance_devices')` for valid field names and projection semantics."],
-                    cursor: [type: "string", description: "Opt-in opaque cursor (alias to offset). Pass \"\" for the first page (page size 50 when limit is unset), then iterate nextCursor."],
+                    cursor: [type: "string", description: "Opt-in opaque cursor (alias to offset). Pass \"\" for the first page (page size 50 when limit is unset), then iterate nextCursor. A page can also end early with budgetLimited:true and a nextCursor when the request time limit is reached."],
                     scope: [type: "string", enum: ["authorized", "all"], description: "Which devices to list. 'authorized' (default) = selected devices plus MCP-owned children, or all devices with bypass enabled[[FLAT_TRIM]] (full detail/currentStates)[[/FLAT_TRIM]]. 'all' = EVERY device on the hub, each tagged with current effective access as mcpAuthorized true/false."]
                 ]
             ]
@@ -5676,20 +5829,21 @@ If no exact device match: suggest similar devices and get user confirmation befo
         ],
         [
             name: "hub_list_device_events",
-            description: """Get event history for a device, an app or rule (the automation events it emitted), or the location.
+            description: """Get event history for a device, an app or rule (the automation events it emitted), or the location and hub.
 
 [[FLAT_TRIM]]
+Location mode also lists the hub's own events (reboots, low memory, startup), tagged kind:'hub'.
 Default: most-recent events for a device (deviceId + optional limit). Device events include producedBy (the app, rule, or device that caused it) and triggered (the apps it fired) when the hub records them -- use attribute 'command-on' etc. to see who sent a command.
 [[/FLAT_TRIM]]
 """,
             inputSchema: [
                 type: "object",
                 properties: [
-                    deviceId: [type: ["string", "integer"], description: "Device ID. Mutually exclusive with appId; omit both for location-level events (mode/HSM/hub variable)."],
-                    appId: [type: "integer", description: "Installed-app ID for per-app events (what the app/rule emitted). Mutually exclusive with deviceId."],
-                    hoursBack: [type: "integer", description: "If set, return up to this many hours of history (max 168 = 7 days) instead of just the most recent events.[[FLAT_TRIM]] Ignored when since is given.[[/FLAT_TRIM]]"],
+                    deviceId: [type: ["string", "integer"], description: "Device ID. Mutually exclusive with appId; omit both for location and hub events."],
+                    appId: [type: "integer", description: "Installed-app ID: the events that app or rule emitted. Mutually exclusive with deviceId."],
+                    hoursBack: [type: "integer", description: "Hours of history (max 168).[[FLAT_TRIM]] Instead of just the most recent events; ignored when since is given.[[/FLAT_TRIM]]"],
                     until: [type: ["string", "integer"], description: "[[FLAT_TRIM]]Optional window end (inclusive), same formats as since.[[/FLAT_TRIM]]"],
-                    since: [type: ["string", "integer"], description: "Absolute window start -- return only events AFTER this timestamp; ISO-8601 with a numeric offset (-0600 or -06:00; e.g. 2026-06-23T10:00:00.000-0600) or epoch milliseconds.[[FLAT_TRIM]] This is the format this tool emits in `date`/`sinceTimestamp`. Takes precedence over hoursBack; a future timestamp yields an empty list.[[/FLAT_TRIM]]"],
+                    since: [type: ["string", "integer"], description: "Window start, exclusive: ISO-8601 with a numeric offset (e.g. 2026-06-23T10:00:00.000-0600) or epoch ms.[[FLAT_TRIM]] -0600 and -06:00 both work. This is the format this tool emits in `date`/`sinceTimestamp`. Takes precedence over hoursBack; a future timestamp yields an empty list.[[/FLAT_TRIM]]"],
                     attribute: [type: "string", description: "Event-name filter. Device: an attribute (e.g. 'switch').[[FLAT_TRIM]] Location: 'mode', 'hsmStatus', 'hsmAlert', or a hub-variable name.[[/FLAT_TRIM]]"],
                     limit: [type: "integer", description: "Max events to return. Recent mode default 10; history mode default 100 (max 500).[[FLAT_TRIM]] Higher values may slow hub.[[/FLAT_TRIM]]", default: 10]
                 ]
@@ -5769,7 +5923,7 @@ Pre-flight (mandatory): 1) hub backup <24h (hub_create_backup); 2) hub_list_devi
             description: """⚠️ DESTRUCTIVE: Replace a device's hardware, KEEPING its id + all app/rule references.
 
 [[FLAT_TRIM]]
-Two-step: list_options=true to list candidates, then apply with confirm=true.
+Two-step: list_options=true to list candidates (with new_device_id it also reports compatible), then apply with confirm=true. Built for newly paired hardware taking over an existing device.
 [[/FLAT_TRIM]]
 Pre-flight: backup <24h (hub_create_backup) + user OK.""",
             inputSchema: [
@@ -5845,7 +5999,7 @@ def _toolDisplayMeta_partDevices() {
         hub_list_devices: [title: "List Devices", summary: "List accessible devices with filtering, pagination, and field projection."],
         hub_get_device: [title: "Get Device Details", summary: "Inspect a device summary, configuration and preferences, or detailed information by section."],
         hub_get_device_attribute: [title: "Get Device Attribute", summary: "Read one attribute value, optionally waiting until it matches an expected value."],
-        hub_list_device_events: [title: "List Device Events", summary: "Recent events for a device or app, or location events when neither is given."],
+        hub_list_device_events: [title: "List Device Events", summary: "Recent events for a device or app, or location and hub events when neither is given."],
         hub_call_device_command: [title: "Send Device Command", summary: "Send a command like on, off, or setLevel to one device, or up to 20 in one call."],
         hub_call_device_swap: [title: "Swap Device", summary: "Exchange two devices' identities so the apps on one run on the other's hardware."],
         hub_call_device_replace: [title: "Replace Device Hardware", summary: "Re-point a device to replacement hardware, keeping its id and all references."],

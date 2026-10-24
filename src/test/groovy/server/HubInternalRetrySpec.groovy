@@ -308,6 +308,41 @@ class HubInternalRetrySpec extends ToolSpecBase {
         sentHeaders?.Cookie == 'JSESSIONID=cached'
     }
 
+    @spock.lang.Unroll
+    def "a struct GET surfaces the session the hub opened as setCookie: #label"() {
+        given:
+        httpGetHandler = { Map params, Closure cb -> cb.call([status: 200, data: 'PAGE', headers: hdrs]) }
+
+        when:
+        def resp = script.hubInternalGetRaw('/dashboard/select')
+
+        then:
+        resp.setCookie == expected
+
+        where:
+        label                  | hdrs                                                              || expected
+        'a single header'      | ['Set-Cookie': 'HUBSESSION=abc; Path=/; HttpOnly']                 || 'HUBSESSION=abc'
+        'a header list'        | ['Set-Cookie': ['HUBSESSION=abc; Path=/', 'other=1']]             || 'HUBSESSION=abc'
+        'HUBSESSION not first' | ['Set-Cookie': ['other=1; Path=/', 'HUBSESSION=abc; Path=/']]     || 'HUBSESSION=abc'
+        'a prefixed header'    | ['Set-Cookie': 'Set-Cookie: HUBSESSION=abc; Path=/']              || 'HUBSESSION=abc'
+        'no header'            | [:]                                                               || null
+    }
+
+    def "a GET in a session sends that session's cookie alongside the hub login cookie"() {
+        given:
+        enableHubSecurity()
+        seedCachedCookie('JSESSIONID=cached')
+        def sentHeaders = null
+        httpGetHandler = { Map params, Closure cb -> sentHeaders = params.headers; cb.call([status: 200, data: '[]']) }
+
+        when:
+        def body = script.hubInternalGetInSession('/dashboard/all', [pinToken: 't'], 'HUBSESSION=abc')
+
+        then:
+        body == '[]'
+        sentHeaders?.Cookie == 'JSESSIONID=cached; HUBSESSION=abc'
+    }
+
     def "a struct (form) caller treats a committed 2xx with an unreadable body as success (status + null data), not a failure"() {
         given:
         enableHubSecurity()

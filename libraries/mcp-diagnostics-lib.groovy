@@ -409,9 +409,13 @@ private String _deviceReadAccessScope() {
 }
 
 private def _deviceReadSnapshot(String tool, Map args, Map context) {
+    // The worker runs without the request clock: the request's budget belongs to the observing request,
+    // and a leaf that honours it would cut a read the continuation exists to finish.
+    Map workArgs = _mrtrCopyMap(args)
+    workArgs.remove("__reqT0")
     Map work = [id: context.id, fresh: context.fresh, tool: tool,
                 outerTool: context.outerTool ?: tool,
-                args: _mrtrCopyMap(args), scope: _deviceReadAccessScope()]
+                args: workArgs, scope: _deviceReadAccessScope()]
     Map snapshot = _hubReadSnapshot(null, args, work)
     if (work.scope != _deviceReadAccessScope()) {
         throw new IllegalArgumentException("Device access changed during this read; start a fresh call.")
@@ -547,8 +551,9 @@ def runNativeLogFetch(Map job = [:]) {
             def payload = _executeWithDeviceReadContext(outer, outerArgs, null)
             String text = groovy.json.JsonOutput.toJson(payload)
             int bytes = text.getBytes("UTF-8").length
-            if (bytes > 120000) text = groovy.json.JsonOutput.toJson(
-                _responseTooLargeEnvelope(work.tool.toString(), bytes, 120000))
+            int limit = _responseSizeLimitBytes()
+            if (bytes > limit) text = groovy.json.JsonOutput.toJson(
+                _responseTooLargeEnvelope(work.tool.toString(), bytes, limit))
             result = [text: text, scope: work.scope]
         } else {
             result = [text: hubInternalGet("/logs/past/json", job.query as Map, 30)]
@@ -967,7 +972,7 @@ def toolGetHubLogs(args) {
     // count, the per-message take(200) bounds the message body so a single oversized
     // entry can't push the page past the cap on its own.
     def estimatedJsonSize = paged.page.sum(0) { (it.message?.length() ?: 0) + (it.name?.length() ?: 0) + 120 }
-    if (estimatedJsonSize > hubResponseCapBytes() - 11072) {  // =120000; matches handleToolsCall responseSizeLimit
+    if (estimatedJsonSize > _responseSizeLimitBytes()) {  // matches handleToolsCall responseSizeLimit
         paged.page.each { it.message = it.message?.take(200) }
         result.truncated = true
         result.note = "Log messages truncated to fit response size limit"
@@ -1422,7 +1427,7 @@ def toolGetHubPerformance(args) {
     def current = [timestamp: formatTimestamp(now()), timestampEpoch: now()]
 
     try {
-        current.freeMemoryKB = hubInternalGet("/hub/advanced/freeOSMemory")?.trim()
+        current.freeMemoryKB = _hubNumber(hubInternalGet("/hub/advanced/freeOSMemory"))
         try {
             def memKB = current.freeMemoryKB as Integer
             if (memKB < 50000) current.memoryWarning = "LOW MEMORY: ${memKB}KB free. Consider rebooting the hub."
@@ -1431,7 +1436,7 @@ def toolGetHubPerformance(args) {
     } catch (Exception e) { current.freeMemoryKB = "unavailable" }
 
     try {
-        current.internalTempC = hubInternalGet("/hub/advanced/internalTempCelsius")?.trim()
+        current.internalTempC = _hubNumber(hubInternalGet("/hub/advanced/internalTempCelsius"))
         try {
             def temp = current.internalTempC as Double
             if (temp > 70) current.temperatureWarning = "HIGH TEMPERATURE: ${temp}°C. Hub may need better ventilation."
@@ -1439,13 +1444,11 @@ def toolGetHubPerformance(args) {
         } catch (Exception nfe) { /* non-numeric */ }
     } catch (Exception e) { current.internalTempC = "unavailable" }
 
+    // The hub reports its database size in MB.
     try {
-        current.databaseSizeKB = hubInternalGet("/hub/advanced/databaseSize")?.trim()
-        try {
-            def dbKB = current.databaseSizeKB as Integer
-            if (dbKB > 500000) current.databaseWarning = "LARGE DATABASE: ${(dbKB / 1024).toInteger()}MB. Consider cleaning up old data."
-        } catch (Exception nfe) { /* non-numeric */ }
-    } catch (Exception e) { current.databaseSizeKB = "unavailable" }
+        current.databaseSizeMB = _hubNumber(hubInternalGet("/hub/advanced/databaseSize"))
+        if (current.databaseSizeMB instanceof Number && current.databaseSizeMB > 500) current.databaseWarning = "LARGE DATABASE: ${current.databaseSizeMB} MB. Consider cleaning up old data."
+    } catch (Exception e) { current.databaseSizeMB = "unavailable" }
 
     try { current.uptimeSeconds = location.hub?.uptime } catch (Exception e) { current.uptimeSeconds = "unavailable" }
     if (current.uptimeSeconds && current.uptimeSeconds instanceof Number) {
@@ -1455,9 +1458,10 @@ def toolGetHubPerformance(args) {
         current.uptimeFormatted = "${days}d ${hours}h ${mins}m"
     }
 
-    // CSV history management
+    // CSV history management. The database column holds the hub's MB figure; the reader skips the
+    // header line, so a file written under the old databaseSizeKB header reads the same.
     def csvFileName = "mcp-performance-history.csv"
-    def csvHeader = "timestamp,freeMemoryKB,internalTempC,databaseSizeKB,uptimeSeconds"
+    def csvHeader = "timestamp,freeMemoryKB,internalTempC,databaseSizeMB,uptimeSeconds"
     def history = []
 
     // Read existing CSV from File Manager
@@ -1477,7 +1481,7 @@ def toolGetHubPerformance(args) {
 
     // Record current snapshot to CSV
     if (recordSnapshot) {
-        def csvRow = "${now()},${current.freeMemoryKB},${current.internalTempC},${current.databaseSizeKB},${current.uptimeSeconds}"
+        def csvRow = "${now()},${current.freeMemoryKB},${current.internalTempC},${current.databaseSizeMB},${current.uptimeSeconds}"
         history << csvRow
 
         // Trim to 500 rows (rolling window)
@@ -1496,25 +1500,38 @@ def toolGetHubPerformance(args) {
 
     // Parse recent trend points for response
     def trends = []
+    int skippedRows = 0
     def startIdx = Math.max(0, history.size() - trendPoints)
     for (int i = startIdx; i < history.size(); i++) {
         def parts = history[i].split(",", -1)
-        if (parts.size() >= 5) {
+        if (parts.size() < 5) skippedRows++
+        else {
             try {
-                trends << [
+                def point = [
                     timestamp: formatTimestamp(parts[0] as Long),
-                    freeMemoryKB: parts[1],
-                    internalTempC: parts[2],
-                    databaseSizeKB: parts[3],
-                    uptimeSeconds: parts[4]
+                    timestampEpoch: parts[0] as Long,
+                    freeMemoryKB: _hubNumber(parts[1]),
+                    internalTempC: _hubNumber(parts[2]),
+                    databaseSizeMB: _hubNumber(parts[3]),
+                    uptimeSeconds: _hubNumber(parts[4])
                 ]
+                // A reading that failed when the point was recorded was stored as text ("unavailable").
+                if (!(point.freeMemoryKB instanceof Number && point.internalTempC instanceof Number && point.databaseSizeMB instanceof Number && point.uptimeSeconds instanceof Number)) point.incomplete = true
+                trends << point
             } catch (Exception e) {
-                // Skip malformed rows
+                skippedRows++
             }
         }
     }
 
     mcpLog("info", "monitoring", "Hub performance snapshot recorded=${recordSnapshot}, trendPoints=${trends.size()}")
+    // Trend rows exist only where a call passed recordSnapshot=true; say so when they are missing
+    // or more than a day old, so an empty or months-old trend is not read as the hub's history.
+    String trendNote = null
+    Long newest = trends ? trends[-1].timestampEpoch as Long : null
+    if (newest == null && skippedRows > 0) trendNote = "No readable trend points: ${skippedRows} row(s) of ${csvFileName} could not be read. For the hub's own memory history use hub_get_memory_history.".toString()
+    else if (newest == null) trendNote = "No trend points: they are recorded only by calls with recordSnapshot=true. For the hub's own memory history use hub_get_memory_history."
+    else if (now() - newest > 86400000L) trendNote = "The newest trend point is from ${formatTimestamp(newest)}: points are recorded only by calls with recordSnapshot=true. For the hub's own memory history use hub_get_memory_history.".toString()
     return [
         current: current,
         // The hub's OWN active health alerts (from /hub2/hubData) sit alongside the locally-derived
@@ -1524,6 +1541,8 @@ def toolGetHubPerformance(args) {
         healthAlerts: _healthAlertsFromHub2(_getHub2HubData()),
         trends: trends,
         trendPointsAvailable: history.size(),
+        trendNote: trendNote,
+        trendRowsSkipped: skippedRows ?: null,
         historyFile: csvFileName
     ]
 }

@@ -674,6 +674,116 @@ class RelayBudgetSpec extends ToolSpecBase {
         captured.edit.patches.size() == 2
     }
 
+    @Unroll
+    def "a poll on a budgeted transport ends by the request deadline: #label"() {
+        given:
+        script.metaClass._isCloudRequest = { -> cloud }
+        settingsMap.lanBudgetMs = lanBudget
+        def captured = [:]
+        script.metaClass._pollUntilAttributeCore = { Map a, Long d = null -> captured.args = a; captured.deadline = d; [success: false, timedOut: true, elapsedMs: 10] }
+
+        when:
+        def r = script.toolPollUntilAttribute([deviceId: '10', attribute: 'switch', expectedValue: 'on',
+                                               timeoutMs: asked, __reqT0: FIXED_NOW - spent])
+
+        then:
+        captured.args.timeoutMs == waited
+        captured.deadline == deadline
+        (r.budgetLimited == true) == limited
+        !limited || r.requestedTimeoutMs == asked
+
+        where:
+        label                       | cloud | lanBudget | asked | spent || waited | limited | deadline
+        'cloud, long poll clamped'  | true  | null      | 25000 | 500   || 5500   | true    | FIXED_NOW + 5500
+        'cloud, short poll as asked'| true  | null      | 4000  | 500   || 4000   | false   | FIXED_NOW + 5500
+        'LAN, no budget'            | false | null      | 25000 | 500   || 25000  | false   | null
+        'LAN with a budget'         | false | 8000      | 25000 | 1000  || 7000   | true    | FIXED_NOW + 7000
+    }
+
+    def "the engine reporting a deadline stop marks the result budget-limited even when the ask fit"() {
+        given:
+        script.metaClass._isCloudRequest = { -> true }
+        script.metaClass._pollUntilAttributeCore = { Map a, Long d = null -> [success: false, timedOut: true, elapsedMs: 3000, budgetStopped: true] }
+
+        when:
+        def r = script.toolPollUntilAttribute([deviceIds: ['10', '11'], attribute: 'switch', expectedValue: 'on',
+                                               timeoutMs: 4000, __reqT0: FIXED_NOW - 500])
+
+        then:
+        r.budgetLimited == true
+        r.requestedTimeoutMs == 4000
+        !r.containsKey('budgetStopped')
+        r.budgetNote.contains('3000 ms')
+    }
+
+    def "a poll that converged under the clamp is reported as converged, not as stopped"() {
+        given:
+        script.metaClass._isCloudRequest = { -> true }
+        script.metaClass._pollUntilAttributeCore = { Map a, Long d = null -> [success: true, finalValue: 'off', elapsedMs: 1] }
+
+        when:
+        def r = script.toolPollUntilAttribute([deviceId: '10', attribute: 'switch', expectedValue: 'off',
+                                               timeoutMs: 25000, __reqT0: FIXED_NOW - 500])
+
+        then:
+        r.success == true
+        !r.containsKey('budgetLimited')
+        !r.containsKey('budgetNote')
+    }
+
+    def "a stableForMs that cannot settle in the budget left is refused before any read"() {
+        given:
+        script.metaClass._isCloudRequest = { -> true }
+        boolean engineRan = false
+        script.metaClass._pollUntilAttributeCore = { Map a, Long d = null -> engineRan = true; [success: true] }
+
+        when:
+        script.toolPollUntilAttribute([deviceId: '10', attribute: 'switch', expectedValue: 'on',
+                                       timeoutMs: 40000, stableForMs: 30000, __reqT0: FIXED_NOW - 500])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains('stableForMs 30000')
+        !engineRan
+    }
+
+    def "a request with under 100 ms left answers without polling"() {
+        given:
+        script.metaClass._isCloudRequest = { -> true }
+        boolean engineRan = false
+        script.metaClass._pollUntilAttributeCore = { Map a, Long d = null -> engineRan = true; [success: true] }
+
+        when:
+        def r = script.toolPollUntilAttribute([deviceId: '10', attribute: 'switch', expectedValue: 'on',
+                                               timeoutMs: 5000, __reqT0: FIXED_NOW - 5950])
+
+        then:
+        r.success == false
+        r.budgetLimited == true
+        r.timeoutMs == 0
+        !engineRan
+    }
+
+    @Unroll
+    def "the wrapper hands #label straight to the engine without a deadline"() {
+        given:
+        script.metaClass._isCloudRequest = { -> true }
+        def captured = [:]
+        script.metaClass._pollUntilAttributeCore = { Map a, Long d = null -> captured.args = a; captured.deadline = d; [success: true] }
+
+        when:
+        script.toolPollUntilAttribute([deviceId: '10', attribute: 'switch', expectedValue: 'on'] + extra)
+
+        then:
+        captured.deadline == null
+        !captured.args.containsKey('__reqT0')
+
+        where:
+        label                     | extra
+        'a call with no clock'    | [timeoutMs: 25000]
+        'an out-of-range timeout' | [timeoutMs: 50, __reqT0: FIXED_NOW - 500]
+    }
+
     // The other leaves in _budgetAwareTools alongside hub_set_rule. Each owns a
     // partial-commit loop that consumes the clock (hub_call_rule's per-rule stop/start
     // toggle; the cloner's stageDisabled disable loop; hub_call_device_command's serial
@@ -681,6 +791,22 @@ class RelayBudgetSpec extends ToolSpecBase {
     // above -- a leaf missing from the allowlist never sees the key, so its loop silently
     // runs unbounded. The loop behaviour itself is pinned in the tools' own specs; these
     // pin only DELIVERY.
+
+    def "the budget clock reaches hub_get_device_attribute polls through dispatch and the gateway"() {
+        given:
+        settingsMap.useGateways = true
+        def captured = [:]
+        script.metaClass._pollUntilAttributeCore = { Map a, Long d = null -> captured.args = a; [success: true, finalValue: 'on'] }
+
+        when:
+        def response = mcpDriver.callTool('hub_read_devices', [tool: 'hub_get_device_attribute',
+            args: [deviceId: '10', attribute: 'switch', expectedValue: 'on', timeoutMs: 2000]])
+
+        then: 'the wrapper consumed the clock; the engine never sees it'
+        response.error == null
+        captured.args.timeoutMs == 2000
+        !captured.args.containsKey('__reqT0')
+    }
 
     def "the budget clock reaches hub_call_rule through dispatch and the gateway"() {
         given:

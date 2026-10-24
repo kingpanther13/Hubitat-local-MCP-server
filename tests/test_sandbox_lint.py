@@ -2193,6 +2193,7 @@ _RETIRED_DERIVED_KEYS = (
     "toolSearchCorpusFingerprint",
     "requiredParamsByTool",
     "requiredParamsByToolFingerprint",
+    "itemBackupManifest",
 )
 
 

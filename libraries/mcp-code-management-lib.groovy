@@ -67,6 +67,10 @@ def toolListHubApps(args) {
         result.note = "Hub internal API unavailable (${e.message}). Showing only MCP Rule Server apps. This may require Hub Security credentials or a firmware update."
     }
 
+    if (args?.nameFilter && result.apps instanceof List) {
+        result.apps = _nameFiltered(result.apps, args.nameFilter)
+        result.count = result.apps.size()
+    }
     if (cursor != null && result.apps instanceof List) {
         def paged = _paginateList(result.apps, cursor, 50, "hub_list_apps")
         result.total = result.apps.size()
@@ -147,10 +151,19 @@ def _projectAppType(Map t, boolean builtIn, Map enrich) {
     return out
 }
 
-def toolListHubDrivers(args) {
+private List _nameFiltered(List rows, filter) {
+    // Rows whose name contains the filter, ignoring case and the hub's HTML (a list's own names).
+    String f = filter?.toString()?.trim()?.toLowerCase()
+    if (!f) return rows
+    return rows.findAll { it instanceof Map && (stripAppConfigHtml(it.name) ?: "").toLowerCase().contains(f) }
+}
 
+def toolListHubDrivers(args) {
+    def unknown = ((args ?: [:]).keySet() - ["include", "cursor", "nameFilter"]).sort()
+    if (unknown) throw new IllegalArgumentException("hub_list_drivers does not take ${unknown.join(', ')}. Valid arguments: include, nameFilter, cursor.")
     def cursor = args?.cursor
     def include = (args?.include ?: "user").toString().toLowerCase()
+    if (!(include in ["user", "all"])) throw new IllegalArgumentException("include must be 'user' or 'all' (got '${args.include}').")
     def result = [:]
     if (include == "all") {
         // Full instantiable driver-type catalog -- built-in "system" + "virtual" + user
@@ -218,6 +231,10 @@ def toolListHubDrivers(args) {
         result.include = "user"
     }
 
+    if (args?.nameFilter && result.drivers instanceof List) {
+        result.drivers = _nameFiltered(result.drivers, args.nameFilter)
+        result.count = result.drivers.size()
+    }
     if (cursor != null && result.drivers instanceof List) {
         def paged = _paginateList(result.drivers, cursor, 50, "hub_list_drivers")
         result.total = result.drivers.size()
@@ -299,7 +316,7 @@ def toolGetItemSource(String type, String idParam, args) {
 
     def maxChunkSize = 64000
     def requestedOffset = args.offset ? args.offset as int : 0
-    def requestedLength = args.length ? Math.min(args.length as int, maxChunkSize) : maxChunkSize
+    def requestedLength = args.length ? Math.min(args.length as int, maxChunkSize) : defaultReadChunkChars()
 
     def ajaxPath = (type == "app") ? "/app/ajax/code" : "/driver/ajax/code"
 
@@ -362,7 +379,9 @@ def toolGetItemSource(String type, String idParam, args) {
     }
 }
 
-private String stripAppConfigHtml(value) {
+// NOT private: list filters and response builders call it from inside closures, and a closure
+// resolves owner calls through the metaClass, which does not expose private methods.
+String stripAppConfigHtml(value) {
     if (value == null) return null
     def s = value.toString()
     // Strip HTML tags, then any leftover CSS-rule / inline-script bodies that
@@ -1543,16 +1562,18 @@ def toolUpdateItemCode(String type, String idParam, args) {
     return toolUpdateItemCodeInner(type, idParam, args)
 }
 
-// Version of an app/driver from its list row (/<type>/list/single/data/<id>: small JSON, no
-// source). Null when the row is unreadable, so the caller falls back to the full code fetch.
+// Version of an app/driver from the hub's code list (/app/list/all/data, /driver/list/data). The
+// single-item read (/<type>/list/single/data/<id>) carries it too, but the hub compiles the whole
+// item to answer it and keeps the memory, so a version check never uses it. Null when the list is
+// unreadable, so the caller falls back to the full code fetch.
 private _itemRowVersion(String type, itemId) {
     try {
-        def txt = hubInternalGet("/${type}/list/single/data/${java.net.URLEncoder.encode(itemId.toString(), 'UTF-8')}", null, 30)
-        def d = txt ? new groovy.json.JsonSlurper().parseText(txt) : null
-        def row = (d instanceof List && d) ? d[0] : (d instanceof Map ? d : null)
+        def txt = type == "driver" ? hubInternalGet("/driver/list/data", null, 30) : hubInternalGet("/app/list/all/data", null, 30)
+        def rows = txt ? new groovy.json.JsonSlurper().parseText(txt) : null
+        def row = (rows instanceof List) ? rows.find { it instanceof Map && it.id?.toString() == itemId?.toString() } : null
         return (row instanceof Map) ? row.version : null
     } catch (Exception e) {
-        mcpLog("warn", "hub-admin", "Could not read ${type} ${itemId} row version: ${e.message}")
+        mcpLog("warn", "hub-admin", "Could not read ${type} ${itemId} version: ${e.message}")
         return null
     }
 }
@@ -1732,7 +1753,15 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args, Map packa
     if (sourceMode == "importUrl") noBackupReason = "the source came from a URL, so its history lives where that URL is published"
     else if (args.sourceOrigin == "published") noBackupReason = "the package deploy's source is the published build"
     else if (args.backup == false) noBackupReason = "backup=false was passed"
-    def itemBackup = noBackupReason ? null : backupItemSource(type, itemId.toString())
+    def itemBackup = null
+    if (!noBackupReason) {
+        try { itemBackup = backupItemSource(type, itemId.toString()) }
+        catch (Exception backupErr) {
+            Map unavailable = _itemBackupIndexUnavailableResult(backupErr)
+            if (unavailable == null) throw backupErr
+            return unavailable + [(idParam): itemId]
+        }
+    }
     if (noBackupReason) mcpLog("info", "hub-admin", "Pre-update source backup skipped for ${type} ID ${itemId}: ${noBackupReason}")
 
     // Fresh version for optimistic locking (resave mode already fetched it). The item's list row
@@ -2192,7 +2221,8 @@ private Map _updateAppOAuth(appId, oauth) {
 // existing creds on re-enable. Returns a Map {clientId, clientSecret} (values may be null for a fresh
 // app) on a SUCCESSFUL read, or NULL if the detail could not be read. The caller MUST distinguish
 // these: "fresh app, no creds yet" (send empty -> hub generates) vs "read failed, don't know" (refuse
-// to submit empty, which would clobber an already-enabled app's live creds).
+// to submit empty, which would clobber an already-enabled app's live creds). No other read returns
+// the creds; the hub compiles the whole app to answer this one, so only an OAuth change makes it.
 private _readAppOAuthCreds(appId) {
     try {
         def txt = hubInternalGet("/app/list/single/data/${java.net.URLEncoder.encode(appId.toString(), 'UTF-8')}", null, 30)
@@ -2312,6 +2342,9 @@ private Map _deleteItemViaEndpoint(String type, String idParam, String deletePat
     try {
         backupItemSource(type, itemId.toString())
     } catch (Exception backupErr) {
+        // An unreadable backup index refuses the delete: the backup's fate is unknown.
+        Map unavailable = _itemBackupIndexUnavailableResult(backupErr)
+        if (unavailable != null) return unavailable + [(idParam): itemId]
         backupSucceeded = false
         mcpLog("warn", "hub-admin", "Pre-delete backup failed for ${type} ${itemId}: ${backupErr.message} -- proceeding with delete")
     }
@@ -2341,7 +2374,9 @@ private Map _deleteItemViaEndpoint(String type, String idParam, String deletePat
                 (idParam): itemId,
                 lastBackup: formatTimestamp(state.lastBackupTimestamp),
                 backupFile: backupEntry?.fileName,
-                restoreHint: backupEntry ? "To restore: use '${installTool}' with the backup source, or download ${backupEntry.fileName} from Hubitat > Settings > File Manager and re-install manually." : null
+                backupRetention: backupEntry ? (backupEntry.retention ?: "pinned") : null,
+                backupRetentionNote: backupEntry ? _itemBackupRetentionNote(backupEntry as Map) : null,
+                restoreHint: backupEntry ? "To restore: use '${installTool}' with the backup source, or download ${backupEntry.fileName} from Hubitat > Settings > File Manager and re-install manually. ${_itemBackupRetentionNote(backupEntry as Map)}" : null
             ]
             if (!backupSucceeded) result.backupWarning = "Pre-delete backup could not be created. The source code may be permanently lost."
             return result
@@ -2388,8 +2423,9 @@ private Map _backupLibrarySourceLocked(String libraryId) {
     def libData = parsed[0]
     def backupSource = libData.source ?: ""
     def fileName = _itemBackupFileName("mcp-backup-library-${libraryId}.groovy")
+    byte[] backupBytes = backupSource.getBytes("UTF-8")
     try {
-        uploadHubFile(fileName, backupSource.getBytes("UTF-8"))
+        uploadHubFile(fileName, backupBytes)
     } catch (Exception e) {
         mcpLogError("hub-admin", "Failed to save library backup file '${fileName}'", e)
         throw new IllegalArgumentException("Cannot back up library ID ${libraryId}: file upload failed -- ${e.message}")
@@ -2401,7 +2437,9 @@ private Map _backupLibrarySourceLocked(String libraryId) {
         fileName: fileName,
         version: libData.version,
         timestamp: now(),
-        sourceLength: backupSource.length()
+        sourceLength: backupSource.length(),
+        sizeBytes: backupBytes.length,
+        retention: "pinned"
     ]
     _publishUploadedItemBackup(key, entry)
     mcpLog("info", "hub-admin", "Backed up library ID ${libraryId} source to File Manager: ${fileName} (version ${libData.version}, ${backupSource.length()} chars)")
@@ -2415,7 +2453,7 @@ def toolGetLibrarySource(args) {
 
     def maxChunkSize = 64000
     def requestedOffset = args.offset ? args.offset as int : 0
-    def requestedLength = args.length ? Math.min(args.length as int, maxChunkSize) : maxChunkSize
+    def requestedLength = args.length ? Math.min(args.length as int, maxChunkSize) : defaultReadChunkChars()
 
     try {
         def responseText = hubInternalGet("/library/list/single/data/${libraryId}")
@@ -2699,17 +2737,23 @@ def toolUpdateLibraryCode(args) {
     } else {
         // The reuse decision and the backup it may take must not interleave with another
         // backup writer. The source download before and the save after need no lock.
-        _withBackupLock("update library ${libraryId}") {
-            existingEntry = _reusableItemBackup(_itemBackupManifest(), "library_${libraryId}".toString(), "Library")
-            if (existingEntry != null) {
-                backupFileName = existingEntry.fileName
-            } else {
-                // Backup needed. backupLibrarySource handles fetch, upload, manifest update, and pruning.
-                // Fail-closed: any throw propagates up and aborts the update -- same contract as
-                // toolUpdateItemCodeInner calling backupItemSource() without try/catch.
-                backupEntry = backupLibrarySource(libraryId.toString())
-                backupFileName = backupEntry.fileName
+        try {
+            _withBackupLock("update library ${libraryId}") {
+                existingEntry = _reusableItemBackup(_itemBackupManifest(), "library_${libraryId}".toString(), "Library")
+                if (existingEntry != null) {
+                    backupFileName = existingEntry.fileName
+                } else {
+                    // Backup needed. backupLibrarySource handles fetch, upload, manifest update, and pruning.
+                    // Fail-closed: any throw propagates up and aborts the update -- same contract as
+                    // toolUpdateItemCodeInner's backupItemSource() call.
+                    backupEntry = backupLibrarySource(libraryId.toString())
+                    backupFileName = backupEntry.fileName
+                }
             }
+        } catch (Exception backupErr) {
+            Map unavailable = _itemBackupIndexUnavailableResult(backupErr)
+            if (unavailable == null) throw backupErr
+            return unavailable + [libraryId: libraryId]
         }
     }
     def skipBackup = backupEntry == null
@@ -2797,6 +2841,9 @@ def toolDeleteLibrary(args) {
         backupFileName = backupEntry.fileName
         backupSucceeded = true
     } catch (Exception backupErr) {
+        // An unreadable backup index refuses the delete: the backup's fate is unknown.
+        Map unavailable = _itemBackupIndexUnavailableResult(backupErr)
+        if (unavailable != null) return unavailable + [libraryId: libraryId]
         mcpLog("warn", "hub-admin", "Pre-delete backup failed for library ${libraryId}: ${backupErr.message} -- proceeding with delete")
     }
 
@@ -2846,7 +2893,9 @@ def toolDeleteLibrary(args) {
                 libraryId: libraryId,
                 lastBackup: formatTimestamp(state.lastBackupTimestamp),
                 backupFile: backupEntry?.fileName ?: backupFileName,
-                restoreHint: backupEntry ? "To restore: use 'hub_create_library' with the backup source, or download ${backupEntry.fileName} from Hubitat > Settings > File Manager and re-install manually." : null
+                backupRetention: backupEntry ? (backupEntry.retention ?: "pinned") : null,
+                backupRetentionNote: backupEntry ? _itemBackupRetentionNote(backupEntry as Map) : null,
+                restoreHint: backupEntry ? "To restore: use 'hub_create_library' with the backup source, or download ${backupEntry.fileName} from Hubitat > Settings > File Manager and re-install manually. ${_itemBackupRetentionNote(backupEntry as Map)}" : null
             ]
             if (!backupSucceeded) result.backupWarning = "Pre-delete backup could not be created. The source code may be permanently lost."
             return result
@@ -2947,6 +2996,7 @@ def toolListInstalledApps(args) {
             }
         }
 
+        if (args?.nameFilter) filtered = _nameFiltered(filtered, args.nameFilter)
         def paged = _paginateList(filtered, cursor, 50, "hub_list_apps")
         def result = [
             apps: paged.page,
@@ -3109,6 +3159,7 @@ def _getAllToolDefinitions_partCodeManagement() {
                 properties: [
                     scope: [type: "string", enum: ["instances", "types"], description: "What to list. 'instances' (default) = running app instances with parent/child tree; 'types' = installed app-type catalog (community + built-in), each with system/isBuiltIn and menu (Apps/Automations/Integrations tab, null if undeclared).", default: "instances"],
                     filter: [type: "string", enum: ["all", "builtin", "user", "disabled", "parents", "children"], description: "scope='instances' only: category filter."],
+                    nameFilter: [type: "string", description: "Name contains (case-insensitive)."],
                     includeHidden: [type: "boolean", description: "scope='instances' only: include hidden apps (typically Hubitat internal). Default: false", default: false],
                     cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded (subject to 120KB guard); pass \"\" for the first page, iterate nextCursor (page size 50)."]
                 ]
@@ -3121,6 +3172,7 @@ def _getAllToolDefinitions_partCodeManagement() {
                 type: "object",
                 properties: [
                     include: [type: "string", enum: ["user", "all"], description: "Scope: 'user' (default) = user-installed drivers only; 'all' = full catalog (system + virtual + user)."],
+                    nameFilter: [type: "string", description: "Name contains (case-insensitive)."],
                     cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 50)."]
                 ]
             ]
@@ -3145,7 +3197,7 @@ def _getAllToolDefinitions_partCodeManagement() {
                     type: [type: "string", enum: ["app", "driver", "library"], description: "What kind of code to read."],
                     id: [type: "string", description: "App/driver/library ID (positive integer), from hub_list_apps / hub_list_drivers / hub_list_libraries respectively (library id is also in a hub_create_library response or the Hubitat Libraries code page)."],
                     offset: [type: "integer", description: "Char offset to start reading from. Default: 0"],
-                    length: [type: "integer", description: "Max characters to return in this chunk. Default/max: 64000"]
+                    length: [type: "integer", description: "Max chars (default 30000, max 64000)."]
                 ],
                 required: ["type", "id"]
             ]

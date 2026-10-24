@@ -87,8 +87,8 @@ def _healthAlertsFromHub2(hub2) {
     if (alerts.alertItems instanceof List) {
         def items = (alerts.alertItems as List).findAll { it instanceof Map && it.key }
         out.active = items.collect { it.key.toString() }.unique().sort()
-        // The handle hub_set_system_settings(dismissAlert) takes.
-        out.items = items.collect { [key: it.key, message: it.message, version: it.version, dismissible: it.dismissible == true] }
+        // The handle hub_set_system_settings(dismissAlert) takes. Messages lose the hub's link markup.
+        out.items = items.collect { [key: it.key, message: stripAppConfigHtml(it.message), version: it.version, dismissible: it.dismissible == true] }
     } else {
         out.active = alerts.findAll { k, v -> v == true }.collect { k, v -> k.toString() }.sort()
     }
@@ -195,7 +195,7 @@ def toolGetHubInfo(args = null) {
     try {
         def freeMemory = hubInternalGet("/hub/advanced/freeOSMemory")
         if (freeMemory) {
-            info.freeMemoryKB = freeMemory.trim()
+            info.freeMemoryKB = _hubNumber(freeMemory)
             try {
                 def memKB = freeMemory.trim() as Integer
                 if (memKB < 50000) {
@@ -210,7 +210,7 @@ def toolGetHubInfo(args = null) {
     try {
         def tempC = hubInternalGet("/hub/advanced/internalTempCelsius")
         if (tempC) {
-            info.internalTempCelsius = tempC.trim()
+            info.internalTempCelsius = _hubNumber(tempC)
             try {
                 def temp = tempC.trim() as Double
                 if (temp > 70) {
@@ -222,25 +222,37 @@ def toolGetHubInfo(args = null) {
         }
     } catch (Exception e) { info.internalTempCelsius = "unavailable" }
 
+    // The hub reports its database size in MB (its own alerts render it as "<n>m").
     try {
         def dbSize = hubInternalGet("/hub/advanced/databaseSize")
         if (dbSize) {
-            info.databaseSizeKB = dbSize.trim()
-            try {
-                def dbKB = dbSize.trim() as Integer
-                if (dbKB > 500000) {
-                    info.databaseWarning = "LARGE DATABASE: ${(dbKB / 1024).toInteger()}MB. Consider cleaning up old data."
-                }
-            } catch (NumberFormatException nfe) { /* non-numeric */ }
+            info.databaseSizeMB = _hubNumber(dbSize)
+            if (info.databaseSizeMB instanceof Number && info.databaseSizeMB > 500) {
+                info.databaseWarning = "LARGE DATABASE: ${info.databaseSizeMB} MB. Consider cleaning up old data."
+            }
         }
-    } catch (Exception e) { info.databaseSizeKB = "unavailable" }
+    } catch (Exception e) { info.databaseSizeMB = "unavailable" }
 
     // Native log history can be temporarily unavailable independently of these stats.
     info.mcpServerVersion = currentVersion()
     info.setupCurrent = SETUP_CURRENT
     info.setupVersion = state.setupVersion
     info.mcpClient = mcpClientIdentity()
-    info.mcpDeviceCount = settings.selectedDevices?.size() ?: 0
+    // Every device the MCP tools reach: the selected devices plus the MCP-managed virtual devices,
+    // or with the allowlist bypassed every device in the hub's device tree.
+    def reachable = ((settings.selectedDevices ?: []) + (getChildDevices() ?: [])).collect { it?.id?.toString() }.findAll { it } as Set
+    if (_bypassEnabled()) {
+        info.deviceAllowlistBypassed = true
+        try {
+            def tree = new groovy.json.JsonSlurper().parseText(hubInternalGet("/hub2/devicesList") ?: "{}")
+            def records = _flattenHub2DeviceTree(tree instanceof Map ? tree.devices : null)
+            if (!(records instanceof List)) throw new IllegalStateException("the device tree was not a list")
+            records.each { r -> if (r?.id != null) reachable << r.id.toString() }
+        } catch (Exception e) {
+            info.mcpDeviceCountNote = "The allowlist is bypassed, so every hub device is reachable, but the hub's device list could not be read (${e.message}); the count covers the selected and MCP-managed devices only.".toString()
+        }
+    }
+    info.mcpDeviceCount = reachable.size()
     info.mcpRuleCount = getChildApps()?.size() ?: 0
     info.mcpLogEntries = logHistory.entries == null ? null : logHistory.entries.size()
     if (logHistory.error) {
@@ -253,11 +265,11 @@ def toolGetHubInfo(args = null) {
     // e2e uses it to skip per-run backups, a hub-heavy op the platform's load limiter punishes.
     info.lastBackupEpoch = state.lastBackupTimestamp ?: null
 
-    // Settings visibility (always available)
-    info.hubSecurityConfigured = settings.hubSecurityEnabled ?: false
-    // Distinguishes a hub whose credentials were shed from one that never configured any --
-    // hubSecurityConfigured reads false for both, and the shed's log line can be filtered out.
+    // Settings visibility (always available). hubSecurityConfigured is whether this app holds
+    // hub-login credentials, not whether the hub's login is on; once the firmware retires them
+    // (hubSecurityRetired) it is always false and is left out, so it is not read as the hub's.
     info.hubSecurityRetired = (state.hubSecurityRetired == true)
+    if (!info.hubSecurityRetired) info.hubSecurityConfigured = settings.hubSecurityEnabled ?: false
     info.readEnabled = settings.enableRead != false
     info.writeEnabled = settings.enableWrite != false
     info.customRuleEngineEnabled = settings.enableCustomRuleEngine == true
@@ -340,9 +352,13 @@ def toolGetHubInfo(args = null) {
         try {
             // Kick the async refresh off first so checkInProgress reflects whether it actually
             // started (asynchttpGet can throw before scheduling). It's async -- handleUpdateCheckResponse
-            // writes state LATER -- so the snapshot below still reflects the PRIOR check.
-            def refreshStarted = doUpdateCheck()
+            // writes state LATER -- so the snapshot below still reflects the PRIOR check. A check that
+            // succeeded in the last five minutes is reported as is, with no new one started, so a
+            // repeat call settles at checkInProgress:false; a failed one is retried.
             def uc = state.updateCheck ?: [:]
+            long sinceCheck = uc.checkedAt instanceof Number ? now() - (uc.checkedAt as long) : -1L
+            boolean fresh = !uc.lastError && sinceCheck >= 0L && sinceCheck < 300000L
+            def refreshStarted = fresh ? false : doUpdateCheck()
             def installed = currentVersion()
             info.appUpdate = [
                 installedVersion: installed,
@@ -370,6 +386,9 @@ def toolGetHubInfo(args = null) {
 
     // A client that saw only a generic error for a write can learn here whether it ran.
     info.recentWrites = _mrtrRecentOperations()
+    // Only on a per-client token: what this token may do, so an agent can ask for access.
+    def clientAccess = _clientAccessInfo()
+    if (clientAccess != null) info.clientAccess = clientAccess
     return info
 }
 
@@ -1030,7 +1049,15 @@ def toolManageMode(args) {
             def name = args?.name?.toString()?.trim()
             if (!name) throw new IllegalArgumentException("name is required to create a mode")
             def body = args?.icon ? [name: name, icon: args.icon.toString()] : [name: name]
-            return _modeWriteResult("create", _modePost("/modes/jsonCreate", body))
+            def created = _modeWriteResult("create", _modePost("/modes/jsonCreate", body))
+            // The hub's answer carries no id; the location's own mode list does, with no extra request.
+            if (created.success == true) {
+                // By name only: a numeric name could also match another mode's id.
+                def newId = location.modes?.find { it?.name?.equalsIgnoreCase(name) }?.id
+                if (newId != null) { created.modeId = newId.toString(); created.name = name }
+                else created.note = "Created; its id was not in this request's mode list yet -- read it with hub_list_modes."
+            }
+            return created
         case "rename":
             def name = args?.name?.toString()?.trim()
             def modeId = _resolveModeId(args?.mode)

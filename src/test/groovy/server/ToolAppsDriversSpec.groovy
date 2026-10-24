@@ -455,6 +455,51 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         !hubGet.calls.any { it.path == '/device/drivers' }
     }
 
+    def "hub_list_apps types nameFilter narrows the list and its count, ignoring case and markup"() {
+        given:
+        enableRead()
+        hubGet.register('/hub2/userAppTypes') { params ->
+            '[{"id": 1, "name": "App One", "namespace": "acme", "usedBy": []}, {"id": 2, "name": "<b>APP</b> Two", "namespace": "acme", "usedBy": []}]'
+        }
+        hubGet.register('/hub2/appsList') { params -> APPS_LIST_ENRICH }
+
+        when:
+        def result = script.toolListHubApps([nameFilter: 'app two'])
+
+        then:
+        result.apps*.id == [2]
+        result.count == 1
+    }
+
+    def "hub_list_drivers nameFilter keeps only drivers whose name contains the text"() {
+        given:
+        enableRead()
+        hubGet.register('/device/drivers') { params ->
+            '{"drivers":[{"id":837,"name":"Virtual Switch","namespace":"hubitat","type":"sys"},{"id":812,"name":"Virtual Dimmer","namespace":"hubitat","type":"sys"},{"id":5,"name":"Generic Zigbee Switch","namespace":"hubitat","type":"sys"}]}'
+        }
+
+        when:
+        def result = script.toolListHubDrivers([include: 'all', nameFilter: 'virtual switch'])
+
+        then:
+        result.drivers*.id == ['837']
+        result.count == 1
+    }
+
+    def "hub_list_drivers refuses an argument it does not take, and an unknown include: #label"() {
+        when:
+        script.toolListHubDrivers(args)
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains(expected)
+
+        where:
+        label            | args                           || expected
+        'unknown key'    | [include: 'all', limit: 10]    || 'does not take limit'
+        'unknown include'| [include: 'everything']        || "include must be 'user' or 'all'"
+    }
+
     // -------- toolListLibraries --------
 
     def "hub_list_libraries returns library summaries (source omitted) from the hub API"() {
@@ -792,10 +837,10 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         then: 'first chunk returned with pagination metadata'
         result.success == true
         result.totalLength == 70000
-        result.chunkLength == 64000
+        result.chunkLength == 30000
         result.hasMore == true
-        result.nextOffset == 64000
-        result.remainingChars == 6000
+        result.nextOffset == 30000
+        result.remainingChars == 40000
         result.sourceFile == 'mcp-source-app-456.groovy'
 
         and: 'full source was uploaded to File Manager'
@@ -828,10 +873,10 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.totalLength == 70000
-        inner.chunkLength == 64000
+        inner.chunkLength == 30000
         inner.hasMore == true
-        inner.nextOffset == 64000
-        inner.remainingChars == 6000
+        inner.nextOffset == 30000
+        inner.remainingChars == 40000
         inner.sourceFile == 'mcp-source-app-456.groovy'
         uploads.size() == 1
         uploads[0].name == 'mcp-source-app-456.groovy'
@@ -927,7 +972,8 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         result.backups == []
         result.total == 0
         result.message.contains('No item backups')
-        result.maxBackups == 20
+        result.storageBudget.limitBytes == 10L * 1024L * 1024L
+        result.retentionPolicy.contains('rolling steps')
     }
 
     @spock.lang.Unroll
@@ -945,7 +991,8 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         inner.backups == []
         inner.total == 0
         inner.message.contains('No item backups')
-        inner.maxBackups == 20
+        inner.storageBudget.limitBytes == 10L * 1024L * 1024L
+        inner.storageBudget.usedBytes == 0
 
         where:
         useGateways << [true, false]
@@ -953,7 +1000,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
 
     def "hub_list_backups returns all manifest entries sorted newest first"() {
         given: 'two manifest entries with different timestamps'
-        atomicStateMap.itemBackupManifest = [
+        backupIndex = [
             'app_10'   : [type: 'app',    id: '10', fileName: 'mcp-backup-app-10.groovy',
                           version: 5, timestamp: 1_000_000_000_000L, sourceLength: 100],
             'driver_20': [type: 'driver', id: '20', fileName: 'mcp-backup-driver-20.groovy',
@@ -972,11 +1019,35 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         result.backups[0].sourceLength == 200
     }
 
+    def "hub_list_backups returns one page of 50 and says where the next page starts"() {
+        given: '60 manifest entries'
+        backupIndex = (1..60).collectEntries { i ->
+            ["app_${i}".toString(), [type: 'app', id: i.toString(), fileName: "mcp-backup-app-${i}.groovy".toString(),
+                                     version: 1, timestamp: 1_000_000_000_000L + i, sourceLength: 10]]
+        }
+
+        when:
+        def first = script.toolListItemBackups()
+        def second = script.toolListItemBackups([cursor: first.nextCursor])
+
+        then: 'newest first, 50 then the remaining 10'
+        first.total == 60
+        first.count == 50
+        first.backups[0].backupKey == 'app_60'
+        first.hasMore == true
+        first.nextCursor == '50'
+        first.note.contains("Showing 50 of 60")
+        second.count == 10
+        second.backups[-1].backupKey == 'app_1'
+        !second.containsKey('hasMore')
+        !second.containsKey('nextCursor')
+    }
+
     @spock.lang.Unroll
     def "hub_list_backups via dispatch returns all manifest entries sorted newest first (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        atomicStateMap.itemBackupManifest = [
+        backupIndex = [
             'app_10'   : [type: 'app',    id: '10', fileName: 'mcp-backup-app-10.groovy',
                           version: 5, timestamp: 1_000_000_000_000L, sourceLength: 100],
             'driver_20': [type: 'driver', id: '20', fileName: 'mcp-backup-driver-20.groovy',
@@ -1030,7 +1101,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
 
     def "hub_get_backup returns helpful error when the key is unknown"() {
         given:
-        atomicStateMap.itemBackupManifest = [
+        backupIndex = [
             'app_1': [type: 'app', id: '1', fileName: 'mcp-backup-app-1.groovy',
                       version: 1, timestamp: 1_000_000_000_000L, sourceLength: 0]
         ]
@@ -1048,7 +1119,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
     def "hub_get_backup via dispatch returns helpful error envelope when key is unknown (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        atomicStateMap.itemBackupManifest = [
+        backupIndex = [
             'app_1': [type: 'app', id: '1', fileName: 'mcp-backup-app-1.groovy',
                       version: 1, timestamp: 1_000_000_000_000L, sourceLength: 0]
         ]
@@ -1070,7 +1141,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
 
     def "hub_get_backup reads the backup source from File Manager"() {
         given:
-        atomicStateMap.itemBackupManifest = [
+        backupIndex = [
             'app_5': [type: 'app', id: '5', fileName: 'mcp-backup-app-5.groovy',
                       version: 2, timestamp: 1_234_000_000_000L, sourceLength: 123]
         ]
@@ -1097,7 +1168,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
     def "hub_get_backup via dispatch reads backup source from File Manager (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        atomicStateMap.itemBackupManifest = [
+        backupIndex = [
             'app_5': [type: 'app', id: '5', fileName: 'mcp-backup-app-5.groovy',
                       version: 2, timestamp: 1_234_000_000_000L, sourceLength: 123]
         ]
@@ -1126,7 +1197,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
 
     def "hub_get_backup reports error when the backup file cannot be read"() {
         given:
-        atomicStateMap.itemBackupManifest = [
+        backupIndex = [
             'app_6': [type: 'app', id: '6', fileName: 'mcp-backup-app-6.groovy',
                       version: 1, timestamp: 1_234_000_000_000L, sourceLength: 0]
         ]
@@ -1145,7 +1216,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
     def "hub_get_backup via dispatch reports error envelope when backup file cannot be read (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        atomicStateMap.itemBackupManifest = [
+        backupIndex = [
             'app_6': [type: 'app', id: '6', fileName: 'mcp-backup-app-6.groovy',
                       version: 1, timestamp: 1_234_000_000_000L, sourceLength: 0]
         ]
@@ -1168,7 +1239,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
 
     def "hub_get_backup omits inline source when the file exceeds the MCP response limit"() {
         given:
-        atomicStateMap.itemBackupManifest = [
+        backupIndex = [
             'driver_9': [type: 'driver', id: '9', fileName: 'mcp-backup-driver-9.groovy',
                          version: 1, timestamp: 1_234_000_000_000L, sourceLength: 0]
         ]
@@ -1189,7 +1260,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
     def "hub_get_backup via dispatch omits inline source when file exceeds the MCP response limit (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        atomicStateMap.itemBackupManifest = [
+        backupIndex = [
             'driver_9': [type: 'driver', id: '9', fileName: 'mcp-backup-driver-9.groovy',
                          version: 1, timestamp: 1_234_000_000_000L, sourceLength: 0]
         ]
@@ -1216,7 +1287,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         given:
         // Library backups cannot go through hub_restore_backup -- that tool only handles
         // apps and drivers. The howToRestore text must point to hub_update_library.
-        atomicStateMap.itemBackupManifest = [
+        backupIndex = [
             'library_42': [type: 'library', id: '42', fileName: 'mcp-backup-library-42.groovy',
                            version: 3, timestamp: 1_234_000_000_000L, sourceLength: 50]
         ]
@@ -1248,7 +1319,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
     def "hub_get_backup via dispatch library-type uses hub_update_library restore path (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        atomicStateMap.itemBackupManifest = [
+        backupIndex = [
             'library_42': [type: 'library', id: '42', fileName: 'mcp-backup-library-42.groovy',
                            version: 3, timestamp: 1_234_000_000_000L, sourceLength: 50]
         ]
@@ -1285,7 +1356,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         given: 'a manifest entry whose backup content equals the CURRENT live source'
         settingsMap.enableWrite = true
         stateMap.lastBackupTimestamp = 1234567890000L
-        atomicStateMap.itemBackupManifest = [
+        backupIndex = [
             app_228: [type: 'app', id: '228', fileName: 'mcp-backup-app-228.groovy', version: 5, timestamp: 1234567880000L, sourceLength: 9]
         ]
         script.metaClass.downloadHubFile = { String name ->
@@ -1304,7 +1375,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         then: 'the restore reports success without touching the undo artifacts'
         result.success == true
         uploads.isEmpty()
-        (atomicStateMap.itemBackupManifest ?: [:]).prerestore_app_228 == null
+        (backupIndex ?: [:]).prerestore_app_228 == null
         result.undoAvailable == false
         result.warning
         !result.containsKey('preRestoreBackup')
@@ -1317,7 +1388,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         given:
         settingsMap.enableWrite = true
         stateMap.lastBackupTimestamp = 1234567890000L
-        atomicStateMap.itemBackupManifest = [
+        backupIndex = [
             app_228: [type: 'app', id: '228', fileName: 'backup.groovy', version: 5, timestamp: 1L],
             prerestore_app_228: [type: 'app', id: '228', fileName: 'mcp-prerestore-app-228.groovy', version: 2, timestamp: 1L]
         ]
@@ -1366,7 +1437,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         given:
         settingsMap.enableWrite = true
         stateMap.lastBackupTimestamp = 1234567890000L
-        atomicStateMap.itemBackupManifest = [
+        backupIndex = [
             app_228: [type: 'app', id: '228', fileName: 'backup.groovy', version: 5, timestamp: 1L],
             prerestore_app_228: [type: 'app', id: '228', fileName: 'mcp-prerestore-app-228.groovy', version: 2, timestamp: 1L]
         ]
