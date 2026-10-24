@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 4.8.3 - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
+ * Version: 4.8.4 - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -29792,17 +29792,21 @@ def _unwrapPreserialized(item) {
 def handleNotification(msg) {
     logMcpTraffic("MCP Notification: ${msg.method}")
 }
-def _mrtrClientErrorHint() {
-    return "If a write returns a client-side error with no result body, the hub is still running it or has already finished it. Wait about 15 seconds, then call hub_get_info and check recentWrites for that tool (running, paused_resuming, finished, finished_with_error). Read the target before repeating the call: a repeat is only safe when the write shows as failed or absent and the target shows the change did not land, because repeating a finished write performs it again. See hub_get_tool_guide(section='slow_ops')."
+def _writeRecoveryHint(boolean modern) {
+    String lead = "If a write returns a client-side error with no result body, its outcome is uncertain: the hub may still be running it or may already have finished it. Wait about 15 seconds. "
+    String recent = modern
+        ? "For a write that accepts requestState (continuation-eligible), call hub_get_info and check recentWrites for that tool (running, paused_resuming, finished, finished_with_error). For every other write, call "
+        : "Then call "
+    return (lead + recent + "hub_get_logs(mode='mcp', component='write') and find the started/finished records for that tool and target (outcome completed, failed, partial, accepted or unknown; each record carries the JSON-RPC id you sent and a write correlation id), then read the target itself. A missing record does not prove the write never ran. Repeat the call only when the write shows as failed or absent and the target shows the change did not land, because repeating a finished write performs it again. See hub_get_tool_guide(section='slow_ops').").toString()
 }
 private String _guideFirstInstruction() {
     return "${guideFirstSentence()} Before calling a write tool, read that tool's guide section. ".toString()
 }
-def serverInstructions() {
+def serverInstructions(boolean modern) {
     if (settings.useGateways == false) {
-        return _guideFirstInstruction() + "Every tool is advertised individually on tools/list (flat catalog; there are no gateway tools). Tool responses are capped near 120KB; on large lists use cursor pagination (pass the returned nextCursor to fetch the next page). MCP resources are also served (resources/list): the tool-guide sections and a live house-state context summary (hubitat://context-summary), each gated like its tool counterpart. " + _mrtrClientErrorHint()
+        return _guideFirstInstruction() + "Every tool is advertised individually on tools/list (flat catalog; there are no gateway tools). Tool responses are capped near 120KB; on large lists use cursor pagination (pass the returned nextCursor to fetch the next page). MCP resources are also served (resources/list): the tool-guide sections and a live house-state context summary (hubitat://context-summary), each gated like its tool counterpart. " + _writeRecoveryHint(modern)
     }
-    _guideFirstInstruction() + "Gateway tools (hub_manage_* / hub_read_*) expose sub-tools -- call a gateway with no arguments to list its sub-tools and their schemas. hub_manage_virtual_device and hub_manage_mode are direct tools (not gateways) -- call them with their own arguments. Tool responses are capped near 120KB; on large lists use cursor pagination (pass the returned nextCursor to fetch the next page). MCP resources are also served (resources/list): the tool-guide sections and a live house-state context summary (hubitat://context-summary), each gated like its tool counterpart. " + _mrtrClientErrorHint()
+    _guideFirstInstruction() + "Gateway tools (hub_manage_* / hub_read_*) expose sub-tools -- call a gateway with no arguments to list its sub-tools and their schemas. hub_manage_virtual_device and hub_manage_mode are direct tools (not gateways) -- call them with their own arguments. Tool responses are capped near 120KB; on large lists use cursor pagination (pass the returned nextCursor to fetch the next page). MCP resources are also served (resources/list): the tool-guide sections and a live house-state context summary (hubitat://context-summary), each gated like its tool counterpart. " + _writeRecoveryHint(modern)
 }
 def supportedProtocolVersions() {
     [modernProtocolVersion(), "2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]
@@ -29840,7 +29844,7 @@ def handleInitialize(msg) {
         protocolVersion: negotiated,
         capabilities: serverCapabilities(),
         serverInfo: serverIdentity(),
-        instructions: serverInstructions()
+        instructions: serverInstructions(false)
     ])
 }
 def serverCapabilities() {
@@ -29850,11 +29854,13 @@ def serverCapabilities() {
     ]
 }
 def handleServerDiscover(msg) {
+    String headerVersion = _requestHeader("MCP-Protocol-Version")
+    boolean modern = headerVersion == null || _modernEraVersion(headerVersion)
     return jsonRpcResult(msg.id, [
         supportedVersions: supportedProtocolVersions(),
         capabilities: serverCapabilities(),
         serverInfo: serverIdentity(),
-        instructions: serverInstructions(),
+        instructions: serverInstructions(modern),
         ttlMs: cacheHintTtlMs(),
         cacheScope: "private",
         resultType: "complete"
@@ -30214,15 +30220,22 @@ def handleToolsCallLegacy(msg) {
     }
     long reqT0 = now()
     String writeLeaseId = null
+    Map audit = null
+    Map outcome = null
     try {
         if (_isActualWriteCall(toolName, reactiveToolName, args)) {
-            def reservation = _writeReserveRequest(reactiveToolName,
-                _modernEraRequest() ? "modern" : "legacy")
+            String transport = _modernEraRequest() ? "modern" : "legacy"
+            def reservation = _writeReserveRequest(reactiveToolName, transport)
+            audit = _writeAuditContext(msg, toolName, reactiveToolName, args, transport)
             if (reservation.accepted != true) {
+                _writeAuditLog(audit, "refused", [reason: reservation.refusal?.status ?: "refused"])
+                audit = null
                 return _renderToolResult(msg.id, toolName, reactiveToolName, args,
                     reservation.refusal, true)
             }
             writeLeaseId = reservation.leaseId?.toString()
+            if (audit != null) audit.writeId = writeLeaseId
+            _writeAuditLog(audit, "started", [:])
         }
         if (args instanceof Map && _budgetAwareTools().contains(reactiveToolName?.toString())) {
             args.__reqT0 = reqT0
@@ -30234,15 +30247,19 @@ def handleToolsCallLegacy(msg) {
             ])
             result = [isError: true, error: "Tool ${reactiveToolName} returned no result",
                       tool: reactiveToolName]
+            if (audit != null) outcome = [outcome: "unknown", error: "tool returned no result"]
         }
+        if (audit != null && outcome == null) outcome = _writeOutcome(result)
         return _renderToolResult(msg.id, toolName, reactiveToolName, args, result,
             result instanceof Map && result.isError == true)
     } catch (IllegalArgumentException e) {
+        if (audit != null && outcome == null) outcome = [outcome: "failed", error: "validation refused the call"]
         mcpLog("error", "server", "Validation error in ${reactiveToolName}: ${e.message}", null, [
             details: _toolLogDetails(reactiveToolName, toolName, args, [error: e.message])
         ])
         return _renderValidationError(msg.id, toolName, reactiveToolName, args, e.message)
     } catch (Exception e) {
+        if (audit != null && outcome == null) outcome = [outcome: "unknown", error: "tool threw ${e.class.simpleName}".toString()]
         mcpLog("error", "server", "Tool execution error in ${reactiveToolName}: ${e.message}", null, [
             details: _toolLogDetails(reactiveToolName, toolName, args, [error: e.message]),
             stackTrace: _exceptionStack(e)
@@ -30254,7 +30271,98 @@ def handleToolsCallLegacy(msg) {
         ])
     } finally {
         if (writeLeaseId != null) _writeReleaseRequest(writeLeaseId)
+        if (audit != null && writeLeaseId != null) {
+            Map fin = outcome ?: [outcome: "unknown", error: "request ended before a result was produced"]
+            _writeAuditLog(audit, "finished", fin + [durationMs: now() - reqT0])
+        }
     }
+}
+private Map _writeAuditContext(msg, toolName, reactiveToolName, args, String transport) {
+    try {
+        String leaf = reactiveToolName?.toString()
+        Map ctx = [tool: leaf, transport: transport, target: _writeTargetSummary(leaf, toolName?.toString(), args)]
+        if (toolName?.toString() != leaf) ctx.gateway = toolName?.toString()
+        if (msg?.id != null) ctx.rpcId = msg.id.toString()
+        return ctx
+    } catch (Exception ignored) {
+        return null
+    }
+}
+private void _writeAuditLog(Map audit, String phase, Map extra) {
+    if (audit == null) return
+    try {
+        Map details = [phase: phase, tool: audit.tool]
+        if (audit.gateway) details.gateway = audit.gateway
+        if (audit.writeId) details.writeId = audit.writeId
+        if (audit.rpcId != null) details.rpcId = audit.rpcId
+        details.transport = audit.transport
+        details.target = audit.target ?: [:]
+        details.putAll(extra ?: [:])
+        if (details.error != null) details.error = details.error.toString().take(200)
+        String target = (audit.target ?: [:]).collect { k, v -> "${k}=${v}" }.join(",")
+        String rpc = audit.rpcId != null ? audit.rpcId : "none"
+        String message
+        if (phase == "refused") {
+            message = "write refused: ${audit.tool} reason=${details.reason} target=${target} rpc=${rpc}"
+        } else if (phase == "started") {
+            message = "write started: ${audit.tool} target=${target} write=${audit.writeId} rpc=${rpc} via=${audit.transport}"
+        } else {
+            message = "write finished: ${audit.tool} outcome=${details.outcome} target=${target} write=${audit.writeId} rpc=${rpc} ms=${details.durationMs}" +
+                (details.error ? " error=${details.error}" : "")
+        }
+        _mcpLogRecord(initDebugLogs(), "info", "write", message.toString(), null, [details: details])
+    } catch (Exception ignored) { }
+}
+private List _writeTargetKeys() {
+    return ["appId", "nativeAppId", "ruleId", "deviceId", "device_id",
+        "driverId", "roomId", "room_id", "variableName", "name", "id", "type", "action", "scope",
+        "backupKey", "ref", "mode", "fileName", "filename", "path"]
+}
+private Map _writeTargetSummary(String leaf, String outer, args) {
+    try {
+        if (!(args instanceof Map)) return [:]
+        def leafArgs = _mrtrLeafArguments(outer, leaf, args as Map)
+        if (!(leafArgs instanceof Map)) return [:]
+        Map target = [:]
+        for (String key : _writeTargetKeys()) {
+            if (target.size() >= 8) break
+            def v = leafArgs.get(key)
+            if (v instanceof CharSequence || v instanceof Number || v instanceof Boolean) {
+                target.put(key, v.toString().take(80))
+            } else if (v instanceof List && !v.isEmpty() &&
+                    v.every { it instanceof CharSequence || it instanceof Number || it instanceof Boolean }) {
+                String joined = v.take(5).collect { it.toString().take(80) }.join(",")
+                target.put(key, (v.size() > 5 ? "${joined},+${v.size() - 5} more" : joined).toString())
+            }
+        }
+        return target
+    } catch (Exception ignored) {
+        return [:]
+    }
+}
+private Map _writeOutcome(result) {
+    try {
+        if (!(result instanceof Map)) return [outcome: "completed"]
+        Map r = result as Map
+        if (r.__deviceValidation != null) return [outcome: "failed", error: "validation refused the call"]
+        if (r.status?.toString() == "in_progress") {
+            return r.requestId != null ? [outcome: "accepted"]
+                : [outcome: "partial", error: "paused with remaining work in the result"]
+        }
+        if (r.partial == true) return [outcome: "partial", error: _writeOutcomeCode(r, "some items did not apply")]
+        if (r.isError == true || r.success == false) return [outcome: "failed", error: _writeOutcomeCode(r, "tool returned a failure result")]
+        if (r.stateError instanceof CharSequence && r.stateError.toString().trim()) {
+            return [outcome: "unknown", error: "the write ran but reading the resulting state failed"]
+        }
+        return [outcome: "completed"]
+    } catch (Exception ignored) {
+        return [outcome: "unknown", error: "outcome could not be classified"]
+    }
+}
+private String _writeOutcomeCode(Map r, String fallback) {
+    def status = r.status
+    if (status instanceof CharSequence && status.toString() ==~ /[A-Za-z0-9_.-]{1,64}/) return status.toString()
+    return fallback
 }
 def _isCloudRequest() {
     try { return request?.requestSource?.toString() == "cloud" }
@@ -32863,18 +32971,19 @@ def getToolDefinitions() {
     }
     def transformed = applyDescriptionTransform(baseTools + gatewayTools, false)
     Set writeLeaves = _mrtrWriteTools()
+    boolean modern = _modernEraRequest() as boolean
     return transformed.collect { tool ->
         String name = tool.name as String
         boolean hinted = writeLeaves.contains(name) ||
             (gatewayConfig.containsKey(name) &&
                 (tool.inputSchema?.properties?.tool?.enum ?: []).any { writeLeaves.contains(it) })
-        def withHint = hinted ? _withMrtrClientErrorHint(tool) : tool
+        def withHint = hinted ? _withWriteRecoveryHint(tool, modern) : tool
         if (withHint.annotations?.containsKey('readOnlyHint')) return withHint
         withHint + [annotations: (withHint.annotations ?: [:]) + annotationsForLeaf(name, readOnlyNames, displayMeta, idempotentNames, openWorldNames)]
     }
 }
-private Map _withMrtrClientErrorHint(Map tool) {
-    return tool + [description: "${tool.description ?: ''}\n\n${_mrtrClientErrorHint()}".toString()]
+private Map _withWriteRecoveryHint(Map tool, boolean modern) {
+    return tool + [description: "${tool.description ?: ''}\n\n${_writeRecoveryHint(modern)}".toString()]
 }
 def getAllToolDefinitions() {
     return _getAllToolDefinitions_partNativeDocuments() + _getAllToolDefinitions_partNativeRM() + _getAllToolDefinitions_partRooms() + _getAllToolDefinitions_partBundles() + _getAllToolDefinitions_partVisualRules() + _getAllToolDefinitions_partDiscovery() + _getAllToolDefinitions_partAppCloner() + _getAllToolDefinitions_partSelfAdmin() + _getAllToolDefinitions_partHpm() + _getAllToolDefinitions_partCodeManagement() + _getAllToolDefinitions_partCustomRules() + _getAllToolDefinitions_partVariables() + _getAllToolDefinitions_partVirtualDevices() + _getAllToolDefinitions_partDevices() + _getAllToolDefinitions_partSystem() + _getAllToolDefinitions_partDiagnostics() + _getAllToolDefinitions_partDebugLogging() + _getAllToolDefinitions_partItemBackups() + _getAllToolDefinitions_partFiles() + _getAllToolDefinitions_partDashboards()
@@ -35002,6 +35111,9 @@ def shouldLog(level) {
 def mcpLog(String level, String component, String message, String ruleId = null, Map extraData = null) {
     def buffer = initDebugLogs()
     if (!shouldLog(level)) return
+    _mcpLogRecord(buffer, level, component, message, ruleId, extraData)
+}
+private void _mcpLogRecord(Map buffer, String level, String component, String message, String ruleId, Map extraData) {
     def raw = [timestamp: now(), level: level, component: component, message: message, ruleId: ruleId]
     ["duration", "ruleName", "details", "stackTrace"].each { key -> if (extraData?.get(key)) raw[key] = extraData[key] }
     if (callerClient != null) raw.client = callerClient.label
@@ -35927,7 +36039,7 @@ private Map _rmForceDeleteApp(Integer appId) {
     return resp
 }
 def currentVersion() {
-    return "4.8.3"
+    return "4.8.4"
 }
 def hubBpsGuideKey(String section, Long atMs = null) {
     long bucket = ((atMs != null ? atMs : now()) as long).intdiv(3600000L)
@@ -37450,7 +37562,7 @@ Renaming a room preserves device assignments, but may require updating automatio
 The cloud relay can end a request while the hub keeps working; a modern client continues the call by itself. Each slow-operation response (`in_progress`, `continuation_limit`, `too_many_writes_in_flight`, `slow_read_timeout`) says what to do next.
 
 - Make writes one at a time and split a large Rule Machine change batch; parallel writes are refused once the hub's write cap is full.
-- A write that fails with no result body, or whose response is lost, may still be running on the hub. Wait about 15 seconds, check `recentWrites` in `hub_get_info`, and read the target before repeating it. An identical repeat while it is still active joins it instead of running it twice.
+- A write that fails with no result body, or whose response is lost, may still be running on the hub or may already have finished. Wait about 15 seconds. A continuation write from a 2026-07-28 client shows in `recentWrites` in `hub_get_info`, and an identical repeat while it is still active joins it instead of running it twice. Every other write leaves started and finished records in `hub_get_logs(mode="mcp", component="write")`, each carrying the JSON-RPC id you sent and the outcome (completed, failed, partial, accepted or unknown). A missing record does not prove the write never ran: read the target before repeating it, because repeating a finished write performs it again.
 '''
     ]
 }
