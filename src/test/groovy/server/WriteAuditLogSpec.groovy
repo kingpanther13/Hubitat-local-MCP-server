@@ -102,7 +102,7 @@ class WriteAuditLogSpec extends ToolSpecBase {
         'isError'              | 'failed'    | { Map a -> [isError: true, error: 'token=abc leaked text'] }           | { it == 'tool returned a failure result' }
         'success false'        | 'failed'    | { Map a -> [success: false, status: 'not_found', error: 'x'] }         | { it == 'not_found' }
         'validation throw'     | 'failed'    | { Map a -> throw new IllegalArgumentException('name is required') }    | { it == 'validation refused the call' }
-        'runtime throw'        | 'failed'    | { Map a -> throw new IllegalStateException('hub said no') }            | { it == 'tool threw IllegalStateException' }
+        'runtime throw'        | 'unknown'   | { Map a -> throw new IllegalStateException('hub said no') }            | { it == 'tool threw IllegalStateException' }
         'state readback error' | 'unknown'   | { Map a -> [success: true, stateError: 'readback timed out'] }         | { it?.contains('resulting state failed') }
         'null result'          | 'unknown'   | { Map a -> null }                                                      | { it == 'tool returned no result' }
     }

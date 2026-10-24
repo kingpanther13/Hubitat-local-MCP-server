@@ -2847,7 +2847,7 @@ def handleToolsCallLegacy(msg) {
         ])
         return _renderValidationError(msg.id, toolName, reactiveToolName, args, e.message)
     } catch (Exception e) {
-        if (audit != null && outcome == null) outcome = [outcome: "failed", error: "tool threw ${e.class.simpleName}".toString()]
+        if (audit != null && outcome == null) outcome = [outcome: "unknown", error: "tool threw ${e.class.simpleName}".toString()]
         mcpLog("error", "server", "Tool execution error in ${reactiveToolName}: ${e.message}", null, [
             details: _toolLogDetails(reactiveToolName, toolName, args, [error: e.message]),
             stackTrace: _exceptionStack(e)
