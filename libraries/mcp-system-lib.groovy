@@ -1703,7 +1703,7 @@ PRE-FLIGHT: 1) Ensure backup <24h old 2) Tell user 3) Get explicit confirmation 
                 properties: [
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved the reboot."],
                     rebuildDatabase: [type: "boolean", description: "Rebuild the hub database while restarting (a Reboot dialog advanced option)."],
-                    purgeLogs: [type: "boolean", description: "Delete the hub's past logs while restarting (a Reboot dialog advanced option)."]
+                    purgeLogs: [type: "boolean", description: "Ask the hub to purge its past logs while restarting (a Reboot dialog advanced option)."]
                 ],
                 required: ["confirm"]
             ]

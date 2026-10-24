@@ -2555,8 +2555,8 @@ class ToolManageLogsSpec extends ToolSpecBase {
         def upper = script.toolGetHubLogs([mode: 'mcp', level: 'ERROR', limit: 0])
 
         then:
-        lower.entries*.message.contains('an error')
-        upper.entries*.message == lower.entries*.message
+        lower.entries*.message == ['an error']
+        upper.entries*.message == ['an error']
     }
 
     def "hub_get_logs mode=mcp with limit 0 returns every stored entry"() {
