@@ -121,15 +121,15 @@ class GuideFirstSentenceSpec extends ToolSpecBase {
     }
 
     @Unroll
-    def "server instructions (useGateways=#gateways) open with the sentence"() {
+    def "server instructions (useGateways=#gateways, modern=#modern) open with the sentence"() {
         given:
         settingsMap.useGateways = gateways
 
         expect:
-        (script.serverInstructions() as String).startsWith(SENTENCE + ' ')
+        (script.serverInstructions(modern) as String).startsWith(SENTENCE + ' ')
 
         where:
-        gateways << [false, true]
+        [gateways, modern] << [[false, true], [false, true]].combinations()
     }
 
     def "hub_get_tool_guide description points write tools at their section instead of calling itself a supplement"() {

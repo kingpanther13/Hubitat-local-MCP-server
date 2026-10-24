@@ -2173,27 +2173,36 @@ def handleNotification(msg) {
 }
 
 
-// Guidance a model needs when its client cannot render a continuation result: some
-// clients surface a state-only input_required as a generic client-side error with no
-// body, while the hub keeps running the write. Shipped in server instructions and, in
-// gateway mode, on every continuation-eligible write surface so the model reads it first.
-def _mrtrClientErrorHint() {
-    return "If a write returns a client-side error with no result body, the hub is still running it or has already finished it. Wait about 15 seconds, then call hub_get_info and check recentWrites for that tool (running, paused_resuming, finished, finished_with_error). Read the target before repeating the call: a repeat is only safe when the write shows as failed or absent and the target shows the change did not land, because repeating a finished write performs it again. See hub_get_tool_guide(section='slow_ops')."
+// Guidance a model needs when a write's response never reaches it: a client that cannot
+// render a continuation result shows a generic error while the hub keeps working, and any
+// lost HTTP response leaves the outcome unknown. recentWrites only tracks continuation
+// writes, which only a 2026-07-28 client makes; every lease-backed write leaves
+// started/finished records in the MCP log (component write), so a legacy-era reader is
+// pointed there alone. Shipped in server instructions and, in gateway mode, on every
+// continuation-eligible write surface.
+def _writeRecoveryHint(boolean modern) {
+    String lead = "If a write returns a client-side error with no result body, its outcome is uncertain: the hub may still be running it or may already have finished it. Wait about 15 seconds. "
+    String recent = modern
+        ? "For a write that accepts requestState (continuation-eligible), call hub_get_info and check recentWrites for that tool (running, paused_resuming, finished, finished_with_error). For every other write, call "
+        : "Then call "
+    return (lead + recent + "hub_get_logs(mode='mcp', component='write') and find the started/finished records for that tool and target (outcome completed, failed, partial, accepted or unknown; each record carries the JSON-RPC id you sent and a write correlation id), then read the target itself. A missing record does not prove the write never ran. Repeat the call only when the write shows as failed or absent and the target shows the change did not land, because repeating a finished write performs it again. See hub_get_tool_guide(section='slow_ops').").toString()
 }
 
 private String _guideFirstInstruction() {
     return "${guideFirstSentence()} Before calling a write tool, read that tool's guide section. ".toString()
 }
 
-def serverInstructions() {
+// initialize is legacy-era by construction (2026-07-28 removed it); server/discover is the
+// modern-era entry point, so each caller states which era's recovery hint applies.
+def serverInstructions(boolean modern) {
     // Flat mode advertises every tool individually and BLOCKS gateway-name calls
     // ("useGateways is OFF"), so the gateway guidance would send a flat client
     // straight into an error (worse: hub_manage_virtual_device / hub_manage_mode
     // match the hub_manage_* pattern but are direct tools, not gateways).
     if (settings.useGateways == false) {
-        return _guideFirstInstruction() + "Every tool is advertised individually on tools/list (flat catalog; there are no gateway tools). Tool responses are capped near 120KB; on large lists use cursor pagination (pass the returned nextCursor to fetch the next page). MCP resources are also served (resources/list): the tool-guide sections and a live house-state context summary (hubitat://context-summary), each gated like its tool counterpart. " + _mrtrClientErrorHint()
+        return _guideFirstInstruction() + "Every tool is advertised individually on tools/list (flat catalog; there are no gateway tools). Tool responses are capped near 120KB; on large lists use cursor pagination (pass the returned nextCursor to fetch the next page). MCP resources are also served (resources/list): the tool-guide sections and a live house-state context summary (hubitat://context-summary), each gated like its tool counterpart. " + _writeRecoveryHint(modern)
     }
-    _guideFirstInstruction() + "Gateway tools (hub_manage_* / hub_read_*) expose sub-tools -- call a gateway with no arguments to list its sub-tools and their schemas. hub_manage_virtual_device and hub_manage_mode are direct tools (not gateways) -- call them with their own arguments. Tool responses are capped near 120KB; on large lists use cursor pagination (pass the returned nextCursor to fetch the next page). MCP resources are also served (resources/list): the tool-guide sections and a live house-state context summary (hubitat://context-summary), each gated like its tool counterpart. " + _mrtrClientErrorHint()
+    _guideFirstInstruction() + "Gateway tools (hub_manage_* / hub_read_*) expose sub-tools -- call a gateway with no arguments to list its sub-tools and their schemas. hub_manage_virtual_device and hub_manage_mode are direct tools (not gateways) -- call them with their own arguments. Tool responses are capped near 120KB; on large lists use cursor pagination (pass the returned nextCursor to fetch the next page). MCP resources are also served (resources/list): the tool-guide sections and a live house-state context summary (hubitat://context-summary), each gated like its tool counterpart. " + _writeRecoveryHint(modern)
 }
 
 // Protocol versions this server can speak, newest first. Single source for the
@@ -2268,7 +2277,7 @@ def handleInitialize(msg) {
         protocolVersion: negotiated,
         capabilities: serverCapabilities(),
         serverInfo: serverIdentity(),
-        instructions: serverInstructions()
+        instructions: serverInstructions(false)
     ])
 }
 
@@ -2289,11 +2298,16 @@ def serverCapabilities() {
 // correctly without the handshake. resultType is explicit (DiscoverResult requires it; discover
 // may arrive headerless as a compat probe) and jsonRpcResult preserves a caller-set value.
 def handleServerDiscover(msg) {
+    // The recovery hint follows the header: a legacy revision means every write this client
+    // makes takes the ordinary (logged) path, so it must not be sent to recentWrites. A
+    // headerless discover is a modern client's compat probe and keeps the modern hint.
+    String headerVersion = _requestHeader("MCP-Protocol-Version")
+    boolean modern = headerVersion == null || _modernEraVersion(headerVersion)
     return jsonRpcResult(msg.id, [
         supportedVersions: supportedProtocolVersions(),
         capabilities: serverCapabilities(),
         serverInfo: serverIdentity(),
-        instructions: serverInstructions(),
+        instructions: serverInstructions(modern),
         ttlMs: cacheHintTtlMs(),
         cacheScope: "private",
         resultType: "complete"
@@ -2791,15 +2805,22 @@ def handleToolsCallLegacy(msg) {
 
     long reqT0 = now()
     String writeLeaseId = null
+    Map audit = null
+    Map outcome = null
     try {
         if (_isActualWriteCall(toolName, reactiveToolName, args)) {
-            def reservation = _writeReserveRequest(reactiveToolName,
-                _modernEraRequest() ? "modern" : "legacy")
+            String transport = _modernEraRequest() ? "modern" : "legacy"
+            def reservation = _writeReserveRequest(reactiveToolName, transport)
+            audit = _writeAuditContext(msg, toolName, reactiveToolName, args, transport)
             if (reservation.accepted != true) {
+                _writeAuditLog(audit, "refused", [reason: reservation.refusal?.status ?: "refused"])
+                audit = null
                 return _renderToolResult(msg.id, toolName, reactiveToolName, args,
                     reservation.refusal, true)
             }
             writeLeaseId = reservation.leaseId?.toString()
+            if (audit != null) audit.writeId = writeLeaseId
+            _writeAuditLog(audit, "started", [:])
         }
         // Legacy clients keep the existing remainder-bearing result. The budget
         // clock is internal and only reaches the explicitly budget-aware leaves.
@@ -2813,15 +2834,20 @@ def handleToolsCallLegacy(msg) {
             ])
             result = [isError: true, error: "Tool ${reactiveToolName} returned no result",
                       tool: reactiveToolName]
+            // The tool may have changed the hub before failing to report it.
+            if (audit != null) outcome = [outcome: "unknown", error: "tool returned no result"]
         }
+        if (audit != null && outcome == null) outcome = _writeOutcome(result)
         return _renderToolResult(msg.id, toolName, reactiveToolName, args, result,
             result instanceof Map && result.isError == true)
     } catch (IllegalArgumentException e) {
+        if (audit != null && outcome == null) outcome = [outcome: "failed", error: "validation refused the call"]
         mcpLog("error", "server", "Validation error in ${reactiveToolName}: ${e.message}", null, [
             details: _toolLogDetails(reactiveToolName, toolName, args, [error: e.message])
         ])
         return _renderValidationError(msg.id, toolName, reactiveToolName, args, e.message)
     } catch (Exception e) {
+        if (audit != null && outcome == null) outcome = [outcome: "unknown", error: "tool threw ${e.class.simpleName}".toString()]
         mcpLog("error", "server", "Tool execution error in ${reactiveToolName}: ${e.message}", null, [
             details: _toolLogDetails(reactiveToolName, toolName, args, [error: e.message]),
             stackTrace: _exceptionStack(e)
@@ -2833,7 +2859,118 @@ def handleToolsCallLegacy(msg) {
         ])
     } finally {
         if (writeLeaseId != null) _writeReleaseRequest(writeLeaseId)
+        if (audit != null && writeLeaseId != null) {
+            // No captured outcome means an Error escaped before a result existed.
+            Map fin = outcome ?: [outcome: "unknown", error: "request ended before a result was produced"]
+            _writeAuditLog(audit, "finished", fin + [durationMs: now() - reqT0])
+        }
     }
+}
+
+// ==================== Write audit records ====================
+// Every lease-backed write (the calls above; continuation writes are covered by
+// hub_get_info.recentWrites instead) leaves a started and a finished line in the MCP log
+// under component "write", at info level and regardless of the configured MCP log level,
+// so a client that lost a response can learn the outcome without having raised the level
+// first. Only identifiers are recorded, never argument values or results (issue #530).
+
+private Map _writeAuditContext(msg, toolName, reactiveToolName, args, String transport) {
+    try {
+        String leaf = reactiveToolName?.toString()
+        Map ctx = [tool: leaf, transport: transport, target: _writeTargetSummary(leaf, toolName?.toString(), args)]
+        if (toolName?.toString() != leaf) ctx.gateway = toolName?.toString()
+        if (msg?.id != null) ctx.rpcId = msg.id.toString()
+        return ctx
+    } catch (Exception ignored) {
+        return null
+    }
+}
+
+private void _writeAuditLog(Map audit, String phase, Map extra) {
+    if (audit == null) return
+    try {
+        Map details = [phase: phase, tool: audit.tool]
+        if (audit.gateway) details.gateway = audit.gateway
+        if (audit.writeId) details.writeId = audit.writeId
+        if (audit.rpcId != null) details.rpcId = audit.rpcId
+        details.transport = audit.transport
+        details.target = audit.target ?: [:]
+        details.putAll(extra ?: [:])
+        if (details.error != null) details.error = details.error.toString().take(200)
+        String target = (audit.target ?: [:]).collect { k, v -> "${k}=${v}" }.join(",")
+        String rpc = audit.rpcId != null ? audit.rpcId : "none"
+        String message
+        if (phase == "refused") {
+            message = "write refused: ${audit.tool} reason=${details.reason} target=${target} rpc=${rpc}"
+        } else if (phase == "started") {
+            message = "write started: ${audit.tool} target=${target} write=${audit.writeId} rpc=${rpc} via=${audit.transport}"
+        } else {
+            message = "write finished: ${audit.tool} outcome=${details.outcome} target=${target} write=${audit.writeId} rpc=${rpc} ms=${details.durationMs}" +
+                (details.error ? " error=${details.error}" : "")
+        }
+        _mcpLogRecord(initDebugLogs(), "info", "write", message.toString(), null, [details: details])
+    } catch (Exception ignored) { }
+}
+
+private List _writeTargetKeys() {
+    return ["appId", "nativeAppId", "ruleId", "deviceId", "device_id",
+        "driverId", "roomId", "room_id", "variableName", "name", "id", "type", "action", "scope",
+        "backupKey", "ref", "mode", "fileName", "filename", "path"]
+}
+
+// Identifier-shaped arguments only, from a fixed allowlist; anything that could carry a
+// value, code or a secret is never read.
+private Map _writeTargetSummary(String leaf, String outer, args) {
+    try {
+        if (!(args instanceof Map)) return [:]
+        def leafArgs = _mrtrLeafArguments(outer, leaf, args as Map)
+        if (!(leafArgs instanceof Map)) return [:]
+        Map target = [:]
+        for (String key : _writeTargetKeys()) {
+            if (target.size() >= 8) break
+            def v = leafArgs.get(key)
+            if (v instanceof CharSequence || v instanceof Number || v instanceof Boolean) {
+                target.put(key, v.toString().take(80))
+            } else if (v instanceof List && !v.isEmpty() &&
+                    v.every { it instanceof CharSequence || it instanceof Number || it instanceof Boolean }) {
+                String joined = v.take(5).collect { it.toString().take(80) }.join(",")
+                target.put(key, (v.size() > 5 ? "${joined},+${v.size() - 5} more" : joined).toString())
+            }
+        }
+        return target
+    } catch (Exception ignored) {
+        return [:]
+    }
+}
+
+// Outcome of a write that produced a result. A paused remainder envelope (status
+// in_progress with no background requestId) committed some steps and returned the rest to
+// the caller, so it is partial; only a scheduled background worker is "accepted". Result
+// error text can echo arguments, so only a short status code is recorded for it.
+private Map _writeOutcome(result) {
+    try {
+        if (!(result instanceof Map)) return [outcome: "completed"]
+        Map r = result as Map
+        if (r.__deviceValidation != null) return [outcome: "failed", error: "validation refused the call"]
+        if (r.status?.toString() == "in_progress") {
+            return r.requestId != null ? [outcome: "accepted"]
+                : [outcome: "partial", error: "paused with remaining work in the result"]
+        }
+        if (r.partial == true) return [outcome: "partial", error: _writeOutcomeCode(r, "some items did not apply")]
+        if (r.isError == true || r.success == false) return [outcome: "failed", error: _writeOutcomeCode(r, "tool returned a failure result")]
+        if (r.stateError instanceof CharSequence && r.stateError.toString().trim()) {
+            return [outcome: "unknown", error: "the write ran but reading the resulting state failed"]
+        }
+        return [outcome: "completed"]
+    } catch (Exception ignored) {
+        return [outcome: "unknown", error: "outcome could not be classified"]
+    }
+}
+
+private String _writeOutcomeCode(Map r, String fallback) {
+    def status = r.status
+    if (status instanceof CharSequence && status.toString() ==~ /[A-Za-z0-9_.-]{1,64}/) return status.toString()
+    return fallback
 }
 
 // ==================== Slow-op time budgets ====================
@@ -6437,6 +6574,8 @@ def getToolDefinitions() {
     // the guide-first sentence.
     def transformed = applyDescriptionTransform(baseTools + gatewayTools, false)
     Set writeLeaves = _mrtrWriteTools()
+    // Built per request, never cached: the hint names recentWrites only for a modern-era caller.
+    boolean modern = _modernEraRequest() as boolean
     return transformed.collect { tool ->
         String name = tool.name as String
         // The enum is visibleSubTools (hideByName already applied), not config.tools:
@@ -6444,7 +6583,7 @@ def getToolDefinitions() {
         boolean hinted = writeLeaves.contains(name) ||
             (gatewayConfig.containsKey(name) &&
                 (tool.inputSchema?.properties?.tool?.enum ?: []).any { writeLeaves.contains(it) })
-        def withHint = hinted ? _withMrtrClientErrorHint(tool) : tool
+        def withHint = hinted ? _withWriteRecoveryHint(tool, modern) : tool
         // Gateways already carry complete annotations from above. Check readOnlyHint,
         // not just the map: a leaf with only a title still needs its canonical hints.
         if (withHint.annotations?.containsKey('readOnlyHint')) return withHint
@@ -6452,8 +6591,8 @@ def getToolDefinitions() {
     }
 }
 
-private Map _withMrtrClientErrorHint(Map tool) {
-    return tool + [description: "${tool.description ?: ''}\n\n${_mrtrClientErrorHint()}".toString()]
+private Map _withWriteRecoveryHint(Map tool, boolean modern) {
+    return tool + [description: "${tool.description ?: ''}\n\n${_writeRecoveryHint(modern)}".toString()]
 }
 
 // Returns ALL tool definitions (used internally by gateway catalog and executeTool dispatch)
@@ -9424,6 +9563,12 @@ def shouldLog(level) {
 def mcpLog(String level, String component, String message, String ruleId = null, Map extraData = null) {
     def buffer = initDebugLogs()
     if (!shouldLog(level)) return
+    _mcpLogRecord(buffer, level, component, message, ruleId, extraData)
+}
+
+// The recording half of mcpLog, past the level threshold. Only mcpLog and the write audit
+// records call it; the audit records skip the threshold so they exist at the default level.
+private void _mcpLogRecord(Map buffer, String level, String component, String message, String ruleId, Map extraData) {
     def raw = [timestamp: now(), level: level, component: component, message: message, ruleId: ruleId]
     ["duration", "ruleName", "details", "stackTrace"].each { key -> if (extraData?.get(key)) raw[key] = extraData[key] }
     if (callerClient != null) raw.client = callerClient.label
@@ -13185,7 +13330,7 @@ Every actual write obtains a server-side lease, whether it uses MRTR or complete
 
 ### Older clients
 
-Clients negotiated below MCP 2026-07-28 do not understand requestState. They retain the existing `status: "in_progress"` remainder envelope for bounded multi-step writes. Completed steps are already committed; reissue only the returned remaining work. This is a compatibility fallback, not a second polling protocol.
+Clients negotiated below MCP 2026-07-28 do not understand requestState. They retain the existing `status: "in_progress"` remainder envelope for bounded multi-step writes. Completed steps are already committed; reissue only the returned remaining work. This is a compatibility fallback, not a second polling protocol. Their writes never appear in `recentWrites`; when a response is lost, use the write records described under "Other writes and write records" and read the target.
 
 Native log reads through `hub_get_logs` and cold MCP log recovery use the same continuation. Recovery also serves logging status, `hub_get_info`, `hub_report_issue`, and detailed `hub_get_custom_rule` diagnostics. `hub_delete_debug_logs` waits for recovery before clearing and retains its small terminal result for safe replay. Reload recovery reads the existing native history; old state-backed entries are discarded once when updating to native storage. No log content is stored in the continuation record.
 A legacy client that receives `status: "in_progress"` from a log read or from `hub_delete_debug_logs` repeats the identical call.
@@ -13200,9 +13345,19 @@ The advanced `relayBudgetMs` setting (default 6000 ms, 0 disables) controls clou
 
 `hub_update_package` is intentionally asynchronous instead of MRTR because a full repair can take minutes and recompiles this app. A real call validates and schedules the repair, then immediately returns `status: "in_progress"` with `requestId`. Do not submit it again: the server retains the reservation until that exact worker clears it or a matching terminal `lastSelfDeploy.requestId` proves it finished. Poll `hub_get_info.lastSelfDeploy` until its `requestId` matches; its `success` and `error` fields are the terminal outcome. During normal execution, keep polling rather than retrying the write. If a worker is abandoned, the next write may remove its marker only after the 10-minute recovery lease has expired and no live worker owns it; retry the deploy only after that recovery condition. `dryRun: true` remains synchronous.
 
-### Other writes
+### Other writes and write records
 
-No custom operation-token or deployment-job protocol is exposed. If a non-continuation write loses its response, read current hub state before deciding whether it is safe to retry.
+No custom operation-token or deployment-job protocol is exposed. `recentWrites` covers only continuation-eligible writes made by a 2026-07-28 client. Every other write -- every write from an older client, and a modern client's writes outside the continuation list -- leaves concise records in the MCP log instead: component `write`, level info, recorded whatever the MCP log level is set to. Read them with `hub_get_logs(mode="mcp", component="write")`; they are also this app's `[MCP1]` lines in the native hub log.
+
+Each write leaves a `started` record when it takes its write slot and a `finished` record when it ends; a write refused at capacity leaves one `refused` record instead. The `details` of each carry `phase`, `tool` (the leaf), `gateway` (when called through one), `writeId` (a correlation id shared by the started and finished records), `rpcId` (the JSON-RPC id the client sent), `transport` (`legacy` or `modern`), and `target` (identifier arguments only, such as `appId`, `deviceId`, `ruleId`, `name` or `type`; never values, code, settings or full arguments). A finished record adds `outcome`, `durationMs` and, unless it completed, a short `error`; a refused record adds `reason`. Outcomes:
+
+- `completed` -- the tool reported success.
+- `failed` -- the tool reported failure or refused the call (a refused validation changed nothing).
+- `partial` -- some steps applied and the rest did not, or the write paused with remaining work in its result.
+- `accepted` -- the call scheduled background work that is still running (for example `hub_update_package`; follow `hub_get_info.lastSelfDeploy`).
+- `unknown` -- the request ended without a classifiable result, or the write ran but its state readback failed; the hub may have changed.
+
+To trace a write whose response never arrived, match the `rpcId` you sent, then the tool, target and timestamp; the `writeId` pairs its started and finished records. A started record with no finished record means the write was still running or the request was cut off. A lost response leaves the outcome uncertain, and the log is not a complete history: the MCP log keeps the last 100 entries and native history is bounded, and a request the hub never received, a hub restart, ring rollover or `hub_delete_debug_logs` leaves no record. A missing record therefore does not prove nothing happened -- always read the target itself before deciding whether to repeat the write, because repeating a finished write performs it again.
 '''
     ]
 }
