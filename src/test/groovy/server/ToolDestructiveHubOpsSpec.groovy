@@ -291,6 +291,7 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
         hubGet.register('/hub/cloud/updatePlatform') { params -> gets << '/hub/cloud/updatePlatform'; '{"success":"true"}' }
         def postedPath = null
         script.metaClass.hubInternalPost = { String path, Map body = null -> postedPath = path; 'ok' }
+        script.metaClass._hubReboot = { boolean rebuild, boolean purge -> postedPath = '/hub/reboot'; 'ok' }
 
         when:
         def result = script.toolUpdateFirmware([confirm: true])
@@ -341,6 +342,7 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
         hubGet.register('/hub/cloud/checkUpdateStatus') { params -> gets << '/hub/cloud/checkUpdateStatus'; '{"status":"IDLE"}' }
         def postedPath = null
         script.metaClass.hubInternalPost = { String path, Map body = null -> postedPath = path; 'ok' }
+        script.metaClass._hubReboot = { boolean rebuild, boolean purge -> postedPath = '/hub/reboot'; 'ok' }
 
         when:
         def result = script.toolUpdateFirmware([statusOnly: true])   // no confirm needed
@@ -447,7 +449,7 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
     def "hub_reboot reports failure when the hub POST throws"() {
         given:
         enableWrite()
-        script.metaClass.hubInternalPost = { String path, Map body = null ->
+        script.metaClass._hubReboot = { boolean rebuild, boolean purge ->
             throw new RuntimeException('Connection refused')
         }
 
@@ -485,7 +487,7 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
-        script.metaClass.hubInternalPost = { String path, Map body = null ->
+        script.metaClass._hubReboot = { boolean rebuild, boolean purge ->
             throw new RuntimeException('Connection refused')
         }
 
