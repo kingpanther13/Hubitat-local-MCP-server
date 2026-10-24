@@ -1093,7 +1093,7 @@ private Map _deleteLogsPastByReboot(Map args) {
     requireDestructiveConfirm(args.confirm)
     mcpLog("warn", "hub-admin", "Hub reboot with past-log purge initiated by MCP")
     try {
-        _hubRebootPurgingPastLogs()
+        _hubReboot(false, true)
     } catch (Exception e) {
         mcpLogError("hub-admin", "Hub reboot with past-log purge failed", e)
         return [success: false, isError: true, mode: "past", error: "The reboot request failed: ${e.message ?: e.class.simpleName}",
@@ -1102,12 +1102,6 @@ private Map _deleteLogsPastByReboot(Map args) {
     return [success: true, mode: "past", rebooting: true,
             message: "The hub is rebooting and its past logs are purged as it restarts. It is unreachable for 1-3 minutes, and automations stop until it is back.",
             lastBackup: formatTimestamp(state.lastBackupTimestamp)]
-}
-
-// The Reboot dialog's request with "Purge Past logs on reboot" ticked.
-def _hubRebootPurgingPastLogs() {
-    return _hubRequest('POST', '/hub/reboot', [body: groovy.json.JsonOutput.toJson([rebuildDatabase: false, purgeLogs: true]),
-                                               requestContentType: "application/json", timeout: 30, returnShape: 'text'])
 }
 
 // /logs/json is the hub's whole live Logs page in one document: every device and app stat and

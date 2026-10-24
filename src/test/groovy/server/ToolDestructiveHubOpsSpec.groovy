@@ -83,6 +83,23 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
         ex.message.contains('hub_create_backup')
     }
 
+    def "hub_reboot passes the Reboot dialog's rebuild-database and purge-logs options"() {
+        given:
+        enableWrite()
+        def reboots = []
+        script.metaClass._hubReboot = { boolean rebuild, boolean purge -> reboots << [rebuild, purge]; 'ok' }
+
+        when:
+        def plain = script.toolRebootHub([confirm: true])
+        def both = script.toolRebootHub([confirm: true, rebuildDatabase: true, purgeLogs: true])
+
+        then:
+        reboots == [[false, false], [true, true]]
+        !plain.containsKey('rebuildDatabase') && !plain.containsKey('purgeLogs')
+        both.rebuildDatabase == true
+        both.purgeLogs == true
+    }
+
     // -------- requireDestructiveConfirm backup-list fallback (issue #361) --------
     // The gate's private stamp goes stale whenever a backup exists that this app never
     // confirmed (scheduled/UI backups, or a create whose completion check missed). The
@@ -94,14 +111,14 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
         // No stateMap.lastBackupTimestamp. Fixed harness now() = 1234567890000 (2009-02-13T23:31:30Z);
         // this entry is ~3.5h old -- within the 24h window.
         hubGet.register('/hub2/localBackups') { params -> '[{"name":"2009-02-13~2.5.0.159.lzf","createTimeOrig":"2009-02-13T20:00:00+0000"}]' }
-        def postedPath = null
-        script.metaClass.hubInternalPost = { String path, Map body = null -> postedPath = path; 'ok' }
+        def reboots = []
+        script.metaClass._hubReboot = { boolean rebuild, boolean purge -> reboots << [rebuild, purge]; 'ok' }
 
         when:
         def result = script.toolRebootHub([confirm: true])
 
         then:
-        postedPath == '/hub/reboot'
+        reboots == [[false, false]]
         result.success == true
         stateMap.lastBackupTimestamp == 1234555200000L   // the list's epoch is cached into the stamp
     }
@@ -110,7 +127,7 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
         given:
         settingsMap.enableWrite = true
         hubGet.register('/hub2/localBackups') { params -> '[{"name":"a.lzf","createTimeOrig":"2009-02-13T20:00:00+0000"}]' }
-        script.metaClass.hubInternalPost = { String path, Map body = null -> 'ok' }
+        script.metaClass._hubReboot = { boolean rebuild, boolean purge -> 'ok' }
 
         when:
         script.toolRebootHub([confirm: true])
@@ -142,7 +159,7 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
         // First entry has no createTimeOrig (skipped); the second is suffix-less -- the
         // SimpleDateFormat UTC fallback must resolve it to the same epoch as the +0000 form.
         hubGet.register('/hub2/localBackups') { params -> '[{"name":"junk.lzf"},{"name":"a.lzf","createTimeOrig":"2009-02-13T20:00:00"}]' }
-        script.metaClass.hubInternalPost = { String path, Map body = null -> 'ok' }
+        script.metaClass._hubReboot = { boolean rebuild, boolean purge -> 'ok' }
 
         when:
         def result = script.toolRebootHub([confirm: true])

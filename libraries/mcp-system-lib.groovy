@@ -1314,17 +1314,22 @@ def toolSetHsm(armCommand) {
 def toolRebootHub(args) {
     requireDestructiveConfirm(args.confirm)
 
-    mcpLog("warn", "hub-admin", "Hub reboot initiated by MCP")
+    boolean rebuildDatabase = args.rebuildDatabase == true
+    boolean purgeLogs = args.purgeLogs == true
+    mcpLog("warn", "hub-admin", "Hub reboot initiated by MCP${rebuildDatabase ? ' with database rebuild' : ''}${purgeLogs ? ' with past-log purge' : ''}")
 
     try {
-        def responseText = hubInternalPost("/hub/reboot")
-        return [
+        def responseText = _hubReboot(rebuildDatabase, purgeLogs)
+        Map out = [
             success: true,
             message: "Hub reboot initiated. The hub will be unreachable for 1-3 minutes.",
             lastBackup: formatTimestamp(state.lastBackupTimestamp),
             warning: "All automations and device communications will stop during reboot. The hub will restart automatically.",
             response: responseText?.take(500)
         ]
+        if (rebuildDatabase) out.rebuildDatabase = true
+        if (purgeLogs) out.purgeLogs = true
+        return out
     } catch (Exception e) {
         mcpLogError("hub-admin", "Hub reboot failed", e)
         return [
@@ -1333,6 +1338,12 @@ def toolRebootHub(args) {
             note: "The reboot command could not be sent. Check Hub Security credentials or try rebooting manually from the Hubitat web UI at Settings → Reboot Hub."
         ]
     }
+}
+
+// The hub's Reboot dialog request; its two advanced options ride in the JSON body.
+def _hubReboot(boolean rebuildDatabase, boolean purgeLogs) {
+    return _hubRequest('POST', '/hub/reboot', [body: groovy.json.JsonOutput.toJson([rebuildDatabase: rebuildDatabase, purgeLogs: purgeLogs]),
+                                               requestContentType: "application/json", timeout: 30, returnShape: 'text'])
 }
 
 def toolShutdownHub(args) {
@@ -1683,7 +1694,9 @@ PRE-FLIGHT: 1) Ensure backup <24h old 2) Tell user 3) Get explicit confirmation 
             inputSchema: [
                 type: "object",
                 properties: [
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved the reboot."]
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved the reboot."],
+                    rebuildDatabase: [type: "boolean", description: "Rebuild the hub database while restarting (the Reboot dialog's advanced option)."],
+                    purgeLogs: [type: "boolean", description: "Delete the hub's past logs while restarting."]
                 ],
                 required: ["confirm"]
             ]

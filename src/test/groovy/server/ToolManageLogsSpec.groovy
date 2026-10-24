@@ -2530,7 +2530,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         given:
         stateMap.lastBackupTimestamp = script.now()
         int reboots = 0
-        script.metaClass._hubRebootPurgingPastLogs = { -> reboots++; 'ok' }
+        script.metaClass._hubReboot = { boolean rebuild, boolean purge -> assert !rebuild && purge; reboots++; 'ok' }
 
         when:
         def result = script.toolDeleteLogs([mode: 'past', confirm: true])
@@ -2549,7 +2549,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         stateMap.lastBackupTimestamp = script.now()
         settingsMap.disabled_tools = disabled
         int reboots = 0
-        script.metaClass._hubRebootPurgingPastLogs = { -> reboots++; 'ok' }
+        script.metaClass._hubReboot = { boolean rebuild, boolean purge -> assert !rebuild && purge; reboots++; 'ok' }
 
         when:
         script.toolDeleteLogs([mode: 'past'] + args)
@@ -2569,7 +2569,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
     def "hub_delete_logs mode=past reports a failed reboot request as an error"() {
         given:
         stateMap.lastBackupTimestamp = script.now()
-        script.metaClass._hubRebootPurgingPastLogs = { -> throw new IOException('connection refused') }
+        script.metaClass._hubReboot = { boolean rebuild, boolean purge -> throw new IOException('connection refused') }
 
         when:
         def result = script.toolDeleteLogs([mode: 'past', confirm: true])

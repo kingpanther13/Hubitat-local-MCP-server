@@ -5221,13 +5221,13 @@ def getGatewayConfig() {
             description: "DESTRUCTIVE hub operations: reboot, shutdown, permanent device deletion, radio network/fabric resets + firmware flashes, network disconnects, and cloud-controller disable. All operations are irreversible or cause significant downtime — confirm with user first.",
             tools: ["hub_reboot", "hub_shutdown", "hub_delete_device", "hub_call_destructive_ops"],
             summaries: [
-                hub_reboot: "Reboot the hub (DISRUPTIVE, 1-3 min downtime). To install a pending hub firmware update instead, use hub_update_firmware. Args: confirm=true",
+                hub_reboot: "Reboot the hub (DISRUPTIVE, 1-3 min downtime), optionally rebuilding the database or purging past logs. To install a pending hub firmware update instead, use hub_update_firmware. Args: confirm=true, rebuildDatabase, purgeLogs",
                 hub_shutdown: "Power OFF the hub (EXTREME, requires physical restart). Args: confirm=true",
                 hub_delete_device: "Permanently delete any device (MOST DESTRUCTIVE, no undo). Args: deviceId, confirm=true",
                 hub_call_destructive_ops: "Destructive ops by target: radio reset/firmware (target=zwave|zigbee|matter), network disconnect (target=network, disconnect_wifi|disconnect_ethernet), or cloud controller disable/enable (target=cloud). Args: target, action, confirm=true"
             ],
             searchHints: [
-                hub_reboot: "restart reset power cycle boot",
+                hub_reboot: "restart reset power cycle boot rebuild database purge logs",
                 hub_shutdown: "power off turn off stop halt",
                 hub_delete_device: "remove ghost orphan zwave zigbee stuck failed pairing",
                 hub_call_destructive_ops: "reset wipe zwave zigbee matter network fabric exclude all firmware flash chip radio ota brick factory disconnect wifi ethernet cloud disable alexa google dashboard subscription"
