@@ -1713,7 +1713,7 @@ Every actual write obtains a server-side lease, whether it uses MRTR or complete
 
 ### Older clients
 
-Clients negotiated below MCP 2026-07-28 do not understand requestState. They retain the existing `status: "in_progress"` remainder envelope for bounded multi-step writes. Completed steps are already committed; reissue only the returned remaining work. This is a compatibility fallback, not a second polling protocol.
+Clients negotiated below MCP 2026-07-28 do not understand requestState. They retain the existing `status: "in_progress"` remainder envelope for bounded multi-step writes. Completed steps are already committed; reissue only the returned remaining work. This is a compatibility fallback, not a second polling protocol. Their writes never appear in `recentWrites`; when a response is lost, use the write records described under "Other writes and write records" and read the target.
 
 Native log reads through `hub_get_logs` and cold MCP log recovery use the same continuation. Recovery also serves logging status, `hub_get_info`, `hub_report_issue`, and detailed `hub_get_custom_rule` diagnostics. `hub_delete_debug_logs` waits for recovery before clearing and retains its small terminal result for safe replay. Reload recovery reads the existing native history; old state-backed entries are discarded once when updating to native storage. No log content is stored in the continuation record.
 A legacy client that receives `status: "in_progress"` from a log read or from `hub_delete_debug_logs` repeats the identical call.
@@ -1728,6 +1728,16 @@ The advanced `relayBudgetMs` setting (default 6000 ms, 0 disables) controls clou
 
 `hub_update_package` is intentionally asynchronous instead of MRTR because a full repair can take minutes and recompiles this app. A real call validates and schedules the repair, then immediately returns `status: "in_progress"` with `requestId`. Do not submit it again: the server retains the reservation until that exact worker clears it or a matching terminal `lastSelfDeploy.requestId` proves it finished. Poll `hub_get_info.lastSelfDeploy` until its `requestId` matches; its `success` and `error` fields are the terminal outcome. During normal execution, keep polling rather than retrying the write. If a worker is abandoned, the next write may remove its marker only after the 10-minute recovery lease has expired and no live worker owns it; retry the deploy only after that recovery condition. `dryRun: true` remains synchronous.
 
-### Other writes
+### Other writes and write records
 
-No custom operation-token or deployment-job protocol is exposed. If a non-continuation write loses its response, read current hub state before deciding whether it is safe to retry.
+No custom operation-token or deployment-job protocol is exposed. `recentWrites` covers only continuation-eligible writes made by a 2026-07-28 client. Every other write -- every write from an older client, and a modern client's writes outside the continuation list -- leaves concise records in the MCP log instead: component `write`, level info, recorded whatever the MCP log level is set to. Read them with `hub_get_logs(mode="mcp", component="write")`; they are also this app's `[MCP1]` lines in the native hub log.
+
+Each write leaves a `started` record when it takes its write slot and a `finished` record when it ends; a write refused at capacity leaves one `refused` record instead. The `details` of each carry `phase`, `tool` (the leaf), `gateway` (when called through one), `writeId` (a correlation id shared by the started and finished records), `rpcId` (the JSON-RPC id the client sent), `transport` (`legacy` or `modern`), and `target` (identifier arguments only, such as `appId`, `deviceId`, `ruleId`, `name` or `type`; never values, code, settings or full arguments). A finished record adds `outcome`, `durationMs` and, unless it completed, a short `error`; a refused record adds `reason`. Outcomes:
+
+- `completed` -- the tool reported success.
+- `failed` -- the tool reported failure or refused the call (a refused validation changed nothing).
+- `partial` -- some steps applied and the rest did not, or the write paused with remaining work in its result.
+- `accepted` -- the call scheduled background work that is still running (for example `hub_update_package`; follow `hub_get_info.lastSelfDeploy`).
+- `unknown` -- the request ended without a classifiable result, or the write ran but its state readback failed; the hub may have changed.
+
+To trace a write whose response never arrived, match the `rpcId` you sent, then the tool, target and timestamp; the `writeId` pairs its started and finished records. A started record with no finished record means the write was still running or the request was cut off. A lost response leaves the outcome uncertain, and the log is not a complete history: the MCP log keeps the last 100 entries and native history is bounded, and a request the hub never received, a hub restart, ring rollover or `hub_delete_debug_logs` leaves no record. A missing record therefore does not prove nothing happened -- always read the target itself before deciding whether to repeat the write, because repeating a finished write performs it again.

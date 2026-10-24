@@ -949,7 +949,7 @@ Alternatively, the app's Device Access section has a **Bypass Device Allowlist**
 <summary><b>Claude Desktop won't connect, or slow writes show a generic error</b></summary>
 
 - **An `mcp-proxy` (`uvx`) config stopped connecting** (often `ImportError: cannot import name 'request_ctx'`): mcp-proxy is no longer supported. It has multiple compatibility issues and doesn't support MCP 2.0. Switch to mcp-remote as per the setup instructions above.
-- **A write returns "Error occurred during tool execution" with no result:** the client didn't continue a slow write. In Claude Desktop, use `mcp-remote` with `--protocol auto`. Claude.ai connectors don't continue these writes yet. The write still finishes on the hub, so check `hub_get_info` → `recentWrites` and read the target before repeating it.
+- **A write returns "Error occurred during tool execution" with no result:** the client didn't continue a slow write. In Claude Desktop, use `mcp-remote` with `--protocol auto`. Claude.ai connectors don't continue these writes yet. The write may still finish on the hub, so its outcome is uncertain: check `hub_get_info` → `recentWrites` for a continuation write from a 2026-07-28 client, or `hub_get_logs(mode='mcp', component='write')` for the started/finished records of every other write, then read the target before repeating it. A missing record does not prove the write never ran.
 - After editing the config, fully quit Claude Desktop (system tray / menu bar), not just the window.
 
 </details>
@@ -1681,6 +1681,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v4.8.4** - ci: run the fast lanes on stacked PRs and harden the e2e lane gates; fix: log every ordinary write to the MCP log and make the lost-response hint era-aware. PRs: [#560](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/560), [#532](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/532)
 - **v4.8.3** - fix(deps): update dependency net.bytebuddy:byte-buddy to v1.18.15-jdk5 ([#557](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/557), @app/renovate); chore(deps): update dependency renovate to v44.168.1 ([#558](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/558), @app/renovate); fix: #511 findings reproduced live. PRs: [#557](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/557), [#558](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/558), [#556](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/556)
 - **v4.8.2** - fix: read app and driver versions from the code list, not the single-item read. PRs: [#554](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/554)
 - **v4.8.1** - fix: end a legacy hub_list_devices page at the request budget. PRs: [#553](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/553)
