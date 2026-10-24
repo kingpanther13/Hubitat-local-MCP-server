@@ -1809,7 +1809,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 
 **Expected**: With the `hub_manage_rule_machine` + `hub_manage_native_rules_and_apps` gateways denied via Per-tool Overrides, `tools/list` does NOT include `hub_set_rule`, `hub_delete_native_app`, or `hub_get_rule_health`. With the overrides removed, all three appear with their full schemas. This guards against the anti-pattern of returning tools that immediately error -- the tool surface must match the user's enablement state.
 
-### T453 — Create a Basic Rule (basic_rule appType, issue #185 item 1)
+### T453 — Create a Basic Rule (basic_rule app_type, issue #185 item 1)
 
 ```json
 {
@@ -1818,31 +1818,31 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: AI calls `hub_set_native_app(appType='basic_rule', name='BAT-BasicRule')` — created under the Basic Rules parent via the generic `createchild` (no special endpoint). `hub_get_app_config(appId)` returns `app.name == 'Basic Rule-1.0'` and renders a real classic configPage. Post-test invariant: [INV-1] `configPage.error == null`. Teardown succeeds.
+**Expected**: AI calls `hub_set_native_app(operation='create', args={app_type: 'basic_rule', name: 'BAT-BasicRule'})` — created under the Basic Rules parent via the generic `createchild` (no special endpoint). `hub_get_app_config(appId)` returns `app.name == 'Basic Rule-1.0'` and renders a real classic configPage. Post-test invariant: [INV-1] `configPage.error == null`. Teardown succeeds.
 
 ### T454 — Edit a Basic Rule's Notes without poisoning the render (commitButton fix, issue #185 item 3)
 
 ```json
 {
-  "setup_prompt": "Create a Basic Rule named 'BAT-BR-Edit' via hub_set_native_app(appType='basic_rule') and remember its id.",
+  "setup_prompt": "Create a Basic Rule named 'BAT-BR-Edit' via hub_set_native_app(operation='create', args={app_type: 'basic_rule', name: 'BAT-BR-Edit'}) and remember its id.",
   "test_prompt": "Write the Notes field on that Basic Rule, setting its comments/notes to 'BAT note'. Then read it back and confirm the page has no rendering error.",
   "teardown_prompt": "Delete the rule via hub_delete_native_app(appId=ruleId, force=true)."
 }
 ```
 
-**Expected**: The `hub_set_native_app` settings write (comments) succeeds and `configPageError` is null/absent — specifically it must NOT contain "For input string: \"updateRule\"". Basic Rule is a submitOnChange app (registry `commitButton: null`), so no spurious `updateRule` button click fires after the write. Post-test invariant: [INV-1] `configPage.error == null` after the edit.
+**Expected**: The `hub_set_native_app(operation='update', app_id, args={fields: {comments: ...}})` write succeeds and `configPageError` is null/absent — specifically it must NOT contain "For input string: \"updateRule\"". Basic Rule is a submitOnChange app (registry `commitButton: null`), so no spurious `updateRule` button click fires after the write. Post-test invariant: [INV-1] `configPage.error == null` after the edit.
 
-### T455 — Create a Button Rule through its controller via buttonRule (issue #185 item 2)
+### T455 — Create a Button Rule through its controller via app_type=button_rule (issue #185 item 2)
 
 ```json
 {
-  "setup_prompt": "Create a Virtual Button device labeled 'BAT-BtnDev' via hub_manage_virtual_device. Create a Button Controller via hub_set_native_app(appType='button_controller', name='BAT-BtnCtrl'), then assign the virtual button to it with hub_set_native_app(appId=controllerId, settings={buttonDev: [deviceId]}). Remember the controllerId and deviceId.",
+  "setup_prompt": "Create a Virtual Button device labeled 'BAT-BtnDev' via hub_manage_virtual_device. Create a Button Controller via hub_set_native_app(operation='create', args={app_type: 'button_controller', name: 'BAT-BtnCtrl'}), then assign the virtual button to it with hub_set_native_app(operation='update', app_id=controllerId, args={fields: {buttonDev: [deviceId]}}). Remember the controllerId and deviceId.",
   "test_prompt": "Create a Button Rule for button 1 pushed under that controller. Capture the returned buttonRuleId, then add a log action to it with the message 'BAT button rule'. Read the rule back and confirm it renders cleanly.",
   "teardown_prompt": "Delete the controller via hub_delete_native_app(appId=controllerId, force=true) (this cascades to its button rules), then delete the virtual button device."
 }
 ```
 
-**Expected**: `buttonRule` returns `success: true` with a `buttonRuleId` and the trigger auto-seeded (Button, button 1, pushed). The rule renders (NOT the broken "Cannot set property '1' on null object" orphan a bare createchild produces). `hub_set_rule(appId=buttonRuleId, addAction=...)` authors the action (RM-wire-format). Post-test invariant: [INV-1] the button rule's `configPage.error == null`. Teardown deletes the controller (cascading to the grandchild rule) and the device.
+**Expected**: `hub_set_native_app(operation='create', args={app_type: 'button_rule', controller_id, button_number: 1, event: 'pushed'})` (no `name`) returns `success: true` with a `buttonRuleId` (equal to `appId`) and the trigger auto-seeded (Button, button 1, pushed). The rule renders (NOT the broken "Cannot set property '1' on null object" orphan a bare createchild produces). `hub_set_rule(appId=buttonRuleId, addAction=...)` authors the action (RM-wire-format). Post-test invariant: [INV-1] the button rule's `configPage.error == null`. Teardown deletes the controller (cascading to the grandchild rule) and the device.
 
 ### T456 — hub_get_rule_health prefers the ruleBuilderJson compiled-state boolean (issue #254)
 

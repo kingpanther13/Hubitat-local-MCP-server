@@ -621,7 +621,7 @@ Reads (`hub_list_rules`, `hub_get_rule_health`, `hub_get_visual_rule`) are gated
 | `hub_set_rule_paused` | Pause or resume one or more RM rules (`paused=true` pauses, `paused=false` resumes; `ruleId` takes an id or an array; reversible) |
 | `hub_set_rule_private_boolean` | Set the private boolean of one or more RM rules (`ruleId` takes an id or an array) |
 | `hub_set_rule` | Read, create, update or use native RM editor forms. Omit operation for help; unconfirmed writes return argument schemas. |
-| `hub_set_native_app` | Generic native-app create/edit escape hatch: appType + name to create; appId with settings, buttons or walkStep to edit. |
+| `hub_set_native_app` | Create, update or drive the native forms of every other classic app, user and community apps included (`operation`: create/update/form). Omit operation for help; unconfirmed writes return argument schemas. |
 | `hub_set_app_disabled` | Enable or disable an installed app without deleting it. |
 | `hub_delete_native_app` | Delete a classic native app (auto-snapshot to File Manager before deleting). |
 | `hub_clone_native_app` | Clone an existing classic SmartApp via Hubitat's `appCloner` endpoint (deep: child apps + pause state copy; `stageDisabled` lands it disabled). Returns the new `appId`. |
@@ -629,7 +629,7 @@ Reads (`hub_list_rules`, `hub_get_rule_health`, `hub_get_visual_rule`) are gated
 | `hub_import_native_app` | Import previously-exported app JSON into a new instance (lands ACTIVE; `stageDisabled` lands it disabled). Returns the new `appId`. |
 | `hub_get_rule_health` | Read-only health check on any installed app — surfaces broken markers, multiple-flag poison, configPage errors. (also in `hub_read_rules`) |
 
-Reads are gated by the Read master; create/update/delete by the Write master (with `confirm=true` + a recent backup). Both masters are ON by default. Native editor operations use returned controls; unsupported app variants remain explicit capability gaps. The generic `hub_set_native_app` escape hatch remains available for classic-app settings, buttons and wizard navigation. RM actions, triggers, expressions and local variables use `hub_set_rule` rather than generic shortcut fields.
+Reads are gated by the Read master; create/update/delete by the Write master (with `confirm=true` + a recent backup). Both masters are ON by default. Native editor operations use returned controls; unsupported app variants remain explicit capability gaps. `hub_set_native_app` covers every other classic app: create a built-in app type, update a page's fields, or run the same native form steps on any app. RM actions, triggers, expressions and local variables use `hub_set_rule` rather than generic shortcut fields.
 
 </details>
 

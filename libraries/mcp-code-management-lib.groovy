@@ -828,7 +828,7 @@ def toolGetAppConfig(args) {
         result.modeInputsNote = "Framework-standard mode input(s) (type='mode') on this page. Semantics are app-specific -- a 'only run during these modes' restriction OR per-mode overrides -- read the input titles/settings to interpret; `modes` is the configured list. Per-page only; absence does NOT mean the app ignores mode: some built-ins gate via mode-ID settings, not a type='mode' input (e.g. Room Lights). See hub_get_tool_guide(section='builtin_app_tools_apps') for the per-built-in key reference."
     }
     // Sub-pages this page links to. Their inputs are not in `sections`; read one with
-    // pageName=<page>, or use hub_set_rule forms for RM and hub_set_native_app walkStep for other apps.
+    // pageName=<page>, or drive it with hub_set_rule forms for RM and hub_set_native_app forms for other apps.
     def pageHrefs = _rmPageHrefs(parsed.configPage as Map)
     if (pageHrefs) result.page.hrefs = pageHrefs
     if (disabledActions) {
@@ -949,7 +949,7 @@ def toolListAppPages(args) {
     def linked = _rmPageHrefs(parsed.configPage as Map).findAll { !(it.page in knownNames) }.unique { it.page }
     linked.each { pages << [name: it.page, title: it.title, role: "sub-page"] }
     if (linked) {
-        note = "Sub-pages are linked from the primary page. A sub-page can link further pages of its own: read hub_get_app_config(appId, pageName=<sub-page>).page.hrefs. Use hub_set_rule for Rule Machine changes and native form controls; use hub_set_native_app walkStep (navigate, write, done) for other apps."
+        note = "Sub-pages are linked from the primary page. A sub-page can link further pages of its own: read hub_get_app_config(appId, pageName=<sub-page>).page.hrefs. Use hub_set_rule for Rule Machine changes and native form controls; for other apps write a sub-page's inputs with hub_set_native_app(operation:'update', args:{page, fields}) or follow its links with operation:'form'."
     } else if (!curatedHpm) {
         note = "The primary page links no sub-pages."
     }
@@ -1052,7 +1052,7 @@ private Map _createUserAppInstance(Integer codeAppId) {
         // Deleting and retrying would meet the same refusal: keep the shell and fill it in.
         return [
             success: false,
-            error: "Instance ${newId} was created but not installed: ${commit.error} Keep it -- write the listed settings with hub_set_native_app(appId:${newId}, settings:{...}); that call's closing Done installs the app.".toString(),
+            error: "Instance ${newId} was created but not installed: ${commit.error} Keep it -- write the listed settings with hub_set_native_app(operation:'update', app_id:${newId}, args:{fields:{...}}, confirm:true); that call's closing Done installs the app.".toString(),
             codeAppId: codeAppId,
             instanceAppId: newId,
             committed: false
@@ -1238,7 +1238,7 @@ private Map _commitUserAppInstall(Integer instanceId, String pageName) {
             success: false,
             uiBlocked: true,
             error: submit.uiReason,
-            note: "No Done was submitted, so the instance is not installed yet. Write the listed settings with hub_set_native_app(appId:${instanceId}, settings:{...}); that call's closing Done installs it.".toString(),
+            note: "No Done was submitted, so the instance is not installed yet. Write the listed settings with hub_set_native_app(operation:'update', app_id:${instanceId}, args:{fields:{...}}, confirm:true); that call's closing Done installs it.".toString(),
             scheduledJobCount: 0,
             eventSubscriptionCount: 0
         ]
@@ -2924,10 +2924,6 @@ def toolListInstalledApps(args) {
     }
 
     try {
-        // Recovery bookkeeping rides on this inventory but must never fail the listing.
-        Map pendingBefore = null
-        try { pendingBefore = _rmPendingPredClearSnapshot() }
-        catch (Exception snapshotError) { mcpLog("warn", "rm-native", "Recovery-record snapshot unavailable; skipping reconciliation for this listing: ${snapshotError.message}") }
         def responseText = hubInternalGet("/hub2/appsList")
         if (!responseText) {
             return [success: false, error: "Empty response from /hub2/appsList", note: "Hub internal API may be transiently unavailable."]
@@ -2938,8 +2934,6 @@ def toolListInstalledApps(args) {
         } catch (Exception parseErr) {
             return [success: false, error: "Failed to parse /hub2/appsList response: ${parseErr.message}", note: "Hubitat firmware may have changed the endpoint format."]
         }
-        try { _rmReconcilePredClearPending(parsed, pendingBefore) }
-        catch (Exception reconcileError) { mcpLog("error", "rm-native", "Could not reconcile deleted-app recovery records during hub_list_apps; records are unchanged: ${reconcileError.message}") }
         def apps = parsed?.apps ?: []
 
         // Flatten tree to list with parentId.

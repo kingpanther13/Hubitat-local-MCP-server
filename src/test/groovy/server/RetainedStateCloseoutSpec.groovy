@@ -7,15 +7,6 @@ import support.TestChildApp
 import support.ToolSpecBase
 
 class RetainedStateCloseoutSpec extends ToolSpecBase {
-    // atomicState whose predClearPending writes fail while fail is set.
-    private static class FailingPredClearState extends LinkedHashMap {
-        boolean fail
-        Object put(Object key, Object value) {
-            if (key == 'predClearPending' && fail) throw new IllegalStateException('manifest unavailable')
-            super.put(key, value)
-        }
-    }
-
     // Backup index file writes that fail on demand: failAt is the 1-based write that
     // fails, fail fails every write.
     private static class FailingIndex {
@@ -160,21 +151,6 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
 
         then:
         backupIndex.keySet() == ['app_1', 'app_2'] as Set
-    }
-
-    def 'complete app inventory reconciles deleted recovery flags but preserves hidden apps and new flags'() {
-        given:
-        atomicStateMap.predClearPending = ['10': true, '11': true, '12': true]
-        hubGet.register('/hub2/appsList') { params ->
-            script._rmCommitPredClearPending(script._rmPendingPredClearSnapshot() + ['12': 'created-after-inventory-snapshot'])
-            '{"apps":[{"data":{"id":10,"hidden":true},"children":[]}]}'
-        }
-
-        when:
-        script.toolListInstalledApps([:])
-
-        then:
-        atomicStateMap.predClearPending.keySet() == ['10', '12'] as Set
     }
 
     def 'overlapping backups of one item serialize upload and reuse the same baseline'() {
@@ -476,11 +452,10 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
         backupIndex.app_99 == entry('99')
     }
 
-    def 'failed writes keep newer committed backup and predicate views over stale snapshots'() {
+    def 'failed writes keep newer committed backups over stale snapshots'() {
         given:
         def index = new FailingIndex()
-        def backing = new FailingPredClearState()
-        def peer = peerWithIndex(index, null, backing)
+        def peer = peerWithIndex(index, null)
         peer._publishItemBackup('app_1', entry('1'))
         backupIndex = [:]
         index.fail = true
@@ -495,26 +470,9 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
         when:
         index.fail = false
         peer._publishItemBackup('app_3', entry('3'))
-        peer._rmCommitPredClearPending(['10': 'generation-10'])
-        peer._rmCommitPredClearPending(['10': 'generation-10', '11': 'generation-11'])
-        backing.put('predClearPending', [:])
-        backing.@fail = true
-        peer.metaClass.hubInternalGet = { String path, Map params = null ->
-            '{"apps":[{"data":{"id":1},"children":[{"data":{"id":10},"children":[]}]}]}'
-        }
-        def listing = peer.toolListInstalledApps([:])
-
-        then: 'a failed reconciliation commit keeps every record and the listing still succeeds'
-        listing.success != false && listing.error == null
-        backupIndex.keySet() == ['app_1', 'app_3'] as Set
-        peer._rmPendingPredClearSnapshot().keySet() == ['10', '11'] as Set
-
-        when:
-        backing.@fail = false
-        peer._rmCommitPredClearPending(peer._rmPendingPredClearSnapshot() + ['11': 'newer-generation-11'])
 
         then:
-        backing.predClearPending.keySet() == ['10', '11'] as Set
+        backupIndex.keySet() == ['app_1', 'app_3'] as Set
     }
 
     def 'double deletion failure retains durable pending metadata and both errors'() {
@@ -699,35 +657,5 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
 
         where:
         type << ['app', 'library']
-    }
-
-    def 'reconciliation walks nested children before treating an id as absent'() {
-        given:
-        atomicStateMap.predClearPending = ['11': true, '12': true]
-        hubGet.register('/hub2/appsList') { params ->
-            '{"apps":[{"data":{"id":1},"children":[{"data":{"id":11},"children":[{"data":{"id":111},"children":[]}]}]}]}'
-        }
-
-        when:
-        script.toolListInstalledApps([:])
-
-        then:
-        atomicStateMap.predClearPending.keySet() == ['11'] as Set
-    }
-
-    def 'unreadable or incomplete app inventory never discards recovery intent'() {
-        given:
-        atomicStateMap.predClearPending = ['10': true]
-        hubGet.register('/hub2/appsList') { params -> response }
-
-        when:
-        script.toolListInstalledApps([:])
-
-        then:
-        atomicStateMap.predClearPending == ['10': true]
-
-        where:
-        response << ['{}', '{"apps":[]}', '{"apps":[],"error":"partial"}', '{"apps":[],"success":false}',
-                     '{"apps":[{"data":{}}]}', '{"apps":[{"data":{"id":11},"children":"unreadable"}]}']
     }
 }

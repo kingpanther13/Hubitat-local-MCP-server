@@ -345,8 +345,9 @@ class NativeFormsSpec extends ToolSpecBase {
         calls.clear()
         model.configPage.sections[0].input << [element: 'paragraph', description:
             "<script>{window.open('/installedapp/configure/${target}/selectActions?resetScroll=true', '_self')}</script>"]
+        // A user app's own child is as valid a target as a built-in one.
         script.metaClass.getAppByAppId = { Long id ->
-            [id: id, parentAppId: id == 43L ? 42 : null, appType: [namespace: 'hubitat'], disabled: false]
+            [id: id, parentAppId: id == 43L ? 42 : null, appType: [namespace: id == 43L ? 'user' : 'hubitat'], disabled: false]
         }
         when:
         def result = submit([:], 'apply||clicked')
@@ -387,7 +388,6 @@ class NativeFormsSpec extends ToolSpecBase {
         reason      | target
         'unrelated' | [id: 43, parentAppId: 99, appType: [namespace: 'hubitat']]
         'disabled'  | [id: 43, parentAppId: 42, appType: [namespace: 'hubitat'], disabled: true]
-        'custom'    | [id: 43, parentAppId: 42, appType: [namespace: 'custom']]
         'missing'   | null
         'protected' | [id: 43, parentAppId: 42, appType: [namespace: 'hubitat']]
     }
@@ -482,19 +482,33 @@ class NativeFormsSpec extends ToolSpecBase {
         calls*.path == ['/device/listJson', '/installedapp/update/json']
     }
 
-    def 'required displayed default must be explicitly submitted before navigation'() {
+    def 'a submit posts the page default of every unset input, as the browser does, and that default satisfies a required check'() {
         given:
         model.configPage.sections[0].input << [element: 'input', name: 'defaultChoice', type: 'enum', required: true, options: ['a', 'b'], defaultValue: 'a']
+        model.configPage.sections[0].input << [element: 'input', name: 'luxOff', type: 'number', defaultValue: 100]
+        model.configPage.sections[0].input << [element: 'input', name: 'secret', type: 'password', defaultValue: 'never-posted']
+        model.configPage.sections[0].input << [element: 'input', name: 'storedNumber', type: 'number', defaultValue: 5]
+        model.settings.storedNumber = 9
         def opened = open()
         calls.clear()
         when:
         def result = submit([:], '_action_update|Done|')
+        def body = calls.find { it.path == '/installedapp/update/json' }.body
         then:
-        opened.fields.find { it.name == 'defaultChoice' }.value == 'a'
         opened.fields.find { it.name == 'defaultChoice' }.value_source == 'default'
-        !result.success
-        !result.partial
-        calls.empty
+        result.success
+        body['settings[defaultChoice]'] == 'a'
+        body['defaultChoice.type'] == 'enum'
+        body['settings[luxOff]'] == '100'
+        !body.containsKey('settings[secret]')
+        !body.containsKey('settings[storedNumber]')
+        when: 'a supplied value wins over the default'
+        calls.clear()
+        assert open().success
+        calls.clear()
+        submit([luxOff: 20])
+        then:
+        calls.find { it.path == '/installedapp/update/json' }.body['settings[luxOff]'] == '20'
     }
 
     def 'button reload after native href uses the current page and breadcrumbs'() {
@@ -545,7 +559,7 @@ class NativeFormsSpec extends ToolSpecBase {
     }
 
     @Unroll
-    def 'non-native or disabled app #appDescriptor is refused before rendering'() {
+    def 'a missing or disabled app #appDescriptor is refused before rendering'() {
         given:
         script.metaClass.getAppByAppId = { Long id -> appDescriptor }
         when:
@@ -554,7 +568,23 @@ class NativeFormsSpec extends ToolSpecBase {
         thrown(IllegalArgumentException)
         calls.empty
         where:
-        appDescriptor << [null, [appType: [namespace: 'custom']], [appType: [namespace: 'hubitat'], disabled: true]]
+        appDescriptor << [null, [id: 99, appType: [namespace: 'hubitat']], [id: 42, appType: [namespace: 'hubitat'], disabled: true]]
+    }
+
+    def 'a user or community app is opened like a built-in one, and hub_set_native_app names itself in the failure log'() {
+        given:
+        script.metaClass.getAppByAppId = { Long id -> [id: id, appType: [namespace: 'someDeveloper', name: 'Community App'], disabled: false] }
+        List logged = []
+        script.metaClass.mcpLogError = { String component, String message, Exception error -> logged << message }
+        when:
+        def opened = open()
+        def failed = script.toolSetNativeApp([operation: 'form', app_id: 42, args: [steps: [[kind: 'submit', expect_page: 'nowhere']]], confirm: true])
+        then:
+        opened.success
+        opened.page.name == 'edit'
+        opened.backup.skipped
+        !failed.success
+        logged == ['hub_set_native_app form failed for app 42: expect_page does not match the last returned native page']
     }
 
     def 'native Remove is reported unsupported and is never a form control'() {
@@ -721,6 +751,7 @@ class NativeFormsSpec extends ToolSpecBase {
         then:
         definitions*.name == ['hub_set_rule']
         script._ndOperationSchema('form').properties.steps.maxItems == 16
+        script._naOperationSchema('form') == script._ndOperationSchema('form')
         !definitions[0].inputSchema.required?.contains('confirm')
         script._ndGuide().contains('Even open renders execute app code')
     }

@@ -182,7 +182,7 @@ per-action; `<N>` is the action index unless noted.
   (pluralized by count); `*BROKEN*` is red but not italic. Clicking `disable<N>`
   via `/installedapp/btn` (no `stateAttribute`) TOGGLES it (live-verified; a second
   click re-enables, and a click on a nonexistent `disable<N>` still reports
-  success). `hub_set_rule` walkStep is what clicks it; `hub_get_app_config` only
+  success). A `hub_set_rule(operation:'form')` control is what clicks it; `hub_get_app_config` only
   reads the span (`[DISABLED]` mark + `disabledActions`, with `disableButton` on a
   `selectActions` read).
 - **String `*contains*` comparator** — for a STRING-typed variable or a

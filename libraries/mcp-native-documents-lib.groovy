@@ -231,41 +231,51 @@ private void _ndValidateChange(Object change) {
     }
 }
 
+// The rows of one native collection a batch can name as it proceeds: the existing ids, one
+// placeholder per row the batch appends (its id is assigned only by the write), and the ids the
+// batch has deleted, which stay gone. Returns true for an existing row, false for an appended one.
+private boolean _ndKnownRow(Map rows, String rowId, String missing) {
+    if (rowId in rows.deleted) throw new IllegalArgumentException(missing)
+    if (rowId in rows.ids) return true
+    if (rows.added > 0) return false
+    throw new IllegalArgumentException(missing)
+}
+
+private void _ndDropRow(Map rows, String rowId, String missing) {
+    if (_ndKnownRow(rows, rowId, missing)) rows.ids.remove(rowId)
+    else rows.added--
+    rows.deleted << rowId
+}
+
 private void _ndPreflight(Long id, List changes) {
     Map before = id == null ? [:] : _nrState(id)
     Map conditions = before.capabsfalse instanceof Map ? [:] + before.capabsfalse : [:]
     Map triggers = before.capabstrue instanceof Map ? [:] + before.capabstrue : [:]
-    Map expressions = before.eval instanceof Map ? [:] + before.eval : [:]
-    boolean allocatedConditions = false
-    boolean allocatedTriggers = false
-    def pendingExpressions = []
+    Map expressions = before.eval instanceof Map ? before.eval.collectEntries { key, value -> [(key.toString()): value] } : [:]
     List actionOrder = before.actionList instanceof List ? before.actionList.collect { it.toString() } : []
     Map projectedActions = before.actions instanceof Map ? before.actions.collectEntries { key, value -> [(key.toString()): value] } : [:]
     List projectedOrder = new ArrayList(actionOrder)
     List projectedPredicate = before.predCapabs instanceof List ? before.predCapabs.collect { it?.toString() } : []
+    Map rows = [action: [ids: (actionOrder + projectedActions.keySet()) as Set, added: 0, deleted: [] as Set],
+                condition: [ids: conditions.keySet().collect { it.toString() } as Set, added: 0, deleted: [] as Set],
+                trigger: [ids: triggers.keySet().collect { it.toString() } as Set, added: 0, deleted: [] as Set]]
     int newAction = 0
-    boolean allocatedActions = false
-    Set deletedActions = [] as Set
+    boolean appendedActions = false
     Map locals = id == null ? [:] : null
     Map inventory = null
     changes.eachWithIndex { change, index ->
         try {
             Map value = change.value
-            // A row named by id must exist. Once an earlier change in the batch has allocated rows of
-            // that kind their ids are known only after the write, so the check waits for the write.
-            if (change.part == 'condition' && value.containsKey('id') && !allocatedConditions && !conditions.keySet().any { it.toString() == value.id.toString() }) throw new IllegalArgumentException('Native row does not exist')
-            if (change.part == 'trigger' && value.containsKey('id') && !allocatedTriggers && !triggers.keySet().any { it.toString() == value.id.toString() }) throw new IllegalArgumentException('Native row does not exist')
-            // A row deleted earlier in this batch stays gone even after an append skips the existence check.
-            if (change.part == 'action' && value.containsKey('id') && value.id.toString() in deletedActions) throw new IllegalArgumentException('Native action does not exist')
-            if (change.part == 'action' && value.containsKey('id') && !allocatedActions) {
+            if (change.part in ['condition', 'trigger'] && value.containsKey('id')) _ndKnownRow(rows.get(change.part), value.id.toString(), 'Native row does not exist')
+            if (change.part == 'action' && value.containsKey('id') && _ndKnownRow(rows.action, value.id.toString(), 'Native action does not exist')) {
                 def prior = projectedActions.get(value.id.toString())
                 if (!(prior instanceof Map)) throw new IllegalArgumentException('Native action does not exist')
                 if (value.subtype == 'getWaitEvents' && (!(prior.wait instanceof List) || prior.wait.size() != value.events.size())) throw new IllegalArgumentException('Editing waits currently requires the existing event count')
             }
-            if (change.part == 'delete' && value.part in ['condition', 'trigger']) {
-                Map rows = value.part == 'condition' ? conditions : triggers
-                if (!(value.part == 'condition' ? allocatedConditions : allocatedTriggers) && !rows.keySet().any { it.toString() == value.id.toString() }) throw new IllegalArgumentException('Native row does not exist')
-            }
+            // Every condition an expression or a simple conditional action names must be in the batch's view.
+            List named = change.part in ['expression', 'required'] ? value.tokens :
+                (change.part == 'action' ? (value.expression instanceof List ? value.expression : []) + (value.containsKey('condition') ? [value.condition] : []) : [])
+            named.findAll { it != null && it.toString().isInteger() }.each { token -> _ndKnownRow(rows.condition, token.toString(), 'Expression references an unknown condition') }
             if (change.part == 'variable') {
                 if (locals == null) {
                     def fresh = _nrHandle(id).getAllLocalVars()
@@ -283,10 +293,10 @@ private void _ndPreflight(Long id, List changes) {
                     } else locals.remove(value.name)
                 }
             }
-            if ((change.part == 'action' && !value.containsKey('id')) || change.part == 'terminator') allocatedActions = true
-            if (change.part == 'trigger' && !value.containsKey('id')) allocatedTriggers = true
+            if (change.part in ['condition', 'trigger'] && !value.containsKey('id')) rows.get(change.part).added++
             if (change.part in ['action', 'terminator']) {
                 boolean newRow = !value.containsKey('id')
+                if (newRow) { rows.action.added++; appendedActions = true }
                 String actionId = newRow ? "new:${newAction++}".toString() : value.id.toString()
                 if (newRow) projectedOrder << actionId
                 String method = change.part == 'terminator' ? ND_TERMINATOR_METHODS.get(value.subtype) : value.subtype
@@ -294,10 +304,11 @@ private void _ndPreflight(Long id, List changes) {
                 // Merge over the prior record so a second edit of the same existing row still sees its wait events and condition.
                 Map record = (prior instanceof Map ? [:] + prior : [:]) + [method: method]
                 if (change.part == 'action' && value.containsKey('condition')) record.cond = value.condition.toString()
+                if (change.part == 'action' && value.expression instanceof List) record.tokens = value.expression
                 projectedActions.put(actionId, record)
             }
             if (change.part == 'order') {
-                if (allocatedActions) throw new IllegalArgumentException('Action order cannot follow new actions in the same batch; add the actions first and order them in a later call')
+                if (appendedActions) throw new IllegalArgumentException('Action order cannot follow new actions in the same batch; add the actions first and order them in a later call')
                 List requested = value.ids.collect { it.toString() }
                 if (requested.sort(false) != actionOrder.sort(false)) throw new IllegalArgumentException('Action order must be an exact permutation of existing action IDs')
                 actionOrder = requested
@@ -305,37 +316,24 @@ private void _ndPreflight(Long id, List changes) {
             }
             if (change.part == 'delete' && value.part == 'action') {
                 String target = value.id.toString()
-                deletedActions << target
+                _ndDropRow(rows.action, target, 'Native action does not exist')
                 projectedOrder = projectedOrder.findAll { it != target }
                 projectedActions.remove(target)
-                if (!allocatedActions) {
-                    if (!actionOrder.contains(target)) throw new IllegalArgumentException('Native action does not exist')
-                    actionOrder = actionOrder.findAll { it != target }
-                }
+                actionOrder = actionOrder.findAll { it != target }
             }
-            if (change.part == 'condition' && !value.containsKey('id')) allocatedConditions = true
-            if (change.part == 'action' && value.containsKey('condition')) {
-                List tokens = [value.condition.toString()]
-                if (!allocatedConditions) _nmTokens(tokens, conditions)
-                pendingExpressions << tokens
-            }
-            if (change.part in ['expression', 'required'] || (change.part == 'action' && value.expression instanceof List)) {
-                List tokens = change.part == 'action' ? value.expression : value.tokens
-                if (!allocatedConditions) _nmTokens(tokens, conditions)
-                if (change.part == 'action') pendingExpressions << tokens
-                else {
-                    String expressionId = change.part == 'required' ? '0' : value.id.toString()
-                    expressions.keySet().findAll { it.toString() == expressionId }.each { expressions.remove(it) }
-                    expressions.put(expressionId, tokens)
-                    if (change.part == 'required') projectedPredicate = tokens.findAll { it?.toString()?.isInteger() }.collect { it.toString() }
-                }
+            if (change.part in ['expression', 'required']) {
+                expressions.put(change.part == 'required' ? '0' : value.id.toString(), value.tokens)
+                if (change.part == 'required') projectedPredicate = value.tokens.findAll { it?.toString()?.isInteger() }.collect { it.toString() }
             }
             if (change.part == 'delete' && value.part == 'condition') {
                 String target = value.id.toString()
-                // Rule Machine keeps the eval entry of a deleted IF; only the Required Expression and live actions' expressions count.
-                Set liveExpressionIds = (['0'] + projectedActions.values().findAll { it instanceof Map && it.rule != null }.collect { it.rule.toString() }) as Set
-                List liveExpressions = expressions.findAll { key, tokens -> key.toString() in liveExpressionIds }.values().toList()
-                boolean referenced = (liveExpressions + pendingExpressions).any { tokens -> tokens instanceof List && tokens.any { it?.toString() == target } }
+                _ndKnownRow(rows.condition, target, 'Native row does not exist')
+                // Only the Required Expression and the live actions' own expressions count: Rule Machine
+                // keeps the eval entry of a deleted IF, and an edited IF carries its new tokens.
+                List live = [expressions.get('0')] + projectedActions.values().findAll { it instanceof Map }.collect { action ->
+                    action.tokens instanceof List ? action.tokens : (action.rule != null ? expressions.get(action.rule.toString()) : null)
+                }
+                boolean referenced = live.any { tokens -> tokens instanceof List && tokens.any { it?.toString() == target } }
                 referenced = referenced || projectedPredicate.any { it == target }
                 referenced = referenced || projectedActions.values().any { it instanceof Map && it.cond?.toString() == target }
                 if (referenced) throw new IllegalArgumentException('Referenced native conditions must be detached before deletion')
@@ -344,9 +342,9 @@ private void _ndPreflight(Long id, List changes) {
                     if (inventory == null) inventory = _nmSettingsInventory(id)
                     if (inventory.any { name, setting -> name.startsWith('condTrig.') && setting.value?.toString() == target }) throw new IllegalArgumentException('Referenced trigger conditions must be detached before deletion')
                 }
-                conditions.keySet().findAll { it.toString() == target }.each { conditions.remove(it) }
+                _ndDropRow(rows.condition, target, 'Native row does not exist')
             }
-            if (change.part == 'delete' && value.part == 'trigger') triggers.keySet().findAll { it.toString() == value.id.toString() }.each { triggers.remove(it) }
+            if (change.part == 'delete' && value.part == 'trigger') _ndDropRow(rows.trigger, value.id.toString(), 'Native row does not exist')
         } catch (IllegalArgumentException failure) {
             throw new IllegalArgumentException("changes[${index}]: ${failure.message}".toString())
         }
@@ -514,8 +512,11 @@ Map toolCreateRuleDocument(Map args) {
     }
 }
 
-boolean _isRuleReadCall(String toolName, args) {
-    toolName == 'hub_set_rule' && args instanceof Map && (!args.containsKey('operation') || args.operation == 'read' || args.confirm != true)
+// A call that only reads: hub_set_rule's read, and the help and unconfirmed schema replies of
+// hub_set_rule and hub_set_native_app.
+boolean _isNativeReadCall(String toolName, args) {
+    toolName in ['hub_set_rule', 'hub_set_native_app'] && args instanceof Map &&
+        (!args.containsKey('operation') || args.confirm != true || (toolName == 'hub_set_rule' && args.operation == 'read'))
 }
 
 private Map _ndOperationSchema(String operation) {
@@ -632,9 +633,9 @@ Example changes: [{part:"action",value:{type:"messageActs",subtype:"getLogMsg",f
 
 ## Native Rule Forms
 
-Use hub_set_rule(operation:"form",rule_id,args:{steps:[{kind:"open"}]},confirm:true) to operate an enabled Rule-5.1 or Button Rule-5.1 rule, or its Rule Machine parent. Select operation:"form" without confirmation to inspect the schema. Discover native action variants, input names and option values through the returned forms rather than guessing a static catalogue. Even open renders execute app code and can change state or cause side effects. Start with steps:[{kind:"open"}]; an optional page names a registered native page. Follow returned controls for page parameters and breadcrumbs. A create_child control creates the native child type exposed by its parent, returns created_app_id and closes the parent context. Open that child separately to configure it; creation alone does not prove configuration is complete. App removal uses the dedicated deletion tool.
+Use hub_set_rule(operation:"form",rule_id,args:{steps:[{kind:"open"}]},confirm:true) to operate an enabled Rule-5.1 or Button Rule-5.1 rule, or its Rule Machine parent; hub_set_native_app(operation:"form",app_id,...) runs the same steps on any other classic app. Select operation:"form" without confirmation to inspect the schema. Discover native action variants, input names and option values through the returned forms rather than guessing a static catalogue. Even open renders execute app code and can change state or cause side effects. Start with steps:[{kind:"open"}]; an optional page names a registered native page. Follow returned controls for page parameters and breadcrumbs. A create_child control creates the native child type exposed by its parent, returns created_app_id and closes the parent context. Open that child separately to configure it; creation alone does not prove configuration is complete. App removal uses the dedicated deletion tool.
 
-Submit with {kind:"submit",expect_page:"last returned page",fields:{"native field name":value},activate:"returned control_id"}. Omit activate to save the supplied fields and refresh the current page. Control IDs distinguish native buttons sharing a name, such as editing and deleting the same variable. Native enum keys, device IDs, booleans and single/multiple cardinality are checked before the request. Only supplied settings are posted; native page code can still change its own settings. Defaults are shown but are not automatically submitted; supply a required default explicitly before navigating. Use args.options_for:["device field name"] to expand device choices on the final returned page.
+Submit with {kind:"submit",expect_page:"last returned page",fields:{"native field name":value},activate:"returned control_id"}. Omit activate to save the supplied fields and refresh the current page. Control IDs distinguish native buttons sharing a name, such as editing and deleting the same variable. Native enum keys, device IDs, booleans and single/multiple cardinality are checked before the request. Only supplied settings are posted; native page code can still change its own settings. As in the native browser, each submit also posts the shown default of every input that has no stored value and was not supplied; password inputs have no default. Use args.options_for:["device field name"] to expand device choices on the final returned page.
 
 Batches contain 1 through 16 ordered steps. Each step uses the form returned by the preceding step, so dependent fields require another submit after they appear. A button handler runs before that step's fields are saved, as in the native browser; submit fields in a preceding step when the handler needs them. A button without submitOnChange reloads and requires a separate field submission.
 

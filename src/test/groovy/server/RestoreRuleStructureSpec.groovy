@@ -494,6 +494,52 @@ class RestoreRuleStructureSpec extends ToolSpecBase {
         rec.replays == [[tstate1: "on"]]
     }
 
+    def "an in-place replay of a password-redacted backup keeps the live password and never posts or clears it"() {
+        given:
+        def rec = nativeStubs()
+        def snap = nativeSnapshot(redactedSettings: ['apiKey'],
+            statusJson: [appSettings: [[name: "tstate1", type: "enum"], [name: "apiKey", type: "password", value: null]]])
+
+        when:
+        def out = script._rmRestoreFromBackup([fileName: "f.json"], snap, true)
+
+        then:
+        out.restoredVia == "settingsReplay"
+        out.passwordsKept == ['apiKey']
+        !out.containsKey('passwordsToReenter')
+        rec.replays == [[tstate1: "on"]]
+    }
+
+    def "a recreate from a password-redacted backup asks for the passwords to be entered again"() {
+        given:
+        nativeStubs()
+
+        when:
+        def out = script._rmRestoreFromBackup([fileName: "f.json"], nativeSnapshot(redactedSettings: ['apiKey']), false)
+
+        then:
+        out.restoredVia == "nativeImport"
+        out.passwordsToReenter == ['apiKey']
+        !out.containsKey('passwordsKept')
+        out.note.contains("Password settings apiKey are not stored in backups")
+    }
+
+    def "clearing settings the backup lacks leaves a redacted password alone"() {
+        given:
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            groovy.json.JsonOutput.toJson([appSettings: [[name: "apiKey", type: "password", value: "live-secret"], [name: "extra", type: "text", value: "x"]]])
+        }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> posts << body; [status: 200, data: '{"status":"success"}'] }
+
+        when:
+        def cleared = script._rmClearSettingsNotInBackup(100, [msg: "kept"], ['apiKey'])
+
+        then:
+        cleared == ['extra']
+        !posts.any { it.containsKey('settings[apiKey]') }
+    }
+
     def "by default a native backup restores in place"() {
         given:
         def rec = nativeStubs()

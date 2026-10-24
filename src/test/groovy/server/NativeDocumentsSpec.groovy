@@ -725,6 +725,57 @@ class NativeDocumentsSpec extends ToolSpecBase {
         events.empty
     }
 
+    def 'rows deleted after an append stay gone: a second delete of the same action or condition is refused before any write'() {
+        given:
+        nativeState.capabsfalse = ['4': 'Switch is on', '8': 'Switch is off']
+        def condition = [part: 'condition', value: [capability: 'Switch', fields: [
+            [name: 'rDev_#', type: 'capability.switch', value: ['789']], [name: 'state_#', type: 'enum', value: 'on']]]]
+        when:
+        def actions = script.toolUpdateRuleDocument([rule_id: 42, confirm: true, changes: [
+            logChange(),
+            [part: 'delete', value: [part: 'action', id: '1']],
+            [part: 'delete', value: [part: 'action', id: '1']]
+        ]])
+        then:
+        !actions.success
+        !actions.partial
+        actions.error == 'changes[2]: Native action does not exist'
+        events.empty
+        when:
+        script._ndPreflight(42L, script._ndChanges([
+            condition,
+            [part: 'delete', value: [part: 'condition', id: '8']],
+            [part: 'condition', value: condition.value + [id: '8']]
+        ]))
+        then:
+        def conditions = thrown(IllegalArgumentException)
+        conditions.message == 'changes[2]: Native row does not exist'
+    }
+
+    def 'an IF retargeted to another condition frees the old condition for deletion in the same batch'() {
+        given:
+        nativeState.capabsfalse = ['1': 'Switch 789 on', '2': 'Switch 746 on']
+        nativeState.actionList = ['1', '2', '3']
+        nativeState.actions = ['1': [method: 'getIfThen', rule: 1], '2': [method: 'getLogMsg'], '3': [method: 'getEndIf']]
+        nativeState.eval = ['1': ['1']]
+        when:
+        script._ndPreflight(42L, script._ndChanges([
+            [part: 'action', value: [id: '1', type: 'condActs', subtype: 'getIfThen', fields: [], expression: ['2']]],
+            [part: 'delete', value: [part: 'condition', id: '1']]
+        ]))
+        then:
+        noExceptionThrown()
+        when: 'a conditional action moved off a condition and then deleted no longer holds either condition'
+        nativeState.actions['2'] = [method: 'getLogMsg', cond: '2']
+        script._ndPreflight(42L, script._ndChanges([
+            [part: 'action', value: [id: '2', type: 'messageActs', subtype: 'getLogMsg', condition: '1', fields: []]],
+            [part: 'delete', value: [part: 'action', id: '2']],
+            [part: 'delete', value: [part: 'condition', id: '2']]
+        ]))
+        then:
+        noExceptionThrown()
+    }
+
     def 'an existing conditional action moved to another condition lets the batch delete the old one'() {
         given:
         nativeState.capabsfalse = ['4': 'Switch is on', '8': 'Switch is off']

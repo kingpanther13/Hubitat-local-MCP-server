@@ -990,6 +990,7 @@ private Map _rmRestoreViaNativeImport(Map snapshot, Integer savedId, boolean exi
         (exists ? " Pass preserveRuleId:true to restore in place by settings replay instead." : "") +
         (reenableFailed ? " Re-enable app(s) ${reenableFailed} with hub_set_app_disabled(disabled=false)." : "") +
         (liveDisabled ? " Rule ${savedId} was disabled, so app ${newId} is left disabled too." : "")).toString()
+    _rmReportPasswords(out, snapshot, true)
     return out
 }
 
@@ -1009,7 +1010,8 @@ String _rmNativeCopyMismatch(Integer copyId, Map snapshot) {
             def expected = _rmNativeModelSignature(data.state)
             def actual = _rmNativeModelSignature(copy).findAll { key, value -> expected.containsKey(key) }
             if (_rmNativeComparable(actual) != _rmNativeComparable(expected)) return 'the compiled native configuration differs from recovery'
-            if (_rmNativeComparable(_rmNativeSettingsSignature(_rmNativeCurrentSettings(copyId.toLong()))) != _rmNativeComparable(_rmNativeSettingsSignature(data.appSettings))) return 'the native settings differ from recovery'
+            List redacted = _rmRedactedSettings(snapshot)
+            if (_rmNativeComparable(_rmNativeSettingsSignature(_rmNativeCurrentSettings(copyId.toLong()).findAll { !(it.name in redacted) })) != _rmNativeComparable(_rmNativeSettingsSignature(data.appSettings))) return 'the native settings differ from recovery'
             // Imported copies are staged disabled, so verify persisted locals without executing app code.
             def locals = _rmNativeLocalSignature(copy)
             if (_rmNativeComparable(locals) != _rmNativeComparable(_rmNativeLocalSignature(data.state))) return 'the native local variables differ from recovery'
@@ -1040,6 +1042,21 @@ void _rmRecordNativeRestore(String backupKey, Integer newId, boolean keepDisable
     } catch (Exception e) {
         mcpLog("warn", "rm-native", "Recording that backup ${backupKey} was restored as app ${newId} failed (${e.message}); a retry would import it again")
     }
+}
+
+// Password-typed settings a snapshot left out; empty for snapshots taken before redaction.
+private List _rmRedactedSettings(Map snapshot) {
+    snapshot?.redactedSettings instanceof List ? snapshot.redactedSettings.collect { it.toString() } : []
+}
+
+// A restore never writes a password: in place it keeps the live value, a recreated app needs it
+// entered again in the native UI.
+private void _rmReportPasswords(Map out, Map snapshot, boolean recreated) {
+    List names = _rmRedactedSettings(snapshot)
+    if (!names) return
+    if (!recreated) { out.passwordsKept = names; return }
+    out.passwordsToReenter = names
+    out.note = "${out.note ?: ''} Password settings ${names.join(', ')} are not stored in backups; enter them again in the app's native page.".toString().trim()
 }
 
 private Object _rmNativeComparable(Object value) {
@@ -1152,6 +1169,7 @@ private Map _rmRestoreNativeEdit(Map snapshot, String sourceBackupKey) {
     if (_ndStructuralIssues(expectedState, data.appSettings.any { it.name == 'useST' && it.value?.toString() == 'true' }) ||
         _nmValidateStructure(id, expectedState).success != true) throw new IllegalArgumentException('Recovery contains an unfinished native rule model')
     List plan = _rmNativeSettingPlan(data.appSettings)
+    List redacted = _rmRedactedSettings(snapshot)
     def deviceIds = payload.deviceReplacements.keySet().collect { it.toString() }
     plan.findAll { it.type == 'capability' || it.type.startsWith('capability.') }.each { row -> deviceIds.addAll(row.value instanceof List ? row.value : [row.value]) }
     List missingDeviceIds = []
@@ -1185,9 +1203,10 @@ private Map _rmRestoreNativeEdit(Map snapshot, String sourceBackupKey) {
         attempted = true
         if (_nrState(id).stopped != true) _nrHandle(id).appButtonHandler('stopRule')
         def wantedNames = plan.collect { it.name }
-        _rmNativeCurrentSettings(id).each { row -> if (!(row.name in wantedNames) || !plan.any { it.name == row.name && it.type == row.type && it.multiple == (row.multiple == true) }) _nrHandle(id).removeSetting(row.name) }
+        def unredacted = { -> _rmNativeCurrentSettings(id).findAll { !(it.name in redacted) } }
+        unredacted().each { row -> if (!(row.name in wantedNames) || !plan.any { it.name == row.name && it.type == row.type && it.multiple == (row.multiple == true) }) _nrHandle(id).removeSetting(row.name) }
         plan.each { row -> _nrHandle(id).updateSetting(row.name, [type: row.type, value: row.value]) }
-        if (_rmNativeComparable(_rmNativeSettingsSignature(_rmNativeCurrentSettings(id))) != _rmNativeComparable(_rmNativeSettingsSignature(data.appSettings))) throw new IllegalStateException('Native typed settings did not restore exactly')
+        if (_rmNativeComparable(_rmNativeSettingsSignature(unredacted())) != _rmNativeComparable(_rmNativeSettingsSignature(data.appSettings))) throw new IllegalStateException('Native typed settings did not restore exactly')
         Map restoreState = [:] + expectedState + [stopped: true]
         _nrStatePatch(id, restoreState, _nrState(id).keySet().findAll { !restoreState.containsKey(it) }.collect { it.toString() })
         if (_rmNativeComparable(_nrState(id)) != _rmNativeComparable(restoreState)) throw new IllegalStateException('Complete native state did not persist exactly')
@@ -1203,12 +1222,14 @@ private Map _rmRestoreNativeEdit(Map snapshot, String sourceBackupKey) {
         if (_rmNativeComparable(actualModel) != _rmNativeComparable(expectedModel)) throw new IllegalStateException('Rebuilt native actions, triggers, conditions or expressions differ from recovery')
         Map actualLocals = _nrHandle(id).getAllLocalVars().collectEntries { name, row -> [(name.toString()): [type: row.type, value: row.value]] }
         if (_rmNativeComparable(actualLocals) != _rmNativeComparable(_rmNativeLocalSignature(expectedState))) throw new IllegalStateException('Native local variables differ from recovery')
-        if (_rmNativeComparable(_rmNativeSettingsSignature(_rmNativeCurrentSettings(id))) != _rmNativeComparable(_rmNativeSettingsSignature(data.appSettings))) throw new IllegalStateException('Native rebuild changed restored settings')
+        if (_rmNativeComparable(_rmNativeSettingsSignature(unredacted())) != _rmNativeComparable(_rmNativeSettingsSignature(data.appSettings))) throw new IllegalStateException('Native rebuild changed restored settings')
         if ((actual.stopped == true) != (expectedState.stopped == true) || (actual.paused == true) != (expectedState.paused == true) ||
             _rmLabelName(_nrHandle(id).label) != restoredName) throw new IllegalStateException('Native label or lifecycle state differs from recovery')
-        [success: true, type: 'rm-rule', ruleId: id, originalRuleId: id, restoredVia: 'nativeStateReplay', backup: undo,
+        Map restored = [success: true, type: 'rm-rule', ruleId: id, originalRuleId: id, restoredVia: 'nativeStateReplay', backup: undo,
          stateVerified: true, settingsVerified: true, localVariablesVerified: true, broken: rebuilt.broken, stopped: rebuilt.stopped, paused: rebuilt.paused,
          eventSubscriptions: rebuilt.eventSubscriptions, scheduledJobs: rebuilt.scheduledJobs]
+        _rmReportPasswords(restored, snapshot, false)
+        restored
     } catch (Exception failure) {
         if (!attempted) throw failure
         mcpLogError('rm-native', "native restore of rule ${id} failed after changes: ${failure.message}".toString(), failure)
@@ -1458,7 +1479,7 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
         if (exists && !isRm) {
             // A replay writes back only the backup's keys; a key the app gained later would stay and
             // mix with the restored values. Rule Machine's own removal handles its rows (reconcile below).
-            try { settingsCleared = _rmClearSettingsNotInBackup(ruleId, savedSettings) } catch (Exception clearExc) {
+            try { settingsCleared = _rmClearSettingsNotInBackup(ruleId, savedSettings, _rmRedactedSettings(snapshot)) } catch (Exception clearExc) {
                 mcpLog("warn", "rm-native", "restore of app ${ruleId}: emptying settings the backup did not have failed (${clearExc.message})")
                 clearMiss = clearExc.message ?: clearExc.toString()
             }
@@ -1485,8 +1506,8 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
             note: (step == "settings replay"
                 ? "Rule ${ruleId} exists but may have incomplete settings. Inspect with hub_get_app_config(appId=${ruleId}) and compare against hub_get_backup(backupKey) before retrying."
                 : (commitButton == "updateRule"
-                    ? "The settings were replayed but the rule's updateRule did not fire, so its subscriptions may still reflect the pre-restore state. Open the rule and click Update Rule, or click it with hub_set_native_app(appId=${ruleId}, button='updateRule', confirm=true)."
-                    : "The settings were replayed but the app's ${commitButton ?: 'Done'} did not run, so its subscriptions may still reflect the pre-restore state. Open the app and click ${commitButton ?: 'Done'}, or click it with hub_set_native_app(appId=${ruleId}, button='${commitButton ?: 'Done'}', confirm=true).")).toString()
+                    ? "The settings were replayed but the rule's updateRule did not fire, so its subscriptions may still reflect the pre-restore state: click Update Rule in the app, or run hub_set_rule(operation:\"form\", rule_id:${ruleId}, args:{steps:[{kind:\"open\"},{kind:\"submit\",expect_page:\"<returned page>\",activate:\"<the updateRule control_id>\"}]}, confirm:true)."
+                    : "The settings were replayed but the app's ${commitButton ?: 'Done'} did not run, so its subscriptions may still reflect the pre-restore state: click ${commitButton ?: 'Done'} in the app, or run hub_set_native_app(operation:\"form\", app_id:${ruleId}, args:{steps:[{kind:\"open\"},{kind:\"submit\",expect_page:\"<returned page>\",activate:\"<the ${commitButton ?: 'Done'} control_id>\"}]}, confirm:true).")).toString()
         ]
     }
 
@@ -1552,6 +1573,7 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
     }
     if (reOutcome) out.putAll(reOutcome)
     if (structure) out.putAll(structure)
+    _rmReportPasswords(out, snapshot, !exists)
     if (out.leftoverConditionIds && structure?.removedConditionIds) {
         def gone = (structure.removedConditionIds as List)*.toString()
         out.leftoverConditionIds = (out.leftoverConditionIds as List).findAll { !gone.contains(it.toString()) }
@@ -1581,10 +1603,10 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
 // Empty every non-button setting the app has that the backup does not, through the same update
 // endpoint as the replay (an emptied setting reads as unset; the hub keeps no way to delete one).
 // Returns the keys emptied.
-List _rmClearSettingsNotInBackup(Integer appId, Map savedSettings) {
+List _rmClearSettingsNotInBackup(Integer appId, Map savedSettings, Collection keep = []) {
     def status = _rmFetchStatusJson(appId)
     if (!(status?.appSettings instanceof List)) return []
-    def saved = savedSettings.keySet().collect { it.toString() } as Set
+    def saved = (savedSettings.keySet().collect { it.toString() } + keep.collect { it.toString() }) as Set
     def extra = (status.appSettings as List).findAll { rec ->
         def n = rec?.name?.toString()
         // A device picker reports its devices in deviceIdsForDeviceList, with a null value.

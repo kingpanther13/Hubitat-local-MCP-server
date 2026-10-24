@@ -49,6 +49,9 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
         where:
         [developerMode, row] << [[false, true], [
             ['toolCallAppForm', [app_id: 42, steps: [[kind: 'open']]]],
+            ['toolSetNativeApp', [operation: 'update', app_id: 42, args: [fields: [comments: 'x']]]],
+            ['toolSetNativeApp', [operation: 'form', app_id: 42, args: [steps: [[kind: 'open']]]]],
+            ['toolSetNativeApp', [operation: 'create', args: [app_type: 'button_rule', controller_id: 42, button_number: 1, event: 'pushed']]],
             ['toolUpdateRuleDocument', [rule_id: 42, changes: [[part: 'variable', value: [operation: 'create', name: 'Fixture', type: 'integer', value: 1]]]]],
             ['toolCreateRuleDocument', [parent_id: 42, name: 'Fixture', changes: [[part: 'variable', value: [operation: 'create', name: 'Fixture', type: 'integer', value: 1]]]]],
             ['toolSetAppDisabled', [appId: '00042', disabled: true]],

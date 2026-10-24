@@ -1293,7 +1293,7 @@ def test_send_retains_structured_rpc_error_with_mixed_quotes(send_client):
 
 @pytest.mark.parametrize("name,args", [
     ("hub_manage_native_rules_and_apps", {"tool": "hub_set_native_app", "args": {
-        "appType": "basic_rule", "name": "BAT", "confirm": True,
+        "operation": "create", "args": {"app_type": "basic_rule", "name": "BAT"}, "confirm": True,
     }}),
     ("hub_manage_virtual_device", {"action": "create", "deviceType": "Virtual Switch", "confirm": True}),
     ("hub_manage_virtual_device", {"action": "delete", "deviceNetworkId": "test-dni", "confirm": True}),

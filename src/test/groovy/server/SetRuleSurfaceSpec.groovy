@@ -62,13 +62,19 @@ class SetRuleSurfaceSpec extends ToolSpecBase {
 
     def 'read shaped classification includes discovery but excludes confirmed writes'() {
         expect:
-        script._isRuleReadCall('hub_set_rule', [:])
-        script._isRuleReadCall('hub_set_rule', [operation: 'read', confirm: true])
-        script._isRuleReadCall('hub_set_rule', [operation: 'form', confirm: false])
-        !script._isRuleReadCall('hub_set_rule', [operation: 'form', confirm: true])
-        !script._isRuleReadCall('hub_set_rule_paused', [:])
-        !script._isRuleReadCall('hub_set_rule', 'invalid arguments')
-        !script._isRuleReadCall('hub_set_rule', null)
+        script._isNativeReadCall('hub_set_rule', [:])
+        script._isNativeReadCall('hub_set_rule', [operation: 'read', confirm: true])
+        script._isNativeReadCall('hub_set_rule', [operation: 'form', confirm: false])
+        !script._isNativeReadCall('hub_set_rule', [operation: 'form', confirm: true])
+        !script._isNativeReadCall('hub_set_rule_paused', [:])
+        !script._isNativeReadCall('hub_set_rule', 'invalid arguments')
+        !script._isNativeReadCall('hub_set_rule', null)
+
+        and: 'hub_set_native_app help and unconfirmed schemas read; it has no confirmed read operation'
+        script._isNativeReadCall('hub_set_native_app', [:])
+        script._isNativeReadCall('hub_set_native_app', [operation: 'update', app_id: 5])
+        !script._isNativeReadCall('hub_set_native_app', [operation: 'read', confirm: true])
+        !script._isNativeReadCall('hub_set_native_app', [operation: 'form', app_id: 5, confirm: true])
     }
 
     def 'form rejects unrelated native apps before executing helper'() {

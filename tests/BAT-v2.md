@@ -2887,7 +2887,7 @@ Tools in this section have mixed gate requirements. `hub_list_apps` (scope=insta
 }
 ```
 
-**Expected**: AI calls `hub_manage_native_rules_and_apps.hub_set_native_app` (appType=room_lighting, name='BAT Study Lights'). Room Lighting creation is supported: the tool installs the Room Lighting parent app first when the hub does not have it, then creates the child and returns its appId. AI reports the new instance and does not fabricate a result.
+**Expected**: AI calls `hub_manage_native_rules_and_apps.hub_set_native_app` (operation='create', args={app_type: 'room_lighting', name: 'BAT Study Lights'}). Room Lighting creation is supported: the tool installs the Room Lighting parent app first when the hub does not have it, then creates the child and returns its appId. AI reports the new instance and does not fabricate a result.
 
 ### T209 — Pause and resume an RM rule (reversible)
 
@@ -4636,7 +4636,7 @@ The Visual Rules Builder tools live in the `hub_manage_rule_machine` gateway (th
 
 **Expected**: AI calls `hub_manage_rule_machine(tool=hub_set_visual_rule)` with NO `appId`, `name='BAT VRB Create'`, the classic `definition`, and `confirm=true`. The response returns a new `appId`, `created=true`, `format='classic'`, `version='1.0'` (the classic shape is what selected the 1.0 builder), and `verified=true` (the tool's read-back confirmed the persisted name); the echoed `definition` contains the whenNode/thenNode pair. A follow-up `hub_get_visual_rule(appId=N)` returns `success=true`, `format='classic'`, `name='BAT VRB Create'`, `rulePaused=false`, and the same `whenNodes`/`thenNodes`. The rule also appears in list mode (`hub_get_visual_rule` with no `appId` — `rules[]` contains `{appId, name:'BAT VRB Create', disabled:false}`).
 
-**Failure modes**: the call is issued without `confirm=true` (rejected -32602 — the AI must include it after user approval, not retry blindly). `verified=false` (the save POST was sent but the read-back did not confirm — inspect with `hub_get_visual_rule`). A format-mismatch response (`success=false` + `hubNativeFormat='classic'`) — that only happens when an editor/graph definition meets a hub whose builder can create nothing but 1.0 children, so it should NOT appear for this classic definition; if it does, the AI should re-issue with a classic definition and the empty child app created during the attempt must have been cleaned up, not stranded. The AI routes to `hub_set_native_app(appType='visual_rule')` instead — that path now throws with a redirect to `hub_set_visual_rule`.
+**Failure modes**: the call is issued without `confirm=true` (rejected -32602 — the AI must include it after user approval, not retry blindly). `verified=false` (the save POST was sent but the read-back did not confirm — inspect with `hub_get_visual_rule`). A format-mismatch response (`success=false` + `hubNativeFormat='classic'`) — that only happens when an editor/graph definition meets a hub whose builder can create nothing but 1.0 children, so it should NOT appear for this classic definition; if it does, the AI should re-issue with a classic definition and the empty child app created during the attempt must have been cleaned up, not stranded. The AI routes to `hub_set_native_app(operation='create', args={app_type: 'visual_rule'})` instead — that path now throws with a redirect to `hub_set_visual_rule`.
 
 ### T701 — hub_set_visual_rule pause + rename without touching the definition
 
