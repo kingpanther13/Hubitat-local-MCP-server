@@ -3519,6 +3519,32 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
+    def "hub_set_native_app help without an operation returns its operations through public dispatch (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableWrite()
+        when:
+        def response = mcpDriver.callTool('hub_set_native_app', [:])
+        then:
+        response.result.isError != true
+        mcpDriver.parseInner(response).operations == ['create', 'update', 'form']
+        where:
+        useGateways << [true, false]
+    }
+
+    def "hub_set_native_app refuses a retired property through public dispatch, naming the accepted ones (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableWrite()
+        when:
+        def response = mcpDriver.callTool('hub_set_native_app', [appId: 100, settings: [origLabel: 'x'], confirm: true])
+        then:
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Unknown hub_set_native_app property; use operation, app_id, args and confirm')
+        where:
+        useGateways << [true, false]
+    }
+
     def "native create requires a name through public dispatch (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways

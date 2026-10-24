@@ -127,6 +127,20 @@ Supporting files:
   completeness of the classic `/ui2/js` set.
 - **`success-compiled.js`** (842 B) — tiny precompiled Handlebars template bundle.
 
+### Classic form behaviours the native form engine mirrors (observed on a hub)
+
+- **A form submit posts every rendered input.** The browser sends a value for each
+  input on the page, so an input with no stored value is saved with its page
+  `defaultValue` when the page is submitted or left (a Room Lights `offMeansPage`
+  Done stores `luxOff=100` without the user touching it). The form engine posts
+  those defaults too; password inputs are never defaulted.
+- **A sub-page fetched directly has no breadcrumb trail.**
+  `GET /installedapp/configure/json/<id>/<page>` answers `pageBreadcrumbs:"[]"`
+  (URL-encoded `%5B%5D`), so the page offers no previous-page Done. Reached through
+  its parent's link the trail is `["<parent>"]`; supplying that trail on the
+  submit (`pageBreadcrumbs=%5B%22<parent>%22%5D` with `_action_previous=Done`) makes
+  the Done return to the parent as the browser's would.
+
 ### On the "Rule Machine is a black box" note
 
 The Vue bundle treats RM (and every classic app) as a black box — it iframes

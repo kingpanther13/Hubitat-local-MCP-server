@@ -9455,34 +9455,13 @@ private Integer normalizeRuleId(def ruleId) {
 // from the input schema automatically, so callers never have to remember.
 
 /**
- * Registry of native automation app types. Each entry tells the create
- * path which namespace + appName + parent type to use for createchild.
- *
- * Adding a new entry here is the only change needed to support a new
- * native app type — the edit + delete + backup paths are app-type-
- * agnostic because they operate on appIds against the generic
- * /installedapp/* endpoint family.
- *
- * Verified live on firmware 2.4.4.135 / 2.5.0.123:
- *   - rule_machine: namespace=hubitat appName=Rule-5.1 parentType="Rule Machine"
- *
- * Also registered (each namespace+appName confirmed via hub_list_apps (scope='instances')
- * before it was added; #120 scope expansion):
- *   - button_controller (parent),  Button Controller-5.1, parentType="Button Controllers"
- *   - button_rule (under controller), Button Rule-5.1, parentType=<a specific Button Controller>
- *   - basic_rule, parentType="Basic Rules"
- *   - room_lighting (Room Lights), parentType="Room Lighting" -- verified fw 2.5.1.181
- *   - groups_scenes (Group-2.1), parentType="Groups and Scenes"
- *   - scene (Scene-1.2), parentType="Groups and Scenes"
- *   - notifier (Notifier), parentType="Notifications"
- *   - thermostat_scheduler (Thermostat Scheduler 2.0), parentType="Thermostat Schedulers"
- *   - thermostat_controller (Thermostat Controller 2.0), parentType="Thermostat Controllers"
- *   - visual_rule (Visual Rule Builder), parentType="Visual Rules Builder"
- *
- * Rule-5.1, Button Rule-5.1 and the Rule Machine parent are edited through
- * hub_set_rule(operation='form'); every other type through hub_set_native_app. Delete with
- * hub_delete_native_app using the appId of an existing classic-app instance
- * (read appId via hub_list_apps (scope='instances') + hub_get_app_config).
+ * Native app types hub_set_native_app can create: each entry names the createchild namespace,
+ * child appName and parent type; edit, delete and backup work on any app id. Entries:
+ *   rule_machine (Rule-5.1), button_controller (Button Controller-5.1), button_rule (Button Rule-5.1,
+ *   under a controller), basic_rule (Basic Rule-1.0), room_lighting (Room Lights),
+ *   groups_scenes (Group-2.1), scene (Scene-1.2), notifier (Notifier),
+ *   thermostat_scheduler / thermostat_controller (Thermostat Scheduler/Controller 2.0),
+ *   visual_rule (Visual Rule Builder).
  */
 private Map _appTypeRegistry() {
     // Optional `commitButton` field: the page-transition button clicked after a
@@ -9505,12 +9484,9 @@ private Map _appTypeRegistry() {
         // alone; Visual Rule Builder has no classic page, so nothing is ever clicked on it.
         groups_scenes: [namespace: "hubitat", appName: "Group-2.1", parentTypeName: "Groups and Scenes", labelInput: "name", commitButton: null],
         notifier: [namespace: "hubitat", appName: "Notifier", parentTypeName: "Notifications", commitButton: null],
-        // visual_rule stays registered so appType detection (_rmBackupRuleSnapshot's
-        // reverse-map) and parentTypeName lookups keep working, but neither classic creation
-        // path uses it: hub_set_native_app create refuses it, and
-        // _rmRestoreFromBackup routes visual_rule snapshots to _vrbRestoreFromSnapshot --
-        // VRB children are Vue-JSON apps (live-probed: /installedapp/configure renders no
-        // classic configPage), served by the hub_*_visual_rule tools instead.
+        // visual_rule stays registered so a snapshot can name the type and its parent can be found,
+        // but it is never created or restored as a classic app: VRB children are Vue-JSON apps
+        // (/installedapp/configure renders no classic configPage), served by the hub_*_visual_rule tools.
         visual_rule: [namespace: "hubitat", appName: "Visual Rule Builder", parentTypeName: "Visual Rules Builder", commitButton: null],
         // Basic Rule is a classic dynamicPage app (configure/json renders a real
         // configPage and generic createchild works), NOT a Vue SPA like Visual
@@ -9538,7 +9514,7 @@ private Map _appTypeRegistry() {
 
 /**
  * Discover and cache the parent app id for the given native-app type.
- * Required by _createNativeAppShell and backup restore: createchild is addressed
+ * Native app creation and a recreating restore need it: createchild is addressed
  * `/installedapp/createchild/<ns>/<appName>/parent/<parentId>`, and the
  * parent id is per-hub.
  *

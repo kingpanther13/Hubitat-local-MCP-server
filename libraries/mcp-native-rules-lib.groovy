@@ -1460,8 +1460,8 @@ private void _rmSubmitSubPageDone(Integer appId, String page, String parentPage,
         }
     }
     if (cfg?.app?.version != null) body.version = cfg.app.version.toString()
-    // Let a Done-POST failure propagate (hubInternalPostForm throws on a real failure): the caller
-    // decides what a failed Done means for its operation.
+    // A Done-POST failure propagates (hubInternalPostForm throws on a real failure): whether a failed
+    // Done fails the operation depends on that operation.
     hubInternalPostForm("/installedapp/update/json", body)
     // The Done POST commits the sub-page + bumps app.version -> drop cached pages for this app.
     _rmCacheInvalidate(cache, appId)
@@ -3196,7 +3196,7 @@ private Map _createNativeApp(Map args) {
     String labelNote = created.labelApplied == true ? '' : ' The requested display label could not be verified; inspect the app before retrying.'
     created.note = (update.success == true ?
         "${args.app_type} app created (id=${newId}) and its fields applied." :
-        "${args.app_type} app created (id=${newId}), but its fields did not all apply (see fieldsUpdate); the app exists, so correct them with hub_set_native_app(operation:'update', app_id:${newId}) instead of creating it again.").toString() + labelNote
+        "${args.app_type} app created (id=${newId}), but its fields did not all apply (see fieldsUpdate); the app exists, so correct them with hub_set_native_app(operation:'update', app_id:${newId}) instead of creating it again. See hub_get_tool_guide(section='set_native_app_reference').").toString() + labelNote
     return created
 }
 
@@ -3422,7 +3422,7 @@ Map _applyNativeAppEdit(Integer appId, Map plan) {
         }
 
         // The config page's error field is null on healthy apps; anything else means the write
-        // poisoned the render and the caller should restore from backup.
+        // poisoned the render, so the result carries a restore hint.
         def finalConfig = _rmFetchConfigJson(appId)
         def err = finalConfig?.configPage?.error
         if (err) {

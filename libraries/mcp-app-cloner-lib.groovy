@@ -1055,8 +1055,8 @@ private List _rmRedactedSettings(Map snapshot) {
 }
 
 // A restore never writes a password, so each redacted name is reported from the restored app: kept
-// when it still holds a value, otherwise to be entered again in the native UI. liveRows are the
-// app's typed settings when the caller already read them; otherwise statusJson is read once.
+// when it still holds a value, otherwise to be entered again in the native UI. liveRows, when given,
+// are the app's typed settings already read; otherwise statusJson is read once.
 private void _rmReportPasswords(Map out, Map snapshot, Integer appId, List liveRows = null) {
     List names = _rmRedactedSettings(snapshot)
     if (!names) return
@@ -1385,7 +1385,7 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
     if (savedAppType == "app" && !exists) {
         return [success: false, type: "rm-rule", ruleId: savedId, originalRuleId: savedId,
                 error: "App ${savedId} no longer exists and its type '${savedTypeName}' is not a built-in app type, so this backup cannot recreate it. Nothing was created.".toString(),
-                note: "Reinstall the app from its app code, then set its settings again from this backup (hub_get_backup shows them) with hub_set_native_app(operation:'update')."]
+                note: "Reinstall the app from its app code, then set its settings again from this backup (hub_get_backup shows them) with hub_set_native_app(operation:'update'). See hub_get_tool_guide(section='set_native_app_reference')."]
     }
     String nativeSkipped = null
     def priorCopy = _rmPriorNativeCopy(entry, savedId, exists, fileName?.toString())

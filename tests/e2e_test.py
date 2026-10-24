@@ -6230,7 +6230,7 @@ def updated() {}
         # that snapshot leaves the live password alone. The throwaway app's page reports whether its
         # password still holds the value set here, so the check never has to read the password back.
         # Once the app is deleted, the snapshot of this user app is not recreated: the restore asks
-        # for the app code to be reinstalled and restored in place.
+        # for the app code to be reinstalled and its settings set again.
         secret = "BAT-E2E-redact-me-552"
         label = "Deadman Test Target Password Snapshot"
         code_id = instance_id = None
@@ -6268,6 +6268,14 @@ def updated() {}
                 f"the password should still be set, shown redacted: {cfg.get('settings')}"
             assert "p-state: kept" in json.dumps(cfg) and secret not in json.dumps(cfg), \
                 f"the restore changed the live password: {cfg}"
+            # With the live password cleared, the same in-place restore asks for it to be entered again.
+            cleared = self._native_app("update", {"fields": {"p": ""}}, instance_id)
+            assert cleared.get("success") is True, f"clearing the password failed: {cleared}"
+            again = self._rm_restore(key, preserveRuleId=True)
+            assert again.get("success") is True and again.get("passwordsToReenter") == ["p"] \
+                and not again.get("passwordsKept"), \
+                f"an in-place restore over an empty password should ask for it again: {again}"
+            assert "enter" in str(again.get("note")).lower(), f"the restore note should say to enter the password again: {again}"
 
             gone = self.client.call_tool("hub_manage_native_rules_and_apps", {"tool": "hub_delete_native_app", "args": {
                 "appId": instance_id, "force": True, "confirm": True}})
@@ -6276,13 +6284,18 @@ def updated() {}
             try:
                 recreate = self._rm_restore(key)
             except McpToolError as exc:
-                recreate = {"success": False, "error": exc.content_text}
+                try:
+                    payload = json.loads(exc.content_text)
+                except (TypeError, ValueError):
+                    payload = None
+                recreate = dict(payload, success=False) if isinstance(payload, dict) else \
+                    {"success": False, "error": exc.content_text, "note": exc.content_text}
             if recreate.get("ruleId"):
                 leftover_ids.append(recreate["ruleId"])
             assert recreate.get("success") is False and not recreate.get("ruleId"), \
                 f"a deleted user app must not be recreated from its snapshot: {recreate}"
-            assert any(word in str(recreate.get("error")) for word in ("reinstall", "in place")), \
-                f"the refusal should say to reinstall the app code and restore in place: {recreate}"
+            assert "cannot recreate it" in str(recreate.get("error")) and "reinstall" in str(recreate.get("note")).lower(), \
+                f"the refusal should say the app cannot be recreated and to reinstall its code: {recreate}"
             stray = self._find_app_id_by_label(label)
             if stray:
                 leftover_ids.append(stray)
