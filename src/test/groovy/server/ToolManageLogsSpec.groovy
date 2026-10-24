@@ -2258,7 +2258,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('Job dev615Once.off belongs to device 615, which is outside this server's device access')
+        ex.message.contains("Job dev615Once.off belongs to device 615, which is outside this server's device access")
         hubGet.calls.empty
 
         when:
