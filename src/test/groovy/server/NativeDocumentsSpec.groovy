@@ -711,6 +711,57 @@ class NativeDocumentsSpec extends ToolSpecBase {
         events.empty
     }
 
+    def 'an action deleted earlier in the batch stays refused for edits after an append'() {
+        when:
+        def result = script.toolUpdateRuleDocument([rule_id: 42, confirm: true, changes: [
+            logChange(),
+            [part: 'delete', value: [part: 'action', id: '1']],
+            [part: 'action', value: logChange().value + [id: '1']]
+        ]])
+        then:
+        !result.success
+        !result.partial
+        result.error.contains('changes[2]: Native action does not exist')
+        events.empty
+    }
+
+    def 'an existing conditional action moved to another condition lets the batch delete the old one'() {
+        given:
+        nativeState.capabsfalse = ['4': 'Switch is on', '8': 'Switch is off']
+        nativeState.actions = ['3': [method: 'getLogMsg'], '1': [method: 'getOnOffSwitch', cond: '8']]
+        when:
+        script._ndPreflight(42L, script._ndChanges([
+            [part: 'action', value: [id: '1', type: 'switchActs', subtype: 'getOnOffSwitch', condition: '4', fields: []]],
+            [part: 'delete', value: [part: 'condition', id: '8']]
+        ]))
+        then:
+        noExceptionThrown()
+    }
+
+    def 'a condition only a deleted IF expression names can be deleted while a remaining IF still holds its condition'() {
+        given:
+        nativeState.capabsfalse = ['4': 'Switch is on', '8': 'Switch is off']
+        nativeState.actionList = ['1', '2', '3']
+        nativeState.actions = ['1': [method: 'getIfThen', rule: 1], '2': [method: 'getLogMsg'], '3': [method: 'getEndIf']]
+        // Rule Machine keeps the eval entry of a deleted IF.
+        nativeState.eval = ['0': ['4'], '1': ['8']]
+        when:
+        script._ndPreflight(42L, script._ndChanges([
+            [part: 'delete', value: [part: 'action', id: '1']],
+            [part: 'delete', value: [part: 'action', id: '3']],
+            [part: 'delete', value: [part: 'condition', id: '8']]
+        ]))
+        then:
+        noExceptionThrown()
+        when:
+        script._ndPreflight(42L, script._ndChanges([
+            [part: 'delete', value: [part: 'condition', id: '8']]
+        ]))
+        then:
+        def error = thrown(IllegalArgumentException)
+        error.message == 'changes[0]: Referenced native conditions must be detached before deletion'
+    }
+
     def 'an order after a new action in the same batch is refused before any write'() {
         when:
         def result = script.toolUpdateRuleDocument([rule_id: 42, confirm: true, changes: [

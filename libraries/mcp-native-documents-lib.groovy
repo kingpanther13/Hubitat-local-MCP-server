@@ -245,6 +245,7 @@ private void _ndPreflight(Long id, List changes) {
     List projectedPredicate = before.predCapabs instanceof List ? before.predCapabs.collect { it?.toString() } : []
     int newAction = 0
     boolean allocatedActions = false
+    Set deletedActions = [] as Set
     Map locals = id == null ? [:] : null
     Map inventory = null
     changes.eachWithIndex { change, index ->
@@ -254,6 +255,8 @@ private void _ndPreflight(Long id, List changes) {
             // that kind their ids are known only after the write, so the check waits for the write.
             if (change.part == 'condition' && value.containsKey('id') && !allocatedConditions && !conditions.keySet().any { it.toString() == value.id.toString() }) throw new IllegalArgumentException('Native row does not exist')
             if (change.part == 'trigger' && value.containsKey('id') && !allocatedTriggers && !triggers.keySet().any { it.toString() == value.id.toString() }) throw new IllegalArgumentException('Native row does not exist')
+            // A row deleted earlier in this batch stays gone even after an append skips the existence check.
+            if (change.part == 'action' && value.containsKey('id') && value.id.toString() in deletedActions) throw new IllegalArgumentException('Native action does not exist')
             if (change.part == 'action' && value.containsKey('id') && !allocatedActions) {
                 def prior = projectedActions.get(value.id.toString())
                 if (!(prior instanceof Map)) throw new IllegalArgumentException('Native action does not exist')
@@ -290,7 +293,7 @@ private void _ndPreflight(Long id, List changes) {
                 def prior = projectedActions.get(actionId)
                 // Merge over the prior record so a second edit of the same existing row still sees its wait events and condition.
                 Map record = (prior instanceof Map ? [:] + prior : [:]) + [method: method]
-                if (change.part == 'action' && newRow && value.containsKey('condition')) record.cond = value.condition.toString()
+                if (change.part == 'action' && value.containsKey('condition')) record.cond = value.condition.toString()
                 projectedActions.put(actionId, record)
             }
             if (change.part == 'order') {
@@ -302,6 +305,7 @@ private void _ndPreflight(Long id, List changes) {
             }
             if (change.part == 'delete' && value.part == 'action') {
                 String target = value.id.toString()
+                deletedActions << target
                 projectedOrder = projectedOrder.findAll { it != target }
                 projectedActions.remove(target)
                 if (!allocatedActions) {
@@ -328,7 +332,10 @@ private void _ndPreflight(Long id, List changes) {
             }
             if (change.part == 'delete' && value.part == 'condition') {
                 String target = value.id.toString()
-                boolean referenced = (expressions.values().toList() + pendingExpressions).any { tokens -> tokens instanceof List && tokens.any { it?.toString() == target } }
+                // Rule Machine keeps the eval entry of a deleted IF; only the Required Expression and live actions' expressions count.
+                Set liveExpressionIds = (['0'] + projectedActions.values().findAll { it instanceof Map && it.rule != null }.collect { it.rule.toString() }) as Set
+                List liveExpressions = expressions.findAll { key, tokens -> key.toString() in liveExpressionIds }.values().toList()
+                boolean referenced = (liveExpressions + pendingExpressions).any { tokens -> tokens instanceof List && tokens.any { it?.toString() == target } }
                 referenced = referenced || projectedPredicate.any { it == target }
                 referenced = referenced || projectedActions.values().any { it instanceof Map && it.cond?.toString() == target }
                 if (referenced) throw new IllegalArgumentException('Referenced native conditions must be detached before deletion')

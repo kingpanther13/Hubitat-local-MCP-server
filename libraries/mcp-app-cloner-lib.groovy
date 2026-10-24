@@ -1485,8 +1485,8 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
             note: (step == "settings replay"
                 ? "Rule ${ruleId} exists but may have incomplete settings. Inspect with hub_get_app_config(appId=${ruleId}) and compare against hub_get_backup(backupKey) before retrying."
                 : (commitButton == "updateRule"
-                    ? "The settings were replayed but the rule's updateRule did not fire, so its subscriptions may still reflect the pre-restore state. Open the rule and click Update Rule, or open hub_set_rule(operation:'form', rule_id:${ruleId}, args:[steps:[[kind:'open']]], confirm:true), then activate the returned Update Rule control_id."
-                    : "The settings were replayed but the app's ${commitButton ?: 'Done'} did not run, so its subscriptions may still reflect the pre-restore state. Open the app and click ${commitButton ?: 'Done'}, or open hub_set_rule(operation:'form', rule_id:${ruleId}, args:[steps:[[kind:'open']]], confirm:true), then activate the returned native control_id.")).toString()
+                    ? "The settings were replayed but the rule's updateRule did not fire, so its subscriptions may still reflect the pre-restore state. Open the rule and click Update Rule, or click it with hub_set_native_app(appId=${ruleId}, button='updateRule', confirm=true)."
+                    : "The settings were replayed but the app's ${commitButton ?: 'Done'} did not run, so its subscriptions may still reflect the pre-restore state. Open the app and click ${commitButton ?: 'Done'}, or click it with hub_set_native_app(appId=${ruleId}, button='${commitButton ?: 'Done'}', confirm=true).")).toString()
         ]
     }
 

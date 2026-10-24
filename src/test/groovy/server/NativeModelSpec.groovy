@@ -762,6 +762,36 @@ class NativeModelSpec extends ToolSpecBase {
         nativeState.eval == ['0': ['1']]
     }
 
+    def 'a condition only an orphan eval entry names deletes while a live IF expression still holds it'() {
+        given:
+        nativeState.eval = ['0': ['1'], '3': ['2']]
+        nativeState.actionList = ['5']
+        nativeState.actions = ['5': [method: liveIf ? 'getIfThen' : 'getLogMsg', rule: liveIf ? 3 : null]]
+        settings.put('rCapab_2', [type: 'enum', value: 'Switch'])
+        nativeRule.selectConditions = { Map params ->
+            nativeState.capabsfalse.remove('2')
+            settings.remove('rCapab_2')
+            nativeState.remove('deleteCon')
+        }
+        when:
+        def result = null
+        Exception failure = null
+        try { result = script._nmDeleteRow(42L, 'condition', '2') } catch (IllegalArgumentException e) { failure = e }
+        then:
+        if (liveIf) {
+            assert failure?.message == 'Referenced native conditions must be detached before deletion'
+            assert writes.empty
+            assert nativeState.capabsfalse.containsKey('2')
+        } else {
+            assert failure == null && result.success
+            assert nativeState.capabsfalse == ['1': 'Switch A on']
+            // The orphan entry stays, as Rule Machine keeps it.
+            assert nativeState.eval == ['0': ['1'], '3': ['2']]
+        }
+        where:
+        liveIf << [false, true]
+    }
+
     def 'predicate editing and rejection retain the correct native group after the last ordinary condition is deleted'() {
         given:
         nativeState.capabsfalse = ['1': 'Switch A on', '2': 'Switch B off', '3': 'Unused switch']

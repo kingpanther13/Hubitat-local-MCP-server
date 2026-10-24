@@ -6959,7 +6959,8 @@ class TestRunner:
     def test_rule_health_ui_shaped_else_endif_rows(self) -> None:
         # Rules saved by the UI can carry ELSE/END-IF rows without an actType, and a stray action row
         # the action list does not reference. Health reads those shapes without a false imbalance, and
-        # deleting the END-IF a block needs is refused.
+        # deleting the END-IF a block needs is refused. An action deleted earlier in a batch stays refused
+        # for a later edit after an append, and the IF block and its condition delete in one batch.
         app_id, doc = self._rm_rule("UiShape", [self._rm_switch_condition(self._ensure_perm_fixture("switch_a"))])
         try:
             condition = next(iter(doc["conditions"]))
@@ -6993,6 +6994,15 @@ class TestRunner:
                 self._rm_refuse_all(copy_id, [[native_delete("action", endif)]])
             finally:
                 self._delete_native(copy_id)
+            actions = self._native_rule_document(app_id)["actions"]
+            ids = [str(row["id"]) for row in actions]
+            branch = next(str(row["id"]) for row in actions if row["value"]["method"] == "getLogMsg")
+            before = self._rm_snapshot(app_id)
+            error = self._rm_refuse(app_id, [native_log("appended"), native_delete("action", branch), native_log("x", id=branch)])
+            assert "does not exist" in error, error
+            assert self._rm_snapshot(app_id) == before, "a refused edit changed the rule"
+            cleared = self._rm_update(app_id, [*[native_delete("action", i) for i in ids], native_delete("condition", condition)])
+            assert cleared["document"]["actions"] == [] and condition not in cleared["document"]["conditions"], cleared["document"]
         finally:
             self._delete_native(app_id)
 
