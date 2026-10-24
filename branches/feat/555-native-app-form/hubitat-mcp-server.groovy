@@ -6693,7 +6693,7 @@ private Date _pastLogTime(Map entry, TimeZone zone) {
 def toolDeleteLogs(args) {
     String mode = args.mode?.toString()
     if (!(mode in ["mcp", "scheduledJobs"])) {
-        throw new IllegalArgumentException("mode must be 'mcp' (clear the MCP log) or 'scheduledJobs' (delete one scheduled job). The hub's past logs are deleted only by a reboot: hub_reboot(confirm=true, purgeLogs=true).")
+        throw new IllegalArgumentException("mode must be 'mcp' (clear the MCP log) or 'scheduledJobs' (delete one scheduled job). The hub's past logs have no delete; its Reboot dialog offers a log purge: hub_reboot(confirm=true, purgeLogs=true).")
     }
     if (mode == "mcp") {
         def stray = ["jobId", "confirm"].findAll(this.&_argPresent.curry(args))
@@ -8206,7 +8206,7 @@ def _getAllToolDefinitions_partDiagnostics() {
         ],
         [
             name: "hub_delete_logs",
-            description: """Clear the MCP app's own log (mode='mcp'), or delete one scheduled job like the Logs page's Delete button (mode='scheduledJobs'). Only that timer goes; its app or device schedules it again only if its own code does. Cannot be undone. The hub's past logs are deleted only by a reboot: hub_reboot(confirm=true, purgeLogs=true).""",
+            description: """Clear the MCP app's own log (mode='mcp'), or delete one scheduled job like the Logs page's Delete button (mode='scheduledJobs'). Only that timer goes; its app or device schedules it again only if its own code does. Cannot be undone. The hub's past logs have no delete; its Reboot dialog offers a log purge: hub_reboot(confirm=true, purgeLogs=true).""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -9744,7 +9744,7 @@ PRE-FLIGHT: 1) Ensure backup <24h old 2) Tell user 3) Get explicit confirmation 
                 properties: [
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved the reboot."],
                     rebuildDatabase: [type: "boolean", description: "Rebuild the hub database while restarting (a Reboot dialog advanced option)."],
-                    purgeLogs: [type: "boolean", description: "Delete the hub's past logs while restarting (a Reboot dialog advanced option)."]
+                    purgeLogs: [type: "boolean", description: "Ask the hub to purge its past logs while restarting (a Reboot dialog advanced option)."]
                 ],
                 required: ["confirm"]
             ]
@@ -29531,7 +29531,7 @@ private void _writeAuditLog(Map audit, String phase, Map extra) {
 }
 private List _writeTargetKeys() {
     return ["appId", "nativeAppId", "ruleId", "deviceId", "device_id",
-        "driverId", "roomId", "room_id", "variableName", "name", "id", "type", "action", "scope",
+        "driverId", "roomId", "room_id", "variableName", "name", "id", "jobId", "type", "action", "scope",
         "backupKey", "ref", "mode", "fileName", "filename", "path"]
 }
 private Map _writeTargetSummary(String leaf, String outer, args) {
@@ -31448,7 +31448,7 @@ def getGatewayConfig() {
             tools: ["hub_get_logs", "hub_delete_logs", "hub_set_log_level"],
             summaries: [
                 hub_get_logs: "Read Logs page tabs or the MCP log. Args: mode (one tab or a list: past default, devices, apps, cloudCalls, locationEvents, hubEvents, scheduledJobs, runningJobs, hubActions, mcp, status), level, deviceId|appId, pattern/patterns, since/until, sortBy, limit, cursor, pageSize (50 per tab when several are listed)",
-                hub_delete_logs: "Clear the MCP log, or delete one scheduled job like the Logs page's Delete button; past logs are deleted by hub_reboot(confirm=true, purgeLogs=true). Args: mode (mcp|scheduledJobs), jobId, confirm",
+                hub_delete_logs: "Clear the MCP log, or delete one scheduled job like the Logs page's Delete button; past logs have no delete, only the reboot's log purge: hub_reboot(confirm=true, purgeLogs=true). Args: mode (mcp|scheduledJobs), jobId, confirm",
                 hub_set_log_level: "Set minimum log level threshold. Args: level (debug/info/warn/error)"
             ],
             searchHints: [
