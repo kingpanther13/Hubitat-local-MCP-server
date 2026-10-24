@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 4.8.4 - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
+ * Version: 5.0.0 - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -6694,7 +6694,7 @@ private Date _pastLogTime(Map entry, TimeZone zone) {
 def toolDeleteLogs(args) {
     String mode = args.mode?.toString()
     if (!(mode in ["mcp", "scheduledJobs"])) {
-        throw new IllegalArgumentException("mode must be 'mcp' (clear the MCP log) or 'scheduledJobs' (delete one scheduled job). The hub's past logs are deleted only by a reboot: hub_reboot(confirm=true, purgeLogs=true).")
+        throw new IllegalArgumentException("mode must be 'mcp' (clear the MCP log) or 'scheduledJobs' (delete one scheduled job). The hub's past logs have no delete; its Reboot dialog offers a log purge: hub_reboot(confirm=true, purgeLogs=true).")
     }
     if (mode == "mcp") {
         def stray = ["jobId", "confirm"].findAll(this.&_argPresent.curry(args))
@@ -8207,7 +8207,7 @@ def _getAllToolDefinitions_partDiagnostics() {
         ],
         [
             name: "hub_delete_logs",
-            description: """Clear the MCP app's own log (mode='mcp'), or delete one scheduled job like the Logs page's Delete button (mode='scheduledJobs'). Only that timer goes; its app or device schedules it again only if its own code does. Cannot be undone. The hub's past logs are deleted only by a reboot: hub_reboot(confirm=true, purgeLogs=true).""",
+            description: """Clear the MCP app's own log (mode='mcp'), or delete one scheduled job like the Logs page's Delete button (mode='scheduledJobs'). Only that timer goes; its app or device schedules it again only if its own code does. Cannot be undone. The hub's past logs have no delete; its Reboot dialog offers a log purge: hub_reboot(confirm=true, purgeLogs=true).""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -9745,7 +9745,7 @@ PRE-FLIGHT: 1) Ensure backup <24h old 2) Tell user 3) Get explicit confirmation 
                 properties: [
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved the reboot."],
                     rebuildDatabase: [type: "boolean", description: "Rebuild the hub database while restarting (a Reboot dialog advanced option)."],
-                    purgeLogs: [type: "boolean", description: "Delete the hub's past logs while restarting (a Reboot dialog advanced option)."]
+                    purgeLogs: [type: "boolean", description: "Ask the hub to purge its past logs while restarting (a Reboot dialog advanced option)."]
                 ],
                 required: ["confirm"]
             ]
@@ -22476,8 +22476,8 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
             note: (step == "settings replay"
                 ? "Rule ${ruleId} exists but may have incomplete settings. Inspect with hub_get_app_config(appId=${ruleId}) and compare against hub_get_backup(backupKey) before retrying."
                 : (commitButton == "updateRule"
-                    ? "The settings were replayed but the rule's updateRule did not fire, so its subscriptions may still reflect the pre-restore state. Open the rule and click Update Rule, or open hub_set_rule(operation:'form', rule_id:${ruleId}, args:[steps:[[kind:'open']]], confirm:true), then activate the returned Update Rule control_id."
-                    : "The settings were replayed but the app's ${commitButton ?: 'Done'} did not run, so its subscriptions may still reflect the pre-restore state. Open the app and click ${commitButton ?: 'Done'}, or open hub_set_rule(operation:'form', rule_id:${ruleId}, args:[steps:[[kind:'open']]], confirm:true), then activate the returned native control_id.")).toString()
+                    ? "The settings were replayed but the rule's updateRule did not fire, so its subscriptions may still reflect the pre-restore state. Open the rule and click Update Rule, or click it with hub_set_native_app(appId=${ruleId}, button='updateRule', confirm=true)."
+                    : "The settings were replayed but the app's ${commitButton ?: 'Done'} did not run, so its subscriptions may still reflect the pre-restore state. Open the app and click ${commitButton ?: 'Done'}, or click it with hub_set_native_app(appId=${ruleId}, button='${commitButton ?: 'Done'}', confirm=true).")).toString()
         ]
     }
     def out = [
@@ -27304,7 +27304,8 @@ Map _nmDeleteRow(Long ruleId, String part, Object rowId) {
     Map rows = before.get(collection) instanceof Map ? [:] + before.get(collection) : [:]
     if (!rows.keySet().any { it.toString() == id }) throw new IllegalArgumentException('Native row does not exist')
     if (part == 'condition') {
-        boolean referenced = before.eval instanceof Map && before.eval.values().any { it instanceof List && it.any { token -> token?.toString() == id } }
+        Set liveExpressionIds = (['0'] + (before.actions instanceof Map ? before.actions.values().findAll { it instanceof Map && it.rule != null }.collect { it.rule.toString() } : [])) as Set
+        boolean referenced = before.eval instanceof Map && before.eval.any { key, tokens -> key.toString() in liveExpressionIds && tokens instanceof List && tokens.any { token -> token?.toString() == id } }
         referenced = referenced || (before.predCapabs instanceof List && before.predCapabs.any { it.toString() == id })
         referenced = referenced || (before.actions instanceof Map && before.actions.values().any { it instanceof Map && it.cond?.toString() == id })
         if (referenced) throw new IllegalArgumentException('Referenced native conditions must be detached before deletion')
@@ -27619,6 +27620,7 @@ private void _ndPreflight(Long id, List changes) {
     List projectedPredicate = before.predCapabs instanceof List ? before.predCapabs.collect { it?.toString() } : []
     int newAction = 0
     boolean allocatedActions = false
+    Set deletedActions = [] as Set
     Map locals = id == null ? [:] : null
     Map inventory = null
     changes.eachWithIndex { change, index ->
@@ -27626,6 +27628,7 @@ private void _ndPreflight(Long id, List changes) {
             Map value = change.value
             if (change.part == 'condition' && value.containsKey('id') && !allocatedConditions && !conditions.keySet().any { it.toString() == value.id.toString() }) throw new IllegalArgumentException('Native row does not exist')
             if (change.part == 'trigger' && value.containsKey('id') && !allocatedTriggers && !triggers.keySet().any { it.toString() == value.id.toString() }) throw new IllegalArgumentException('Native row does not exist')
+            if (change.part == 'action' && value.containsKey('id') && value.id.toString() in deletedActions) throw new IllegalArgumentException('Native action does not exist')
             if (change.part == 'action' && value.containsKey('id') && !allocatedActions) {
                 def prior = projectedActions.get(value.id.toString())
                 if (!(prior instanceof Map)) throw new IllegalArgumentException('Native action does not exist')
@@ -27661,7 +27664,7 @@ private void _ndPreflight(Long id, List changes) {
                 String method = change.part == 'terminator' ? ND_TERMINATOR_METHODS.get(value.subtype) : value.subtype
                 def prior = projectedActions.get(actionId)
                 Map record = (prior instanceof Map ? [:] + prior : [:]) + [method: method]
-                if (change.part == 'action' && newRow && value.containsKey('condition')) record.cond = value.condition.toString()
+                if (change.part == 'action' && value.containsKey('condition')) record.cond = value.condition.toString()
                 projectedActions.put(actionId, record)
             }
             if (change.part == 'order') {
@@ -27673,6 +27676,7 @@ private void _ndPreflight(Long id, List changes) {
             }
             if (change.part == 'delete' && value.part == 'action') {
                 String target = value.id.toString()
+                deletedActions << target
                 projectedOrder = projectedOrder.findAll { it != target }
                 projectedActions.remove(target)
                 if (!allocatedActions) {
@@ -27699,7 +27703,9 @@ private void _ndPreflight(Long id, List changes) {
             }
             if (change.part == 'delete' && value.part == 'condition') {
                 String target = value.id.toString()
-                boolean referenced = (expressions.values().toList() + pendingExpressions).any { tokens -> tokens instanceof List && tokens.any { it?.toString() == target } }
+                Set liveExpressionIds = (['0'] + projectedActions.values().findAll { it instanceof Map && it.rule != null }.collect { it.rule.toString() }) as Set
+                List liveExpressions = expressions.findAll { key, tokens -> key.toString() in liveExpressionIds }.values().toList()
+                boolean referenced = (liveExpressions + pendingExpressions).any { tokens -> tokens instanceof List && tokens.any { it?.toString() == target } }
                 referenced = referenced || projectedPredicate.any { it == target }
                 referenced = referenced || projectedActions.values().any { it instanceof Map && it.cond?.toString() == target }
                 if (referenced) throw new IllegalArgumentException('Referenced native conditions must be detached before deletion')
@@ -30315,7 +30321,7 @@ private void _writeAuditLog(Map audit, String phase, Map extra) {
 }
 private List _writeTargetKeys() {
     return ["appId", "nativeAppId", "ruleId", "deviceId", "device_id",
-        "driverId", "roomId", "room_id", "variableName", "name", "id", "type", "action", "scope",
+        "driverId", "roomId", "room_id", "variableName", "name", "id", "jobId", "type", "action", "scope",
         "backupKey", "ref", "mode", "fileName", "filename", "path"]
 }
 private Map _writeTargetSummary(String leaf, String outer, args) {
@@ -32274,7 +32280,7 @@ def getGatewayConfig() {
             tools: ["hub_get_logs", "hub_delete_logs", "hub_set_log_level"],
             summaries: [
                 hub_get_logs: "Read Logs page tabs or the MCP log. Args: mode (one tab or a list: past default, devices, apps, cloudCalls, locationEvents, hubEvents, scheduledJobs, runningJobs, hubActions, mcp, status), level, deviceId|appId, pattern/patterns, since/until, sortBy, limit, cursor, pageSize (50 per tab when several are listed)",
-                hub_delete_logs: "Clear the MCP log, or delete one scheduled job like the Logs page's Delete button; past logs are deleted by hub_reboot(confirm=true, purgeLogs=true). Args: mode (mcp|scheduledJobs), jobId, confirm",
+                hub_delete_logs: "Clear the MCP log, or delete one scheduled job like the Logs page's Delete button; past logs have no delete, only the reboot's log purge: hub_reboot(confirm=true, purgeLogs=true). Args: mode (mcp|scheduledJobs), jobId, confirm",
                 hub_set_log_level: "Set minimum log level threshold. Args: level (debug/info/warn/error)"
             ],
             searchHints: [
@@ -36039,7 +36045,7 @@ private Map _rmForceDeleteApp(Integer appId) {
     return resp
 }
 def currentVersion() {
-    return "4.8.4"
+    return "5.0.0"
 }
 def hubBpsGuideKey(String section, Long atMs = null) {
     long bucket = ((atMs != null ? atMs : now()) as long).intdiv(3600000L)
