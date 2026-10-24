@@ -22476,8 +22476,8 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
             note: (step == "settings replay"
                 ? "Rule ${ruleId} exists but may have incomplete settings. Inspect with hub_get_app_config(appId=${ruleId}) and compare against hub_get_backup(backupKey) before retrying."
                 : (commitButton == "updateRule"
-                    ? "The settings were replayed but the rule's updateRule did not fire, so its subscriptions may still reflect the pre-restore state. Open the rule and click Update Rule, or open hub_set_rule(operation:'form', rule_id:${ruleId}, args:[steps:[[kind:'open']]], confirm:true), then activate the returned Update Rule control_id."
-                    : "The settings were replayed but the app's ${commitButton ?: 'Done'} did not run, so its subscriptions may still reflect the pre-restore state. Open the app and click ${commitButton ?: 'Done'}, or open hub_set_rule(operation:'form', rule_id:${ruleId}, args:[steps:[[kind:'open']]], confirm:true), then activate the returned native control_id.")).toString()
+                    ? "The settings were replayed but the rule's updateRule did not fire, so its subscriptions may still reflect the pre-restore state. Open the rule and click Update Rule, or click it with hub_set_native_app(appId=${ruleId}, button='updateRule', confirm=true)."
+                    : "The settings were replayed but the app's ${commitButton ?: 'Done'} did not run, so its subscriptions may still reflect the pre-restore state. Open the app and click ${commitButton ?: 'Done'}, or click it with hub_set_native_app(appId=${ruleId}, button='${commitButton ?: 'Done'}', confirm=true).")).toString()
         ]
     }
     def out = [
@@ -27304,7 +27304,8 @@ Map _nmDeleteRow(Long ruleId, String part, Object rowId) {
     Map rows = before.get(collection) instanceof Map ? [:] + before.get(collection) : [:]
     if (!rows.keySet().any { it.toString() == id }) throw new IllegalArgumentException('Native row does not exist')
     if (part == 'condition') {
-        boolean referenced = before.eval instanceof Map && before.eval.values().any { it instanceof List && it.any { token -> token?.toString() == id } }
+        Set liveExpressionIds = (['0'] + (before.actions instanceof Map ? before.actions.values().findAll { it instanceof Map && it.rule != null }.collect { it.rule.toString() } : [])) as Set
+        boolean referenced = before.eval instanceof Map && before.eval.any { key, tokens -> key.toString() in liveExpressionIds && tokens instanceof List && tokens.any { token -> token?.toString() == id } }
         referenced = referenced || (before.predCapabs instanceof List && before.predCapabs.any { it.toString() == id })
         referenced = referenced || (before.actions instanceof Map && before.actions.values().any { it instanceof Map && it.cond?.toString() == id })
         if (referenced) throw new IllegalArgumentException('Referenced native conditions must be detached before deletion')
@@ -27619,6 +27620,7 @@ private void _ndPreflight(Long id, List changes) {
     List projectedPredicate = before.predCapabs instanceof List ? before.predCapabs.collect { it?.toString() } : []
     int newAction = 0
     boolean allocatedActions = false
+    Set deletedActions = [] as Set
     Map locals = id == null ? [:] : null
     Map inventory = null
     changes.eachWithIndex { change, index ->
@@ -27626,6 +27628,7 @@ private void _ndPreflight(Long id, List changes) {
             Map value = change.value
             if (change.part == 'condition' && value.containsKey('id') && !allocatedConditions && !conditions.keySet().any { it.toString() == value.id.toString() }) throw new IllegalArgumentException('Native row does not exist')
             if (change.part == 'trigger' && value.containsKey('id') && !allocatedTriggers && !triggers.keySet().any { it.toString() == value.id.toString() }) throw new IllegalArgumentException('Native row does not exist')
+            if (change.part == 'action' && value.containsKey('id') && value.id.toString() in deletedActions) throw new IllegalArgumentException('Native action does not exist')
             if (change.part == 'action' && value.containsKey('id') && !allocatedActions) {
                 def prior = projectedActions.get(value.id.toString())
                 if (!(prior instanceof Map)) throw new IllegalArgumentException('Native action does not exist')
@@ -27661,7 +27664,7 @@ private void _ndPreflight(Long id, List changes) {
                 String method = change.part == 'terminator' ? ND_TERMINATOR_METHODS.get(value.subtype) : value.subtype
                 def prior = projectedActions.get(actionId)
                 Map record = (prior instanceof Map ? [:] + prior : [:]) + [method: method]
-                if (change.part == 'action' && newRow && value.containsKey('condition')) record.cond = value.condition.toString()
+                if (change.part == 'action' && value.containsKey('condition')) record.cond = value.condition.toString()
                 projectedActions.put(actionId, record)
             }
             if (change.part == 'order') {
@@ -27673,6 +27676,7 @@ private void _ndPreflight(Long id, List changes) {
             }
             if (change.part == 'delete' && value.part == 'action') {
                 String target = value.id.toString()
+                deletedActions << target
                 projectedOrder = projectedOrder.findAll { it != target }
                 projectedActions.remove(target)
                 if (!allocatedActions) {
@@ -27699,7 +27703,9 @@ private void _ndPreflight(Long id, List changes) {
             }
             if (change.part == 'delete' && value.part == 'condition') {
                 String target = value.id.toString()
-                boolean referenced = (expressions.values().toList() + pendingExpressions).any { tokens -> tokens instanceof List && tokens.any { it?.toString() == target } }
+                Set liveExpressionIds = (['0'] + projectedActions.values().findAll { it instanceof Map && it.rule != null }.collect { it.rule.toString() }) as Set
+                List liveExpressions = expressions.findAll { key, tokens -> key.toString() in liveExpressionIds }.values().toList()
+                boolean referenced = (liveExpressions + pendingExpressions).any { tokens -> tokens instanceof List && tokens.any { it?.toString() == target } }
                 referenced = referenced || projectedPredicate.any { it == target }
                 referenced = referenced || projectedActions.values().any { it instanceof Map && it.cond?.toString() == target }
                 if (referenced) throw new IllegalArgumentException('Referenced native conditions must be detached before deletion')
