@@ -5095,31 +5095,17 @@ def toolGetDebugLogs(args) {
     def stored = history.entries
     def logs = stored
     if (level && level != "all") {
-        logs = logs.findAll { it.level == level }
+        logs = logs.findAll(this.&_debugLogFieldIs.curry("level", level))
     }
     if (component) {
-        logs = logs.findAll { it.component?.contains(component) }
+        logs = logs.findAll(this.&_debugLogComponentHas.curry(component))
     }
     if (ruleId) {
-        logs = logs.findAll { it.ruleId == ruleId }
+        logs = logs.findAll(this.&_debugLogFieldIs.curry("ruleId", ruleId))
     }
     def count = Math.min(limit, logs.size())
     logs = logs.drop(Math.max(0, logs.size() - count))
-    def materialized = logs.collect { entry ->
-        def e = [
-            timestamp: entry.timestamp,
-            time: formatTimestamp(entry.timestamp),
-            level: entry.level,
-            component: entry.component,
-            message: entry.message
-        ]
-        if (entry.ruleId) e.ruleId = entry.ruleId
-        if (entry.ruleName) e.ruleName = entry.ruleName
-        if (entry.duration) e.durationMs = entry.duration
-        if (entry.stackTrace) e.stackTrace = entry.stackTrace
-        if (entry.details) e.details = entry.details
-        return e
-    }
+    def materialized = logs.collect(this.&_debugLogEntryOut)
     def cursor = args?.cursor
     def paged = _paginateList(materialized, cursor, 100, "hub_get_logs")
     def result = [
@@ -5134,6 +5120,27 @@ def toolGetDebugLogs(args) {
         if (paged.nextCursor != null) result.nextCursor = paged.nextCursor
     }
     return result
+}
+private boolean _debugLogFieldIs(String field, value, Map entry) {
+    return entry[field] == value
+}
+private boolean _debugLogComponentHas(component, Map entry) {
+    return entry.component?.contains(component) == true
+}
+private Map _debugLogEntryOut(Map entry) {
+    def e = [
+        timestamp: entry.timestamp,
+        time: formatTimestamp(entry.timestamp),
+        level: entry.level,
+        component: entry.component,
+        message: entry.message
+    ]
+    if (entry.ruleId) e.ruleId = entry.ruleId
+    if (entry.ruleName) e.ruleName = entry.ruleName
+    if (entry.duration) e.durationMs = entry.duration
+    if (entry.stackTrace) e.stackTrace = entry.stackTrace
+    if (entry.details) e.details = entry.details
+    return e
 }
 def toolSetLogLevel(args) {
     def level = args.level
@@ -6316,26 +6323,38 @@ private Map _logsPatterns(Map args) {
     if (patternMode != null && !(patternMode in ["any", "all"])) {
         throw new IllegalArgumentException("patternMode must be 'any' or 'all' (got '${args.patternMode}')")
     }
-    def compile = { String label, p ->
-        if (p != null && !(p instanceof String)) throw new IllegalArgumentException("${label} must be a string")
-        if (!p) throw new IllegalArgumentException("${label} must not be null or empty")
-        if (p.length() > 100) throw new IllegalArgumentException("${label} exceeds 100 char limit (was ${p.length()} chars)")
-        try {
-            return java.util.regex.Pattern.compile(p, java.util.regex.Pattern.CASE_INSENSITIVE)
-        } catch (java.util.regex.PatternSyntaxException e) {
-            throw new IllegalArgumentException("Invalid regex ${label} '${p}': ${e.message}")
-        }
-    }
     List list = []
-    (args.patterns ?: []).eachWithIndex { p, int i -> list << compile("patterns[${i}]", p) }
-    return [single: args.pattern != null ? compile("pattern", args.pattern) : null, list: list, all: patternMode == "all"]
+    (args.patterns ?: []).eachWithIndex(this.&_logsAddPattern.curry(list))
+    return [single: args.pattern != null ? _logsCompilePattern("pattern", args.pattern) : null, list: list, all: patternMode == "all"]
+}
+private void _logsAddPattern(List list, p, int i) {
+    list << _logsCompilePattern("patterns[${i}]", p)
+}
+private java.util.regex.Pattern _logsCompilePattern(String label, p) {
+    if (p != null && !(p instanceof String)) throw new IllegalArgumentException("${label} must be a string")
+    if (!p) throw new IllegalArgumentException("${label} must not be null or empty")
+    if (p.length() > 100) throw new IllegalArgumentException("${label} exceeds 100 char limit (was ${p.length()} chars)")
+    try {
+        return java.util.regex.Pattern.compile(p, java.util.regex.Pattern.CASE_INSENSITIVE)
+    } catch (java.util.regex.PatternSyntaxException e) {
+        throw new IllegalArgumentException("Invalid regex ${label} '${p}': ${e.message}")
+    }
 }
 private boolean _logsRowMatches(Map row, List fields, Map patterns) {
-    List texts = fields.collect { row[it] == null ? "" : row[it].toString() }
-    def hit = { java.util.regex.Pattern p -> texts.any { p.matcher(it).find() } }
-    if (patterns.single != null && !hit(patterns.single)) return false
+    List texts = fields.collect(this.&_logsFieldText.curry(row))
+    if (patterns.single != null && !_logsTextsHit(texts, patterns.single)) return false
     if (!patterns.list) return true
+    Closure hit = this.&_logsTextsHit.curry(texts)
     return patterns.all ? patterns.list.every(hit) : patterns.list.any(hit)
+}
+private String _logsFieldText(Map row, field) {
+    return row[field] == null ? "" : row[field].toString()
+}
+private boolean _logsTextsHit(List texts, java.util.regex.Pattern p) {
+    return texts.any(this.&_logsPatternFinds.curry(p))
+}
+private boolean _logsPatternFinds(java.util.regex.Pattern p, text) {
+    return p.matcher(text.toString()).find()
 }
 private boolean _logsOutsideWindow(Date at, Map query) {
     return (query.since != null && !at.after(query.since)) || (query.until != null && at.after(query.until))
@@ -6415,22 +6434,22 @@ private Map _logsQuery(Map args, String mode) {
 def toolGetHubLogs(args) {
     Map modeArgs = _logsModeArgs()
     List allModeArgs = modeArgs.values().flatten().unique()
-    List unknown = args.keySet().collect { it.toString() }.findAll { !(it in allModeArgs) && it != "mode" && !it.startsWith("__") }
+    List unknown = args.keySet()*.toString().findAll(this.&_logsUnknownArg.curry(allModeArgs))
     if (unknown) {
         throw new IllegalArgumentException("Unknown parameter${unknown.size() == 1 ? '' : 's'} for hub_get_logs: ${unknown.join(', ')}. Search a row's name and text with pattern, and scope with deviceId or appId.")
     }
-    List modes = args.mode instanceof List ? args.mode.collect { it?.toString() }.unique() : [args.mode == null ? "past" : args.mode.toString()]
+    List modes = args.mode instanceof List ? args.mode*.toString().unique() : [args.mode == null ? "past" : args.mode.toString()]
     if (!modes) throw new IllegalArgumentException("mode must name at least one tab")
     for (m in modes) {
         if (!modeArgs.containsKey(m)) {
             throw new IllegalArgumentException("Invalid log mode: ${m}. Valid modes: ${modeArgs.keySet().join(', ')}")
         }
-        def supplied = (allModeArgs - modeArgs[m]).findAll { args[it] != null }
+        def supplied = (allModeArgs - modeArgs[m]).findAll(this.&_argPresent.curry(args))
         if (supplied) throw new IllegalArgumentException("Parameters ${supplied.join(', ')} do not apply to log mode '${m}'")
     }
     if (args.mode instanceof List) {
         if (args.cursor != null) throw new IllegalArgumentException("cursor pages one mode: each listed tab returns its first page; call that mode alone with its nextCursor")
-        modes.findAll { !(it in ["mcp", "status"]) }.each { _logsQuery(args, it) }
+        (modes - ["mcp", "status"]).each(this.&_logsQuery.curry(args))
         Map results = [:]
         boolean pending = false
         for (m in modes) {
@@ -6456,13 +6475,14 @@ def toolGetHubLogs(args) {
                     note: "Some tabs are still loading on the hub. Continue with requestState, or repeat the same call on a legacy client."]
         }
         Map out = [modes: results]
-        List shared = results.values().findAll { it.snapshot instanceof Map && it.snapshot.background != null }
+        List shared = results.values().findAll(this.&_logsHasFetchSnapshot)
         if (shared.size() > 1 && shared*.snapshot*.fetchedAt.unique(false).size() == 1 && shared*.uptime.unique(false).size() == 1) {
             out.uptime = shared[0].uptime
             out.snapshot = shared[0].snapshot
-            shared.each { it.remove("uptime"); it.remove("snapshot") }
+            shared*.remove("uptime")
+            shared*.remove("snapshot")
         }
-        List failed = results.findAll { k, v -> v.isError == true }.collect { it.key }
+        List failed = results.findAll(this.&_logsTabFailed).keySet() as List
         if (failed) out.failedModes = failed
         if (failed && failed.size() == results.size()) {
             out.success = false
@@ -6515,7 +6535,7 @@ def toolGetHubLogs(args) {
             return [success: false, isError: true, error: "Could not read ${path}: ${e.message ?: e.class.simpleName}",
                     note: "Retry once; the same endpoint feeds the hub's Logs page."]
         }
-        boolean shaped = mode == "cloudCalls" ? parsed instanceof Map : parsed instanceof List && !parsed.any { !(it instanceof Map) }
+        boolean shaped = mode == "cloudCalls" ? parsed instanceof Map : parsed instanceof List && parsed.every(this.&_isMap)
         if (!shaped) {
             return [success: false, isError: true, error: "${path} returned an unexpected shape",
                     note: "The hub's Logs page format may have changed; report it with hub_report_issue."]
@@ -6528,18 +6548,39 @@ def toolGetHubLogs(args) {
     }
     return result + _logsPage(mode, rows, query)
 }
+private boolean _logsUnknownArg(List allowed, String key) {
+    return !(key in allowed) && key != "mode" && !key.startsWith("__")
+}
+private boolean _logsHasFetchSnapshot(r) {
+    return r.snapshot instanceof Map && r.snapshot.background != null
+}
+private boolean _logsTabFailed(mode, r) {
+    return r.isError == true
+}
 private List _cloudCallRows(Map raw) {
     Map hoursByApp = [:]
-    (raw.hours instanceof List ? raw.hours : []).each { h ->
-        if (!(h instanceof Map) || h.appId == null || h.hourStart == null) return
-        String key = h.appId.toString()
-        if (!hoursByApp.containsKey(key)) hoursByApp.put(key, [])
-        hoursByApp.get(key) << [epoch: h.hourStart as Long, count: h.count]
-    }
-    return (raw.apps instanceof List ? raw.apps : []).findAll { it instanceof Map }.collect { a ->
-        List series = (hoursByApp.get(a.id?.toString()) ?: []).sort { -(it.epoch as long) }
-        a + [hours: series.take(48).collect { [hourStart: formatTimestamp(it.epoch as Long), count: it.count] }]
-    }.sort { -((it.total ?: 0) as long) }
+    (raw.hours instanceof List ? raw.hours : []).each(this.&_cloudCallAddHour.curry(hoursByApp))
+    List apps = (raw.apps instanceof List ? raw.apps : []).findAll(this.&_isMap).collect(this.&_cloudCallAppRow.curry(hoursByApp))
+    return apps.sort(this.&_cloudCallBusiestFirst)
+}
+private void _cloudCallAddHour(Map hoursByApp, h) {
+    if (!(h instanceof Map) || h.appId == null || h.hourStart == null) return
+    String key = h.appId.toString()
+    if (!hoursByApp.containsKey(key)) hoursByApp.put(key, [])
+    hoursByApp.get(key) << [epoch: h.hourStart as Long, count: h.count]
+}
+private Map _cloudCallAppRow(Map hoursByApp, Map app) {
+    List series = (hoursByApp.get(app.id?.toString()) ?: []).sort(this.&_cloudCallNewestFirst)
+    return app + [hours: series.take(48).collect(this.&_cloudCallHourRow)]
+}
+private long _cloudCallNewestFirst(Map hour) {
+    return -(hour.epoch as long)
+}
+private Map _cloudCallHourRow(Map hour) {
+    return [hourStart: formatTimestamp(hour.epoch as Long), count: hour.count]
+}
+private long _cloudCallBusiestFirst(Map app) {
+    return -((app.total ?: 0) as long)
 }
 private Map _logsPage(String mode, List rows, Map query) {
     List fields = _logsSearchFields(mode)
@@ -6564,24 +6605,32 @@ private Map _logsPage(String mode, List rows, Map query) {
         matched << entry
     }
     if (mode in ["devices", "apps"]) {
-        if (query.sortBy == "name") matched.sort { (it.name ?: "").toString().toLowerCase() }
-        else matched.sort { -((it[query.sortBy] ?: 0) as double) }
+        if (query.sortBy == "name") matched.sort(this.&_logsSortName)
+        else matched.sort(this.&_logsSortMetricDesc.curry(query.sortBy.toString()))
     }
     Map out = [total: rows.size(), matched: matched.size()]
     if (query.limit > 0 && matched.size() > query.limit) matched = matched.take(query.limit)
     def paged = _paginateList(matched, query.cursor, query.pageSize as int, "hub_get_logs")
     Set nullFields = new TreeSet()
-    out.entries = paged.page.collect { Map row ->
-        row.findAll { k, v ->
-            if (v == null) nullFields << k.toString()
-            v != null
-        }
-    }
+    out.entries = paged.page.collect(this.&_logsDropNulls.curry(nullFields))
     if (nullFields) out.nullFields = nullFields as List
     out.count = paged.page.size()
     if (paged.nextCursor != null) out.nextCursor = paged.nextCursor
     if (unparseable > 0) out.timeFilterUnparseable = unparseable
     return out
+}
+private String _logsSortName(Map row) {
+    return (row.name ?: "").toString().toLowerCase()
+}
+private double _logsSortMetricDesc(String key, Map row) {
+    return -((row[key] ?: 0) as double)
+}
+private Map _logsDropNulls(Set nullFields, Map row) {
+    return row.findAll(this.&_logsKeepValue.curry(nullFields))
+}
+private boolean _logsKeepValue(Set nullFields, key, value) {
+    if (value == null) nullFields << key.toString()
+    return value != null
 }
 private Map _pastLogs(Map args, Map query) {
     Map scope = query.deviceId ? [type: "dev", id: query.deviceId] : query.appId ? [type: "app", id: query.appId] : null
@@ -6629,17 +6678,23 @@ private Map _pastLogs(Map args, Map query) {
     out.total = rows.size()
     if (unparseable > 0) out.timeFilterUnparseable = unparseable
     if (fetchedAt != null) out.snapshot = [fetchedAt: fetchedAt, ageMs: Math.max(0L, now() - (fetchedAt as Long))]
-    if ((out.entries.sum(0) { (it.message?.length() ?: 0) + (it.name?.length() ?: 0) + 120 } as int) > _responseSizeLimitBytes()) {
-        out.entries.each { it.message = it.message?.take(200) }
+    if ((out.entries.sum(0, this.&_pastLogEntrySize) as int) > _responseSizeLimitBytes()) {
+        out.entries.each(this.&_pastLogTrimMessage)
         out.truncated = true
         out.note = "Log messages truncated to fit response size limit"
     }
-    int noise = out.entries.count { _isBenignRmInternalNoise(it.message) }
+    int noise = out.entries*.message.count(this.&_isBenignRmInternalNoise)
     if (noise > 0) {
         out.benignRmNoiseCount = noise
         out.benignRmNoiseNote = "${noise} of these entr${noise == 1 ? 'y is' : 'ies are'} known-benign RM-internal noise (RM 5.1's own 'periodic' method logging an NPE on params.n while it renders the periodic sub-page during a periodic-trigger build). NON-FATAL, NOT an MCP-tool failure -- the trigger bakes correctly. Safe to ignore."
     }
     return out
+}
+private int _pastLogEntrySize(Map entry) {
+    return (entry.message?.length() ?: 0) + (entry.name?.length() ?: 0) + 120
+}
+private void _pastLogTrimMessage(Map entry) {
+    entry.message = entry.message?.take(200)
 }
 private Date _pastLogTime(Map entry, TimeZone zone) {
     String text = entry.time?.toString()?.trim() ?: entry.name?.toString()?.trim()
@@ -6656,7 +6711,7 @@ def toolDeleteLogs(args) {
         throw new IllegalArgumentException("mode must be 'mcp' (clear the MCP log) or 'scheduledJobs' (delete one scheduled job)")
     }
     if (mode == "mcp") {
-        def stray = ["jobId", "confirm"].findAll { args[it] != null }
+        def stray = ["jobId", "confirm"].findAll(this.&_argPresent.curry(args))
         if (stray) throw new IllegalArgumentException("Parameters ${stray.join(', ')} apply to mode='scheduledJobs' only")
         Map cleared = clearDebugLogEntries()
         mcpLog("info", "server", "MCP log cleared (${cleared.clearedCount != null ? "${cleared.clearedCount} entries" : 'entry count not loaded'})")
@@ -6714,13 +6769,19 @@ def _logsJsonObserveWaitMs() {
 }
 def _logsJsonUsesBackgroundFetch() { _mrtrReadContinuationActive() }
 private List _logsJsonStats(List statsList) {
-    return statsList.collect { stat -> stat.findAll { k, v -> !k.toString().startsWith("formatted") } }
+    return statsList.collect(this.&_logsJsonDropFormatted)
+}
+private Map _logsJsonDropFormatted(Map stat) {
+    return stat.findAll(this.&_logsJsonNotFormatted)
+}
+private boolean _logsJsonNotFormatted(key, value) {
+    return !key.toString().startsWith("formatted")
 }
 private List _logsJsonTable(Map data, String key) {
     def table = data[key]
     if (table == null) return []
     if (!(table instanceof List)) throw new IllegalStateException("Unexpected /logs/json response: '${key}' is not an array")
-    if (key != "hubCommands" && table.any { !(it instanceof Map) }) {
+    if (key != "hubCommands" && !table.every(this.&_isMap)) {
         throw new IllegalStateException("Unexpected /logs/json response: '${key}' contains a non-object entry")
     }
     return table
@@ -28407,6 +28468,27 @@ def mainPage() {
         }
     }
 }
+private boolean _isMap(value) {
+    return value instanceof Map
+}
+private boolean _argPresent(Map args, key) {
+    return args[key] != null
+}
+private String _toStringOrNull(value) {
+    return value?.toString()
+}
+private boolean _mrtrRowFailed(row) {
+    return row instanceof Map && row.success != true
+}
+private boolean _mrtrRowSucceeded(row) {
+    return row instanceof Map && row.success == true
+}
+private boolean _hasSnapshotFetchedAt(part) {
+    return part instanceof Map && part.snapshot instanceof Map && part.snapshot.fetchedAt instanceof Number
+}
+private Long _snapshotFetchedAt(Map part) {
+    return part.snapshot.fetchedAt as Long
+}
 def formatTimestamp(timestamp) {
     if (!timestamp) return "Never"
     try {
@@ -31092,17 +31174,17 @@ private Map _mrtrCommitSlice(String stateId, Map rec, Map claim, Map executionAr
                 def banked = cappedBank.results
                 capped.results = banked
                 capped.ruleIds = cappedBank.ruleIds
-                def cappedFailed = banked.findAll { it instanceof Map && it.success != true }
+                def cappedFailed = banked.findAll(this.&_mrtrRowFailed)
                 if (!cappedFailed.isEmpty()) {
-                    capped.failedRuleIds = cappedFailed.collect { it.ruleId }.findAll { it != null }.unique()
+                    capped.failedRuleIds = (cappedFailed*.ruleId - [null]).unique()
                 }
                 if (result instanceof Map && result.remainingRuleIds instanceof List
                         && !(result.remainingRuleIds as List).isEmpty()) {
                     capped.remainingRuleIds = result.remainingRuleIds
                 }
-                capped.partial = banked.any { it instanceof Map && it.success == true }
+                capped.partial = banked.any(this.&_mrtrRowSucceeded)
                 def reissue = (((capped.failedRuleIds ?: []) as List) +
-                               ((capped.remainingRuleIds ?: []) as List)).unique { it?.toString() }
+                               ((capped.remainingRuleIds ?: []) as List)).unique(this.&_toStringOrNull)
                 if (!reissue.isEmpty()) {
                     capped.note = "The completed slices remain committed. Re-issue ${reissue} " +
                         "to finish: that is the failed rules plus the ones never reached. " +
@@ -31119,10 +31201,8 @@ private Map _mrtrCommitSlice(String stateId, Map rec, Map claim, Map executionAr
                     "operation."
             }
             if (continuation.kind in ["walk_steps", "driver_installs", "driver_updates"]) {
-                ["appId", "page", "operation", "stepsRemaining", "installsRemaining", "updatesRemaining",
-                 "backup", "repairHints", "resume"].each { key ->
-                    if (result.containsKey(key)) capped.put(key, result.get(key))
-                }
+                capped.putAll(result.subMap(["appId", "page", "operation", "stepsRemaining", "installsRemaining",
+                                             "updatesRemaining", "backup", "repairHints", "resume"]))
                 capped.note = "aggregate records completed work. Inspect the remaining-work fields " +
                     "and resume guidance before submitting a new call with only that remainder. " +
                     "This requestState now replays the terminal continuation_limit result."
@@ -31241,8 +31321,7 @@ private boolean _mrtrStoreTerminal(String stateId, Map originalRec, Map claim, r
             def fetchedAt = readLeaf ? originalRec.readSnapshotFetchedAt : null
             if (!(fetchedAt instanceof Number) && readLeaf && result instanceof Map) {
                 List parts = [result] + (result.modes instanceof Map ? (result.modes as Map).values().toList() : [])
-                fetchedAt = parts.findAll { it instanceof Map && it.snapshot instanceof Map && it.snapshot.fetchedAt instanceof Number }
-                    .collect { it.snapshot.fetchedAt as Long }.min()
+                fetchedAt = parts.findAll(this.&_hasSnapshotFetchedAt).collect(this.&_snapshotFetchedAt).min()
             }
             if (fetchedAt instanceof Number) {
                 rec.expiresAt = Math.min(rec.expiresAt as Long, (fetchedAt as Long) + _logsJsonSnapshotTtlMs())
@@ -33002,9 +33081,9 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
         case "hub_manage_dashboards":
             if (settings.useGateways == false) {
                 def visibleNames = getToolDefinitions()*.name as Set
-                def subTools = (getGatewayConfig()[toolName]?.tools ?: []).findAll { visibleNames.contains(it) }
+                def subTools = (getGatewayConfig()[toolName]?.tools ?: []).findAll(visibleNames.&contains)
                 def hint = subTools
-                    ? "Call the underlying tool directly: ${subTools.collect { _externalToolName(it as String) }.join(', ')}. Refresh tools/list to see the flat catalog."
+                    ? "Call the underlying tool directly: ${subTools.collect(this.&_externalToolName).join(', ')}. Refresh tools/list to see the flat catalog."
                     : "All sub-tools of this gateway are also disabled by other server toggles (Read/Write masters or Custom Rule Engine). Enable those toggles or refresh tools/list."
                 return [
                     isError: true,
