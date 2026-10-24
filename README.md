@@ -352,7 +352,7 @@ Call a gateway with no arguments to see full parameter schemas. Call with `tool=
 
 | Tool | Description |
 |------|-------------|
-| `hub_get_logs` | Read one tab, or a list of tabs, of the hub's Logs page with the hub's own field names (`mode`: `past` log history (default), `devices`/`apps` runtime stats, `cloudCalls`, `locationEvents`, `hubEvents` (reboots, low memory), `scheduledJobs`, `runningJobs`, `hubActions`), or the MCP log (`mode='mcp'`) and its status (`mode='status'`). Jobs, running jobs and hub actions carry their owner app or device. |
+| `hub_get_logs` | Read one tab, or a list of tabs, of the hub's Logs page with the hub's own field names (`mode`: `past` log history (default), `devices`/`apps` runtime stats, `cloudCalls`, `locationEvents`, `hubEvents` (reboots, low memory), `scheduledJobs`, `runningJobs`, `hubActions`), or the MCP log (`mode='mcp'`) and its status (`mode='status'`). Jobs, running jobs and hub actions name their owner app or device when the hub links one (system jobs have none). |
 | `hub_get_metrics` | Retrieve hub metrics with CSV trend history (read-only by default; does not record a new snapshot) |
 | `hub_get_memory_history` | Free OS memory and CPU load history with summary stats (Read master) |
 | `hub_get_device_health` | Find stale/offline devices |
@@ -537,7 +537,7 @@ Whole-hub backup *creation* is the flat core tool `hub_create_backup`.
 
 | Tool | Description |
 |------|-------------|
-| `hub_get_logs` | Read one tab, or a list of tabs, of the hub's Logs page with the hub's own field names (`mode`: `past` log history (default), `devices`/`apps` runtime stats, `cloudCalls`, `locationEvents`, `hubEvents` (reboots, low memory), `scheduledJobs`, `runningJobs`, `hubActions`), or the MCP log (`mode='mcp'`) and its status (`mode='status'`). Jobs, running jobs and hub actions carry their owner app or device. (also in `hub_read_diagnostics`) |
+| `hub_get_logs` | Read one tab, or a list of tabs, of the hub's Logs page with the hub's own field names (`mode`: `past` log history (default), `devices`/`apps` runtime stats, `cloudCalls`, `locationEvents`, `hubEvents` (reboots, low memory), `scheduledJobs`, `runningJobs`, `hubActions`), or the MCP log (`mode='mcp'`) and its status (`mode='status'`). Jobs, running jobs and hub actions name their owner app or device when the hub links one (system jobs have none). (also in `hub_read_diagnostics`) |
 | `hub_delete_logs` | Clear the MCP log (`mode='mcp'`), or delete one scheduled job like the Delete button on the Logs page (`mode='scheduledJobs'`, `jobId`, `confirm=true`). Past logs are deleted only by a reboot: `hub_reboot(confirm=true, purgeLogs=true)` |
 | `hub_set_log_level` | Set MCP log level (debug/info/warn/error) |
 

@@ -223,6 +223,12 @@ def test_sandbox_011_hubaction():
     assert "SANDBOX-011" in hits("def ha = new HubAction('...')")
 
 
+def test_sandbox_018_method_pointer_off_this():
+    """SANDBOX-018 fires on a method pointer taken on anything but the script."""
+    assert "SANDBOX-018" in hits("def names = tools.findAll(visible.&contains)")
+    assert "SANDBOX-018" not in hits("def names = tools.findAll(this.&_visible)")
+
+
 def test_clean_source_no_findings():
     """Clean Groovy code produces no findings."""
     source = "def greet(String name) { log.debug 'hello' }"

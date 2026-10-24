@@ -6723,7 +6723,7 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
                 // Filter the hint against the live flat catalog so we don't recommend tools
                 // that other settings (Read/Write masters or Custom Rule Engine) have also hidden.
                 def visibleNames = getToolDefinitions()*.name as Set
-                def subTools = (getGatewayConfig()[toolName]?.tools ?: []).findAll(visibleNames.&contains)
+                def subTools = (getGatewayConfig()[toolName]?.tools ?: []).findAll { visibleNames.contains(it) }
                 def hint = subTools
                     ? "Call the underlying tool directly: ${subTools.collect(this.&_externalToolName).join(', ')}. Refresh tools/list to see the flat catalog."
                     : "All sub-tools of this gateway are also disabled by other server toggles (Read/Write masters or Custom Rule Engine). Enable those toggles or refresh tools/list."

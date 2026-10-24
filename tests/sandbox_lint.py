@@ -221,6 +221,14 @@ RULES = [
         "pattern": r"\.(?:methods|fields|declaredFields)\b(?!\s*\()",
         "message": "`.methods`, `.fields` and `.declaredFields` property reads are blocked by the Hubitat sandbox at runtime, even on a Map. Use map.get(\"<name>\") or another key.",
         "severity": "error",
+    },    {
+        # The sandbox allows a method pointer only on the script itself: `set.&contains` fails at
+        # runtime with "Method pointers are not allowed on java.util.LinkedHashSet" (live, ephemeral
+        # hub e2e), while the Spock harness accepts it.
+        "id": "SANDBOX-018",
+        "pattern": r"(?<![\w.])(?!this\b)[A-Za-z_]\w*\s*\.&\s*[A-Za-z_]",
+        "message": "Method pointer on something other than `this` -- the Hubitat sandbox refuses it at runtime ('Method pointers are not allowed on <class>'). Use `this.&name` or an inline closure.",
+        "severity": "error",
     },
 ]
 
