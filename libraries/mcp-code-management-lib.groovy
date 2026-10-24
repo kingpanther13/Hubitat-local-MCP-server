@@ -1052,7 +1052,7 @@ private Map _createUserAppInstance(Integer codeAppId) {
         // Deleting and retrying would meet the same refusal: keep the shell and fill it in.
         return [
             success: false,
-            error: "Instance ${newId} was created but not installed: ${commit.error} Keep it -- write the listed settings with hub_set_native_app(operation:'update', app_id:${newId}, args:{fields:{...}}, confirm:true); that call's closing Done installs the app.".toString(),
+            error: "Instance ${newId} was created but not installed: ${commit.error} Keep it -- write the listed settings with hub_set_native_app(operation:'update', app_id:${newId}, args:{fields:{...}}, confirm:true), whose closing Done on the app's mainPage installs it; an app whose first page has another name is finished with operation:'form' by activating its returned Done control.".toString(),
             codeAppId: codeAppId,
             instanceAppId: newId,
             committed: false
@@ -1238,7 +1238,7 @@ private Map _commitUserAppInstall(Integer instanceId, String pageName) {
             success: false,
             uiBlocked: true,
             error: submit.uiReason,
-            note: "No Done was submitted, so the instance is not installed yet. Write the listed settings with hub_set_native_app(operation:'update', app_id:${instanceId}, args:{fields:{...}}, confirm:true); that call's closing Done installs it.".toString(),
+            note: "No Done was submitted, so the instance is not installed yet. Write the listed settings with hub_set_native_app(operation:'update', app_id:${instanceId}, args:{fields:{...}}, confirm:true), whose closing Done on the app's mainPage installs it; an app whose first page has another name is finished with operation:'form' by activating its returned Done control.".toString(),
             scheduledJobCount: 0,
             eventSubscriptionCount: 0
         ]

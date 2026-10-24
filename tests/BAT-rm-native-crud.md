@@ -1523,7 +1523,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: After `addRequiredExpression` + `addAction`, the mainPage paragraphs show the switch-on action cleanly (e.g. "On: Test Plug" or similar) WITHOUT any "IF (**Broken Condition**)" wrapper. This confirms `_rmClearPredCapabsViaGhostIfThen` fired after the expression-builder hasRule click and cleared the predCapabs leak. [INV-1] `configPage.error == null`.
+**Expected**: After the `hub_set_rule(operation='create', args={changes: [...]})` call that adds the trigger, the Required Expression and the action, the mainPage paragraphs show the switch-on action cleanly (e.g. "On: Test Plug" or similar) WITHOUT any "IF (**Broken Condition**)" wrapper. No hidden clean-up step runs: the create writes each row through the native editor as the UI does, and the returned document's `nativeHealth` reports the rule not broken. [INV-1] `configPage.error == null`.
 
 ### T432b — Bug E: Sequential runCommand actions all render with parameters
 
@@ -1842,7 +1842,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: `hub_set_native_app(operation='create', args={app_type: 'button_rule', controller_id, button_number: 1, event: 'pushed'})` (no `name`) returns `success: true` with a `buttonRuleId` (equal to `appId`) and the trigger auto-seeded (Button, button 1, pushed). The rule renders (NOT the broken "Cannot set property '1' on null object" orphan a bare createchild produces). `hub_set_rule(appId=buttonRuleId, addAction=...)` authors the action (RM-wire-format). Post-test invariant: [INV-1] the button rule's `configPage.error == null`. Teardown deletes the controller (cascading to the grandchild rule) and the device.
+**Expected**: `hub_set_native_app(operation='create', args={app_type: 'button_rule', controller_id, button_number: 1, event: 'pushed'})` (no `name`) returns `success: true` with a `buttonRuleId` (equal to `appId`) and the trigger auto-seeded (Button, button 1, pushed). The rule renders (NOT the broken "Cannot set property '1' on null object" orphan a bare createchild produces). `hub_set_rule(operation='update', rule_id=buttonRuleId, args={changes: [<log action>]})` authors the action (RM-wire-format). Post-test invariant: [INV-1] the button rule's `configPage.error == null`. Teardown deletes the controller (cascading to the grandchild rule) and the device.
 
 ### T456 — hub_get_rule_health prefers the ruleBuilderJson compiled-state boolean (issue #254)
 

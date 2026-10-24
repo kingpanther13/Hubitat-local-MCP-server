@@ -79,4 +79,61 @@ class SnapshotPasswordRedactionSpec extends ToolSpecBase {
         String plain = export.replace('"password"', '"text"')
         script._rmRedactExportPasswords(plain, [] as Set).is(plain)
     }
+
+    def "a snapshot whose statusJson cannot be read fails closed instead of storing unclassified settings"() {
+        given:
+        List uploads = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> uploads << fn }
+        hubGet.register('/installedapp/configure/json/78') { params ->
+            JsonOutput.toJson([app: [id: 78, name: 'Notifier', label: 'A', installed: true, appType: [name: 'Notifier', namespace: 'hubitat']],
+                configPage: [name: 'mainPage', sections: []], settings: [subPagePassword: 'live-secret'], childApps: []])
+        }
+        hubGet.register('/installedapp/statusJson/78') { params -> throw new RuntimeException('statusJson timed out') }
+
+        when:
+        script._rmBackupRuleSnapshot(78, 'pre-update')
+
+        then:
+        def failure = thrown(IllegalStateException)
+        failure.message == "the app's settings could not be read, so no snapshot was taken; nothing was changed"
+        uploads.isEmpty()
+    }
+
+    def "a user or community app is snapshotted under its own type, not as a Rule Machine rule"() {
+        given:
+        List uploads = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> uploads << new String(b, 'UTF-8') }
+        hubGet.register('/installedapp/configure/json/79') { params ->
+            JsonOutput.toJson([app: [id: 79, name: 'BAT555 Stateful Wizard', label: 'W', installed: true, appType: [name: 'BAT555 Stateful Wizard', namespace: 'someDeveloper']],
+                configPage: [name: 'mainPage', sections: []], settings: [count: '1'], childApps: []])
+        }
+        hubGet.register('/installedapp/statusJson/79') { params -> JsonOutput.toJson([installedApp: [id: 79], appState: [], appSettings: [[name: 'count', type: 'number', value: '1']]]) }
+
+        when:
+        script._rmBackupRuleSnapshot(79, 'pre-update')
+        def snap = new JsonSlurper().parseText(uploads[0])
+
+        then:
+        snap.appType == 'app'
+        snap.appTypeName == 'BAT555 Stateful Wizard'
+        !snap.containsKey('nativeExport')
+    }
+
+    def "a snapshot taken for a page renders that page, not the app's main page"() {
+        given:
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        hubGet.register('/installedapp/configure/json/80/subPage') { params ->
+            JsonOutput.toJson([app: [id: 80, name: 'Wizard', label: 'W', installed: true, appType: [name: 'Wizard', namespace: 'someDeveloper']],
+                configPage: [name: 'subPage', sections: []], settings: [step: '3'], childApps: []])
+        }
+        hubGet.register('/installedapp/statusJson/80') { params -> JsonOutput.toJson([installedApp: [id: 80], appState: [], appSettings: [[name: 'step', type: 'number', value: '3']]]) }
+
+        when:
+        def backup = script._rmBackupBeforeEdit(80, 'pre-native-form', 'subPage')
+
+        then:
+        backup.backupKey
+        hubGet.calls*.path.contains('/installedapp/configure/json/80/subPage')
+        !hubGet.calls*.path.contains('/installedapp/configure/json/80')
+    }
 }

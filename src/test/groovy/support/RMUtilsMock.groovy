@@ -23,8 +23,9 @@ package support
  * Coverage: PR #79's `manage_rule_machine` gateway tools call
  * `RMUtils.getRuleList()` (no-arg for RM 4.x) AND
  * `RMUtils.getRuleList("5.0")` (RM 5.x) as a dual probe, plus
- * `RMUtils.sendAction([ruleId], action, appLabel, "5.0")` 4-arg with
- * a 3-arg fallback. This mock supports all those signatures plus
+ * `RMUtils.sendAction([ruleId], action, appLabel, "5.0")` 4-arg. The
+ * platform also exposes a 3-arg form, which production never calls; a
+ * spec can use it to prove that. This mock supports all those signatures plus
  * per-version stubs and per-method throw-injection for modelling
  * partial-failure shapes.
  */
@@ -74,8 +75,7 @@ class RMUtilsMock {
         calls << [method: 'sendAction', ruleIds: ruleIds, action: action, appLabel: appLabel, version: version]
     }
 
-    // Production 3-arg fallback form (fires only on MissingMethodException /
-    // NoSuchMethodError from the 4-arg attempt).
+    // The platform's 3-arg form; production never calls it, so a recorded call is a regression.
     void sendAction(List ruleIds, String action, String appLabel) {
         if (throwOnSendAction != null) throw throwOnSendAction
         calls << [method: 'sendAction', ruleIds: ruleIds, action: action, appLabel: appLabel]
@@ -108,7 +108,7 @@ class RMUtilsMock {
         hubitat.helper.RMUtils.metaClass.static.getRuleList = { String v -> self.getRuleList(v) }
         // sendAction: three production forms
         //   (Long, String)                       -- legacy simple form
-        //   (List, String, String)               -- PR-79 3-arg fallback
+        //   (List, String, String)               -- platform 3-arg form (never called by production)
         //   (List, String, String, String)       -- PR-79 preferred 4-arg form
         hubitat.helper.RMUtils.metaClass.static.sendAction = { Long id, String a -> self.sendAction(id, a) }
         hubitat.helper.RMUtils.metaClass.static.sendAction = { List ids, String a, String lbl -> self.sendAction(ids, a, lbl) }

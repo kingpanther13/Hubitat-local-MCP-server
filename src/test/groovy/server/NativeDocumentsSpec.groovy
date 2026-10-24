@@ -752,6 +752,22 @@ class NativeDocumentsSpec extends ToolSpecBase {
         conditions.message == 'changes[2]: Native row does not exist'
     }
 
+    def 'a condition deleted after an append cannot be named by a later Required Expression'() {
+        given:
+        nativeState.capabsfalse = ['4': 'Switch is on', '8': 'Switch is off']
+        def condition = [part: 'condition', value: [capability: 'Switch', fields: [
+            [name: 'rDev_#', type: 'capability.switch', value: ['789']], [name: 'state_#', type: 'enum', value: 'on']]]]
+        when:
+        script._ndPreflight(42L, script._ndChanges([
+            condition,
+            [part: 'delete', value: [part: 'condition', id: '8']],
+            [part: 'required', value: [tokens: ['8']]]
+        ]))
+        then:
+        def error = thrown(IllegalArgumentException)
+        error.message == 'changes[2]: Expression references an unknown condition'
+    }
+
     def 'an IF retargeted to another condition frees the old condition for deletion in the same batch'() {
         given:
         nativeState.capabsfalse = ['1': 'Switch 789 on', '2': 'Switch 746 on']

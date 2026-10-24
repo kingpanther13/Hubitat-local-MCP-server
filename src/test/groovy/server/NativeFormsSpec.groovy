@@ -489,6 +489,9 @@ class NativeFormsSpec extends ToolSpecBase {
         model.configPage.sections[0].input << [element: 'input', name: 'secret', type: 'password', defaultValue: 'never-posted']
         model.configPage.sections[0].input << [element: 'input', name: 'storedNumber', type: 'number', defaultValue: 5]
         model.settings.storedNumber = 9
+        model.configPage.sections[0].input << [element: 'input', name: 'lockedNumber', type: 'number', defaultValue: 4, disabled: true]
+        model.configPage.sections[0].input << [element: 'input', name: 'tint', type: 'color', defaultValue: '#ff0000']
+        model.configPage.sections[0].input << [element: 'input', name: 'staleChoice', type: 'enum', options: ['a', 'b'], defaultValue: 'z']
         def opened = open()
         calls.clear()
         when:
@@ -502,6 +505,12 @@ class NativeFormsSpec extends ToolSpecBase {
         body['settings[luxOff]'] == '100'
         !body.containsKey('settings[secret]')
         !body.containsKey('settings[storedNumber]')
+        !body.containsKey('settings[lockedNumber]')
+        !body.containsKey('settings[tint]')
+        !body.containsKey('settings[staleChoice]')
+        result.defaults_posted as Set == ['defaultChoice', 'luxOff'] as Set
+        result.defaults_not_posted*.name == ['staleChoice']
+        result.defaults_not_posted[0].reason.contains('staleChoice')
         when: 'a supplied value wins over the default'
         calls.clear()
         assert open().success
@@ -622,7 +631,7 @@ class NativeFormsSpec extends ToolSpecBase {
         opened.page.name == 'edit'
         opened.backup.skipped
         !failed.success
-        logged == ['hub_set_native_app form failed for app 42: expect_page does not match the last returned native page']
+        logged.any { it.contains('hub_set_native_app form failed for app 42') && it.contains('expect_page does not match') }
     }
 
     def 'native Remove is reported unsupported and is never a form control'() {

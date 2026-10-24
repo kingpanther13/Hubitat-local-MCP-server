@@ -52,7 +52,7 @@ def _getAllToolDefinitions_partNativeRM() {
         ],
         [
             name: "hub_set_native_app",
-            description: "Create, update or drive the native forms of classic Hubitat apps: Room Lighting, Button Controllers and Button Rules, Basic Rules, Notifier, Groups and Scenes, Thermostat Scheduler, and user or community apps. Omit operation for help; select a write operation without confirm for its schema. Writes require confirm=true and a recent backup; partial changes can remain. Rule Machine rules use hub_set_rule; guide: set_native_app_reference.",
+            description: "Create, update or drive the native forms of classic Hubitat apps: Room Lighting, Button Controllers and Button Rules, Basic Rules, Notifier, Groups and Scenes, Thermostat Scheduler and Controller, and user or community apps. Omit operation for help; select a write operation without confirm for its schema. Writes require confirm=true and a recent backup; partial changes can remain. Rule Machine rules use hub_set_rule (create app_type rule_machine makes only an empty rule shell); guide: set_native_app_reference.",
             inputSchema: [type: "object", additionalProperties: false, properties: [operation: [type: "string", enum: ["create", "update", "form"]], app_id: [type: "integer", minimum: 1], args: [type: "object"], confirm: [type: "boolean"], bestPracticeKey: [type: "string"]]]
         ],
         [
@@ -178,7 +178,7 @@ def toolSetAppDisabled(args) {
 //   ghostIds     -- ids RMUtils reported that are absent from /hub2/appsList
 //   v4Error/v5Error -- RM 4.x / 5.x lookup error strings (null on success)
 //   treeReadable -- false when /hub2/appsList could not be read; combined is
-//                   then UNfiltered (may still carry post-delete cache ghosts)
+//                   then UNfiltered (may still carry ids of deleted rules)
 //   liveApps     -- the /hub2/appsList map (id -> [name, disabled, type]) used for the
 //                   ghost filter AND hub_list_rules status enrichment; null when
 //                   the tree was unreadable (treeReadable=false)
@@ -261,8 +261,8 @@ private Set _rmValidRuleIds() {
     return ids
 }
 
-// List all Rule Machine rules (RM 4.x + 5.x, deduped by id) via RMUtils, with
-// post-delete cache ghosts filtered against /hub2/appsList. The RMUtils lookup and
+// List all Rule Machine rules (RM 4.x + 5.x, deduped by id) via RMUtils, with the ids of
+// deleted rules that RM's rule-list variables still carry filtered against /hub2/appsList. The RMUtils lookup and
 // ghost filter live in _rmCollectFilteredRmRules (shared with the rule-target
 // existence guard); this tool formats, paginates, and classifies the result.
 def toolListRmRules(args) {
@@ -302,7 +302,7 @@ def toolListRmRules(args) {
     }
     if (ghostIds) {
         result.ghostsFiltered = ghostIds.sort()
-        result.ghostNote = "RMUtils reported ${ghostIds.size()} rule id(s) that no longer exist in /hub2/appsList — these are post-delete RMUtils-cache ghosts (rule is already gone, the cache just hasn't caught up). Filtered out of the rules list."
+        result.ghostNote = "RMUtils reported ${ghostIds.size()} rule id(s) that no longer exist in /hub2/appsList — these rules were deleted, and Rule Machine's own rule list keeps their ids until its parent app next runs. Filtered out of the rules list."
     }
     if (!treeReadable && !rules.isEmpty()) {
         result.statusNote = "/hub2/appsList was unreadable, so each rule's status is \"unknown\" (enabled/paused/stopped/disabled could not be determined). Retry; if it persists the hub's internal API may need Hub Security credentials."
@@ -821,11 +821,11 @@ private String _rmSendActionErrorNote(String rmAction, List<Integer> ruleIds, St
 // Resolve the page-transition button to click after a main-page settings
 // write commits, for the app type whose live config reports `configAppName`
 // (config.app.appType.name -- the child appName the registry keys on).
-// Returns "updateRule" (the RM framework default) for unrecognized or
-// RM-family types, and the registry's explicit `commitButton` (which may be
-// null) for types that override it. A null return means "no commit click" --
-// the app's inputs are submitOnChange and clicking updateRule would poison
-// the render (e.g. Basic Rule's "For input string: updateRule").
+// Returns "updateRule" (the RM framework default) for RM-family types or an
+// unreadable name, the registry's `commitButton` (which may be null) for the
+// types it lists, and null for any other app. A null return means "no commit
+// click": the app commits through its page's Done, and clicking a button it
+// lacks would poison the render (e.g. Basic Rule's "For input string: updateRule").
 private String _resolveCommitButton(String configAppName) {
     if (!configAppName) return "updateRule"
     // The Room Lighting parent has no updateRule button and no create entry of its own. A settings write on
@@ -838,29 +838,10 @@ private String _resolveCommitButton(String configAppName) {
     def bare = versioned.matches() ? (versioned[0] as List)[1].toString() : null
     def match = _appTypeRegistry().find { typeKey, reg -> reg.appName == configAppName } ?:
                 (bare != null ? _appTypeRegistry().find { typeKey, reg -> reg.appName == bare } : null)
-    if (match != null && match.value.containsKey("commitButton")) return match.value.commitButton
-    return "updateRule"
+    if (match != null) return match.value.containsKey("commitButton") ? match.value.commitButton : "updateRule"
+    return configAppName ==~ /Rule-[0-9.]+/ ? "updateRule" : null
 }
 
-// Detect whether the given configPage still carries an open RM-style
-// wizard editor scaffold (any input whose name matches the well-known
-// trigger/condition/action edit-scaffold patterns). Used by
-// hub_set_native_app to decide whether a wizard-Done button (`hasAll`,
-// `actionDone`, ...) actually closed the editor or whether it needs a
-// second click to commit. Verified live on firmware 2.5.0.123: the
-// first wizard-Done click frequently leaves the scaffold in place and
-// a second click of the same button finalizes the commit.
-//
-// Patterns recognized:
-// isCondTrig.<N>   trigger-N "is conditional?" toggle (always present
-// while a trigger row is open for editing)
-// tCapab<N>        trigger-N capability picker
-// tDev<N>          trigger-N device picker
-// tstate<N>        trigger-N state value
-// AlltDev<N>       trigger-N "all of these?" toggle
-// stays<N>         trigger-N "and stays?" toggle
-// editAct<N>       action-N edit scaffold
-// editCond<N>      condition-N edit scaffold
 private Map _collectLiveApps() {
     def responseText
     try {
@@ -1807,9 +1788,9 @@ private Map _rmDecodeRuleExport(Integer ruleId, Object raw) {
     payload
 }
 
-Map _rmBackupRuleSnapshot(Integer ruleId, String reason, boolean requireNativeExport = false, String protectedKey = null) {
+Map _rmBackupRuleSnapshot(Integer ruleId, String reason, boolean requireNativeExport = false, String protectedKey = null, String activePage = null) {
     // Strict edit capture never renders the editor before its recovery point is saved.
-    def built = requireNativeExport ? _rmBuildNativeEditSnapshot(ruleId, reason, _rmCaptureRuleExport(ruleId)) : _rmBuildRuleSnapshot(ruleId, reason)
+    def built = requireNativeExport ? _rmBuildNativeEditSnapshot(ruleId, reason, _rmCaptureRuleExport(ruleId)) : _rmBuildRuleSnapshot(ruleId, reason, activePage)
     return _withBackupLock("rule ${ruleId} snapshot (${reason})") { _rmWriteRuleSnapshotLocked(ruleId, reason, built.snapshot as Map, built.config as Map, protectedKey) }
 }
 
@@ -1870,11 +1851,13 @@ private Map _rmBuildNativeEditSnapshot(Integer ruleId, String reason, String cap
     [snapshot: snapshot, config: config]
 }
 
-private Map _rmBuildRuleSnapshot(Integer ruleId, String reason) {
+// activePage: the page a form workflow is on. Its render is read instead of the app's main page,
+// which resets a stateful wizard (HPM clears its pending install settings there).
+private Map _rmBuildRuleSnapshot(Integer ruleId, String reason, String activePage = null) {
     def config
     def status
     try {
-        config = _rmFetchConfigJson(ruleId)
+        config = activePage ? _rmFetchConfigJson(ruleId, activePage) : _rmFetchConfigJson(ruleId)
     } catch (Exception e) {
         // Vue-JSON children (Visual Rules) may not serve configure/json. If the id speaks a
         // VRB serialization, the VRB-flavored snapshot below is still a full backup --
@@ -1898,6 +1881,11 @@ private Map _rmBuildRuleSnapshot(Integer ruleId, String reason) {
         mcpLog("warn", "rm-native", "Backup for rule ${ruleId}: statusJson failed -- ${e.message}")
         status = [error: e.message ?: e.toString()]
     }
+    // Only statusJson types every setting, so without it a password on another page could not be
+    // told apart and would reach File Manager.
+    if (!(status?.appSettings instanceof List) && config?.settings instanceof Map && !config.settings.isEmpty()) {
+        throw new IllegalStateException("the app's settings could not be read, so no snapshot was taken; nothing was changed")
+    }
 
     // Detect appType from the config's appType.name so the restore path
     // can route to the right registry entry. RM 5.1 = "rule_machine";
@@ -1918,7 +1906,9 @@ private Map _rmBuildRuleSnapshot(Integer ruleId, String reason) {
         // assigning would let the last registry entry override an earlier exact match.
         def exactKey = _appTypeRegistry().find { typeKey, reg -> reg.appName == name }?.key
         def bareKey = (exactKey == null && bare != null) ? _appTypeRegistry().find { typeKey, reg -> reg.appName == bare }?.key : null
-        detectedAppType = exactKey ?: bareKey ?: detectedAppType
+        // Any other app (user, community, or a built-in type the registry lacks) is recorded as such,
+        // so a restore never rebuilds it as a Rule Machine rule.
+        detectedAppType = exactKey ?: bareKey ?: (name ==~ /Rule-[0-9.]+/ ? "rule_machine" : "app")
     }
     // The hub's appType record carries the app type's OAuth client credentials and passwords
     // (populated for Rule-5.1); restore never reads them, so they stay out of File Manager.
@@ -1939,6 +1929,7 @@ private Map _rmBuildRuleSnapshot(Integer ruleId, String reason) {
         configJson: config,
         statusJson: status
     ]
+    if (detectedAppType == "app") snapshot.appTypeName = configAppName.toString()
 
     // Visual Rules keep their definition in app state behind the ruleBuilder endpoints, not
     // in classic settings -- capture it so _vrbRestoreFromSnapshot can replay it. A null
@@ -1998,8 +1989,8 @@ private Map _rmBuildRuleSnapshot(Integer ruleId, String reason) {
         }
     }
 
-    // An app the registry does not know also lands on rule_machine above, so the export is gated on
-    // the hub's own Rule Machine type name.
+    // A snapshot whose config carries no type name also lands on rule_machine above, so the export is
+    // gated on the hub's own Rule Machine type name.
     if (detectedAppType == "rule_machine" && config != null && (configAppName?.toString() ==~ /Rule-[0-9.]+/)) {
         // Rule Machine only (restore imports it as a rule). The cloner renders no export for a rule with a
         // committed Required Expression (live, fw 2.5.2.129).
@@ -3053,13 +3044,13 @@ private boolean _rmReusableBackupFileMatches(Map entry, Integer ruleId) {
 }
 
 
-Map _rmBackupBeforeEdit(Integer ruleId, String reason) {
-    def reused = _withBackupLock("rule ${ruleId} baseline (${reason})") { _rmBackupBeforeEditLocked(ruleId, reason) }
-    return reused ?: _rmBackupRuleSnapshot(ruleId, reason)
+Map _rmBackupBeforeEdit(Integer ruleId, String reason, String activePage = null) {
+    def reused = _withBackupLock("rule ${ruleId} baseline (${reason})") { _rmBackupBeforeEditLocked(ruleId, reason, activePage) }
+    return reused ?: _rmBackupRuleSnapshot(ruleId, reason, false, null, activePage)
 }
 
 
-private Map _rmBackupBeforeEditLocked(Integer ruleId, String reason) {
+private Map _rmBackupBeforeEditLocked(Integer ruleId, String reason, String activePage = null) {
     if (_effectiveBackupSetting('backupEveryRuleWrite') == 'true' || reason == "pre-replaceRequiredExpression") return null
 
     long nowMs = now()
@@ -3089,7 +3080,7 @@ private Map _rmBackupBeforeEditLocked(Integer ruleId, String reason) {
         _repairItemBackupRetention(mfst, recent.key.toString(), recent.value as Map)
         def config = null
         try {
-            config = _rmFetchConfigJson(ruleId)
+            config = activePage ? _rmFetchConfigJson(ruleId, activePage) : _rmFetchConfigJson(ruleId)
         } catch (Exception e) {
             def vrbFallback = null
             try { vrbFallback = _vrbDetect(ruleId) } catch (Exception ignored) { }
@@ -3185,12 +3176,27 @@ private Map _createNativeApp(Map args) {
     if (!args.get('fields') || created.appId == null || created.containsKey('orphanCleanup')) return created
     Integer newId = created.appId as Integer
     Map update
-    // The app now exists, so a refused field is reported here instead of thrown.
+    // The app now exists, so any failure is reported here with its id instead of thrown.
     try { update = _applyNativeAppEdit(newId, _naPlanUpdate(newId, [fields: args.get('fields')])) }
     catch (IllegalArgumentException refused) { update = [success: false, appId: newId, error: refused.message] }
+    catch (Exception failure) {
+        mcpLogError("rm-native", "hub_set_native_app create: fields update failed for new app ${newId}", failure)
+        update = [success: false, appId: newId, partial: true, error: failure.message ?: failure.toString()]
+    }
     created.fieldsUpdate = update
-    created.success = update.success == true
-    if (update.success != true) created.note = "${created.note} Its fields did not all apply (see fieldsUpdate); the app exists, so correct them with hub_set_native_app(operation:'update', app_id:${newId}) instead of creating it again.".toString()
+    // A shell whose Done the page refused (a required input still empty) is committed by the update's
+    // own Done once its fields land; a shell that failed its health check stays failed.
+    boolean shellOk = created.success != false || (created.mainPageDoneFailed == true && _rmHealthGatePass(created.health as Map))
+    if (update.success == true && created.mainPageDoneFailed == true) {
+        created.remove('mainPageDoneFailed')
+        created.remove('mainPageDoneError')
+        created.remove('repairHints')
+    }
+    created.success = shellOk && update.success == true
+    String labelNote = created.labelApplied == true ? '' : ' The requested display label could not be verified; inspect the app before retrying.'
+    created.note = (update.success == true ?
+        "${args.app_type} app created (id=${newId}) and its fields applied." :
+        "${args.app_type} app created (id=${newId}), but its fields did not all apply (see fieldsUpdate); the app exists, so correct them with hub_set_native_app(operation:'update', app_id:${newId}) instead of creating it again.").toString() + labelNote
     return created
 }
 
@@ -3282,9 +3288,9 @@ def _createNativeAppShell(String appType, String name) {
         // common cause is that the registry's namespace/appName combo
         // doesn't match an installed app on this hub. Surface a clear
         // hint instead of the generic "unexpected error".
-        mcpLogError("rm-native", "createchild failed for appType='${appType}' (ns=${reg.namespace}, appName=${reg.appName}, parent=${parentId})", createExc)
+        mcpLogError("rm-native", "createchild failed for app_type='${appType}' (ns=${reg.namespace}, appName=${reg.appName}, parent=${parentId})", createExc)
         throw new IllegalArgumentException(
-            "Creating a native app failed at the createchild step for appType='${appType}'. " +
+            "Creating a native app failed at the createchild step for app_type='${appType}'. " +
             "The hub rejected namespace='${reg.namespace}' + appName='${reg.appName}' " +
             "(parent app id ${parentId}). Most likely the _appTypeRegistry entry has the " +
             "wrong child appName for this hub's installed parent. To verify the actual " +
@@ -3325,7 +3331,9 @@ def _createNativeAppShell(String appType, String name) {
         def result = [success: _rmHealthGatePass(health), partial: false, appId: newId, appType: appType,
             name: name, labelApplied: labelApplied, parentAppId: parentId, ruleId: appType == 'rule_machine' ? newId : null,
             statusSummary: [eventSubscriptions: status?.eventSubscriptions?.size() ?: 0, scheduledJobs: status?.scheduledJobs?.size() ?: 0],
-            health: health, note: "Empty ${appType} app created (id=${newId}). Set its fields with hub_set_native_app(operation:'update', app_id:${newId}, args:{fields:{...}}, confirm:true) or drive its pages with operation:'form'.".toString()]
+            health: health, note: (appType == 'rule_machine' ?
+                "Empty rule_machine rule created (id=${newId}). Author its triggers and actions with hub_set_rule(operation:'update', rule_id:${newId}, args:{changes:[...]}, confirm:true)." :
+                "Empty ${appType} app created (id=${newId}). Set its fields with hub_set_native_app(operation:'update', app_id:${newId}, args:{fields:{...}}, confirm:true) or drive its pages with operation:'form'.").toString()]
         if (createDone?.done == false) {
             result.mainPageDoneFailed = true
             result.mainPageDoneError = createDone.reason
@@ -3394,7 +3402,7 @@ Map _applyNativeAppEdit(Integer appId, Map plan) {
             commit = _resolveCommitButton(plan.config?.app?.appType?.name?.toString())
             // A page without that button throws MissingMethodException in its appButtonHandler when
             // it is clicked; its settings commit through the closing Done instead.
-            if (commit == 'updateRule' && schema.get('updateRule')?.type != 'button') commit = null
+            if (commit && schema.get(commit)?.type != 'button') commit = null
             if (commit) _rmClickAppButton(appId, commit)
             result.fieldsApplied = fields.keySet().collect { it.toString() }
         } else {
@@ -3429,7 +3437,10 @@ Map _applyNativeAppEdit(Integer appId, Map plan) {
         // so a miss there is a failure; otherwise it is a cleanup caveat.
         def editDone = null
         try { editDone = _rmSubmitMainPageDone(appId) }
-        catch (Exception doneExc) { mcpLog("warn", "rm-native", "hub_set_native_app: closing mainPage Done failed for app ${appId}: ${doneExc.message}") }
+        catch (Exception doneExc) {
+            mcpLog("warn", "rm-native", "hub_set_native_app: closing mainPage Done failed for app ${appId}: ${doneExc.message}")
+            editDone = [done: false, reason: "Done threw: ${doneExc.message ?: doneExc.toString()}".toString()]
+        }
         if (editDone?.done == false) {
             result.mainPageDoneFailed = true
             result.mainPageDoneError = editDone.reason
@@ -3475,7 +3486,7 @@ def _toolDisplayMeta_partNativeRM() {
         hub_set_rule_private_boolean: [title: "Set Rule Private Boolean", summary: "Set the private boolean of one or more Rule Machine rules."],
         hub_get_rule_health: [title: "Get Rule Health", summary: "Read-only health check on any installed app."],
         hub_list_rule_local_variables: [title: "List Rule Local Variables", summary: "Read-only list of a Rule Machine rule's local variables."],
-        hub_set_native_app: [title: "Set Native App", summary: "Create, update or drive the native forms of classic apps (Room Lighting, Notifier, user apps)."],
+        hub_set_native_app: [title: "Set Native App", summary: "Create, update or drive the native forms of classic apps (Room Lighting, Thermostat Scheduler and Controller, user apps)."],
         hub_delete_native_app: [title: "Delete Native App", summary: "Delete a classic native app (auto-snapshot first)."],
         hub_set_app_disabled: [title: "Enable or Disable App", summary: "Enable or disable any installed app without deleting it (reversible)."]
     ]
@@ -3488,7 +3499,7 @@ hub_set_native_app works on classic Hubitat apps (dynamicPage apps): Room Lighti
 
 ### create
 
-hub_set_native_app(operation:"create",args:{app_type,name,fields?},confirm:true) creates a child of a built-in type under its parent, installing the parent first when the hub lacks it, and writes the label. Types without a label input keep their default label; labelApplied reports whether the label shows. fields are then written as an update of the new app and reported in fieldsUpdate. A failed fields update leaves the app in place: correct it with update instead of creating it again. A setup failure after the child exists attempts its removal and reports orphanCleanup.
+hub_set_native_app(operation:"create",args:{app_type,name,fields?},confirm:true) creates a child of a built-in type under its parent, installing the parent first when the hub lacks it, and writes the label. Types without a label input keep their default label; labelApplied reports whether the label shows. fields are then written as an update of the new app and reported in fieldsUpdate. app_type rule_machine makes only an empty rule shell; author its triggers and actions with hub_set_rule. A failed fields update leaves the app in place: correct it with update instead of creating it again. A setup failure after the child exists attempts its removal and reports orphanCleanup.
 
 A button_rule takes args:{app_type:"button_rule",controller_id,button_number,event} and no name or fields. It is created through the Button Controller's add-button flow, so the controller needs its button device assigned first. The controller seeds the trigger; author the actions with hub_set_rule(operation:"update",rule_id:<returned appId>).
 
@@ -3496,7 +3507,7 @@ A button_rule takes args:{app_type:"button_rule",controller_id,button_number,eve
 
 hub_set_native_app(operation:"update",app_id,args:{fields:{input name:value},page?},confirm:true) writes inputs the page renders: the main page by default, or the sub-page named by page (hub_list_app_pages lists them; hub_get_app_config shows their inputs and values). Device inputs take a list of device IDs or the {id:label} map configuration reads return; a multi-select enum takes a list. A field the page does not render, a button, an object on a non-device input, or an unknown device ID is refused before anything is written. An input that appears only after another choice is saved needs that choice in an earlier update, or a form workflow.
 
-Main-page fields post together, then the app type's commit button is clicked when its page renders one: updateRule for Rule Machine-style apps, update for Room Lights, Scenes and the Thermostat apps. Apps without a commit button (Basic Rule, Button Controller, Notifier, Groups) commit through the closing Done. Sub-page fields post one at a time with page context, without the commit button, so that page's editor state survives. The closing mainPage Done runs after every update. The result reports fieldsApplied, fieldsNotLanded for a sub-page miss, configPageError, health, and a closing-Done failure with repairHints.
+Main-page fields post together, then the app type's commit button is clicked when its page renders one: updateRule for Rule Machine-style apps, update for Room Lights, Scenes and Thermostat Scheduler and Controller. Apps without a commit button (Basic Rule, Button Controller, Notifier, Groups, and user or community apps) commit through the closing Done. Sub-page fields post one at a time with page context, without the commit button, so that page's editor state survives. The closing mainPage Done runs after every update. The result reports fieldsApplied, fieldsNotLanded for a sub-page miss, configPageError, health, and a closing-Done failure with repairHints.
 
 Each update first takes a File Manager baseline of the app, reused for the same app for one hour unless every-write backups are on; backup.backupKey restores it with hub_restore_backup.
 

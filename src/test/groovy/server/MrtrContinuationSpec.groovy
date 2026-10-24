@@ -262,6 +262,41 @@ class MrtrContinuationSpec extends ToolSpecBase {
         leaf                       | args
         'hub_set_rule' | [operation: 'create', args: [parent_id: 28, name: 'Unconfirmed', changes: [[part: 'variable', value: [operation: 'create', name: 'Counter', type: 'integer', value: 0]]]], confirm: false]
         'hub_set_rule'         | [operation: 'form', rule_id: 42, args: [steps: [[kind: 'open']]], confirm: false]
+        'hub_set_native_app'   | [operation: 'update', app_id: 42, args: [fields: [comments: 'x']]]
+        'hub_set_native_app'   | [operation: 'form', app_id: 42, args: [steps: [[kind: 'open']]], confirm: false]
+    }
+
+    def "hub_set_native_app help is answered inline without a request record or worker"() {
+        given:
+        settingsMap.enableWrite = true
+        settingsMap.enableMandatoryBPS = false
+        when:
+        def response = modernCall('hub_set_native_app', [:])
+        then:
+        response.result.isError != true
+        mcpDriver.parseInner(response).operations == ['create', 'update', 'form']
+        !(atomicStateMap.mrtrRequests instanceof Map) || atomicStateMap.mrtrRequests.isEmpty()
+        runInMillisCalls.empty
+    }
+
+    def "a confirmed hub_set_native_app write through its gateway schedules its worker"() {
+        given:
+        settingsMap.enableWrite = true
+        settingsMap.enableMandatoryBPS = false
+        settingsMap.useGateways = true
+        stateMap.lastBackupTimestamp = 1234567890000L
+
+        when:
+        def response = modernCall('hub_manage_native_rules_and_apps', [tool: 'hub_set_native_app',
+            args: [operation: 'update', app_id: 779, args: [fields: [comments: 'worker']], confirm: true]])
+        String requestState = response.result.requestState
+
+        then:
+        response.error == null
+        response.result.resultType == 'input_required'
+        requestState instanceof String
+        atomicStateMap.mrtrRequests[requestState].leafTool == 'hub_set_native_app'
+        runInMillisCalls.size() == 1
     }
 
     def "valid #leaf document write schedules its worker"() {

@@ -159,7 +159,7 @@ private void _nfWalk(Object node, Map fields, Map controls, List messages, List 
             if (device && !field.multiple && current instanceof List) current = current ? current[0] : null
             if (type == 'password') field.has_value = current != null && current != ''
             else { field.value = current; field.value_source = exists ? 'stored' : 'default' }
-            // The page default the browser posts for an input with no stored value; a password has none.
+            // The page default the browser posts for an input with no stored value; a password's default is never posted.
             if (!exists && type != 'password' && current != null && current != '' && !(current instanceof Collection && current.isEmpty())) field.default_value = current
             field.present = exists && current != null && current != '' && (!(current instanceof Collection) || !current.empty)
             field.options = _nfOptions(type == 'mode' ? model.modeMap : node.options)
@@ -291,13 +291,18 @@ private Map _nfPublic(Map context, List optionsFor) {
 
 // The recovery point a form workflow takes before its first render: Rule Machine rules use their
 // exact native export, the Rule Machine parent has no child state to restore, and every other
-// classic app uses the generic configuration snapshot.
-private Map _nfBackup(Long id, def nativeApp) {
+// classic app uses the generic configuration snapshot of the page being worked on (page is null for
+// the main page), since rendering another page can reset a stateful wizard.
+private Map _nfBackup(Long id, def nativeApp, String page) {
     boolean builtIn = nativeApp?.appType?.namespace == 'hubitat'
     if (builtIn && nativeApp.appType.name == 'Rule Machine') return [skipped: true, reason: 'Parent creation/navigation has no existing child state to restore; opening a child starts its own protected workflow']
     if (builtIn && nativeApp.appType.name in ['Rule-5.1', 'Button Rule-5.1']) return _ndEditBackup(id, 'pre-native-form')
     if (_effectiveBackupSetting('backupBeforeRuleEdits') == 'false') return [skipped: true, reason: 'Automatic pre-edit backups are disabled']
-    _rmBackupBeforeEdit(id.toInteger(), 'pre-native-form')
+    _rmBackupBeforeEdit(id.toInteger(), 'pre-native-form', page)
+}
+
+private Map _nfDefaultsReport(List posted, List rejected) {
+    (posted ? [defaults_posted: posted.unique()] : [:]) + (rejected ? [defaults_not_posted: rejected] : [:])
 }
 
 Map toolCallAppForm(Map args, String toolName = 'hub_set_rule') {
@@ -328,6 +333,8 @@ Map toolCallAppForm(Map args, String toolName = 'hub_set_rule') {
         throw new IllegalStateException('This app already has an active form operation')
     }
     List completed = []
+    List defaultsPosted = []
+    List defaultsNotPosted = []
     boolean attempted = false
     Long createdId = null
     Map navigation = null
@@ -343,7 +350,7 @@ Map toolCallAppForm(Map args, String toolName = 'hub_set_rule') {
                 // An explicit open starts this caller's next workflow, even if rendering fails.
                 NATIVE_FORM_CONTEXTS.remove(key)
                 context = null
-                if (backup == null) backup = _nfBackup(id, nativeApp)
+                if (backup == null) backup = _nfBackup(id, nativeApp, step.page)
                 attempted = true
                 model = _nfJson(hubInternalGet("/installedapp/configure/json/${id}" + (step.page ? "/${_nfEncode(step.page)}" : '')))
             } else {
@@ -359,10 +366,18 @@ Map toolCallAppForm(Map args, String toolName = 'hub_set_rule') {
                     body["${name}.multiple".toString()] = field.multiple.toString()
                 }
                 // The browser posts every input on the page, so an unset input saves its default.
+                List stepDefaults = []
+                List stepRejected = []
                 context.get('fields').each { name, field ->
                     if (supplied.containsKey(name) || field.present || !field.containsKey('default_value') || field.disabled || !field.supported) return
                     String encoded
-                    try { encoded = _nfValue(field, field.default_value) } catch (IllegalArgumentException ignored) { return }
+                    try { encoded = _nfValue(field, field.default_value) }
+                    catch (IllegalArgumentException rejected) {
+                        mcpLog('debug', 'rm-native', "${toolName} form: page default of ${name} on app ${id} not posted: ${rejected.message}")
+                        stepRejected << [name: name, reason: rejected.message]
+                        return
+                    }
+                    stepDefaults << name
                     body["settings[${name}]".toString()] = encoded
                     body["${name}.type".toString()] = field.type
                     body["${name}.multiple".toString()] = field.multiple.toString()
@@ -383,7 +398,7 @@ Map toolCallAppForm(Map args, String toolName = 'hub_set_rule') {
                         if (missing) throw new IllegalArgumentException("Complete required native fields before navigating: ${missing.join(', ')}")
                     }
                 }
-                if (backup == null) backup = _nfBackup(id, nativeApp)
+                if (backup == null) backup = _nfBackup(id, nativeApp, context.page.name ?: null)
                 attempted = true
                 if (control?.kind == 'local_app') {
                     navigation = _nfVerifyNavigation(id, [app_id: control.value.toString().toLong(), page: control.stateAttribute])
@@ -407,7 +422,11 @@ Map toolCallAppForm(Map args, String toolName = 'hub_set_rule') {
                     body.put(control.name, control.value ?: '')
                     if (control.params != null) body["params_for${control.name}".toString()] = _nfEncode(groovy.json.JsonOutput.toJson(control.params))
                 }
-                if (model == null) model = _nfPost('/installedapp/update/json', body)
+                if (model == null) {
+                    model = _nfPost('/installedapp/update/json', body)
+                    defaultsPosted.addAll(stepDefaults)
+                    defaultsNotPosted.addAll(stepRejected)
+                }
             }
             if (!navigation) navigation = _nfNavigation(id, model)
             if (model.location || navigation) {
@@ -421,13 +440,13 @@ Map toolCallAppForm(Map args, String toolName = 'hub_set_rule') {
                 completed << [kind: step.kind, page: context.page.name]
             }
         }
-        [success: true, app_id: id, completed: completed, backup: backup] + (navigation ? [navigated_app_id: navigation.app_id, navigated_page: navigation.page] : [:]) + (createdId == null ? [:] : [created_app_id: createdId]) + (context ? _nfPublic(context, optionsFor) : [closed: true])
+        [success: true, app_id: id, completed: completed, backup: backup] + _nfDefaultsReport(defaultsPosted, defaultsNotPosted) + (navigation ? [navigated_app_id: navigation.app_id, navigated_page: navigation.page] : [:]) + (createdId == null ? [:] : [created_app_id: createdId]) + (context ? _nfPublic(context, optionsFor) : [closed: true])
     } catch (Exception failure) {
         mcpLogError('rm-native', "${toolName} form failed for app ${id}: ${failure.message}".toString(), failure)
         // A lost response can follow a successful write; stale controls must never be replayed automatically.
         if (attempted) NATIVE_FORM_CONTEXTS.remove(key)
         [success: false, app_id: id, partial: attempted, completed: completed, error: failure.message?.toString(),
-         reopen_required: attempted, remaining_steps: args.steps.size() - completed.size()] + (backup == null ? [:] : [backup: backup]) + (navigation ? [navigated_app_id: navigation.app_id, navigated_page: navigation.page, closed: true] : [:]) + (createdId == null ? [:] : [created_app_id: createdId])
+         reopen_required: attempted, remaining_steps: args.steps.size() - completed.size()] + _nfDefaultsReport(defaultsPosted, defaultsNotPosted) + (backup == null ? [:] : [backup: backup]) + (navigation ? [navigated_app_id: navigation.app_id, navigated_page: navigation.page, closed: true] : [:]) + (createdId == null ? [:] : [created_app_id: createdId])
     } finally { NATIVE_FORM_BUSY.remove(appKey); NATIVE_FORM_BUSY.remove(key) }
 }
 

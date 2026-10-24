@@ -494,20 +494,29 @@ class RestoreRuleStructureSpec extends ToolSpecBase {
         rec.replays == [[tstate1: "on"]]
     }
 
-    def "an in-place replay of a password-redacted backup keeps the live password and never posts or clears it"() {
+    def "an in-place replay of a password-redacted backup never posts the password and reports it from the live app: #label"() {
         given:
         def rec = nativeStubs()
         def snap = nativeSnapshot(redactedSettings: ['apiKey'],
             statusJson: [appSettings: [[name: "tstate1", type: "enum"], [name: "apiKey", type: "password", value: null]]])
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            groovy.json.JsonOutput.toJson([appSettings: [[name: "apiKey", type: "password", value: liveValue]]])
+        }
 
         when:
         def out = script._rmRestoreFromBackup([fileName: "f.json"], snap, true)
 
         then:
         out.restoredVia == "settingsReplay"
-        out.passwordsKept == ['apiKey']
-        !out.containsKey('passwordsToReenter')
+        out.passwordsKept == kept
+        out.passwordsToReenter == reenter
+        (out.note?.contains("enter them again") ?: false) == (reenter != null)
         rec.replays == [[tstate1: "on"]]
+
+        where:
+        label                          | liveValue     | kept       | reenter
+        'the app still holds a value'  | 'live-secret' | ['apiKey'] | null
+        'the app holds no value'       | ''            | null       | ['apiKey']
     }
 
     def "a recreate from a password-redacted backup asks for the passwords to be entered again"() {
@@ -538,6 +547,88 @@ class RestoreRuleStructureSpec extends ToolSpecBase {
         then:
         cleared == ['extra']
         !posts.any { it.containsKey('settings[apiKey]') }
+    }
+
+    private Map communitySnapshot(Map extra = [:]) {
+        [ruleId: 100, appType: "app", appTypeName: "BAT555 Stateful Wizard",
+         configJson: [app: [id: 100, appType: [name: "BAT555 Stateful Wizard", namespace: "someDeveloper"]], configPage: [sections: [[input: [[name: "count", type: "number"]]]]], settings: [count: "3"]],
+         statusJson: [appSettings: [[name: "count", type: "number", value: "3"]]]] + extra
+    }
+
+    private void appGone() {
+        hubGet.register('/installedapp/configure/json/100') { params -> throw new RuntimeException("status code: 404, reason phrase: Not Found") }
+        hubGet.register('/hub2/appsList') { params -> '{"apps":[{"data":{"id":21},"children":[]}]}' }
+    }
+
+    def "a deleted user or community app is never recreated as another type: #label"() {
+        given:
+        nativeStubs()
+        appGone()
+        def created = []
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 -> created << path; [status: 302, location: "/installedapp/configure/200"] }
+
+        when:
+        def out = script._rmRestoreFromBackup([fileName: "f.json"], snapshot, true)
+
+        then:
+        out.success == false
+        out.error.contains("is not a built-in app type")
+        out.error.contains("BAT555 Stateful Wizard")
+        out.note.contains("Reinstall the app")
+        created.isEmpty()
+
+        where:
+        label                                  | snapshot
+        'snapshot marked as an app'            | communitySnapshot()
+        'older snapshot recorded as an RM rule' | communitySnapshot(appType: "rule_machine", appTypeName: null)
+    }
+
+    def "a user or community app still restores in place, committing through its Done instead of updateRule"() {
+        given:
+        def rec = nativeStubs()
+        hubGet.register('/installedapp/configure/json/100') { params -> '{"app":{"id":100,"appType":{"name":"BAT555 Stateful Wizard"}},"configPage":{"sections":[]},"settings":{}}' }
+        script.metaClass._rmClearSettingsNotInBackup = { Integer id, Map saved, Collection keep = [] -> [] }
+        def done = [fail: false]
+        script.metaClass._rmSubmitMainPageDone = { Integer id -> if (done.fail) throw new RuntimeException("status code: 500"); [done: true] }
+
+        when:
+        def out = script._rmRestoreFromBackup([fileName: "f.json"], communitySnapshot(), true)
+
+        then:
+        out.success == true
+        out.restoredVia == "settingsReplay"
+        rec.replays == [[count: "3"]]
+        !calls.contains("updateRule")
+
+        when: "its closing Done fails"
+        done.fail = true
+        def failed = script._rmRestoreFromBackup([fileName: "f.json"], communitySnapshot(), true)
+
+        then: "the note points at the app's own form, not hub_set_rule"
+        failed.failedStep == "the closing Done"
+        failed.note.contains('hub_set_native_app(operation:"form", app_id:100')
+        !failed.note.contains("hub_set_rule(")
+    }
+
+    def "a settings-replay recreate of a password-redacted backup asks for the passwords again"() {
+        given:
+        def rec = nativeStubs()
+        appGone()
+        atomicStateMap.parentAppIds = [rule_machine: 21]
+        hubGet.register('/installedapp/configure/json/200') { params -> '{"app":{"id":200},"configPage":{"sections":[{"input":[{"name":"origLabel","type":"text"}]}]},"settings":{}}' }
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 -> [status: 302, location: "/installedapp/configure/200"] }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, data: '{"status":"success"}'] }
+
+        when:
+        def out = script._rmRestoreFromBackup([fileName: "f.json"], nativeSnapshot(nativeExport: null, redactedSettings: ['apiKey']), true)
+
+        then:
+        out.restoredVia == "settingsReplay"
+        out.recreated == true
+        out.ruleId == 200
+        out.passwordsToReenter == ['apiKey']
+        !out.containsKey('passwordsKept')
+        rec.replays == [[tstate1: "on"]]
     }
 
     def "by default a native backup restores in place"() {

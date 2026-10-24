@@ -6229,8 +6229,12 @@ def updated() {}
         # #552: a pre-write snapshot never stores a password-typed setting, and an in-place restore of
         # that snapshot leaves the live password alone. The throwaway app's page reports whether its
         # password still holds the value set here, so the check never has to read the password back.
+        # Once the app is deleted, the snapshot of this user app is not recreated: the restore asks
+        # for the app code to be reinstalled and restored in place.
         secret = "BAT-E2E-redact-me-552"
+        label = "Deadman Test Target Password Snapshot"
         code_id = instance_id = None
+        leftover_ids: list = []
         try:
             created = self.client.call_tool("hub_manage_code", {"tool": "hub_create_app", "args": {
                 "source": self.PASSWORD_SNAPSHOT_APP.replace("SECRET_VALUE", secret), "confirm": True}})
@@ -6264,13 +6268,32 @@ def updated() {}
                 f"the password should still be set, shown redacted: {cfg.get('settings')}"
             assert "p-state: kept" in json.dumps(cfg) and secret not in json.dumps(cfg), \
                 f"the restore changed the live password: {cfg}"
+
+            gone = self.client.call_tool("hub_manage_native_rules_and_apps", {"tool": "hub_delete_native_app", "args": {
+                "appId": instance_id, "force": True, "confirm": True}})
+            assert gone.get("success") is True, f"deleting the password app instance failed: {gone}"
+            instance_id = None
+            try:
+                recreate = self._rm_restore(key)
+            except McpToolError as exc:
+                recreate = {"success": False, "error": exc.content_text}
+            if recreate.get("ruleId"):
+                leftover_ids.append(recreate["ruleId"])
+            assert recreate.get("success") is False and not recreate.get("ruleId"), \
+                f"a deleted user app must not be recreated from its snapshot: {recreate}"
+            assert any(word in str(recreate.get("error")) for word in ("reinstall", "in place")), \
+                f"the refusal should say to reinstall the app code and restore in place: {recreate}"
+            stray = self._find_app_id_by_label(label)
+            if stray:
+                leftover_ids.append(stray)
+            assert stray is None, f"the refused restore left an app instance behind: {stray}"
         finally:
-            if instance_id:
+            for app_id in [i for i in (instance_id, *leftover_ids) if i]:
                 try:
                     self.client.call_tool("hub_manage_native_rules_and_apps", {"tool": "hub_delete_native_app", "args": {
-                        "appId": instance_id, "force": True, "confirm": True}})
+                        "appId": app_id, "force": True, "confirm": True}})
                 except (McpError, McpToolError, requests.HTTPError) as exc:
-                    print(f"  [WARN] password snapshot cleanup: delete instance {instance_id} failed: {exc}")
+                    print(f"  [WARN] password snapshot cleanup: delete instance {app_id} failed: {exc}")
             if code_id:
                 try:
                     self.client.call_tool("hub_manage_code", {"tool": "hub_delete_item", "args": {

@@ -4020,11 +4020,12 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     }
 
-    def "_resolveCommitButton: null for submitOnChange Basic Rule, updateRule for RM-family/unknown (issue #185 item 3)"() {
+    def "_resolveCommitButton: null for submitOnChange Basic Rule and unregistered apps, updateRule for RM-family or an unreadable name (issue #185 item 3)"() {
         expect:
         script._resolveCommitButton("Basic Rule-1.0") == null
         script._resolveCommitButton("Rule-5.1") == "updateRule"
-        script._resolveCommitButton("Some Unregistered App") == "updateRule"
+        script._resolveCommitButton("Some Unregistered App") == null
+        script._resolveCommitButton("Rule-4.1") == "updateRule"
         script._resolveCommitButton(null) == "updateRule"
     }
 
@@ -4886,5 +4887,200 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         posts.isEmpty()
     }
 
+    // ---------- review follow-ups: update outcomes, commit buttons, create edge cases ----------
 
+    private void editHarness(int appId, Map pages, List uploads = [], List posts = [], List clicks = []) {
+        enableWrite()
+        pages.each { page, json -> hubGet.register("/installedapp/configure/json/${appId}${page ? '/' + page : ''}".toString()) { params -> json } }
+        hubGet.register("/installedapp/statusJson/${appId}".toString()) { params -> statusJson(appId) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> uploads << fn }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> posts << [path: path, body: body]; [status: 200, location: null, data: '{"status":"success"}'] }
+        script.metaClass._rmClickAppButton = { Integer id, String name, String attr = null, String page = null, Map cache = null -> clicks << name; [status: 200] }
+        script.metaClass._rmCheckRuleHealth = { Integer id, String source = "auto" -> [ok: true] }
+    }
+
+    private static String appPage(int id, String typeName, String page, List inputs) {
+        JsonOutput.toJson([app: [id: id, name: typeName, label: "L", installed: true, appType: [name: typeName, namespace: "hubitat"]],
+            configPage: [name: page, error: null, sections: [[title: "", input: inputs]]], settings: [:], childApps: []])
+    }
+
+    def "a sub-page field that does not land is reported in fieldsNotLanded, failing the update as partial"() {
+        given:
+        editHarness(100, [(null): appPage(100, "Room Lights", "mainPage", []), onMeansPage: appPage(100, "Room Lights", "onMeansPage", [[name: "luxLevel", type: "number"]])])
+        script.metaClass._rmWriteSettingOnPage = { Integer id, String page, String key, Object value, List applied, String hint, List skipped ->
+            skipped << [key: key, reason: "silent_rejection"]
+        }
+        script.metaClass._rmSubmitMainPageDone = { Integer id -> [done: true] }
+
+        when:
+        def result = update(100, [fields: [luxLevel: 30], page: "onMeansPage"])
+
+        then:
+        result.success == false
+        result.partial == true
+        result.fieldsNotLanded*.key == ["luxLevel"]
+        result.fieldsApplied == []
+        result.subPageNote.contains("onMeansPage")
+    }
+
+    def "a sub-page update whose closing Done fails is not a success"() {
+        given:
+        editHarness(100, [(null): appPage(100, "Room Lights", "mainPage", []), onMeansPage: appPage(100, "Room Lights", "onMeansPage", [[name: "luxLevel", type: "number"]])])
+        script.metaClass._rmWriteSettingOnPage = { Integer id, String page, String key, Object value, List applied, String hint, List skipped -> applied << key }
+        script.metaClass._rmSubmitMainPageDone = { Integer id -> [done: false, reason: "status 500"] }
+
+        when:
+        def result = update(100, [fields: [luxLevel: 30], page: "onMeansPage"])
+
+        then:
+        result.fieldsApplied == ["luxLevel"]
+        result.mainPageDoneFailed == true
+        result.success == false
+        result.repairHints.any { it.contains("did not commit") }
+    }
+
+    def "a failed closing Done fails a main-page update only when no commit button ran: #label"() {
+        given:
+        def clicks = []
+        editHarness(100, [(null): appPage(100, typeName, "mainPage", inputs)], [], [], clicks)
+        script.metaClass._rmSubmitMainPageDone = { Integer id -> [done: false, reason: "status 500"] }
+
+        when:
+        def result = update(100, [fields: [msg: "x"]])
+
+        then:
+        clicks == expectedClicks
+        result.mainPageDoneFailed == true
+        result.success == expectedSuccess
+        result.repairHints.size() == 1
+
+        where:
+        label                        | typeName   | inputs                                                                   | expectedClicks | expectedSuccess
+        'Notifier commits by Done'   | "Notifier" | [[name: "msg", type: "text"]]                                            | []             | false
+        'Rule-5.1 clicked updateRule' | "Rule-5.1" | [[name: "msg", type: "text"], [name: "updateRule", type: "button"]]      | ["updateRule"] | true
+    }
+
+    def "a Room Lights update clicks its update button only when the page renders it"() {
+        given:
+        def clicks = []
+        def withButton = false
+        editHarness(100, [:], [], [], clicks)
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            appPage(100, "Room Lights", "mainPage", [[name: "roomDevsL", type: "text"]] + (withButton ? [[name: "update", type: "button"]] : []))
+        }
+        script.metaClass._rmSubmitMainPageDone = { Integer id -> [done: true] }
+
+        when:
+        update(100, [fields: [roomDevsL: "x"]])
+
+        then:
+        clicks.isEmpty()
+
+        when:
+        withButton = true
+        update(100, [fields: [roomDevsL: "x"]])
+
+        then:
+        clicks == ["update"]
+    }
+
+    def "an update naming a device that does not exist is refused before any backup or write"() {
+        given:
+        def uploads = []
+        def posts = []
+        editHarness(100, [(null): appPage(100, "Room Lights", "mainPage", [[name: "roomDevsL", type: "capability.switch", multiple: true]])], uploads, posts)
+        hubGet.register('/device/fullJson/999') { params -> throw new RuntimeException("status code: 404, reason phrase: Not Found") }
+
+        when:
+        update(100, [fields: [roomDevsL: ["999"]]])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("device ID '999' which does not exist")
+        uploads.isEmpty()
+        posts.isEmpty()
+    }
+
+    def "create returns the shell result unchanged when the shell left no app to update: #label"() {
+        given:
+        enableWrite()
+        script.metaClass._createNativeAppShell = { String type, String name -> shell }
+        script.metaClass._applyNativeAppEdit = { Integer id, Map plan -> throw new AssertionError("no update expected") }
+
+        when:
+        def result = create([app_type: "notifier", name: "N", fields: [msg: "x"]])
+
+        then:
+        result == shell
+
+        where:
+        label              | shell
+        'no appId'         | [success: false, error: "notifier create failed: x"]
+        'orphan cleanup'   | [success: false, appId: 55, orphanCleanup: "attempted", error: "notifier create failed: x"]
+    }
+
+    def "create with fields keeps the new app id when the fields update fails unexpectedly, and says so only when they failed"() {
+        given:
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/55') { params -> appPage(55, "Notifier", "mainPage", [[name: "msg", type: "text"]]) }
+        hubGet.register('/installedapp/statusJson/55') { params -> statusJson(55) }
+        script.metaClass._createNativeAppShell = { String type, String name -> [success: true, appId: 55, appType: type, labelApplied: true, note: "Empty notifier app created (id=55)."] }
+        def outcome = [:]
+        script.metaClass._applyNativeAppEdit = { Integer id, Map plan -> if (outcome.fail) throw new RuntimeException("hub went away"); [success: true, appId: id] }
+
+        when:
+        outcome.fail = true
+        def failed = create([app_type: "notifier", name: "N", fields: [msg: "x"]])
+
+        then:
+        failed.appId == 55
+        failed.success == false
+        failed.fieldsUpdate == [success: false, appId: 55, partial: true, error: "hub went away"]
+        failed.note.contains("its fields did not all apply")
+
+        when:
+        outcome.fail = false
+        def applied = create([app_type: "notifier", name: "N", fields: [msg: "x"]])
+
+        then:
+        applied.success == true
+        applied.note == "notifier app created (id=55) and its fields applied."
+    }
+
+    def "a closing Done that throws fails an update whose only commit it was"() {
+        given:
+        editHarness(100, [(null): appPage(100, "Notifier", "mainPage", [[name: "msg", type: "text"]])])
+        script.metaClass._rmSubmitMainPageDone = { Integer id -> throw new RuntimeException("status code: 500") }
+
+        when:
+        def result = update(100, [fields: [msg: "x"]])
+
+        then:
+        result.success == false
+        result.mainPageDoneFailed == true
+        result.mainPageDoneError == "Done threw: status code: 500"
+        result.repairHints.size() == 1
+    }
+
+    def "a fields update that lands supersedes a refused shell Done, but not a failed shell health check: #label"() {
+        given:
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/56') { params -> appPage(56, "Notifier", "mainPage", [[name: "msg", type: "text"]]) }
+        script.metaClass._createNativeAppShell = { String type, String name -> [appId: 56, appType: type, labelApplied: true, note: "Empty notifier app created (id=56)."] + shell }
+        script.metaClass._applyNativeAppEdit = { Integer id, Map plan -> [success: true, appId: id] }
+
+        when:
+        def result = create([app_type: "notifier", name: "N", fields: [msg: "x"]])
+
+        then:
+        result.success == expected
+        result.fieldsUpdate.success == true
+        result.containsKey('mainPageDoneFailed') == staleDone
+        result.containsKey('repairHints') == staleDone
+
+        where:
+        label                                  | shell                                                                                                                            | expected | staleDone
+        'shell Done refused, then committed'   | [success: false, health: [ok: true], mainPageDoneFailed: true, mainPageDoneError: "therm: required but empty", repairHints: ["redo the Done"]] | true     | false
+        'shell health failed'                  | [success: false, health: [ok: false]]                                                                                            | false    | false
+    }
 }

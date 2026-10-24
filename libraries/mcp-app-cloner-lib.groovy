@@ -990,7 +990,7 @@ private Map _rmRestoreViaNativeImport(Map snapshot, Integer savedId, boolean exi
         (exists ? " Pass preserveRuleId:true to restore in place by settings replay instead." : "") +
         (reenableFailed ? " Re-enable app(s) ${reenableFailed} with hub_set_app_disabled(disabled=false)." : "") +
         (liveDisabled ? " Rule ${savedId} was disabled, so app ${newId} is left disabled too." : "")).toString()
-    _rmReportPasswords(out, snapshot, true)
+    _rmReportPasswords(out, snapshot, newId)
     return out
 }
 
@@ -1054,14 +1054,29 @@ private List _rmRedactedSettings(Map snapshot) {
     snapshot?.redactedSettings instanceof List ? snapshot.redactedSettings.collect { it.toString() } : []
 }
 
-// A restore never writes a password: in place it keeps the live value, a recreated app needs it
-// entered again in the native UI.
-private void _rmReportPasswords(Map out, Map snapshot, boolean recreated) {
+// A restore never writes a password, so each redacted name is reported from the restored app: kept
+// when it still holds a value, otherwise to be entered again in the native UI. liveRows are the
+// app's typed settings when the caller already read them; otherwise statusJson is read once.
+private void _rmReportPasswords(Map out, Map snapshot, Integer appId, List liveRows = null) {
     List names = _rmRedactedSettings(snapshot)
     if (!names) return
-    if (!recreated) { out.passwordsKept = names; return }
-    out.passwordsToReenter = names
-    out.note = "${out.note ?: ''} Password settings ${names.join(', ')} are not stored in backups; enter them again in the app's native page.".toString().trim()
+    List rows = liveRows
+    if (rows == null) {
+        try {
+            def settings = _rmFetchStatusJson(appId)?.appSettings
+            rows = settings instanceof List ? settings : []
+        }
+        catch (Exception unreadable) {
+            mcpLog("warn", "rm-native", "Restore of app ${appId}: its settings could not be read to confirm the kept passwords (${unreadable.message})")
+            rows = []
+        }
+    }
+    List kept = names.findAll { name -> rows.any { it instanceof Map && it.name?.toString() == name && it.value != null && it.value.toString() != '' } }
+    List missing = names - kept
+    if (kept) out.passwordsKept = kept
+    if (!missing) return
+    out.passwordsToReenter = missing
+    out.note = "${out.note ?: ''} Password settings ${missing.join(', ')} are not stored in backups and the app holds no value for them; enter them again in the app's native page.".toString().trim()
 }
 
 private Object _rmNativeComparable(Object value) {
@@ -1232,7 +1247,7 @@ private Map _rmRestoreNativeEdit(Map snapshot, String sourceBackupKey) {
         Map restored = [success: true, type: 'rm-rule', ruleId: id, originalRuleId: id, restoredVia: 'nativeStateReplay', backup: undo,
          stateVerified: true, settingsVerified: true, localVariablesVerified: true, broken: rebuilt.broken, stopped: rebuilt.stopped, paused: rebuilt.paused,
          eventSubscriptions: rebuilt.eventSubscriptions, scheduledJobs: rebuilt.scheduledJobs]
-        _rmReportPasswords(restored, snapshot, false)
+        _rmReportPasswords(restored, snapshot, id.toInteger(), _rmNativeCurrentSettings(id))
         restored
     } catch (Exception failure) {
         if (!attempted) throw failure
@@ -1336,6 +1351,10 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
     // only app type the original snapshots covered) for the recreate
     // path. Future snapshots can carry an explicit savedAppType field.
     def savedAppType = snapshot?.appType ?: "rule_machine"
+    // Older snapshots recorded any app the registry lacks (user, community) as rule_machine.
+    String savedTypeName = snapshot?.appTypeName?.toString() ?: snapshot?.configJson?.app?.appType?.name?.toString()
+    if (savedAppType == "rule_machine" && savedTypeName && !(savedTypeName ==~ /Rule-[0-9.]+/) &&
+            !_appTypeRegistry().values().any { it.appName == savedTypeName }) savedAppType = "app"
     if (savedAppType == "visual_rule") {
         // Visual Rules don't speak the classic createchild + settings-replay protocol below
         // (incl. the configure/json exists-probe, which Vue children may not serve); their
@@ -1359,9 +1378,14 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
         }
         exists = false
     }
-    def reg = _appTypeRegistry()[savedAppType]
-    if (!reg) {
+    def reg = savedAppType == "app" ? [:] : _appTypeRegistry()[savedAppType]
+    if (reg == null) {
         throw new IllegalArgumentException("Backup references unknown appType '${savedAppType}'. Supported: ${_appTypeRegistry().keySet().join(', ')}")
+    }
+    if (savedAppType == "app" && !exists) {
+        return [success: false, type: "rm-rule", ruleId: savedId, originalRuleId: savedId,
+                error: "App ${savedId} no longer exists and its type '${savedTypeName}' is not a built-in app type, so this backup cannot recreate it. Nothing was created.".toString(),
+                note: "Reinstall the app from its app code, then set its settings again from this backup (hub_get_backup shows them) with hub_set_native_app(operation:'update')."]
     }
     String nativeSkipped = null
     def priorCopy = _rmPriorNativeCopy(entry, savedId, exists, fileName?.toString())
@@ -1498,6 +1522,9 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
         }
     } catch (Exception e) {
         mcpLog("error", "rm-native", "restore of rule ${ruleId} from ${fileName} failed during ${step}: ${e.message}")
+        String commitName = commitButton ?: 'Done'
+        // Rule Machine rules take their form through hub_set_rule; every other app through hub_set_native_app.
+        String formCall = savedAppType in ['rule_machine', 'button_rule'] ? "hub_set_rule(operation:\"form\", rule_id:${ruleId}" : "hub_set_native_app(operation:\"form\", app_id:${ruleId}"
         return [
             success: false,
             type: "rm-rule",
@@ -1509,9 +1536,7 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
             error: "Restore applied partially; failed during ${step}: ${e.message}",
             note: (step == "settings replay"
                 ? "Rule ${ruleId} exists but may have incomplete settings. Inspect with hub_get_app_config(appId=${ruleId}) and compare against hub_get_backup(backupKey) before retrying."
-                : (commitButton == "updateRule"
-                    ? "The settings were replayed but the rule's updateRule did not fire, so its subscriptions may still reflect the pre-restore state: click Update Rule in the app, or run hub_set_rule(operation:\"form\", rule_id:${ruleId}, args:{steps:[{kind:\"open\"},{kind:\"submit\",expect_page:\"<returned page>\",activate:\"<the updateRule control_id>\"}]}, confirm:true)."
-                    : "The settings were replayed but the app's ${commitButton ?: 'Done'} did not run, so its subscriptions may still reflect the pre-restore state: click ${commitButton ?: 'Done'} in the app, or run hub_set_native_app(operation:\"form\", app_id:${ruleId}, args:{steps:[{kind:\"open\"},{kind:\"submit\",expect_page:\"<returned page>\",activate:\"<the ${commitButton ?: 'Done'} control_id>\"}]}, confirm:true).")).toString()
+                : "The settings were replayed but the app's ${commitName} did not run, so its subscriptions may still reflect the pre-restore state: click ${commitName == 'updateRule' ? 'Update Rule' : commitName} in the app, or run ${formCall}, args:{steps:[{kind:\"open\"},{kind:\"submit\",expect_page:\"<returned page>\",activate:\"<the ${commitName} control_id>\"}]}, confirm:true).").toString()
         ]
     }
 
@@ -1577,7 +1602,7 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
     }
     if (reOutcome) out.putAll(reOutcome)
     if (structure) out.putAll(structure)
-    _rmReportPasswords(out, snapshot, !exists)
+    _rmReportPasswords(out, snapshot, ruleId as Integer)
     if (out.leftoverConditionIds && structure?.removedConditionIds) {
         def gone = (structure.removedConditionIds as List)*.toString()
         out.leftoverConditionIds = (out.leftoverConditionIds as List).findAll { !gone.contains(it.toString()) }

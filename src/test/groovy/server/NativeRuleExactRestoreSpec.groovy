@@ -242,6 +242,24 @@ class NativeRuleExactRestoreSpec extends ToolSpecBase {
         result.sourceFile == 'edited-rule.json'
     }
 
+    def 'an in-place restore of a password-redacted snapshot keeps the live password and reports it kept'() {
+        given:
+        def source = new JsonSlurper().parseText(snapshot.nativeExport)
+        source.appData['42'].appSettings << [name: 'token', type: 'password', value: null]
+        snapshot.nativeExport = JsonOutput.toJson(source)
+        snapshot.redactedSettings = ['token']
+        child.typed.token = [type: 'password', value: 'live-secret', multiple: false]
+        when:
+        def result = restore()
+        then:
+        result.success
+        result.restoredVia == 'nativeStateReplay'
+        result.passwordsKept == ['token']
+        child.typed.token.value == 'live-secret'
+        !events.contains(['removeSetting', 'token'])
+        !events.contains(['updateSetting', 'token'])
+    }
+
     def 'same ID restore recovers deleted records full payloads expressions order settings locals and unknown native configuration'() {
         given:
         nativeType = ruleType

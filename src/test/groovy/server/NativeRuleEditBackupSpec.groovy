@@ -256,8 +256,8 @@ class NativeRuleEditBackupSpec extends ToolSpecBase {
     def 'a classic app form takes the generic baseline before rendering, and skips it when pre-edit backups are off'() {
         given:
         nativeApp = [id: 42L, appType: [namespace: 'hubitat', name: 'Room Lights']]
-        script.metaClass._rmBackupBeforeEdit = { Integer id, String reason ->
-            events << "baseline:${reason}".toString()
+        script.metaClass._rmBackupBeforeEdit = { Integer id, String reason, String page ->
+            events << "baseline:${reason}${page ? ':' + page : ''}".toString()
             [backupKey: 'rm-rule_42_baseline', ruleId: id]
         }
         when:
@@ -266,6 +266,11 @@ class NativeRuleEditBackupSpec extends ToolSpecBase {
         result.success
         result.backup.backupKey == 'rm-rule_42_baseline'
         events == ['baseline:pre-native-form', 'open']
+        when: 'a sub-page opened directly backs up that page, not the main page that resets its wizard'
+        events.clear()
+        script.toolCallAppForm([app_id: 42, steps: [[kind: 'open', page: 'subPage', from: 'mainPage']], confirm: true])
+        then:
+        events == ['baseline:pre-native-form:subPage', 'open']
         when:
         events.clear()
         settingsMap.backupBeforeRuleEdits = false

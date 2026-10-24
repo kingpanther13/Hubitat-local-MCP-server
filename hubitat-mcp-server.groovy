@@ -5515,7 +5515,7 @@ def getGatewayConfig() {
                 hub_call_rule: "Trigger an RM rule lifecycle verb. Args: ruleId (id or array of ids), action (rule/actions/stop/start, default rule). rule uses RMUtils; actions clicks runAction; stop/start toggle stopRule (start re-initializes the rule).",
                 hub_set_rule_paused: "Pause or resume one or more RM rules in one call (RMUtils). Args: ruleId (id or array of ids), paused (true=pause, false=resume)",
                 hub_set_rule_private_boolean: "Set the private boolean of one or more RM rules (RMUtils). Args: ruleId (id or array of ids), value (bool)",
-                hub_set_native_app: "Create, update or drive the native forms of classic apps (Room Lighting, Button Controller and Button Rule, Basic Rule, Notifier, Groups and Scenes, user and community apps). Args: operation?, app_id?, args?, confirm?. Omit operation for help; unconfirmed writes return schemas. Rule Machine rules use hub_set_rule.",
+                hub_set_native_app: "Create, update or drive the native forms of classic apps (Room Lighting, Button Controller and Button Rule, Basic Rule, Notifier, Groups and Scenes, Thermostat Scheduler and Controller, user and community apps). Args: operation?, app_id?, args?, confirm?. Omit operation for help; unconfirmed writes return schemas. Rule Machine rules use hub_set_rule.",
                 hub_delete_native_app: "Delete any classic native app (soft by default, force=true for hard). Auto-backs-up first. Args: appId, force (opt), confirm",
                 hub_set_app_disabled: "Enable or disable any installed app without deleting it (reversible red-X). Args: appId, disabled (bool). Read-back verified. For RM rules prefer hub_set_rule_paused.",
                 hub_clone_native_app: "Clone an existing rule/app via Hubitat's first-party appCloner (deep: child apps and pause state copy too, so a clone of an ACTIVE app lands ACTIVE). Cheaper than rebuilding from scratch via the wizard. Args: appId (alias sourceAppId), newName (opt), stageDisabled (opt: disable clone + every descendant immediately), confirm. Returns newAppId.",
@@ -9472,8 +9472,11 @@ private Integer normalizeRuleId(def ruleId) {
  *   - button_rule (under controller), Button Rule-5.1, parentType=<a specific Button Controller>
  *   - basic_rule, parentType="Basic Rules"
  *   - room_lighting (Room Lights), parentType="Room Lighting" -- verified fw 2.5.1.181
- *   - groups_scenes (Group-2.1 / Scene-2.1), parentType="Groups and Scenes"
+ *   - groups_scenes (Group-2.1), parentType="Groups and Scenes"
+ *   - scene (Scene-1.2), parentType="Groups and Scenes"
  *   - notifier (Notifier), parentType="Notifications"
+ *   - thermostat_scheduler (Thermostat Scheduler 2.0), parentType="Thermostat Schedulers"
+ *   - thermostat_controller (Thermostat Controller 2.0), parentType="Thermostat Controllers"
  *   - visual_rule (Visual Rule Builder), parentType="Visual Rules Builder"
  *
  * Rule-5.1, Button Rule-5.1 and the Rule Machine parent are edited through
@@ -9498,13 +9501,13 @@ private Map _appTypeRegistry() {
         button_controller: [namespace: "hubitat", appName: "Button Controller-5.1", parentTypeName: "Button Controllers", commitButton: null],
         // Group-2.1 takes its label from its own required `name` input (no origLabel input);
         // writing `name` relabels the app immediately (verified live, fw 2.5.1.181).
-        // Group-2.1, Notifier and Visual Rule Builder render no buttons at all, so they commit
-        // through the page's Done alone.
+        // Group-2.1 and Notifier render no buttons at all, so they commit through the page's Done
+        // alone; Visual Rule Builder has no classic page, so nothing is ever clicked on it.
         groups_scenes: [namespace: "hubitat", appName: "Group-2.1", parentTypeName: "Groups and Scenes", labelInput: "name", commitButton: null],
         notifier: [namespace: "hubitat", appName: "Notifier", parentTypeName: "Notifications", commitButton: null],
         // visual_rule stays registered so appType detection (_rmBackupRuleSnapshot's
         // reverse-map) and parentTypeName lookups keep working, but neither classic creation
-        // path uses it: the wizard create rejects it in _createNativeAppShell, and
+        // path uses it: hub_set_native_app create refuses it, and
         // _rmRestoreFromBackup routes visual_rule snapshots to _vrbRestoreFromSnapshot --
         // VRB children are Vue-JSON apps (live-probed: /installedapp/configure renders no
         // classic configPage), served by the hub_*_visual_rule tools instead.
@@ -10503,9 +10506,8 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
     }
     if (runHtml) {
         try {
-            // A non-RM app's default page can reset its own wizard (HPM clears its pending
-            // install settings there), so a caller mid-wizard passes the page it is on; the
-            // settings in the response are app-wide either way.
+            // This reads the app's default page, which can reset a non-RM app's own wizard (HPM
+            // clears its pending install settings there); the settings in the response are app-wide.
             def cfg = _rmFetchConfigJson(appId)
             sourcesUsed << "configPage"
             label = cfg?.app?.label?.toString()
@@ -12286,7 +12288,7 @@ For BACKUP enumeration and restore, use the unified **hub_list_backups** (in hub
 
 ### Safety model for native CRUD
 1. With backupBeforeRuleEdits enabled (default), each hub_set_rule update batch saves one fresh native snapshot in File Manager before editing. A native form workflow saves one snapshot before opening and reuses it for subsequent submissions. The response's backup.backupKey restores the configuration from before that batch or workflow. Snapshot failure prevents the edit.
-2. Native form writes validate native field types and cardinality before submission; omitted values remain unchanged.
+2. Native form writes validate native field types and cardinality before submission. An omitted input keeps its stored value; an unset input with a page default is saved with that default, as the native browser does.
 3. Inspect partial outcomes and native health after writes; a persisted setting alone does not prove runtime behavior.
 4. delete is soft by default. Pass force=true only when you know the rule has children you also want gone.
 
