@@ -2614,8 +2614,12 @@ class ToolManageLogsSpec extends ToolSpecBase {
         !response.result.isError
         def inner = mcpDriver.parseInner(response)
         inner.success == true
-        inner.clearedCount == 1
-        script.getDebugLogEntries() == []
+        // The seeded entry plus this call's own "write started" audit record; its "finished"
+        // record lands after the clear, and the clear's own info line is below the error level.
+        inner.clearedCount == 2
+        def left = script.getDebugLogEntries()
+        left*.component == ['write']
+        left[0].details.phase == 'finished'
 
         where:
         useGateways << [true, false]
