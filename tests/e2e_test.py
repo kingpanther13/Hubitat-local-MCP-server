@@ -6168,10 +6168,17 @@ class TestRunner:
             assert form["page"]["name"] == "mainPage", f"onMeansPage Done did not return to mainPage: {form['page']}"
             assert motion in (settings().get("motions") or {}), f"motions not set: {settings().get('motions')}"
 
+            # A sub-page opens directly when the open names its parent page, which `from` requires.
+            try:
+                bad = self._native_app("form", {"steps": [{"kind": "open", "from": "mainPage"}]}, app_id)
+            except McpToolError as exc:
+                bad = {"success": False, "error": exc.content_text}
+            assert bad.get("success") is False and "requires page" in str(bad.get("error")), \
+                f"an open with from but no page must be refused: {bad}"
             # The UI refuses this Done while the required illuminance picker is empty; so does the tool,
             # before submitting anything, and the page stays open for the fix.
-            form = self._native_app_form(app_id, self._rm_step(form, control=self._rm_control(form, kind="href", page="offMeansPage")))
-            form = self._native_app_form(app_id, self._rm_step(form, fields={"offMeans": ["illuminance rises"]}))
+            form = self._native_app_form(app_id, {"kind": "open", "page": "offMeansPage", "from": "mainPage"},
+                                         {"kind": "submit", "expect_page": "offMeansPage", "fields": {"offMeans": ["illuminance rises"]}})
             done = self._native_app_done(form)
             refused = self._native_app("form", {"steps": [self._rm_step(form, control=done)]}, app_id)
             assert refused.get("success") is False and "illumsOff" in str(refused.get("error")), \
