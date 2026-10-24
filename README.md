@@ -932,7 +932,7 @@ Alternatively, the app's Device Access section has a **Bypass Device Allowlist**
 <summary><b>Claude Desktop won't connect, or slow writes show a generic error</b></summary>
 
 - **An `mcp-proxy` (`uvx`) config stopped connecting** (often `ImportError: cannot import name 'request_ctx'`): mcp-proxy is no longer supported. It has multiple compatibility issues and doesn't support MCP 2.0. Switch to mcp-remote as per the setup instructions above.
-- **A write returns "Error occurred during tool execution" with no result:** the client didn't continue a slow write. In Claude Desktop, use `mcp-remote` with `--protocol auto`. Claude.ai connectors don't continue these writes yet. The write may still finish on the hub, so its outcome is uncertain: check `hub_get_logs(mode='mcp', component='write')` for its started/finished records (any write), or `hub_get_info` → `recentWrites` (continuation writes from a 2026-07-28 client only), then read the target before repeating it. A missing record does not prove the write never ran.
+- **A write returns "Error occurred during tool execution" with no result:** the client didn't continue a slow write. In Claude Desktop, use `mcp-remote` with `--protocol auto`. Claude.ai connectors don't continue these writes yet. The write may still finish on the hub, so its outcome is uncertain: check `hub_get_info` → `recentWrites` for a continuation write from a 2026-07-28 client, or `hub_get_logs(mode='mcp', component='write')` for the started/finished records of every other write, then read the target before repeating it. A missing record does not prove the write never ran.
 - After editing the config, fully quit Claude Desktop (system tray / menu bar), not just the window.
 
 </details>

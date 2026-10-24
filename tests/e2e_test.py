@@ -17559,12 +17559,6 @@ class TestRunner:
         client sends), so a mis-classification or a lease that is never released surfaces
         here as a refused, failed, or hung write. Every write a shipping client makes
         today goes down this path -- the modern MRTR dispatcher never runs for them.
-
-        What it does NOT reach: the lease's `transport: "legacy"` stamp. That value is
-        only observable in a too_many_writes_in_flight refusal, which needs the cap at 1
-        and two writes genuinely in flight -- the machinery
-        test_write_cap_refuses_a_second_concurrent_write already carries, at a cost this
-        smoke group is deliberately kept under.
         """
         legacy = LegacyEraClient(self.client, verbose=self.verbose)
         init = legacy.initialize(LEGACY_PROTOCOL_VERSION)
@@ -17637,6 +17631,8 @@ class TestRunner:
             assert any(e["details"].get("phase") == "started" and e["details"].get("writeId") == write_id
                        for e in records), \
                 f"the finished write record has no started record with the same writeId: {records}"
+            assert all(e["details"].get("transport") == "legacy" for e in records), \
+                f"the legacy create's write records must carry transport legacy: {records}"
             assert "legacy-era-v1" not in str(records), \
                 f"a write record leaked the written value: {records}"
 

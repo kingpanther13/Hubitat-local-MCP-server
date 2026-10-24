@@ -2334,7 +2334,7 @@ private Map _writeAuditContext(msg, toolName, reactiveToolName, args, String tra
         String leaf = reactiveToolName?.toString()
         Map ctx = [tool: leaf, transport: transport, target: _writeTargetSummary(leaf, toolName?.toString(), args)]
         if (toolName?.toString() != leaf) ctx.gateway = toolName?.toString()
-        if (msg?.id != null) ctx.rpcId = msg.id.toString().take(64)
+        if (msg?.id != null) ctx.rpcId = msg.id.toString()
         return ctx
     } catch (Exception ignored) {
         return null

@@ -130,6 +130,23 @@ class WriteAuditLogSpec extends ToolSpecBase {
         script._activeWrites().isEmpty()
     }
 
+    def "a long JSON-RPC id is recorded whole so it equals the id the client sent"() {
+        given:
+        settingsMap.useGateways = false
+        script.metaClass.toolSetVariable = { Map a -> [success: true] }
+        String longId = 'req-' + ('0123456789abcdef' * 5)
+
+        when:
+        script.handleToolsCallLegacy([jsonrpc: '2.0', id: longId, method: 'tools/call',
+                                      params: [name: 'hub_set_variable', arguments: [name: 'AuditVar', value: '1']]])
+        def records = writeRecords()
+
+        then:
+        longId.length() > 64
+        records*.details*.phase == ['started', 'finished']
+        records.every { it.details.rpcId == longId }
+    }
+
     def "the target summary keeps only identifiers and truncates long strings and lists"() {
         when:
         Map leaf = script._writeTargetSummary('hub_set_rule', 'hub_set_rule',
