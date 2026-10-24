@@ -2524,6 +2524,66 @@ class ToolManageLogsSpec extends ToolSpecBase {
         !stored.containsKey('stackTrace')
     }
 
+    // -------- hub_delete_logs: past logs (a reboot) --------
+
+    def "hub_delete_logs mode=past reboots the hub with the purge, behind hub_reboot's backup check"() {
+        given:
+        stateMap.lastBackupTimestamp = script.now()
+        int reboots = 0
+        script.metaClass._hubRebootPurgingPastLogs = { -> reboots++; 'ok' }
+
+        when:
+        def result = script.toolDeleteLogs([mode: 'past', confirm: true])
+
+        then:
+        reboots == 1
+        result.success == true
+        result.rebooting == true
+        result.message.contains('rebooting')
+        result.message.contains('1-3 minutes')
+    }
+
+    @Unroll
+    def "hub_delete_logs mode=past refuses #label without rebooting"() {
+        given:
+        stateMap.lastBackupTimestamp = script.now()
+        settingsMap.disabled_tools = disabled
+        int reboots = 0
+        script.metaClass._hubRebootPurgingPastLogs = { -> reboots++; 'ok' }
+
+        when:
+        script.toolDeleteLogs([mode: 'past'] + args)
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains(says)
+        reboots == 0
+
+        where:
+        label                     | args                              | disabled         || says
+        'without confirm'         | [:]                               | []               || 'confirm=true'
+        'a jobId'                 | [jobId: 'app1Once.run', confirm: true] | []          || "jobId applies to mode='scheduledJobs' only"
+        'when hub_reboot is off'  | [confirm: true]                   | ['hub_reboot']   || 'hub_reboot is turned off'
+    }
+
+    def "hub_delete_logs mode=past reports a failed reboot request as an error"() {
+        given:
+        stateMap.lastBackupTimestamp = script.now()
+        script.metaClass._hubRebootPurgingPastLogs = { -> throw new IOException('connection refused') }
+
+        when:
+        def result = script.toolDeleteLogs([mode: 'past', confirm: true])
+
+        then:
+        result.isError == true
+        result.error.contains('connection refused')
+    }
+
+    def "hub_delete_logs is not marked idempotent: mode=past reboots on every call"() {
+        expect:
+        !script.getIdempotentToolNames().contains('hub_delete_logs')
+    }
+
     // -------- hub_delete_logs: the MCP log --------
 
     def "hub_get_logs mode=mcp with limit 0 returns every stored entry"() {
