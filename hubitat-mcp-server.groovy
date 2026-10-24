@@ -446,6 +446,36 @@ def mainPage() {
     }
 }
 
+// Small predicates passed as method references (this.&name) instead of inline blocks: each inline
+// block compiles to its own class, and the hub keeps every class of a saved copy loaded.
+private boolean _isMap(value) {
+    return value instanceof Map
+}
+
+private boolean _argPresent(Map args, key) {
+    return args[key] != null
+}
+
+private String _toStringOrNull(value) {
+    return value?.toString()
+}
+
+private boolean _mrtrRowFailed(row) {
+    return row instanceof Map && row.success != true
+}
+
+private boolean _mrtrRowSucceeded(row) {
+    return row instanceof Map && row.success == true
+}
+
+private boolean _hasSnapshotFetchedAt(part) {
+    return part instanceof Map && part.snapshot instanceof Map && part.snapshot.fetchedAt instanceof Number
+}
+
+private Long _snapshotFetchedAt(Map part) {
+    return part.snapshot.fetchedAt as Long
+}
+
 def formatTimestamp(timestamp) {
     if (!timestamp) return "Never"
     try {
@@ -4075,9 +4105,9 @@ private Map _mrtrCommitSlice(String stateId, Map rec, Map claim, Map executionAr
                 def banked = cappedBank.results
                 capped.results = banked
                 capped.ruleIds = cappedBank.ruleIds
-                def cappedFailed = banked.findAll { it instanceof Map && it.success != true }
+                def cappedFailed = banked.findAll(this.&_mrtrRowFailed)
                 if (!cappedFailed.isEmpty()) {
-                    capped.failedRuleIds = cappedFailed.collect { it.ruleId }.findAll { it != null }.unique()
+                    capped.failedRuleIds = (cappedFailed*.ruleId - [null]).unique()
                 }
                 // Reaching this branch REQUIRES a non-empty remainingRuleIds, and failed is a
                 // different set from not-yet-reached -- so name the un-actioned ids rather than
@@ -4098,14 +4128,14 @@ private Map _mrtrCommitSlice(String stateId, Map rec, Map claim, Map executionAr
                 // success is therefore enough to make this batch some-actioned-some-not, whereas
                 // at the ordinary terminal nothing is left unreached and a mixed row set is the
                 // only way to be partial.
-                capped.partial = banked.any { it instanceof Map && it.success == true }
+                capped.partial = banked.any(this.&_mrtrRowSucceeded)
                 // Name the re-issue set explicitly. The un-done work at the cap is
                 // failedRuleIds UNION remainingRuleIds -- exactly what the continuation would
                 // have re-queued -- and note is the field an agent reads for its next move.
                 // Left generic, it leads to re-issuing only the un-reached ids and stranding
                 // the failed ones, which is what the leaf's own note exists to prevent.
                 def reissue = (((capped.failedRuleIds ?: []) as List) +
-                               ((capped.remainingRuleIds ?: []) as List)).unique { it?.toString() }
+                               ((capped.remainingRuleIds ?: []) as List)).unique(this.&_toStringOrNull)
                 if (!reissue.isEmpty()) {
                     capped.note = "The completed slices remain committed. Re-issue ${reissue} " +
                         "to finish: that is the failed rules plus the ones never reached. " +
@@ -4128,10 +4158,8 @@ private Map _mrtrCommitSlice(String stateId, Map rec, Map claim, Map executionAr
                     "operation."
             }
             if (continuation.kind in ["walk_steps", "driver_installs", "driver_updates"]) {
-                ["appId", "page", "operation", "stepsRemaining", "installsRemaining", "updatesRemaining",
-                 "backup", "repairHints", "resume"].each { key ->
-                    if (result.containsKey(key)) capped.put(key, result.get(key))
-                }
+                capped.putAll(result.subMap(["appId", "page", "operation", "stepsRemaining", "installsRemaining",
+                                             "updatesRemaining", "backup", "repairHints", "resume"]))
                 capped.note = "aggregate records completed work. Inspect the remaining-work fields " +
                     "and resume guidance before submitting a new call with only that remainder. " +
                     "This requestState now replays the terminal continuation_limit result."
@@ -4276,8 +4304,7 @@ private boolean _mrtrStoreTerminal(String stateId, Map originalRec, Map claim, r
             if (!(fetchedAt instanceof Number) && readLeaf && result instanceof Map) {
                 // hub_get_logs with a list of modes carries one snapshot per tab; the oldest bounds the replay.
                 List parts = [result] + (result.modes instanceof Map ? (result.modes as Map).values().toList() : [])
-                fetchedAt = parts.findAll { it instanceof Map && it.snapshot instanceof Map && it.snapshot.fetchedAt instanceof Number }
-                    .collect { it.snapshot.fetchedAt as Long }.min()
+                fetchedAt = parts.findAll(this.&_hasSnapshotFetchedAt).collect(this.&_snapshotFetchedAt).min()
             }
             if (fetchedAt instanceof Number) {
                 rec.expiresAt = Math.min(rec.expiresAt as Long, (fetchedAt as Long) + _logsJsonSnapshotTtlMs())
@@ -6714,9 +6741,9 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
                 // Filter the hint against the live flat catalog so we don't recommend tools
                 // that other settings (Read/Write masters or Custom Rule Engine) have also hidden.
                 def visibleNames = getToolDefinitions()*.name as Set
-                def subTools = (getGatewayConfig()[toolName]?.tools ?: []).findAll { visibleNames.contains(it) }
+                def subTools = (getGatewayConfig()[toolName]?.tools ?: []).findAll(visibleNames.&contains)
                 def hint = subTools
-                    ? "Call the underlying tool directly: ${subTools.collect { _externalToolName(it as String) }.join(', ')}. Refresh tools/list to see the flat catalog."
+                    ? "Call the underlying tool directly: ${subTools.collect(this.&_externalToolName).join(', ')}. Refresh tools/list to see the flat catalog."
                     : "All sub-tools of this gateway are also disabled by other server toggles (Read/Write masters or Custom Rule Engine). Enable those toggles or refresh tools/list."
                 return [
                     isError: true,
