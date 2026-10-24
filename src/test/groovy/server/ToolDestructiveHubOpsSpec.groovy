@@ -45,7 +45,8 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
 
     /** Records each reboot's (rebuildDatabase, purgeLogs) pair instead of sending it. */
     private List stubReboots() {
-        def reboots = stubReboots()
+        def reboots = []
+        script.metaClass._hubReboot = { boolean rebuild, boolean purge -> reboots << [rebuild, purge]; 'ok' }
         reboots
     }
 
