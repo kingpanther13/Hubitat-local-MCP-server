@@ -33126,7 +33126,7 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
         case "hub_manage_dashboards":
             if (settings.useGateways == false) {
                 def visibleNames = getToolDefinitions()*.name as Set
-                def subTools = (getGatewayConfig()[toolName]?.tools ?: []).findAll(visibleNames.&contains)
+                def subTools = (getGatewayConfig()[toolName]?.tools ?: []).findAll { visibleNames.contains(it) }
                 def hint = subTools
                     ? "Call the underlying tool directly: ${subTools.collect(this.&_externalToolName).join(', ')}. Refresh tools/list to see the flat catalog."
                     : "All sub-tools of this gateway are also disabled by other server toggles (Read/Write masters or Custom Rule Engine). Enable those toggles or refresh tools/list."
