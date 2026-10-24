@@ -92,9 +92,10 @@ def native_mrtr_changes(
 def write_cap_variable_count(environ: Mapping[str, str] | None = None) -> int:
     """Select a bounded real bulk-create workload for the concurrent write proof."""
     settings = os.environ if environ is None else environ
-    # 48 creates hold the slot for several probe round trips on a physical hub behind the cloud
-    # relay; at 16 the hub-side window was about one round trip, so a probe landing in it was luck.
-    configured = settings.get("E2E_WRITE_CAP_VARIABLE_COUNT", "48")
+    # 16 creates hold the slot for 3.5-5 s on a physical hub behind the cloud relay, long enough for
+    # the interval probes to land inside it. 48 ran past the relay's ~10 s response window, so the
+    # holder's own response was lost to a 504.
+    configured = settings.get("E2E_WRITE_CAP_VARIABLE_COUNT", "16")
     if not isinstance(configured, str) or re.fullmatch(r"[0-9]+", configured) is None:
         raise ValueError("E2E_WRITE_CAP_VARIABLE_COUNT must be an integer from 4 through 120")
     count = int(configured)

@@ -28,7 +28,7 @@ def test_mrtr_workload_rejects_invalid_or_unbounded_configuration(configured):
         helpers.mrtr_action_count({"E2E_MRTR_ACTION_COUNT": configured})
 
 
-@pytest.mark.parametrize(("configured", "expected"), [(None, 48), ("4", 4), ("72", 72), ("120", 120)])
+@pytest.mark.parametrize(("configured", "expected"), [(None, 16), ("4", 4), ("72", 72), ("120", 120)])
 def test_write_cap_workload_creates_every_distinct_real_variable(configured, expected):
     environment = {} if configured is None else {"E2E_WRITE_CAP_VARIABLE_COUNT": configured}
     items = helpers.write_cap_variable_items("BAT_E2E_WriteCap_run", environment)
