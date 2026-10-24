@@ -425,7 +425,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         given:
         hubGet.register('/logs/json') { params -> logsJsonWithJobs(1) }
 
-        when: 'the MCP log comes first, so only the up-front check can catch the stats tab's bad pageSize'
+        when: 'the MCP log comes first, so only the up-front check can catch the bad pageSize for the jobs tab'
         script.toolGetHubLogs([mode: ['mcp', 'scheduledJobs'], pageSize: 500])
 
         then:
