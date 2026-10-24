@@ -612,7 +612,9 @@ Map _nmDeleteRow(Long ruleId, String part, Object rowId) {
     Map rows = before.get(collection) instanceof Map ? [:] + before.get(collection) : [:]
     if (!rows.keySet().any { it.toString() == id }) throw new IllegalArgumentException('Native row does not exist')
     if (part == 'condition') {
-        boolean referenced = before.eval instanceof Map && before.eval.values().any { it instanceof List && it.any { token -> token?.toString() == id } }
+        // Rule Machine keeps the eval entry of a deleted IF; only the Required Expression and live actions' expressions count.
+        Set liveExpressionIds = (['0'] + (before.actions instanceof Map ? before.actions.values().findAll { it instanceof Map && it.rule != null }.collect { it.rule.toString() } : [])) as Set
+        boolean referenced = before.eval instanceof Map && before.eval.any { key, tokens -> key.toString() in liveExpressionIds && tokens instanceof List && tokens.any { token -> token?.toString() == id } }
         referenced = referenced || (before.predCapabs instanceof List && before.predCapabs.any { it.toString() == id })
         referenced = referenced || (before.actions instanceof Map && before.actions.values().any { it instanceof Map && it.cond?.toString() == id })
         if (referenced) throw new IllegalArgumentException('Referenced native conditions must be detached before deletion')
