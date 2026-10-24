@@ -6669,7 +6669,7 @@ private Date _pastLogTime(Map entry, TimeZone zone) {
 def toolDeleteLogs(args) {
     String mode = args.mode?.toString()
     if (!(mode in ["mcp", "scheduledJobs"])) {
-        throw new IllegalArgumentException("mode must be 'mcp' (clear the MCP log) or 'scheduledJobs' (delete one scheduled job)")
+        throw new IllegalArgumentException("mode must be 'mcp' (clear the MCP log) or 'scheduledJobs' (delete one scheduled job). The hub's past logs are deleted only by a reboot: hub_reboot(confirm=true, purgeLogs=true).")
     }
     if (mode == "mcp") {
         def stray = ["jobId", "confirm"].findAll(this.&_argPresent.curry(args))
@@ -8174,7 +8174,7 @@ def _getAllToolDefinitions_partDiagnostics() {
         ],
         [
             name: "hub_delete_logs",
-            description: """Clear the MCP app's own log (mode='mcp'), or delete one scheduled job like the Logs page's Delete button (mode='scheduledJobs'). Only that timer goes; its app or device schedules it again only if its own code does. Cannot be undone.""",
+            description: """Clear the MCP app's own log (mode='mcp'), or delete one scheduled job like the Logs page's Delete button (mode='scheduledJobs'). Only that timer goes; its app or device schedules it again only if its own code does. Cannot be undone. The hub's past logs are deleted only by a reboot: hub_reboot(purgeLogs=true).""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -9374,16 +9374,21 @@ def toolSetHsm(armCommand) {
 }
 def toolRebootHub(args) {
     requireDestructiveConfirm(args.confirm)
-    mcpLog("warn", "hub-admin", "Hub reboot initiated by MCP")
+    boolean rebuildDatabase = args.rebuildDatabase == true
+    boolean purgeLogs = args.purgeLogs == true
+    mcpLog("warn", "hub-admin", "Hub reboot initiated by MCP${rebuildDatabase ? ' with database rebuild' : ''}${purgeLogs ? ' with past-log purge' : ''}")
     try {
-        def responseText = hubInternalPost("/hub/reboot")
-        return [
+        def responseText = _hubReboot(rebuildDatabase, purgeLogs)
+        Map out = [
             success: true,
             message: "Hub reboot initiated. The hub will be unreachable for 1-3 minutes.",
             lastBackup: formatTimestamp(state.lastBackupTimestamp),
             warning: "All automations and device communications will stop during reboot. The hub will restart automatically.",
             response: responseText?.take(500)
         ]
+        if (rebuildDatabase) out.rebuildDatabase = true
+        if (purgeLogs) out.purgeLogs = true
+        return out
     } catch (Exception e) {
         mcpLogError("hub-admin", "Hub reboot failed", e)
         return [
@@ -9392,6 +9397,10 @@ def toolRebootHub(args) {
             note: "The reboot command could not be sent. Check Hub Security credentials or try rebooting manually from the Hubitat web UI at Settings → Reboot Hub."
         ]
     }
+}
+def _hubReboot(boolean rebuildDatabase, boolean purgeLogs) {
+    return _hubRequest('POST', '/hub/reboot', [body: groovy.json.JsonOutput.toJson([rebuildDatabase: rebuildDatabase, purgeLogs: purgeLogs]),
+                                               requestContentType: "application/json", timeout: 30, returnShape: 'text'])
 }
 def toolShutdownHub(args) {
     requireDestructiveConfirm(args.confirm)
@@ -9695,7 +9704,9 @@ PRE-FLIGHT: 1) Ensure backup <24h old 2) Tell user 3) Get explicit confirmation 
             inputSchema: [
                 type: "object",
                 properties: [
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved the reboot."]
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved the reboot."],
+                    rebuildDatabase: [type: "boolean", description: "Rebuild the hub database while restarting (the Reboot dialog's advanced option)."],
+                    purgeLogs: [type: "boolean", description: "Delete the hub's past logs while restarting."]
                 ],
                 required: ["confirm"]
             ]
@@ -31982,13 +31993,13 @@ def getGatewayConfig() {
             description: "DESTRUCTIVE hub operations: reboot, shutdown, permanent device deletion, radio network/fabric resets + firmware flashes, network disconnects, and cloud-controller disable. All operations are irreversible or cause significant downtime — confirm with user first.",
             tools: ["hub_reboot", "hub_shutdown", "hub_delete_device", "hub_call_destructive_ops"],
             summaries: [
-                hub_reboot: "Reboot the hub (DISRUPTIVE, 1-3 min downtime). To install a pending hub firmware update instead, use hub_update_firmware. Args: confirm=true",
+                hub_reboot: "Reboot the hub (DISRUPTIVE, 1-3 min downtime), optionally rebuilding the database or purging past logs. To install a pending hub firmware update instead, use hub_update_firmware. Args: confirm=true, rebuildDatabase, purgeLogs",
                 hub_shutdown: "Power OFF the hub (EXTREME, requires physical restart). Args: confirm=true",
                 hub_delete_device: "Permanently delete any device (MOST DESTRUCTIVE, no undo). Args: deviceId, confirm=true",
                 hub_call_destructive_ops: "Destructive ops by target: radio reset/firmware (target=zwave|zigbee|matter), network disconnect (target=network, disconnect_wifi|disconnect_ethernet), or cloud controller disable/enable (target=cloud). Args: target, action, confirm=true"
             ],
             searchHints: [
-                hub_reboot: "restart reset power cycle boot",
+                hub_reboot: "restart reset power cycle boot rebuild database purge delete past logs",
                 hub_shutdown: "power off turn off stop halt",
                 hub_delete_device: "remove ghost orphan zwave zigbee stuck failed pairing",
                 hub_call_destructive_ops: "reset wipe zwave zigbee matter network fabric exclude all firmware flash chip radio ota brick factory disconnect wifi ethernet cloud disable alexa google dashboard subscription"
