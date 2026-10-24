@@ -81,7 +81,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_list_variables', 'hub_get_variable', 'hub_list_variable_changes',
             'hub_list_captured_states',
             'hub_report_issue',
-            'hub_get_logs', 'hub_list_device_events', 'hub_get_performance_stats',
+            'hub_get_logs', 'hub_list_device_events',
             'hub_get_radio_details', 'hub_get_device_health', 'hub_get_metrics',
             'hub_list_apps', 'hub_get_source', 'hub_list_backups', 'hub_get_backup',
             'hub_get_compatible_devices',
@@ -125,7 +125,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_set_system_settings', 'hub_update_hub_mesh',
             'hub_update_mcp_settings',
             'hub_delete_captured_state',
-            'hub_delete_debug_logs',
+            'hub_delete_logs',
             'hub_create_backup', 'hub_call_gc',
             'hub_reboot', 'hub_shutdown', 'hub_delete_device',
             'hub_set_zwave', 'hub_set_zigbee',
@@ -178,7 +178,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_manage_destructive_ops',// reboot/shutdown/hub_delete_device/hub_call_destructive_ops
             'hub_manage_code',          // install/update/delete code
             'hub_manage_devices',            // hub_call_device_command, hub_call_device_swap, hub_update_device
-            'hub_manage_logs',               // hub_delete_debug_logs, hub_set_log_level
+            'hub_manage_logs',               // hub_delete_logs, hub_set_log_level
             'hub_manage_diagnostics',        // hub_call_gc, hub_delete_captured_state
             'hub_manage_radio',              // hub_set_zwave/zigbee, hub_call_zwave/zigbee/matter
             'hub_manage_files',              // hub_write_file, hub_delete_file
@@ -323,7 +323,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_update_custom_rule', 'hub_delete_custom_rule',
             'hub_set_hsm', 'hub_set_mode_manager', 'hub_update_hub_mesh',
             'hub_delete_variable', 'hub_create_connector', 'hub_delete_connector',
-            'hub_set_log_level', 'hub_delete_debug_logs',
+            'hub_set_log_level', 'hub_delete_logs',
             'hub_delete_captured_state',
             'hub_update_device', 'hub_delete_device',
             'hub_update_room', 'hub_delete_room',
@@ -497,8 +497,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_list_variables', 'hub_get_variable', 'hub_list_variable_changes',
             'hub_list_captured_states',
             'hub_report_issue',
-            'hub_get_logs', 'hub_get_performance_stats',
-            'hub_get_jobs', 'hub_get_memory_history',
+            'hub_get_logs', 'hub_get_memory_history',
             'hub_get_radio_details', 'hub_get_device_health', 'hub_get_metrics',
             'hub_list_apps', 'hub_list_drivers', 'hub_list_libraries', 'hub_list_bundles',
             'hub_get_source',
@@ -525,7 +524,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_set_hsm',
             'hub_set_system_settings', 'hub_update_hub_mesh',
             'hub_delete_captured_state',
-            'hub_delete_debug_logs', 'hub_set_log_level',
+            'hub_delete_logs', 'hub_set_log_level',
             'hub_create_backup',
             'hub_reboot', 'hub_shutdown', 'hub_update_firmware', 'hub_delete_device',
             'hub_call_gc',
@@ -570,7 +569,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         names.size() == (names as Set).size()
 
         and: 'no chunk dropped — the full surface is present (bump on intentional add/remove)'
-        names.size() == 118
+        names.size() == 116
 
         and: 'sentinels from the first and last chunks survive the concatenation chain'
         names.contains('hub_list_devices')   // first chunk

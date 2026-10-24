@@ -9,14 +9,13 @@ import support.TestLocation
 import support.ToolSpecBase
 
 /**
- * Spec for the hub_manage_logs gateway tools (hubitat-mcp-server.groovy):
+ * Spec for the hub_manage_logs gateway tools (libraries/mcp-diagnostics-lib.groovy, mcp-debug-logging-lib.groovy):
  *
  * - toolGetHubLogs         -> hub_get_logs          (additional coverage beyond ToolGetHubLogsSpec)
- * - toolGetDeviceHistory   -> hub_list_device_events (core tool; windowed/app/location branches)
- * - toolGetPerformanceStats-> hub_get_performance_stats
- * - toolGetHubJobs         -> hub_get_jobs
- * - toolGetDebugLogs       -> hub_get_logs
- * - toolClearDebugLogs     -> hub_delete_debug_logs
+ * - toolGetHubLogs         -> hub_get_logs (Logs page tabs: events, stats, jobs, hub actions)
+ * - toolGetDeviceHistory   -> hub_list_device_events (core tool; windowed device and app branches)
+ * - toolGetDebugLogs       -> hub_get_logs(mode:'mcp')
+ * - toolDeleteLogs         -> hub_delete_logs
  * - toolSetLogLevel        -> hub_set_log_level
  * - toolGetLoggingStatus   -> hub_get_logs(mode:'status')
  *
@@ -87,9 +86,9 @@ class ToolManageLogsSpec extends ToolSpecBase {
         def result = script.toolGetHubLogs([level: level])
 
         then:
-        result.logs.size() == 1
-        result.logs[0].level == level
-        result.logs[0].message == expectedMsg
+        result.entries.size() == 1
+        result.entries[0].level == level
+        result.entries[0].message == expectedMsg
 
         where:
         level   | expectedMsg
@@ -120,15 +119,15 @@ class ToolManageLogsSpec extends ToolSpecBase {
         response.error == null
         !response.result.isError
         def inner = mcpDriver.parseInner(response)
-        inner.logs.size() == 1
-        inner.logs[0].level == 'warn'
-        inner.logs[0].message == 'Warn msg'
+        inner.entries.size() == 1
+        inner.entries[0].level == 'warn'
+        inner.entries[0].message == 'Warn msg'
 
         where:
         useGateways << [true, false]
     }
 
-    def "hub_get_logs filters by source substring (case-insensitive)"() {
+    def "hub_get_logs pattern searches the source name and the message (case-insensitive)"() {
         given:
         settingsMap.enableRead = true
         hubGet.register('/logs/past/json') { params ->
@@ -140,11 +139,11 @@ class ToolManageLogsSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolGetHubLogs([source: 'kitchen'])
+        def result = script.toolGetHubLogs([pattern: 'kitchen'])
 
-        then: 'case-insensitive substring match against message or name'
-        result.logs.size() == 2
-        result.logs.every { it.name.toLowerCase().contains('kitchen') }
+        then: 'case-insensitive match against name or message'
+        result.entries.size() == 2
+        result.entries.every { it.name.toLowerCase().contains('kitchen') }
     }
 
     def "hub_get_logs trims to the limit argument (keeping newest)"() {
@@ -159,11 +158,11 @@ class ToolManageLogsSpec extends ToolSpecBase {
         def result = script.toolGetHubLogs([limit: 3])
 
         then:
-        result.logs.size() == 3
+        result.entries.size() == 3
         result.count == 3
-        result.logs[0].message == 'Message 10'
-        result.logs[1].message == 'Message 9'
-        result.logs[2].message == 'Message 8'
+        result.entries[0].message == 'Message 10'
+        result.entries[1].message == 'Message 9'
+        result.entries[2].message == 'Message 8'
     }
 
     def "hub_get_logs scopes to a selected device and passes type=dev&id=X in query"() {
@@ -183,7 +182,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
 
         then:
         capturedParams == [type: 'dev', id: '42']
-        result.logs.size() == 1
+        result.entries.size() == 1
     }
 
     def "hub_get_logs rejects a malformed deviceId before hitting the hub"() {
@@ -235,7 +234,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
 
         then:
         capturedParams == [type: 'app', id: '7']
-        result.logs.size() == 1
+        result.entries.size() == 1
     }
 
     def "hub_get_logs truncates messages when estimated JSON exceeds the 120KB cloud limit"() {
@@ -253,7 +252,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         then:
         result.truncated == true
         result.note.contains('truncated')
-        result.logs.every { it.message.length() <= 200 }
+        result.entries.every { it.message.length() <= 200 }
     }
 
     def "hub_get_logs handles empty hub response gracefully"() {
@@ -265,12 +264,414 @@ class ToolManageLogsSpec extends ToolSpecBase {
         def result = script.toolGetHubLogs([:])
 
         then:
-        result.logs == []
+        result.entries == []
         result.count == 0
-        result.message.contains('No log data')
+        result.total == 0
     }
 
     // -------- toolGetDeviceHistory --------
+
+    // -------- hub_get_logs: location and hub events --------
+
+    private static final String LOCATION_ROWS = '''[
+      {"name":"mode","value":"Night","unit":null,"descriptionText":"Mode changed to Night","isStateChange":true,"type":"API","date":"2009-02-13T22:30:00.000+0000"},
+      {"name":"hsmStatus","value":"armedAway","unit":null,"descriptionText":"HSM armed away","isStateChange":true,"type":"API","date":"2009-02-13T22:00:00.000+0000"},
+      {"name":"variable:guestCount","value":"3","unit":null,"descriptionText":"hub variable updated","isStateChange":true,"type":"HUB_VARIABLE_SET","date":"2009-02-13T21:00:00.000+0000"}
+    ]'''
+
+    def "hub_get_logs locationEvents returns the Logs page's rows with the hub's own field names"() {
+        given:
+        hubGet.register('/logs/eventsJson') { params -> LOCATION_ROWS }
+
+        when:
+        def result = script.toolGetHubLogs([mode: 'locationEvents'])
+
+        then: 'it reads the endpoint the Logs page uses, once'
+        hubGet.calls*.path == ['/logs/eventsJson']
+
+        and: 'rows are the native rows, in the hub\'s order'
+        result.mode == 'locationEvents'
+        result.total == 3
+        result.matched == 3
+        result.count == 3
+        result.entries*.name == ['mode', 'hsmStatus', 'variable:guestCount']
+        result.entries[0] == [name: 'mode', value: 'Night', descriptionText: 'Mode changed to Night',
+                              isStateChange: true, type: 'API', date: '2009-02-13T22:30:00.000+0000']
+
+        and: 'the null unit is left out of each row and named once'
+        result.nullFields == ['unit']
+        result.entries.every { !it.containsKey('unit') }
+    }
+
+    def "hub_get_logs names a field in nullFields when it is null on some rows and keeps it where it is set"() {
+        given:
+        hubGet.register('/logs/eventsJson') { params ->
+            '[{"name":"temp","value":"70","unit":"F","deviceId":null},{"name":"mode","value":"Day","unit":null,"deviceId":null}]'
+        }
+
+        when:
+        def result = script.toolGetHubLogs([mode: 'locationEvents'])
+
+        then:
+        result.nullFields == ['deviceId', 'unit']
+        result.entries == [[name: 'temp', value: '70', unit: 'F'], [name: 'mode', value: 'Day']]
+    }
+
+    def "hub_get_logs leaves nullFields out when no row has a null field"() {
+        given:
+        hubGet.register('/hub/eventsJson') { params -> '[{"name":"systemStart","value":"","date":"2009-02-13T22:15:00.000+0000"}]' }
+
+        when:
+        def result = script.toolGetHubLogs([mode: 'hubEvents'])
+
+        then:
+        !result.containsKey('nullFields')
+        result.entries == [[name: 'systemStart', value: '', date: '2009-02-13T22:15:00.000+0000']]
+    }
+
+    def "hub_get_logs with a list of modes answers every tab under its own key in one call"() {
+        given:
+        hubGet.register('/logs/eventsJson') { params -> LOCATION_ROWS }
+        hubGet.register('/hub/eventsJson') { params -> '[{"name":"lowMemory","value":"","date":"2009-02-13T22:15:00.000+0000"}]' }
+
+        when:
+        def result = script.toolGetHubLogs([mode: ['locationEvents', 'hubEvents'], since: '2009-02-13T21:30:00.000+0000'])
+
+        then: 'each tab is read once and filtered by the shared arguments'
+        hubGet.calls*.path == ['/logs/eventsJson', '/hub/eventsJson']
+        result.modes.keySet() as List == ['locationEvents', 'hubEvents']
+        result.modes.locationEvents.entries*.name == ['mode', 'hsmStatus']
+        result.modes.hubEvents.entries*.name == ['lowMemory']
+        !result.modes.locationEvents.containsKey('mode')
+        !result.containsKey('failedModes')
+    }
+
+    def "hub_get_logs with a list of job modes serves all three from one /logs/json fetch"() {
+        given:
+        def fetches = new java.util.concurrent.atomic.AtomicInteger(0)
+        hubGet.register('/logs/json') { params -> fetches.incrementAndGet(); logsJsonWithJobs(2) }
+
+        when:
+        def result = script.toolGetHubLogs([mode: ['scheduledJobs', 'runningJobs', 'hubActions'], deviceId: '900'])
+
+        then:
+        fetches.get() == 1
+        result.modes.keySet() as List == ['scheduledJobs', 'runningJobs', 'hubActions']
+        result.modes.runningJobs.entries*.owner == [[type: 'device', id: 900]]
+        result.modes.hubActions.entries*.owner == [[type: 'device', id: 900]]
+        result.modes.scheduledJobs.matched == 0
+
+        and: 'the shared fetch is stated once'
+        result.uptime == '1d'
+        result.snapshot.fetchedAt instanceof Number
+        result.modes.values().every { !it.containsKey('uptime') && !it.containsKey('snapshot') }
+    }
+
+    def "hub_get_logs with a list of modes keeps the other tabs when one fails"() {
+        given:
+        hubGet.register('/logs/eventsJson') { params -> LOCATION_ROWS }
+        hubGet.register('/hub/eventsJson') { params -> '{"a":1}' }
+
+        when:
+        def result = script.toolGetHubLogs([mode: ['locationEvents', 'hubEvents']])
+
+        then:
+        result.failedModes == ['hubEvents']
+        result.modes.hubEvents.isError == true
+        result.modes.hubEvents.error.contains('unexpected shape')
+        result.modes.locationEvents.count == 3
+    }
+
+    def "hub_get_logs with a list of modes returns each tab's first page with its own cursor"() {
+        given:
+        hubGet.register('/logs/json') { params -> logsJsonWithJobs(150) }
+        hubGet.register('/hub/eventsJson') { params -> '[]' }
+
+        when:
+        def result = script.toolGetHubLogs([mode: ['scheduledJobs', 'hubEvents']])
+        def sized = script.toolGetHubLogs([mode: ['scheduledJobs', 'hubEvents'], pageSize: 70])
+
+        then: '50 rows per tab by default'
+        result.modes.scheduledJobs.count == 50
+        result.modes.scheduledJobs.matched == 150
+        result.modes.scheduledJobs.nextCursor == '50'
+        result.modes.hubEvents.count == 0
+        !result.modes.hubEvents.containsKey('nextCursor')
+
+        and: 'pageSize sets it'
+        sized.modes.scheduledJobs.count == 70
+        sized.modes.scheduledJobs.nextCursor == '70'
+    }
+
+    def "hub_get_logs pageSize pages a single tab, alone or with a cursor"() {
+        given:
+        hubGet.register('/logs/json') { params -> logsJsonWithJobs(150) }
+
+        when:
+        def first = script.toolGetHubLogs([mode: 'scheduledJobs', pageSize: 40])
+        def next = script.toolGetHubLogs([mode: 'scheduledJobs', pageSize: 40, cursor: first.nextCursor])
+        def whole = script.toolGetHubLogs([mode: 'scheduledJobs'])
+
+        then:
+        first.entries*.id == (1..40).collect { "app${it}Recur.run".toString() }
+        first.nextCursor == '40'
+        next.entries*.id == (41..80).collect { "app${it}Recur.run".toString() }
+        next.nextCursor == '80'
+        whole.count == 150
+        !whole.containsKey('nextCursor')
+    }
+
+    def "hub_get_logs with a list of modes validates every tab before reading any"() {
+        given:
+        hubGet.register('/logs/json') { params -> logsJsonWithJobs(1) }
+
+        when: 'the MCP log comes first, so only the up-front check can catch the bad pageSize for the jobs tab'
+        script.toolGetHubLogs([mode: ['mcp', 'scheduledJobs'], pageSize: 500])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('pageSize must be a whole number from 1 to 100')
+        hubGet.calls.empty
+    }
+
+    def "hub_get_logs with a list of modes is an error when every tab fails, and keeps the other tabs when one does"() {
+        given:
+        hubGet.register('/logs/past/json') { params -> throw new RuntimeException('store down') }
+        hubGet.register('/logs/eventsJson') { params -> LOCATION_ROWS }
+        hubGet.register('/hub/eventsJson') { params -> '{"a":1}' }
+
+        when:
+        def one = script.toolGetHubLogs([mode: ['past', 'locationEvents']])
+        def all = script.toolGetHubLogs([mode: ['past', 'hubEvents']])
+
+        then:
+        one.failedModes == ['past']
+        !one.containsKey('isError')
+        one.modes.past.note.contains("hub_get_logs(mode='past')")
+        one.modes.locationEvents.count == 3
+        all.isError == true
+        all.success == false
+        all.error.contains('Every listed tab failed')
+    }
+
+    def "hub_get_logs with past and mcp listed returns both, each as its first page"() {
+        given:
+        hubGet.register('/logs/past/json') { params -> JsonOutput.toJson(['2026-09-06 12:00:00.000\tINFO\tapp|1|A|hello']) }
+
+        when:
+        def result = script.toolGetHubLogs([mode: ['past', 'mcp']])
+
+        then:
+        result.modes.keySet() as List == ['past', 'mcp']
+        result.modes.past.count == 1
+        result.modes.mcp.entries instanceof List
+    }
+
+    def "hub_get_logs with a list of modes takes pageSize for every tab, the MCP log as its limit"() {
+        given:
+        hubGet.register('/logs/json') { params -> logsJsonWithJobs(3) }
+        3.times { script.mcpLog('error', 'server', "entry ${it}") }
+
+        when:
+        def result = script.toolGetHubLogs([mode: ['scheduledJobs', 'mcp', 'status'], pageSize: 2])
+
+        then:
+        !result.containsKey('isError')
+        result.modes.keySet() as List == ['scheduledJobs', 'mcp', 'status']
+        result.modes.scheduledJobs.count == 2
+        result.modes.scheduledJobs.nextCursor != null
+        result.modes.mcp.entries.size() == 2
+        !result.modes.status.containsKey('isError')
+    }
+
+    @Unroll
+    def "hub_get_logs with a list of modes refuses #args before reading anything"() {
+        when:
+        script.toolGetHubLogs(args)
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains(says)
+        hubGet.calls.empty
+
+        where:
+        args                                                              || says
+        [mode: ['locationEvents', 'scheduledJobs'], deviceId: '5']        || "do not apply to log mode 'locationEvents'"
+        [mode: ['hubEvents', 'locationEvents'], cursor: '']               || 'cursor pages one mode'
+        [mode: ['hubEvents', 'nope']]                                     || 'Invalid log mode: nope'
+        [mode: []]                                                        || 'at least one tab'
+        [mode: ['mcp', 'status'], pageSize: 0]                            || 'pageSize must be a whole number from 1 to 100'
+        [mode: ['mcp', 'status'], pageSize: 101]                          || 'pageSize must be a whole number from 1 to 100'
+        [mode: ['mcp', 'status'], pageSize: '20']                         || 'pageSize must be a whole number from 1 to 100'
+        [mode: 'mcp', limit: -1]                                          || 'limit must be a whole number'
+        [mode: 'mcp', limit: 'abc']                                       || 'limit must be a whole number'
+        [mode: 'mcp', limit: 4294967301L]                                 || 'limit must be a whole number'
+        [mode: 'mcp', level: 'bogus']                                     || 'level must be one of'
+    }
+
+    @Unroll
+    def "hub_get_logs via dispatch takes a list of modes (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        hubGet.register('/logs/eventsJson') { params -> LOCATION_ROWS }
+        hubGet.register('/hub/eventsJson') { params -> '[]' }
+
+        when:
+        def inner = useGateways ?
+            mcpDriver.parseInner(mcpDriver.callTool('hub_read_diagnostics', [tool: 'hub_get_logs', args: [mode: ['locationEvents', 'hubEvents']]])) :
+            mcpDriver.parseInner(mcpDriver.callTool('hub_get_logs', [mode: ['locationEvents', 'hubEvents']]))
+
+        then:
+        inner.modes.locationEvents.count == 3
+        inner.modes.hubEvents.count == 0
+
+        where:
+        useGateways << [false, true]
+    }
+
+    def "hub_get_logs hubEvents reads the Hub events tab"() {
+        given:
+        hubGet.register('/hub/eventsJson') { params ->
+            '[{"name":"lowMemory","value":"","descriptionText":"Hub memory is critically low, rebooting now","date":"2009-02-13T22:15:00.000+0000"}]'
+        }
+
+        when:
+        def result = script.toolGetHubLogs([mode: 'hubEvents', pattern: 'lowMemory'])
+
+        then:
+        hubGet.calls*.path == ['/hub/eventsJson']
+        result.count == 1
+        result.entries[0].descriptionText.contains('rebooting now')
+    }
+
+    @Unroll
+    def "hub_get_logs locationEvents pattern #pattern searches name, descriptionText and value"() {
+        given:
+        hubGet.register('/logs/eventsJson') { params -> LOCATION_ROWS }
+
+        when:
+        def result = script.toolGetHubLogs([mode: 'locationEvents', pattern: pattern])
+
+        then:
+        result.entries*.name == names
+        result.matched == names.size()
+        result.total == 3
+
+        where:
+        pattern        || names
+        '^mode$'       || ['mode']
+        'armed'        || ['hsmStatus']
+        '^3$'          || ['variable:guestCount']
+        'HUB VARIABLE' || ['variable:guestCount']
+    }
+
+    def "hub_get_logs event since excludes the bookmarked instant and until bounds the window"() {
+        given:
+        hubGet.register('/logs/eventsJson') { params -> LOCATION_ROWS }
+
+        when: 'since is the hsmStatus row\'s own date'
+        def after = script.toolGetHubLogs([mode: 'locationEvents', since: '2009-02-13T22:00:00.000+0000'])
+        def slice = script.toolGetHubLogs([mode: 'locationEvents', since: '2009-02-13T20:00:00.000+0000', until: '2009-02-13T22:00:00.000+0000'])
+        def relative = script.toolGetHubLogs([mode: 'locationEvents', since: '2h'])
+
+        then:
+        after.entries*.name == ['mode']
+        slice.entries*.name == ['hsmStatus', 'variable:guestCount']
+        relative.entries*.name == ['mode', 'hsmStatus']
+    }
+
+    def "hub_get_logs event rows whose date cannot be read stay and are counted"() {
+        given:
+        hubGet.register('/logs/eventsJson') { params ->
+            '''[
+              {"name":"mode","value":"Night","descriptionText":"in window","date":"2009-02-13T22:00:00.000+0000"},
+              {"name":"mode","value":"Day","descriptionText":"no date"}
+            ]'''
+        }
+
+        when:
+        def result = script.toolGetHubLogs([mode: 'locationEvents', since: '6h'])
+
+        then:
+        result.count == 2
+        result.timeFilterUnparseable == 1
+    }
+
+    def "hub_get_logs event limit keeps the first rows and cursor pages them"() {
+        given:
+        hubGet.register('/logs/eventsJson') { params -> LOCATION_ROWS }
+
+        when:
+        def limited = script.toolGetHubLogs([mode: 'locationEvents', limit: 2])
+        def firstPage = script.toolGetHubLogs([mode: 'locationEvents', cursor: ''])
+
+        then:
+        limited.entries*.name == ['mode', 'hsmStatus']
+        limited.matched == 3
+        firstPage.count == 3
+        !firstPage.containsKey('nextCursor')
+    }
+
+    @Unroll
+    def "hub_get_logs #mode reports an unreadable endpoint as an error result"() {
+        given:
+        hubGet.register(path) { params -> body() }
+
+        when:
+        def result = script.toolGetHubLogs([mode: mode])
+
+        then:
+        result.success == false
+        result.isError == true
+        result.error.contains(says)
+
+        where:
+        mode             | path                    | body                                         || says
+        'locationEvents' | '/logs/eventsJson'      | { throw new RuntimeException('store down') } || 'store down'
+        'hubEvents'      | '/hub/eventsJson'       | { '{"a":1}' }                                || 'unexpected shape'
+        'cloudCalls'     | '/logs/cloudCalls/json' | { '[1]' }                                    || 'unexpected shape'
+    }
+
+    @Unroll
+    def "hub_get_logs refuses #args for mode #mode before reading anything"() {
+        when:
+        script.toolGetHubLogs([mode: mode] + args)
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains(says)
+        hubGet.calls.empty
+
+        where:
+        mode             | args                            || says
+        'locationEvents' | [deviceId: '5']                 || 'do not apply'
+        'hubEvents'      | [level: 'warn']                 || 'do not apply'
+        'devices'        | [since: '1h']                   || 'do not apply'
+        'scheduledJobs'  | [sortBy: 'pct']                 || 'do not apply'
+        'status'         | [limit: 5]                      || 'do not apply'
+        'devices'        | [sortBy: 'totalMs']             || 'sortBy must be one of'
+        'past'           | [since: '31d']                  || '30d cap'
+        'past'           | [since: 'yesterday']            || 'Cannot parse since'
+        'past'           | [since: '1h', until: '2h']      || 'until must be later than since'
+        'past'           | [deviceId: '5', appId: '6']     || 'mutually exclusive'
+        'scheduledJobs'  | [appId: 'x']                    || 'appId must be numeric'
+        'past'           | [patterns: ['ok', '(']]         || 'Invalid regex patterns[1]'
+        'nope'           | [:]                             || 'Invalid log mode'
+        'scheduledJobs'  | [pageSize: 0]                   || 'pageSize must be a whole number from 1 to 100'
+        'scheduledJobs'  | [pageSize: 101]                 || 'pageSize must be a whole number from 1 to 100'
+        'scheduledJobs'  | [pageSize: '20']                || 'pageSize must be a whole number from 1 to 100'
+        'scheduledJobs'  | [pageSize: 20.5]                || 'pageSize must be a whole number from 1 to 100'
+        'mcp'            | [pageSize: 20]                  || 'do not apply'
+        'past'           | [source: 'Lock']                || 'Unknown parameter for hub_get_logs: source'
+        'devices'        | [type: 'app', includeCloudCalls: true] || 'Unknown parameters for hub_get_logs: type, includeCloudCalls'
+        'past'           | [limit: 'abc']                  || 'limit must be a whole number'
+        'past'           | [limit: -1]                     || 'limit must be a whole number'
+        'scheduledJobs'  | [pageSize: 4294967301L]         || 'pageSize must be a whole number from 1 to 100'
+        'past'           | [since: '2026-02-30 10:00:00']  || 'no such date and time'
+        'past'           | [since: '2026-13-01T00:00:00Z'] || 'no such date and time'
+        'past'           | [since: '30']                   || "Cannot read since='30' as a time"
+        'past'           | [until: 30]                     || "Cannot read until='30' as a time"
+    }
 
     def "hub_list_device_events returns location events when deviceId is omitted (reads /logs/eventsJson)"() {
         given: '/logs/eventsJson stubbed with mode + HSM + hub-variable rows (real wire shape)'
@@ -437,15 +838,6 @@ class ToolManageLogsSpec extends ToolSpecBase {
         result.note.contains('retry')
     }
 
-    def "hub_list_device_events throws when device is not found"() {
-        when:
-        script.toolGetDeviceHistory([deviceId: '999'])
-
-        then:
-        def ex = thrown(IllegalArgumentException)
-        ex.message.contains('Device not found')
-    }
-
     @Unroll
     def "hub_list_device_events validates supplied #idCase instead of reading location history"() {
         given:
@@ -466,57 +858,6 @@ class ToolManageLogsSpec extends ToolSpecBase {
         'empty string'  | ''      | 'deviceId must be a non-empty string or integral number'
         'blank string'  | ' '     | 'deviceId must be a non-empty string or integral number'
         'boolean false' | false   | 'deviceId must be a non-empty string or integral number'
-    }
-
-    @Unroll
-    def "hub_list_device_events via dispatch rejects #idCase in history mode (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        hubGet.register('/logs/eventsJson') { '[]' }
-
-        when:
-        def response = mcpDriver.callTool('hub_list_device_events', [deviceId: inputId, hoursBack: 1])
-
-        then:
-        response.error == null
-        response.result.isError == true
-        mcpDriver.parseInner(response).error.contains('Device not found: 0')
-        hubGet.calls.empty
-
-        where:
-        useGateways | idCase         | inputId
-        false       | 'integer zero' | 0
-        false       | 'string zero'  | '0'
-        true        | 'integer zero' | 0
-        true        | 'string zero'  | '0'
-    }
-
-    @Unroll
-    def "hub_list_device_events with bypass refuses #inputId at native metadata (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        settingsMap.bypassDeviceAllowlist = true
-        hubGet.register('/device/fullJson/0') { '{"device":null}' }
-        hubGet.register('/logs/eventsJson') { '[]' }
-
-        when:
-        def response = mcpDriver.callTool('hub_list_device_events', [deviceId: inputId, hoursBack: 1])
-
-        then:
-        response.error == null
-        response.result.isError == true
-        def inner = mcpDriver.parseInner(response)
-        inner.success == false
-        inner.error == 'Device metadata fetch failed (/device/fullJson/0)'
-        inner.source != 'location'
-        hubGet.calls*.path == ['/device/fullJson/0']
-
-        where:
-        useGateways | inputId
-        false       | 0
-        false       | '0'
-        true        | 0
-        true        | '0'
     }
 
     @Unroll
@@ -542,6 +883,158 @@ class ToolManageLogsSpec extends ToolSpecBase {
         false       | 'null'    | [deviceId: null, hoursBack: 1]
         true        | 'omitted' | [hoursBack: 1]
         true        | 'null'    | [deviceId: null, hoursBack: 1]
+    }
+
+    def "hub_list_device_events location mode surfaces timeFilterUnparseable the same way"() {
+        given:
+        hubGet.register('/logs/eventsJson') { params ->
+            '''[
+              {"name":"mode","value":"Night","descriptionText":"in window","isStateChange":true,"type":"API","date":"2009-02-13T22:00:00.000+0000"},
+              {"name":"mode","value":"Day","descriptionText":"no date","isStateChange":true,"type":"API"}
+            ]'''
+        }
+
+        when:
+        def result = script.toolGetDeviceHistory([hoursBack: 6])
+
+        then: 'the dateless row survives and is counted'
+        result.count == 2
+        result.timeFilterUnparseable == 1
+    }
+
+    def "hub_list_device_events location mode: since drops pre-bookmark rows and echoes the bookmark"() {
+        given: 'no deviceId/appId -> location branch; one row after the bookmark, one before it'
+        hubGet.register('/logs/eventsJson') { params ->
+            '''[
+              {"name":"mode","value":"Night","descriptionText":"after bookmark","isStateChange":true,"type":"API","date":"2009-02-13T22:30:00.000+0000"},
+              {"name":"mode","value":"Day","descriptionText":"before bookmark","isStateChange":true,"type":"API","date":"2009-02-13T21:00:00.000+0000"}
+            ]'''
+        }
+
+        when:
+        def result = script.toolGetDeviceHistory([since: '2009-02-13T22:00:00.000+0000'])
+
+        then: 'location source; only the post-bookmark row survives'
+        result.source == 'location'
+        result.count == 1
+        result.events*.description == ['after bookmark']
+
+        and: 'the explicit window is reported (caller string echoed verbatim); no hoursBack as if it bounded the result'
+        result.sinceMode == 'explicit'
+        result.since == '2009-02-13T22:00:00.000+0000'
+        !result.containsKey('hoursBack')
+        Date.parse("yyyy-MM-dd'T'HH:mm:ss.SSSZ", result.sinceTimestamp).time == 1234562400000L
+    }
+
+    def "hub_list_device_events location mode without since reports sinceMode=relative and echoes hoursBack"() {
+        given:
+        hubGet.register('/logs/eventsJson') { params ->
+            '[{"name":"mode","value":"Night","descriptionText":"in window","isStateChange":true,"type":"API","date":"2009-02-13T22:00:00.000+0000"}]'
+        }
+
+        when:
+        def result = script.toolGetDeviceHistory([hoursBack: 6])
+
+        then: 'the relative path is labelled and hoursBack is the bounding field; no spurious since'
+        result.sinceMode == 'relative'
+        result.hoursBack == 6
+        !result.containsKey('since')
+        result.sinceTimestamp == new Date(1234567890000L - (6 * 3600000L)).format("yyyy-MM-dd'T'HH:mm:ss.SSSZ")
+    }
+
+    def "hub_list_device_events location mode: the bookmarked instant is EXCLUDED (strictly after)"() {
+        given: 'one row exactly AT the bookmark, one strictly after it'
+        hubGet.register('/logs/eventsJson') { params ->
+            '''[
+              {"name":"mode","value":"Night","descriptionText":"after bookmark","isStateChange":true,"type":"API","date":"2009-02-13T22:30:00.000+0000"},
+              {"name":"mode","value":"Day","descriptionText":"at the bookmark","isStateChange":true,"type":"API","date":"2009-02-13T22:00:00.000+0000"}
+            ]'''
+        }
+
+        when:
+        def result = script.toolGetDeviceHistory([since: '2009-02-13T22:00:00.000+0000'])
+
+        then: 'the at-bookmark row is dropped; only the strictly-newer row survives'
+        result.source == 'location'
+        result.count == 1
+        result.events*.description == ['after bookmark']
+    }
+
+    def "hub_list_device_events throws when device is not found"() {
+        when:
+        script.toolGetDeviceHistory([deviceId: '999'])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('Device not found')
+    }
+
+    @Unroll
+    def "hub_list_device_events validates supplied #idCase before any read"() {
+        given:
+        when:
+        script.toolGetDeviceHistory([deviceId: inputId, hoursBack: 1])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains(expectedError)
+        hubGet.calls.empty
+
+        where:
+        idCase          | inputId | expectedError
+        'integer zero'  | 0       | 'Device not found: 0'
+        'string zero'   | '0'     | 'Device not found: 0'
+        'empty string'  | ''      | 'deviceId must be a non-empty string or integral number'
+        'blank string'  | ' '     | 'deviceId must be a non-empty string or integral number'
+        'boolean false' | false   | 'deviceId must be a non-empty string or integral number'
+    }
+
+    @Unroll
+    def "hub_list_device_events via dispatch rejects #idCase in history mode (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+
+        when:
+        def response = mcpDriver.callTool('hub_list_device_events', [deviceId: inputId, hoursBack: 1])
+
+        then:
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Device not found: 0')
+        hubGet.calls.empty
+
+        where:
+        useGateways | idCase         | inputId
+        false       | 'integer zero' | 0
+        false       | 'string zero'  | '0'
+        true        | 'integer zero' | 0
+        true        | 'string zero'  | '0'
+    }
+
+    @Unroll
+    def "hub_list_device_events with bypass refuses #inputId at native metadata (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.bypassDeviceAllowlist = true
+        hubGet.register('/device/fullJson/0') { '{"device":null}' }
+
+        when:
+        def response = mcpDriver.callTool('hub_list_device_events', [deviceId: inputId, hoursBack: 1])
+
+        then:
+        response.error == null
+        response.result.isError == true
+        def inner = mcpDriver.parseInner(response)
+        inner.success == false
+        inner.error == 'Device metadata fetch failed (/device/fullJson/0)'
+        hubGet.calls*.path == ['/device/fullJson/0']
+
+        where:
+        useGateways | inputId
+        false       | 0
+        false       | '0'
+        true        | 0
+        true        | '0'
     }
 
     // -------- toolGetDeviceHistory: per-app events (appId) --------
@@ -571,7 +1064,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         !result.containsKey('deviceId')
         result.hoursBack == 6
 
-        and: 'relative mode is labelled and does not echo a since (parity with the location pin)'
+        and: 'relative mode is labelled and does not echo a since'
         result.sinceMode == 'relative'
         !result.containsKey('since')
 
@@ -607,23 +1100,6 @@ class ToolManageLogsSpec extends ToolSpecBase {
 
         and: 'the silent escape is surfaced with the affected row count'
         result.timeFilterUnparseable == 2
-    }
-
-    def "hub_list_device_events location mode surfaces timeFilterUnparseable the same way"() {
-        given:
-        hubGet.register('/logs/eventsJson') { params ->
-            '''[
-              {"name":"mode","value":"Night","descriptionText":"in window","isStateChange":true,"type":"API","date":"2009-02-13T22:00:00.000+0000"},
-              {"name":"mode","value":"Day","descriptionText":"no date","isStateChange":true,"type":"API"}
-            ]'''
-        }
-
-        when:
-        def result = script.toolGetDeviceHistory([hoursBack: 6])
-
-        then: 'the dateless row survives and is counted'
-        result.count == 2
-        result.timeFilterUnparseable == 1
     }
 
     def "hub_list_device_events applies attribute and limit filters to app events client-side"() {
@@ -744,7 +1220,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         result.events[0].value == 'on'
         result.events[1].name == 'level'
 
-        and: 'relative mode is labelled and does not echo a since (parity with the location pin)'
+        and: 'relative mode is labelled and does not echo a since'
         result.sinceMode == 'relative'
         !result.containsKey('since')
     }
@@ -956,46 +1432,6 @@ class ToolManageLogsSpec extends ToolSpecBase {
         Date.parse("yyyy-MM-dd'T'HH:mm:ss.SSSZ", result.sinceTimestamp).time == 1234562400000L
     }
 
-    def "hub_list_device_events location mode: since drops pre-bookmark rows and echoes the bookmark"() {
-        given: 'no deviceId/appId -> location branch; one row after the bookmark, one before it'
-        hubGet.register('/logs/eventsJson') { params ->
-            '''[
-              {"name":"mode","value":"Night","descriptionText":"after bookmark","isStateChange":true,"type":"API","date":"2009-02-13T22:30:00.000+0000"},
-              {"name":"mode","value":"Day","descriptionText":"before bookmark","isStateChange":true,"type":"API","date":"2009-02-13T21:00:00.000+0000"}
-            ]'''
-        }
-
-        when:
-        def result = script.toolGetDeviceHistory([since: '2009-02-13T22:00:00.000+0000'])
-
-        then: 'location source; only the post-bookmark row survives'
-        result.source == 'location'
-        result.count == 1
-        result.events*.description == ['after bookmark']
-
-        and: 'the explicit window is reported (caller string echoed verbatim); no hoursBack as if it bounded the result'
-        result.sinceMode == 'explicit'
-        result.since == '2009-02-13T22:00:00.000+0000'
-        !result.containsKey('hoursBack')
-        Date.parse("yyyy-MM-dd'T'HH:mm:ss.SSSZ", result.sinceTimestamp).time == 1234562400000L
-    }
-
-    def "hub_list_device_events location mode without since reports sinceMode=relative and echoes hoursBack"() {
-        given:
-        hubGet.register('/logs/eventsJson') { params ->
-            '[{"name":"mode","value":"Night","descriptionText":"in window","isStateChange":true,"type":"API","date":"2009-02-13T22:00:00.000+0000"}]'
-        }
-
-        when:
-        def result = script.toolGetDeviceHistory([hoursBack: 6])
-
-        then: 'the relative path is labelled and hoursBack is the bounding field; no spurious since'
-        result.sinceMode == 'relative'
-        result.hoursBack == 6
-        !result.containsKey('since')
-        result.sinceTimestamp == new Date(1234567890000L - (6 * 3600000L)).format("yyyy-MM-dd'T'HH:mm:ss.SSSZ")
-    }
-
     def "hub_list_device_events: a future since yields an empty list, not an error"() {
         given: 'native events include an existing row before the future window'
         def device = new TestDevice(id: 42, name: 'Kitchen Light', label: 'Kitchen Light')
@@ -1177,24 +1613,6 @@ class ToolManageLogsSpec extends ToolSpecBase {
         result.events*.description == ['after bookmark']
     }
 
-    def "hub_list_device_events location mode: the bookmarked instant is EXCLUDED (strictly after)"() {
-        given: 'one row exactly AT the bookmark, one strictly after it'
-        hubGet.register('/logs/eventsJson') { params ->
-            '''[
-              {"name":"mode","value":"Night","descriptionText":"after bookmark","isStateChange":true,"type":"API","date":"2009-02-13T22:30:00.000+0000"},
-              {"name":"mode","value":"Day","descriptionText":"at the bookmark","isStateChange":true,"type":"API","date":"2009-02-13T22:00:00.000+0000"}
-            ]'''
-        }
-
-        when:
-        def result = script.toolGetDeviceHistory([since: '2009-02-13T22:00:00.000+0000'])
-
-        then: 'the at-bookmark row is dropped; only the strictly-newer row survives'
-        result.source == 'location'
-        result.count == 1
-        result.events*.description == ['after bookmark']
-    }
-
     def "hub_list_device_events device mode: the bookmarked instant is EXCLUDED (strictly after)"() {
         given: 'the native endpoint returns a row AT the bookmark and one after it; the filter must drop the at-bookmark row'
         def device = new TestDevice(id: 42, name: 'Kitchen Light', label: 'Kitchen Light')
@@ -1259,330 +1677,254 @@ class ToolManageLogsSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    // -------- toolGetPerformanceStats --------
+    // -------- hub_get_logs: device/app stats --------
 
-    def "hub_get_performance_stats returns device stats sorted by pct (default)"() {
-        given:
-        settingsMap.enableRead = true
-        hubGet.register('/logs/json') { params ->
-            JsonOutput.toJson([
-                uptime: '5d 2h',
-                totalDevicesRuntime: 1000,
-                devicePct: 12.5,
-                totalAppsRuntime: 500,
-                appPct: 6.25,
-                deviceStats: [
-                    [id: 1, name: 'SlowDevice', pct: 15.0, count: 100, total: 500, stateSize: 1000, formattedPct: '15.00', formattedPctTotal: '50.00'],
-                    [id: 2, name: 'FastDevice', pct: 2.0, count: 5, total: 10, stateSize: 100, formattedPct: '2.00', formattedPctTotal: '1.00']
-                ],
-                appStats: []
-            ])
-        }
-
-        when:
-        def result = script.toolGetPerformanceStats([:])
-
-        then: 'sorted descending by pct'
-        result.deviceStats.size() == 2
-        result.deviceStats[0].name == 'SlowDevice'
-        result.deviceStats[1].name == 'FastDevice'
-        result.deviceSummary.deviceCount == 2
-        result.uptime == '5d 2h'
+    private String logsJsonStats(Map extra = [:]) {
+        JsonOutput.toJson([
+            uptime: '5d 2h', devicesUptime: '5d 2h', totalDevicesRuntime: '0m 9s', devicePct: '0.1%',
+            appsUptime: '5d 2h', totalAppsRuntime: '3m 44s', appPct: '0.1%',
+            deviceStats: [
+                [id: 1, name: 'SlowDevice', pct: 15.0, count: 100, total: 500, average: 5.0, stateSize: 1000, largeState: true,
+                 formattedPct: '15.0', formattedCount: '100', customAttributes: [eventsCount: 8, statesCount: 9]],
+                [id: 2, name: 'FastDevice', pct: 2.0, count: 900, total: 10, average: 0.1, stateSize: 100, largeState: false,
+                 formattedPct: '2.0', formattedCount: '900']
+            ],
+            appStats: [[id: 99, name: 'MyApp', pct: 5.0, count: 10, total: 200, stateSize: 50, formattedPct: '5.0']],
+            jobs: [], runningJobs: [], hubCommands: []
+        ] + extra)
     }
 
-    @spock.lang.Unroll
-    def "hub_get_performance_stats via dispatch returns sorted device stats (useGateways=#useGateways)"() {
+    def "hub_get_logs devices returns the native stat rows by % busy with the page summary"() {
         given:
-        settingsMap.useGateways = useGateways
-        settingsMap.enableRead = true
-        hubGet.register('/logs/json') { params ->
-            JsonOutput.toJson([
-                uptime: '5d 2h',
-                deviceStats: [
-                    [id: 1, name: 'SlowDevice', pct: 15.0, count: 100, total: 500, stateSize: 1000, formattedPct: '15.00'],
-                    [id: 2, name: 'FastDevice', pct: 2.0, count: 5, total: 10, stateSize: 100, formattedPct: '2.00']
-                ],
-                appStats: []
-            ])
-        }
+        hubGet.register('/logs/json') { params -> logsJsonStats() }
 
         when:
-        def response = mcpDriver.callTool('hub_get_performance_stats', [:])
+        def result = script.toolGetHubLogs([mode: 'devices'])
+
+        then: 'native rows, highest pct first; the formatted display copies are dropped'
+        result.mode == 'devices'
+        result.entries*.name == ['SlowDevice', 'FastDevice']
+        result.entries[0] == [id: 1, name: 'SlowDevice', pct: 15.0, count: 100, total: 500, average: 5.0, stateSize: 1000,
+                              largeState: true, customAttributes: [eventsCount: 8, statesCount: 9]]
+        result.summary == [devicesUptime: '5d 2h', totalDevicesRuntime: '0m 9s', devicePct: '0.1%']
+        result.uptime == '5d 2h'
+        result.total == 2
+    }
+
+    @Unroll
+    def "hub_get_logs devices via dispatch (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        hubGet.register('/logs/json') { params -> logsJsonStats() }
+
+        when:
+        def response = mcpDriver.callTool('hub_get_logs', [mode: 'devices', sortBy: 'count'])
 
         then:
-        response.error == null
         !response.result.isError
-        def inner = mcpDriver.parseInner(response)
-        inner.deviceStats.size() == 2
-        inner.deviceStats[0].name == 'SlowDevice'
-        inner.deviceStats[1].name == 'FastDevice'
+        mcpDriver.parseInner(response).entries*.name == ['FastDevice', 'SlowDevice']
 
         where:
         useGateways << [true, false]
     }
 
-    def "hub_get_performance_stats sortBy=count reorders results"() {
+    @Unroll
+    def "hub_get_logs devices sortBy=#sortBy"() {
         given:
-        settingsMap.enableRead = true
-        hubGet.register('/logs/json') { params ->
-            JsonOutput.toJson([
-                uptime: 'x',
-                deviceStats: [
-                    [id: 1, name: 'Few', count: 2, pct: 50.0, total: 100, formattedPct: '50.00'],
-                    [id: 2, name: 'Many', count: 200, pct: 1.0, total: 50, formattedPct: '1.00']
-                ],
-                appStats: []
-            ])
-        }
+        hubGet.register('/logs/json') { params -> logsJsonStats() }
 
-        when:
-        def result = script.toolGetPerformanceStats([sortBy: 'count'])
+        expect:
+        script.toolGetHubLogs([mode: 'devices', sortBy: sortBy]).entries*.id == ids
 
-        then:
-        result.deviceStats[0].name == 'Many'
-        result.deviceStats[1].name == 'Few'
+        where:
+        sortBy      || ids
+        'pct'       || [1, 2]
+        'count'     || [2, 1]
+        'total'     || [1, 2]
+        'stateSize' || [1, 2]
+        'name'      || [2, 1]
     }
 
-    def "hub_get_performance_stats type=app returns only app stats"() {
+    def "hub_get_logs apps returns only app rows with the apps summary"() {
         given:
-        settingsMap.enableRead = true
-        hubGet.register('/logs/json') { params ->
-            JsonOutput.toJson([
-                uptime: 'x',
-                totalAppsRuntime: 100,
-                appPct: 5.0,
-                deviceStats: [[id: 1, name: 'D', pct: 1.0, formattedPct: '1.00']],
-                appStats: [[id: 99, name: 'MyApp', pct: 5.0, count: 10, total: 200, formattedPct: '5.00']]
-            ])
-        }
+        hubGet.register('/logs/json') { params -> logsJsonStats() }
 
         when:
-        def result = script.toolGetPerformanceStats([type: 'app'])
+        def result = script.toolGetHubLogs([mode: 'apps'])
 
         then:
-        result.appStats.size() == 1
-        result.appStats[0].name == 'MyApp'
-        result.deviceStats == null
-        result.appSummary.appCount == 1
+        result.entries*.name == ['MyApp']
+        result.summary == [appsUptime: '5d 2h', totalAppsRuntime: '3m 44s', appPct: '0.1%']
     }
 
-    def "hub_get_performance_stats surfaces the largeState flag on flagged entries"() {
+    def "hub_get_logs stats limit defaults to 20, 0 returns every row, and an id keeps one row"() {
         given:
-        settingsMap.enableRead = true
-        hubGet.register('/logs/json') { params ->
-            JsonOutput.toJson([
-                uptime: 'x',
-                deviceStats: [
-                    [id: 1, name: 'FatState', pct: 10.0, count: 50, total: 100, stateSize: 50000, formattedPct: '10.00', largeState: true],
-                    [id: 2, name: 'LeanState', pct: 1.0, count: 5, total: 10, stateSize: 100, formattedPct: '1.00']
-                ],
-                appStats: []
-            ])
-        }
+        def many = (1..25).collect { [id: it, name: "D${it}".toString(), pct: it as double] }
+        hubGet.register('/logs/json') { params -> logsJsonStats(deviceStats: many) }
 
         when:
-        def result = script.toolGetPerformanceStats([:])
+        def byDefault = script.toolGetHubLogs([mode: 'devices'])
+        def all = script.toolGetHubLogs([mode: 'devices', limit: 0])
+        def one = script.toolGetHubLogs([mode: 'devices', deviceId: '7'])
+        def app = script.toolGetHubLogs([mode: 'apps', appId: '99'])
 
         then:
-        result.deviceStats[0].name == 'FatState'
-        result.deviceStats[0].largeState == true
-        result.deviceStats[1].name == 'LeanState'
-        !result.deviceStats[1].containsKey('largeState')
+        byDefault.count == 20
+        byDefault.matched == 25
+        byDefault.entries[0].id == 25
+        all.count == 25
+        one.entries*.id == [7]
+        app.entries*.name == ['MyApp']
     }
 
-    def "hub_get_performance_stats limit=0 returns all entries with the unlimited-response note"() {
-        given:
-        settingsMap.enableRead = true
-        hubGet.register('/logs/json') { params ->
-            JsonOutput.toJson([
-                uptime: 'x',
-                deviceStats: [[id: 1, name: 'A', pct: 1.0, formattedPct: '1.00']],
-                appStats: [[id: 2, name: 'B', pct: 1.0, formattedPct: '1.00']]
-            ])
-        }
-
-        when:
-        def result = script.toolGetPerformanceStats([type: 'both', limit: 0])
-
-        then:
-        result.note?.contains('Returning all')
-        result.note?.contains('2 entries')
-    }
-
-    def "hub_get_performance_stats is blocked by the central Read master gate"() {
-        // The read gate is now central (executeTool), not inside the /logs/json fetch.
+    def "hub_get_logs is blocked by the central Read master gate"() {
         given:
         settingsMap.enableRead = false
 
         when:
-        script.executeTool("hub_get_performance_stats", [:])
+        script.executeTool("hub_get_logs", [mode: 'scheduledJobs'])
 
         then:
         def e = thrown(IllegalArgumentException)
         e.message.contains("Read tools are disabled")
     }
 
-    // -------- toolGetHubJobs --------
+    // -------- hub_get_logs: scheduled jobs, running jobs, hub actions --------
 
-    def "hub_get_jobs returns scheduled + running + hubActions"() {
-        given:
-        settingsMap.enableRead = true
+    private String logsJsonWithJobs(int jobCount) {
+        JsonOutput.toJson([
+            uptime: '1d',
+            jobs: (1..jobCount).collect {
+                [id: "app${it}Recur.run".toString(), name: "Job${it}".toString(), link: "/installedapp/configure/${it}".toString(),
+                 recurring: true, methodName: 'run', nextRun: '2026-04-21 02:00:00 EDT', nextRunDt: '2026-04-21T06:00:00+0000']
+            },
+            runningJobs: [[name: 'HubCheck', link: '/device/edit/900', methodName: 'checkHealth', runningFor: '2s']],
+            hubCommands: [[type: 'dev', id: 900, name: 'Porch', link: '/device/edit/900']]
+        ])
+    }
+
+    def "hub_get_logs scheduledJobs keeps the native link and nextRunDt and adds the owner from the link"() {
+        given: 'one app job, one device job, one system job (empty link), as the Logs page reports them'
         hubGet.register('/logs/json') { params ->
-            JsonOutput.toJson([
-                uptime: '1d',
-                jobs: [
-                    [id: 1, name: 'NightlyBackup', recurring: true, methodName: 'runBackup', nextRun: '2026-04-21 02:00:00'],
-                    [id: 2, name: 'Poll',          recurring: true, methodName: 'poll',      nextRun: '2026-04-21 10:00:00']
-                ],
-                runningJobs: [
-                    [id: 3, name: 'HubCheck', methodName: 'checkHealth']
-                ],
-                hubCommands: ['cmd1', 'cmd2', 'cmd3']
-            ])
+            JsonOutput.toJson([uptime: '1d', runningJobs: [], hubCommands: [], jobs: [
+                [id: 'app2Recur.checkForUpdate', name: 'MCP', link: '/installedapp/configure/2', recurring: true,
+                 methodName: 'checkForUpdate', nextRun: '2026-10-23 03:00:00 EDT', nextRunDt: '2026-10-23T07:00:00+0000'],
+                [id: 'dev54Recur.deviceHealthCheck', name: 'Sensor', link: '/device/edit/54', recurring: true,
+                 methodName: 'deviceHealthCheck', nextRun: '2026-10-22 22:46:54 EDT', nextRunDt: '2026-10-23T02:46:54+0000'],
+                [id: 'system.sunJob', name: 'sunJob', link: '', recurring: false, methodName: null,
+                 nextRun: '2026-10-22 23:00:00 EDT', nextRunDt: '2026-10-23T03:00:00+0000']
+            ]])
         }
 
         when:
-        def result = script.toolGetHubJobs([:])
+        def result = script.toolGetHubLogs([mode: 'scheduledJobs'])
 
         then:
-        result.scheduledJobs.count == 2
-        result.scheduledJobs.jobs[0].name == 'NightlyBackup'
-        result.runningJobs.count == 1
-        result.hubActions.count == 3
+        result.entries[0] == [id: 'app2Recur.checkForUpdate', name: 'MCP', link: '/installedapp/configure/2', recurring: true,
+                              methodName: 'checkForUpdate', nextRun: '2026-10-23 03:00:00 EDT', nextRunDt: '2026-10-23T07:00:00+0000',
+                              owner: [type: 'app', id: 2]]
+        result.entries[1].owner == [type: 'device', id: 54]
+        !result.entries[2].containsKey('owner')
+        result.entries[2].link == ''
         result.uptime == '1d'
     }
 
-    @spock.lang.Unroll
-    def "hub_get_jobs via dispatch returns scheduled + running + hubActions (useGateways=#useGateways)"() {
+    def "hub_get_logs job modes filter by owner and search name and methodName"() {
         given:
-        settingsMap.useGateways = useGateways
-        settingsMap.enableRead = true
-        hubGet.register('/logs/json') { params ->
-            JsonOutput.toJson([
-                uptime: '1d',
-                jobs: [
-                    [id: 1, name: 'NightlyBackup', recurring: true, methodName: 'runBackup', nextRun: '2026-04-21 02:00:00']
-                ],
-                runningJobs: [
-                    [id: 3, name: 'HubCheck', methodName: 'checkHealth']
-                ],
-                hubCommands: ['cmd1', 'cmd2']
-            ])
-        }
+        hubGet.register('/logs/json') { params -> logsJsonWithJobs(3) }
 
         when:
-        def response = mcpDriver.callTool('hub_get_jobs', [:])
+        def byApp = script.toolGetHubLogs([mode: 'scheduledJobs', appId: '2'])
+        def byMethod = script.toolGetHubLogs([mode: 'scheduledJobs', pattern: '^run$'])
+        def running = script.toolGetHubLogs([mode: 'runningJobs', deviceId: '900'])
+        def actions = script.toolGetHubLogs([mode: 'hubActions'])
+        def wrongKind = script.toolGetHubLogs([mode: 'runningJobs', appId: '900'])
 
         then:
-        response.error == null
+        byApp.entries*.id == ['app2Recur.run']
+        byMethod.count == 3
+        running.entries == [[name: 'HubCheck', link: '/device/edit/900', methodName: 'checkHealth', runningFor: '2s',
+                             owner: [type: 'device', id: 900]]]
+        actions.entries == [[type: 'dev', id: 900, name: 'Porch', link: '/device/edit/900', owner: [type: 'device', id: 900]]]
+        wrongKind.count == 0
+    }
+
+    @Unroll
+    def "hub_get_logs scheduledJobs via dispatch (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        hubGet.register('/logs/json') { params -> logsJsonWithJobs(1) }
+
+        when:
+        def response = mcpDriver.callTool('hub_get_logs', [mode: 'scheduledJobs'])
+
+        then:
         !response.result.isError
         def inner = mcpDriver.parseInner(response)
-        inner.scheduledJobs.count == 1
-        inner.scheduledJobs.jobs[0].name == 'NightlyBackup'
-        inner.runningJobs.count == 1
-        inner.hubActions.count == 2
+        inner.entries[0].owner == [type: 'app', id: 1]
         inner.uptime == '1d'
 
         where:
         useGateways << [true, false]
     }
 
-    def "hub_get_jobs is blocked by the central Read master gate"() {
+    def "hub_get_logs scheduledJobs cursor pages 100 at a time"() {
         given:
-        settingsMap.enableRead = false
-
-        when:
-        script.executeTool("hub_get_jobs", [:])
-
-        then:
-        def e = thrown(IllegalArgumentException)
-        e.message.contains("Read tools are disabled")
-    }
-
-    // -------- /logs/json snapshot + hub_get_jobs cursor --------
-
-    private String logsJsonWithJobs(int jobCount) {
-        JsonOutput.toJson([
-            uptime: '1d',
-            jobs: (1..jobCount).collect { [id: it, name: "Job${it}".toString(), recurring: true, methodName: 'run', nextRun: '2026-04-21 02:00:00'] },
-            runningJobs: [[id: 900, name: 'HubCheck', methodName: 'checkHealth']],
-            hubCommands: ['cmd1']
-        ])
-    }
-
-    def "hub_get_jobs cursor pages scheduledJobs 100 at a time while the other tables stay in full"() {
-        given:
-        settingsMap.enableRead = true
         hubGet.register('/logs/json') { params -> logsJsonWithJobs(150) }
 
-        when: 'no cursor'
-        def full = script.toolGetHubJobs([:])
+        when:
+        def full = script.toolGetHubLogs([mode: 'scheduledJobs'])
+        def first = script.toolGetHubLogs([mode: 'scheduledJobs', cursor: ''])
+        def second = script.toolGetHubLogs([mode: 'scheduledJobs', cursor: first.nextCursor])
 
-        then: 'the whole-list shape, count matching the array, no cursor fields'
-        full.scheduledJobs.count == 150
-        full.scheduledJobs.jobs.size() == 150
-        !full.scheduledJobs.containsKey('total')
+        then:
+        full.count == 150
         !full.containsKey('nextCursor')
-
-        when: 'first page'
-        def first = script.toolGetHubJobs([cursor: ''])
-
-        then:
-        first.scheduledJobs.count == 100
-        first.scheduledJobs.jobs*.id == (1..100).toList()
-        first.scheduledJobs.total == 150
+        first.count == 100
+        first.entries*.name == (1..100).collect { "Job${it}".toString() }
         first.nextCursor == '100'
-        first.runningJobs.count == 1
-        first.hubActions.count == 1
-
-        when: 'second page'
-        def second = script.toolGetHubJobs([cursor: first.nextCursor])
-
-        then:
-        second.scheduledJobs.count == 50
-        second.scheduledJobs.jobs*.id == (101..150).toList()
-        second.scheduledJobs.total == 150
+        second.count == 50
+        second.entries*.name == (101..150).collect { "Job${it}".toString() }
         !second.containsKey('nextCursor')
-        second.runningJobs.count == 1
-        second.hubActions.count == 1
     }
 
-    def "both Logs-page reads share one /logs/json fetch inside the snapshot TTL and refetch after it"() {
+    // -------- /logs/json snapshot --------
+
+    def "every Logs-page mode shares one /logs/json fetch inside the snapshot TTL and refetches after it"() {
         given:
-        settingsMap.enableRead = true
         def fetches = new java.util.concurrent.atomic.AtomicInteger(0)
         hubGet.register('/logs/json') { params -> fetches.incrementAndGet(); logsJsonWithJobs(2) }
         def virtualNow = new java.util.concurrent.atomic.AtomicLong(1234567890000L)
         NOW_OVERRIDE.set({ -> virtualNow.get() })
 
-        when: 'jobs, then performance stats, then a jobs page'
-        def jobs = script.toolGetHubJobs([:])
-        def stats = script.toolGetPerformanceStats([type: 'both'])
-        def paged = script.toolGetHubJobs([cursor: ''])
+        when:
+        def jobs = script.toolGetHubLogs([mode: 'scheduledJobs'])
+        def stats = script.toolGetHubLogs([mode: 'apps'])
+        def running = script.toolGetHubLogs([mode: 'runningJobs'])
+        def paged = script.toolGetHubLogs([mode: 'scheduledJobs', cursor: ''])
 
-        then: 'one inline fetch served all three; no worker on an unbudgeted LAN request'
+        then: 'one inline fetch served all four; no worker on an unbudgeted LAN request'
         fetches.get() == 1
-        jobs.scheduledJobs.count == 2
+        jobs.count == 2
         jobs.snapshot.background == false
         jobs.snapshot.budgeted == false
         jobs.snapshot.ageMs == 0L
         stats.snapshot.fetchedAt == jobs.snapshot.fetchedAt
-        stats.uptime == '1d'
-        stats.deviceSummary.deviceCount == 0
-        paged.scheduledJobs.total == 2
+        stats.entries == []
+        running.count == 1
+        paged.count == 2
         runInMillisCalls.isEmpty()
 
         when: 'the TTL passes'
         virtualNow.addAndGet(script._logsJsonSnapshotTtlMs() as Long)
-        script.toolGetHubJobs([:])
+        script.toolGetHubLogs([mode: 'hubActions'])
 
         then:
         fetches.get() == 2
     }
 
-    def "a relay-bound legacy hub_get_jobs schedules the background fetch, answers in_progress, then serves the landed snapshot"() {
+    def "a relay-bound legacy hub_get_logs job read schedules the background fetch, answers in_progress, then serves the landed snapshot"() {
         given:
-        settingsMap.enableRead = true
         settingsMap.relayBudgetMs = 6000
         script.metaClass._isCloudRequest = { -> true }
         def fetches = new java.util.concurrent.atomic.AtomicInteger(0)
@@ -1593,14 +1935,14 @@ class ToolManageLogsSpec extends ToolSpecBase {
         PAUSE_EXECUTION_OVERRIDE.set({ Long ms -> waitedMs.addAndGet(ms); virtualNow.addAndGet(ms) })
 
         when: 'the legacy dispatch path runs the read'
-        def response = mcpDriver.callTool('hub_get_jobs', [:])
+        def response = mcpDriver.callTool('hub_get_logs', [mode: 'scheduledJobs'])
         def inner = mcpDriver.parseInner(response)
 
         then: 'nothing was fetched on the request thread; one worker was scheduled; the call waited out its observe window'
         response.error == null
         !response.result.isError
         inner.status == 'in_progress'
-        inner.tool == 'hub_get_jobs'
+        inner.tool == 'hub_get_logs'
         inner.retryable == true
         fetches.get() == 0
         runInMillisCalls.size() == 1
@@ -1608,8 +1950,8 @@ class ToolManageLogsSpec extends ToolSpecBase {
         runInMillisCalls[0][2].overwrite == false
         waitedMs.get() == 4500L   // 6000 ms budget - 1500 ms headroom, capped at 4500 over the cloud
 
-        when: 'the same call arrives again while the worker is still queued'
-        def again = mcpDriver.parseInner(mcpDriver.callTool('hub_get_jobs', [:]))
+        when: 'another mode arrives while the worker is still queued'
+        def again = mcpDriver.parseInner(mcpDriver.callTool('hub_get_logs', [mode: 'devices']))
 
         then: 'no second worker'
         again.status == 'in_progress'
@@ -1617,21 +1959,50 @@ class ToolManageLogsSpec extends ToolSpecBase {
 
         when: 'Hubitat runs the worker and the client repeats the identical call'
         script.runLogsJsonFetch(runInMillisCalls[0][2].data as Map)
-        def served = mcpDriver.parseInner(mcpDriver.callTool('hub_get_jobs', [:]))
+        def served = mcpDriver.parseInner(mcpDriver.callTool('hub_get_logs', [mode: 'scheduledJobs']))
 
         then:
         fetches.get() == 1
-        served.scheduledJobs.count == 3
+        served.count == 3
         served.snapshot.background == true
         served.snapshot.budgeted == true
         served.uptime == '1d'
         runInMillisCalls.size() == 1
     }
 
+    def "a relay-bound hub_get_logs list of modes answers in_progress without reading the inline tabs, then serves every tab"() {
+        given:
+        settingsMap.relayBudgetMs = 6000
+        script.metaClass._isCloudRequest = { -> true }
+        def fetches = new java.util.concurrent.atomic.AtomicInteger(0)
+        hubGet.register('/logs/json') { params -> fetches.incrementAndGet(); logsJsonWithJobs(3) }
+        hubGet.register('/logs/eventsJson') { params -> LOCATION_ROWS }
+        def virtualNow = new java.util.concurrent.atomic.AtomicLong(1234567890000L)
+        NOW_OVERRIDE.set({ -> virtualNow.get() })
+        PAUSE_EXECUTION_OVERRIDE.set({ Long ms -> virtualNow.addAndGet(ms) })
+
+        when:
+        def first = mcpDriver.parseInner(mcpDriver.callTool('hub_get_logs', [mode: ['scheduledJobs', 'locationEvents']]))
+
+        then: 'the Logs page fetch is scheduled and the inline tab waits for the repeat'
+        first.status == 'in_progress'
+        first.tool == 'hub_get_logs'
+        runInMillisCalls.size() == 1
+        hubGet.calls.findAll { it.path == '/logs/eventsJson' }.empty
+
+        when:
+        script.runLogsJsonFetch(runInMillisCalls[0][2].data as Map)
+        def served = mcpDriver.parseInner(mcpDriver.callTool('hub_get_logs', [mode: ['scheduledJobs', 'locationEvents']]))
+
+        then:
+        fetches.get() == 1
+        served.modes.scheduledJobs.count == 3
+        served.modes.locationEvents.count == 3
+    }
+
     @Unroll
     def "a LAN request with lanBudgetMs=#lanBudget uses the background fetch and waits #expectedWait"() {
         given: 'budget - 1500 below the 6000 LAN cap (distinct from the 4500 cloud cap), the cap above it'
-        settingsMap.enableRead = true
         settingsMap.lanBudgetMs = lanBudget
         def fetches = new java.util.concurrent.atomic.AtomicInteger(0)
         hubGet.register('/logs/json') { params -> fetches.incrementAndGet(); logsJsonWithJobs(2) }
@@ -1641,9 +2012,9 @@ class ToolManageLogsSpec extends ToolSpecBase {
         PAUSE_EXECUTION_OVERRIDE.set({ Long ms -> waitedMs.addAndGet(ms); virtualNow.addAndGet(ms) })
 
         when:
-        def first = script.toolGetHubJobs([__reqT0: virtualNow.get()])
+        def first = script.toolGetHubLogs([mode: 'scheduledJobs', __reqT0: virtualNow.get()])
         script.runLogsJsonFetch(runInMillisCalls[0][2].data as Map)
-        def second = script.toolGetHubJobs([__reqT0: virtualNow.get()])
+        def second = script.toolGetHubLogs([mode: 'scheduledJobs', __reqT0: virtualNow.get()])
 
         then:
         script._isCloudRequest() == false
@@ -1652,7 +2023,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         waitedMs.get() == expectedWait
         runInMillisCalls.size() == 1
         fetches.get() == 1
-        second.scheduledJobs.count == 2
+        second.count == 2
 
         where:
         lanBudget | expectedWait
@@ -1663,7 +2034,6 @@ class ToolManageLogsSpec extends ToolSpecBase {
 
     def "a failed background /logs/json fetch is reported as an error result with a retry already scheduled"() {
         given:
-        settingsMap.enableRead = true
         settingsMap.relayBudgetMs = 6000
         script.metaClass._isCloudRequest = { -> true }
         def attempts = new java.util.concurrent.atomic.AtomicInteger(0)
@@ -1676,20 +2046,20 @@ class ToolManageLogsSpec extends ToolSpecBase {
         PAUSE_EXECUTION_OVERRIDE.set({ Long ms -> virtualNow.addAndGet(ms) })
 
         when: 'the first call schedules the worker, which fails; the repeat observes the failure'
-        def first = script.toolGetPerformanceStats([__reqT0: virtualNow.get()])
+        def first = script.toolGetHubLogs([mode: 'devices', __reqT0: virtualNow.get()])
         script.runLogsJsonFetch(runInMillisCalls[0][2].data as Map)
-        def second = script.toolGetPerformanceStats([__reqT0: virtualNow.get()])
+        def second = script.toolGetHubLogs([mode: 'devices', __reqT0: virtualNow.get()])
 
         then: 'the runtime-error contract, not another in_progress, and a replacement worker is queued'
         first.status == 'in_progress'
         second.success == false
         second.isError == true
-        second.error == "hub_get_performance_stats could not read the hub's Logs page: logs page timed out"
+        second.error == "hub_get_logs could not read the hub's Logs page: logs page timed out"
         second.note.contains('Repeat the identical call once')
         runInMillisCalls.size() == 2
 
         when: 'a second caller arrives before the retry lands'
-        def third = script.toolGetHubJobs([__reqT0: virtualNow.get()])
+        def third = script.toolGetHubLogs([mode: 'scheduledJobs', __reqT0: virtualNow.get()])
 
         then: 'it sees the same failure (not a silent in_progress) and does not stack a third worker'
         third.isError == true
@@ -1698,7 +2068,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
 
         when: 'the retry worker succeeds'
         script.runLogsJsonFetch(runInMillisCalls[1][2].data as Map)
-        def fourth = script.toolGetPerformanceStats([__reqT0: virtualNow.get()])
+        def fourth = script.toolGetHubLogs([mode: 'devices', __reqT0: virtualNow.get()])
 
         then: 'the failure is cleared by the successful publish'
         attempts.get() == 2
@@ -1708,7 +2078,6 @@ class ToolManageLogsSpec extends ToolSpecBase {
 
     def "a worker failure with no exception message still reports a failure, naming the exception class"() {
         given:
-        settingsMap.enableRead = true
         settingsMap.relayBudgetMs = 6000
         script.metaClass._isCloudRequest = { -> true }
         hubGet.register('/logs/json') { params -> throw new IllegalStateException() }
@@ -1717,9 +2086,9 @@ class ToolManageLogsSpec extends ToolSpecBase {
         PAUSE_EXECUTION_OVERRIDE.set({ Long ms -> virtualNow.addAndGet(ms) })
 
         when:
-        script.toolGetHubJobs([__reqT0: virtualNow.get()])
+        script.toolGetHubLogs([mode: 'scheduledJobs', __reqT0: virtualNow.get()])
         script.runLogsJsonFetch(runInMillisCalls[0][2].data as Map)
-        def result = script.toolGetHubJobs([__reqT0: virtualNow.get()])
+        def result = script.toolGetHubLogs([mode: 'scheduledJobs', __reqT0: virtualNow.get()])
 
         then:
         result.isError == true
@@ -1728,11 +2097,10 @@ class ToolManageLogsSpec extends ToolSpecBase {
 
     def "a fetch failure reaches the legacy dispatch envelope as isError"() {
         given:
-        settingsMap.enableRead = true
         hubGet.register('/logs/json') { params -> throw new RuntimeException('boom') }
 
         when:
-        def response = mcpDriver.callTool('hub_get_jobs', [:])
+        def response = mcpDriver.callTool('hub_get_logs', [mode: 'scheduledJobs'])
 
         then:
         response.result.isError == true
@@ -1741,11 +2109,10 @@ class ToolManageLogsSpec extends ToolSpecBase {
 
     def "an unexpected /logs/json shape is an error, not an empty hub"() {
         given:
-        settingsMap.enableRead = true
         hubGet.register('/logs/json') { params -> JsonOutput.toJson(body) }
 
         when:
-        def result = script.toolGetHubJobs([:])
+        def result = script.toolGetHubLogs([mode: 'scheduledJobs'])
 
         then:
         result.isError == true
@@ -1758,59 +2125,189 @@ class ToolManageLogsSpec extends ToolSpecBase {
         [uptime: '1d', jobs: [[id: 1], 'stray-string']]    | "'jobs' contains a non-object entry"
     }
 
-    def "the snapshot keeps only the fields the tools read and never the log buffer"() {
+    def "the snapshot keeps the page's tables and summary fields, without display copies or other top-level keys"() {
         given:
-        settingsMap.enableRead = true
         hubGet.register('/logs/json') { params ->
-            JsonOutput.toJson([
-                uptime: '1d',
-                logs: (1..500).collect { [id: it, msg: "SENTINEL-LOG-${it}".toString()] },
-                unusedTopLevel: 'x',
-                deviceStats: [[id: 1, name: 'D', count: 2, pct: 3.5, total: 4, average: 2.0, stateSize: 5,
-                               formattedPct: '3.50', formattedPctTotal: '0.10', hubActionCount: 1,
-                               pendingEventsCount: 0, cloudCallCount: 7, largeState: true,
-                               customAttributes: [eventsCount: 8, statesCount: 9, extra: 'drop'],
-                               junk: 'drop']],
-                appStats: [], jobs: [], runningJobs: [], hubCommands: []
-            ])
+            logsJsonStats(unusedTopLevel: 'SENTINEL-TOP', maxEvents: 11,
+                          deviceStats: [[id: 1, name: 'D', pct: 3.5, formattedPct: 'SENTINEL-FORMATTED', junk: 'native-kept']])
         }
 
         when:
-        def stats = script.toolGetPerformanceStats([type: 'device'])
+        script.toolGetHubLogs([mode: 'devices'])
         def cached = (scriptStaticField('LOGS_JSON_SNAPSHOT') as Map).snapshot as Map
         def json = JsonOutput.toJson(cached)
 
-        then: 'every supported field survives the trim'
-        stats.deviceStats[0] == [id: 1, name: 'D', count: 2, pctBusy: '3.50', pctTotal: '0.10', stateSize: 5,
-                                 totalMs: 4, averageMs: 2.0, totalEvents: 8, states: 9, hubActions: 1,
-                                 pendingEvents: 0, cloudCalls: 7, largeState: true]
-
-        and: 'the log buffer and unknown fields are not retained'
-        !json.contains('SENTINEL-LOG')
-        !json.contains('unusedTopLevel')
-        !json.contains('junk')
-        !json.contains('"extra"')
+        then:
+        cached.deviceStats == [[id: 1, name: 'D', pct: 3.5, junk: 'native-kept']]
+        !json.contains('SENTINEL')
+        !cached.containsKey('maxEvents')
+        cached.keySet().containsAll(['uptime', 'devicesUptime', 'appsUptime', 'jobs', 'runningJobs', 'hubCommands'])
     }
 
-    def "sorting a performance read never mutates the shared cached list"() {
+    def "sorting a stats read never mutates the shared cached list"() {
         given:
-        settingsMap.enableRead = true
         hubGet.register('/logs/json') { params ->
             JsonOutput.toJson([uptime: '1d', appStats: [], jobs: [],
                 deviceStats: [[id: 1, name: 'B', count: 1, pct: 9.0], [id: 2, name: 'A', count: 5, pct: 1.0]]])
         }
 
         when:
-        def byPct = script.toolGetPerformanceStats([type: 'device'])
-        def byName = script.toolGetPerformanceStats([type: 'device', sortBy: 'name'])
-        def byCount = script.toolGetPerformanceStats([type: 'device', sortBy: 'count'])
+        def byPct = script.toolGetHubLogs([mode: 'devices'])
+        def byName = script.toolGetHubLogs([mode: 'devices', sortBy: 'name'])
+        def byCount = script.toolGetHubLogs([mode: 'devices', sortBy: 'count'])
         def cached = ((scriptStaticField('LOGS_JSON_SNAPSHOT') as Map).snapshot as Map).deviceStats as List
 
         then:
-        byPct.deviceStats*.id == [1, 2]
-        byName.deviceStats*.id == [2, 1]
-        byCount.deviceStats*.id == [2, 1]
+        byPct.entries*.id == [1, 2]
+        byName.entries*.id == [2, 1]
+        byCount.entries*.id == [2, 1]
         cached*.id == [1, 2]
+    }
+
+    // -------- hub_delete_logs: scheduled jobs --------
+
+    def "hub_delete_logs deletes one scheduled job through the Logs page's own request and drops the cached page"() {
+        given:
+        hubGet.register('/logs/json') { params -> logsJsonWithJobs(1) }
+        def sent = []
+        hubGet.register('/hub/advanced/deleteScheduledJob') { params -> sent << params; 'done' }
+        script.toolGetHubLogs([mode: 'scheduledJobs'])
+
+        when:
+        def result = script.toolDeleteLogs([mode: 'scheduledJobs', jobId: 'app40Recur.5updateData', confirm: true])
+
+        then:
+        sent == [[id: 'app40Recur.5updateData']]
+        result.success == true
+        result.jobId == 'app40Recur.5updateData'
+        result.owner == [type: 'app', id: 40]
+        result.note.contains('Only this scheduled run is gone')
+        !(scriptStaticField('LOGS_JSON_SNAPSHOT') as Map).containsKey('snapshot')
+    }
+
+    @Unroll
+    def "hub_delete_logs refuses #label before sending anything"() {
+        when:
+        script.toolDeleteLogs(args)
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains(says)
+        hubGet.calls.empty
+
+        where:
+        label                | args                                                                || says
+        'no mode'            | [jobId: 'app1Once.run', confirm: true]                              || "mode must be 'mcp'"
+        'no jobId'           | [mode: 'scheduledJobs', confirm: true]                              || 'jobId is required'
+        'a non-string jobId' | [mode: 'scheduledJobs', jobId: 5, confirm: true]                    || 'jobId must be a string'
+        'a malformed jobId'  | [mode: 'scheduledJobs', jobId: 'nodot', confirm: true]              || 'is not a scheduled-job id'
+        'a system job'       | [mode: 'scheduledJobs', jobId: 'system.sunJob', confirm: true]      || 'System jobs cannot be deleted'
+        'no confirm'         | [mode: 'scheduledJobs', jobId: 'app12Once.run']                     || 'needs confirm=true'
+        'jobId on mcp'       | [mode: 'mcp', jobId: 'app1Once.run']                                || "apply to mode='scheduledJobs' only"
+        'an owner id too long' | [mode: 'scheduledJobs', jobId: 'app99999999999Recur.x', confirm: true] || 'names no app or device on this hub'
+    }
+
+    def "hub_delete_logs refuses a protected app's job, and a client token the MCP app's own, before sending anything"() {
+        given:
+        settingsMap.protectedAppIds = ['42']
+        atomicStateMap.protectedAppsPolicy = [ids: ['42']]
+
+        when:
+        script.toolDeleteLogs([mode: 'scheduledJobs', jobId: 'app42Recur.poll', confirm: true])
+
+        then:
+        def protectedEx = thrown(IllegalArgumentException)
+        protectedEx.message.contains('App 42 is protected')
+
+        when:
+        script.callerClient = [id: 'c1', label: 'client']
+        script.toolDeleteLogs([mode: 'scheduledJobs', jobId: "app${script.app.id}Once.runLogsJsonFetch".toString(), confirm: true])
+
+        then:
+        def selfEx = thrown(IllegalArgumentException)
+        selfEx.message.contains("own scheduled jobs")
+        hubGet.calls.empty
+
+        cleanup:
+        script.callerClient = null
+    }
+
+    def "hub_delete_logs keeps the cached Logs page when the delete request itself fails"() {
+        given:
+        hubGet.register('/logs/json') { params -> logsJsonWithJobs(1) }
+        hubGet.register('/hub/advanced/deleteScheduledJob') { params -> throw new RuntimeException('timeout') }
+        script.toolGetHubLogs([mode: 'scheduledJobs'])
+
+        when:
+        def result = script.toolDeleteLogs([mode: 'scheduledJobs', jobId: 'app40Recur.poll', confirm: true])
+
+        then:
+        result.success == false
+        result.error.contains('The delete request failed')
+        result.note.contains('before retrying')
+        (scriptStaticField('LOGS_JSON_SNAPSHOT') as Map).containsKey('snapshot')
+    }
+
+    def "hub_delete_logs refuses a job of a device outside the server's device access, and allows a selected one"() {
+        given:
+        settingsMap.selectedDevices = [new TestDevice(id: 5, name: 'Lamp', label: 'Lamp')]
+        hubGet.register('/hub/advanced/deleteScheduledJob') { params -> 'done' }
+
+        when:
+        script.toolDeleteLogs([mode: 'scheduledJobs', jobId: 'dev615Once.off', confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("Job dev615Once.off belongs to device 615, which is outside this server's device access")
+        hubGet.calls.empty
+
+        when:
+        def allowed = script.toolDeleteLogs([mode: 'scheduledJobs', jobId: 'dev5Once.off', confirm: true])
+
+        then:
+        allowed.success == true
+        allowed.owner == [type: 'device', id: 5]
+    }
+
+    @Unroll
+    def "hub_delete_logs reports the hub's #reply reply as an error"() {
+        given:
+        settingsMap.selectedDevices = [new TestDevice(id: 5, name: 'Lamp', label: 'Lamp')]
+        hubGet.register('/hub/advanced/deleteScheduledJob') { params -> reply }
+
+        when:
+        def result = script.toolDeleteLogs([mode: 'scheduledJobs', jobId: 'dev5Once.poll', confirm: true])
+
+        then:
+        result.success == false
+        result.isError == true
+        result.error.contains(says)
+
+        where:
+        reply                || says
+        'job does not exist' || 'No scheduled job dev5Once.poll exists'
+        'invalid id'         || 'did not delete dev5Once.poll: invalid id'
+    }
+
+    @Unroll
+    def "hub_delete_logs via dispatch is a write (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        hubGet.register('/hub/advanced/deleteScheduledJob') { params -> 'done' }
+
+        when:
+        def allowed = mcpDriver.callTool('hub_delete_logs', [mode: 'scheduledJobs', jobId: 'app3Recur.poll', confirm: true])
+        settingsMap.enableWrite = false
+        def blocked = mcpDriver.callTool('hub_delete_logs', [mode: 'scheduledJobs', jobId: 'app3Recur.poll', confirm: true])
+
+        then:
+        mcpDriver.parseInner(allowed).success == true
+        blocked.result.isError == true
+        mcpDriver.parseInner(blocked).error.contains('Write tools are disabled')
+        hubGet.calls.count { it.path == '/hub/advanced/deleteScheduledJob' } == 1
+
+        where:
+        useGateways << [true, false]
     }
 
     def "a stale in-flight marker is replaced after 45 s, and the stale worker's late publish is ignored"() {
@@ -1825,10 +2322,10 @@ class ToolManageLogsSpec extends ToolSpecBase {
         PAUSE_EXECUTION_OVERRIDE.set({ Long ms -> virtualNow.addAndGet(ms) })
 
         when: 'the first worker is scheduled and never runs; 45 s pass; a call schedules a replacement'
-        script.toolGetHubJobs([__reqT0: virtualNow.get()])
+        script.toolGetHubLogs([mode: 'scheduledJobs', __reqT0: virtualNow.get()])
         Map staleJob = runInMillisCalls[0][2].data as Map
         virtualNow.addAndGet(45000L)
-        script.toolGetHubJobs([__reqT0: virtualNow.get()])
+        script.toolGetHubLogs([mode: 'scheduledJobs', __reqT0: virtualNow.get()])
         Map freshJob = runInMillisCalls[1][2].data as Map
 
         then:
@@ -1837,15 +2334,15 @@ class ToolManageLogsSpec extends ToolSpecBase {
 
         when: 'the fresh worker lands first, then the stale one finally runs'
         script.runLogsJsonFetch(freshJob)
-        def afterFresh = script.toolGetHubJobs([__reqT0: virtualNow.get()])
+        def afterFresh = script.toolGetHubLogs([mode: 'scheduledJobs', __reqT0: virtualNow.get()])
         script.runLogsJsonFetch(staleJob)
-        def afterStale = script.toolGetHubJobs([__reqT0: virtualNow.get()])
+        def afterStale = script.toolGetHubLogs([mode: 'scheduledJobs', __reqT0: virtualNow.get()])
         def cache = scriptStaticField('LOGS_JSON_SNAPSHOT') as Map
 
         then: 'the stale worker fetched but did not overwrite the fresh snapshot or clear its marker state'
         served.get() == 2
-        afterFresh.scheduledJobs.count == 1
-        afterStale.scheduledJobs.count == 1
+        afterFresh.count == 1
+        afterStale.count == 1
         !cache.containsKey('fetchStartedAt')
     }
 
@@ -1863,7 +2360,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         })
 
         when:
-        def failed = script.toolGetHubJobs([__reqT0: 1234567890000L])
+        def failed = script.toolGetHubLogs([mode: 'scheduledJobs', __reqT0: 1234567890000L])
         def cache = scriptStaticField('LOGS_JSON_SNAPSHOT') as Map
 
         then: 'the failure is reported and no phantom worker is left in flight'
@@ -1872,7 +2369,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         !cache.containsKey('fetchStartedAt')
 
         when: 'the next call schedules normally'
-        def next = script.toolGetHubJobs([__reqT0: 1234567890000L])
+        def next = script.toolGetHubLogs([mode: 'scheduledJobs', __reqT0: 1234567890000L])
 
         then:
         next.status == 'in_progress'
@@ -2036,9 +2533,49 @@ class ToolManageLogsSpec extends ToolSpecBase {
         !stored.containsKey('stackTrace')
     }
 
-    // -------- toolClearDebugLogs --------
+    def "hub_delete_logs points past-log deletion at hub_reboot instead of rebooting itself"() {
+        when:
+        script.toolDeleteLogs([mode: 'past', confirm: true])
 
-    def "hub_delete_debug_logs clears MCP history and reports count"() {
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('hub_reboot(confirm=true, purgeLogs=true)')
+        hubGet.calls.empty
+    }
+
+    // -------- hub_delete_logs: the MCP log --------
+
+    def "hub_get_logs mode=mcp reads level in any case"() {
+        given:
+        script.mcpLog('error', 'server', 'an error')
+        script.mcpLog('warn', 'server', 'a warning')
+
+        when:
+        def lower = script.toolGetHubLogs([mode: 'mcp', level: 'error', limit: 0])
+        def upper = script.toolGetHubLogs([mode: 'mcp', level: 'ERROR', limit: 0])
+
+        then:
+        lower.entries*.message.contains('an error')
+        upper.entries*.message == lower.entries*.message
+    }
+
+    def "hub_get_logs mode=mcp with limit 0 returns every stored entry"() {
+        given:
+        seedDebugLogHistory([
+            entries: (1..60).collect { [timestamp: it as Long, level: 'info', component: 'c', message: "m${it}".toString()] },
+            config: [logLevel: 'info', maxEntries: 100]
+        ])
+
+        when:
+        def all = script.toolGetHubLogs([mode: 'mcp', limit: 0])
+        def some = script.toolGetHubLogs([mode: 'mcp', limit: 5])
+
+        then:
+        all.count == 60
+        some.count == 5
+    }
+
+    def "hub_delete_logs mode=mcp clears loaded MCP history and reports the count"() {
         given: 'logLevel=debug so the post-clear confirmation mcpLog write is retained'
         seedDebugLogHistory([
             entries: [
@@ -2049,55 +2586,60 @@ class ToolManageLogsSpec extends ToolSpecBase {
         ])
 
         when:
-        def result = script.toolClearDebugLogs([:])
+        def result = script.toolDeleteLogs([mode: 'mcp'])
 
         then:
         result.success == true
         result.clearedCount == 2
+        hubGet.calls.empty
 
-        and: 'the tool logs a confirmation entry AFTER clearing — `entries` now holds only that line, not the 2 pre-clear entries'
+        and: 'the confirmation line is the only entry after the clear'
         script.getDebugLogEntries().size() == 1
-        script.getDebugLogEntries()[0].level == 'info'
-        script.getDebugLogEntries()[0].message.contains('cleared')
-        script.getDebugLogEntries()[0].message.contains('(2 entries removed)')
+        script.getDebugLogEntries()[0].message.contains('MCP log cleared (2 entries)')
     }
 
     @spock.lang.Unroll
-    def "hub_delete_debug_logs via dispatch empties entries and reports count (useGateways=#useGateways)"() {
+    def "hub_delete_logs mode=mcp via dispatch (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         seedDebugLogHistory([
-            entries: [
-                [timestamp: 1L, level: 'info', component: 'c', message: 'a'],
-                [timestamp: 2L, level: 'info', component: 'c', message: 'b']
-            ],
-            config: [logLevel: 'debug', maxEntries: 100]
+            entries: [[timestamp: 1L, level: 'info', component: 'c', message: 'a']],
+            config: [logLevel: 'error', maxEntries: 100]
         ])
 
         when:
-        def response = mcpDriver.callTool('hub_delete_debug_logs', [:])
+        def response = mcpDriver.callTool('hub_delete_logs', [mode: 'mcp'])
 
         then:
-        response.error == null
         !response.result.isError
         def inner = mcpDriver.parseInner(response)
         inner.success == true
-        inner.clearedCount == 2
+        inner.clearedCount == 1
+        script.getDebugLogEntries() == []
 
         where:
         useGateways << [true, false]
     }
 
-    def "hub_delete_debug_logs succeeds when there are no entries"() {
-        given: 'explicit logLevel=error so the post-clear info log is below threshold — pinned against initDebugLogs default drift'
+    def "hub_delete_logs mode=mcp before history loads reads nothing and leaves old lines unrecoverable"() {
+        given: 'a fresh JVM whose MCP history has not been read back from the native log yet'
         seedDebugLogHistory([entries: [], config: [logLevel: 'error', maxEntries: 100]])
+        def buffer = script.initDebugLogs()
+        String oldGeneration = buffer.generation
+        buffer.hydrated = false
+        hubGet.register('/logs/past/json') { params ->
+            JsonOutput.toJson(["2026-04-19 10:00:00.000\tinfo\tapp|1|MCP|[MCP1] " + JsonOutput.toJson(
+                [appId: '1', generation: oldGeneration, id: 'old-1', entry: [timestamp: 1L, level: 'info', component: 'c', message: 'stale']])])
+        }
 
         when:
-        def result = script.toolClearDebugLogs([:])
+        def result = script.toolDeleteLogs([mode: 'mcp'])
+        def callsAtClear = hubGet.calls.size()
 
         then:
         result.success == true
-        result.clearedCount == 0
+        result.clearedCount == null
+        callsAtClear == 0
         script.getDebugLogEntries() == []
     }
 

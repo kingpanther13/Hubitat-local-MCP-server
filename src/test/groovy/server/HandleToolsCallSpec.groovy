@@ -198,7 +198,7 @@ class HandleToolsCallSpec extends ToolSpecBase {
 
         and: 'the text payload parses back to the tool result shape'
         def inner = mcpDriver.parseInner(response)
-        inner.logs == []
+        inner.entries == []
         inner.count == 0
     }
 

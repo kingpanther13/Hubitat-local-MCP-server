@@ -87,7 +87,7 @@ class LogMrtrContinuationSpec extends ToolSpecBase {
 
         then:
         result.result.resultType == 'complete'
-        mcpDriver.parseInner(result).logs[0].message == "app|42|Example|${text}"
+        mcpDriver.parseInner(result).entries[0].message == "app|42|Example|${text}"
         atomicStateMap.mrtrRequests[stateId].terminalResult == [__slowReadReplay: true, tool: 'hub_get_logs']
         atomicStateMap.mrtrRequests[stateId].expiresAt == fetchedAt + 30000L
 
@@ -95,7 +95,7 @@ class LogMrtrContinuationSpec extends ToolSpecBase {
         def replay = call('hub_read_diagnostics', args, stateId)
 
         then:
-        mcpDriver.parseInner(replay).logs[0].message == "app|42|Example|${text}"
+        mcpDriver.parseInner(replay).entries[0].message == "app|42|Example|${text}"
         hubGet.calls.size() == 1
     }
 
@@ -422,8 +422,8 @@ class LogMrtrContinuationSpec extends ToolSpecBase {
         rejected.error != null || rejected.result?.isError == true
         JsonOutput.toJson(rejected).contains('Background read capacity is full')
         replay.result.resultType == 'complete'
-        mcpDriver.parseInner(replay).logs == mcpDriver.parseInner(completed).logs
-        mcpDriver.parseInner(replay).logs[0].message == 'app|42|Example|original'
+        mcpDriver.parseInner(replay).entries == mcpDriver.parseInner(completed).entries
+        mcpDriver.parseInner(replay).entries[0].message == 'app|42|Example|original'
         hubGet.calls.size() == 1
         runInMillisCalls.size() == 1
         snapshots.size() == 8
@@ -464,7 +464,7 @@ class LogMrtrContinuationSpec extends ToolSpecBase {
         script.now() == timestamp
     }
 
-    def "MCP log history uses requestState and clearing waits before rotating history"() {
+    def "MCP log history uses requestState, and a clear finishes at once and fences the pending recovery"() {
         given:
         script.mcpLog('error', 'server', 'retained error')
         def nativeLine = script.log.messages.last()
@@ -480,28 +480,23 @@ class LogMrtrContinuationSpec extends ToolSpecBase {
         first.result.resultType == 'input_required'
         hubGet.calls.empty
 
-        when:
-        def clearFirst = call('hub_delete_debug_logs', [:])
-        String clearState = clearFirst.result.requestState
+        when: 'the clear arrives while recovery is still queued'
         def generation = atomicStateMap.debugLogGeneration
-        def clearPending = call('hub_delete_debug_logs', [:], clearState)
+        def cleared = call('hub_manage_logs', [tool: 'hub_delete_logs', args: [mode: 'mcp']])
 
-        then:
-        clearPending.result.resultType == 'input_required'
-        atomicStateMap.debugLogGeneration == generation
+        then: 'it completes in one request without reading the history'
+        cleared.result.resultType != 'input_required'
+        mcpDriver.parseInner(cleared).success == true
+        mcpDriver.parseInner(cleared).clearedCount == null
+        atomicStateMap.debugLogGeneration != generation
+        hubGet.calls.empty
 
-        when:
+        when: 'the queued recovery worker runs late and the read continues'
         script.runDebugLogHistoryFetch(runInMillisCalls.find { it[1] == 'runDebugLogHistoryFetch' }[2].data as Map)
         def recovered = call('hub_read_diagnostics', args, first.result.requestState as String)
-        def cleared = call('hub_delete_debug_logs', [:], clearState)
-        def clearedGeneration = atomicStateMap.debugLogGeneration
-        def replay = call('hub_delete_debug_logs', [:], clearState)
 
-        then:
-        mcpDriver.parseInner(recovered).entries*.message == ['retained error']
-        mcpDriver.parseInner(cleared).clearedCount == 1
-        clearedGeneration != generation
-        mcpDriver.parseInner(replay).clearedCount == 1
-        atomicStateMap.debugLogGeneration == clearedGeneration
+        then: 'the old generation never comes back'
+        mcpDriver.parseInner(recovered).entries.every { it.message != 'retained error' }
+        hubGet.calls.empty
     }
 }

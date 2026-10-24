@@ -63,7 +63,7 @@ class DebugLogBudgetSpec extends ToolSpecBase {
         runInMillisCalls.size() == 1
     }
 
-    def "clear waits for recovery then fences a replayed worker after mutation"() {
+    def "clear rotates at once without reading history and fences the queued recovery worker"() {
         given:
         def rows = coldHistory()
         script.getDebugLogReadResult([__reqT0: 1234567880000L])
@@ -72,22 +72,14 @@ class DebugLogBudgetSpec extends ToolSpecBase {
         def generation = atomicStateMap.debugLogGeneration
 
         when:
-        def pending = script.toolClearDebugLogs([__reqT0: 1234567880000L])
-
-        then:
-        pending.status == 'in_progress'
-        atomicStateMap.debugLogGeneration == generation
-        hubGet.calls.empty
-
-        when:
-        script.runDebugLogHistoryFetch(job)
-        def cleared = script.toolClearDebugLogs([__reqT0: 1234567880000L])
+        def cleared = script.toolDeleteLogs([mode: 'mcp'])
         script.runDebugLogHistoryFetch(job)
 
         then:
         cleared.success
-        cleared.clearedCount == 1
+        cleared.clearedCount == null
         atomicStateMap.debugLogGeneration != generation
+        hubGet.calls.empty
         script.getDebugLogEntries([__reqT0: 1234567880000L]) == []
     }
 

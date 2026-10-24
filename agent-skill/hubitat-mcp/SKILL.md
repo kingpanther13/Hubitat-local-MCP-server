@@ -126,7 +126,7 @@ Each domain has its own gateway pair — call the gateway with no args for its s
 - Use `labelFilter` (substring) and `capabilityFilter` (exact capability name) for server-side narrowing -- far cheaper than fetching all devices and filtering client-side
 - `format='ids'` returns a flat integer array (cheapest shape); `fields=[...]` projects only named fields to reduce payload and skip hub reads
 - `hub_list_device_events` default limit 10, max recommended 50
-- `hub_get_logs` default 100, max 500 - use filters to narrow
+- `hub_get_logs`: 100 log lines by default, `limit: 0` for all; page with `cursor`/`pageSize` and narrow with filters
 - Make tool calls sequentially, not in parallel (hub is single-threaded)
 - Every `tools/call` response is bounded by a 120KB size guard; an oversized response comes back as a `{response_too_large: true, ..., suggestion}` envelope — follow the per-tool `suggestion`, or opt into cursor pagination on list tools (`cursor: ""` for the first page, iterate `nextCursor` until absent)
 - For Hubitat Cloud connections, use `labelFilter`, `capabilityFilter`, `fields`, or pagination to stay under the response-size limit

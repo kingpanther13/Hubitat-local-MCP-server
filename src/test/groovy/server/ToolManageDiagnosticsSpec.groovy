@@ -1635,38 +1635,25 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
 
     // -------- mcpLogError structured stackTrace capture (log-mcplogerror-low-adoption) --------
 
-    def "converted perf-stats error site captures a structured stackTrace via mcpLogError"() {
+    def "a Logs-page read failure captures a structured stackTrace via mcpLogError"() {
         given: 'logLevel=debug so the error entry is retained, and the hub fetch throws'
         settingsMap.mcpLogLevel = 'debug'
         seedDebugLogHistory([entries: [], config: [logLevel: 'debug', maxEntries: 100]])
-        script.metaClass._logsJsonFetchAndPublish = { -> throw new IllegalStateException('boom-perf') }
+        script.metaClass._logsJsonFetchAndPublish = { -> throw new IllegalStateException('boom-logs-page') }
 
         when:
-        def result = script.toolGetPerformanceStats([:])
+        def result = script.toolGetHubLogs([mode: mode])
 
         then: 'the tool returns its structured error map'
-        result.error?.contains('boom-perf')
+        result.error?.contains('boom-logs-page')
 
         and: 'the newest debug-log entry carries a class-qualified stackTrace from mcpLogError'
         def entry = script.getDebugLogEntries()[-1]
         entry.level == 'error'
         entry.component == 'monitoring'
-        entry.stackTrace.startsWith('java.lang.IllegalStateException: boom-perf')
-    }
+        entry.stackTrace.startsWith('java.lang.IllegalStateException: boom-logs-page')
 
-    def "converted hub-jobs error site captures a structured stackTrace via mcpLogError"() {
-        given:
-        settingsMap.mcpLogLevel = 'debug'
-        seedDebugLogHistory([entries: [], config: [logLevel: 'debug', maxEntries: 100]])
-        script.metaClass._logsJsonFetchAndPublish = { -> throw new RuntimeException('boom-jobs') }
-
-        when:
-        def result = script.toolGetHubJobs([:])
-
-        then:
-        result.error?.contains('boom-jobs')
-        def entry = script.getDebugLogEntries()[-1]
-        entry.component == 'monitoring'
-        entry.stackTrace.startsWith('java.lang.RuntimeException: boom-jobs')
+        where:
+        mode << ['devices', 'scheduledJobs']
     }
 }

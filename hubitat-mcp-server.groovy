@@ -64,8 +64,8 @@ private String _effectiveBackupSetting(String key) {
 // _resolveCaller. Null is the main token and non-request contexts (UI, schedules), except an
 // MRTR worker or server-side resume, which restores the client that started the write.
 @groovy.transform.Field Map callerClient = null
-// JVM-live /logs/json snapshot shared by hub_get_jobs and hub_get_performance_stats (see
-// _logsJsonSnapshot in McpDiagnosticsLib). Keys: snapshot (the trimmed page + at), fetchId
+// JVM-live /logs/json snapshot behind hub_get_logs' stats and job modes (see _logsJsonSnapshot in
+// McpDiagnosticsLib). Keys: snapshot (the page's tables and summary + at), fetchId
 // (monotonic; fences a stale worker's publish), fetchStartedAt (in-flight marker owned by
 // fetchId), fetchError (last worker failure, at + message).
 @groovy.transform.Field static final Map LOGS_JSON_SNAPSHOT = new java.util.HashMap()
@@ -444,6 +444,18 @@ def mainPage() {
                   defaultValue: 60, range: "10..300", required: false
         }
     }
+}
+
+// Method references (this.&name) save the class an inline closure compiles to, but each call through
+// one costs far more on the hub than a closure call, so they are used only over small, fixed-size
+// lists, never per row (measured: per-row use made log-history reads 16-30x slower).
+private Long _snapshotFetchedAt(part) {
+    return part instanceof Map && part.snapshot instanceof Map && part.snapshot.fetchedAt instanceof Number ? part.snapshot.fetchedAt as Long : null
+}
+
+// A whole number (Integer or Long) between min and max inclusive.
+private boolean _isWholeNumberIn(value, long min, long max) {
+    return (value instanceof Integer || value instanceof Long) && (value as Long) >= min && (value as Long) <= max
 }
 
 def formatTimestamp(timestamp) {
@@ -2919,8 +2931,8 @@ def _maxConcurrentWrites() {
 def _budgetAwareTools() {
     return ["hub_set_native_app", "hub_call_rule", "hub_clone_native_app",
             "hub_import_native_app", "hub_call_device_command",
-            "hub_get_jobs", "hub_get_performance_stats", "hub_get_logs", "hub_get_info",
-            "hub_report_issue", "hub_get_custom_rule", "hub_delete_debug_logs",
+            "hub_get_logs", "hub_get_info",
+            "hub_report_issue", "hub_get_custom_rule",
             "hub_get_device", "hub_list_devices", "hub_get_device_health", "hub_list_libraries",
             "hub_get_device_attribute", "hub_list_rules"] as Set
 }
@@ -2931,7 +2943,7 @@ def _mrtrWriteTools() {
     return ["hub_set_native_app", "hub_set_rule", "hub_call_rule",
             "hub_clone_native_app", "hub_import_native_app",
             "hub_create_driver", "hub_update_driver", "hub_delete_item",
-            "hub_delete_debug_logs", "hub_manage_virtual_device", "hub_update_device",
+            "hub_manage_virtual_device", "hub_update_device",
             "hub_restore_backup", "hub_create_backup"] as Set
 }
 
@@ -2941,7 +2953,7 @@ def _mrtrWriteTools() {
 // the read from its cached snapshot). The leaf itself answers status: "in_progress" while its
 // background fetch is still running. Every member must also be in getReadOnlyToolNames().
 def _mrtrReadTools() {
-    return ["hub_get_jobs", "hub_get_performance_stats", "hub_get_logs", "hub_get_info",
+    return ["hub_get_logs", "hub_get_info",
             "hub_report_issue", "hub_get_custom_rule", "hub_get_device", "hub_list_devices",
             "hub_get_device_health", "hub_list_libraries", "hub_list_rules"] as Set
 }
@@ -3983,8 +3995,7 @@ private Map _mrtrContinuation(String leafTool, Map executionArgs, result, Map re
             result.updatesRemaining instanceof List && !result.updatesRemaining.isEmpty()) {
         nextLeaf.updates = result.updatesRemaining
         kind = "driver_updates"
-    } else if ((_mrtrReadTools().contains(leafTool) || leafTool == "hub_delete_debug_logs")
-            && result.status == "in_progress") {
+    } else if (_mrtrReadTools().contains(leafTool) && result.status == "in_progress") {
         // The background fetch is still running; the next leg re-runs the identical read.
         kind = "slow_read"
     }
@@ -4078,7 +4089,7 @@ private Map _mrtrCommitSlice(String stateId, Map rec, Map claim, Map executionAr
                 capped.ruleIds = cappedBank.ruleIds
                 def cappedFailed = banked.findAll { it instanceof Map && it.success != true }
                 if (!cappedFailed.isEmpty()) {
-                    capped.failedRuleIds = cappedFailed.collect { it.ruleId }.findAll { it != null }.unique()
+                    capped.failedRuleIds = (cappedFailed*.ruleId - [null]).unique()
                 }
                 // Reaching this branch REQUIRES a non-empty remainingRuleIds, and failed is a
                 // different set from not-yet-reached -- so name the un-actioned ids rather than
@@ -4129,10 +4140,8 @@ private Map _mrtrCommitSlice(String stateId, Map rec, Map claim, Map executionAr
                     "operation."
             }
             if (continuation.kind in ["walk_steps", "driver_installs", "driver_updates"]) {
-                ["appId", "page", "operation", "stepsRemaining", "installsRemaining", "updatesRemaining",
-                 "backup", "repairHints", "resume"].each { key ->
-                    if (result.containsKey(key)) capped.put(key, result.get(key))
-                }
+                capped.putAll(result.subMap(["appId", "page", "operation", "stepsRemaining", "installsRemaining",
+                                             "updatesRemaining", "backup", "repairHints", "resume"]))
                 capped.note = "aggregate records completed work. Inspect the remaining-work fields " +
                     "and resume guidance before submitting a new call with only that remainder. " +
                     "This requestState now replays the terminal continuation_limit result."
@@ -4156,10 +4165,8 @@ private Map _mrtrCommitSlice(String stateId, Map rec, Map claim, Map executionAr
         if (stored == null) {
             throw new IllegalStateException("requestState ownership was lost before its continuation checkpoint could be stored")
         }
-        // Writes only, matching the slow_ops contract: a slow read's background fetch already
-        // runs on its own schedule, and resuming it here would re-enter the read for no gain.
-        // hub_delete_debug_logs uses the slow_read continuation kind but is a write, so gate on
-        // the tool set rather than the kind.
+        // Writes only: a slow read's background fetch already runs on its own schedule, and
+        // resuming it here would re-enter the read for no gain.
         if (_mrtrWriteTools().contains(stored.leafTool?.toString())) {
             _mrtrScheduleAutoContinue(stateId, stored)
         }
@@ -4276,8 +4283,10 @@ private boolean _mrtrStoreTerminal(String stateId, Map originalRec, Map claim, r
             // The replay re-reads the cached snapshot, so the record must not outlive it:
             // clock the read TTL from when that snapshot was fetched, not from finishedAt.
             def fetchedAt = readLeaf ? originalRec.readSnapshotFetchedAt : null
-            if (!(fetchedAt instanceof Number) && readLeaf && result instanceof Map && result.snapshot instanceof Map) {
-                fetchedAt = result.snapshot.fetchedAt
+            if (!(fetchedAt instanceof Number) && readLeaf && result instanceof Map) {
+                // hub_get_logs with a list of modes carries one snapshot per tab; the oldest bounds the replay.
+                List parts = [result] + (result.modes instanceof Map ? (result.modes as Map).values().toList() : [])
+                fetchedAt = (parts.collect(this.&_snapshotFetchedAt) - [null]).min()
             }
             if (fetchedAt instanceof Number) {
                 rec.expiresAt = Math.min(rec.expiresAt as Long, (fetchedAt as Long) + _logsJsonSnapshotTtlMs())
@@ -4993,13 +5002,9 @@ def _responseTooLargeSuggestion(String toolName) {
         case "hub_get_memory_history":
             return "Pass a smaller limit (e.g. 100). limit=0 returns the entire hub ring buffer which can be thousands of entries."
         case "hub_get_logs":
-            return "Narrow with deviceId/appId/level/source/pattern, set a smaller limit, or filter by time window (since/until). The tool already truncates per-entry messages but cannot trim the entry count below the requested limit."
+            return "Narrow with deviceId/appId/level/pattern, set a smaller limit, filter by time window (since/until), or page with cursor=''. With a list of modes, lower pageSize or ask for fewer tabs per call. Past logs already cut long messages, but no mode trims the row count below the requested limit."
         case "hub_export_native_app":
             return "Large app payloads can exceed the inline cap. Pass saveAs=<filename.json> to write the export to the hub File Manager instead of returning it inline."
-        case "hub_get_jobs":
-            return "Pass cursor='' to page scheduledJobs 100 at a time (then follow nextCursor); runningJobs and hubActions stay in full on every page."
-        case "hub_get_performance_stats":
-            return "Pass a smaller limit (default 20; limit=0 returns every device and app) or narrow type to device or app."
         case "hub_get_info":
         case "hub_get_metrics":
             return "Hub status payload is unusually large -- consider polling at a lower frequency or fetching a single subsection via the matching sub-tool if available."
@@ -5201,13 +5206,13 @@ def getGatewayConfig() {
             description: "DESTRUCTIVE hub operations: reboot, shutdown, permanent device deletion, radio network/fabric resets + firmware flashes, network disconnects, and cloud-controller disable. All operations are irreversible or cause significant downtime — confirm with user first.",
             tools: ["hub_reboot", "hub_shutdown", "hub_delete_device", "hub_call_destructive_ops"],
             summaries: [
-                hub_reboot: "Reboot the hub (DISRUPTIVE, 1-3 min downtime). To install a pending hub firmware update instead, use hub_update_firmware. Args: confirm=true",
+                hub_reboot: "Reboot the hub (DISRUPTIVE, 1-3 min downtime), optionally rebuilding the database or purging past logs. To install a pending hub firmware update instead, use hub_update_firmware. Args: confirm=true, rebuildDatabase, purgeLogs",
                 hub_shutdown: "Power OFF the hub (EXTREME, requires physical restart). Args: confirm=true",
                 hub_delete_device: "Permanently delete any device (MOST DESTRUCTIVE, no undo). Args: deviceId, confirm=true",
                 hub_call_destructive_ops: "Destructive ops by target: radio reset/firmware (target=zwave|zigbee|matter), network disconnect (target=network, disconnect_wifi|disconnect_ethernet), or cloud controller disable/enable (target=cloud). Args: target, action, confirm=true"
             ],
             searchHints: [
-                hub_reboot: "restart reset power cycle boot",
+                hub_reboot: "restart reset power cycle boot rebuild database purge delete past logs",
                 hub_shutdown: "power off turn off stop halt",
                 hub_delete_device: "remove ghost orphan zwave zigbee stuck failed pairing",
                 hub_call_destructive_ops: "reset wipe zwave zigbee matter network fabric exclude all firmware flash chip radio ota brick factory disconnect wifi ethernet cloud disable alexa google dashboard subscription"
@@ -5289,20 +5294,16 @@ def getGatewayConfig() {
         ],
         // Option B: manage_logs_diagnostics split into logs + diagnostics
         hub_manage_logs: [
-            description: "System logs, performance stats, and log settings: hub logs, device/app performance stats, scheduled jobs, MCP debug logs, and log level configuration. (Device/app/location event history: use the core hub_list_device_events tool.)",
-            tools: ["hub_get_logs", "hub_get_performance_stats", "hub_get_jobs", "hub_delete_debug_logs", "hub_set_log_level"],
+            description: "The hub's Logs page and MCP log settings: log history, device/app runtime stats, cloud calls, location and hub events, scheduled and running jobs, hub actions, the MCP log, deleting a scheduled job, and the MCP log level. (Device and app event history: use hub_list_device_events.)",
+            tools: ["hub_get_logs", "hub_delete_logs", "hub_set_log_level"],
             summaries: [
-                hub_get_logs: "Read logs: mode=hub (default) for native history, mcp for structured MCP history, status for MCP logging status. Hub filters: level, source, pattern/patterns, since/until, deviceId|appId, limit. MCP filters: level, component, ruleId, limit",
-                hub_get_performance_stats: "Get device/app performance stats (count, % busy, total ms, state size, events, cloud calls, large state flag). Args: type (device/app/both), sortBy (pct/count/stateSize/totalMs/name), limit, includeCloudCalls?",
-                hub_get_jobs: "Get scheduled jobs, running jobs, and hub actions. Args: cursor? (pages scheduledJobs, 100 per page)",
-                hub_delete_debug_logs: "Clear all MCP debug log entries",
+                hub_get_logs: "Read Logs page tabs or the MCP log. Args: mode (one tab or a list: past default, devices, apps, cloudCalls, locationEvents, hubEvents, scheduledJobs, runningJobs, hubActions, mcp, status), level, deviceId|appId, pattern/patterns, since/until, sortBy, limit, cursor, pageSize (50 per tab when several are listed)",
+                hub_delete_logs: "Clear the MCP log, or delete one scheduled job like the Logs page's Delete button; past logs are deleted by hub_reboot(confirm=true, purgeLogs=true). Args: mode (mcp|scheduledJobs), jobId, confirm",
                 hub_set_log_level: "Set minimum log level threshold. Args: level (debug/info/warn/error)"
             ],
             searchHints: [
-                hub_get_logs: "mcp internal debug logging status buffer capacity errors warnings trace syslog recent device app regex time window since until",
-                hub_get_performance_stats: "slow cpu busy resource usage hog bottleneck",
-                hub_get_jobs: "scheduled cron timer recurring what is running next automation",
-                hub_delete_debug_logs: "wipe reset mcp internal",
+                hub_get_logs: "errors warnings trace syslog recent device app regex time window since until performance stats slow cpu busy hog state size cloud calls location events mode hsm hub events reboot low memory scheduled jobs cron timer recurring running hub actions mcp internal status",
+                hub_delete_logs: "wipe reset clear mcp log remove cancel unschedule scheduled job timer",
                 hub_set_log_level: "verbosity debug trace quiet"
             ]
         ],
@@ -5365,12 +5366,10 @@ def getGatewayConfig() {
             ]
         ],
         hub_read_diagnostics: [
-            description: "Read-only hub health, logs, and diagnostics: system logs, performance stats, scheduled jobs, MCP debug logs, hub metrics, free-memory/CPU history, device health/staleness, Z-Wave/Zigbee radio details, and saved state snapshots. All operations are read-only; the matching writes (gc, Z-Wave repair, clear logs, set log level, delete snapshots) live in hub_manage_logs / hub_manage_diagnostics.",
-            tools: ["hub_get_logs", "hub_get_performance_stats", "hub_get_jobs", "hub_get_metrics", "hub_get_memory_history", "hub_get_device_health", "hub_get_radio_details", "hub_list_captured_states"],
+            description: "Read-only hub health, logs, and diagnostics: the Logs page (log history, runtime stats, cloud calls, location and hub events, jobs, hub actions), the MCP log, hub metrics, free-memory/CPU history, device health/staleness, Z-Wave/Zigbee radio details, and saved state snapshots. All operations are read-only; the matching writes (gc, Z-Wave repair, clear the MCP log, delete a scheduled job, set log level, delete snapshots) live in hub_manage_logs / hub_manage_diagnostics.",
+            tools: ["hub_get_logs", "hub_get_metrics", "hub_get_memory_history", "hub_get_device_health", "hub_get_radio_details", "hub_list_captured_states"],
             summaries: [
-                hub_get_logs: "Read logs: mode=hub (default) for native history, mcp for structured MCP history, status for MCP logging status. Hub filters: level, source, pattern/patterns, since/until, deviceId|appId, limit. MCP filters: level, component, ruleId, limit",
-                hub_get_performance_stats: "Get device/app performance stats (count, % busy, total ms, state size, events, cloud calls). Args: type, sortBy, limit, includeCloudCalls?",
-                hub_get_jobs: "Get scheduled jobs, running jobs, and hub actions. Args: cursor? (pages scheduledJobs, 100 per page)",
+                hub_get_logs: "Read Logs page tabs or the MCP log. Args: mode (one tab or a list: past default, devices, apps, cloudCalls, locationEvents, hubEvents, scheduledJobs, runningJobs, hubActions, mcp, status), level, deviceId|appId, pattern/patterns, since/until, sortBy, limit, cursor, pageSize (50 per tab when several are listed)",
                 hub_get_metrics: "Get hub metrics (memory, temp, DB) with CSV trend history + the hub's own health alerts (radio offline, backup failures, low memory, DB bloat, safeMode). Read-only by default; pass recordSnapshot=true to also append a snapshot to the File Manager. Args: recordSnapshot?, trendPoints?",
                 hub_get_memory_history: "Get free OS memory and CPU load history with summary stats. Args: limit",
                 hub_get_device_health: "Check device staleness; run network diagnostics (ICMP-ping arbitrary IPs, traceroute to one IPv4, WAN download speedtest); and/or blink the hub identify-LED. Args: staleHours, includeHealthy, pingHosts, pingCount, tracerouteHost, speedtest, identifyHub",
@@ -5378,9 +5377,7 @@ def getGatewayConfig() {
                 hub_list_captured_states: "List saved device state snapshots"
             ],
             searchHints: [
-                hub_get_logs: "errors warnings messages trace syslog output recent latest device app scope regex pattern filter time window since until",
-                hub_get_performance_stats: "slow cpu busy resource usage hog bottleneck",
-                hub_get_jobs: "scheduled cron timer recurring what is running next automation",
+                hub_get_logs: "errors warnings messages trace syslog output recent latest device app scope regex pattern filter time window since until performance stats slow cpu busy hog state size cloud calls location events mode hsm hub events reboot low memory scheduled jobs cron timer recurring running next hub actions",
                 hub_get_metrics: "temperature database size trending monitoring memory over time snapshot history health alerts safe mode radio offline backup failed weak mesh",
                 hub_get_memory_history: "ram free used leak trending over time java heap nio",
                 hub_get_device_health: "stale offline dead unresponsive battery not reporting ping icmp reachable network ip lan host router traceroute route hops speedtest bandwidth wan download internet speed identify led blink locate",
@@ -6565,7 +6562,6 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
         case "hub_delete_captured_state": return toolDeleteCapturedState(args)
 
         // Debug Logging Tools
-        case "hub_delete_debug_logs": return toolClearDebugLogs(args)
         case "hub_set_log_level": return toolSetLogLevel(args)
         case "hub_report_issue": return toolGenerateBugReport(args)
 
@@ -6585,8 +6581,7 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
 
         // Monitoring Tools
         case "hub_get_logs": return toolGetHubLogs(args)
-        case "hub_get_performance_stats": return toolGetPerformanceStats(args)
-        case "hub_get_jobs": return toolGetHubJobs(args)
+        case "hub_delete_logs": return toolDeleteLogs(args)
         case "hub_get_metrics": return toolGetHubPerformance(args)
         case "hub_get_device_health": return toolDeviceHealthCheck(args)
         case "hub_get_memory_history": return toolGetMemoryHistory(args)
@@ -6728,9 +6723,9 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
                 // Filter the hint against the live flat catalog so we don't recommend tools
                 // that other settings (Read/Write masters or Custom Rule Engine) have also hidden.
                 def visibleNames = getToolDefinitions()*.name as Set
-                def subTools = (getGatewayConfig()[toolName]?.tools ?: []).findAll { visibleNames.contains(it) }
+                def subTools = (getGatewayConfig()[toolName]?.tools ?: []).findAll(visibleNames.&contains)
                 def hint = subTools
-                    ? "Call the underlying tool directly: ${subTools.collect { _externalToolName(it as String) }.join(', ')}. Refresh tools/list to see the flat catalog."
+                    ? "Call the underlying tool directly: ${subTools.collect(this.&_externalToolName).join(', ')}. Refresh tools/list to see the flat catalog."
                     : "All sub-tools of this gateway are also disabled by other server toggles (Read/Write masters or Custom Rule Engine). Enable those toggles or refresh tools/list."
                 return [
                     isError: true,
@@ -9023,7 +9018,7 @@ def jsonRpcError(id, code, message, data = null) {
 }
 
 // Per-call MCP traffic stays out of mcpLog on purpose: at debug level it would flush the
-// 100-entry MCP history within about 50 calls. Read it through hub_get_logs mode=hub.
+// 100-entry MCP history within about 50 calls. Read it through hub_get_logs mode=past.
 def logMcpTraffic(msg) {
     if (settings.debugLogging) {
         log.debug msg
@@ -9220,12 +9215,12 @@ def getDebugLogReadResult(Map args = [:]) {
     }
 }
 
-def clearDebugLogEntries(Map args = [:]) {
-    def history = getDebugLogReadResult(args)
-    if (history.status == "in_progress") return history
+// A clear starts a new generation: native lines from older generations are never recovered, so
+// nothing needs reading first. The count is known only once history has been loaded.
+def clearDebugLogEntries() {
     def buffer = initDebugLogs()
     synchronized (buffer) {
-        int count = buffer.entries.size()
+        Integer count = buffer.hydrated ? buffer.entries.size() : null
         String generation = java.util.UUID.randomUUID().toString()
         atomicState.debugLogGeneration = generation
         if (atomicState.reportErrors != null) atomicState.reportErrors = []
@@ -9236,12 +9231,7 @@ def clearDebugLogEntries(Map args = [:]) {
         buffer.remove("fetchClaimId")
         buffer.remove("fetchStartedAt")
         buffer.remove("fetchError")
-        def result = [clearedCount: history.error ? null : count]
-        if (history.error) {
-            result.countIncomplete = true
-            result.logReadError = history.error
-        }
-        return result
+        return [clearedCount: count]
     }
 }
 
@@ -12013,25 +12003,8 @@ Use after hub_list_files to fetch a named file (config, backup, exported rule/ap
 **Cursor pagination.** List tools that take `cursor` return the whole list when it is omitted, subject to the guard; `hub_list_backups` (scope=source) is the exception and always returns one page, with `hasMore: true` and `nextCursor` when more backups follow. Pass `cursor: ""` for the first page, then pass each returned `nextCursor` until it is absent. A malformed or out-of-range cursor is rejected as a validation error. Page sizes:
 - 25: `hub_list_hpm_packages`.
 - 50: `hub_list_apps` (pages the filtered set), `hub_list_drivers`, `hub_list_libraries`, `hub_list_bundles`, `hub_list_rules`, `hub_get_custom_rule` (list mode), `hub_list_captured_states`, `hub_list_backups` (scope=source, newest first), and `hub_list_devices`. For `hub_list_devices`, 50 applies when `limit` is unset (virtual filter included); the cursor is an alternative to `offset`, and the two cannot be combined.
-- 100: `hub_list_variables` (hubVariables; ruleVariables stay whole), `hub_list_files`, `hub_list_rooms`, `hub_list_device_dependents` (appsUsing), `hub_get_logs`, `hub_get_memory_history`, `hub_get_device_health` (staleDevices), and `hub_get_jobs` (scheduledJobs).
+- 100: `hub_list_variables` (hubVariables; ruleVariables stay whole), `hub_list_files`, `hub_list_rooms`, `hub_list_device_dependents` (appsUsing), `hub_get_logs` (50 per tab when several are listed), `hub_get_memory_history`, and `hub_get_device_health` (staleDevices).
 - `hub_get_device` and `hub_get_tool_guide` page oversized responses automatically.
-
-### hub_get_logs (history, logging status, and filters)
-
-Use mode='hub' (default) for native app/device logs, mode='mcp' for structured MCP entries, or mode='status' for MCP log level, counts, and capacity. MCP mode keeps level/component/ruleId/limit/cursor filters and the existing diagnostic fields used by hub_report_issue. Debug and info are retained alongside warnings and errors when admitted by the configured threshold. After reload, MCP history recovers from this app's native Past Logs; retention shares Hubitat's approximately 1 MB rolling history with other apps and devices. The memory view keeps up to 100 entries without storing the ring in app state.
-
-The following filter pipeline applies to hub mode. Current three-column native timestamps use the hub's timezone; timezone-free since/until arguments still mean UTC.
-
-- Device scope: `deviceId` filters hub-wide history regardless of device selection or bypass (logs are hub diagnostics, including history for deleted devices). The hub answers an empty list for an unknown id and a quiet device alike, so a device-filtered read carries `deviceIdResolved` (true when an entry or a native identity read proves the id; false means the id names no device on the hub).
-- Filter pipeline order: scope (deviceId/appId, server-side) -> level -> source -> pattern -> patterns -> time window (since/until) -> limit.
-- `pattern` / `patterns`: the regex matches the log message field ONLY (use `source` for app/device-name substring matching); it is compiled once and throws on invalid regex syntax. A pathological regex like `(.*)*` may hang the matcher -- prefer simple alternation (`error|fail`) or anchored prefixes.
-- `pattern` and `patterns` are compatible: when both are supplied, both apply simultaneously.
-- `patternMode` is case-insensitive ('ANY' and 'any' both work).
-- `since`/`until` relative offsets are subtracted from now; the max relative offset is 30d and a larger offset throws -- use an ISO-8601 timestamp for longer ranges.
-- Timestamps without a TZ marker (e.g. '2024-01-15T10:30:00' or '2024-01-15 10:30:00.000') are parsed as UTC. '0m' / '0d' is a degenerate `since` that filters out everything older than now (useful for test harnesses, rarely otherwise).
-- `until` defaults to now (no upper bound); pair it with `since` for a window, e.g. since='2h', until='1h' means '1 to 2 hours ago'.
-- `cursor`: filters + limit apply first, then the cursor pages within the filtered result (page size 100).
-- Hub mode returns the newest entries first, so `limit` keeps the most recent. MCP-mode entries keep up to 500 characters of message and 1,000 of exception/stack text. The native log line keeps the full message.
 
 ### hub_get_radio_details (read-only Z-Wave/Zigbee/Matter radio surface)
 
@@ -12070,13 +12043,6 @@ The following filter pipeline applies to hub mode. Current three-column native t
 - limit caps the most-recent entries returned (default 100); limit=0 returns all (the hub may hold thousands of rows)
 - Cursor mode pages within the limit-filtered entries; with limit=0 + cursor it pages the FULL ring buffer (every history row, not just a limit-filtered window). Pass "" for the first page and iterate nextCursor (page size 100)
 
-### hub_get_performance_stats (per-device/app metrics it reports)
-
-- Reports per device/app: method call counts, % busy, state size, events, states, hub actions, and pending events.
-- The `sortBy` enum maps onto these columns: `pct` = % busy (default), `count` = method call count, `stateSize` = state size, `totalMs` = total ms, `name` = device/app name.
-- Each entry also carries `cloudCalls`, its count of calls to Hubitat cloud services (firmware 2.5.2.129+).
-- `includeCloudCalls=true` adds a top-level `cloudCalls` block: per app `{id, name, installed, total, currentHour, hourly:[{hourStart, count}]}` (newest hour first, at most 48), sorted by total, plus `countingSince` and `timeZone`. Use it to find which integration is calling the cloud most.
-
 **hub_list_captured_states (list saved device-state snapshots):**
 - Storage limit is configurable (default 20; `maxCapturedStates` setting). When the store is full, the oldest snapshot is auto-deleted to make room for a new capture.
 - The response reports `maxLimit` (the retention cap) and, when near/at the cap, a `warning` field: "Approaching limit" within 4 slots of the cap, "At maximum capacity" once full (the next capture will evict the oldest).
@@ -12086,19 +12052,15 @@ The following filter pipeline applies to hub mode. Current three-column native t
 - Returns free memory before and after GC in KB (`beforeFreeMemoryKB`, `afterFreeMemoryKB`).
 - Reports the reclaimed amount as `deltaKB` plus a `memoryReclaimed` boolean (true when free memory increased); both are present only when both readings succeeded.
 
-### hub_delete_debug_logs
-
-Clears the MCP history view read by hub_get_logs(mode='mcp') using a durable clear marker, so old native entries do not return after reload. Hubitat system logs (hub_get_logs) and captured device states (hub_delete_captured_state) are unchanged. Use it before reproducing an issue.
-
 ### hub_report_issue
 
-With the opt-in advanced setting "Keep recent errors for bug reports" (off by default), reports include up to ten recent server errors kept in app state (they survive native log rollover), in a section ahead of the native log history. With it off, reports read errors from the native log history only. On a bug report with no `failingTool`, the newest retained error inside the report's log window that names a tool supplies it for the title and the prefilled form field only; the result marks it `failingToolSource: "retained_error"`, and the log scope stays whatever the caller passed. Privacy controls also apply to retained errors; hub_delete_debug_logs clears them.
+With the opt-in advanced setting "Keep recent errors for bug reports" (off by default), reports include up to ten recent server errors kept in app state (they survive native log rollover), in a section ahead of the native log history. With it off, reports read errors from the native log history only. On a bug report with no `failingTool`, the newest retained error inside the report's log window that names a tool supplies it for the title and the prefilled form field only; the result marks it `failingToolSource: "retained_error"`, and the log scope stays whatever the caller passed. Privacy controls also apply to retained errors; hub_delete_logs(mode='mcp') clears them.
 
 Rule routing: a legacy custom MCP rule-engine rule id goes in the `ruleId` param; a native Rule Machine rule/app goes in the `nativeAppId` param. They are different engines -- do not cross them (each scopes the report's logs to its own engine).
 
 Issue-type routing: `issueType` picks the GitHub issue template behind `submitUrl` -- `bug` opens the bug-report template, `enhancement` the feature template, `agent_behavior` the agent-behavior template -- and sets the report heading and the title prefix (`[bug]` / `[feature]` / `[agent-behavior]`) with it. Filing a feature request as a bug lands the user on the wrong form, so pick the type before you call.
 
-**Before filing a bug.** The result carries `preflight` (bug and agent_behavior reports) and `missingContext`; resolve both before handing the user the link. On a bug, preflight asks you to raise the MCP log level to debug (`hub_set_log_level`), reproduce the failure, and then attach the debug lines from `hub_get_logs(mode='mcp')` via `clientLogs` -- the report itself only embeds error/warn entries, so debug output reaches the maintainer only if you paste it. That step is present only when the level is not already debug. Then attach logs from EVERY source -- `hub_get_logs(mode='hub')` for the native hub log around the failure and the client host's own MCP log via `clientLogs`. In `privacyMode='public'` the verbatim and client-log sections and the raw log text are withheld unconditionally -- a placeholder names how many lines were held back, and there is no override; `includeRawLogs` only matters in private mode, where `false` withholds the same content. The link also prefills the MCP server version, hub firmware, client and failing tool, and labels the issue `diag-prefilled` so a tool-generated report is recognisable. In both modes credentials are redacted -- the same redaction also runs over `expected`, `actual`, `stepsToReproduce`, the title and the embedded log block. The settings snapshot prints posture only (no hostname, no token), which is why it is kept in public mode.
+**Before filing a bug.** The result carries `preflight` (bug and agent_behavior reports) and `missingContext`; resolve both before handing the user the link. On a bug, preflight asks you to raise the MCP log level to debug (`hub_set_log_level`), reproduce the failure, and then attach the debug lines from `hub_get_logs(mode='mcp')` via `clientLogs` -- the report itself only embeds error/warn entries, so debug output reaches the maintainer only if you paste it. That step is present only when the level is not already debug. Then attach logs from EVERY source -- `hub_get_logs(mode='past')` for the native hub log around the failure and the client host's own MCP log via `clientLogs`. In `privacyMode='public'` the verbatim and client-log sections and the raw log text are withheld unconditionally -- a placeholder names how many lines were held back, and there is no override; `includeRawLogs` only matters in private mode, where `false` withholds the same content. The link also prefills the MCP server version, hub firmware, client and failing tool, and labels the issue `diag-prefilled` so a tool-generated report is recognisable. In both modes credentials are redacted -- the same redaction also runs over `expected`, `actual`, `stepsToReproduce`, the title and the embedded log block. The settings snapshot prints posture only (no hostname, no token), which is why it is kept in public mode.
 
 **What to pass.** `llmClient` is the host app plus version (`Claude Code 2.1`, `Claude Desktop`, `Claude.ai web`, `ChatGPT desktop`, `Cursor`); `Claude` alone is not enough -- ask the user. When the server has no client self-report, or it names a transport wrapper (mcp-remote, mcp-proxy, fastmcp-remote, supergateway, or the Python SDK default identity those bridges send -- `mcp 0.1.0`, or `mcp` with no version), the result says so in missingContext: ask the user and never infer the host app or model from context. Wrapper detection reads only what THIS request self-reported; nothing is carried over from an earlier one. A legacy client names itself on `initialize` alone, so an ordinary tool call from one reports `not reported on this request` and the tool asks the user instead. `llmModel` is the model behind it (`Claude Opus 5`, `Sonnet 5`, `Haiku 4.5`, `GPT-5`); ask if unknown. `verbatimToolCalls` takes the exact failing call (tool name and args JSON) and the exact raw response or error text copied from the transcript -- never a paraphrase, the real wording is usually the diagnosis. `clientLogs` takes raw log lines from the client host for the failure window (Claude Desktop writes `mcp-server-*.log`; Claude Code has its own debug log), and also takes pasted `hub_get_logs` output. An `agent_behavior` report asks for `stepsToReproduce`, `verbatimToolCalls` and `clientLogs` exactly as a bug does, and renders the same sections.
 
@@ -12636,62 +12598,12 @@ To move EXISTING devices into an existing room, set each device's room via hub_u
 Renaming a room preserves device assignments, but may require updating automations/dashboards that reference the room by name.
 ''',
 
-        slow_ops: '''## Slow operations over Streamable HTTP
+        slow_ops: '''## Slow operations
 
-Hubitat's cloud relay can end one HTTP request while hub-side work continues. MCP 2026-07-28 request-to-request continuation solves this without changing transport, installing an extension, or asking the caller to invent a token.
+The cloud relay can end a request while the hub keeps working; a modern client continues the call by itself. Each slow-operation response (`in_progress`, `continuation_limit`, `too_many_writes_in_flight`, `slow_read_timeout`) says what to do next.
 
-### Automatic request-to-request continuation
-
-The modern path applies to `hub_set_native_app`, `hub_set_rule(operation='create')`, `hub_set_rule(operation='update')`, `hub_set_rule(operation='form')`, multi-rule stop/start batches through `hub_call_rule`, `hub_clone_native_app`, `hub_import_native_app`, the slow driver-code lifecycle writes `hub_create_driver`, `hub_update_driver`, and `hub_delete_item(type="driver")`, `hub_delete_debug_logs`, `hub_manage_virtual_device`, `hub_update_device`, and `hub_restore_backup` for a rule backup (`scope=source` with an `rm-rule_` key or a `sourceFile` snapshot). When the transport carries a time budget, device, log and diagnostic reads also continue as described below.
-
-The first write request reserves the operation and starts its first slice at once; a write that finishes within that request's wait budget returns an ordinary `resultType: "complete"` result in one round trip, so a client that never echoes `requestState` still completes fast writes. Only work still running at the budget returns `resultType: "input_required"` with an opaque `requestState`; compatible MCP clients repeat the same tool call with that state, subject to their retry limit. A resumed request either advances work or observes an internal worker within the request's wait budget. Detached workers use a separate 120-second cooperative target at safe batch boundaries; individual wizard operations may exceed it. A terminal `resultType: "complete"` describes the operation's outcome; neither successful completion nor completion within a particular client's retry limit is guaranteed.
-
-The state is bound to the original leaf tool and exact original arguments. A mismatched, unknown, or expired state executes nothing. A fresh identical call while the original is active rejoins that same `requestState` and observes the running owner; every response to that replay is marked `rejoined: true`, and it cannot reserve or run a second write. This lets a client safely replay a first request whose HTTP response was lost while the work is still running. To INTENTIONALLY run the same write twice while the first record is still live, vary the arguments or wait out the record TTL -- a byte-identical repeat always coalesces. The terminal result remains replayable briefly under the same requestState so losing only the final HTTP response does not rerun the operation. A write that completed within its first request has no state the client could echo, so a lost response there is the same exposure as any single-request write: read the target before repeating it. A client that cannot render `input_required` shows a generic client-side error with no result body while the hub keeps running the write; the same rule applies -- read the target, and know that an identical repeat within the active window joins the running write rather than starting a second one.
-
-### Worker checkpoints and limits
-
-Driver bulk installs/updates pause between drivers. Each saved checkpoint retains the untouched remainder, renews the active window, and advances the owner generation; the next original-argument request with the same state starts a fresh worker slice. If no client request resumes a checkpoint within about five seconds, the server resumes it itself and keeps going to completion or the eight-slice cap, so a client that never continues still gets the whole write; a client request that arrives later observes or replays as usual. Clone and import checkpoints resume the same way (their later phases read only the checkpoint, so the import JSON is not retained). `hub_get_info` returns `recentWrites`: the last ten continuation-eligible writes with their status (`running`, `paused_resuming`, `finished`, `finished_with_error`) and identifiers, so a client that saw only a generic error can learn what happened with one read. Every state-only reply, every background completion and every paused write that expires unresumed is logged in the MCP log (`hub_get_logs` with `mode="mcp"`, component `mrtr`) at info or warn, so a client-side error can be traced without enabling debug logging.
-
-Native Rule Machine document and form operations run in one worker without item checkpoints. Their replies can still use request-to-request continuation while that worker runs. A large changes batch does not yield at the worker target; use smaller batches when necessary and inspect any partial result before continuing. Individual driver operations also remain uninterrupted. The worker target is not a hard execution deadline or a guarantee of recovery from a platform kill.
-
-If eight owner slices leave work unfinished, the terminal `continuation_limit` result retains the completed aggregate, exact remaining-work fields and any deferred-finalization guidance. Inspect that result before making a new, smaller call containing only the remainder. Replaying the old state only returns the same terminal result.
-
-### The `mrtr` block
-
-A result that ran through request-to-request continuation carries `mrtr: {continued, rounds, startedAt}`: `continued` is always true there, `rounds` is how many owner work slices ran (1 when the background worker finished it in one), and `startedAt` is when the first slice started (epoch ms). A replayed or joined result also carries `rejoined: true`. A successful result without `mrtr` ran inside its first request. An error result can lack `mrtr` even after earlier slices ran (a later slice that could not be scheduled ends the write there), so read the target before retrying it.
-
-### Client retry limits and resume
-
-The official Python SDK pinned by this project (2.2.0) defaults to ten automatic continuation retries. Contention and worker-coordination responses consume client rounds; the server's `mrtr.rounds` counts owner work slices instead. Its eight-slice cap does not bound a client's retries, and ten retries is an SDK policy, not an MCP requirement. Cloud wait budgets reduce rapid polling but cannot make an arbitrary-duration worker finish within that limit.
-
-For integrations that control the SDK, configure `Client(..., input_required_max_rounds=...)` for the expected operation size, or use `client.session.call_tool(..., allow_input_required=True)` and retain each returned `request_state` before the next request. Resume with the same outer tool, original arguments and exact state; do not send only the remaining arguments. Hubitat keeps one state string for the logical call. The SDK also accepts `client.call_tool(..., request_state=saved_state)` to resume its automatic loop. Choose state capture before starting: `InputRequiredRoundsExceededError` does not contain the last state. A worked example and offline SDK coverage are in `docs/testing.md`, "Client retry policy".
-
-Stopping client retries does not cancel an executing worker or free its write slot. Replaying the saved state retrieves the retained outcome without repeating the write. Retention is finite: idle active records expire after three minutes; executing workers remain protected while their live marker exists; write terminal results expire after ten minutes and may be evicted earlier under record pressure. If state expires or is lost, inspect the actual target before deciding on a new write. A fresh identical call after completion is a NEW operation, not a terminal replay. Clients with an unconfigurable limit cannot be promised completion for arbitrary operation sizes.
-
-### Global write concurrency cap
-
-Every actual write obtains a server-side lease, whether it uses MRTR or completes in one request. `maxConcurrentWrites` defaults to 2 (1 fully serializes writes; 0 disables the cap). A new write at capacity is refused as `too_many_writes_in_flight` before dispatch, so parallel agents or a client burst cannot overwhelm the hub. Active MRTR calls and the background `hub_update_package` worker keep their slot until completion; abandoned leases expire automatically. Reads, gateway catalog calls, schema-only probes, `hub_call_device_replace(list_options=true)`, and `hub_update_package(dryRun=true)` do not count. No client token or extra argument is involved.
-
-### Older clients
-
-Clients negotiated below MCP 2026-07-28 do not understand requestState. They retain the existing `status: "in_progress"` remainder envelope for bounded multi-step writes. Completed steps are already committed; reissue only the returned remaining work. This is a compatibility fallback, not a second polling protocol.
-
-Native log reads through `hub_get_logs` and cold MCP log recovery use the same continuation. Recovery also serves logging status, `hub_get_info`, `hub_report_issue`, and detailed `hub_get_custom_rule` diagnostics. `hub_delete_debug_logs` waits for recovery before clearing and retains its small terminal result for safe replay. Reload recovery reads the existing native history; old state-backed entries are discarded once when updating to native storage. No log content is stored in the continuation record.
-A legacy client that receives `status: "in_progress"` from a log read or from `hub_delete_debug_logs` repeats the identical call.
-
-`hub_get_device` (every mode), `hub_list_devices` (including virtual devices), and `hub_get_device_health` use background reads on budgeted modern requests. Fast reads finish in one response. Each independent call fetches fresh data; only continuation/replay shares its snapshot, including any device-details pagination cursor. Device access changes or a lost snapshot reject continuation. Device payloads remain in bounded memory, outside persisted continuation records. Legacy device calls remain synchronous; a legacy `hub_list_devices` page that reaches the request budget ends early with `budgetLimited: true` and a cursor to continue from (see the `performance_devices` section). Health retains its 30-second traceroute and 90-second speedtest timeouts, but eight observation slices or a client's retry limit can end the wait before a long probe finishes. A health `slow_read_timeout` does not cancel probes or the optional identify LED blink; do not automatically retry it as a new call.
-
-Two reads use the same continuation: `hub_get_jobs` and `hub_get_performance_stats` both come from the hub's `/logs/json` page, one document that carries every device and app stat plus the job tables, so its fetch time grows with hub size and on a large hub can outrun the relay. When the request's transport has a time budget (`relayBudgetMs` over the cloud relay, `lanBudgetMs` on the LAN) the fetch runs in a background worker and its trimmed result is cached for 30 s; a modern client's first call already runs the read (a cached or quickly landed snapshot answers in one round trip) and only a still-pending fetch hands back `requestState` to continue, a legacy client that receives `status: "in_progress"` repeats the identical call, and a failed fetch is returned as an ordinary `isError` result with a retry already scheduled. Reads never hold a write lease or count toward `maxConcurrentWrites`, and their terminal record carries no payload (a replay re-runs the read from the cache). With no budget on the transport the fetch runs inline and the call is a single ordinary response.
-
-The advanced `relayBudgetMs` setting (default 6000 ms, 0 disables) controls cloud slices. Both transport budgets automatically use at least 6000 ms when enabled. `lanBudgetMs` defaults to 0; enable it only when the LAN client timeout leaves room for that minimum plus request overhead.
-
-### Package deployment
-
-`hub_update_package` is intentionally asynchronous instead of MRTR because a full repair can take minutes and recompiles this app. A real call validates and schedules the repair, then immediately returns `status: "in_progress"` with `requestId`. Do not submit it again: the server retains the reservation until that exact worker clears it or a matching terminal `lastSelfDeploy.requestId` proves it finished. Poll `hub_get_info.lastSelfDeploy` until its `requestId` matches; its `success` and `error` fields are the terminal outcome. During normal execution, keep polling rather than retrying the write. If a worker is abandoned, the next write may remove its marker only after the 10-minute recovery lease has expired and no live worker owns it; retry the deploy only after that recovery condition. `dryRun: true` remains synchronous.
-
-### Other writes
-
-No custom operation-token or deployment-job protocol is exposed. If a non-continuation write loses its response, read current hub state before deciding whether it is safe to retry.
+- Make writes one at a time and split a large Rule Machine change batch; parallel writes are refused once the hub's write cap is full.
+- A write that fails with no result body, or whose response is lost, may still be running on the hub. Wait about 15 seconds, check `recentWrites` in `hub_get_info`, and read the target before repeating it. An identical repeat while it is still active joins it instead of running it twice.
 '''
     ]
 }
@@ -12731,9 +12643,7 @@ def getToolGuideSubSections() {
             performance_overview: [],
             performance_devices: ["hub_list_devices", "hub_list_device_events", "hub_get_device",
                                   "hub_get_compatible_devices"],
-            performance_diagnostics: ["hub_get_logs", "hub_get_radio_details", "hub_get_metrics",
-                                      "hub_get_performance_stats", "hub_delete_debug_logs",
-                                      "hub_report_issue"]
+            performance_diagnostics: ["hub_get_radio_details", "hub_get_metrics", "hub_report_issue"]
         ],
         builtin_app_tools: [
             builtin_app_tools_overview: [],

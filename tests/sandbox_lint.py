@@ -2438,18 +2438,18 @@ READ_WRITE_SPLIT_SELF_TEST_CASES = [
     (
         "read reachable ONLY through a hub_manage_* gateway -- flags stranded (must-catch)",
         _build_read_write_split_corpus(
-            {"hub_manage_logs": ["hub_get_logs", "hub_delete_debug_logs"]},
+            {"hub_manage_logs": ["hub_get_logs", "hub_delete_logs"]},
             ["hub_get_logs"],
-            ["hub_get_logs", "hub_delete_debug_logs"],
+            ["hub_get_logs", "hub_delete_logs"],
         ),
         {"read-write-split-stranded-read"},
     ),
     (
         "read in no gateway at all and not flat -- flags stranded, empty holders (must-catch)",
         _build_read_write_split_corpus(
-            {"hub_manage_logs": ["hub_delete_debug_logs"]},
+            {"hub_manage_logs": ["hub_delete_logs"]},
             ["hub_ghost_read"],
-            ["hub_delete_debug_logs"],
+            ["hub_delete_logs"],
         ),
         {"read-write-split-stranded-read"},
     ),
@@ -5017,8 +5017,8 @@ def check_sandbox_map_subscripts(
 def check_logs_json_snapshot_guard() -> list[dict]:
     """Slow-read guard for the hub's /logs/json page. That one document carries every device and
     app stat plus the job tables, so its fetch time grows with hub size and a synchronous read
-    built on it outruns the cloud relay on a large hub (hub_get_jobs and
-    hub_get_performance_stats both 502'd that way). Two source-level invariants keep the fix in
+    built on it outruns the cloud relay on a large hub (the job and stats reads 502'd that
+    way before the snapshot). Two source-level invariants keep the fix in
     place: (1) the only hubInternalGet of "/logs/json" lives in _logsJsonFetchAndPublish, the
     single fetch implementation behind the JVM snapshot (invoked inline on an unbudgeted request
     and by the scheduled worker otherwise); (2) every tool whose implementation reads the

@@ -56,8 +56,8 @@ class MrtrCleanupSpec extends ToolSpecBase {
         script._mrtrPutLocked('write', terminal(at + 600000L))
         script._mrtrPutLocked('later', terminal(at + 610000L))
         Map read = terminal(at + 30000L)
-        read.leafTool = 'hub_get_jobs'
-        read.terminalResult = [__slowReadReplay: true, tool: 'hub_get_jobs']
+        read.leafTool = 'hub_get_logs'
+        read.terminalResult = [__slowReadReplay: true, tool: 'hub_get_logs']
         script._mrtrPutLocked('read', read)
 
         then:

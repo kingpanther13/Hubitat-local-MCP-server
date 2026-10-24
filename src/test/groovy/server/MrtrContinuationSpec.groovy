@@ -2546,14 +2546,14 @@ class MrtrContinuationSpec extends ToolSpecBase {
             fetches.incrementAndGet()
             groovy.json.JsonOutput.toJson([
                 uptime: '2d',
-                jobs: (1..jobCount).collect { [id: it, name: "Job${it}".toString(), recurring: false, methodName: 'run', nextRun: 'soon'] },
+                jobs: (1..jobCount).collect { [id: "app${it}Once.run".toString(), name: "Job${it}".toString(), link: "/installedapp/configure/${it}".toString(), recurring: false, methodName: 'run', nextRun: 'soon'] },
                 runningJobs: [], hubCommands: []
             ])
         }
     }
 
     @spock.lang.Unroll
-    def "cold gateway #leaf with #argumentForm inner args continues until the read is complete"() {
+    def "cold gateway hub_get_logs #mode with #argumentForm inner args continues until the read is complete"() {
         given:
         settingsMap.enableRead = true
         settingsMap.enableWrite = false
@@ -2565,10 +2565,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         def virtualNow = new AtomicLong(1234567890000L)
         NOW_OVERRIDE.set({ -> virtualNow.get() })
         PAUSE_EXECUTION_OVERRIDE.set({ Long ms -> virtualNow.addAndGet(ms) })
-        Map args = [tool: leaf]
-        if (argumentForm == 'null') args.args = null
-        if (argumentForm == 'empty map') args.args = [:]
-        if (argumentForm == 'encoded object') args.args = '{}'
+        Map args = [tool: 'hub_get_logs', args: argumentForm == 'map' ? [mode: mode] : groovy.json.JsonOutput.toJson([mode: mode])]
 
         when: 'the cold fetch is queued but cannot complete during the request'
         def first = modernCall('hub_manage_logs', args)
@@ -2604,7 +2601,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         completed.result.resultType == 'complete'
         completed.result.isError != true
         inner.status != 'in_progress'
-        leaf == 'hub_get_performance_stats' ? inner.uptime == '2d' : inner.scheduledJobs.count == 3
+        mode == 'devices' ? inner.uptime == '2d' : inner.count == 3
         inner.snapshot.background == true
         inner.mrtr.continued == true
         fetches.get() == 1
@@ -2612,8 +2609,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         script._activeWrites().isEmpty()
 
         where:
-        [leaf, argumentForm] << [['hub_get_performance_stats', 'hub_get_jobs'],
-            ['omitted', 'null', 'empty map', 'encoded object']].combinations()
+        [mode, argumentForm] << [['devices', 'scheduledJobs'], ['map', 'encoded object']].combinations()
     }
 
     @spock.lang.Unroll
@@ -2630,7 +2626,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         PAUSE_EXECUTION_OVERRIDE.set({ Long ms -> virtualNow.addAndGet(ms) })
 
         when:
-        def refused = modernCall('hub_manage_logs', [tool: 'hub_get_performance_stats', args: innerArgs])
+        def refused = modernCall('hub_manage_logs', [tool: 'hub_get_logs', args: innerArgs])
 
         then:
         refused.error.code == -32602
@@ -2645,7 +2641,84 @@ class MrtrContinuationSpec extends ToolSpecBase {
         innerArgs << ['not JSON', '[]', 'null', 'true', '42']
     }
 
-    def "a budgeted hub_get_jobs continues through requestState while its background fetch runs, holding no write slot"() {
+    def "a budgeted hub_get_logs list of modes continues through requestState and its replay is bounded by the tab snapshot"() {
+        given:
+        settingsMap.useGateways = true
+        settingsMap.relayBudgetMs = 6000
+        script.metaClass._isCloudRequest = { -> true }
+        def fetches = new AtomicInteger(0)
+        registerLogsJson(fetches, 3)
+        hubGet.register('/logs/eventsJson') { params -> '[{"name":"mode","value":"Day","unit":null,"date":"2009-02-13T23:00:00.000+0000"}]' }
+        def virtualNow = new AtomicLong(1234567890000L)
+        NOW_OVERRIDE.set({ -> virtualNow.get() })
+        PAUSE_EXECUTION_OVERRIDE.set({ Long ms -> virtualNow.addAndGet(ms) })
+        def args = [tool: 'hub_get_logs', args: [mode: ['scheduledJobs', 'runningJobs', 'locationEvents']]]
+
+        when: 'round zero schedules the one Logs page fetch and is still pending'
+        def preflight = modernCall('hub_read_diagnostics', args)
+        String stateId = preflight.result.requestState
+
+        then:
+        preflight.result.resultType == 'input_required'
+        runInMillisCalls.size() == 1
+        fetches.get() == 0
+
+        when: 'the worker lands and the client continues'
+        script.runLogsJsonFetch(runInMillisCalls[0][2].data as Map)
+        def done = modernCall('hub_read_diagnostics', args, stateId)
+        def inner = mcpDriver.parseInner(done)
+        def rec = (atomicStateMap.mrtrRequests as Map)[stateId] as Map
+
+        then: 'every tab answers from the one fetch, and the terminal record expires with that snapshot'
+        done.result.resultType == 'complete'
+        fetches.get() == 1
+        inner.modes.scheduledJobs.count == 3
+        inner.modes.runningJobs.count == 0
+        inner.modes.locationEvents.entries == [[name: 'mode', value: 'Day', date: '2009-02-13T23:00:00.000+0000']]
+        inner.modes.locationEvents.nullFields == ['unit']
+        !inner.modes.scheduledJobs.containsKey('snapshot')
+        rec.expiresAt == (inner.snapshot.fetchedAt as Long) + 30000L
+    }
+
+    def "a hub_get_logs list whose tabs were fetched at different times bounds its replay by the older fetch"() {
+        given:
+        settingsMap.useGateways = true
+        settingsMap.relayBudgetMs = 6000
+        script.metaClass._isCloudRequest = { -> true }
+        def fetches = new AtomicInteger(0)
+        registerLogsJson(fetches, 2)
+        hubGet.register('/logs/past/json') { params -> groovy.json.JsonOutput.toJson(['2026-09-06 12:00:00.000\tINFO\tapp|1|A|hello']) }
+        def virtualNow = new AtomicLong(1234567890000L)
+        NOW_OVERRIDE.set({ -> virtualNow.get() })
+        PAUSE_EXECUTION_OVERRIDE.set({ Long ms -> virtualNow.addAndGet(ms) })
+        def args = [tool: 'hub_get_logs', args: [mode: ['past', 'scheduledJobs']]]
+
+        when: 'both background reads are started in the first leg'
+        String stateId = modernCall('hub_read_diagnostics', args).result.requestState
+        def pastJob = runInMillisCalls.find { it[1] == 'runNativeLogFetch' }
+        def jobsJob = runInMillisCalls.find { it[1] == 'runLogsJsonFetch' }
+
+        then:
+        stateId
+        pastJob && jobsJob
+
+        when: 'the past read lands first, the Logs page 10 s later'
+        script.runNativeLogFetch(pastJob[2].data as Map)
+        long pastAt = virtualNow.get()
+        virtualNow.addAndGet(10000L)
+        script.runLogsJsonFetch(jobsJob[2].data as Map)
+        def done = modernCall('hub_read_diagnostics', args, stateId)
+        def inner = mcpDriver.parseInner(done)
+        def rec = (atomicStateMap.mrtrRequests as Map)[stateId] as Map
+
+        then:
+        done.result.resultType == 'complete'
+        inner.modes.past.count == 1
+        inner.modes.scheduledJobs.count == 2
+        rec.expiresAt == pastAt + script._logsJsonSnapshotTtlMs()
+    }
+
+    def "a budgeted hub_get_logs job read continues through requestState while its background fetch runs, holding no write slot"() {
         given: 'the Write master is OFF (a read must not need it) and the write cap is already full'
         settingsMap.enableRead = true
         settingsMap.enableWrite = false
@@ -2659,7 +2732,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         NOW_OVERRIDE.set({ -> virtualNow.get() })
         PAUSE_EXECUTION_OVERRIDE.set({ Long ms -> virtualNow.addAndGet(ms) })
         assert script._writeReserveRequest('hub_set_rule', 'legacy').accepted == true
-        def args = [tool: 'hub_get_jobs', args: [cursor: '']]
+        def args = [tool: 'hub_get_logs', args: [mode: 'scheduledJobs', cursor: '']]
 
         when: 'round zero runs the read: the fetch is scheduled and observed, and is still pending'
         def preflight = modernCall('hub_read_diagnostics', args)
@@ -2696,8 +2769,8 @@ class MrtrContinuationSpec extends ToolSpecBase {
         leg2.result.resultType == 'complete'
         !leg2.result.isError
         fetches.get() == 1
-        inner.scheduledJobs.count == 100
-        inner.scheduledJobs.total == 120
+        inner.count == 100
+        inner.total == 120
         inner.nextCursor == '100'
         inner.snapshot.background == true
         inner.snapshot.ageMs == 5000
@@ -2709,11 +2782,11 @@ class MrtrContinuationSpec extends ToolSpecBase {
         def rec = (atomicStateMap.mrtrRequests as Map)[stateId] as Map
 
         then: 'the terminal record holds a marker, not the payload; the replay re-reads the cached snapshot; the record expires with that snapshot, clocked from its fetch'
-        replay.scheduledJobs.total == 120
+        replay.total == 120
         replay.nextCursor == '100'
         fetches.get() == 1
         rec.status == 'terminal'
-        rec.terminalResult == [__slowReadReplay: true, tool: 'hub_get_jobs']
+        rec.terminalResult == [__slowReadReplay: true, tool: 'hub_get_logs']
         rec.expiresAt == (inner.snapshot.fetchedAt as Long) + 30000L
         (rec.expiresAt as Long) < (rec.finishedAt as Long) + 30000L
 
@@ -2744,12 +2817,12 @@ class MrtrContinuationSpec extends ToolSpecBase {
             pool["mrtr-wterm-${it}".toString()] = fakeRecord('hub_set_rule', 1234567890000L - 100000L - it) +
                 [status: 'terminal', terminalResult: [success: true], terminalIsError: false]
         }
-        (1..readCap).each { pool["mrtr-read-${it}".toString()] = fakeRecord('hub_get_jobs', 1234567890000L - it) }
+        (1..readCap).each { pool["mrtr-read-${it}".toString()] = fakeRecord('hub_get_logs', 1234567890000L - it) }
         atomicStateMap.mrtrRequests = pool
         script._writeStateCacheInvalidate()
 
         when: 'a read arrives (its reserve runs the sweep) and is refused on the read cap'
-        def refused = mcpDriver.parseInner(modernCall('hub_get_performance_stats', [limit: 1]))
+        def refused = mcpDriver.parseInner(modernCall('hub_get_logs', [mode: 'devices', limit: 1]))
         def after = atomicStateMap.mrtrRequests as Map
 
         then: 'every write terminal survived; the combined count is over 16 by design'
@@ -2768,12 +2841,12 @@ class MrtrContinuationSpec extends ToolSpecBase {
         script._logsJsonFetchAndPublish()
 
         when:
-        def only = modernCall('hub_get_jobs', [cursor: ''])
+        def only = modernCall('hub_get_logs', [mode: 'scheduledJobs', cursor: ''])
         def inner = mcpDriver.parseInner(only)
 
         then:
         only.result.resultType == 'complete'
-        inner.scheduledJobs.count == 3
+        inner.count == 3
         inner.snapshot.background == false
         inner.mrtr == null
         fetches.get() == 1
@@ -2797,7 +2870,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         })
 
         when:
-        def only = modernCall('hub_get_performance_stats', [limit: 1])
+        def only = modernCall('hub_get_logs', [mode: 'devices', limit: 1])
         def inner = mcpDriver.parseInner(only)
 
         then:
@@ -2829,12 +2902,12 @@ class MrtrContinuationSpec extends ToolSpecBase {
         int writeCap = script._mrtrMaxRecords() as Integer
         int readCap = script._mrtrMaxReadRecords() as Integer
         (1..writeCap).each { pool["mrtr-write-${it}".toString()] = fakeRecord('hub_set_rule', 1234567890000L - it) }
-        (1..readCap).each { pool["mrtr-read-${it}".toString()] = fakeRecord('hub_get_performance_stats', 1234567890000L - it) }
+        (1..readCap).each { pool["mrtr-read-${it}".toString()] = fakeRecord('hub_get_logs', 1234567890000L - it) }
         atomicStateMap.mrtrRequests = pool
         script._writeStateCacheInvalidate()
 
         when: 'a new read arrives with every read slot active'
-        def readRefused = mcpDriver.parseInner(modernCall('hub_get_jobs', [cursor: '']))
+        def readRefused = mcpDriver.parseInner(modernCall('hub_get_logs', [mode: 'scheduledJobs', cursor: '']))
 
         then: 'it is refused on the READ cap, and the write records were untouched'
         readRefused.status == 'request_state_capacity'
@@ -2846,7 +2919,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         finished['mrtr-read-1'] = [:] + (finished['mrtr-read-1'] as Map) + [status: 'terminal']
         atomicStateMap.mrtrRequests = finished
         script._writeStateCacheInvalidate()
-        def readOk = modernCall('hub_get_jobs', [cursor: ''])
+        def readOk = modernCall('hub_get_logs', [mode: 'scheduledJobs', cursor: ''])
 
         then: 'the read pool made room among reads only; the full write pool did not block it'
         readOk.result.resultType == 'input_required'
@@ -2873,12 +2946,12 @@ class MrtrContinuationSpec extends ToolSpecBase {
         def virtualNow = new AtomicLong(1234567890000L)
         NOW_OVERRIDE.set({ -> virtualNow.get() })
         PAUSE_EXECUTION_OVERRIDE.set({ Long ms -> virtualNow.addAndGet(ms) })
-        def args = [type: 'app', limit: 1]
+        def args = [mode: 'apps', limit: 1]
 
         when:
-        String stateId = modernCall('hub_get_performance_stats', args).result.requestState
+        String stateId = modernCall('hub_get_logs', args).result.requestState
         script.runLogsJsonFetch(runInMillisCalls[0][2].data as Map)
-        def terminal = modernCall('hub_get_performance_stats', args, stateId)
+        def terminal = modernCall('hub_get_logs', args, stateId)
         def rec = (atomicStateMap.mrtrRequests as Map)[stateId] as Map
 
         then:
@@ -2899,13 +2972,13 @@ class MrtrContinuationSpec extends ToolSpecBase {
         def virtualNow = new AtomicLong(1234567890000L)
         NOW_OVERRIDE.set({ -> virtualNow.get() })
         PAUSE_EXECUTION_OVERRIDE.set({ Long ms -> virtualNow.addAndGet(ms) })
-        def args = [cursor: '']
+        def args = [mode: 'scheduledJobs', cursor: '']
 
         when: 'the client keeps continuing while the worker stays queued'
-        String stateId = modernCall('hub_get_jobs', args).result.requestState
+        String stateId = modernCall('hub_get_logs', args).result.requestState
         def legs = []
         int cap = script._mrtrMaxContinuationSlices() as Integer
-        (1..cap).each { legs << modernCall('hub_get_jobs', args, stateId) }
+        (1..cap).each { legs << modernCall('hub_get_logs', args, stateId) }
         def last = legs[-1]
         def inner = mcpDriver.parseInner(last)
 
@@ -2923,11 +2996,11 @@ class MrtrContinuationSpec extends ToolSpecBase {
 
         when: 'the worker finally lands and the client starts a fresh identical call'
         script.runLogsJsonFetch(runInMillisCalls[0][2].data as Map)
-        String fresh = modernCall('hub_get_jobs', args).result.requestState
-        def served = mcpDriver.parseInner(modernCall('hub_get_jobs', args, fresh))
+        String fresh = modernCall('hub_get_logs', args).result.requestState
+        def served = mcpDriver.parseInner(modernCall('hub_get_logs', args, fresh))
 
         then:
-        served.scheduledJobs.count == 1
+        served.count == 1
         fetches.get() == 1
     }
 
@@ -2939,7 +3012,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         script.metaClass._isCloudRequest = { -> true }
 
         when:
-        def refused = modernCall('hub_get_performance_stats', [limit: 5])
+        def refused = modernCall('hub_get_logs', [mode: 'devices', limit: 5])
 
         then:
         refused.error == null
@@ -2955,7 +3028,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         registerLogsJson(fetches, 2)
 
         when:
-        def only = modernCall('hub_get_performance_stats', [type: 'app', limit: 1])
+        def only = modernCall('hub_get_logs', [mode: 'apps', limit: 1])
 
         then:
         only.result.resultType == 'complete'
@@ -2974,7 +3047,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         script.metaClass._isCloudRequest = { -> true }
 
         when: 'a read with no bestPracticeKey'
-        def read = modernCall('hub_get_jobs', [cursor: ''])
+        def read = modernCall('hub_get_logs', [mode: 'scheduledJobs', cursor: ''])
 
         then:
         read.error == null
@@ -3098,11 +3171,11 @@ class MrtrContinuationSpec extends ToolSpecBase {
         def virtualNow = new AtomicLong(1234567890000L)
         NOW_OVERRIDE.set({ -> virtualNow.get() })
         PAUSE_EXECUTION_OVERRIDE.set({ Long ms -> virtualNow.addAndGet(ms) })
-        def args = [cursor: '']
+        def args = [mode: 'scheduledJobs', cursor: '']
 
         when: 'the fetch is queued but not landed, and an identical read arrives'
-        def first = modernCall('hub_get_jobs', args)
-        def duplicate = modernCall('hub_get_jobs', args)
+        def first = modernCall('hub_get_logs', args)
+        def duplicate = modernCall('hub_get_logs', args)
 
         then:
         first.result.resultType == 'input_required'
@@ -3316,11 +3389,11 @@ class MrtrContinuationSpec extends ToolSpecBase {
         def virtualNow = new AtomicLong(1234567890000L)
         NOW_OVERRIDE.set({ -> virtualNow.get() })
         PAUSE_EXECUTION_OVERRIDE.set({ Long ms -> virtualNow.addAndGet(ms) })
-        def args = [cursor: '']
+        def args = [mode: 'scheduledJobs', cursor: '']
 
         when: 'the fetch is still pending, so the read pauses with a checkpoint'
-        def first = modernCall('hub_get_jobs', args)
-        def paused = modernCall('hub_get_jobs', args, first.result.requestState as String)
+        def first = modernCall('hub_get_logs', args)
+        def paused = modernCall('hub_get_logs', args, first.result.requestState as String)
 
         then: 'the read waits for its own background fetch, not for a resumption job'
         paused.result.resultType == 'input_required'
@@ -3517,7 +3590,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         Map claim = [claimId: 'read-cap-unstorable', generation: 1]
         Map rec = [status: 'active', claimId: 'read-cap-unstorable', claimedGeneration: 1, generation: 1,
                    rounds: script._mrtrMaxContinuationSlices() - 1,
-                   outerTool: 'hub_get_jobs', leafTool: 'hub_get_jobs',
+                   outerTool: 'hub_get_logs', leafTool: 'hub_get_logs',
                    startedAt: script.now(), expiresAt: script.now() + 60000L]
         atomicStateMap.mrtrRequests = ['read-cap-unstorable': rec]
         script._writeStateCacheInvalidate()
@@ -3527,7 +3600,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
 
         when:
         def outcome = script._mrtrCommitSlice('read-cap-unstorable', rec, claim, [:],
-            [status: 'in_progress', tool: 'hub_get_jobs'])
+            [status: 'in_progress', tool: 'hub_get_logs'])
 
         then: 'the timeout still comes back, and the caller is told the state will not replay it'
         outcome.outcome == 'terminal'

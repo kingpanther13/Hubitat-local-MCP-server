@@ -1,10 +1,18 @@
-library(name: "McpDebugLoggingLib", namespace: "mcp", author: "kingpanther13", description: "MCP debug-log + bug-report tool implementations (hub_get_logs MCP modes/hub_delete_debug_logs/hub_set_log_level/hub_report_issue) for the MCP Rule Server; #include'd by the main app. Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.")
+library(name: "McpDebugLoggingLib", namespace: "mcp", author: "kingpanther13", description: "MCP debug-log + bug-report tool implementations (hub_get_logs MCP modes/hub_set_log_level/hub_report_issue) for the MCP Rule Server; #include'd by the main app. Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.")
 
 def toolGetDebugLogs(args) {
     initDebugLogs()
 
-    def limit = args.limit != null ? Math.min(args.limit as Integer, 200) : 50
-    def level = args.level ?: "all"
+    if (args.limit != null && !_isWholeNumberIn(args.limit, 0L, Integer.MAX_VALUE)) {
+        throw new IllegalArgumentException("limit must be a whole number: 0 for every entry, or the most entries to return (got '${args.limit}')")
+    }
+    if (args.level != null && !(args.level.toString().toLowerCase() in ["trace", "debug", "info", "warn", "error", "all"])) {
+        throw new IllegalArgumentException("level must be one of trace, debug, info, warn, error, all (got '${args.level}')")
+    }
+    // 0 = every entry: the log keeps at most 100, under the 200-entry cap.
+    int limit = 50
+    if (args.limit != null) limit = (args.limit as Long) == 0L ? 200 : (Math.min(args.limit as Long, 200L) as int)
+    def level = args.level?.toString()?.toLowerCase() ?: "all"
     def component = args.component
     def ruleId = args.ruleId
 
@@ -58,15 +66,6 @@ def toolGetDebugLogs(args) {
         if (paged.nextCursor != null) result.nextCursor = paged.nextCursor
     }
     return result
-}
-
-def toolClearDebugLogs(args) {
-    initDebugLogs()
-    def cleared = clearDebugLogEntries(args)
-    if (cleared.status == "in_progress") return cleared + [tool: "hub_delete_debug_logs"]
-    def detail = cleared.countIncomplete ? "previous entry count unavailable" : "${cleared.clearedCount} entries removed"
-    mcpLog("info", "server", "Debug logs cleared (${detail})")
-    return [success: true] + cleared
 }
 
 def toolSetLogLevel(args) {
@@ -546,7 +545,7 @@ private List _bugReportPreflight(String issueType, boolean includeRawLogs, Strin
     // The embedded error/warn block is the reason mode='mcp' is normally redundant; when it is
     // withheld the agent has to fetch those entries itself, so say which case this is.
     String mcpNote = includeRawLogs ? "error/warn already attached" : (privacyMode == "public" ? "error/warn withheld in public mode" : "error/warn withheld: includeRawLogs=false")
-    steps << "Attach logs from every source: hub_get_logs(mode='hub') for native hub logs around the failure, mode='mcp' for MCP entries (${mcpNote}), and your client host's own MCP logs via clientLogs.".toString()
+    steps << "Attach logs from every source: hub_get_logs(mode='past') for native hub logs around the failure, mode='mcp' for MCP entries (${mcpNote}), and your client host's own MCP logs via clientLogs.".toString()
     steps << verbatimStep
     return steps
 }
@@ -843,11 +842,6 @@ def _getAllToolDefinitions_partDebugLogging() {
     return [
         // Debug Logging Tools
         [
-            name: "hub_delete_debug_logs",
-            description: "Clear the structured MCP history view read by hub_get_logs(mode='mcp').[[FLAT_TRIM]] A durable clear marker keeps old native entries from reappearing after reload. Use before reproducing an issue. Does NOT touch Hubitat system logs (hub_get_logs) or captured device states (hub_delete_captured_state).[[/FLAT_TRIM]] Cannot be undone.",
-            inputSchema: [type: "object", properties: [:]]
-        ],
-        [
             name: "hub_set_log_level",
             description: "Set the minimum log level threshold. Logs below this level won't be stored.",
             inputSchema: [
@@ -902,7 +896,7 @@ def _idempotentWriteToolNames_partDebugLogging() {
     // app's getIdempotentWriteToolNames() aggregator; see the classification rules there.
     return [
         // MCP self-admin + logging
-        "hub_set_log_level", "hub_delete_debug_logs"
+        "hub_set_log_level"
     ]
 }
 
@@ -911,7 +905,6 @@ def _toolDisplayMeta_partDebugLogging() {
     // overrides menu) -- merged into the app's getToolDisplayMeta() aggregator (issue #209).
     return [
         hub_report_issue: [title: "Generate Diagnostic Report", summary: "Generate a comprehensive diagnostic report for bug reports."],
-        hub_delete_debug_logs: [title: "Clear MCP Debug Logs", summary: "Clear all MCP debug log entries."],
         hub_set_log_level: [title: "Set MCP Log Level", summary: "Set the MCP log level (debug, info, warn, error)."]
     ]
 }
