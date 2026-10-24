@@ -13534,27 +13534,35 @@ class TestRunner:
         ONLY place it is exercised live. Cap 1 + one slow bulk variable create saturates it,
         and the second write must be refused BEFORE dispatch -- the refusal is what proves
         the lease was taken, since nothing else on the wire reports an in-flight write.
-        The first probe is sent as soon as the holder thread starts, with no fixed head start.
-        If it reaches the hub first (the holder is refused instead), the holder is retried,
-        up to three attempts, once its fixtures are verified absent."""
+        Probes start as soon as the holder thread starts and then fire on a fixed interval, each
+        from its own client instance, so one slow relay round trip cannot leave the holder's
+        window unprobed. A probe refused by another probe (the refusal names hub_set_variable)
+        is ignored; only a refusal naming hub_create_variable counts. If a probe reaches the hub
+        first (the holder is refused instead), the holder is retried, up to three attempts, once
+        its fixtures are verified absent."""
         suffix = _run_artifact_suffix()
         items = write_cap_variable_items(f"{PREFIX}WriteCap_{suffix}")
         slow_names = [item["name"] for item in items]
         probe_name = f"{PREFIX}WriteCapProbe_{suffix}"
         print(f"    WRITE_CAP workload: {len(items)} real variable creates")
 
-        # A second client instance, not a second caller on self.client: the client keeps
+        # One client instance per thread, not callers sharing self.client: the client keeps
         # per-call mutable state (JSON-RPC id counter, last-op timings), so two threads
         # sharing one would corrupt both. Its own requests.Session is the point.
-        bg = HubitatMcpClient(self.client.hub_url, self.client.app_id,
-                              self.client.access_token, verbose=self.verbose)
-        # Hand it the catalog maps rather than letting it fetch its own: they are identical
-        # per hub, and a second tools/list is one of the largest reads in the suite.
         self.client._ensure_catalog_maps()
-        bg._gateway_members = self.client._gateway_members
-        bg._gateway_route = self.client._gateway_route
-        bg._read_only_catalog_tools = self.client._read_only_catalog_tools
-        bg._active_test = self.client._active_test
+
+        def _thread_client() -> HubitatMcpClient:
+            client = HubitatMcpClient(self.client.hub_url, self.client.app_id,
+                                      self.client.access_token, verbose=self.verbose)
+            # Hand it the catalog maps rather than letting it fetch its own: they are identical
+            # per hub, and a second tools/list is one of the largest reads in the suite.
+            client._gateway_members = self.client._gateway_members
+            client._gateway_route = self.client._gateway_route
+            client._read_only_catalog_tools = self.client._read_only_catalog_tools
+            client._active_test = self.client._active_test
+            return client
+
+        bg = _thread_client()
 
         # Track before creating -- only the CI purge prefix-sweeps variables, so a crash between
         # a create landing and a later append would strand them on the hub.
@@ -13572,6 +13580,37 @@ class TestRunner:
             except Exception as exc:      # re-raised on the main thread after the join
                 slow["error"] = exc
 
+        probe_lock = threading.Lock()
+        holder_refusals: list[dict[str, Any]] = []
+        probe_errors: list[Exception] = []
+        refused = threading.Event()
+
+        def _probe(number: int) -> None:
+            client = _thread_client()
+            try:
+                client.call_tool("hub_manage_variables", {
+                    "tool": "hub_set_variable",
+                    "args": {"name": probe_name, "value": f"probe-{number}"},
+                })
+            except McpToolError as exc:
+                payload = _tool_error_payload(exc)
+                if payload.get("status") != "too_many_writes_in_flight":
+                    with probe_lock:
+                        probe_errors.append(exc)
+                elif [a.get("tool") for a in payload.get("active") or []] == ["hub_create_variable"]:
+                    with probe_lock:
+                        holder_refusals.append(payload)
+                    refused.set()
+                # Any other refusal names a probe holding the slot: probe against probe, ignored.
+            except RelayLostResponseError as exc:
+                print(f"    write-cap probe {number} lost to a relay 504 ({exc})")
+            except Exception as exc:      # re-raised on the main thread after the joins
+                with probe_lock:
+                    probe_errors.append(exc)
+            finally:
+                with probe_lock:
+                    self.client.op_timings.extend(client.op_timings)
+
         refusal = None
         probes = 0
         try:
@@ -13581,6 +13620,7 @@ class TestRunner:
                 slow.clear()
                 started.clear()
                 bg.op_timings.clear()
+                probe_threads: list[threading.Thread] = []
                 worker = threading.Thread(target=_hold_the_slot, name="e2e-write-cap-slow", daemon=True)
                 holder_started = time.monotonic()
                 worker.start()
@@ -13590,28 +13630,29 @@ class TestRunner:
                     # each retry gives the holder a longer head start for the relay-latency case.
                     time.sleep(0.4 * (attempt - 1))
                     deadline = time.monotonic() + 60
-                    while worker.is_alive() and time.monotonic() < deadline:
+                    while worker.is_alive() and not refused.is_set() and time.monotonic() < deadline:
                         probes += 1
-                        try:
-                            self.client.call_tool("hub_manage_variables", {
-                                "tool": "hub_set_variable",
-                                "args": {"name": probe_name, "value": f"probe-{probes}"},
-                            })
-                        except McpToolError as exc:
-                            payload = _tool_error_payload(exc)
-                            if payload.get("status") != "too_many_writes_in_flight":
-                                raise
-                            refusal = payload
-                            break
-                        except RelayLostResponseError as exc:
-                            print(f"    write-cap probe {probes} lost to a relay 504 ({exc}); re-probing")
+                        probe = threading.Thread(target=_probe, args=(probes,),
+                                                 name=f"e2e-write-cap-probe-{probes}", daemon=True)
+                        probe.start()
+                        probe_threads.append(probe)
+                        refused.wait(0.5)
                 finally:
-                    # Restore is a capped write, so the holder must finish first.
+                    # Restore is a capped write, so the holder and every probe must finish first.
                     worker.join(timeout=180)
-                    self.client.op_timings.extend(bg.op_timings)
+                    for probe in probe_threads:
+                        probe.join(timeout=60)
+                    with probe_lock:
+                        self.client.op_timings.extend(bg.op_timings)
                     print(f"    WRITE_CAP attempt={attempt} holder_elapsed={time.monotonic() - holder_started:.3f}s "
                           f"probes={probes} holder_error={slow.get('error')!r}")
                 assert not worker.is_alive(), "the in-flight write never finished; the cap state is unknown"
+                assert not any(probe.is_alive() for probe in probe_threads), \
+                    "a write-cap probe never finished; the cap state is unknown"
+                if probe_errors:
+                    raise probe_errors[0]
+                if holder_refusals:
+                    refusal = holder_refusals[0]
                 holder_error = slow.get("error")
                 if refusal is None and isinstance(holder_error, McpToolError) and attempt < 3:
                     payload = _tool_error_payload(holder_error)
