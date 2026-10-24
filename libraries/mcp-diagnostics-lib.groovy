@@ -767,6 +767,8 @@ def toolGetHubLogs(args) {
             throw new IllegalArgumentException("Invalid log mode: ${m}. Valid modes: ${modeArgs.keySet().join(', ')}")
         }
         def supplied = (allModeArgs - modeArgs[m]).findAll(this.&_argPresent.curry(args))
+        // In a list, pageSize sets every tab's row count: the MCP log takes it as its limit, status ignores it.
+        if (args.mode instanceof List && m in ["mcp", "status"]) supplied -= ["pageSize"]
         if (supplied) throw new IllegalArgumentException("Parameters ${supplied.join(', ')} do not apply to log mode '${m}'")
     }
     if (args.mode instanceof List) {
@@ -783,9 +785,14 @@ def toolGetHubLogs(args) {
             Map paging = [:]
             if (modeArgs[m].contains("pageSize")) paging = [cursor: "", pageSize: args.pageSize != null ? args.pageSize : 50]
             else if (modeArgs[m].contains("cursor")) paging = [cursor: ""]
+            Map tabArgs = args
+            if (m in ["mcp", "status"] && args.pageSize != null) {
+                tabArgs = args.subMap(args.keySet() - ["pageSize"])
+                if (m == "mcp" && args.limit == null) tabArgs.limit = args.pageSize
+            }
             Map r
             try {
-                r = toolGetHubLogs(args + [mode: m] + paging)
+                r = toolGetHubLogs(tabArgs + [mode: m] + paging)
             } catch (IllegalArgumentException e) {
                 throw e
             } catch (Exception e) {

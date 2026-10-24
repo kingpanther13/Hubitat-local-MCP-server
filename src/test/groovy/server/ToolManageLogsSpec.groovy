@@ -466,6 +466,23 @@ class ToolManageLogsSpec extends ToolSpecBase {
         result.modes.mcp.entries instanceof List
     }
 
+    def "hub_get_logs with a list of modes takes pageSize for every tab, the MCP log as its limit"() {
+        given:
+        hubGet.register('/logs/json') { params -> logsJsonWithJobs(3) }
+        3.times { script.mcpLog('error', 'server', "entry ${it}") }
+
+        when:
+        def result = script.toolGetHubLogs([mode: ['scheduledJobs', 'mcp', 'status'], pageSize: 2])
+
+        then:
+        !result.containsKey('isError')
+        result.modes.keySet() as List == ['scheduledJobs', 'mcp', 'status']
+        result.modes.scheduledJobs.count == 2
+        result.modes.scheduledJobs.nextCursor != null
+        result.modes.mcp.entries.size() == 2
+        !result.modes.status.containsKey('isError')
+    }
+
     @Unroll
     def "hub_get_logs with a list of modes refuses #args before reading anything"() {
         when:
