@@ -159,6 +159,8 @@ private void _nfWalk(Object node, Map fields, Map controls, List messages, List 
             if (device && !field.multiple && current instanceof List) current = current ? current[0] : null
             if (type == 'password') field.has_value = current != null && current != ''
             else { field.value = current; field.value_source = exists ? 'stored' : 'default' }
+            // The page default the browser posts for an input with no stored value; a password has none.
+            if (!exists && type != 'password' && current != null && current != '' && !(current instanceof Collection && current.isEmpty())) field.default_value = current
             field.present = exists && current != null && current != '' && (!(current instanceof Collection) || !current.empty)
             field.options = _nfOptions(type == 'mode' ? model.modeMap : node.options)
             if (device) {
@@ -188,20 +190,24 @@ private void _nfWalk(Object node, Map fields, Map controls, List messages, List 
     ['sections', 'input', 'body', 'children'].each { key -> if (node[key] instanceof Map || node[key] instanceof List) _nfWalk(node[key], fields, controls, messages, unsupported, model) }
 }
 
-private Map _nfContext(Long id, Map model) {
+// from: the parent page of a sub-page opened directly. A direct render carries no breadcrumb trail,
+// so the page's Done would have nowhere to return; the parent becomes the trail, as a link would make it.
+private Map _nfContext(Long id, Map model, String from = null) {
     if (model.app?.id?.toString() != id.toString() || !(model.configPage instanceof Map)) throw new IllegalStateException('Native response does not identify the requested app and classic form')
     Map page = model.configPage
     Map fields = [:], controls = [:]
     List messages = [], unsupported = []
     _nfWalk(page, fields, controls, messages, unsupported, model)
+    String trail = model.pageBreadcrumbs && model.pageBreadcrumbs != '%5B%5D' ? model.pageBreadcrumbs.toString() :
+        (from ? _nfEncode(groovy.json.JsonOutput.toJson([from])) : '%5B%5D')
     if (page.install || model.doneButton) _nfControl(controls, [name: '_action_update', value: 'Done', kind: 'navigation', title: model.cancelButton ? 'Save' : 'Done'])
     else if (page.nextPage && !page.donePage) _nfControl(controls, [name: '_action_next', value: page.nextPageLabel ?: 'Next', kind: 'navigation', title: page.nextPageLabel ?: 'Next'])
     else if (page.nextPage && page.donePage) unsupported << 'Native _action_done browser navigation'
-    else if (model.pageBreadcrumbs && model.pageBreadcrumbs != '%5B%5D') _nfControl(controls, [name: '_action_previous', value: 'Done', kind: 'navigation', title: 'Done (previous page)'])
+    else if (trail != '%5B%5D') _nfControl(controls, [name: '_action_previous', value: 'Done', kind: 'navigation', title: 'Done (previous page)'])
     if (model.cancelButton) _nfControl(controls, [name: '_action_update', value: 'Cancel', kind: 'navigation', title: 'Cancel'])
     if (model.removeButton) unsupported << 'Remove app: use the dedicated native-app deletion tool'
     if (model.defaultFields) unsupported << 'Default app label and mode controls'
-    Map envelope = [id: id.toString(), currentPage: page.name ?: '', pageBreadcrumbs: model.pageBreadcrumbs ?: '%5B%5D']
+    Map envelope = [id: id.toString(), currentPage: page.name ?: '', pageBreadcrumbs: trail]
     ['returnPath', 'referrer', 'url', 'formAction'].each { key -> if (model.containsKey(key)) envelope[key] = model[key] }
     ['nextPage', 'donePage'].each { key -> if (page[key]) envelope[key] = page[key] }
     if (page.returnPath != null) envelope.returnPath = page.returnPath
@@ -228,11 +234,8 @@ private void _nfCache(String key, Map context) {
     Map cached = [app_id: context.app_id, page: [name: context.page.name], envelope: context.envelope, expires: context.expires,
                   fields: [:], controls: [:], backup: context.backup]
     context.get('fields').each { name, field ->
-        Map descriptor = field.findAll { k, v -> k in ['name', 'type', 'multiple', 'required', 'supported', 'device', 'disabled', 'present', 'capability', 'ignore', 'range', 'min', 'max', 'step'] }
+        Map descriptor = field.findAll { k, v -> k in ['name', 'type', 'multiple', 'required', 'supported', 'device', 'disabled', 'present', 'capability', 'ignore', 'range', 'min', 'max', 'step', 'default_value'] }
         descriptor.option_keys = field.options == null ? null : field.options*.value
-        // The page default the browser would post for an input with no stored value; a password has none.
-        def fallback = field.value
-        if (field.value_source == 'default' && fallback != null && fallback != '' && !(fallback instanceof Collection && fallback.isEmpty())) descriptor.default_value = fallback
         cached.get('fields').put(name, descriptor)
     }
     context.controls.each { name, control ->
@@ -275,7 +278,7 @@ private String _nfValue(Map field, Object value) {
 private Map _nfPublic(Map context, List optionsFor) {
     List fields = context.get('fields').values().collect { field ->
         Map result = [:] + field
-        result.remove('device'); result.remove('ignore'); result.remove('capability'); result.remove('present')
+        result.remove('device'); result.remove('ignore'); result.remove('capability'); result.remove('present'); result.remove('default_value')
         if (field.type == 'password') result.redacted = true
         if (field.device && field.name in optionsFor) result.options = _nfDevices(field)
         if (field.device) result.options_available = true
@@ -304,9 +307,10 @@ Map toolCallAppForm(Map args, String toolName = 'hub_set_rule') {
     if (!(optionsFor instanceof List) || optionsFor.size() > 32 || optionsFor.any { !(it instanceof String) }) throw new IllegalArgumentException('options_for must contain at most 32 field names')
     args.steps.each { step ->
         if (!(step instanceof Map) || !(step.kind in ['open', 'submit'])) throw new IllegalArgumentException('Unknown form step')
-        List keys = step.kind == 'open' ? ['kind', 'page'] : ['kind', 'expect_page', 'fields', 'activate']
+        List keys = step.kind == 'open' ? ['kind', 'page', 'from'] : ['kind', 'expect_page', 'fields', 'activate']
         if (step.keySet().any { !(it in keys) }) throw new IllegalArgumentException('Unknown form step property')
         if (step.kind == 'open' && step.page != null && (!(step.page instanceof String) || !(step.page ==~ /[A-Za-z_][A-Za-z0-9_.-]*/))) throw new IllegalArgumentException('A registered native page name is required')
+        if (step.kind == 'open' && step.from != null && (step.page == null || !(step.from instanceof String) || !(step.from ==~ /[A-Za-z_][A-Za-z0-9_.-]*/))) throw new IllegalArgumentException('from names the parent page of the opened page and requires page')
         if (step.kind == 'submit' && (!(step.expect_page instanceof String) || (step.get('fields') != null && !(step.get('fields') instanceof Map)))) throw new IllegalArgumentException('Submit requires expect_page and an optional fields object')
         if (step.activate != null && !(step.activate instanceof String)) throw new IllegalArgumentException('activate requires a returned control_id string')
     }
@@ -411,7 +415,7 @@ Map toolCallAppForm(Map args, String toolName = 'hub_set_rule') {
                 completed << [kind: step.kind, navigation_ended: true]
                 if (index + 1 < args.steps.size()) throw new IllegalStateException('Native navigation ended the form; remaining steps were not executed')
             } else {
-                context = _nfContext(id, model)
+                context = _nfContext(id, model, step.kind == 'open' ? step.from : null)
                 context.backup = backup
                 _nfCache(key, context)
                 completed << [kind: step.kind, page: context.page.name]

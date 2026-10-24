@@ -509,6 +509,44 @@ class NativeFormsSpec extends ToolSpecBase {
         submit([luxOff: 20])
         then:
         calls.find { it.path == '/installedapp/update/json' }.body['settings[luxOff]'] == '20'
+        when: 'a later step of the same batch still posts the default'
+        assert open().success
+        calls.clear()
+        def batch = script.toolCallAppForm([app_id: 42, confirm: true, steps: [
+            [kind: 'submit', expect_page: 'edit', fields: [text: 'typed']],
+            [kind: 'submit', expect_page: 'edit', activate: '_action_update|Done|']]])
+        def posts = calls.findAll { it.path == '/installedapp/update/json' }*.body
+        then:
+        batch.success
+        posts.size() == 2
+        posts[1]._action_update == 'Done'
+        posts[1]['settings[luxOff]'] == '100'
+        posts[1]['settings[defaultChoice]'] == 'a'
+        !batch.fields.any { it.containsKey('default_value') }
+    }
+
+    def 'a sub-page opened directly with from offers its Done back to that parent'() {
+        given: 'a direct render carries an empty breadcrumb trail and no Done of its own'
+        model.pageBreadcrumbs = '%5B%5D'
+        model.doneButton = false
+        model.cancelButton = false
+        when:
+        def plain = script.toolCallAppForm([app_id: 42, steps: [[kind: 'open', page: 'onMeansPage']], confirm: true])
+        def opened = script.toolCallAppForm([app_id: 42, steps: [[kind: 'open', page: 'onMeansPage', from: 'mainPage']], confirm: true])
+        calls.clear()
+        def done = submit([:], '_action_previous|Done|')
+        then:
+        !plain.controls*.control_id.contains('_action_previous|Done|')
+        opened.controls*.control_id.contains('_action_previous|Done|')
+        done.success
+        def body = calls.find { it.path == '/installedapp/update/json' }.body
+        body._action_previous == 'Done'
+        body.pageBreadcrumbs == '%5B%22mainPage%22%5D'
+        when:
+        script.toolCallAppForm([app_id: 42, steps: [[kind: 'open', from: 'mainPage']], confirm: true])
+        then:
+        def refused = thrown(IllegalArgumentException)
+        refused.message.contains('requires page')
     }
 
     def 'button reload after native href uses the current page and breadcrumbs'() {
