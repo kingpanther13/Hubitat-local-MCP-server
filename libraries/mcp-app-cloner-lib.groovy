@@ -1044,6 +1044,11 @@ void _rmRecordNativeRestore(String backupKey, Integer newId, boolean keepDisable
     }
 }
 
+// The live typed settings without the password rows a snapshot never stored.
+private List _rmUnredactedSettings(Long id, List redacted) {
+    _rmNativeCurrentSettings(id).findAll { !(it.name in redacted) }
+}
+
 // Password-typed settings a snapshot left out; empty for snapshots taken before redaction.
 private List _rmRedactedSettings(Map snapshot) {
     snapshot?.redactedSettings instanceof List ? snapshot.redactedSettings.collect { it.toString() } : []
@@ -1203,10 +1208,9 @@ private Map _rmRestoreNativeEdit(Map snapshot, String sourceBackupKey) {
         attempted = true
         if (_nrState(id).stopped != true) _nrHandle(id).appButtonHandler('stopRule')
         def wantedNames = plan.collect { it.name }
-        def unredacted = { -> _rmNativeCurrentSettings(id).findAll { !(it.name in redacted) } }
-        unredacted().each { row -> if (!(row.name in wantedNames) || !plan.any { it.name == row.name && it.type == row.type && it.multiple == (row.multiple == true) }) _nrHandle(id).removeSetting(row.name) }
+        _rmUnredactedSettings(id, redacted).each { row -> if (!(row.name in wantedNames) || !plan.any { it.name == row.name && it.type == row.type && it.multiple == (row.multiple == true) }) _nrHandle(id).removeSetting(row.name) }
         plan.each { row -> _nrHandle(id).updateSetting(row.name, [type: row.type, value: row.value]) }
-        if (_rmNativeComparable(_rmNativeSettingsSignature(unredacted())) != _rmNativeComparable(_rmNativeSettingsSignature(data.appSettings))) throw new IllegalStateException('Native typed settings did not restore exactly')
+        if (_rmNativeComparable(_rmNativeSettingsSignature(_rmUnredactedSettings(id, redacted))) != _rmNativeComparable(_rmNativeSettingsSignature(data.appSettings))) throw new IllegalStateException('Native typed settings did not restore exactly')
         Map restoreState = [:] + expectedState + [stopped: true]
         _nrStatePatch(id, restoreState, _nrState(id).keySet().findAll { !restoreState.containsKey(it) }.collect { it.toString() })
         if (_rmNativeComparable(_nrState(id)) != _rmNativeComparable(restoreState)) throw new IllegalStateException('Complete native state did not persist exactly')
@@ -1222,7 +1226,7 @@ private Map _rmRestoreNativeEdit(Map snapshot, String sourceBackupKey) {
         if (_rmNativeComparable(actualModel) != _rmNativeComparable(expectedModel)) throw new IllegalStateException('Rebuilt native actions, triggers, conditions or expressions differ from recovery')
         Map actualLocals = _nrHandle(id).getAllLocalVars().collectEntries { name, row -> [(name.toString()): [type: row.type, value: row.value]] }
         if (_rmNativeComparable(actualLocals) != _rmNativeComparable(_rmNativeLocalSignature(expectedState))) throw new IllegalStateException('Native local variables differ from recovery')
-        if (_rmNativeComparable(_rmNativeSettingsSignature(unredacted())) != _rmNativeComparable(_rmNativeSettingsSignature(data.appSettings))) throw new IllegalStateException('Native rebuild changed restored settings')
+        if (_rmNativeComparable(_rmNativeSettingsSignature(_rmUnredactedSettings(id, redacted))) != _rmNativeComparable(_rmNativeSettingsSignature(data.appSettings))) throw new IllegalStateException('Native rebuild changed restored settings')
         if ((actual.stopped == true) != (expectedState.stopped == true) || (actual.paused == true) != (expectedState.paused == true) ||
             _rmLabelName(_nrHandle(id).label) != restoredName) throw new IllegalStateException('Native label or lifecycle state differs from recovery')
         Map restored = [success: true, type: 'rm-rule', ruleId: id, originalRuleId: id, restoredVia: 'nativeStateReplay', backup: undo,
