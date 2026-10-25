@@ -25288,7 +25288,7 @@ private Map _naReadBack(Long id, Map page, Map written) {
     Map stored = model.settings instanceof Map ? model.settings : [:]
     List notLanded = written.keySet().findAll { name ->
         Map field = page.get('fields').get(name)
-        def value = stored.get(name)
+        def value = field.app_field ? _nfAppValue(model, field.name == 'mode[mode]') : stored.get(name)
         if (field.type == 'password') return (written.get(name) != '') != (value != null && value != '')
         _naComparable(field, value, false) != _naComparable(field, written.get(name), true)
     }.collect { it.toString() }
@@ -25354,8 +25354,8 @@ private Map _naCreate(Map args) {
             childId = made.created_id
             child = _nfContext(childId, _nfPage(childId))
             if (name) {
-                String labelInput = ['origLabel', 'name'].find { child.get('fields').containsKey(it) }
-                if (!labelInput) throw new IllegalArgumentException("The first page of a new ${type} renders no label input (origLabel or name), so name cannot be set there; omit name and set the label later with update or form.".toString())
+                String labelInput = ['origLabel', 'name', 'label'].find { child.get('fields').containsKey(it) }
+                if (!labelInput) throw new IllegalArgumentException("The first page of a new ${type} renders no label input (origLabel, name or the app's own label), so name cannot be set there; omit name and set the label later with update or form.".toString())
                 if (supplied.containsKey(labelInput)) throw new IllegalArgumentException("Pass the label once, as name or as fields.${labelInput}".toString())
                 supplied.put(labelInput, name)
             }
@@ -25593,7 +25593,7 @@ hub_set_native_app works on classic Hubitat apps (dynamicPage apps), user and co
 
 ### create
 
-operation:"create" with args:{app_type,name?,fields?} does what Apps does: it opens the type's parent app (installing it first when the hub lacks it), presses that page's Create control, fills the new app's first page with fields and presses its Done, which installs the app. name goes to the label input the first page renders (origLabel or name); a type whose first page renders neither (Button Controller, Basic Rule, Thermostat Scheduler and Controller) refuses name. fields are checked against that page before anything is saved: an input it does not render, a button, a disabled input, a bad value or device ID, or a required input left empty for the Done is refused with success:false, and the new app is removed. Inputs that a choice reveals belong to update or form. The result reports app_id, label, fields_applied, and fields_not_landed (with success:false) for any field the hub did not store as written. installed:false means the first page has no Done (Basic Rule: finish it with form) or the hub rendered the page again instead of accepting the Done. app_type rule_machine makes only an empty rule.
+operation:"create" with args:{app_type,name?,fields?} does what Apps does: it opens the type's parent app (installing it first when the hub lacks it), presses that page's Create control, fills the new app's first page with fields and presses its Done, which installs the app. name goes to the label input the first page renders (origLabel, name, or the hub's own label field); a type whose first page renders none of them (Button Controller, Basic Rule, Thermostat Scheduler and Controller) refuses name. fields are checked against that page before anything is saved: an input it does not render, a button, a disabled input, a bad value or device ID, or a required input left empty for the Done is refused with success:false, and the new app is removed. Inputs that a choice reveals belong to update or form. The result reports app_id, label, fields_applied, and fields_not_landed (with success:false) for any field the hub did not store as written. installed:false means the first page has no Done (Basic Rule: finish it with form) or the hub rendered the page again instead of accepting the Done. app_type rule_machine makes only an empty rule.
 
 A button_rule takes args:{app_type:"button_rule",controller_id,button_number,event} and no name or fields. It runs the Button Controller's own Add Button, the button number, then that event's Create Button Rule control. The controller needs its button device assigned first. A button number the controller does not offer returns success:false after its page's Cancel, with the controller as before. The controller seeds the trigger; add the actions with hub_set_rule(operation:"update",rule_id:<returned app_id>).
 
@@ -27085,7 +27085,7 @@ Example changes: [{part:"action",value:{type:"messageActs",subtype:"getLogMsg",f
 
 hub_set_rule(operation:"form",rule_id,args:{steps:[{kind:"open"}]},confirm:true) operates an enabled Rule-5.1 or Button Rule-5.1 rule, or its Rule Machine parent; hub_set_native_app(operation:"form",app_id,...) runs the same steps on any other classic app. Read action variants, input names and option values from the returned forms instead of guessing them. Even open renders execute app code and can change state or cause side effects. An open's optional page names a registered native page, and from names the page that links to it, so a sub-page opened directly offers its Done back to that parent. Follow returned controls for page parameters and breadcrumbs. A create_child control creates the parent's native child type, returns created_app_id and closes the parent context; open the child separately to configure it. Apps are deleted with hub_delete_native_app.
 
-Submit with {kind:"submit",expect_page:"last returned page",fields:{"native field name":value},activate:"returned control_id"}; without activate it saves the fields and refreshes the page. Control IDs tell apart native buttons that share a name, such as editing and deleting the same variable. Native enum keys, device IDs, booleans and single/multiple cardinality are checked before the request. Each submit posts the supplied settings and, as the browser does, the shown default of every other input with no stored value; a password's default is never posted, and page code can still change its own settings. args.options_for:["device field name"] expands device choices on the final returned page.
+Submit with {kind:"submit",expect_page:"last returned page",fields:{"native field name":value},activate:"returned control_id"}; without activate it saves the fields and refreshes the page. Control IDs tell apart native buttons that share a name, such as editing and deleting the same variable. A page with both a next page and a done page renders its Done as the _action_done control, which the hub answers by saving the page and rendering that same page again. An app without pages also shows the hub's default fields, label (the app's name) and mode[mode] (a list of mode IDs from its options), and a page's own label and mode elements are the same two fields; the hub does not store a label posted together with mode[mode], so set them in separate submits. Native enum keys, device IDs, booleans and single/multiple cardinality are checked before the request. Each submit posts the supplied settings and, as the browser does, the shown default of every other input with no stored value; a password's default is never posted, and page code can still change its own settings. args.options_for:["device field name"] expands device choices on the final returned page.
 
 A batch holds 1 through 16 steps, each using the form the step before it returned, so dependent fields require another submit after they appear. A button handler runs before its step's fields are saved, as in the browser: submit the fields it needs in an earlier step. A button without submitOnChange reloads and needs a separate field submission.
 
@@ -27218,6 +27218,25 @@ private void _nfControl(Map controls, Map control) {
     if (controls.containsKey(key) && controls[key] != control) throw new IllegalStateException('Native form contains ambiguous controls')
     controls.put(key, control)
 }
+private Object _nfAppValue(Map model, boolean mode) {
+    def value = mode ? model.app?.restrictedModes : model.app?.label
+    if (!mode) return value
+    (value instanceof Map ? value.keySet() : (value instanceof Collection ? value : (value == null ? [] : [value]))).collect { it.toString() }
+}
+private void _nfAppField(Map fields, Map model, boolean mode, Map node) {
+    def current = _nfAppValue(model, mode)
+    Map field = [name: mode ? 'mode[mode]' : 'label', title: mode ? 'Set for specific mode(s)' : (_nfText(node.title) ?: 'Assign a name'), type: mode ? 'mode' : 'text',
+                 multiple: mode, required: !mode && _nfTrue(node.required), submit_on_change: !mode && _nfTrue(node.submitOnChange), supported: true, device: false,
+                 disabled: false, app_field: true, value: current, value_source: 'stored', present: current != null && current != '' && !(current instanceof Collection && current.isEmpty())]
+    if (mode) field.options = _nfOptions(model.modeMap)
+    field.sidecars = mode ? ['mode[mode].multiple': 'true'] : (node.name && node.type ? [("${node.name}.type".toString()): node.type.toString()] : [:])
+    if (fields.containsKey(field.name) && fields[field.name] != field) throw new IllegalStateException('Native form contains ambiguous fields')
+    fields.put(field.name, field)
+}
+private Map _nfWire(Map field, String encoded) {
+    if (field.app_field) return [(field.name): encoded] + (field.sidecars ?: [:])
+    [("settings[${field.name}]".toString()): encoded, ("${field.name}.type".toString()): field.type, ("${field.name}.multiple".toString()): field.multiple.toString()]
+}
 private void _nfWalk(Object node, Map fields, Map controls, List messages, List unsupported, Map model, int position = 0) {
     if (node instanceof List) { node.eachWithIndex { item, index -> _nfWalk(item, fields, controls, messages, unsupported, model, index) }; return }
     if (!(node instanceof Map)) return
@@ -27253,13 +27272,15 @@ private void _nfWalk(Object node, Map fields, Map controls, List messages, List 
         }
     } else if (node.element == 'app' && node.namespace == 'hubitat' && node.appName instanceof String && node.appName && node.name && node.appId?.toString() == model.app?.id?.toString()) {
         _nfControl(controls, [name: node.name.toString(), value: node.appName, kind: 'create_child', title: _nfText(node.title)])
+    } else if (node.element in ['label', 'mode']) {
+        _nfAppField(fields, model, node.element == 'mode', node)
     } else if (node.element == 'href') {
         if (node.page && !node.url) {
             String name = "_action_href_${node.name ?: 'name'}|${node.page}|${position + 1}"
             _nfControl(controls, [name: name, kind: 'href', title: _nfText(node.title), page: node.page.toString(),
                                   value: '', params: node.params instanceof Map ? node.params : null])
         } else unsupported << "Navigation requires a browser: ${_nfText(node.title)}"
-    } else if (node.element && !(node.element in ['paragraph', 'section', 'label', 'image', 'input'])) {
+    } else if (node.element && !(node.element in ['paragraph', 'section', 'input'])) {
         unsupported << "Native element: ${node.element}"
     }
     ['title', 'description', 'text'].each { key ->
@@ -27275,15 +27296,15 @@ private Map _nfContext(Long id, Map model, String from = null) {
     Map fields = [:], controls = [:]
     List messages = [], unsupported = []
     _nfWalk(page, fields, controls, messages, unsupported, model)
+    if (model.defaultFields) [false, true].each { mode -> if (!fields.containsKey(mode ? 'mode[mode]' : 'label')) _nfAppField(fields, model, mode, [:]) }
     String trail = model.pageBreadcrumbs && model.pageBreadcrumbs != '%5B%5D' ? model.pageBreadcrumbs.toString() :
         (from ? _nfEncode(groovy.json.JsonOutput.toJson([from])) : '%5B%5D')
     if (page.install || model.doneButton) _nfControl(controls, [name: '_action_update', value: 'Done', kind: 'navigation', title: model.cancelButton ? 'Save' : 'Done'])
     else if (page.nextPage && !page.donePage) _nfControl(controls, [name: '_action_next', value: page.nextPageLabel ?: 'Next', kind: 'navigation', title: page.nextPageLabel ?: 'Next'])
-    else if (page.nextPage && page.donePage) unsupported << 'Native _action_done browser navigation'
+    else if (page.nextPage && page.donePage) _nfControl(controls, [name: '_action_done', value: 'Done', kind: 'navigation', title: 'Done'])
     else if (trail != '%5B%5D') _nfControl(controls, [name: '_action_previous', value: 'Done', kind: 'navigation', title: 'Done (previous page)'])
     if (model.cancelButton) _nfControl(controls, [name: '_action_update', value: 'Cancel', kind: 'navigation', title: 'Cancel'])
     if (model.removeButton) unsupported << 'Remove app: use the dedicated native-app deletion tool'
-    if (model.defaultFields) unsupported << 'Default app label and mode controls'
     Map envelope = [id: id.toString(), currentPage: page.name ?: '', pageBreadcrumbs: trail]
     ['returnPath', 'referrer', 'url', 'formAction'].each { key -> if (model.containsKey(key)) envelope[key] = model[key] }
     ['nextPage', 'donePage'].each { key -> if (page[key]) envelope[key] = page[key] }
@@ -27308,7 +27329,7 @@ private void _nfCache(String key, Map context) {
     Map cached = [app_id: context.app_id, page: [name: context.page.name], envelope: context.envelope, expires: context.expires,
                   fields: [:], controls: [:], backup: context.backup]
     context.get('fields').each { name, field ->
-        Map descriptor = field.findAll { k, v -> k in ['name', 'type', 'multiple', 'required', 'supported', 'device', 'disabled', 'present', 'capability', 'ignore', 'range', 'min', 'max', 'step', 'default_value'] }
+        Map descriptor = field.findAll { k, v -> k in ['name', 'type', 'multiple', 'required', 'supported', 'device', 'disabled', 'present', 'capability', 'ignore', 'range', 'min', 'max', 'step', 'default_value', 'app_field', 'sidecars'] }
         descriptor.option_keys = field.options == null ? null : field.options*.value
         cached.get('fields').put(name, descriptor)
     }
@@ -27331,7 +27352,7 @@ private List _nfDevices(Map field) {
     }
 }
 private String _nfValue(Map field, Object value) {
-    if (!field.supported || field.disabled || field.name =~ /[\[\]\r\n]/) throw new IllegalArgumentException("Unsupported or disabled native field: ${field.name}")
+    if (!field.supported || field.disabled || (!field.app_field && field.name =~ /[\[\]\r\n]/)) throw new IllegalArgumentException("Unsupported or disabled native field: ${field.name}")
     if (field.device && value instanceof Map) {
         List ids = value.keySet().collect { it.toString() }
         value = field.multiple ? ids : (ids.size() == 1 ? ids[0] : ids)
@@ -27352,7 +27373,7 @@ private String _nfValue(Map field, Object value) {
 private Map _nfPublic(Map context, List optionsFor) {
     List fields = context.get('fields').values().collect { field ->
         Map result = [:] + field
-        result.remove('device'); result.remove('ignore'); result.remove('capability'); result.remove('present'); result.remove('default_value')
+        ['device', 'ignore', 'capability', 'present', 'default_value', 'app_field', 'sidecars'].each { result.remove(it) }
         if (field.type == 'password') result.redacted = true
         if (field.device && field.name in optionsFor) result.options = _nfDevices(field)
         if (field.device) result.options_available = true
@@ -27390,9 +27411,7 @@ private Map _nfPrepare(Long id, Map context, Map supplied, String activate, Stri
         Map field = context.get('fields').get(name)
         if (!field && context.controls.values().any { it.kind == 'button' && it.name == name }) throw new IllegalArgumentException("${name} is a button on the current native page, not a field; activate its control_id instead")
         if (!field) throw new IllegalArgumentException("Field is not present on the current native page: ${name}")
-        body["settings[${name}]".toString()] = _nfValue(field, value)
-        body["${name}.type".toString()] = field.type
-        body["${name}.multiple".toString()] = field.multiple.toString()
+        body.putAll(_nfWire(field, _nfValue(field, value)))
     }
     List defaults = []
     List rejected = []
@@ -27406,9 +27425,7 @@ private Map _nfPrepare(Long id, Map context, Map supplied, String activate, Stri
             return
         }
         defaults << name
-        body["settings[${name}]".toString()] = encoded
-        body["${name}.type".toString()] = field.type
-        body["${name}.multiple".toString()] = field.multiple.toString()
+        body.putAll(_nfWire(field, encoded))
     }
     Map control = null
     String reloadPath = null
@@ -27421,8 +27438,10 @@ private Map _nfPrepare(Long id, Map context, Map supplied, String activate, Stri
         if (control.kind == 'button' && !control.submit_on_change && supplied) throw new IllegalArgumentException('Submit fields separately before a button that reloads the native page')
         if (control.kind == 'button' && !control.submit_on_change) reloadPath = _nfReloadPath(id, context)
         if (control.kind in ['href', 'navigation'] && control.value != 'Cancel') {
-            List missing = context.get('fields').values().findAll { field -> field.required && !field.disabled &&
-                !(body.containsKey("settings[${field.name}]".toString()) ? !(body["settings[${field.name}]".toString()] in ['', '[]']) : field.present) }*.name
+            List missing = context.get('fields').values().findAll { field ->
+                String key = _nfWire(field, '').keySet().first()
+                field.required && !field.disabled && !(body.containsKey(key) ? !(body[key] in ['', '[]']) : field.present)
+            }*.name
             if (missing) throw new IllegalArgumentException("Complete required native fields before navigating: ${missing.join(', ')}")
         }
     }
