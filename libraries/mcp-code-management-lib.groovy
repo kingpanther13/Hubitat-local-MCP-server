@@ -441,7 +441,11 @@ private Map _appConfigNotFound(Exception e, String path, String appIdStr) {
     try { st = e.response?.status as Integer } catch (Exception ignored) { st = null }
     if (st != 404 && st != 410) return null
     mcpLog("warn", "hub-admin", "hub_get_app_config app ${appIdStr} not found (HTTP ${st} from ${path})")
-    return [success: false, error: "App ${appIdStr} not found (HTTP ${st} from ${path}); check the id with hub_get_app_config(summary=true) or hub_list_apps.", appId: appIdStr as Integer, fingerprint: 'app not found (404)', status: st]
+    return [success: false, error: "App ${appIdStr} not found (HTTP ${st} from ${path}).", note: _appConfigNote("Check the id with hub_get_app_config(summary=true) or hub_list_apps(scope='instances')"), appId: appIdStr as Integer, fingerprint: 'app not found (404)', status: st]
+}
+
+private String _appConfigNote(String step) {
+    return "${step}; see hub_get_tool_guide(section='builtin_app_tools_apps').".toString()
 }
 
 def toolGetAppConfig(args) {
@@ -472,20 +476,20 @@ def toolGetAppConfig(args) {
             Map gone = _appConfigNotFound(e, summaryPath, appIdStr)
             if (gone) return gone
             mcpLogError("hub-admin", "hub_get_app_config summary fetch failed", e)
-            return [success: false, error: "Failed to fetch app summary [${e.class.simpleName}]: ${e.message}", appId: appIdStr as Integer]
+            return [success: false, error: "Failed to fetch app summary [${e.class.simpleName}]: ${e.message}", note: _appConfigNote('Retry once; if it fails again, check that the hub answers with hub_get_info'), appId: appIdStr as Integer]
         }
         if (!summaryText) {
-            return [success: false, error: "Empty response from ${summaryPath}.", appId: appIdStr as Integer]
+            return [success: false, error: "Empty response from ${summaryPath}.", note: _appConfigNote('Retry once; if it fails again, read the app without summary=true'), appId: appIdStr as Integer]
         }
         def summaryParsed
         try {
             summaryParsed = new groovy.json.JsonSlurper().parseText(summaryText)
         } catch (Exception e) {
             mcpLogError("hub-admin", "hub_get_app_config summary JSON parse failed", e)
-            return [success: false, error: "Failed to parse app summary JSON: ${e.message}", appId: appIdStr as Integer]
+            return [success: false, error: "Failed to parse app summary JSON: ${e.message}", note: _appConfigNote('Retry once; if it fails again, read the app without summary=true'), appId: appIdStr as Integer]
         }
         if (!(summaryParsed instanceof Map)) {
-            return [success: false, error: "Unexpected response shape: the app summary is not a JSON object.", appId: appIdStr as Integer, fingerprint: "top-level not a Map"]
+            return [success: false, error: "Unexpected response shape: the app summary is not a JSON object.", note: _appConfigNote('Retry once; if it fails again, read the app without summary=true'), appId: appIdStr as Integer, fingerprint: "top-level not a Map"]
         }
         def summaryResult = [:]
         summaryResult.putAll(summaryParsed)
@@ -506,11 +510,11 @@ def toolGetAppConfig(args) {
         Map gone = _appConfigNotFound(e, path, appIdStr)
         if (gone) return gone
         mcpLogError("hub-admin", "hub_get_app_config fetch failed", e)
-        return [success: false, error: "Failed to fetch app config [${e.class.simpleName}]: ${e.message}", appId: appIdStr as Integer]
+        return [success: false, error: "Failed to fetch app config [${e.class.simpleName}]: ${e.message}", note: _appConfigNote('Retry once; if it fails again, check that the hub answers with hub_get_info'), appId: appIdStr as Integer]
     }
 
     if (!responseText) {
-        return [success: false, error: "Empty response from ${path}.", appId: appIdStr as Integer]
+        return [success: false, error: "Empty response from ${path}.", note: _appConfigNote('Retry once; if it fails again, check that the app still exists with hub_get_app_config(summary=true)'), appId: appIdStr as Integer]
     }
 
     def parsed
@@ -518,20 +522,20 @@ def toolGetAppConfig(args) {
         parsed = new groovy.json.JsonSlurper().parseText(responseText)
     } catch (Exception e) {
         mcpLogError("hub-admin", "hub_get_app_config JSON parse failed", e)
-        return [success: false, error: "Failed to parse app config JSON: ${e.message}", appId: appIdStr as Integer]
+        return [success: false, error: "Failed to parse app config JSON: ${e.message}", note: _appConfigNote('Retry once; if it fails again, check that the app still exists with hub_get_app_config(summary=true)'), appId: appIdStr as Integer]
     }
 
     if (!(parsed instanceof Map)) {
-        return [success: false, error: "Unexpected response shape: the page is not a JSON object.", appId: appIdStr as Integer, fingerprint: "top-level not a Map"]
+        return [success: false, error: "Unexpected response shape: the page is not a JSON object.", note: _appConfigNote('Retry once; if it fails again, check that the app still exists with hub_get_app_config(summary=true)'), appId: appIdStr as Integer, fingerprint: "top-level not a Map"]
     }
     if (!(parsed.app instanceof Map)) {
-        return [success: false, error: "Unexpected response shape: the page names no app.", appId: appIdStr as Integer, fingerprint: "missing app"]
+        return [success: false, error: "Unexpected response shape: the page names no app.", note: _appConfigNote("Check the id with hub_list_apps(scope='instances')"), appId: appIdStr as Integer, fingerprint: "missing app"]
     }
     if (!(parsed.configPage instanceof Map)) {
-        return [success: false, error: "Unexpected response shape: the page has no configPage.", appId: appIdStr as Integer, fingerprint: "missing configPage"]
+        return [success: false, error: "Unexpected response shape: the page has no configPage.", note: _appConfigNote('Retry once; if it fails again, check that the app still exists with hub_get_app_config(summary=true)'), appId: appIdStr as Integer, fingerprint: "missing configPage"]
     }
     if (!(parsed.configPage.sections instanceof List)) {
-        return [success: false, error: "This page has no sections to read; read another page from page.hrefs of the app's default page.", appId: appIdStr as Integer, fingerprint: "sections not a list"] +
+        return [success: false, error: "This page has no sections to read.", note: _appConfigNote("Read the app's default page (omit pageName) and read another page from its page.hrefs"), appId: appIdStr as Integer, fingerprint: "sections not a list"] +
             (parsed.configPage.error ? [configPageError: parsed.configPage.error] : [:])
     }
 

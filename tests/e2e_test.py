@@ -6353,6 +6353,7 @@ preferences {
     page(name: "pageOne")
     page(name: "pageTwo")
     page(name: "pageThree")
+    page(name: "pageFour")
 }
 
 def pageOne() {
@@ -6363,7 +6364,11 @@ def pageOne() {
 
 def pageTwo() {
     dynamicPage(name: "pageTwo", title: "Step two", nextPage: "pageThree", donePage: "pageThree") {
-        section { input "second", "text", title: "Second", required: true }
+        section {
+            input "second", "text", title: "Second", required: true
+            input "retries", "number", title: "Retries", defaultValue: 3
+            input "flavor", "enum", title: "Flavor", options: ["plain", "spicy"], defaultValue: "mild"
+        }
     }
 }
 
@@ -6372,6 +6377,8 @@ def pageThree() {
         section { input "third", "text", title: "Third", required: false }
     }
 }
+
+def pageFour() { pageThree() }
 
 def installed() {}
 def updated() {}
@@ -6394,7 +6401,7 @@ def updated() {}
         # A wizard page that names both a next and a done page offers its Done as _action_done, which
         # the hub answers by saving the page and rendering it again. An app whose preferences hold no
         # pages shows the hub's own name and mode fields; update renames the app and restricts its
-        # modes through them, one call each, since a label posted with mode[mode] is stored one save late.
+        # modes through them. A label posted with mode[mode] is stored one save late, which the update reports.
         codes: list = []
         instances: list = []
         try:
@@ -6415,14 +6422,28 @@ def updated() {}
             assert done["kind"] == "navigation" and not form.get("unsupported"), f"pageTwo should offer _action_done and nothing unsupported: {form}"
             form = self._native_app_form(wizard, self._rm_step(form, {"second": "two"}, done))
             assert form["page"]["name"] == "pageTwo", f"the hub should answer _action_done by rendering pageTwo again: {form['page']}"
+            # The install's Done stored only pageOne. pageTwo's unset inputs post their page defaults as the
+            # browser does, except a default outside the enum's own options.
+            assert form.get("defaults_posted") == ["retries"], f"the usable page default should be posted: {form}"
+            refused = form.get("defaults_not_posted") or []
+            assert [r.get("name") for r in refused] == ["flavor"] and "flavor" in str(refused[0].get("reason")), \
+                f"a default outside the enum's options should be reported as not posted: {form}"
             stored = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config", "args": {"appId": wizard, "includeSettings": True}})
             settings = stored.get("settings") or {}
             assert settings.get("first") == "one" and settings.get("second") == "two", f"the wizard's pages were not saved: {settings}"
+            # The hub stores the posted number input as the string it received.
+            assert settings.get("retries") == "3" and "flavor" not in settings, f"only the usable default should be stored: {settings}"
+            # A page method that returns another page renders that page, and pageNote names both.
+            alias = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config", "args": {"appId": wizard, "pageName": "pageFour"}})
+            assert (alias.get("page") or {}).get("name") == "pageThree" and alias.get("pageNote") == (
+                "The hub rendered 'pageThree' instead of 'pageFour'; this app reaches that page only through its own link: "
+                "open it with hub_set_native_app(operation:'form') and activate the href."), f"pageNote should name both pages: {alias}"
 
             form = self._native_app_form(defaults, {"kind": "open"})
             label = self._native_app_field(form, "label")
             modes = self._native_app_field(form, "mode[mode]")
-            assert label.get("value") == "Deadman Test Target Form Defaults" and modes.get("multiple") is True and modes.get("options"),                 f"the default fields should carry the app's name and the hub's modes: {label} {modes}"
+            assert label.get("value") == "Deadman Test Target Form Defaults" and modes.get("multiple") is True and modes.get("options"), \
+                f"the default fields should carry the app's name and the hub's modes: {label} {modes}"
             assert not form.get("unsupported") or all("label" not in str(u) for u in form["unsupported"]), form["unsupported"]
             renamed = "Deadman Test Target Form Defaults Renamed"
             relabel = self._native_app("update", {"fields": {"label": renamed}}, defaults)
@@ -6433,6 +6454,16 @@ def updated() {}
             form = self._native_app_form(defaults, {"kind": "open"})
             assert self._native_app_field(form, "label").get("value") == renamed, f"the rename did not hold: {form['fields']}"
             assert self._native_app_field(form, "mode[mode]").get("value") == [mode_id], f"the mode restriction did not hold: {form['fields']}"
+            # Posted together, the modes land and the label does not; the update reports it, and the label alone then lands.
+            together = "Deadman Test Target Form Defaults Together"
+            both = self._native_app("update", {"fields": {"label": together, "mode[mode]": [mode_id]}}, defaults)
+            assert both.get("success") is False and both.get("fields_not_landed") == ["label"] \
+                and "mode[mode]" in (both.get("fields_applied") or []), \
+                f"a label posted with mode[mode] should be reported as not landed: {both}"
+            alone = self._native_app("update", {"fields": {"label": together}}, defaults)
+            assert alone.get("success") is True and alone.get("fields_applied") == ["label"], f"the label alone should land: {alone}"
+            form = self._native_app_form(defaults, {"kind": "open"})
+            assert self._native_app_field(form, "label").get("value") == together, f"the second rename did not hold: {form['fields']}"
         finally:
             for app_id in instances:
                 try:
@@ -10937,6 +10968,12 @@ def updated() {}
             assert isinstance(value, list) and sorted(str(v) for v in value) == sorted(want), \
                 f"the mode input's value must be the configured list {want}, got: {value!r}"
             assert "modeInputs" not in cfg, f"modeInputs still returned: {cfg.get('modeInputs')}"
+            # A page name the app does not have renders no sections; the note sends the caller to page.hrefs.
+            other = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config", "args": {"appId": app_id, "pageName": "noSuchPage"}})
+            assert other.get("success") is False and other.get("fingerprint") == "sections not a list" \
+                and "page.hrefs" in str(other.get("note")) and "section='builtin_app_tools_apps'" in str(other.get("note")), \
+                f"an unknown page should fail with a note pointing at page.hrefs and the guide: {other}"
         finally:
             self._delete_native(app_id, gateway="hub_manage_native_rules_and_apps")
 

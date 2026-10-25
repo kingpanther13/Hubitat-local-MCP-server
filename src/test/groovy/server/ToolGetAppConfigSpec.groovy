@@ -1414,7 +1414,8 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         result.appId == 9999
         result.error.toLowerCase().contains('not found')
         // Steers the agent to the cheap identity probe instead of dead-end retries
-        result.error.contains('summary')
+        result.note.contains('summary')
+        result.note.contains("hub_get_tool_guide(section='builtin_app_tools_apps')")
     }
 
     @spock.lang.Unroll
@@ -1437,7 +1438,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         inner.fingerprint == 'app not found (404)'
         inner.status == 404
         inner.error.toLowerCase().contains('not found')
-        inner.error.contains('summary')
+        inner.note.contains('summary')
 
         where:
         useGateways << [true, false]
@@ -1478,7 +1479,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         result.status == 404
         result.appId == 9999
         result.error.toLowerCase().contains('not found')
-        result.error.contains('summary')
+        result.note.contains('summary')
     }
 
     def "returns success=false with fingerprint when response is not a JSON object"() {
@@ -1494,6 +1495,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         result.error != null
         // Production code's fingerprint for "top-level not a Map"
         result.fingerprint == 'top-level not a Map'
+        result.note.contains("hub_get_tool_guide(section='builtin_app_tools_apps')")
     }
 
     @spock.lang.Unroll
@@ -1601,7 +1603,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "returns success=false with fingerprint and a page.hrefs hint when configPage.sections is not a list"() {
+    def "returns success=false with fingerprint and a page.hrefs note when configPage.sections is not a list"() {
         given:
         settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params ->
@@ -1619,8 +1621,8 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         then:
         result.success == false
         result.fingerprint == 'sections not a list'
-        // Error must point the agent at the default page's page.hrefs instead of dead-end retries
-        result.error.contains('page.hrefs')
+        // The note must point the agent at the default page's page.hrefs instead of dead-end retries
+        result.note.contains('page.hrefs')
     }
 
     @spock.lang.Unroll
@@ -1646,7 +1648,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.fingerprint == 'sections not a list'
-        inner.error.contains('page.hrefs')
+        inner.note.contains('page.hrefs')
 
         where:
         useGateways << [true, false]
