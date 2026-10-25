@@ -1677,6 +1677,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v5.0.1** - feat: read every Logs page tab through hub_get_logs, delete scheduled jobs, reboot with purge. PRs: [#562](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/562)
 - **v5.0.0** - feat: rebuild hub_set_rule on Rule Machine's native model. PRs: [#559](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/559)
 - **v4.8.4** - ci: run the fast lanes on stacked PRs and harden the e2e lane gates; fix: log every ordinary write to the MCP log and make the lost-response hint era-aware. PRs: [#560](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/560), [#532](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/532)
 - **v4.8.3** - fix(deps): update dependency net.bytebuddy:byte-buddy to v1.18.15-jdk5 ([#557](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/557), @app/renovate); chore(deps): update dependency renovate to v44.168.1 ([#558](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/558), @app/renovate); fix: #511 findings reproduced live. PRs: [#557](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/557), [#558](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/558), [#556](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/556)
