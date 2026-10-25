@@ -713,121 +713,64 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         atomicStateMap.parentAppIds == [scene: 202, thermostat_scheduler: '203']
     }
 
-    def "strict snapshots retain a pinned baseline and a rolling next step"() {
-        given:
+    private List editBackupRule504(String label, boolean everyWrite) {
         enableWrite()
-        settingsMap.backupEveryRuleWrite = true
-        def clock = [1234567890000L]
-        NOW_OVERRIDE.set({ -> clock[0] })
-        hubGet.register('/installedapp/configure/json/504') { params -> ruleConfigJson(504, "strict") }
-        hubGet.register('/installedapp/statusJson/504') { params -> statusJson(504) }
-        def uploads = []
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> uploads << fn }
-
-        when:
-        def first = script._rmBackupRuleSnapshot(504, "pre-addAction")
-        clock[0] += 1L
-        def second = script._rmBackupRuleSnapshot(504, "pre-update")
-
-        then: 'the session baseline is pinned and the later per-write snapshot is a rolling step'
-        first.backupKey != second.backupKey
-        uploads.size() == 2
-        first.retention == "pinned"
-        first.retentionNote.startsWith("Pinned baseline")
-        second.retention == "rolling"
-        second.retentionNote.startsWith("Rolling step")
-        backupIndex[first.backupKey].retention == "pinned"
-        backupIndex[second.backupKey].retention == "rolling"
-    }
-
-    def "backupEveryRuleWrite keeps every rolling step while the budget has room"() {
-        given:
-        enableWrite()
-        settingsMap.backupEveryRuleWrite = true
-        def clock = [1234567890000L]
-        NOW_OVERRIDE.set({ -> clock[0] })
-        hubGet.register('/installedapp/configure/json/504') { params -> ruleConfigJson(504, "strict-cap") }
-        hubGet.register('/installedapp/statusJson/504') { params -> statusJson(504) }
-        def files = [:]
-        List deleted = []
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> files[fn] = b }
-        script.metaClass.deleteHubFile = { String fn -> deleted << fn; files.remove(fn) }
-        backupIndex = ["rm-rule_77_other": [type: "rm-rule", id: 77, ruleId: 77, fileName: "mcp-rm-backup-77-other.json",
-                                             timestamp: clock[0] - 120_000L, sourceLength: 10, sizeBytes: 10, retention: "rolling"]]
-
-        when: 'eight strict writes land inside one editing session'
-        List backups = (1..8).collect {
-            clock[0] += 1000L
-            script._rmBackupRuleSnapshot(504, "pre-update")
-        }
-
-        then: 'the first is pinned, the rest are rolling steps, and nothing is evicted by count'
-        backups[0].retention == "pinned"
-        backups.drop(1).every { it.retention == "rolling" }
-        def kept = backupIndex.findAll { k, v -> v.ruleId == 504 }.keySet()
-        kept == backups.collect { it.backupKey.toString() } as Set
-        deleted.isEmpty()
-
-        and: "another rule's rolling step is untouched"
-        backupIndex.containsKey("rm-rule_77_other")
-    }
-
-    private List strictRule504(String label) {
-        enableWrite()
-        settingsMap.backupEveryRuleWrite = true
+        settingsMap.backupEveryRuleWrite = everyWrite
         def clock = [1234567890000L]
         NOW_OVERRIDE.set({ -> clock[0] })
         hubGet.register('/installedapp/configure/json/504') { params -> ruleConfigJson(504, label) }
         hubGet.register('/installedapp/statusJson/504') { params -> statusJson(504) }
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        return clock
+        Map files = [:]
+        List deleted = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> files[fn] = b }
+        script.metaClass.downloadHubFile = { String fn -> files[fn] }
+        script.metaClass.deleteHubFile = { String fn -> deleted << fn; files.remove(fn) }
+        return [clock, files, deleted]
     }
 
-    def "a strict-mode snapshot more than an hour after the rule's last one starts a new pinned session"() {
+    def "backupEveryRuleWrite takes a fresh snapshot before every edit and keeps each while the budget has room"() {
         given:
-        def clock = strictRule504("strict-gap")
+        def (clock, files, deleted) = editBackupRule504("strict", true)
+        backupIndex = ["rm-rule_77_other": [type: "rm-rule", id: 77, ruleId: 77, fileName: "mcp-rm-backup-77-other.json",
+                                             timestamp: clock[0] - 120_000L, sourceLength: 10, sizeBytes: 10]]
 
-        when:
-        def first = script._rmBackupRuleSnapshot(504, "pre-addAction")
-        clock[0] += 61 * 60 * 1000L
-        def later = script._rmBackupRuleSnapshot(504, "pre-addAction")
-
-        then:
-        first.retention == "pinned"
-        later.retention == "pinned"
-    }
-
-    def "a continuous strict-mode chain keeps the session open past the baseline's hour"() {
-        given:
-        def clock = strictRule504("strict-chain")
-
-        when: 'writes every 40 minutes'
-        def steps = (0..3).collect {
-            if (it) clock[0] += 40 * 60 * 1000L
-            script._rmBackupRuleSnapshot(504, "pre-update")
+        when: 'eight edits a second apart'
+        List backups = (1..8).collect {
+            clock[0] += 1000L
+            script._rmBackupBeforeEdit(504, "pre-native-form")
         }
 
-        then: 'only the first is pinned, even two hours on'
-        steps*.retention == ["pinned", "rolling", "rolling", "rolling"]
+        then: 'each edit has its own snapshot file and key'
+        backups*.backupKey.collect { it.toString() }.unique().size() == 8
+        files.size() == 8
+        backups.every { it.baselineReused == false }
+        backupIndex.findAll { k, v -> v.ruleId == 504 }.keySet() == backups.collect { it.backupKey.toString() } as Set
+        deleted.isEmpty()
+        backupIndex.containsKey("rm-rule_77_other")
+
+        and: 'no retention kind, only the one eviction rule'
+        backups.every { !it.containsKey('retention') && it.retentionNote == script._itemBackupRetentionNote() }
+        backupIndex.values().every { !it.containsKey('retention') }
     }
 
-    def "strict-mode pre-delete and pre-forcedelete snapshots inside a session stay pinned"() {
+    def "without backupEveryRuleWrite an edit within the hour reuses the rule's snapshot"() {
         given:
-        def clock = strictRule504("strict-delete")
+        def (clock, files, deleted) = editBackupRule504("reuse", false)
 
         when:
-        script._rmBackupRuleSnapshot(504, "pre-update")
+        def first = script._rmBackupBeforeEdit(504, "pre-native-form")
         clock[0] += 1000L
-        def step = script._rmBackupRuleSnapshot(504, "pre-update")
-        clock[0] += 1000L
-        def delete = script._rmBackupRuleSnapshot(504, reason)
+        def second = script._rmBackupBeforeEdit(504, "pre-native-form")
+        clock[0] += 61 * 60 * 1000L
+        def later = script._rmBackupBeforeEdit(504, "pre-native-form")
 
-        then:
-        step.retention == "rolling"
-        delete.retention == "pinned"
-
-        where:
-        reason << ["pre-delete", "pre-forcedelete"]
+        then: 'the second edit reuses the first snapshot; an edit an hour later takes a new one'
+        second.backupKey == first.backupKey
+        second.baselineReused == true
+        later.backupKey != first.backupKey
+        later.baselineReused == false
+        files.size() == 2
+        !second.containsKey('retention')
     }
 
     def "hub_list_backups surfaces rm-rule entries with rule-specific metadata alongside app/driver entries"() {

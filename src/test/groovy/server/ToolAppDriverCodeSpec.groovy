@@ -3248,11 +3248,11 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         uploads == ['mcp-backup-app-33.groovy']
         result.restoreHint.contains('hub_create_app')
 
-        and: 'the response says the backup is pinned and when it can be removed'
-        result.backupRetention == 'pinned'
-        result.backupRetentionNote.startsWith('Pinned baseline')
+        and: 'the response states the eviction rule and no retention kind'
+        !result.containsKey('backupRetention')
+        result.backupRetentionNote == script._itemBackupRetentionNote()
         result.restoreHint.endsWith(result.backupRetentionNote)
-        result.restoreHint.contains('10 MB budget')
+        result.restoreHint.contains('10 MB storage budget')
     }
 
     @spock.lang.Unroll

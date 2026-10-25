@@ -1934,12 +1934,6 @@ private Map _rmBuildRuleSnapshot(Integer ruleId, String reason, String activePag
 }
 
 private Map _rmWriteRuleSnapshotLocked(Integer ruleId, String reason, Map snapshot, Map config, String protectedKey = null) {
-    // Under strict per-write backups an edit inside an editing session is a rolling step. The
-    // session's first snapshot, and a delete's or restore's recovery point, stay pinned. Decided
-    // under the lock, against the committed index.
-    boolean editStep = _effectiveBackupSetting('backupEveryRuleWrite') == 'true' &&
-        !(reason in ["pre-delete", "pre-forcedelete", "pre-native-restore"])
-    String retention = editStep && _rmRecentRuleBackup(_itemBackupManifest(), ruleId, now()) != null ? "rolling" : "pinned"
     def ts = new Date(now()).format("yyyyMMdd-HHmmss-SSS")
     String namePrefix = "mcp-rm-backup-${ruleId}-"
     String nameExt = ".json"
@@ -1981,8 +1975,7 @@ private Map _rmWriteRuleSnapshotLocked(Integer ruleId, String reason, Map snapsh
         appLabel: snapshot.appLabel,
         timestamp: snapshot.timestamp,
         sourceLength: jsonBytes.length,  // reusing the existing field name for byte size
-        sizeBytes: jsonBytes.length,
-        retention: retention
+        sizeBytes: jsonBytes.length
     ]
     _publishUploadedItemBackup(backupKey, entry, protectedKey)
 
@@ -1997,7 +1990,7 @@ private Map _rmWriteRuleSnapshotLocked(Integer ruleId, String reason, Map snapsh
             brokenBefore: (config == null ? null : _rmConfigHasBrokenMarkers(config)),
             baselineReused: false,
             rollbackScope: "Restoring this baseline returns rule ${ruleId} to its state at ${formatTimestamp(snapshot.timestamp as Long)}."] +
-        entry + [retentionNote: _itemBackupRetentionNote(entry)]
+        entry + [retentionNote: _itemBackupRetentionNote()]
 }
 
 // Soft delete via /installedapp/delete/<id>. Refuses if the app has
@@ -2891,18 +2884,8 @@ Map _rmBackupBeforeEdit(Integer ruleId, String reason, String activePage = null)
 private Map _rmBackupBeforeEditLocked(Integer ruleId, String reason, String activePage = null) {
     if (_effectiveBackupSetting('backupEveryRuleWrite') == 'true') return null
 
-    long nowMs = now()
     def mfst = _itemBackupManifest()
-    def recent = mfst.findAll { key, value ->
-        if (!(value instanceof Map) || value.deletePending || value.type?.toString() != "rm-rule") return false
-        def savedRuleId = value.ruleId != null ? value.ruleId : value.id
-        if (savedRuleId?.toString() != ruleId?.toString()) return false
-        Long savedAt = null
-        try { savedAt = value.timestamp as Long } catch (Exception ignored) { }
-        if (savedAt == null) return false
-        long age = nowMs - savedAt
-        return age >= 0L && age < 60L * 60L * 1000L
-    }.max { a, b -> (a.value.timestamp as Long) <=> (b.value.timestamp as Long) }
+    def recent = _rmRecentRuleBackup(mfst, ruleId, now())
 
     if (recent != null && !_rmReusableBackupFileMatches(recent.value as Map, ruleId)) {
         def staleFile = recent.value?.fileName?.toString()

@@ -6312,8 +6312,8 @@ def updated() {}
                 "appId": instance_id, "force": True, "confirm": True}})
             assert gone.get("success") is True, f"deleting the password app instance failed: {gone}"
             instance_id = None
-            # The delete's own snapshot is the newest backup: on a hub at its storage budget the
-            # earlier rolling baseline may already be evicted, which is retention, not a refusal.
+            # The delete's own snapshot is the app's newest backup, which retention never evicts; on a
+            # hub at its storage budget the earlier snapshot may already be gone.
             recreate_key = (gone.get("backup") or {}).get("backupKey") or key
             try:
                 recreate = self._rm_restore(recreate_key)
@@ -8789,10 +8789,15 @@ def updated() {}
             self._rule_edit_backups(True)
             self._mcp_settings({"backupEveryRuleWrite": True})
             try:
-                keys = {name: self._rm_update(app_id, [self._rm_switch_condition(switches[name][0], id=condition)])["backup"]["backupKey"]
-                        for name in ("Kitchen", "Den")}
+                backups = {name: self._rm_update(app_id, [self._rm_switch_condition(switches[name][0], id=condition)])["backup"]
+                           for name in ("Kitchen", "Den")}
             finally:
                 self._mcp_settings({"backupEveryRuleWrite": False})
+            keys = {name: backup["backupKey"] for name, backup in backups.items()}
+            for backup in backups.values():
+                note = str(backup.get("retentionNote"))
+                assert "retention" not in backup and "oldest first" in note and "newest backup is never removed" in note, \
+                    f"a rule write's snapshot must state the plain eviction rule and no retention kind: {backup}"
             assert self._rm_restore(keys["Den"]).get("success") is True
             assert labels["Kitchen"] in json.dumps(self._native_rule_document(app_id)["conditions"])
             _, original = self._rm_recovery_file(keys["Kitchen"])
@@ -12051,10 +12056,10 @@ def updated() {}
             and set(budget) == {"usedBytes", "limitBytes"}, \
             f"source-backup listing must report the storage budget: {src}"
         policy = str(src.get("retentionPolicy"))
-        assert "maxBackups" not in src and "rolling" in policy and "10 MB storage budget" in policy, \
-            f"source-backup listing must describe the budget-only retention policy: {src}"
+        assert "maxBackups" not in src and "10 MB storage budget" in policy and "oldest first" in policy \
+            and "newest backup" in policy, f"source-backup listing must describe the budget-only retention policy: {src}"
         for entry in src["backups"]:
-            assert entry.get("retention") in ("pinned", "rolling"), f"backup entry without a retention kind: {entry}"
+            assert "retention" not in entry, f"a backup entry must carry no retention kind: {entry}"
 
     @test("system_tools")
     def test_get_backup_schedule_read(self) -> None:

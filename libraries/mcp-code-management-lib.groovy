@@ -2186,9 +2186,8 @@ private Map _deleteItemViaEndpoint(String type, String idParam, String deletePat
                 (idParam): itemId,
                 lastBackup: formatTimestamp(state.lastBackupTimestamp),
                 backupFile: backupEntry?.fileName,
-                backupRetention: backupEntry ? (backupEntry.retention ?: "pinned") : null,
-                backupRetentionNote: backupEntry ? _itemBackupRetentionNote(backupEntry as Map) : null,
-                restoreHint: backupEntry ? "To restore: use '${installTool}' with the backup source, or download ${backupEntry.fileName} from Hubitat > Settings > File Manager and re-install manually. ${_itemBackupRetentionNote(backupEntry as Map)}" : null
+                backupRetentionNote: backupEntry ? _itemBackupRetentionNote() : null,
+                restoreHint: backupEntry ? "To restore: use '${installTool}' with the backup source, or download ${backupEntry.fileName} from Hubitat > Settings > File Manager and re-install manually. ${_itemBackupRetentionNote()}" : null
             ]
             if (!backupSucceeded) result.backupWarning = "Pre-delete backup could not be created. The source code may be permanently lost."
             return result
@@ -2250,8 +2249,7 @@ private Map _backupLibrarySourceLocked(String libraryId) {
         version: libData.version,
         timestamp: now(),
         sourceLength: backupSource.length(),
-        sizeBytes: backupBytes.length,
-        retention: "pinned"
+        sizeBytes: backupBytes.length
     ]
     _publishUploadedItemBackup(key, entry)
     mcpLog("info", "hub-admin", "Backed up library ID ${libraryId} source to File Manager: ${fileName} (version ${libData.version}, ${backupSource.length()} chars)")
@@ -2705,9 +2703,8 @@ def toolDeleteLibrary(args) {
                 libraryId: libraryId,
                 lastBackup: formatTimestamp(state.lastBackupTimestamp),
                 backupFile: backupEntry?.fileName ?: backupFileName,
-                backupRetention: backupEntry ? (backupEntry.retention ?: "pinned") : null,
-                backupRetentionNote: backupEntry ? _itemBackupRetentionNote(backupEntry as Map) : null,
-                restoreHint: backupEntry ? "To restore: use 'hub_create_library' with the backup source, or download ${backupEntry.fileName} from Hubitat > Settings > File Manager and re-install manually. ${_itemBackupRetentionNote(backupEntry as Map)}" : null
+                backupRetentionNote: backupEntry ? _itemBackupRetentionNote() : null,
+                restoreHint: backupEntry ? "To restore: use 'hub_create_library' with the backup source, or download ${backupEntry.fileName} from Hubitat > Settings > File Manager and re-install manually. ${_itemBackupRetentionNote()}" : null
             ]
             if (!backupSucceeded) result.backupWarning = "Pre-delete backup could not be created. The source code may be permanently lost."
             return result

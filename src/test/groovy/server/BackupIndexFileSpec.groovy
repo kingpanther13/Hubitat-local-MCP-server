@@ -35,7 +35,7 @@ class BackupIndexFileSpec extends ToolSpecBase {
 
         when:
         script._publishItemBackup('app_1', [type: 'app', id: '1', fileName: 'mcp-backup-app-1.groovy',
-                                            timestamp: 5L, sourceLength: 3, sizeBytes: 3, retention: 'pinned'])
+                                            timestamp: 5L, sourceLength: 3, sizeBytes: 3])
 
         then:
         indexFile().version == 1
@@ -53,7 +53,7 @@ class BackupIndexFileSpec extends ToolSpecBase {
     def 'a new class load reads the index file back'() {
         given:
         files['mcp-backup-index.json'] = JsonOutput.toJson([version: 1, entries: [
-            app_7: [type: 'app', id: '7', fileName: 'mcp-backup-app-7.groovy', timestamp: 9L, retention: 'pinned']]]).getBytes('UTF-8')
+            app_7: [type: 'app', id: '7', fileName: 'mcp-backup-app-7.groovy', timestamp: 9L]]]).getBytes('UTF-8')
         listFilesLive()
 
         when:

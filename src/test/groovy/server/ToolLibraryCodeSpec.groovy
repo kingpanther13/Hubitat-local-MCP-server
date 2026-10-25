@@ -1650,9 +1650,9 @@ def helperMethod() { return "ok" }
         uploads == ['mcp-backup-library-42.groovy']
         result.restoreHint.contains('hub_create_library')
 
-        and: 'the response says the backup is pinned and when it can be removed'
-        result.backupRetention == 'pinned'
-        result.backupRetentionNote.startsWith('Pinned baseline')
+        and: 'the response states the eviction rule and no retention kind'
+        !result.containsKey('backupRetention')
+        result.backupRetentionNote == script._itemBackupRetentionNote()
         result.restoreHint.endsWith(result.backupRetentionNote)
     }
 

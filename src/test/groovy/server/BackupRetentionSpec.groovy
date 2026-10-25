@@ -14,12 +14,12 @@ class BackupRetentionSpec extends ToolSpecBase {
 
     private Map app(String id, long timestamp, long sizeBytes, Map extra = [:]) {
         [type: 'app', id: id, fileName: "mcp-backup-app-${id}.groovy".toString(), timestamp: timestamp,
-         version: 1, sourceLength: sizeBytes, sizeBytes: sizeBytes, retention: 'pinned'] + extra
+         version: 1, sourceLength: sizeBytes, sizeBytes: sizeBytes] + extra
     }
 
-    private Map rule(Integer ruleId, String suffix, long timestamp, long sizeBytes, String retention) {
+    private Map rule(Integer ruleId, String suffix, long timestamp, long sizeBytes) {
         [type: 'rm-rule', id: ruleId, ruleId: ruleId, fileName: "mcp-rm-backup-${ruleId}-${suffix}.json".toString(),
-         timestamp: timestamp, sourceLength: sizeBytes, sizeBytes: sizeBytes, retention: retention]
+         timestamp: timestamp, sourceLength: sizeBytes, sizeBytes: sizeBytes]
     }
 
     private List deletedFiles() {
@@ -129,8 +129,8 @@ class BackupRetentionSpec extends ToolSpecBase {
         ruleEntry.timestamp == Date.parse('yyyyMMdd-HHmmss-SSS', '20260101-120000-123').time
         ruleEntry.sizeBytes == 90L
 
-        and: 'adopted files are pinned and the rebuilt index is saved'
-        view.values().every { it.retention == 'pinned' }
+        and: 'adopted entries carry no retention kind and the rebuilt index is saved'
+        view.values().every { !it.containsKey('retention') }
         backupIndex.keySet() == view.keySet()
     }
 
@@ -308,11 +308,13 @@ class BackupRetentionSpec extends ToolSpecBase {
 
     // ---------- byte budget ----------
 
-    def 'over the byte budget, rolling steps go before older pinned baselines of other items'() {
+    def 'over the byte budget the oldest backups go first, whatever their kind'() {
         given:
         backupIndex = [
-            'rm-rule_5_a': rule(5, 'a', 1L, 4 * MIB, 'pinned'),
-            'rm-rule_6_a': rule(6, 'a', 5L, 3 * MIB, 'rolling'),
+            'rm-rule_5_a': rule(5, 'a', 1L, 4 * MIB),
+            'rm-rule_5_b': rule(5, 'b', 6L, MIB),
+            'rm-rule_6_a': rule(6, 'a', 5L, 3 * MIB),
+            'rm-rule_6_b': rule(6, 'b', 7L, MIB),
             app_1: app('1', 2L, 3 * MIB)
         ]
         List deleted = deletedFiles()
@@ -320,38 +322,86 @@ class BackupRetentionSpec extends ToolSpecBase {
         when:
         script._publishItemBackup('app_9', app('9', 10L, MIB))
 
-        then:
-        backupIndex.keySet() == ['rm-rule_5_a', 'app_1', 'app_9'] as Set
-        deleted == ['mcp-rm-backup-6-a.json']
+        then: 'the oldest backup goes and the total is back under the budget'
+        backupIndex.keySet() == ['rm-rule_5_b', 'rm-rule_6_a', 'rm-rule_6_b', 'app_1', 'app_9'] as Set
+        deleted == ['mcp-rm-backup-5-a.json']
     }
 
-    def 'pinned baselines go oldest first, never the published entry or the restore target'() {
+    def 'eviction skips the published entry, the restore target and each item newest backup'() {
         given:
         backupIndex = [
-            app_2: app('2', 0L, MIB),
-            'rm-rule_5_a': rule(5, 'a', 1L, 4 * MIB, 'pinned'),
+            'rm-rule_5_a': rule(5, 'a', 0L, MIB),
+            'rm-rule_5_b': rule(5, 'b', 1L, 4 * MIB),
+            'rm-rule_5_c': rule(5, 'c', 3L, MIB),
             app_1: app('1', 2L, 4 * MIB)
         ]
         List deleted = deletedFiles()
 
-        when:
-        script._publishItemBackup('app_9', app('9', 10L, 3 * MIB), 'app_2')
+        when: 'rm-rule_5_a is the active restore target'
+        script._publishItemBackup('app_9', app('9', 10L, 3 * MIB), 'rm-rule_5_a')
 
         then:
-        backupIndex.keySet() == ['app_2', 'app_1', 'app_9'] as Set
-        deleted == ['mcp-rm-backup-5-a.json']
+        backupIndex.keySet() == ['rm-rule_5_a', 'rm-rule_5_c', 'app_1', 'app_9'] as Set
+        deleted == ['mcp-rm-backup-5-b.json']
     }
 
-    def 'a single backup larger than the budget is kept and everything evictable goes'() {
+    def 'the newest backup of an item survives eviction while older backups of other items go'() {
+        given: 'the only backup of app 1 is the oldest in the index'
+        backupIndex = [
+            app_1: app('1', 0L, 4 * MIB),
+            'rm-rule_6_a': rule(6, 'a', 1L, 3 * MIB),
+            'rm-rule_6_b': rule(6, 'b', 2L, 2 * MIB)
+        ]
+        List deleted = deletedFiles()
+
+        when:
+        script._publishItemBackup('rm-rule_6_c', rule(6, 'c', 3L, 2 * MIB))
+
+        then:
+        backupIndex.keySet() == ['app_1', 'rm-rule_6_b', 'rm-rule_6_c'] as Set
+        deleted == ['mcp-rm-backup-6-a.json']
+    }
+
+    def 'a full index of one item backups evicts all but its newest'() {
         given:
-        backupIndex = [app_1: app('1', 1L, MIB), app_2: app('2', 2L, MIB)]
+        settingsMap.backupBudgetMb = 1
+        backupIndex = (1..4).collectEntries { [("rm-rule_5_s${it}".toString()): rule(5, "s${it}", (long) it, 600 * 1024L)] }
+        List deleted = deletedFiles()
+
+        when:
+        script._publishItemBackup('rm-rule_5_s5', rule(5, 's5', 5L, 600 * 1024L))
+
+        then:
+        backupIndex.keySet() == ['rm-rule_5_s5'] as Set
+        deleted as Set == (1..4).collect { "mcp-rm-backup-5-s${it}.json".toString() } as Set
+    }
+
+    def 'a pre-restore undo counts as a backup of its item'() {
+        given: 'the undo is newer than the item baseline it was taken beside'
+        backupIndex = [
+            app_1: app('1', 1L, 6 * MIB),
+            prerestore_app_1: app('1', 2L, 3 * MIB, [fileName: 'mcp-prerestore-app-1.groovy', undoForBackupKey: 'app_1'])
+        ]
+        List deleted = deletedFiles()
+
+        when:
+        script._publishItemBackup('app_9', app('9', 3L, 2 * MIB))
+
+        then:
+        backupIndex.keySet() == ['prerestore_app_1', 'app_9'] as Set
+        deleted == ['mcp-backup-app-1.groovy']
+    }
+
+    def 'a single backup larger than the budget is kept and every evictable backup goes'() {
+        given:
+        backupIndex = ['rm-rule_5_a': rule(5, 'a', 1L, MIB), 'rm-rule_5_b': rule(5, 'b', 2L, MIB)]
         deletedFiles()
 
         when:
-        script._publishItemBackup('app_9', app('9', 10L, 11 * MIB))
+        script._publishItemBackup('rm-rule_6_a', rule(6, 'a', 10L, 11 * MIB))
 
         then:
-        backupIndex.keySet() == ['app_9'] as Set
+        backupIndex.keySet() == ['rm-rule_5_b', 'rm-rule_6_a'] as Set
     }
 
     def 'pending-deletion entries do not count toward the reported budget usage'() {
@@ -409,16 +459,17 @@ class BackupRetentionSpec extends ToolSpecBase {
         given:
         settingsMap.backupBudgetMb = 1
         backupIndex = null
+        String uuid = '0f8fad5b-d9cb-469f-a165-70867728950e'
         listFiles([[name: 'mcp-backup-app-1.groovy', type: 'file', size: String.valueOf(600 * 1024)],
-                   [name: 'mcp-backup-app-2.groovy', type: 'file', size: String.valueOf(300 * 1024), date: '5000']])
+                   [name: "mcp-backup-app-1-${uuid}.groovy".toString(), type: 'file', size: String.valueOf(300 * 1024), date: '5000']])
         List deleted = deletedFiles()
 
         when:
         script._publishItemBackup('app_9', app('9', 10000L, 300 * 1024L))
 
-        then:
+        then: 'the undated copy goes; the dated one is the item newest backup'
         deleted == ['mcp-backup-app-1.groovy']
-        backupIndex.keySet() == ['app_2', 'app_9'] as Set
+        backupIndex.keySet() == ['app_1', 'app_9'] as Set
     }
 
     def 'entries without sizeBytes count their sourceLength against the budget'() {
@@ -428,16 +479,16 @@ class BackupRetentionSpec extends ToolSpecBase {
         script._itemBackupEntryBytes([:]) == 0L
     }
 
-    def 'under the budget no backup is evicted, however many rolling steps or items there are'() {
-        given: 'forty rolling steps of one rule, plus another rule and an app'
-        Map seeded = (1..40).collectEntries { [("rm-rule_5_s${it}".toString()): rule(5, "s${it}", (long) it, 10L, 'rolling')] }
-        seeded['rm-rule_6_s1'] = rule(6, 's1', 0L, 10L, 'rolling')
+    def 'under the budget no backup is evicted, however many snapshots or items there are'() {
+        given: 'forty snapshots of one rule, plus another rule and an app'
+        Map seeded = (1..40).collectEntries { [("rm-rule_5_s${it}".toString()): rule(5, "s${it}", (long) it, 10L)] }
+        seeded['rm-rule_6_s1'] = rule(6, 's1', 0L, 10L)
         seeded['app_1'] = app('1', 0L, 10L)
         backupIndex = seeded
         List deleted = deletedFiles()
 
         when:
-        script._publishItemBackup('rm-rule_5_s41', rule(5, 's41', 41L, 10L, 'rolling'))
+        script._publishItemBackup('rm-rule_5_s41', rule(5, 's41', 41L, 10L))
 
         then:
         deleted.isEmpty()
@@ -480,39 +531,40 @@ class BackupRetentionSpec extends ToolSpecBase {
         scriptStaticField('ITEM_BACKUP_BUDGET_WARNED') as Set == ['lots'] as Set
     }
 
+    private Map budgetIndex() {
+        [
+            app_1_1: app('1', 1L, 300 * 1024L, [fileName: 'mcp-backup-app-1-old.groovy']),
+            'rm-rule_5_a': rule(5, 'a', 2L, 600 * 1024L),
+            app_1: app('1', 4L, 100 * 1024L),
+            'rm-rule_5_b': rule(5, 'b', 5L, 300 * 1024L)
+        ]
+    }
+
     def 'a 1 MB budget evicts what the default budget keeps'() {
         given:
         settingsMap.backupBudgetMb = 1
-        backupIndex = [
-            app_1: app('1', 1L, 600 * 1024L),
-            'rm-rule_5_a': rule(5, 'a', 5L, 300 * 1024L, 'rolling'),
-            app_2: app('2', 2L, 300 * 1024L)
-        ]
+        backupIndex = budgetIndex()
         List deleted = deletedFiles()
 
-        when: 'the new backup takes the total to 1.4 MB'
+        when: 'the new backup takes the total to 1.5 MB'
         script._publishItemBackup('app_9', app('9', 10L, 200 * 1024L))
 
-        then: 'the rolling step goes first, then the oldest pinned baseline'
-        deleted as Set == ['mcp-rm-backup-5-a.json', 'mcp-backup-app-1.groovy'] as Set
-        backupIndex.keySet() == ['app_2', 'app_9'] as Set
+        then: 'the two oldest backups go; each item keeps its newest'
+        deleted as Set == ['mcp-backup-app-1-old.groovy', 'mcp-rm-backup-5-a.json'] as Set
+        backupIndex.keySet() == ['app_1', 'rm-rule_5_b', 'app_9'] as Set
 
         when:
         def listing = script.toolListItemBackups([:])
 
         then: 'the listing and the notes report the configured budget'
-        listing.storageBudget == [usedBytes: 500 * 1024L, limitBytes: MIB]
+        listing.storageBudget == [usedBytes: 600 * 1024L, limitBytes: MIB]
         listing.retentionPolicy.contains('1 MB storage budget')
-        script._itemBackupRetentionNote([type: 'app']).contains('the 1 MB budget')
+        script._itemBackupRetentionNote().contains('the 1 MB storage budget')
     }
 
     def 'the same index stays untouched under the default budget'() {
         given:
-        backupIndex = [
-            app_1: app('1', 1L, 600 * 1024L),
-            'rm-rule_5_a': rule(5, 'a', 5L, 300 * 1024L, 'rolling'),
-            app_2: app('2', 2L, 300 * 1024L)
-        ]
+        backupIndex = budgetIndex()
         List deleted = deletedFiles()
 
         when:
@@ -520,16 +572,16 @@ class BackupRetentionSpec extends ToolSpecBase {
 
         then:
         deleted.isEmpty()
-        backupIndex.size() == 4
+        backupIndex.size() == 5
     }
 
     // ---------- what callers are told ----------
 
-    def 'hub_list_backups reports the budget and each entry retention'() {
-        given:
+    def 'hub_list_backups reports the budget and the policy, and no retention kind per entry'() {
+        given: 'one entry still carries the retention key an older version wrote'
         backupIndex = [
-            app_1: app('1', 1L, 2 * MIB),
-            'rm-rule_5_a': rule(5, 'a', 2L, MIB, 'rolling'),
+            app_1: app('1', 1L, 2 * MIB, [retention: 'pinned']),
+            'rm-rule_5_a': rule(5, 'a', 2L, MIB),
             app_legacy: [type: 'app', id: 'legacy', fileName: 'mcp-backup-app-legacy.groovy', timestamp: 3L, sourceLength: 500]
         ]
 
@@ -538,11 +590,11 @@ class BackupRetentionSpec extends ToolSpecBase {
 
         then:
         result.storageBudget == [usedBytes: 3 * MIB + 500, limitBytes: 10 * MIB]
-        result.retentionPolicy.contains('removed only when')
+        result.retentionPolicy == script._itemBackupRetentionNote()
         result.retentionPolicy.contains('10 MB')
         !result.containsKey('maxBackups')
-        result.backups.collectEntries { [(it.backupKey): it.retention] } ==
-            [app_1: 'pinned', 'rm-rule_5_a': 'rolling', app_legacy: 'pinned']
+        result.backups*.backupKey as Set == ['app_1', 'rm-rule_5_a', 'app_legacy'] as Set
+        result.backups.every { !it.containsKey('retention') }
         result.backups.find { it.backupKey == 'app_legacy' }.sizeBytes == 500L
     }
 
@@ -561,15 +613,9 @@ class BackupRetentionSpec extends ToolSpecBase {
         script.getToolGuideSections().file_manager.contains("the newest ${scriptStaticField('FILE_BACKUP_COPIES')} copies of each file name are kept")
     }
 
-    def 'retention notes name the eviction rule for each kind of backup'() {
+    def 'the retention note states the one eviction rule'() {
         expect:
-        script._itemBackupRetentionNote([type: 'rm-rule', retention: 'rolling']).startsWith('Rolling step')
-        script._itemBackupRetentionNote([type: 'rm-rule', retention: 'rolling']).contains('removed only when the 10 MB budget')
-        !script._itemBackupRetentionNote([type: 'rm-rule', retention: 'rolling']).contains('newest')
-        script._itemBackupRetentionNote([type: 'rm-rule', retention: 'pinned']).contains('Backups of this or other rules never replace it')
-        script._itemBackupRetentionNote([type: 'app', retention: 'pinned']).contains('next backup after the one-hour reuse window')
-        script._itemBackupRetentionNote([type: 'app', retention: 'pinned', undoForBackupKey: 'app_1']).contains('next pre-restore undo')
-        script._itemBackupRetentionNote([type: 'app']).startsWith('Pinned baseline')
-        script._itemBackupRetentionNote([type: 'app']).contains('10 MB budget')
+        script._itemBackupRetentionNote() ==
+            "Backups are removed only when all MCP backups together exceed the 10 MB storage budget, oldest first; an item's newest backup is never removed."
     }
 }
