@@ -3030,7 +3030,7 @@ private String _naDone(Map context) { ['_action_update|Done|', '_action_previous
 
 // Sets the fields and presses the page's Done as the browser does. A submitOnChange input posts the
 // page as soon as it changes, and the Done is pressed on the page that post renders, so the inputs it
-// reveals save their defaults too. The caller has already checked the fields against the first page.
+// reveals save their defaults too. The fields were already checked against the first page.
 // committed: the hub accepted the page's install Done, which it answers with a location; a page it
 // renders again instead means the app's update did not run.
 private Map _naSave(Long id, Map context, Map supplied, String from, boolean existing) {
@@ -3114,6 +3114,11 @@ private Map _naRefusedCreate(String type, Long childId, String message, String g
      note: "Delete app ${childId} with hub_delete_native_app before creating again.${guide}".toString()]
 }
 
+// Another form operation holds the app or this caller: nothing was read or written.
+private Map _naBusy(IllegalStateException busy, Map target, String guide) {
+    [success: false] + target + [error: busy.message, note: "Wait for the running form operation to finish, then retry.${guide}".toString()]
+}
+
 // What the browser does from Apps: the parent's create control, the new app's first page, then its Done.
 private Map _naCreate(Map args) {
     String type = args.app_type
@@ -3122,7 +3127,8 @@ private Map _naCreate(Map args) {
     Long parentId = _discoverParentAppId(type) as Long
     _requireUnprotectedAppMutation(parentId, 'create a child app under')
     String guide = " See hub_get_tool_guide(section='set_native_app_reference')."
-    _nfAcquire(parentId)
+    try { _nfAcquire(parentId) }
+    catch (IllegalStateException busy) { return _naBusy(busy, [app_type: type], guide) }
     Long childId = null
     try {
         Map child = null
@@ -3136,12 +3142,15 @@ private Map _naCreate(Map args) {
                 Map ids = [:] + (atomicState.parentAppIds ?: [:])
                 ids.remove(type)
                 atomicState.parentAppIds = ids
-                throw new IllegalArgumentException("The ${reg.parentTypeName} app recorded for this type no longer exists; retry to install or find it again. Nothing was created.".toString())
+                return [success: false, app_type: type, error: "The ${reg.parentTypeName} app recorded for this type no longer exists. Nothing was created.".toString(),
+                        note: "Retry: the next create finds or installs the ${reg.parentTypeName} app again.${guide}".toString()]
             }
             Map create = parent.controls.values().find { it.kind == 'create_child' && it.value == reg.appName }
             if (!create) {
+                // The parent may have been installed for this call, so the refusal is a result.
                 List offered = parent.controls.values().findAll { it.kind == 'create_child' }*.value
-                throw new IllegalArgumentException("The ${reg.parentTypeName} page offers no control that creates ${reg.appName}; it offers ${offered ?: 'none'}. Nothing was created.".toString())
+                return [success: false, app_type: type, error: "The ${reg.parentTypeName} page offers no control that creates ${reg.appName}; it offers ${offered ?: 'none'}. Nothing was created.".toString(),
+                        note: "Open the ${reg.parentTypeName} app with operation:'form' to see what it offers.${guide}".toString()]
             }
             Map made = _nfExecute(parentId, _nfPrepare(parentId, parent, [:], create.control_id, 'hub_set_native_app'))
             if (made.created_mismatch) {
@@ -3229,12 +3238,12 @@ private Map _naCreateButtonRule(Map args) {
         throw new IllegalArgumentException("controller_id ${controllerId} is not an installed Button Controller".toString())
     }
     if (controller.disabled == true) throw new IllegalArgumentException('Enable the Button Controller before creating a rule under it')
-    _nfAcquire(controllerId)
+    try { _nfAcquire(controllerId) }
+    catch (IllegalStateException busy) { return _naBusy(busy, [app_type: 'button_rule', controller_id: controllerId], guide) }
     Map backup = null
     boolean attempted = false
     Long openedId = null
     try {
-        backup = _nfBackup(controllerId, controller, null)
         Map context = _nfContext(controllerId, _nfPage(controllerId))
         Map setBut = _naSetBut(context, wanted)
         if (!setBut) {
@@ -3242,6 +3251,7 @@ private Map _naCreateButtonRule(Map args) {
             if (defined) throw new IllegalArgumentException("Button ${number} on controller ${controllerId} offers no rule to create for ${event}; it offers ${defined}. That event may already have a rule.".toString())
             Map add = context.controls.values().find { it.kind == 'button' && it.stateAttribute == 'addBut' }
             if (!add) throw new IllegalArgumentException("Button Controller ${controllerId} renders no Add Button control. Assign its button device first: hub_set_native_app(operation:'update', app_id:${controllerId}, args:{fields:{buttonDev:['<device id>']}}, confirm:true).".toString())
+            backup = _nfBackup(controllerId, controller, null)
             attempted = true
             context = _nfContext(controllerId, _nfExecute(controllerId, _nfPrepare(controllerId, context, [:], add.control_id, 'hub_set_native_app')).model)
             List offered = context.get('fields').newBut?.options*.value
@@ -3265,6 +3275,7 @@ private Map _naCreateButtonRule(Map args) {
             setBut = _naSetBut(context, wanted)
             if (!setBut) throw new IllegalStateException("Button ${number} was added, but the controller offers no rule to create for ${event}".toString())
         }
+        if (backup == null) backup = _nfBackup(controllerId, controller, null)
         attempted = true
         Map answer = _nfExecute(controllerId, _nfPrepare(controllerId, context, [:], setBut.control_id, 'hub_set_native_app'))
         Map opened = answer.navigation ?: _nfNavigation(controllerId, answer.model)
@@ -3300,13 +3311,13 @@ private Map _naUpdate(Long id, Map args) {
     if (nativeApp?.id?.toString() != id.toString()) throw new IllegalArgumentException('app_id must identify an installed app')
     if (nativeApp.disabled == true) throw new IllegalArgumentException('Enable the app before updating it')
     boolean subPage = false
-    _nfAcquire(id)
+    try { _nfAcquire(id) }
+    catch (IllegalStateException busy) { return _naBusy(busy, [app_id: id], guide) }
     Map backup = null
     boolean attempted = false
     List posted = []
     List notPosted = []
     try {
-        backup = _nfBackup(id, nativeApp, page)
         Map context
         String root = null
         try {
@@ -3324,6 +3335,7 @@ private Map _naUpdate(Long id, Map args) {
         }
         if (page && context.page.name != page) throw new IllegalArgumentException("App ${id} renders no page '${page}' (the hub rendered '${context.page.name}'); hub_list_app_pages lists its pages. Nothing was written.".toString())
         _nfPrepare(id, context, fields, _naDone(context), 'hub_set_native_app')
+        backup = _nfBackup(id, nativeApp, page)
         attempted = true
         Map saved = _naSave(id, context, fields, subPage ? root : null, true)
         posted.addAll(saved.posted)

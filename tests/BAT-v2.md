@@ -1668,7 +1668,7 @@ Per Finding #4 (shipped in commit `95654ad`), `success` and `partial` are orthog
 - Agent calls `hub_manage_rule_machine(tool=hub_set_rule)` to create the rule (name only, no appId), then `hub_manage_rule_machine(tool=hub_set_rule, args={appId: ..., addAction: ...})`.
 - The response returns `{success: true, partial: true, ...}` (empirically observed for Switch actions).
 - Agent does NOT panic, does NOT call `removeAction`, does NOT retry the `addAction` (which would create a duplicate).
-- Agent calls `hub_read_apps_code(tool=hub_get_app_config, args={appId: ..., includeSettings: true})` OR `hub_manage_rule_machine(tool=hub_set_rule, args={appId: ..., walkStep: {page: "mainPage", operation: "introspect"}})` to verify the action rendered correctly in the rule.
+- Agent calls `hub_read_apps_code(tool=hub_get_app_config, args={appId: ..., includeSettings: true})` OR `hub_manage_rule_machine(tool=hub_set_rule, args={operation: "form", rule_id: ..., args: {steps: [{kind: "open"}]}, confirm: true})` to verify the action rendered correctly in the rule.
 - Agent reports the action was added successfully, noting the partial flag was cosmetic.
 
 **What an agent must NOT do**:
@@ -4307,7 +4307,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: the call is rejected with an `IllegalArgumentException` (JSON-RPC -32602) whose message names `replaceActions`, says it is an `edit-only` operation requiring an existing rule, and points the caller to create-then-edit. NO rule is created. This is the create-arm completeness contract: every shortcut the create arm is handed is HONORED or LOUDLY REJECTED, never silently dropped to a `success=true` empty shell. The same rejection holds for `addLocalVariable`, `patches`, `removeAction`, `clearActions`, `moveAction`, `removeTrigger`, `modifyTrigger`, `modifyAction`, and `walkStep`.
+**Expected**: the call is rejected with an `IllegalArgumentException` (JSON-RPC -32602) whose message names `replaceActions`, says it is an `edit-only` operation requiring an existing rule, and points the caller to create-then-edit. NO rule is created. This is the create-arm completeness contract: every shortcut the create arm is handed is HONORED or LOUDLY REJECTED, never silently dropped to a `success=true` empty shell. The same rejection holds for `addLocalVariable`, `patches`, `removeAction`, `clearActions`, `moveAction`, `removeTrigger`, `modifyTrigger`, and `modifyAction`.
 
 **Failure modes**: a `success=true` envelope with an empty rule (the edit-only op was silently dropped -- the exact pre-fix bug, regressed). A raw internal error with no actionable guidance, or a rule created despite the rejection, also fails this scenario.
 
@@ -4553,7 +4553,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: both are rejected pre-write with a clear steer -- nothing is committed. (1) `Days of week` (a date/day-window capability) is unmodelled on every structured condition surface: `success=false`, `error` names it is not supported "via the structured condition shortcut on any surface" and points at `rawSettings`/`walkStep`. (2) A `*changed*`/`*became*` state-change comparator on a device-state condition is invalid because conditions are point-in-time: `success=false`, `error` says it is "not valid as a condition" and steers to a TRIGGER row (where device-state change events ARE supported). The same rejects fire identically on `addTrigger.condition` and `addAction` `ifThen` expressions.
+**Expected**: both are rejected pre-write with a clear steer -- nothing is committed. (1) `Days of week` (a date/day-window capability) is unmodelled on every structured condition surface: `success=false`, `error` names it is not supported "via the structured condition shortcut on any surface" and points at the native form (`operation: "form"`). (2) A `*changed*`/`*became*` state-change comparator on a device-state condition is invalid because conditions are point-in-time: `success=false`, `error` says it is "not valid as a condition" and steers to a TRIGGER row (where device-state change events ARE supported). The same rejects fire identically on `addTrigger.condition` and `addAction` `ifThen` expressions.
 
 **Failure modes**: either condition silently committing a broken/`null` condition row; the change-comparator condition being accepted and rendering meaninglessly; the date/day reject surfacing an opaque `IllegalStateException` mid-walk instead of the uniform steer.
 
@@ -4946,7 +4946,7 @@ After a baseline run, save the JSON output path. On the next run (e.g., after a 
 ### Known false positives / probe quirks
 
 - **A6** (STPage sub-expression): uses a simplified 3-condition RE rather than a true sub-expression because the sub-expression `{subExpression: ...}` shape has not been validated live. The simplified form is still a useful regression gate for multi-condition RE behavior.
-- **A10** (walkStep introspect): uses `getAppConfig: true` as a read-only substitute for the walkStep introspect path, because the exact mid-edit walkStep shape is not yet validated live. The probe still covers the primary concern (read-only snapshot does not corrupt actNdx).
+- **A10** (mid-edit read): uses `getAppConfig: true` as a read-only substitute for a mid-edit `operation: "form"` open. The probe still covers the primary concern (read-only snapshot does not corrupt actNdx).
 - The "Local Variables" HTML table paragraph in the render text is long and present in all rules; it does not indicate a bug.
 
 ### Diag mode -- `quick_probe()` importable API
@@ -5020,9 +5020,7 @@ The matrix YAML step ops cover the high-level `hub_set_rule` arguments. For low-
                  "settings": {"actType.1": "condActs", "actSubType.1": "getIfThen"}}}
 ```
 
-These map to `walkStep` calls (the MCP tool's single-step wizard walker):
-- `raw_button` uses `operation: "click"` with the named button
-- `raw_setting` uses `operation: "write"` once per key (walkStep.write allows exactly one key per call)
+These escape hatches were written for the single-step wizard walker that `hub_set_rule(operation: "form")` replaced; the probe still sends that retired shape, so `raw_button` and `raw_setting` do not run against the current server until the probe is ported to form steps (a submit activating the button's `control_id`, and a submit with `fields`).
 
 Use sparingly -- direct page manipulation can leave the hub app in states that the
 high-level tools don't expect.

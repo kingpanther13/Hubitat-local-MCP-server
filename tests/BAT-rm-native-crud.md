@@ -1884,7 +1884,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 
 ```json
 {
-  "setup_prompt": "Create a Basic Rule named 'BAT-RH-Basic' and a Button Controller named 'BAT-RH-Btn' via hub_set_native_app. Remember both appIds.",
+  "setup_prompt": "Create a Basic Rule via hub_set_native_app(operation='create', args={app_type: 'basic_rule'}) and a Button Controller bound to a virtual button via hub_set_native_app(operation='create', args={app_type: 'button_controller', fields: {buttonDev: [deviceId]}}) (neither first page renders a label input, so no name). Remember both app_ids.",
   "test_prompt": "Check the health of each. Report ruleFormat, broken, source, configPageError, and multipleFlagPoison for both.",
   "teardown_prompt": "Delete both via hub_delete_native_app(appId=..., force=true)."
 }

@@ -787,9 +787,8 @@ class NativeFormsSpec extends ToolSpecBase {
         List errors = []
         script.metaClass.hubInternalGet = { String path, Map query = null, int timeout = 30, boolean retry = false ->
             calls << [path: path]
-            try {
-                script.toolCallAppForm([app_id: 43, steps: [[kind: 'open']], confirm: true])
-            } catch (IllegalStateException failure) { errors << failure.message }
+            def nestedResult = script.toolCallAppForm([app_id: 43, steps: [[kind: 'open']], confirm: true])
+            if (nestedResult.success == false) errors << nestedResult.error
             JsonOutput.toJson(model)
         }
         when:
@@ -812,9 +811,9 @@ class NativeFormsSpec extends ToolSpecBase {
                 nested = true
                 script.callerClient = [id: 'other']
                 try {
-                    script.toolCallAppForm([app_id: 42, steps: [[kind: 'open']], confirm: true])
-                } catch (IllegalStateException failure) { errors << failure.message }
-                finally { script.callerClient = null }
+                    def nestedResult = script.toolCallAppForm([app_id: 42, steps: [[kind: 'open']], confirm: true])
+                    if (nestedResult.success == false) errors << nestedResult.error
+                } finally { script.callerClient = null }
             }
             JsonOutput.toJson(model)
         }

@@ -6830,6 +6830,8 @@ def updated() {}
             assert self._rm_snapshot(app_id) == before and self._rm_health(app_id).get("stopped") is True
             result = self.client.call_tool("hub_call_rule", {"ruleId": app_id, "action": "start"})
             assert result.get("success") is not False, result
+            assert result.get("rmAction") == "stopRule button -> state.stopped=false (initialize)", \
+                f"start must describe exactly what Rule Machine does: {result}"
             self._rm_wait(lambda: self._rm_health(app_id).get("stopped") is False, what="started")
             assert self._rm_health(app_id)["scheduledJobCount"] >= 1, "the started time trigger has no schedule"
             # A disabled rule refuses document and form edits until it is enabled again.

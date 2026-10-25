@@ -438,7 +438,8 @@ Map toolCallAppForm(Map args, String toolName = 'hub_set_rule') {
     if (nativeApp?.id?.toString() != id.toString()) throw new IllegalArgumentException('app_id must identify an installed app')
     if (nativeApp.disabled == true) throw new IllegalArgumentException('Enable the app before editing its form')
     String key = _nfCallerKey()
-    _nfAcquire(id)
+    try { _nfAcquire(id) }
+    catch (IllegalStateException busy) { return [success: false, app_id: id, error: busy.message, note: 'Wait for the running form operation to finish, then retry.'] }
     List completed = []
     List defaultsPosted = []
     List defaultsNotPosted = []

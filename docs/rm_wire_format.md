@@ -239,9 +239,7 @@ of `uVar<P>`, so they are mutually exclusive at the schema level.
 **moreParams_no_reveal (consumer-actionable):**
 
 If the `moreParams` button click does not reveal a new `cpType<P>.<N>` field in the
-re-introspected schema, the parameter cannot be wired. The implementation records the
-skipped parameter in `settingsSkipped` with `reason='moreParams_no_reveal'` and sets
-`partial=true` on the action result rather than silently dropping the parameter. Callers
-should inspect `settingsSkipped` for entries with this reason and consult `repairHints`
-for next steps. Common causes: firmware version does not support parameters for this
-command, or the command name is invalid and RM did not allocate a slot.
+re-rendered page, the parameter cannot be wired: a field the page does not render is refused
+before anything is written, and the refusal names the field. Common causes: firmware version
+does not support parameters for this command, or the command name is invalid and RM did not
+allocate a slot.

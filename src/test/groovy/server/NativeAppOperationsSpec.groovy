@@ -201,12 +201,12 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         pages['/installedapp/configure/json/40'] = page(40L, [[element: 'app', namespace: 'hubitat', appName: 'Notifier Plus', name: 'other', appId: 40L]])
 
         when:
-        create([app_type: 'notifier', name: 'N'])
+        def result = create([app_type: 'notifier', name: 'N'])
 
         then:
-        def e = thrown(IllegalArgumentException)
-        e.message.contains('offers no control that creates Notifier')
-        e.message.contains('Notifier Plus')
+        !result.success
+        result.error.contains('offers no control that creates Notifier')
+        result.error.contains('Notifier Plus')
         raws.isEmpty()
         posts.isEmpty()
     }
@@ -562,10 +562,12 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         sharedMap('NATIVE_FORM_BUSY')[script._nfKey(70L)] = true
 
         when:
-        update(70L, [fields: [logging: true]])
+        def result = update(70L, [fields: [logging: true]])
 
         then:
-        thrown(IllegalStateException)
+        !result.success
+        result.error.contains('active form operation')
+        result.note.contains('retry')
         gets.isEmpty()
         sharedMap('NATIVE_FORM_BUSY')[script._nfKey(70L)]
     }
@@ -885,11 +887,12 @@ class NativeAppOperationsSpec extends ToolSpecBase {
 
     def 'a cached parent that no longer exists is dropped and the refusal names its type'() {
         when:
-        create([app_type: 'notifier', name: 'N'])
+        def result = create([app_type: 'notifier', name: 'N'])
 
         then:
-        def e = thrown(IllegalArgumentException)
-        e.message.contains('The Notifications app recorded for this type no longer exists; retry to install or find it again.')
+        !result.success
+        result.error.contains('The Notifications app recorded for this type no longer exists')
+        result.note.contains('Retry')
         !atomicStateMap.parentAppIds.containsKey('notifier')
         atomicStateMap.parentAppIds.rule_machine == 43
         raws.isEmpty()
@@ -902,10 +905,11 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         sharedMap('NATIVE_FORM_BUSY')[script._nfKey(40L)] = true
 
         when:
-        create([app_type: 'notifier', name: 'N'])
+        def result = create([app_type: 'notifier', name: 'N'])
 
         then:
-        thrown(IllegalStateException)
+        !result.success
+        result.error.contains('active form operation')
         raws.isEmpty()
         gets.isEmpty()
         sharedMap('NATIVE_FORM_BUSY')[script._nfKey(40L)]
