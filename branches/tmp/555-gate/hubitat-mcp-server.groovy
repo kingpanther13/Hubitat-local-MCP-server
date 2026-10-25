@@ -25258,6 +25258,7 @@ private String _naDone(Map context) { ['_action_update|Done|', '_action_previous
 private Map _naSave(Long id, Map context, Map supplied, String from, boolean existing) {
     List posted = []
     List rejected = []
+    Map label = [:]
     Map page = context
     Map pending = supplied
     boolean changed = false
@@ -25265,6 +25266,7 @@ private Map _naSave(Long id, Map context, Map supplied, String from, boolean exi
     if (_naDone(context) && revealing) {
         Map change = _nfPrepare(id, page, pending, null, 'hub_set_native_app')
         Map answer = _nfExecute(id, change)
+        label = answer.findAll { k, v -> k in ['label_restored', 'label_lost'] }
         changed = true
         posted.addAll(change.defaults)
         rejected.addAll(change.rejected)
@@ -25281,8 +25283,20 @@ private Map _naSave(Long id, Map context, Map supplied, String from, boolean exi
     }
     Map answer = (pending || done) ? _nfExecute(id, plan) : null
     if (answer?.posted) { posted.addAll(plan.defaults); rejected.addAll(plan.rejected) }
+    if (answer?.label_restored || answer?.label_lost) label = answer.findAll { k, v -> k in ['label_restored', 'label_lost'] }
     [answer: answer, done: done, page: page.page.name?.toString(), committed: done == '_action_update|Done|' && answer?.model?.location != null,
-     wrote: changed || answer?.posted == true, posted: posted, rejected: rejected]
+     wrote: changed || answer?.posted == true, posted: posted, rejected: rejected] + label
+}
+private void _naLabelResult(Map result, Map saved, List notes) {
+    if (saved.label_restored) {
+        result.label_restored = true
+        notes << _nfLabelRestoredNote()
+    }
+    if (!saved.label_lost) return
+    result.success = false
+    result.fields_not_landed = ((result.fields_not_landed ?: []) + ['label']).unique()
+    result.fields_applied = result.fields_applied - ['label']
+    result.error = ([result.error, _nfLabelLostError(saved.label_lost)] - null).join(' ')
 }
 private Object _naComparable(Map field, Object value, boolean written) {
     if (value == null || value == '' || (value instanceof Collection && value.isEmpty())) return null
@@ -25444,6 +25458,7 @@ private Map _naCreate(Map args) {
             notes << "The hub did not store the value written for ${back.not_landed.join(', ')}; inspect the page with operation:'form' before retrying."
         }
         if (back.consumed) notes << _naConsumedNote(back.consumed)
+        _naLabelResult(result, saved, notes)
         if (back.model.app?.installed != true) {
             result.installed = false
             notes << (!saved.done ? 'Its page renders no Done yet, so the app stays uninstalled until operation:\'form\' completes it.' :
@@ -25601,6 +25616,7 @@ private Map _naUpdate(Long id, Map args) {
             result.fields_consumed = back.consumed
             notes << _naConsumedNote(back.consumed)
         }
+        _naLabelResult(result, saved, notes)
         if (refused) notes << 'fields_applied lists the fields the hub stored although it refused the Done.'
         else if (uncommitted) notes << uncommitted
         if (notes) result.note = notes.join(' ') + guide
@@ -27140,7 +27156,7 @@ Example changes: [{part:"action",value:{type:"messageActs",subtype:"getLogMsg",f
 
 hub_set_rule(operation:"form",rule_id,args:{steps:[{kind:"open"}]},confirm:true) operates an enabled Rule-5.1 or Button Rule-5.1 rule, or its Rule Machine parent; hub_set_native_app(operation:"form",app_id,...) runs the same steps on any other classic app. Read action variants, input names and option values from the returned forms instead of guessing them. Even open renders execute app code and can change state or cause side effects. An open's optional page names a registered native page, and from names the page that links to it, so a sub-page opened directly offers its Done back to that parent. Follow returned controls for page parameters and breadcrumbs. A create_child control creates the parent's native child type, returns created_app_id and closes the parent context; open the child separately to configure it. Apps are deleted with hub_delete_native_app.
 
-Submit with {kind:"submit",expect_page:"last returned page",fields:{"native field name":value},activate:"returned control_id"}; without activate it saves the fields and refreshes the page. Control IDs tell apart native buttons that share a name, such as editing and deleting the same variable. A page with both a next page and a done page renders its Done as the _action_done control, which the hub answers by saving the page and rendering that same page again. An app without pages also shows the hub's default fields, label (the app's name) and mode[mode] (a list of mode IDs from its options), and a page's own label and mode elements are the same two fields; the hub does not store a label posted together with mode[mode], so set them in separate submits. Native enum keys, device IDs, booleans and single/multiple cardinality are checked before the request. Each submit posts the supplied settings and, as the browser does, the shown default of every other input with no stored value; a password's default is never posted, and page code can still change its own settings. args.options_for:["device field name"] expands device choices on the final returned page.
+Submit with {kind:"submit",expect_page:"last returned page",fields:{"native field name":value},activate:"returned control_id"}; without activate it saves the fields and refreshes the page. Control IDs tell apart native buttons that share a name, such as editing and deleting the same variable. A page with both a next page and a done page renders its Done as the _action_done control, which the hub answers by saving the page and rendering that same page again. An app without pages also shows the hub's default fields, label (the app's name) and mode[mode] (a list of mode IDs from its options), and a page's own label and mode elements are the same two fields; the hub does not always keep the label posted with mode[mode], so after such a submit the label is checked and posted again on its own when the hub put back an older one (label_restored). Native enum keys, device IDs, booleans and single/multiple cardinality are checked before the request. Each submit posts the supplied settings and, as the browser does, the shown default of every other input with no stored value; a password's default is never posted, and page code can still change its own settings. args.options_for:["device field name"] expands device choices on the final returned page.
 
 A batch holds 1 through 16 steps, each using the form the step before it returned, so dependent fields require another submit after they appear. A button handler runs before its step's fields are saved, as in the browser: submit the fields it needs in an earlier step. A button without submitOnChange reloads and needs a separate field submission.
 
@@ -27351,7 +27367,10 @@ private Map _nfContext(Long id, Map model, String from = null) {
     Map fields = [:], controls = [:]
     List messages = [], unsupported = []
     _nfWalk(page, fields, controls, messages, unsupported, model)
-    if (model.defaultFields) [false, true].each { mode -> if (!fields.containsKey(mode ? 'mode[mode]' : 'label')) _nfAppField(fields, model, mode, [:]) }
+    if (model.defaultFields) [false, true].each { mode ->
+        String name = mode ? 'mode[mode]' : 'label'
+        if (!fields.containsKey(name)) { _nfAppField(fields, model, mode, [:]); fields[name].hub_default = true }
+    }
     String trail = model.pageBreadcrumbs && model.pageBreadcrumbs != '%5B%5D' ? model.pageBreadcrumbs.toString() :
         (from ? _nfEncode(groovy.json.JsonOutput.toJson([from])) : '%5B%5D')
     if (page.install || model.doneButton) _nfControl(controls, [name: '_action_update', value: 'Done', kind: 'navigation', title: model.cancelButton ? 'Save' : 'Done'])
@@ -27384,7 +27403,7 @@ private void _nfCache(String key, Map context) {
     Map cached = [app_id: context.app_id, page: [name: context.page.name], envelope: context.envelope, expires: context.expires,
                   fields: [:], controls: [:], backup: context.backup]
     context.get('fields').each { name, field ->
-        Map descriptor = field.findAll { k, v -> k in ['name', 'type', 'multiple', 'required', 'supported', 'device', 'disabled', 'present', 'capability', 'ignore', 'range', 'min', 'max', 'step', 'default_value', 'app_field', 'sidecars'] }
+        Map descriptor = field.findAll { k, v -> k in ['name', 'type', 'multiple', 'required', 'supported', 'device', 'disabled', 'present', 'capability', 'ignore', 'range', 'min', 'max', 'step', 'default_value', 'app_field', 'sidecars', 'hub_default'] }
         descriptor.option_keys = field.options == null ? null : field.options*.value
         if (field.app_field && name == 'label') descriptor.value = field.value
         cached.get('fields').put(name, descriptor)
@@ -27429,7 +27448,7 @@ private String _nfValue(Map field, Object value) {
 private Map _nfPublic(Map context, List optionsFor) {
     List fields = context.get('fields').values().collect { field ->
         Map result = [:] + field
-        ['device', 'ignore', 'capability', 'present', 'default_value', 'app_field', 'sidecars'].each { result.remove(it) }
+        ['device', 'ignore', 'capability', 'present', 'default_value', 'app_field', 'sidecars', 'hub_default'].each { result.remove(it) }
         if (field.type == 'password') result.redacted = true
         else if (field.name ==~ /(?i)access_?token/ && result.value instanceof CharSequence && result.value && _redactsAccessTokens()) result.value = _accessTokenRedactedMarker()
         if (field.device && field.name in optionsFor) result.options = _nfDevices(field)
@@ -27472,6 +27491,7 @@ private Map _nfPrepare(Long id, Map context, Map supplied, String activate, Stri
     }
     Map label = context.get('fields').get('label')
     if (body.containsKey('mode[mode]') && !body.containsKey('label') && label?.app_field && label.present) body.putAll(_nfWire(label, _nfValue(label, label.value)))
+    Map relabel = body.containsKey('mode[mode]') && body.containsKey('label') && label?.hub_default ? [field: label, value: body.label] : null
     List defaults = []
     List rejected = []
     context.get('fields').each { name, field ->
@@ -27504,7 +27524,7 @@ private Map _nfPrepare(Long id, Map context, Map supplied, String activate, Stri
             if (missing) throw new IllegalArgumentException("Complete required native fields before navigating: ${missing.join(', ')}")
         }
     }
-    [body: body, control: control, reload: reloadPath, defaults: defaults, rejected: rejected]
+    [body: body, control: control, reload: reloadPath, defaults: defaults, rejected: rejected, envelope: context.envelope, relabel: relabel]
 }
 private Map _nfExecute(Long id, Map plan) {
     Map control = plan.control
@@ -27530,7 +27550,38 @@ private Map _nfExecute(Long id, Map plan) {
         body.put(control.name, control.value ?: '')
         if (control.params != null) body["params_for${control.name}".toString()] = _nfEncode(groovy.json.JsonOutput.toJson(control.params))
     }
-    [model: _nfPost('/installedapp/update/json', body), posted: true]
+    Map model = _nfPost('/installedapp/update/json', body)
+    [model: model, posted: true] + (plan.relabel ? _nfRelabel(id, plan, model) : [:])
+}
+private String _nfLabelText(Map field, Object value) {
+    if (value == null || value.toString().trim() == '') return ''
+    try { return _nfValue(field, value.toString()).trim() }
+    catch (IllegalArgumentException unusable) { return value.toString().trim() }
+}
+private Map _nfRelabel(Long id, Map plan, Map answer) {
+    Map field = plan.relabel.field
+    String wanted = _nfLabelText(field, plan.relabel.value)
+    Map app = answer.app instanceof Map ? answer.app : _nfPage(id).app
+    String shown = _nfLabelText(field, app?.trueLabel ?: app?.label)
+    if (shown == wanted) return [:]
+    for (int attempt = 1; attempt <= 2 && shown != wanted; attempt++) {
+        mcpLog('warn', 'rm-native', "App ${id}: the hub's mode write left the label '${shown}' instead of '${wanted}'; posting the label again (${attempt} of 2)")
+        Map repair = [:] + plan.envelope + _nfWire(field, plan.relabel.value) + [_action_update: 'Done']
+        if (app?.containsKey('version')) repair.version = app.version
+        Map reply = _nfPost('/installedapp/update/json', repair)
+        app = reply.app instanceof Map ? reply.app : _nfPage(id).app
+        shown = _nfLabelText(field, app?.trueLabel ?: app?.label)
+    }
+    if (shown != wanted) return [label_lost: [posted: wanted, shown: shown]]
+    [label_restored: true] + (answer.configPage instanceof Map ? [model: answer + [app: app]] : [:])
+}
+private String _nfLabelRestoredNote() { "The hub's mode write put back an older label, so the label was posted again on its own." }
+private String _nfLabelLostError(Map lost) {
+    "The hub's mode write put back the label '${lost.shown}', and posting '${lost.posted}' again on its own did not change it.".toString()
+}
+private Map _nfLabelReport(Map outcome) {
+    if (outcome?.label_lost) return [success: false, fields_not_landed: ['label'], error: _nfLabelLostError(outcome.label_lost)]
+    outcome?.label_restored ? [label_restored: true, note: _nfLabelRestoredNote()] : [:]
 }
 private void _nfForget(Long id) {
     String key = _nfCallerKey()
@@ -27565,6 +27616,7 @@ Map toolCallAppForm(Map args, String toolName = 'hub_set_rule') {
     boolean attempted = false
     Long createdId = null
     Map navigation = null
+    Map labelOutcome = [:]
     Map context = NATIVE_FORM_CONTEXTS[key]
     Map backup = null
     try {
@@ -27590,6 +27642,7 @@ Map toolCallAppForm(Map args, String toolName = 'hub_set_rule') {
                 if (answer.navigation) navigation = answer.navigation
                 if (answer.created_id != null) createdId = answer.created_id
                 if (answer.created_mismatch) throw new IllegalStateException(answer.created_mismatch)
+                if (answer.label_restored || answer.label_lost) labelOutcome = answer.findAll { k, v -> k in ['label_restored', 'label_lost'] }
                 if (answer.posted) {
                     defaultsPosted.addAll(plan.defaults)
                     defaultsNotPosted.addAll(plan.rejected)
@@ -27607,7 +27660,7 @@ Map toolCallAppForm(Map args, String toolName = 'hub_set_rule') {
                 completed << [kind: step.kind, page: context.page.name]
             }
         }
-        [success: true, app_id: id, completed: completed, backup: backup] + _nfDefaultsReport(defaultsPosted, defaultsNotPosted) + (navigation ? [navigated_app_id: navigation.app_id, navigated_page: navigation.page] : [:]) + (createdId == null ? [:] : [created_app_id: createdId]) + (context ? _nfPublic(context, optionsFor) : [closed: true])
+        [success: true, app_id: id, completed: completed, backup: backup] + _nfDefaultsReport(defaultsPosted, defaultsNotPosted) + (navigation ? [navigated_app_id: navigation.app_id, navigated_page: navigation.page] : [:]) + (createdId == null ? [:] : [created_app_id: createdId]) + (context ? _nfPublic(context, optionsFor) : [closed: true]) + _nfLabelReport(labelOutcome)
     } catch (Exception failure) {
         mcpLogError('rm-native', "${toolName} form failed for app ${id}: ${failure.message}".toString(), failure)
         if (attempted) NATIVE_FORM_CONTEXTS.remove(key)
