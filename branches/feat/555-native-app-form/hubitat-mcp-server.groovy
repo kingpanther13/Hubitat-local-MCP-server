@@ -17473,96 +17473,15 @@ private stripOptionsHtml(options) {
     }
     return options
 }
-private String _rmDisabledActionSpanRegex() {
-    def regex = /(?is)<span\s+style=['"]\s*color:\s*red;?\s*['"]\s*>\s*<i>(.*?)<\/i>\s*<\/span>/
-    return regex
-}
-private String _rmDisabledActionMark() { return "[DISABLED] " }
 private boolean _rmIsRuleAppType(String name) {
     return name != null && name ==~ /(Button )?Rule-\d.*/
 }
-private String _rmDisabledActionText(String spanInnerHtml) {
-    def text = stripAppConfigHtml(spanInnerHtml)
-    if (!text || text ==~ /(?i)Disabled Actions?/) return null
-    return text
-}
-private Map _rmMarkDisabledActions(String html) {
-    if (!html || !html.contains("color:")) return [html: html, disabled: []]
-    def disabled = []
-    def out = new StringBuilder()
-    int last = 0
-    def m = (html =~ _rmDisabledActionSpanRegex())
-    while (m.find()) {
-        def inner = m.group(1)
-        def text = _rmDisabledActionText(inner)
-        if (!text) continue
-        out << html.substring(last, m.start()) << _rmDisabledActionMark() << inner
-        last = m.end()
-        disabled << text
-    }
-    if (last == 0) return [html: html, disabled: []]
-    out << html.substring(last)
-    return [html: out.toString(), disabled: disabled]
-}
-private String _rmDisabledRowText(String innerRaw) {
-    if (!innerRaw || !innerRaw.contains("color:")) return null
-    def m = (innerRaw =~ _rmDisabledActionSpanRegex())
-    while (m.find()) {
-        def text = _rmDisabledActionText(m.group(1))
-        if (text) return text
-    }
-    return null
-}
-private List _extractEmbeddedActions(String html, boolean markDisabled = false, List disabledRows = null) {
-    if (!html) return []
-    def buttonNames = []
-    def im = (html =~ /<input\s+type=['"]hidden['"]\s+name=['"]([^'"]+?)\.type['"]\s+value=['"]button['"][^>]*>/)
-    while (im.find()) {
-        buttonNames << im.group(1)
-    }
-    def divs = []
-    def dm = (html =~ /(?s)<div([^>]*)class=['"](?:[^'"]*\s)?submitOnChange(?:\s[^'"]*)?['"]([^>]*)>(.*?)<\/div>/)
-    while (dm.find()) {
-        def attrs = (dm.group(1) ?: "") + (dm.group(2) ?: "")
-        def innerRaw = dm.group(3) ?: ""
-        def title = null
-        def state = null
-        def tm = attrs =~ /title=['"]([^'"]+?)['"]/
-        if (tm.find()) title = tm.group(1)
-        def sm = attrs =~ /data-stateAttribute=['"]([^'"]+?)['"]/
-        if (sm.find()) state = sm.group(1)
-        def div = [title: title, stateAttribute: state]
-        def disabledText = markDisabled ? _rmDisabledRowText(innerRaw) : null
-        if (disabledText) {
-            div.description = stripAppConfigHtml(innerRaw) ?: null
-            div.disabledText = disabledText
-        } else {
-            def inner = innerRaw.replaceAll(/<\/?[A-Za-z!][^>]*>/, "").replaceAll(/&nbsp;|&#65291|&#x[0-9a-fA-F]+;|&#\d+;/, "").trim()
-            div.description = inner ?: null
-        }
-        divs << div
-    }
-    if (!buttonNames || !divs) return []
-    def actions = []
-    int n = Math.min(buttonNames.size(), divs.size())
-    for (int i = 0; i < n; i++) {
-        def a = [name: buttonNames[i]]
-        def d = divs[i]
-        if (d.title) a.title = d.title
-        if (d.stateAttribute) a.stateAttribute = d.stateAttribute
-        if (d.description) a.description = d.description
-        if (d.disabledText) {
-            a.disabled = true
-            if (disabledRows != null) {
-                def row = [text: d.disabledText]
-                def im2 = (a.name.toString() =~ /^(\d+)\./)
-                if (im2.find() && buttonNames.contains("disable" + im2.group(1))) row.disableButton = "disable" + im2.group(1)
-                disabledRows << row
-            }
-        }
-        actions << a
-    }
-    return actions
+private Map _appConfigNotFound(Exception e, String path, String appIdStr) {
+    Integer st = null
+    try { st = e.response?.status as Integer } catch (Exception ignored) { st = null }
+    if (st != 404 && st != 410) return null
+    mcpLog("warn", "hub-admin", "hub_get_app_config app ${appIdStr} not found (HTTP ${st} from ${path})")
+    return [success: false, error: "App ${appIdStr} not found (HTTP ${st} from ${path}); check the id with hub_get_app_config(summary=true) or hub_list_apps.", appId: appIdStr as Integer, fingerprint: 'app not found (404)', status: st]
 }
 def toolGetAppConfig(args) {
     if (args?.appId == null || args.appId.toString().trim() == "") {
@@ -17584,29 +17503,23 @@ def toolGetAppConfig(args) {
         try {
             summaryText = hubInternalGet(summaryPath, null, 30)
         } catch (Exception e) {
-            def resp = null
-            try { resp = e.response } catch (Exception ig) { resp = null }
-            Integer st = null
-            try { st = resp?.status as Integer } catch (Exception ig) { st = null }
-            if (st == 404 || st == 410) {
-                mcpLog("warn", "hub-admin", "hub_get_app_config app ${appIdStr} not found (HTTP ${st} from ${summaryPath})")
-                return [success: false, error: "App ${appIdStr} not found (HTTP ${st} from ${summaryPath}). May be deleted, mid-delete, or a not-yet-committed install shell whose config page cannot render. Verify with hub_get_app_config(summary=true) or hub_list_apps.", appId: appIdStr as Integer, fingerprint: 'app not found (404)', status: st]
-            }
+            Map gone = _appConfigNotFound(e, summaryPath, appIdStr)
+            if (gone) return gone
             mcpLogError("hub-admin", "hub_get_app_config summary fetch failed", e)
             return [success: false, error: "Failed to fetch app summary [${e.class.simpleName}]: ${e.message}", appId: appIdStr as Integer]
         }
         if (!summaryText) {
-            return [success: false, error: "Empty response from ${summaryPath}. App may not exist or hub internal API is unavailable.", appId: appIdStr as Integer]
+            return [success: false, error: "Empty response from ${summaryPath}.", appId: appIdStr as Integer]
         }
         def summaryParsed
         try {
             summaryParsed = new groovy.json.JsonSlurper().parseText(summaryText)
         } catch (Exception e) {
             mcpLogError("hub-admin", "hub_get_app_config summary JSON parse failed", e)
-            return [success: false, error: "Failed to parse app summary JSON: ${e.message}. Hubitat firmware may have changed the endpoint contract.", appId: appIdStr as Integer]
+            return [success: false, error: "Failed to parse app summary JSON: ${e.message}", appId: appIdStr as Integer]
         }
         if (!(summaryParsed instanceof Map)) {
-            return [success: false, error: "Unexpected response shape: expected a JSON object. Firmware may have changed the endpoint contract.", appId: appIdStr as Integer, fingerprint: "top-level not a Map"]
+            return [success: false, error: "Unexpected response shape: the app summary is not a JSON object.", appId: appIdStr as Integer, fingerprint: "top-level not a Map"]
         }
         def summaryResult = [:]
         summaryResult.putAll(summaryParsed)
@@ -17621,70 +17534,49 @@ def toolGetAppConfig(args) {
     try {
         responseText = hubInternalGet(path, null, 30)
     } catch (Exception e) {
-        def resp = null
-        try { resp = e.response } catch (Exception ig) { resp = null }
-        Integer st = null
-        try { st = resp?.status as Integer } catch (Exception ig) { st = null }
-        if (st == 404 || st == 410) {
-            mcpLog("warn", "hub-admin", "hub_get_app_config app ${appIdStr} not found (HTTP ${st} from ${path})")
-            return [success: false, error: "App ${appIdStr} not found (HTTP ${st} from ${path}). May be deleted, mid-delete, or a not-yet-committed install shell whose config page cannot render. Verify with hub_get_app_config(summary=true) or hub_list_apps.", appId: appIdStr as Integer, fingerprint: 'app not found (404)', status: st]
-        }
+        Map gone = _appConfigNotFound(e, path, appIdStr)
+        if (gone) return gone
         mcpLogError("hub-admin", "hub_get_app_config fetch failed", e)
         return [success: false, error: "Failed to fetch app config [${e.class.simpleName}]: ${e.message}", appId: appIdStr as Integer]
     }
     if (!responseText) {
-        return [success: false, error: "Empty response from ${path}. App may not exist or hub internal API is unavailable.", appId: appIdStr as Integer]
+        return [success: false, error: "Empty response from ${path}.", appId: appIdStr as Integer]
     }
     def parsed
     try {
         parsed = new groovy.json.JsonSlurper().parseText(responseText)
     } catch (Exception e) {
         mcpLogError("hub-admin", "hub_get_app_config JSON parse failed", e)
-        return [success: false, error: "Failed to parse app config JSON: ${e.message}. Hubitat firmware may have changed the endpoint contract.", appId: appIdStr as Integer]
+        return [success: false, error: "Failed to parse app config JSON: ${e.message}", appId: appIdStr as Integer]
     }
     if (!(parsed instanceof Map)) {
-        return [success: false, error: "Unexpected response shape: expected a JSON object. Firmware may have changed the endpoint contract.", appId: appIdStr as Integer, fingerprint: "top-level not a Map"]
+        return [success: false, error: "Unexpected response shape: the page is not a JSON object.", appId: appIdStr as Integer, fingerprint: "top-level not a Map"]
     }
     if (!(parsed.app instanceof Map)) {
-        return [success: false, error: "Unexpected response shape: missing 'app' object. Firmware may have changed the endpoint contract.", appId: appIdStr as Integer, fingerprint: "missing app"]
+        return [success: false, error: "Unexpected response shape: the page names no app.", appId: appIdStr as Integer, fingerprint: "missing app"]
     }
     if (!(parsed.configPage instanceof Map)) {
-        return [success: false, error: "Unexpected response shape: missing 'configPage' object. Firmware may have changed the endpoint contract.", appId: appIdStr as Integer, fingerprint: "missing configPage"]
+        return [success: false, error: "Unexpected response shape: the page has no configPage.", appId: appIdStr as Integer, fingerprint: "missing configPage"]
     }
     if (!(parsed.configPage.sections instanceof List)) {
-        return [success: false, error: "Unexpected response shape: configPage.sections is not a list. This page may be a dynamic redirect or action-only page (common in HPM multi-step flows). Try another page from the page.hrefs of the app's default page (hub_get_app_config without pageName).", appId: appIdStr as Integer, fingerprint: "sections not a list"]
+        return [success: false, error: "This page has no sections to read; read another page from page.hrefs of the app's default page.", appId: appIdStr as Integer, fingerprint: "sections not a list"] +
+            (parsed.configPage.error ? [configPageError: parsed.configPage.error] : [:])
     }
     def appTypeRaw = parsed.app.appType
-    def appTypeSummary = null
-    if (appTypeRaw instanceof Map) {
-        appTypeSummary = [
-            name: appTypeRaw.name,
-            namespace: appTypeRaw.namespace,
-            author: appTypeRaw.author,
-            category: appTypeRaw.category,
-            classLocation: appTypeRaw.classLocation,
-            deprecated: appTypeRaw.deprecated == true,
-            system: appTypeRaw.system == true,
-            menu: appTypeRaw.menu,
-            documentationLink: appTypeRaw.documentationLink
-        ]
-    }
     def appObj = [
         id: parsed.app.id,
         label: stripAppConfigHtml(parsed.app.trueLabel ?: parsed.app.label),
         name: parsed.app.name,
-        appType: appTypeSummary,
+        appType: appTypeRaw instanceof Map ? [system: appTypeRaw.system == true, menu: appTypeRaw.menu] : null,
         disabled: parsed.app.disabled == true,
         parentAppId: parsed.app.parentAppId,
         installed: parsed.app.installed == true
     ]
     def redactedPw = _appConfigRedactedMarker()
     def passwordInputNames = [] as Set
-    def disabledActions = []
     boolean isRmRule = _rmIsRuleAppType((appTypeRaw instanceof Map ? appTypeRaw.name : null)?.toString()) ||
         _rmIsRuleAppType(parsed.app.name?.toString())
     def sections = []
-    def modeInputs = []
     for (s in parsed.configPage.sections) {
         if (!(s instanceof Map)) continue
         def section = [
@@ -17705,44 +17597,23 @@ def toolGetAppConfig(args) {
             if (i.options) input.options = stripOptionsHtml(i.options)
             if (i.defaultValue != null && (i.defaultValue != true || i.type == "bool")) input.value = i.defaultValue
             else if (i.value != null && (i.value != true || i.type == "bool")) input.value = i.value
+            if (i.type == "mode" && parsed.settings instanceof Map && parsed.settings.containsKey(i.name)) input.value = parsed.settings[i.name]
             if (i.type == "password" && i.name) passwordInputNames << i.name.toString()
             if (input.containsKey("value") && _appConfigIsSecretSetting(i.name, i.type, input.value)) input.value = redactedPw
             else if (input.containsKey("value") && settings.redactAccessTokens == true && input.value instanceof CharSequence &&
                      i.name?.toString() ==~ /(?i)access_?token/) input.value = _accessTokenRedactedMarker()
-            if (i.type == "mode") {
-                def rawModes = (parsed.settings instanceof Map) ? parsed.settings[i.name] : null
-                def modes = null
-                if (rawModes instanceof List) modes = rawModes.collect { it?.toString() }.findAll { it }
-                else if (rawModes != null) modes = rawModes.toString().split(",").collect { it.trim() }.findAll { it }
-                modeInputs << [name: input.name, modes: modes, section: section.title]
-            }
             section.inputs << input
         }
         def paragraphs = []
-        def embeddedActions = []
         for (b in (s.body ?: [])) {
             if (!(b instanceof Map)) continue
             def rawHtml = (b.description ?: b.title)?.toString()
-            def marked = isRmRule ? _rmMarkDisabledActions(rawHtml) : [html: rawHtml, disabled: []]
-            def text = stripAppConfigHtml(marked.html)
-            if (text && text != "Click to set") paragraphs << text
-            def disabledRows = []
-            if (rawHtml) {
-                def acts = _extractEmbeddedActions(rawHtml, isRmRule, disabledRows)
-                if (acts) embeddedActions.addAll(acts)
-            }
-            for (t in marked.disabled) {
-                def entry = [text: t]
-                def row = disabledRows.find { it.text == t }
-                if (row) {
-                    disabledRows.remove(row)
-                    if (row.disableButton) entry.disableButton = row.disableButton
-                }
-                disabledActions << entry
-            }
+            def text = stripAppConfigHtml(rawHtml)
+            if (!text || text == "Click to set") continue
+            boolean disabled = isRmRule && (rawHtml =~ /(?i)<span\s+style=['"]\s*color:\s*red;?\s*['"]\s*>\s*<i>/).find()
+            paragraphs << (disabled ? [text: text, disabled: true] : text)
         }
         if (paragraphs) section.paragraphs = paragraphs
-        if (embeddedActions) section.embeddedActions = embeddedActions
         sections << section
     }
     def children = []
@@ -17763,15 +17634,17 @@ def toolGetAppConfig(args) {
         childApps: children,
         endpoint: path
     ]
-    if (modeInputs) {
-        result.modeInputs = modeInputs
-        result.modeInputsNote = "Framework-standard mode input(s) (type='mode') on this page. Semantics are app-specific -- a 'only run during these modes' restriction OR per-mode overrides -- read the input titles/settings to interpret; `modes` is the configured list. Per-page only; absence does NOT mean the app ignores mode: some built-ins gate via mode-ID settings, not a type='mode' input (e.g. Room Lights). See hub_get_tool_guide(section='builtin_app_tools_apps') for the per-built-in key reference."
-    }
+    if (parsed.configPage.error) result.configPageError = parsed.configPage.error
     def pageHrefs = _rmPageHrefs(parsed.configPage as Map)
     if (pageHrefs) result.page.hrefs = pageHrefs
-    if (disabledActions) {
-        result.disabledActions = disabledActions
-        result.disabledActionsNote = "These Rule Machine actions are DISABLED and do not run: marked ${_rmDisabledActionMark().trim()} in paragraphs, and on a pageName=selectActions (Rule-5.1) or selectActionsX (Button Rule-5.1) read also disabled:true on the row in embeddedActions, whose disable<N> button reads 'Enable Action'. disableButton names that button (N is the action index, not the row position). The button is a TOGGLE: read selectActions/selectActionsX first, click only when the row's state differs from the target, re-read to confirm, and never retry a click whose response was lost.".toString()
+    if (pageName && parsed.configPage.name != null && parsed.configPage.name.toString() != pageName) {
+        String formTool = isRmRule ? "hub_set_rule" : "hub_set_native_app"
+        result.pageNote = "The hub rendered '${parsed.configPage.name}' instead of '${pageName}'; this app reaches that page only through its own link: open it with ${formTool}(operation:'form') and activate the href.".toString()
+    }
+    try {
+        result.controls = _nfPublic(_nfContext(appIdStr as Long, parsed as Map), []).controls
+    } catch (IllegalStateException unreadable) {
+        result.controlsError = unreadable.message
     }
     int settingsCount = (parsed.settings instanceof Map) ? parsed.settings.size() : 0
     result.settingsKeyCount = settingsCount
@@ -17802,7 +17675,7 @@ def toolGetAppConfig(args) {
             }
         }
     } else if (settingsCount > 0) {
-        result.settingsNote = "Raw settings omitted -- pass includeSettings=true to include. Large apps (Room Lighting, RM 5.1) may have 500-1000 keys with app-specific encoding (e.g. \"dm~<deviceId>~<scene>\" for Room Lighting dim presets) that is non-trivial to decode without app-specific knowledge."
+        result.settingsNote = "Raw settings omitted; pass includeSettings=true to include them."
     }
     return result
 }
@@ -19864,7 +19737,7 @@ A transport drop can lose the response while the hub still commits this write; v
         ],
         [
             name: "hub_get_app_config",
-            description: """Read an installed classic app's page as the Hubitat UI renders it: the app's identity, the page's sections with each input's current value, and its child apps. The pages it links to are listed in page.hrefs; read one by passing its page as pageName, starting from the default page. Secret values are redacted. Get appId from hub_list_apps (scope='instances') or hub_list_rules.""",
+            description: """Read an installed classic app's page as the Hubitat UI renders it: the app's identity, the page's sections with each input's current value, and its child apps. The pages it links to are listed in page.hrefs. controls lists the page's buttons and links with the control_id that hub_set_native_app or hub_set_rule(operation:'form') activates, and pageNote says when the hub rendered another page than pageName. Secret values are redacted.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -27223,7 +27096,7 @@ The context expires after five minutes or an app reload and keeps no field value
 private String _nfEncode(Object value) { java.net.URLEncoder.encode(value == null ? '' : value.toString(), 'UTF-8') }
 private String _nfBody(Map values) { values.collect { key, value -> "${_nfEncode(key)}=${_nfEncode(value)}" }.join('&') }
 private boolean _nfTrue(Object value) { value == true || value == 'true' }
-private String _nfText(Object value) { _nfEntities(value?.toString()?.replaceAll(/(?s)<[^>]*>/, '') ?: '') }
+private String _nfText(Object value) { _nfEntities(value?.toString()?.replaceAll(/(?s)<\/?[A-Za-z!][^>]*>/, '') ?: '') }
 private String _nfEntities(String value) {
     value.replace('&quot;', '"').replace('&#39;', "'").replace('&apos;', "'").replace('&lt;', '<').replace('&gt;', '>').replace('&nbsp;', ' ').replace('&amp;', '&')
 }
@@ -31462,7 +31335,7 @@ def getGatewayConfig() {
                 hub_list_backups: "List backups. scope=source (code) | hub_local | hub_cloud | hub | all (hub scopes also return the automatic-backup schedule and network-share settings). Args: scope?, cursor?",
                 hub_get_backup: "Get source from a backup. Args: backupKey",
                 hub_list_device_dependents: "List all apps that reference a device (Room Lighting, Rule Machine, Groups, etc.). Args: deviceId",
-                hub_get_app_config: "Read an installed app's configuration page (sections, inputs, current values) and the pages it links to (page.hrefs). Works for Rule Machine, Room Lighting, Basic Rules, HPM, etc. Args: appId, pageName?, includeSettings?, summary?",
+                hub_get_app_config: "Read an installed app's configuration page (sections, inputs, current values), its form controls and the pages it links to (page.hrefs). Works for Rule Machine, Room Lighting, Basic Rules, HPM, etc. Args: appId, pageName?, includeSettings?, summary?",
                 hub_list_hpm_packages: "List all HPM-tracked packages (name, version, beta flag, apps, drivers, files). includeDrift=true surfaces missing-required/orphan components. Args: hpmAppId?, includeDrift?, packageFilter?"
             ],
             searchHints: [
@@ -31474,7 +31347,7 @@ def getGatewayConfig() {
                 hub_list_backups: "list show backups code source whole hub database local cloud full backup restore points schedule frequency automatic daily time when backups run network share smb nas",
                 hub_get_backup: "view read saved previous version revision",
                 hub_list_device_dependents: "which apps use device reference inUseBy appsUsing dependencies affected by",
-                hub_get_app_config: "read inspect app configuration page settings inputs values rule machine room lighting hpm mode manager page names sub-pages pageName multi-page navigation discover hrefs",
+                hub_get_app_config: "read inspect app configuration page settings inputs values rule machine room lighting hpm mode manager page names sub-pages pageName multi-page navigation discover hrefs buttons controls disabled actions",
                 hub_list_hpm_packages: "package manager HPM tracked installed manifest version inventory community apps drivers drift orphan missing required"
             ]
         ],
@@ -36323,21 +36196,22 @@ A single tool can also be switched off under **Advanced: Per-tool Overrides**. A
 - **hub_list_device_dependents** — check it before deleting, disabling or replacing a device. `appsUsing` rows carry id, name (the app type), label, trueLabel and disabled.
 - **hub_get_app_config** renders one page as opening it in the UI does, which runs the app's page code.
   - The pages a page links to are in `page.hrefs` as `{page, title}`; a sub-page's own links are in its `page.hrefs` (Room Lighting's optionsOnPage is linked from onMeansPage). A linked page's inputs are not in `sections`: read them with `pageName`.
-  - `embeddedActions` are buttons a page's paragraphs carry. Press one only through the control IDs that hub_set_rule(operation='form') (Rule Machine) or hub_set_native_app(operation='form') returns.
-  - A Rule Machine action disabled in the UI is prefixed `[DISABLED]` in paragraphs, listed in `disabledActions` (`{text, disableButton}`), and marked `disabled: true` on its selectActions (Button Rule: selectActionsX) row in embeddedActions. The button toggles: never replay a click whose response was lost. hub_set_app_disabled disables the whole app.
+  - `controls` are the page's buttons and links as hub_set_rule(operation='form') (Rule Machine) or hub_set_native_app(operation='form') returns them; activate one there by its control_id after opening the same page.
+  - On a Rule Machine rule a paragraph holding a disabled action or trigger reads `{text, disabled: true}`. On selectActions (Button Rule: selectActionsX) a disabled action's `disable<N>` control reads 'Enable Action', and the control named `<N>.0.<bool>` carries that action's text; N is the action index, not the row position. The button toggles: never replay a click whose response was lost. hub_set_app_disabled disables the whole app.
+  - `pageNote` appears when the hub rendered another page than `pageName`: the app reaches that page only through its link, so open it in a form workflow.
   - `appType.system` and `appType.menu` are the fields hub_list_apps(scope='types') gives for every type at once.
   - `includeSettings=true` adds the raw settings map: 500-1000 app-encoded keys on large apps (Room Lighting stores per-device scene levels as `dm~<deviceId>~<scene>`). Secrets read `***redacted (password)***`: every setting the hub types as a password, on any page, and free-text settings with credential-shaped names (password, pass, secret, token, API key, credential, ...). OAuth accessToken settings follow the Hide access tokens setting. Page inputs are redacted the same way. When the setting types cannot be read the map is withheld and `settingsNote` says why.
-  - **modeInputs** lists the page's framework mode inputs (type="mode") as {name, modes, section}. Their meaning is app-specific: an "only during these modes" restriction, or per-mode overrides (Day Lights has ten, for per-mode levels, gated by `useModeOverrides`). They are found only on the page read, often a sub-page, and not for apps that gate on mode in their own settings or code, so their absence does not mean an app ignores mode.
+  - A type='mode' input's `value` is its stored setting. Day Lights uses ten of them for per-mode levels, gated by `useModeOverrides`; most apps use one as an "only during these modes" restriction.
   - **Mode gating in the built-in apps.** The hub has no "modes in use by" list, so read each app; resolve mode IDs with hub_list_modes.
-    - **Notifier** — `modes` (mode names) on `moreOptions`; restricts.
+    - **Notifier** — `modes` (mode ids) on `moreOptions`; restricts.
     - **Motion Lighting** — `onModes` / `offModes` (names) on `onOptions` / `offOptions`, gated by `useModes`: the modes in which turning on or off is disabled.
-    - **Room Lights** — `modes` holds mode IDs (e.g. ["1","2","3","5"]) with `schedTypeL:"Hub Modes"`: per-mode settings, not a type='mode' input, so not in modeInputs.
-    - **Thermostat Scheduler** — `modesR` (names, `moreOptions`) restricts; `schedTypeL:"Hub Modes"` on the main page selects per-mode settings. modeInputs catches only `modesR`.
+    - **Room Lights** — `modes` holds mode IDs (e.g. ["1","2","3","5"]) with `schedTypeL:"Hub Modes"`: per-mode settings, not a type='mode' input.
+    - **Thermostat Scheduler** — `modesR` (names, `moreOptions`) restricts; `schedTypeL:"Hub Modes"` on the main page selects per-mode settings. Only `modesR` is a type='mode' input.
     - **Simple Automation Rules** — `modes` (names); restricts.
     - **Button Controller** — no app-level mode key; each child Button Rule uses Rule Machine Mode conditions.
-    - **Basic Rules** — `trigCapab:"System Mode"` with `mode` (names, titled "Becomes") is a trigger, not a restriction, although modeInputs lists it. "Set mode" is one of its actions.
+    - **Basic Rules** — `trigCapab:"System Mode"` with `mode` (names, titled "Becomes") is a trigger, not a restriction, although it is a type='mode' input. "Set mode" is one of its actions.
     - **Rule Machine** — mode restrictions and Mode conditions, read with the rule tools.
-    Community apps show type='mode' inputs in modeInputs; otherwise only their source tells.
+    For a community app, read its type='mode' inputs or its source.
 
 ### hub_list_hpm_packages — HPM package state introspection (in hub_read_apps_code; Read master required)
 
