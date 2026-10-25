@@ -485,10 +485,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "_rmSubmitMainPageDone commits on the selectActions page for Button Rule-5.1 (NOT mainPage)"() {
         given:
         // Button Rule-5.1's root/commit page is named selectActions (playing
-        // mainPage's role). The trailing Done must GET + POST selectActions; a
-        // hardcoded mainPage logs "Cannot find page 'mainPage'" and the fetch
-        // returns done:false. Only /selectActions is registered here, so a
-        // mainPage fetch would miss and the assertions below would fail.
+        // mainPage's role). The trailing Done renders the root page once and
+        // posts the Done to the page it names; a hardcoded mainPage would miss.
         def fetched = []
         hubGet.register('/installedapp/configure/json/710') { params ->
             fetched << "root"
@@ -514,8 +512,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         when:
         def r = script._rmSubmitMainPageDone(710)
 
-        then: "the commit page (selectActions), not mainPage, is fetched and posted -- and the Done succeeds"
-        fetched.contains("selectActions")
+        then: "the root render names the commit page (selectActions), which is posted -- and the Done succeeds"
+        fetched == ["root"]
         def done = posts.find { it.path == "/installedapp/update/json" }
         done != null
         done.body.currentPage == "selectActions"

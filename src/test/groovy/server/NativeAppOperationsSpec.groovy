@@ -1114,7 +1114,8 @@ class NativeAppOperationsSpec extends ToolSpecBase {
     def 'a rule control that opens no new Button Rule is a partial failure with its recovery backup: #label'() {
         given:
         controller()
-        script.metaClass._nfBackup = { Long id, Object nativeApp, String page -> [backupKey: 'k1'] }
+        settingsMap.backupBeforeRuleEdits = true
+        script.metaClass._rmBackupBeforeEdit = { Integer id, String reason, String page = null -> [backupKey: 'k1'] }
         if (other != null) apps[other.id] = other
         pages['/installedapp/configure/json/60'] = controllerPage([setButton('1 pushed'), addButton()])
         replies['/installedapp/update/json'] = [other == null ? controllerPage([]) : openedRule(other.id)]

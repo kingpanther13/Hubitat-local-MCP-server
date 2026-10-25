@@ -3093,7 +3093,8 @@ private Map _naReadBack(Long id, Map page, Map written) {
 private String _naRemoveUnfinished(Long id) {
     String failure = null
     try {
-        _requireUnprotectedAppDeletion(id.toInteger())
+        // The child is new under a parent this create already checked, so the policy list is the whole check.
+        _requireUnprotectedAppMutation(id, 'delete')
         _rmForceDeleteApp(id.toInteger())
         // The force delete counts any answer below 400 as success, a missing one included.
         if (getAppByAppId(id) != null) failure = 'the app still exists after its force delete'
