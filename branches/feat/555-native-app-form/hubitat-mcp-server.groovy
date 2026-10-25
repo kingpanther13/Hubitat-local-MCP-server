@@ -17678,7 +17678,7 @@ def toolGetAppConfig(args) {
         parentAppId: parsed.app.parentAppId,
         installed: parsed.app.installed == true
     ]
-    def redactedPw = "***redacted (password)***"
+    def redactedPw = _appConfigRedactedMarker()
     def passwordInputNames = [] as Set
     def disabledActions = []
     boolean isRmRule = _rmIsRuleAppType((appTypeRaw instanceof Map ? appTypeRaw.name : null)?.toString()) ||
@@ -17705,10 +17705,10 @@ def toolGetAppConfig(args) {
             if (i.options) input.options = stripOptionsHtml(i.options)
             if (i.defaultValue != null && (i.defaultValue != true || i.type == "bool")) input.value = i.defaultValue
             else if (i.value != null && (i.value != true || i.type == "bool")) input.value = i.value
-            if (i.type == "password") {
-                if (i.name) passwordInputNames << i.name.toString()
-                if (input.containsKey("value")) input.value = redactedPw
-            }
+            if (i.type == "password" && i.name) passwordInputNames << i.name.toString()
+            if (input.containsKey("value") && _appConfigIsSecretSetting(i.name, i.type, input.value)) input.value = redactedPw
+            else if (input.containsKey("value") && settings.redactAccessTokens == true && input.value instanceof CharSequence &&
+                     i.name?.toString() ==~ /(?i)access_?token/) input.value = _accessTokenRedactedMarker()
             if (i.type == "mode") {
                 def rawModes = (parsed.settings instanceof Map) ? parsed.settings[i.name] : null
                 def modes = null
@@ -17777,16 +17777,87 @@ def toolGetAppConfig(args) {
     result.settingsKeyCount = settingsCount
     if (includeSettings) {
         def rawSettings = (parsed.settings instanceof Map) ? parsed.settings : [:]
-        result.settings = passwordInputNames ? rawSettings.collectEntries { k, v ->
-            [(k): (passwordInputNames.contains(k?.toString()) ? redactedPw : v)]
-        } : rawSettings
-        if (rawSettings) {
-            result.settingsRedactionNote = "Password-type values are redacted using this page's inputs. For a multi-page app, password values defined on OTHER pages are not detectable from this fetch and may appear here unredacted -- redaction is page-scoped (see hub_list_app_pages)."
+        if (!rawSettings) {
+            result.settings = rawSettings
+        } else {
+            Map settingTypes = _appConfigSettingTypes(appIdStr as Integer)
+            if (settingTypes == null) {
+                result.settingsNote = "Raw settings withheld: the app's setting types could not be read from /installedapp/statusJson/${appIdStr}, so password values could not be identified for redaction. Retry; the config page above is unaffected.".toString()
+            } else {
+                def redacted = [:]
+                rawSettings.each { k, v ->
+                    String key = k?.toString()
+                    String type = passwordInputNames.contains(key) ? "password" : settingTypes.get(key)
+                    redacted.put(k, _appConfigIsSecretSetting(key, type, v) ? redactedPw : v)
+                }
+                result.settings = redacted
+                result.settingsRedactionNote = "Secret values read ${redactedPw}: every setting the hub types as a password, on any page of the app, plus free-text settings whose names look like credentials (password, passwd, pwd, pass, passphrase, passcode, secret, token, API/access/private key, credential, psk). OAuth accessToken settings follow the Hide access tokens setting instead. Empty values are shown as-is. The secret itself is never returned; read or change it in the Hubitat UI.".toString()
+            }
         }
     } else if (settingsCount > 0) {
         result.settingsNote = "Raw settings omitted -- pass includeSettings=true to include. Large apps (Room Lighting, RM 5.1) may have 500-1000 keys with app-specific encoding (e.g. \"dm~<deviceId>~<scene>\" for Room Lighting dim presets) that is non-trivial to decode without app-specific knowledge."
     }
     return result
+}
+private String _appConfigRedactedMarker() { return "***redacted (password)***" }
+private Map _appConfigSettingTypes(Integer appId) {
+    def status
+    try {
+        status = _rmFetchStatusJson(appId)
+    } catch (Exception e) {
+        mcpLog("warn", "hub-admin", "hub_get_app_config: statusJson read for app ${appId} failed (${e.message}); raw settings withheld")
+        return null
+    }
+    if (!(status?.appSettings instanceof List)) {
+        mcpLog("warn", "hub-admin", "hub_get_app_config: statusJson for app ${appId} carried no appSettings list; raw settings withheld")
+        return null
+    }
+    Map types = [:]
+    for (rec in (status.appSettings as List)) {
+        if (rec instanceof Map && rec.name != null) types.put(rec.name.toString(), rec.type?.toString())
+    }
+    return types
+}
+private boolean _appConfigIsSecretSetting(name, type, value) {
+    if (value == null) return false
+    if (value instanceof CharSequence && value.toString().isEmpty()) return false
+    if ((value instanceof Collection || value instanceof Map) && value.isEmpty()) return false
+    String t = type?.toString()
+    if (t == "password") return true
+    if (value instanceof Boolean) return false
+    if (t && (t in ["bool", "boolean", "enum", "mode", "time", "date", "button", "href", "hub", "icon", "color"] ||
+              t.startsWith("capability") || t.startsWith("device"))) return false
+    return _appConfigSecretName(name)
+}
+private boolean _appConfigSecretName(name) {
+    String raw = name?.toString()
+    if (!raw) return false
+    if (raw ==~ /(?i)access_?token/) return false
+    String lower = raw.toLowerCase()
+    if (!(lower.contains("pass") || lower.contains("pwd") || lower.contains("secret") || lower.contains("token") ||
+          lower.contains("key") || lower.contains("credential") || lower.contains("psk"))) return false
+    String spaced = raw.replaceAll(/([a-z0-9])([A-Z])/, '$1 $2').replaceAll(/([A-Z]+)([A-Z][a-z])/, '$1 $2')
+    List words = spaced.toLowerCase().split(/[^a-z]+/).findAll { part -> part }
+    Set metadata = ["count", "counter", "cnt", "expiry", "expires", "expire", "expired", "expiration", "time",
+                    "timestamp", "date", "length", "len", "type", "enabled", "enable", "set", "required", "url",
+                    "uri", "endpoint", "timeout", "interval", "mode", "policy", "hint", "label", "name"] as Set
+    Set keyQualifiers = ["api", "access", "private", "auth", "client", "secret", "encryption", "signing", "shared"] as Set
+    for (int idx = 0; idx < words.size(); idx++) {
+        String w = words[idx]
+        String prev = idx > 0 ? words[idx - 1] : null
+        String next = idx + 1 < words.size() ? words[idx + 1] : null
+        boolean hit = w.contains("password") || w.contains("passwd") || w.contains("passphrase") ||
+            w.contains("passcode") || w.contains("pwd") || w.contains("apikey") || w.contains("privatekey") ||
+            w.contains("accesskey") || (w.contains("secret") && !w.startsWith("secretar")) ||
+            w.endsWith("token") || w.endsWith("tokens") || w.startsWith("credential") || w == "psk" ||
+            (w == "pass" && prev != "by" && (next == null || next in ["word", "phrase", "code", "key"])) ||
+            (keyQualifiers.contains(w) && (next == "key" || next == "keys"))
+        if (!hit) continue
+        String after = (next == "key" || next == "keys") && keyQualifiers.contains(w) ? (idx + 2 < words.size() ? words[idx + 2] : null) : next
+        if (after != null && metadata.contains(after)) continue
+        return true
+    }
+    return false
 }
 def toolListAppPages(args) {
     if (args?.appId == null || args.appId.toString().trim() == "") {
@@ -31234,8 +31305,9 @@ private def _renderToolResult(id, toolName, reactiveToolName, args, result, bool
     }
     return [__preserialized: candidateJson]
 }
+private String _accessTokenRedactedMarker() { return "***redacted (access token)***" }
 private def _redactAccessTokens(value) {
-    String marker = "***redacted (access token)***"
+    String marker = _accessTokenRedactedMarker()
     if (value instanceof Map) {
         return value.collectEntries { k, v ->
             if (k?.toString() == "clientTokens" && v instanceof Map) {
@@ -36379,7 +36451,7 @@ A single tool can also be switched off under **Advanced: Per-tool Overrides**. A
     Community (non-built-in) apps are case-by-case: type='mode' inputs surface via modeInputs when used; otherwise reading the app source is the only signal.
   - summary=true is a fast identity-only mode: the hub's thin app record (id, name, type, disabled, user) with no config-page render -- use it for existence/identity checks on expensive apps
   - Multi-page apps expose sub-pages via pageName. Native editor navigation and supported controls use hub_set_rule(operation='form') for Rule Machine and hub_set_native_app(operation='form') for other apps; rendering can mutate app state.
-  - includeSettings=true adds the raw internal settings map (large apps: 500-1000 keys with app-specific encoding)
+  - includeSettings=true adds the raw internal settings map (large apps: 500-1000 keys with app-specific encoding). Secret values in it read `***redacted (password)***`: every setting the hub types as a password, on any page of the app, plus free-text settings with credential-shaped names (password, pass, secret, token, API key, credential, ...); OAuth accessToken settings follow the redactAccessTokens setting instead. Page input values are redacted the same way. If the app's setting types cannot be read, the map is withheld (settingsNote says so) rather than returned partly redacted
   - Workflow: hub_list_apps (scope='instances'; or hub_list_rules for RM rules specifically -- note that hub_get_custom_rule handles only MCP-native rules, not Hubitat's built-in Rule Machine) to find appId, then hub_get_app_config to inspect. For multi-page apps, consider hub_list_app_pages first.
 
 - **hub_list_app_pages** — discover what pageNames a given app accepts (Read master required)
