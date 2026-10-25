@@ -1222,6 +1222,36 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         'differing' | [2]    | false
     }
 
+    @Unroll
+    def 'an update whose mode write puts back an older label posts the label again on its own: #label'() {
+        given:
+        existing(75L, 'Group-2.1')
+        Map opts = [defaultFields: true, modeMap: ['1': 'Day', '2': 'Night']]
+        Map stale = page(75L, [], opts + [label: 'Old G'])
+        Map kept = page(75L, [], opts + [label: 'G'])
+        [stale, kept].each { it.app.restrictedModes = [1] }
+        pages['/installedapp/configure/json/75'] = [page(75L, [], opts + [label: 'G']), stale] + (restored ? [kept] : [stale])
+
+        when:
+        def result = update(75L, [fields: ['mode[mode]': ['1']]])
+
+        then:
+        result.success == restored
+        posts.size() == (restored ? 2 : 3)
+        posts[0].body['mode[mode]'] == '["1"]'
+        posts.drop(1).every { it.body.label == 'G' && it.body._action_update == 'Done' && !it.body.containsKey('mode[mode]') }
+        result.fields_applied == ['mode[mode]']
+        result.label_restored == (restored ? true : null)
+        result.fields_not_landed == (restored ? null : ['label'])
+        restored ? result.note.contains("put back an older label, so the label was posted again on its own") :
+            result.error == "The hub's mode write put back the label 'Old G', and posting 'G' again on its own did not change it."
+
+        where:
+        label         | restored
+        'restored'    | true
+        'not landing' | false
+    }
+
     def 'a button rule while another form operation holds the controller is refused before any read'() {
         given:
         controller()

@@ -162,7 +162,12 @@ Supporting files:
   Posted alone it is stored at once, with or without a Done. The partial posts
   `label` with every `mode[mode]`; a `mode[mode]` posted without it can leave the
   app showing the label it had before the last rename, so the form engine posts
-  the current label with a mode write.
+  the current label with a mode write. Even then the save of a `mode[mode]` can
+  store an older label: on one hub, a rename followed by a mode write left the
+  previous label in 4 of 8 tries, while the label posted alone landed 8 of 8. So
+  after a mode write on these fields the form engine reads the label the hub
+  renders and, when it is not the one posted, posts `label` alone with the Done
+  (at most twice) and reports `label_restored`.
 - **No `image` element.** Apps have no `image()` method (a page calling it errors
   with "No signature of method ... image()"); main.js draws images only as an
   `href`'s `image:` option.

@@ -6401,7 +6401,8 @@ def updated() {}
         # A wizard page that names both a next and a done page offers its Done as _action_done, which
         # the hub answers by saving the page and rendering it again. An app whose preferences hold no
         # pages shows the hub's own name and mode fields; update renames the app and restricts its
-        # modes through them. A label posted with mode[mode] is stored one save late, which the update reports.
+        # modes through them. The hub's save of a mode write can keep an older label, so the update posts the label
+        # again on its own when the hub put one back.
         codes: list = []
         instances: list = []
         try:
@@ -6451,17 +6452,16 @@ def updated() {}
             mode_id = modes["options"][0]["value"]
             restrict = self._native_app("update", {"fields": {"mode[mode]": [mode_id]}}, defaults)
             assert restrict.get("success") is True, f"restricting the modes failed: {restrict}"
+            assert restrict.get("label_restored") in (None, True), f"label_restored is either absent or true: {restrict}"
             form = self._native_app_form(defaults, {"kind": "open"})
             assert self._native_app_field(form, "label").get("value") == renamed, f"the rename did not hold: {form['fields']}"
             assert self._native_app_field(form, "mode[mode]").get("value") == [mode_id], f"the mode restriction did not hold: {form['fields']}"
-            # Posted together, the modes land and the label does not; the update reports it, and the label alone then lands.
+            # The hub does not store a label posted together with mode[mode]; the update posts the label again
+            # on its own, so both land.
             together = "Deadman Test Target Form Defaults Together"
             both = self._native_app("update", {"fields": {"label": together, "mode[mode]": [mode_id]}}, defaults)
-            assert both.get("success") is False and both.get("fields_not_landed") == ["label"] \
-                and "mode[mode]" in (both.get("fields_applied") or []), \
-                f"a label posted with mode[mode] should be reported as not landed: {both}"
-            alone = self._native_app("update", {"fields": {"label": together}}, defaults)
-            assert alone.get("success") is True and alone.get("fields_applied") == ["label"], f"the label alone should land: {alone}"
+            assert both.get("success") is True and sorted(both.get("fields_applied") or []) == ["label", "mode[mode]"] \
+                and both.get("label_restored") in (None, True), f"a label posted with mode[mode] should land: {both}"
             form = self._native_app_form(defaults, {"kind": "open"})
             assert self._native_app_field(form, "label").get("value") == together, f"the second rename did not hold: {form['fields']}"
         finally:

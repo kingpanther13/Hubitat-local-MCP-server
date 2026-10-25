@@ -633,12 +633,15 @@ class NativeFormsSpec extends ToolSpecBase {
         modes.value == ['2']
         modes.options == [[value: '1', label: 'Day'], [value: '2', label: 'Night']]
         opened.unsupported.every { !it.contains('label') }
-        when:
+        when: 'the hub answers with the posted label, so nothing is posted again'
         calls.clear()
+        model.app.label = 'Back porch'
         def saved = submit([label: 'Back <b>porch</b>', 'mode[mode]': ['1', '2']])
         def body = calls.find { it.path == '/installedapp/update/json' }.body
         then:
         saved.success
+        calls.count { it.path == '/installedapp/update/json' } == 1
+        !saved.containsKey('label_restored')
         body.label == 'Back porch'
         body['mode[mode]'] == '["1","2"]'
         body['mode[mode].multiple'] == 'true'
@@ -680,6 +683,71 @@ class NativeFormsSpec extends ToolSpecBase {
         label.success
         labelBody.label == 'Back porch'
         !labelBody.keySet().any { it.startsWith('mode[mode]') }
+    }
+
+    private Map renderedWithLabel(String label, int version) {
+        Map copy = new groovy.json.JsonSlurper().parseText(JsonOutput.toJson(model)) as Map
+        copy.app.label = label
+        copy.app.version = version
+        [status: 200, data: JsonOutput.toJson(copy)]
+    }
+
+    def 'a mode write whose answer renders an older label posts the label once more on its own and reports label_restored'() {
+        given:
+        model.defaultFields = true
+        model.modeMap = ['1': 'Day', '2': 'Night']
+        model.app.label = 'Porch'
+        assert open().success
+        calls.clear()
+        replies << renderedWithLabel('Old porch', 5)
+        when:
+        def result = submit(['mode[mode]': ['1']])
+        def posts = calls.findAll { it.path == '/installedapp/update/json' }
+        then:
+        result.success
+        result.label_restored == true
+        result.note == "The hub's mode write put back an older label, so the label was posted again on its own."
+        posts.size() == 2
+        posts[0].body['mode[mode]'] == '["1"]'
+        posts[0].body.label == 'Porch'
+        posts[1].body.label == 'Porch'
+        posts[1].body._action_update == 'Done'
+        posts[1].body.version == '5'
+        !posts[1].body.keySet().any { it.startsWith('mode[mode]') }
+        result.fields.find { it.name == 'label' }.value == 'Porch'
+    }
+
+    def 'a mode write whose answer renders the posted label posts nothing more'() {
+        given:
+        model.defaultFields = true
+        model.modeMap = ['1': 'Day']
+        model.app.label = 'Porch'
+        assert open().success
+        calls.clear()
+        when:
+        def result = submit(['mode[mode]': ['1']])
+        then:
+        result.success
+        !result.containsKey('label_restored')
+        calls*.path == ['/installedapp/update/json']
+    }
+
+    def 'a label the hub keeps putting back after both re-posts is reported not landed with both labels'() {
+        given:
+        model.defaultFields = true
+        model.modeMap = ['1': 'Day']
+        model.app.label = 'Porch'
+        assert open().success
+        calls.clear()
+        3.times { replies << renderedWithLabel('Old porch', 5) }
+        when:
+        def result = submit(['mode[mode]': ['1']])
+        then:
+        !result.success
+        result.fields_not_landed == ['label']
+        !result.containsKey('label_restored')
+        result.error == "The hub's mode write put back the label 'Old porch', and posting 'Porch' again on its own did not change it."
+        calls.count { it.path == '/installedapp/update/json' } == 3
     }
 
     def 'the label field reads trueLabel, the label without the HTML an app decorates it with'() {

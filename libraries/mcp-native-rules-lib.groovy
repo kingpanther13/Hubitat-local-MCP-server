@@ -3024,6 +3024,7 @@ private String _naDone(Map context) { ['_action_update|Done|', '_action_previous
 private Map _naSave(Long id, Map context, Map supplied, String from, boolean existing) {
     List posted = []
     List rejected = []
+    Map label = [:]
     Map page = context
     Map pending = supplied
     boolean changed = false
@@ -3031,6 +3032,7 @@ private Map _naSave(Long id, Map context, Map supplied, String from, boolean exi
     if (_naDone(context) && revealing) {
         Map change = _nfPrepare(id, page, pending, null, 'hub_set_native_app')
         Map answer = _nfExecute(id, change)
+        label = answer.findAll { k, v -> k in ['label_restored', 'label_lost'] }
         changed = true
         posted.addAll(change.defaults)
         rejected.addAll(change.rejected)
@@ -3047,8 +3049,22 @@ private Map _naSave(Long id, Map context, Map supplied, String from, boolean exi
     }
     Map answer = (pending || done) ? _nfExecute(id, plan) : null
     if (answer?.posted) { posted.addAll(plan.defaults); rejected.addAll(plan.rejected) }
+    if (answer?.label_restored || answer?.label_lost) label = answer.findAll { k, v -> k in ['label_restored', 'label_lost'] }
     [answer: answer, done: done, page: page.page.name?.toString(), committed: done == '_action_update|Done|' && answer?.model?.location != null,
-     wrote: changed || answer?.posted == true, posted: posted, rejected: rejected]
+     wrote: changed || answer?.posted == true, posted: posted, rejected: rejected] + label
+}
+
+// Folds the label repair of a mode write into a create or update result.
+private void _naLabelResult(Map result, Map saved, List notes) {
+    if (saved.label_restored) {
+        result.label_restored = true
+        notes << _nfLabelRestoredNote()
+    }
+    if (!saved.label_lost) return
+    result.success = false
+    result.fields_not_landed = ((result.fields_not_landed ?: []) + ['label']).unique()
+    result.fields_applied = result.fields_applied - ['label']
+    result.error = ([result.error, _nfLabelLostError(saved.label_lost)] - null).join(' ')
 }
 
 // A written value as the hub stores it: device ids, sorted lists, and the browser's text cleanup.
@@ -3238,6 +3254,7 @@ private Map _naCreate(Map args) {
             notes << "The hub did not store the value written for ${back.not_landed.join(', ')}; inspect the page with operation:'form' before retrying."
         }
         if (back.consumed) notes << _naConsumedNote(back.consumed)
+        _naLabelResult(result, saved, notes)
         if (back.model.app?.installed != true) {
             result.installed = false
             notes << (!saved.done ? 'Its page renders no Done yet, so the app stays uninstalled until operation:\'form\' completes it.' :
@@ -3410,6 +3427,7 @@ private Map _naUpdate(Long id, Map args) {
             result.fields_consumed = back.consumed
             notes << _naConsumedNote(back.consumed)
         }
+        _naLabelResult(result, saved, notes)
         if (refused) notes << 'fields_applied lists the fields the hub stored although it refused the Done.'
         else if (uncommitted) notes << uncommitted
         if (notes) result.note = notes.join(' ') + guide
