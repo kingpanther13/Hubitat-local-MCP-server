@@ -260,6 +260,54 @@ class NativeRuleExactRestoreSpec extends ToolSpecBase {
         !events.contains(['updateSetting', 'token'])
     }
 
+    private void redactToken() {
+        def source = new JsonSlurper().parseText(snapshot.nativeExport)
+        source.appData['42'].appSettings << [name: 'token', type: 'password', value: null]
+        snapshot.nativeExport = JsonOutput.toJson(source)
+        snapshot.redactedSettings = ['token']
+        child.typed.token = [type: 'password', value: 'live-secret', multiple: false]
+    }
+
+    // The final label check is the restore's last verification read, so a settings read after it is the password report's.
+    private void traceSettingsReads(boolean failAfterLabel) {
+        child.traceLabel = true
+        hubGet.register('/installedapp/settings/42') { q ->
+            if (failAfterLabel && events.contains('label')) throw new RuntimeException('settings read timed out')
+            events << 'settings'
+            JsonOutput.toJson([settings: child.typed.collect { name, row -> [name: name] + row }])
+        }
+    }
+
+    def 'a verified restore whose password read fails still succeeds and lists the password unverified'() {
+        given:
+        redactToken()
+        traceSettingsReads(true)
+        when:
+        def result = restore()
+        then:
+        result.success
+        result.restoredVia == 'nativeStateReplay'
+        result.settingsVerified
+        result.passwordsUnverified == ['token']
+        !result.containsKey('passwordsKept')
+        !result.containsKey('passwordsToReenter')
+        result.note.contains("could not be read to confirm them")
+        child.typed.token.value == 'live-secret'
+    }
+
+    def 'a restore of a snapshot without redacted settings makes no settings read for its password report'() {
+        given:
+        traceSettingsReads(false)
+        when:
+        def result = restore()
+        then:
+        result.success
+        events.contains('label')
+        !events.drop(events.lastIndexOf('label') + 1).contains('settings')
+        !result.containsKey('passwordsUnverified')
+        !result.containsKey('passwordsKept')
+    }
+
     def 'same ID restore recovers deleted records full payloads expressions order settings locals and unknown native configuration'() {
         given:
         nativeType = ruleType
@@ -544,11 +592,13 @@ class RestoreNativeChild {
     Map pending
     Closure rebuild
     String label = 'Edited'
+    boolean traceLabel
     boolean decorates
     String relabelTo
     List events
 
     RestoreNativeChild(List events) { this.events = events }
+    String getLabel() { if (traceLabel) events << 'label'; this.@label }
     Object getSetting(String name) { typed.get(name)?.value }
     Map selectTriggers() { rebuild.call(); [name: 'selectTriggers', sections: [[body: []]]] }
     Map selectActions(Map params) { events << 'selectActions'; [name: 'selectActions', sections: [[body: []]]] }

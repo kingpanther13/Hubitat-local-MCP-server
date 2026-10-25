@@ -95,7 +95,8 @@ class SnapshotPasswordRedactionSpec extends ToolSpecBase {
 
         then:
         def failure = thrown(IllegalStateException)
-        failure.message == "the app's settings could not be read, so no snapshot was taken; nothing was changed"
+        failure.message == "App 78: its settings could not be read (statusJson timed out), so no snapshot was taken; nothing was changed. " +
+            "Retry; or delete it from the hub's Apps page; or turn off pre-edit backups for edits."
         uploads.isEmpty()
     }
 

@@ -452,6 +452,29 @@ class NativeFormsSpec extends ToolSpecBase {
         calls*.path == ['/installedapp/createchild/hubitat/Example Child/parent/42']
     }
 
+    def 'a created child that is not the requested type fails the form and still reports its id'() {
+        given:
+        model.configPage.sections[0].input << [element: 'app', name: 'children', namespace: 'hubitat',
+                                               appName: 'Example Child', appId: 42, title: 'Create child']
+        def control = open().controls.find { it.kind == 'create_child' }
+        calls.clear()
+        script.metaClass.hubInternalGetRaw = { String path ->
+            calls << [path: path]
+            [status: 302, location: '/installedapp/configure/43']
+        }
+        script.metaClass.getAppByAppId = { Long id ->
+            [id: id, parentAppId: id == 43L ? 42 : null, disabled: false, appType: [namespace: 'hubitat', name: 'Other Child']]
+        }
+        when:
+        def result = submit([:], control.control_id)
+        then:
+        !result.success
+        result.partial
+        result.created_app_id == 43L
+        result.error == 'Created app 43 did not match the native parent and child type'
+        calls*.path == ['/installedapp/createchild/hubitat/Example Child/parent/42']
+    }
+
     def 'child creation refuses accompanying fields before the native request'() {
         given:
         model.configPage.sections[0].input << [element: 'app', name: 'children', namespace: 'hubitat',
@@ -585,6 +608,40 @@ class NativeFormsSpec extends ToolSpecBase {
         result.partial
         result.error.contains('Native form reported an error')
         calls*.path == ['/installedapp/update/json']
+    }
+
+    def 'engine failures carry the hub own error text, HTTP status and parse failure'() {
+        given:
+        assert open().success
+        replies << [status: 200, data: JsonOutput.toJson([status: 'success', app: [id: 42], configPage: [name: 'edit', error: 'Value out of range']])]
+        when:
+        def reported = submit([count: 1])
+        then:
+        !reported.success
+        reported.error == 'Native form reported an error: Value out of range; inspect the native editor and logs'
+        when:
+        assert open().success
+        replies << [status: 500, data: '']
+        def failed = submit([count: 1])
+        then:
+        failed.error == 'Native form request returned HTTP 500; inspect the app before retrying'
+        when:
+        assert open().success
+        replies << [status: 200, data: '<html>not json</html>']
+        def unreadable = submit([count: 1])
+        then:
+        unreadable.error.startsWith('Native form returned unreadable JSON (')
+        unreadable.error.endsWith('); inspect the app before retrying')
+    }
+
+    def 'an error the hub reports at the top level is carried too'() {
+        given:
+        assert open().success
+        replies << [status: 200, data: JsonOutput.toJson([status: 'success', errorMessage: 'Rule is busy'])]
+        when:
+        def result = submit([count: 1])
+        then:
+        result.error == 'Native form reported an error: Rule is busy; inspect the native editor and logs'
     }
 
     def 'transient context retains execution descriptors without field values messages or option labels'() {

@@ -7147,9 +7147,22 @@ def updated() {}
             before = self._rm_snapshot(app_id)
             error = self._rm_refuse(app_id, [native_log("appended"), native_delete("action", branch), native_log("x", id=branch)])
             assert "does not exist" in error, error
+            # One appended action leaves room for one unknown id: a second delete of the same row is refused.
+            twice = self._rm_refuse(app_id, [native_log("appended"), native_delete("action", ids[0]), native_delete("action", ids[0])])
+            assert "changes[2]" in twice and "does not exist" in twice, twice
             assert self._rm_snapshot(app_id) == before, "a refused edit changed the rule"
-            cleared = self._rm_update(app_id, [*[native_delete("action", i) for i in ids], native_delete("condition", condition)])
-            assert cleared["document"]["actions"] == [] and condition not in cleared["document"]["conditions"], cleared["document"]
+            assert ids[0] in {str(row["id"]) for row in self._native_rule_document(app_id)["actions"]}
+            # Retargeting the IF to a second condition frees the first, which deletes in the same batch.
+            added = self._rm_update(app_id, [self._rm_switch_condition(self._ensure_perm_fixture("switch_a"), "off")])
+            second = next(c for c in added["document"]["conditions"] if c != condition)
+            if_id = next(str(row["id"]) for row in added["document"]["actions"] if row["value"]["method"] == "getIfThen")
+            retargeted = self._rm_update(app_id, [native_change("action", type="condActs", subtype="getIfThen", fields=[],
+                                                                expression=[second], id=if_id),
+                                                  native_delete("condition", condition)])
+            assert retargeted.get("success") is True and condition not in retargeted["document"]["conditions"] \
+                and second in retargeted["document"]["conditions"], retargeted
+            cleared = self._rm_update(app_id, [*[native_delete("action", i) for i in ids], native_delete("condition", second)])
+            assert cleared["document"]["actions"] == [] and second not in cleared["document"]["conditions"], cleared["document"]
         finally:
             self._delete_native(app_id)
 
@@ -10817,10 +10830,20 @@ def updated() {}
         # (issue #431 item 3; the review-2 fix reads `modes` from the page JSON settings[name], not
         # the always-null defaultValue). A Notifier carries a `modes` type='mode' RESTRICT input on
         # its moreOptions sub-page; set it, then read it back and assert the list is the one written.
+        # A create its first page refuses removes the child it made and returns success:false.
         modes = self.client.call_tool("hub_list_modes").get("modes") or []
         assert len(modes) >= 1, "hub_list_modes returned no modes -- cannot set a mode restriction"
         # A mode input's options are the hub's mode ids, which is what its page posts.
         want = [str(m["id"]) for m in modes[:2]]
+
+        def notifiers() -> set[str]:
+            return {str(r.get("id")) for r in self._installed_app_rows() if r.get("type") == "Notifier"}
+
+        before = notifiers()
+        refused = self._native_app("create", {"app_type": "notifier", "fields": {"nope": 1}})
+        assert refused.get("success") is False and "removed" in str(refused.get("error")), refused
+        left = notifiers() - before
+        assert not left, f"a refused Notifier create left app(s) {sorted(left)} behind: {refused}"
 
         label = f"{PREFIX}NotifierModes"
         created = self._native_app("create", {"app_type": "notifier", "name": label})
@@ -10829,7 +10852,8 @@ def updated() {}
         self.created_native_app_ids.append(str(app_id))
         try:
             # Write the type='mode' `modes` restriction on the moreOptions sub-page.
-            self._native_app("update", {"page": "moreOptions", "fields": {"modes": want}}, app_id)
+            updated = self._native_app("update", {"page": "moreOptions", "fields": {"modes": want}}, app_id)
+            assert updated.get("success") is True and updated.get("fields_applied") == ["modes"], updated
             # Read the sub-page back; modeInputs[].modes must equal the configured list (not null).
             cfg = self.client.call_tool("hub_read_apps_code", {
                 "tool": "hub_get_app_config", "args": {"appId": app_id, "pageName": "moreOptions"}})

@@ -528,6 +528,10 @@ class RestoreRuleStructureSpec extends ToolSpecBase {
         given:
         nativeStubs()
 
+        hubGet.register('/installedapp/statusJson/200') { params ->
+            groovy.json.JsonOutput.toJson([appSettings: [[name: "apiKey", type: "password", value: null]]])
+        }
+
         when:
         def out = script._rmRestoreFromBackup([fileName: "f.json"], nativeSnapshot(redactedSettings: ['apiKey']), false)
 
@@ -536,6 +540,26 @@ class RestoreRuleStructureSpec extends ToolSpecBase {
         out.passwordsToReenter == ['apiKey']
         !out.containsKey('passwordsKept')
         out.note.contains("Password settings apiKey are not stored in backups")
+    }
+
+    def "a password report whose settings cannot be read lists them unverified, never to re-enter: #label"() {
+        given:
+        hubGet.register('/installedapp/statusJson/100', responder)
+        def out = [note: "Restored."]
+
+        when:
+        script._rmReportPasswords(out, [redactedSettings: ['apiKey']], 100)
+
+        then:
+        out.passwordsUnverified == ['apiKey']
+        !out.containsKey('passwordsToReenter')
+        !out.containsKey('passwordsKept')
+        out.note == "Restored. Password settings apiKey are not stored in backups, and the app's settings could not be read to confirm them; check them in the app's native page."
+
+        where:
+        label                     | responder
+        'the status read throws'  | { params -> throw new RuntimeException('statusJson timed out') }
+        'it has no settings list' | { params -> '{"appState":[]}' }
     }
 
     def "clearing settings the backup lacks leaves a redacted password alone"() {
@@ -623,6 +647,9 @@ class RestoreRuleStructureSpec extends ToolSpecBase {
         hubGet.register('/installedapp/configure/json/200') { params -> '{"app":{"id":200},"configPage":{"sections":[{"input":[{"name":"origLabel","type":"text"}]}]},"settings":{}}' }
         script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 -> [status: 302, location: "/installedapp/configure/200"] }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, data: '{"status":"success"}'] }
+        hubGet.register('/installedapp/statusJson/200') { params ->
+            groovy.json.JsonOutput.toJson([appSettings: [[name: "origLabel", type: "text", value: "r"]]])
+        }
 
         when:
         def out = script._rmRestoreFromBackup([fileName: "f.json"], nativeSnapshot(nativeExport: null, redactedSettings: ['apiKey']), true)

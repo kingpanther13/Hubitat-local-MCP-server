@@ -752,6 +752,39 @@ class NativeDocumentsSpec extends ToolSpecBase {
         conditions.message == 'changes[2]: Native row does not exist'
     }
 
+    def 'one appended action leaves room for one unknown action id: a second unknown delete is refused before any write'() {
+        when:
+        def result = script.toolUpdateRuleDocument([rule_id: 42, confirm: true, changes: [
+            logChange(),
+            [part: 'delete', value: [part: 'action', id: '99']],
+            [part: 'delete', value: [part: 'action', id: '98']]
+        ]])
+        then:
+        !result.success
+        !result.partial
+        result.error == 'changes[2]: Native action does not exist'
+        events.empty
+    }
+
+    def 'an appended trigger lets a later change name one unknown trigger id as its placeholder, never two'() {
+        given:
+        def trigger = [part: 'trigger', value: [capability: 'Switch', fields: [
+            [name: 'tDev#', type: 'capability.switch', value: ['789']], [name: 'tstate#', type: 'enum', value: 'on']]]]
+        when:
+        script._ndPreflight(42L, script._ndChanges([trigger, [part: 'trigger', value: trigger.value + [id: '99']]]))
+        then:
+        noExceptionThrown()
+        when:
+        script._ndPreflight(42L, script._ndChanges([
+            trigger,
+            [part: 'delete', value: [part: 'trigger', id: '99']],
+            [part: 'delete', value: [part: 'trigger', id: '98']]
+        ]))
+        then:
+        def refused = thrown(IllegalArgumentException)
+        refused.message == 'changes[2]: Native row does not exist'
+    }
+
     def 'a condition deleted after an append cannot be named by a later Required Expression'() {
         given:
         nativeState.capabsfalse = ['4': 'Switch is on', '8': 'Switch is off']

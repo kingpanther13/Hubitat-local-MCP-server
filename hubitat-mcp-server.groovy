@@ -11877,7 +11877,7 @@ Duplicates an existing MCP custom-engine rule into a new, independent rule with 
 ### Rule Backups (Automatic)
 - With `backupBeforeRuleEdits` enabled (default), hub_set_rule takes one fresh snapshot before an update batch and one before a native rule form workflow. Subsequent submissions in that workflow reuse its snapshot. Snapshot failure prevents the edit. Creating a new rule or navigating its parent does not have a previous child rule to restore.
 - hub_set_native_app updates and form workflows on other classic apps take one baseline snapshot first while `backupBeforeRuleEdits` is on, reused for the same app for one hour unless `backupEveryRuleWrite` is on. Its creates take none; a button_rule create takes one of its Button Controller.
-- Password-typed settings are not stored in pre-write snapshots: the snapshot lists them in `redactedSettings`. A restore leaves a live password unchanged (`passwordsKept`); an app recreated by restore needs them re-entered in the native UI (`passwordsToReenter`).
+- Password-typed settings are not stored in pre-write snapshots: the snapshot lists them in `redactedSettings`. A restore leaves a live password unchanged (`passwordsKept`); an app recreated by restore needs them re-entered in the native UI (`passwordsToReenter`); when the restored app's settings cannot be read to confirm them, they are listed in `passwordsUnverified`.
 - hub_delete_custom_rule auto-backs up to File Manager as mcp_rule_backup_<name>_<timestamp>.json
 - Restore via: hub_read_file → hub_import_custom_rule
 - Skip backup: set testRule=true when creating/updating

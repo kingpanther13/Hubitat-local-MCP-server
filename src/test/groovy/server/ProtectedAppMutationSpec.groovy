@@ -33,6 +33,7 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
     def '#method rejects protected target before mutation with Developer Mode #developerMode'() {
         given:
         settingsMap.enableDeveloperMode = developerMode
+        atomicStateMap.parentAppIds = [notifier: 42]
         hubGet.register('/installedapp/statusJson/42') {
             '{"installedApp":{"id":42,"name":"Dashboard","systemAppType":true}}'
         }
@@ -52,6 +53,7 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
             ['toolSetNativeApp', [operation: 'update', app_id: 42, args: [fields: [comments: 'x']]]],
             ['toolSetNativeApp', [operation: 'form', app_id: 42, args: [steps: [[kind: 'open']]]]],
             ['toolSetNativeApp', [operation: 'create', args: [app_type: 'button_rule', controller_id: 42, button_number: 1, event: 'pushed']]],
+            ['toolSetNativeApp', [operation: 'create', args: [app_type: 'notifier', name: 'x']]],
             ['toolUpdateRuleDocument', [rule_id: 42, changes: [[part: 'variable', value: [operation: 'create', name: 'Fixture', type: 'integer', value: 1]]]]],
             ['toolCreateRuleDocument', [parent_id: 42, name: 'Fixture', changes: [[part: 'variable', value: [operation: 'create', name: 'Fixture', type: 'integer', value: 1]]]]],
             ['toolSetAppDisabled', [appId: '00042', disabled: true]],

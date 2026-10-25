@@ -1055,21 +1055,23 @@ private List _rmRedactedSettings(Map snapshot) {
 }
 
 // A restore never writes a password, so each redacted name is reported from the restored app: kept
-// when it still holds a value, otherwise to be entered again in the native UI. liveRows, when given,
-// are the app's typed settings already read; otherwise statusJson is read once.
-private void _rmReportPasswords(Map out, Map snapshot, Integer appId, List liveRows = null) {
+// when it still holds a value, otherwise to be entered again in the native UI, and unverified when its
+// settings cannot be read. readRows, when given, reads the app's typed settings; otherwise statusJson does.
+private void _rmReportPasswords(Map out, Map snapshot, Integer appId, Closure readRows = null) {
     List names = _rmRedactedSettings(snapshot)
     if (!names) return
-    List rows = liveRows
+    List rows = null
+    try {
+        def read = readRows != null ? readRows.call() : _rmFetchStatusJson(appId)?.appSettings
+        if (read instanceof List) rows = read
+        else mcpLog("warn", "rm-native", "Restore of app ${appId}: its settings read returned no settings list, so the kept passwords could not be confirmed")
+    } catch (Exception unreadable) {
+        mcpLog("warn", "rm-native", "Restore of app ${appId}: its settings could not be read to confirm the kept passwords (${unreadable.message})")
+    }
     if (rows == null) {
-        try {
-            def settings = _rmFetchStatusJson(appId)?.appSettings
-            rows = settings instanceof List ? settings : []
-        }
-        catch (Exception unreadable) {
-            mcpLog("warn", "rm-native", "Restore of app ${appId}: its settings could not be read to confirm the kept passwords (${unreadable.message})")
-            rows = []
-        }
+        out.passwordsUnverified = names
+        out.note = "${out.note ?: ''} Password settings ${names.join(', ')} are not stored in backups, and the app's settings could not be read to confirm them; check them in the app's native page.".toString().trim()
+        return
     }
     List kept = names.findAll { name -> rows.any { it instanceof Map && it.name?.toString() == name && it.value != null && it.value.toString() != '' } }
     List missing = names - kept
@@ -1247,7 +1249,7 @@ private Map _rmRestoreNativeEdit(Map snapshot, String sourceBackupKey) {
         Map restored = [success: true, type: 'rm-rule', ruleId: id, originalRuleId: id, restoredVia: 'nativeStateReplay', backup: undo,
          stateVerified: true, settingsVerified: true, localVariablesVerified: true, broken: rebuilt.broken, stopped: rebuilt.stopped, paused: rebuilt.paused,
          eventSubscriptions: rebuilt.eventSubscriptions, scheduledJobs: rebuilt.scheduledJobs]
-        _rmReportPasswords(restored, snapshot, id.toInteger(), _rmNativeCurrentSettings(id))
+        _rmReportPasswords(restored, snapshot, id.toInteger()) { _rmNativeCurrentSettings(id) }
         restored
     } catch (Exception failure) {
         if (!attempted) throw failure

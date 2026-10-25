@@ -4,18 +4,23 @@ import groovy.json.JsonOutput
 import spock.lang.Shared
 import spock.lang.Unroll
 import support.TestChildApp
+import support.TestLocation
 import support.ToolSpecBase
 
 /**
  * hub_set_native_app create and update run the native form engine the way the browser does
  * (issue #561): the parent's create_child control, the new app's first page and its Done; on an
  * existing app the page's Done, and on a sub-page the Done of the page it returns to. A refusal
- * fires before the page is posted (a refused create removes the child it made); the one exception
- * is an input whose own save reveals a required one, which stops before the Done and reports
- * partial. One read-back after the Done reports what the hub stored.
+ * fires before the page is posted; a create refused once its child exists removes the child and
+ * returns success:false. An update input whose own save reveals a required one stops before the
+ * Done and reports partial. The hub answers an accepted Done with a location; without one the app
+ * did not commit. One read-back after the Done reports what the hub stored.
  */
 class NativeAppOperationsSpec extends ToolSpecBase {
     @Shared TestChildApp serverApp = new TestChildApp(id: 1L, label: 'MCP')
+    @Shared TestLocation sharedLocation = new TestLocation()
+    // The hub answers a Done it accepts with the page the browser goes to next.
+    static final Map DONE = [status: 'success', location: '/installedapp/list']
     Map pages
     Map apps
     Map replies
@@ -25,10 +30,13 @@ class NativeAppOperationsSpec extends ToolSpecBase {
     List deleted
     List devices
     boolean deleteFails
+    boolean deleteSilent
     Closure postFailure
 
     void setupSpec() {
         appExecutor.getApp() >> serverApp
+        appExecutor.getLocation() >> sharedLocation
+        appExecutor.toDateTime(_ as String) >> { String value -> Date.parse("yyyy-MM-dd'T'HH:mm:ss.SSSZ", value) }
     }
 
     void setup() {
@@ -37,11 +45,13 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         gets = []; posts = []; raws = []; deleted = []
         devices = [[id: 7, label: 'Lamp'], [id: 8, label: 'Fan']]
         deleteFails = false
+        deleteSilent = false
         postFailure = null
+        sharedLocation.timeZone = TimeZone.getTimeZone('UTC')
         settingsMap.enableMandatoryBPS = false
         settingsMap.backupBeforeRuleEdits = false
         stateMap.lastBackupTimestamp = 1234567890000L
-        atomicStateMap.parentAppIds = [notifier: 40, rule_machine: 43, thermostat_scheduler: 45, basic_rule: 46, button_controller: 47]
+        atomicStateMap.parentAppIds = [notifier: 40, rule_machine: 43, thermostat_scheduler: 45, basic_rule: 46, button_controller: 47, groups_scenes: 48]
         ['NATIVE_FORM_CONTEXTS', 'NATIVE_FORM_BUSY'].each { name -> sharedMap(name).clear() }
         script.metaClass.getAppByAppId = { Long id -> apps[id] }
         script.metaClass.hubInternalGet = { String path, Map query = null, int timeout = 30, boolean retry = false ->
@@ -60,7 +70,9 @@ class NativeAppOperationsSpec extends ToolSpecBase {
             def removal = path =~ /^\/installedapp\/forcedelete\/(\d+)\/quiet$/
             if (removal.find()) {
                 if (deleteFails) return [status: 500, data: '']
+                if (deleteSilent) return null
                 deleted << (removal.group(1) as Integer)
+                apps.remove(removal.group(1) as Long)
                 return [status: 302, location: '/installedapp/list', data: '']
             }
             throw new IllegalStateException("unexpected raw GET ${path}")
@@ -70,7 +82,7 @@ class NativeAppOperationsSpec extends ToolSpecBase {
             posts << [path: path, body: body]
             if (postFailure) postFailure.call(path, body)
             List queue = replies[path]
-            def reply = queue ? (queue.size() > 1 ? queue.remove(0) : queue[0]) : [status: 'success']
+            def reply = queue ? (queue.size() > 1 ? queue.remove(0) : queue[0]) : (body._action_update == 'Done' ? DONE : [status: 'success'])
             [status: 200, data: JsonOutput.toJson(reply)]
         }
     }
@@ -96,6 +108,7 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         Map model = [app: [id: id, label: opts.label, installed: opts.containsKey('installed') ? opts.installed : false, version: 3],
                      configPage: [name: opts.page ?: 'mainPage', title: 'Page', install: opts.containsKey('install') ? opts.install : true, sections: [[input: inputs]]],
                      settings: opts.settings ?: [:]]
+        if (opts.modeMap) model.modeMap = opts.modeMap
         model
     }
 
@@ -199,18 +212,21 @@ class NativeAppOperationsSpec extends ToolSpecBase {
     }
 
     @Unroll
-    def 'a create its first page refuses removes the new app and posts nothing: #label'() {
+    def 'a create its first page refuses removes the new app, posts nothing and returns success false: #label'() {
         given:
         parentAt(40L, 'notifierChild', 'Notifier')
         childAt(90L, 40L, 'Notifier', [page(90L, notifierInputs())])
 
         when:
-        create(args)
+        def result = create(args)
 
         then:
-        def e = thrown(IllegalArgumentException)
-        e.message.contains(message)
-        e.message.contains('The new app was removed, so nothing was created.')
+        !result.success
+        result.app_type == 'notifier'
+        !result.containsKey('app_id')
+        result.error.contains(message)
+        result.error.contains('The new app was removed, so nothing was created.')
+        result.note.contains("hub_get_tool_guide(section='set_native_app_reference')")
         deleted == [90]
         posts.isEmpty()
 
@@ -231,11 +247,12 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         childAt(92L, 47L, 'Button Controller-5.1', [page(92L, [input('buttonDev', 'capability.pushableButton', [multiple: true, required: true])])])
 
         when:
-        create([app_type: 'button_controller', name: 'Kitchen', fields: [buttonDev: ['7']]])
+        def result = create([app_type: 'button_controller', name: 'Kitchen', fields: [buttonDev: ['7']]])
 
         then:
-        def e = thrown(IllegalArgumentException)
-        e.message.contains('renders no label input (origLabel or name)')
+        !result.success
+        result.error.contains('renders no label input (origLabel or name)')
+        result.error.contains('The new app was removed, so nothing was created.')
         deleted == [92]
         posts.isEmpty()
     }
@@ -329,7 +346,7 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         List revealed = first + [input('setOnStart', 'bool', [defaultValue: true])]
         childAt(93L, 45L, 'Thermostat Scheduler 2.0', [page(93L, first),
             page(93L, revealed, [label: 'Sched', installed: true, settings: [therm: ['7': 'Lamp'], setOnStart: 'true']])])
-        replies['/installedapp/update/json'] = [page(93L, revealed, [settings: [therm: ['7': 'Lamp']]]), [status: 'success']]
+        replies['/installedapp/update/json'] = [page(93L, revealed, [settings: [therm: ['7': 'Lamp']]]), DONE]
 
         when:
         def result = create([app_type: 'thermostat_scheduler', fields: [therm: ['7']]])
@@ -413,7 +430,7 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         List main = [input('origLabel', 'text')]
         pages['/installedapp/configure/json/71/onMeansPage'] = page(71L, sub, [page: 'onMeansPage', install: false])
         pages['/installedapp/configure/json/71'] = page(71L, main, [settings: [origLabel: 'Room', motions: ['8': 'Fan']]])
-        replies['/installedapp/update/json'] = [page(71L, main, [settings: [origLabel: 'Room']]), [status: 'success']]
+        replies['/installedapp/update/json'] = [page(71L, main, [settings: [origLabel: 'Room']]), DONE]
 
         when:
         def result = update(71L, [fields: [motions: ['8']], page: 'onMeansPage'])
@@ -438,7 +455,7 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         List main = [input('note', 'text')]
         pages['/installedapp/configure/json/73'] = page(73L, main, [page: 'pageMain', settings: [note: 'root', subNote: 'x']])
         pages['/installedapp/configure/json/73/pageSub'] = page(73L, sub, [page: 'pageSub', install: false])
-        replies['/installedapp/update/json'] = [page(73L, main, [page: 'pageMain', settings: [note: 'root']]), [status: 'success']]
+        replies['/installedapp/update/json'] = [page(73L, main, [page: 'pageMain', settings: [note: 'root']]), DONE]
 
         when:
         def result = update(73L, [fields: [subNote: 'x'], page: 'pageSub'])
@@ -570,7 +587,7 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         result.note.contains("operation:'form'")
     }
 
-    def 'a read-back failure after the Done is a partial failure'() {
+    def 'a read-back failure after a fully posted update reports the fields unverified, not partial'() {
         given:
         existing(70L)
         pages['/installedapp/configure/json/70'] = [page(70L, notifierInputs(), [settings: [origLabel: 'N']]), { -> throw new IOException('read timed out') }]
@@ -580,8 +597,11 @@ class NativeAppOperationsSpec extends ToolSpecBase {
 
         then:
         !result.success
-        result.partial
-        result.error.contains('read timed out')
+        !result.containsKey('partial')
+        result.fields_unverified == ['logging']
+        result.error == 'App 70 was updated, but reading it back failed: read timed out'
+        result.note.contains('hub_get_app_config(appId=70, includeSettings=true)')
+        result.backup.skipped == true
         posts.size() == 1
     }
 
@@ -649,9 +669,10 @@ class NativeAppOperationsSpec extends ToolSpecBase {
 
         then:
         result.success
+        result.committed == false
         posts.size() == 1
         !posts[0].body.containsKey('_action_update')
-        result.note.contains('renders no Done')
+        result.note.contains("Page 'mainPage' renders no Done, so the fields were saved as the page posts them and the app's update did not run.")
     }
 
     // ---------------------------------------------------------------- button_rule
@@ -722,13 +743,18 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         replies['/installedapp/update/json'] = [controllerPage([input('newBut', 'enum', [multiple: true, submitOnChange: true, options: ['2', '3']]), input('cancelBtn', 'button', [title: 'Cancel'])])]
 
         when:
-        create([app_type: 'button_rule', controller_id: 60, button_number: 1, event: 'pushed'])
+        def result = create([app_type: 'button_rule', controller_id: 60, button_number: 1, event: 'pushed'])
 
         then:
-        def e = thrown(IllegalArgumentException)
-        e.message.contains('offers buttons [2, 3], not 1')
+        !result.success
+        !result.partial
+        result.error.contains('offers buttons [2, 3], not 1')
+        result.error.contains('The controller was left unchanged.')
+        result.note.contains('Cancel was pressed; the controller renders as before.')
+        result.backup.skipped == true
         posts.findAll { it.path == '/installedapp/btn' }*.body*.name == ['true', 'cancelBtn']
         !posts.any { it.body.stateAttribute == 'setBut' }
+        gets.count { it == '/installedapp/configure/json/60' } == 2
     }
 
     @Unroll
@@ -750,5 +776,364 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         'event already has one'   | 'Button Controller-5.1' | [setButton('1 held'), addButton()]   | 'offers no rule to create for pushed'
         'no button device yet'    | 'Button Controller-5.1' | []                                  | 'renders no Add Button control'
         'not a Button Controller' | 'Rule-5.1'              | [addButton()]                       | 'is not an installed Button Controller'
+    }
+
+    // ---------------------------------------------------------------- review round 2
+
+    @Unroll
+    def 'a created child that is not the requested type under the parent is removed and its id named: #label'() {
+        given:
+        parentAt(40L, 'notifierChild', 'Notifier')
+        replies.createdId = 90L
+        if (record != null) apps[90L] = record
+
+        when:
+        def result = create([app_type: 'notifier', name: 'N'])
+
+        then:
+        !result.success
+        result.app_id == 90L
+        result.error.contains('Created app 90 did not match the native parent and child type')
+        result.orphan_cleanup == 'removed'
+        deleted == [90]
+        posts.isEmpty()
+        !gets.contains('/installedapp/configure/json/90')
+
+        where:
+        label           | record
+        'wrong parent'  | [id: 90L, parentAppId: 41L, appType: [namespace: 'hubitat', name: 'Notifier'], disabled: false]
+        'no app record' | null
+    }
+
+    def 'a create whose first post reveals a required input removes the app and does not ask for another call'() {
+        given:
+        parentAt(45L, 'Thermostat Scheduler 2.0', 'Thermostat Scheduler 2.0')
+        List first = [input('therm', 'capability.switch', [multiple: true, required: true, submitOnChange: true])]
+        childAt(93L, 45L, 'Thermostat Scheduler 2.0', [page(93L, first)])
+        replies['/installedapp/update/json'] = [page(93L, first + [input('heatSet', 'number', [required: true])], [settings: [therm: ['7': 'Lamp']]])]
+
+        when:
+        def result = create([app_type: 'thermostat_scheduler', fields: [therm: ['7']]])
+
+        then:
+        !result.success
+        !result.containsKey('app_id')
+        result.error == 'The first page accepted therm, but the page that save rendered needs more before its Done (Complete required native fields before navigating: heatSet). ' +
+            'The new app was removed, so nothing was created; supply the revealed input in fields, or create without therm and finish with update or form.'
+        !result.error.contains('another call')
+        !result.error.contains('saved')
+        deleted == [93]
+        posts.size() == 1
+        !posts[0].body.containsKey('_action_update')
+    }
+
+    def 'a force delete that answers without a status while the app still exists is reported as a failed removal'() {
+        given:
+        parentAt(40L, 'notifierChild', 'Notifier')
+        childAt(90L, 40L, 'Notifier', [page(90L, notifierInputs())])
+        deleteSilent = true
+
+        when:
+        def result = create([app_type: 'notifier', name: 'N', fields: [nope: 1]])
+
+        then:
+        !result.success
+        result.app_id == 90L
+        result.error.contains('Removing the unfinished app then failed: the app still exists after its force delete')
+        !result.error.contains('was removed')
+        result.note.contains('Delete app 90 with hub_delete_native_app')
+        posts.isEmpty()
+    }
+
+    def 'a create whose first page renders only name writes the label there'() {
+        given:
+        parentAt(48L, 'childGroups', 'Group-2.1')
+        List inputs = [input('name', 'text', [required: true])]
+        childAt(96L, 48L, 'Group-2.1', [page(96L, inputs), page(96L, inputs, [label: 'Hall group', installed: true, settings: [name: 'Hall group']])])
+
+        when:
+        def result = create([app_type: 'groups_scenes', name: 'Hall group'])
+
+        then:
+        result.success
+        result.app_id == 96L
+        result.fields_applied == ['name']
+        raws == ['/installedapp/createchild/hubitat/Group-2.1/parent/48']
+        posts.size() == 1
+        posts[0].body['settings[name]'] == 'Hall group'
+        !posts[0].body.containsKey('settings[origLabel]')
+    }
+
+    def 'a create whose Done the hub answers by rendering the page again reports the app not installed'() {
+        given:
+        parentAt(40L, 'notifierChild', 'Notifier')
+        childAt(90L, 40L, 'Notifier', [page(90L, notifierInputs()),
+            page(90L, notifierInputs(), [label: 'N', installed: true, settings: [origLabel: 'N']])])
+        replies['/installedapp/update/json'] = [page(90L, notifierInputs(), [settings: [origLabel: 'N']])]
+
+        when:
+        def result = create([app_type: 'notifier', name: 'N'])
+
+        then:
+        result.success
+        result.installed == false
+        result.note.contains('instead of accepting its Done, so the app is not installed')
+        posts*.body*._action_update == ['Done']
+        deleted.isEmpty()
+    }
+
+    def 'a cached parent that no longer exists is dropped and the refusal names its type'() {
+        when:
+        create([app_type: 'notifier', name: 'N'])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains('The Notifications app recorded for this type no longer exists; retry to install or find it again.')
+        !atomicStateMap.parentAppIds.containsKey('notifier')
+        atomicStateMap.parentAppIds.rule_machine == 43
+        raws.isEmpty()
+        posts.isEmpty()
+    }
+
+    def 'a create while another form operation holds the parent is refused before anything is created'() {
+        given:
+        parentAt(40L, 'notifierChild', 'Notifier')
+        sharedMap('NATIVE_FORM_BUSY')[script._nfKey(40L)] = true
+
+        when:
+        create([app_type: 'notifier', name: 'N'])
+
+        then:
+        thrown(IllegalStateException)
+        raws.isEmpty()
+        gets.isEmpty()
+        sharedMap('NATIVE_FORM_BUSY')[script._nfKey(40L)]
+    }
+
+    def 'without a recent backup a create makes no child and an update posts nothing'() {
+        given:
+        stateMap.lastBackupTimestamp = 0
+        parentAt(40L, 'notifierChild', 'Notifier')
+        childAt(90L, 40L, 'Notifier', [page(90L, notifierInputs())])
+        existing(70L)
+        pages['/installedapp/configure/json/70'] = page(70L, notifierInputs(), [settings: [origLabel: 'N']])
+
+        when:
+        create([app_type: 'notifier', name: 'N'])
+
+        then:
+        def refusedCreate = thrown(IllegalArgumentException)
+        refusedCreate.message.contains('BACKUP REQUIRED')
+        raws.isEmpty()
+
+        when:
+        update(70L, [fields: [logging: true]])
+
+        then:
+        def refusedUpdate = thrown(IllegalArgumentException)
+        refusedUpdate.message.contains('BACKUP REQUIRED')
+        posts.isEmpty()
+        !gets.any { it.startsWith('/installedapp/configure/json/') }
+    }
+
+    def 'an update drops the caller cached form context of the app it changed'() {
+        given:
+        existing(70L)
+        pages['/installedapp/configure/json/70'] = [page(70L, notifierInputs(), [settings: [origLabel: 'N']]),
+            page(70L, notifierInputs(), [settings: [origLabel: 'N', logging: 'true']])]
+        sharedMap('NATIVE_FORM_CONTEXTS')[script._nfCallerKey()] = [app_id: 70L, page: [name: 'mainPage']]
+
+        when:
+        def result = update(70L, [fields: [logging: true]])
+
+        then:
+        result.success
+        !sharedMap('NATIVE_FORM_CONTEXTS').containsKey(script._nfCallerKey())
+    }
+
+    def 'an app whose default page does not render is refused before any write'() {
+        given:
+        existing(70L)
+
+        when:
+        update(70L, [fields: [logging: true]])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains("App 70 renders no page 'its default page'")
+        e.message.contains('Nothing was written.')
+        posts.isEmpty()
+    }
+
+    def 'a sub-page update whose returned main page renders no Done reports the app uncommitted'() {
+        given:
+        existing(71L, 'Room Lights')
+        List sub = [input('motions', 'capability.switch', [multiple: true, required: true])]
+        List main = [input('origLabel', 'text')]
+        pages['/installedapp/configure/json/71/onMeansPage'] = page(71L, sub, [page: 'onMeansPage', install: false])
+        pages['/installedapp/configure/json/71'] = page(71L, main, [settings: [origLabel: 'Room', motions: ['8': 'Fan']]])
+        replies['/installedapp/update/json'] = [page(71L, main, [install: false, settings: [origLabel: 'Room']])]
+
+        when:
+        def result = update(71L, [fields: [motions: ['8']], page: 'onMeansPage'])
+
+        then:
+        result.success
+        result.committed == false
+        result.fields_applied == ['motions']
+        result.note.contains("Page 'mainPage', which the sub-page returned to, renders no Done, so the app's update did not run.")
+        posts.size() == 1
+        posts[0].body._action_previous == 'Done'
+    }
+
+    def 'a Done the hub answers without a location reports the app uncommitted'() {
+        given:
+        existing(70L)
+        pages['/installedapp/configure/json/70'] = [page(70L, notifierInputs(), [settings: [origLabel: 'N']]),
+            page(70L, notifierInputs(), [settings: [origLabel: 'N', logging: 'true']])]
+        replies['/installedapp/update/json'] = [[status: 'success']]
+
+        when:
+        def result = update(70L, [fields: [logging: true]])
+
+        then:
+        result.success
+        result.committed == false
+        result.fields_applied == ['logging']
+        result.note.contains("The hub rendered page 'mainPage' again instead of accepting its Done, so the app's update did not run")
+        posts*.body*._action_update == ['Done']
+    }
+
+    def 'an accepted Done reports no committed flag'() {
+        given:
+        existing(70L)
+        pages['/installedapp/configure/json/70'] = [page(70L, notifierInputs(), [settings: [origLabel: 'N']]),
+            page(70L, notifierInputs(), [settings: [origLabel: 'N', logging: 'true']])]
+
+        when:
+        def result = update(70L, [fields: [logging: true]])
+
+        then:
+        result.success
+        !result.containsKey('committed')
+        !result.containsKey('note')
+    }
+
+    def 'a time, a mode list and a multi-select enum read back as the hub stores them'() {
+        given:
+        existing(74L, 'Community App')
+        List inputs = [input('at', 'time'), input('modes', 'mode', [multiple: true]), input('pick', 'enum', [multiple: true, options: ['a', 'b', 'c']])]
+        Map modeMap = ['1': 'Day', '2': 'Night', '3': 'Away']
+        pages['/installedapp/configure/json/74'] = [page(74L, inputs, [modeMap: modeMap]),
+            page(74L, inputs, [modeMap: modeMap, settings: [at: '2026-10-26T07:30:00.000+0000', modes: [2, 1], pick: ['a', 'b']]])]
+
+        when:
+        def result = update(74L, [fields: [at: '2026-10-25T07:30:00.000+0000', modes: ['1', '2'], pick: ['b', 'a']]])
+
+        then:
+        result.success
+        result.fields_applied == ['at', 'modes', 'pick']
+        !result.containsKey('fields_not_landed')
+        posts[0].body['settings[modes]'] == '["1","2"]'
+        posts[0].body['settings[pick]'] == '["b","a"]'
+    }
+
+    def 'a time stored at another clock is named as not landed'() {
+        given:
+        existing(74L, 'Community App')
+        List inputs = [input('at', 'time')]
+        pages['/installedapp/configure/json/74'] = [page(74L, inputs), page(74L, inputs, [settings: [at: '2026-10-25T08:30:00.000+0000']])]
+
+        when:
+        def result = update(74L, [fields: [at: '2026-10-25T07:30:00.000+0000']])
+
+        then:
+        !result.success
+        result.fields_not_landed == ['at']
+    }
+
+    private Map pickerPage(List options) {
+        controllerPage([input('newBut', 'enum', [multiple: true, submitOnChange: true, options: options]), input('cancelBtn', 'button', [title: 'Cancel'])])
+    }
+
+    def 'a picker Cancel after which the controller still renders the picker is a partial failure'() {
+        given:
+        controller()
+        pages['/installedapp/configure/json/60'] = [controllerPage([addButton()]), pickerPage(['2', '3'])]
+        pages['/installedapp/configure/json/60/mainPage'] = pickerPage(['2', '3'])
+        replies['/installedapp/update/json'] = [pickerPage(['2', '3'])]
+
+        when:
+        def result = create([app_type: 'button_rule', controller_id: 60, button_number: 1, event: 'pushed'])
+
+        then:
+        !result.success
+        result.partial
+        result.error.contains('Its Cancel was pressed, but the controller still renders the Add Button picker')
+        !result.note.contains('renders as before')
+        !result.note.contains('Nothing was changed')
+        result.note.contains("hub_set_native_app(operation:'form', app_id:60")
+    }
+
+    def 'a Cancel post that fails during the picker refusal is a partial failure'() {
+        given:
+        controller()
+        pages['/installedapp/configure/json/60'] = controllerPage([addButton()])
+        replies['/installedapp/update/json'] = [pickerPage(['2', '3'])]
+        postFailure = { String path, Map body -> if (path == '/installedapp/btn' && body.name == 'cancelBtn') throw new IOException('read timed out') }
+
+        when:
+        def result = create([app_type: 'button_rule', controller_id: 60, button_number: 1, event: 'pushed'])
+
+        then:
+        !result.success
+        result.partial
+        result.error.contains('read timed out')
+        !result.note.contains('Nothing was changed')
+    }
+
+    def 'a button added without a rule control for the event is a partial failure'() {
+        given:
+        controller()
+        pages['/installedapp/configure/json/60'] = [controllerPage([addButton()]), controllerPage([addButton()])]
+        replies['/installedapp/update/json'] = [pickerPage(['1', '2']), controllerPage([])]
+
+        when:
+        def result = create([app_type: 'button_rule', controller_id: 60, button_number: 1, event: 'pushed'])
+
+        then:
+        !result.success
+        result.partial
+        result.error.contains('Button 1 was added, but the controller offers no rule to create for pushed')
+        !result.note.contains('Nothing was changed')
+        posts.find { it.body.containsKey('settings[newBut]') }.body['settings[newBut]'] == '["1"]'
+    }
+
+    @Unroll
+    def 'a rule control that opens no new Button Rule is a partial failure with its recovery backup: #label'() {
+        given:
+        controller()
+        script.metaClass._nfBackup = { Long id, Object nativeApp, String page -> [backupKey: 'k1'] }
+        if (other != null) apps[other.id] = other
+        pages['/installedapp/configure/json/60'] = controllerPage([setButton('1 pushed'), addButton()])
+        replies['/installedapp/update/json'] = [other == null ? controllerPage([]) : openedRule(other.id)]
+
+        when:
+        def result = create([app_type: 'button_rule', controller_id: 60, button_number: 1, event: 'pushed'])
+
+        then:
+        !result.success
+        result.partial
+        result.error.contains('The controller did not open a new Button Rule')
+        result.backup.backupKey == 'k1'
+        result.note.contains("hub_restore_backup(backupKey:'k1')")
+        !result.note.contains('Nothing was changed')
+        result.opened_app_id == (other == null ? null : other.id)
+        result.containsKey('opened_app_id') == (other != null)
+
+        where:
+        label                   | other
+        'no app opened'         | null
+        'another app type'      | [id: 96L, parentAppId: 60L, appType: [namespace: 'hubitat', name: 'Notifier'], label: 'N', disabled: false]
     }
 }

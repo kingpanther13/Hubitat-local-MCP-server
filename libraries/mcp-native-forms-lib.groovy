@@ -16,16 +16,20 @@ private String _nfCallerKey() { "${app.id}:caller:${callerClient == null ? 'main
 private Map _nfJson(Object value) {
     def parsed
     try { parsed = value instanceof Map ? value : new groovy.json.JsonSlurper().parseText(value?.toString() ?: '') }
-    catch (Exception ignored) { throw new IllegalStateException('Native form returned unreadable JSON; inspect the app before retrying') }
+    catch (Exception unreadable) {
+        String reason = (unreadable.message ?: unreadable.toString()).toString()
+        throw new IllegalStateException("Native form returned unreadable JSON (${reason.take(200)}); inspect the app before retrying".toString())
+    }
     if (!(parsed instanceof Map)) throw new IllegalStateException('Native form returned an invalid response')
     if (parsed.status && parsed.status != 'success') throw new IllegalStateException('Native form rejected the request')
-    if (parsed.error || parsed.errorMessage || parsed.configPage?.error) throw new IllegalStateException('Native form reported an error; inspect the native editor and logs')
+    def reported = parsed.configPage instanceof Map && parsed.configPage.error ? parsed.configPage.error : (parsed.error ?: parsed.errorMessage)
+    if (reported) throw new IllegalStateException("Native form reported an error: ${reported}; inspect the native editor and logs".toString())
     parsed
 }
 
 private Map _nfPost(String path, Map values) {
     def response = hubInternalPostFormRaw(path, _nfBody(values))
-    if (response?.status != 200) throw new IllegalStateException('Native form request did not return HTTP 200; inspect the app before retrying')
+    if (response?.status != 200) throw new IllegalStateException("Native form request returned HTTP ${response?.status ?: 'no status'}; inspect the app before retrying".toString())
     _nfJson(response.data)
 }
 
@@ -377,7 +381,8 @@ private Map _nfPrepare(Long id, Map context, Map supplied, String activate, Stri
 }
 
 // Performs a prepared submit as the browser does. Returns the hub's answer as model, plus created_id
-// for a child it created, navigation for an app link, and posted when the page itself was posted.
+// for a child it created (with created_mismatch when that child is not the requested type under this
+// parent), navigation for an app link, and posted when the page itself was posted.
 private Map _nfExecute(Long id, Map plan) {
     Map control = plan.control
     Map body = plan.body
@@ -387,8 +392,9 @@ private Map _nfExecute(Long id, Map plan) {
         Long createdId = _nrCreatedAppId(hubInternalGetRaw("/installedapp/createchild/hubitat/${control.value}/parent/${id}"))
         if (createdId == null) throw new IllegalStateException('Native child creation did not return an app ID; inspect the parent before retrying')
         def child = getAppByAppId(createdId)
-        if (child?.parentAppId?.toString() != id.toString() || child?.appType?.namespace != 'hubitat' || child?.appType?.name != control.value) throw new IllegalStateException('Created app did not match the native parent and child type')
-        return [model: [location: 'child_created'], created_id: createdId]
+        boolean matches = child?.parentAppId?.toString() == id.toString() && child?.appType?.namespace == 'hubitat' && child?.appType?.name == control.value
+        return [model: [location: 'child_created'], created_id: createdId,
+                created_mismatch: matches ? null : "Created app ${createdId} did not match the native parent and child type".toString()]
     }
     if (control?.kind == 'button') {
         Map button = [id: id, name: control.name]
@@ -464,6 +470,7 @@ Map toolCallAppForm(Map args, String toolName = 'hub_set_rule') {
                 model = answer.model
                 if (answer.navigation) navigation = answer.navigation
                 if (answer.created_id != null) createdId = answer.created_id
+                if (answer.created_mismatch) throw new IllegalStateException(answer.created_mismatch)
                 if (answer.posted) {
                     defaultsPosted.addAll(plan.defaults)
                     defaultsNotPosted.addAll(plan.rejected)

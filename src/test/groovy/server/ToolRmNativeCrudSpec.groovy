@@ -4391,7 +4391,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         'visual rule create'          | [operation: 'create', args: [app_type: 'visual_rule', name: 'x'], confirm: true]              | 'hub_set_visual_rule'
         'create with app_id'          | [operation: 'create', app_id: 5, args: [app_type: 'notifier', name: 'x'], confirm: true]      | 'create takes no app_id'
         'update without app_id'       | [operation: 'update', args: [fields: [a: 1]], confirm: true]                                  | 'app_id is required'
-        'blank name'                  | [operation: 'create', args: [app_type: 'notifier', name: '  '], confirm: true]                | 'name must not be blank'
+        'blank name'                  | [operation: 'create', args: [app_type: 'notifier', name: '  '], confirm: true]                | 'Invalid args.name'
         'button keys on another type' | [operation: 'create', args: [app_type: 'notifier', name: 'n', controller_id: 7], confirm: true] | 'apply only to app_type button_rule'
         'button_rule with a name'     | [operation: 'create', args: [app_type: 'button_rule', name: 'n', controller_id: 7, button_number: 1, event: 'pushed'], confirm: true] | 'button_rule takes no name'
         'button_rule without event'   | [operation: 'create', args: [app_type: 'button_rule', controller_id: 7, button_number: 1], confirm: true] | 'button_rule requires event'
