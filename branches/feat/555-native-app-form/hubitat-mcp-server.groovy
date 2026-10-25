@@ -25449,6 +25449,7 @@ private Map _naReadBack(Long id, Map page, Map written) {
 private String _naRemoveUnfinished(Long id) {
     String failure = null
     try {
+        _requireUnprotectedAppDeletion(id.toInteger())
         _rmForceDeleteApp(id.toInteger())
         if (getAppByAppId(id) != null) failure = 'the app still exists after its force delete'
     } catch (Exception error) { failure = (error.message ?: error.toString()).toString() }
@@ -25491,8 +25492,12 @@ private Map _naCreate(Map args) {
                 throw new IllegalArgumentException("The ${reg.parentTypeName} page offers no control that creates ${reg.appName}; it offers ${offered ?: 'none'}. Nothing was created.".toString())
             }
             Map made = _nfExecute(parentId, _nfPrepare(parentId, parent, [:], create.control_id, 'hub_set_native_app'))
+            if (made.created_mismatch) {
+                mcpLog('warn', 'rm-native', "hub_set_native_app create of ${type}: ${made.created_mismatch}; left in place")
+                return [success: false, app_type: type, app_id: made.created_id, error: "${made.created_mismatch}; it was left in place.".toString(),
+                        note: "Inspect app ${made.created_id} with hub_get_app_config(appId=${made.created_id}) before deleting it with hub_delete_native_app.${guide}".toString()]
+            }
             childId = made.created_id
-            if (made.created_mismatch) throw new IllegalStateException(made.created_mismatch)
             child = _nfContext(childId, _nfPage(childId))
             if (name) {
                 String labelInput = ['origLabel', 'name'].find { child.get('fields').containsKey(it) }
