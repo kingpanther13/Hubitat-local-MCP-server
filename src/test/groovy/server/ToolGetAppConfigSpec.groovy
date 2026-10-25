@@ -1536,7 +1536,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "returns success=false with fingerprint and hub_list_app_pages hint when configPage.sections is not a list"() {
+    def "returns success=false with fingerprint and a page.hrefs hint when configPage.sections is not a list"() {
         given:
         settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params ->
@@ -1554,8 +1554,8 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         then:
         result.success == false
         result.fingerprint == 'sections not a list'
-        // Note must guide the agent toward hub_list_app_pages and away from dead-end retries
-        result.error.contains('hub_list_app_pages')
+        // Error must point the agent at the default page's page.hrefs instead of dead-end retries
+        result.error.contains('page.hrefs')
     }
 
     @spock.lang.Unroll
@@ -1581,7 +1581,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.fingerprint == 'sections not a list'
-        inner.error.contains('hub_list_app_pages')
+        inner.error.contains('page.hrefs')
 
         where:
         useGateways << [true, false]

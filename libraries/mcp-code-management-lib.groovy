@@ -654,7 +654,7 @@ def toolGetAppConfig(args) {
         return [success: false, error: "Unexpected response shape: missing 'configPage' object. Firmware may have changed the endpoint contract.", appId: appIdStr as Integer, fingerprint: "missing configPage"]
     }
     if (!(parsed.configPage.sections instanceof List)) {
-        return [success: false, error: "Unexpected response shape: configPage.sections is not a list. This page may be a dynamic redirect or action-only page (common in HPM multi-step flows). Try a different pageName -- call hub_list_app_pages for this app, or `hub_get_tool_guide(section='builtin_app_tools_apps')` for common multi-page app names.", appId: appIdStr as Integer, fingerprint: "sections not a list"]
+        return [success: false, error: "Unexpected response shape: configPage.sections is not a list. This page may be a dynamic redirect or action-only page (common in HPM multi-step flows). Try another page from the page.hrefs of the app's default page (hub_get_app_config without pageName).", appId: appIdStr as Integer, fingerprint: "sections not a list"]
     }
 
     // Hub returns app.appType as a ~30-key metadata object (author, classLocation,
@@ -962,116 +962,6 @@ private boolean _appConfigSecretName(name) {
         return true
     }
     return false
-}
-
-def toolListAppPages(args) {
-
-    if (args?.appId == null || args.appId.toString().trim() == "") {
-        throw new IllegalArgumentException("appId is required")
-    }
-    def appIdStr = args.appId.toString().trim()
-    if (!appIdStr.isInteger()) {
-        throw new IllegalArgumentException("appId must be numeric: ${appIdStr}")
-    }
-
-    mcpLog("info", "hub-admin", "hub_list_app_pages appId=${appIdStr}")
-
-    def path = "/installedapp/configure/json/${appIdStr}"
-    def responseText
-    try {
-        responseText = hubInternalGet(path, null, 30)
-    } catch (Exception e) {
-        // Duck-type the HTTP status off the exception (HttpResponseException NCDFEs at parse
-        // time on the test classpath, so read e.response.status defensively). A 404/410 here is
-        // benign: the configure page can't render for a deleted, mid-delete, or not-yet-committed
-        // install shell -- degrade to a clean not-found at warn, not an opaque ERROR.
-        def resp = null
-        try { resp = e.response } catch (Exception ig) { resp = null }
-        Integer st = null
-        try { st = resp?.status as Integer } catch (Exception ig) { st = null }
-        if (st == 404 || st == 410) {
-            mcpLog("warn", "hub-admin", "hub_list_app_pages app ${appIdStr} not found (HTTP ${st} from ${path})")
-            return [success: false, error: "App ${appIdStr} not found (HTTP ${st} from ${path}). May be deleted, mid-delete, or a not-yet-committed install shell whose config page cannot render. Verify with hub_get_app_config(summary=true) or hub_list_apps.", appId: appIdStr as Integer, fingerprint: 'app not found (404)', status: st]
-        }
-        mcpLogError("hub-admin", "hub_list_app_pages fetch failed", e)
-        return [success: false, error: "Failed to fetch app config [${e.class.simpleName}]: ${e.message}", appId: appIdStr as Integer]
-    }
-
-    if (!responseText) {
-        return [success: false, error: "Empty response from ${path}. App may not exist or hub internal API is unavailable.", appId: appIdStr as Integer]
-    }
-
-    def parsed
-    try {
-        parsed = new groovy.json.JsonSlurper().parseText(responseText)
-    } catch (Exception e) {
-        mcpLogError("hub-admin", "hub_list_app_pages JSON parse failed", e)
-        return [success: false, error: "Failed to parse app config JSON: ${e.message}. Hubitat firmware may have changed the endpoint contract.", appId: appIdStr as Integer]
-    }
-
-    if (!(parsed instanceof Map)) {
-        return [success: false, error: "Unexpected response shape: expected a JSON object. Firmware may have changed the endpoint contract.", appId: appIdStr as Integer, fingerprint: "top-level not a Map"]
-    }
-    if (!(parsed.app instanceof Map)) {
-        return [success: false, error: "Unexpected response shape: missing 'app' object. Firmware may have changed the endpoint contract.", appId: appIdStr as Integer, fingerprint: "missing app"]
-    }
-    if (!(parsed.configPage instanceof Map)) {
-        return [success: false, error: "Unexpected response shape: missing 'configPage' object. Firmware may have changed the endpoint contract.", appId: appIdStr as Integer, fingerprint: "missing configPage"]
-    }
-
-    def appTypeRaw = parsed.app.appType
-    def appTypeName = (appTypeRaw instanceof Map) ? (appTypeRaw.name ?: "") : ""
-    def appLabel = stripAppConfigHtml(parsed.app.trueLabel ?: parsed.app.label) ?: ""
-
-    // Primary page: introspected from the hub response (configPage guaranteed Map by fingerprint check above)
-    def primaryPageName = parsed.configPage.name ?: "mainPage"
-    def primaryPageTitle = stripAppConfigHtml(parsed.configPage.title)
-    def primaryPage = [name: primaryPageName, title: primaryPageTitle, role: "primary"]
-
-    def appObj = [
-        id: parsed.app.id,
-        label: appLabel,
-        name: parsed.app.name,
-        appTypeName: appTypeName
-    ]
-
-    // HPM keeps a curated directory (case-insensitive substring match); every other app type gets
-    // its live primary page plus whatever that page links to.
-    def appTypeNameLower = appTypeName.toLowerCase()
-    def pages
-    def note = null
-    boolean curatedHpm = appTypeNameLower.contains("hubitat package manager")
-
-    if (curatedHpm) {
-        pages = [
-            [name: "prefOptions",    title: "Main Menu",                role: "navigation"],
-            [name: "prefPkgUninstall", title: "Uninstall / Full Package List", role: "full_package_list"],
-            [name: "prefPkgModify",  title: "Modify Package (optional-components subset)", role: "modifiable_subset"],
-            [name: "prefPkgInstall", title: "Install New Package",       role: "install_flow"],
-            [name: "prefPkgMatchUp", title: "Match Up Packages",         role: "matching_flow"]
-        ]
-    } else {
-        pages = [primaryPage]
-    }
-    // Every sub-page the live primary page links to, read from the page itself rather than a
-    // hard-coded directory: RM rules link selectTriggers/selectActions and Room Lighting links
-    // onDevicesPage/onMeansPage/offMeansPage, where a static "single page" note used to be.
-    def knownNames = pages.collect { it.name } as Set
-    def linked = _rmPageHrefs(parsed.configPage as Map).findAll { !(it.page in knownNames) }.unique { it.page }
-    linked.each { pages << [name: it.page, title: it.title, role: "sub-page"] }
-    if (linked) {
-        note = "Sub-pages are linked from the primary page. A sub-page can link further pages of its own: read hub_get_app_config(appId, pageName=<sub-page>).page.hrefs. Use hub_set_rule for Rule Machine changes and native form controls; for other apps write a sub-page's inputs with hub_set_native_app(operation:'update', args:{page, fields}) or follow its links with operation:'form'."
-    } else if (!curatedHpm) {
-        note = "The primary page links no sub-pages."
-    }
-
-    return [
-        success: true,
-        app: appObj,
-        primaryPage: primaryPage,
-        pages: pages,
-        note: note
-    ]
 }
 
 // Unified source reader for the hub_get_source tool: dispatches on type to the
@@ -3518,32 +3408,14 @@ A transport drop can lose the response while the hub still commits this write; v
         // Hub Admin App Configuration Read (grouped with installed-apps peers)
         [
             name: "hub_get_app_config",
-            description: """Read an installed app's configuration — the structured data the Hubitat Web UI shows on an app's settings page.[[FLAT_TRIM]] Works for any legacy SmartApp (Rule Machine rules, Room Lighting, Basic Rules, HPM, Mode Manager, etc.).[[/FLAT_TRIM]] Read-only.
-
-Returns the app's identity plus its current config page (sections, inputs, current values) and `embeddedActions` — clickable native editor buttons; hub_set_rule form operations return supported Rule Machine controls. Multi-page apps (e.g. RM 5.1): pass pageName; call hub_list_app_pages to discover sub-page names.[[FLAT_TRIM]] A Rule Machine action disabled in the UI is prefixed `[DISABLED]` in paragraphs, listed in `disabledActions` (`{text, disableButton}`), and flagged `disabled:true` on its selectActions (Button Rule: selectActionsX) row in embeddedActions; unmarked actions are live.[[/FLAT_TRIM]]
-
-Get appId from hub_list_apps (scope='instances') or hub_list_rules.[[FLAT_TRIM]] For RM rules use hub_list_rules, NOT hub_get_custom_rule (which only handles MCP-native rules).[[/FLAT_TRIM]][[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]""",
+            description: """Read an installed classic app's page as the Hubitat UI renders it: the app's identity, the page's sections with each input's current value, and its child apps. The pages it links to are listed in page.hrefs; read one by passing its page as pageName, starting from the default page. Secret values are redacted. Get appId from hub_list_apps (scope='instances') or hub_list_rules.""",
             inputSchema: [
                 type: "object",
                 properties: [
                     appId: [type: "string", description: "Installed-app ID (decimal). From hub_list_apps (scope='instances'), hub_list_rules, or the numeric id in the Hubitat UI URL (/installedapp/configure/<id>)."],
-                    pageName: [type: "string", description: "Optional sub-page name for multi-page apps; main page when omitted. Call hub_list_app_pages to discover available names."],
+                    pageName: [type: "string", description: "The page to read instead of the default page: a page.hrefs[].page name from a page of this app already read."],
                     includeSettings: [type: "boolean", description: "Include the raw app-internal settings key-value map (default false). Set true only for power-user inspection.", default: false],
                     summary: [type: "boolean", description: "Fast identity-only read: returns the thin app record (id, name, type, disabled, user), no config page; pageName/includeSettings ignored.", default: false]
-                ],
-                required: ["appId"]
-            ]
-        ],
-        // Hub Admin App Pages Directory
-        [
-            name: "hub_list_app_pages",
-            description: """List page names for an installed app: the live primary page plus every sub-page it links to (any classic app), with a curated directory added for HPM.[[FLAT_TRIM]] A page linked only from a sub-page appears in hub_get_app_config(appId, pageName=<sub-page>).page.hrefs.[[/FLAT_TRIM]]
-
-Use before hub_get_app_config on multi-page apps to avoid guessing page names.[[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    appId: [type: "string", description: "Installed-app ID (decimal). From hub_list_apps (scope='instances'), hub_list_rules, or the Hubitat UI URL (/installedapp/configure/<id>)."]
                 ],
                 required: ["appId"]
             ]
@@ -3573,7 +3445,7 @@ def _readOnlyToolNames_partCodeManagement() {
         // Apps/drivers (read)
         "hub_list_apps", "hub_list_drivers", "hub_list_libraries", "hub_get_source",
         // Installed apps (read) -- instances list folded into hub_list_apps(scope='instances').
-        "hub_list_device_dependents", "hub_get_app_config", "hub_list_app_pages"
+        "hub_list_device_dependents", "hub_get_app_config"
     ]
 }
 
@@ -3611,7 +3483,6 @@ def _toolDisplayMeta_partCodeManagement() {
         hub_update_library: [title: "Update Library Code", summary: "Modify an existing library's source code."],
         hub_delete_item: [title: "Delete Code Item", summary: "Permanently delete an app, driver, or library (auto-backs up first)."],
         hub_list_device_dependents: [title: "List Device Dependents", summary: "Find all apps that reference a device."],
-        hub_get_app_config: [title: "Get App Configuration", summary: "Read an installed app's configuration page."],
-        hub_list_app_pages: [title: "List App Pages", summary: "List known page names for a multi-page app."]
+        hub_get_app_config: [title: "Get App Configuration", summary: "Read an installed app's configuration page."]
     ]
 }

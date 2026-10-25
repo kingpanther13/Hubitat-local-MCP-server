@@ -8,7 +8,7 @@
 
 **Dedicated test-hub prompt:** "Create a disposable test device, inspect its preferences and configuration, and verify boolean, numeric, text and enum changes using an independent native read. Restore each original value and verify restoration, then remove only the device and driver you created. Leave every existing device and automation unchanged."
 
-Updated for the installed-apps + Rule Machine interop + native CRUD + library management + HPM package state architecture, then the issue #105 PR1A hub_ rename + consolidation, then the PR1B read/write split, then the issue #259 item #9 Easy Dashboard CRUD (13 flat core + 23 gateways = 36 on tools/list, 116 total distinct tools).
+Updated for the installed-apps + Rule Machine interop + native CRUD + library management + HPM package state architecture, then the issue #105 PR1A hub_ rename + consolidation, then the PR1B read/write split, then the issue #259 item #9 Easy Dashboard CRUD (13 flat core + 23 gateways = 36 on tools/list, 115 total distinct tools).
 
 Comprehensive test scenarios for the Hubitat MCP Rule Server. Modeled after ha-mcp's BAT framework.
 
@@ -2762,11 +2762,11 @@ These operations are too destructive for automated testing. Test manually with e
 | Flat core tools on `tools/list` | 13 |
 | Gateways on `tools/list` | 23 |
 | Total visible on `tools/list` | 36 |
-| Total distinct tools in codebase | 116 |
+| Total distinct tools in codebase | 115 |
 
 With Developer Mode on, `hub_update_package` joins the flat core tools, so a Developer Mode hub lists one more.
 
-**8 read gateways**: `hub_read_apps_code` (11), `hub_read_devices` (6), `hub_read_diagnostics` (6), `hub_read_files` (2), `hub_read_rooms` (2), `hub_read_rules` (6), `hub_read_variables` (3), `hub_read_dashboards` (2)
+**8 read gateways**: `hub_read_apps_code` (10), `hub_read_devices` (6), `hub_read_diagnostics` (6), `hub_read_files` (2), `hub_read_rooms` (2), `hub_read_rules` (6), `hub_read_variables` (3), `hub_read_dashboards` (2)
 
 **15 manage gateways**: `hub_manage_backup` (4), `hub_manage_code` (10), `hub_manage_custom_rules` (8), `hub_manage_dashboards` (6), `hub_manage_destructive_ops` (4), `hub_manage_devices` (11), `hub_manage_diagnostics` (7), `hub_manage_files` (4), `hub_manage_logs` (3), `hub_manage_mcp` (1), `hub_manage_native_rules_and_apps` (12), `hub_manage_radio` (6), `hub_manage_rooms` (5), `hub_manage_rule_machine` (11), `hub_manage_variables` (8)
 
@@ -2774,7 +2774,7 @@ With Developer Mode on, `hub_update_package` joins the flat core tools, so a Dev
 
 ### Tool Coverage (non-destructive tools only)
 
-All 116 distinct tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
+All 115 distinct tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
 
 Sections 1-9 each target a specific tool — named in the test's title and **Expected** criteria while the `test_prompt` stays goal-first (see Prompt style above). Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist. Section 11 covers the built-in app integration tools.
 
@@ -2784,7 +2784,7 @@ Sections 1-9 each target a specific tool — named in the test's title and **Exp
 
 ## Section 11: Built-in App Integration Tests
 
-Tools in this section have mixed gate requirements. `hub_list_apps` (scope=instances) and `hub_list_device_dependents` require the Read master. `hub_get_app_config` and `hub_list_app_pages` require the Read master. `hub_manage_native_rules_and_apps` tools require the Read master; CRUD tools additionally require the Write master. Tests assume at least one Rule Machine rule and at least one Room Lighting or other multi-app configuration exists on the hub.
+Tools in this section have mixed gate requirements. `hub_list_apps` (scope=instances) and `hub_list_device_dependents` require the Read master. `hub_get_app_config` requires the Read master. `hub_manage_native_rules_and_apps` tools require the Read master; CRUD tools additionally require the Write master. Tests assume at least one Rule Machine rule and at least one Room Lighting or other multi-app configuration exists on the hub.
 
 ### Safety Rules for Section 11
 
@@ -2851,7 +2851,7 @@ Tools in this section have mixed gate requirements. `hub_list_apps` (scope=insta
 }
 ```
 
-**Expected**: AI calls `hub_read_apps_code` with no args, sees catalog of 11 tools (`hub_list_apps`, `hub_list_drivers`, `hub_get_source`, `hub_list_libraries`, `hub_list_bundles`, `hub_list_backups`, `hub_get_backup`, `hub_list_device_dependents`, `hub_get_app_config`, `hub_list_app_pages`, `hub_list_hpm_packages`) with full parameter schemas. The installed-apps listing is reached via `hub_list_apps` with `scope='instances'`.
+**Expected**: AI calls `hub_read_apps_code` with no args, sees catalog of 10 tools (`hub_list_apps`, `hub_list_drivers`, `hub_get_source`, `hub_list_libraries`, `hub_list_bundles`, `hub_list_backups`, `hub_get_backup`, `hub_list_device_dependents`, `hub_get_app_config`, `hub_list_hpm_packages`) with full parameter schemas. The installed-apps listing is reached via `hub_list_apps` with `scope='instances'`.
 
 ### T206 — Gateway catalog discovery (hub_manage_native_rules_and_apps)
 
@@ -3012,7 +3012,7 @@ Tools in this section have mixed gate requirements. `hub_list_apps` (scope=insta
 
 **Expected**: `hub_get_app_config` throws `IllegalArgumentException: the Read master access is disabled...`. AI reports the gate requirement and directs user to enable it in MCP app settings.
 
-### T217 — hub_list_app_pages for HPM (discover sub-page names)
+### T217 — HPM page discovery (sub-page names from page.hrefs)
 
 ```json
 {
@@ -3021,9 +3021,9 @@ Tools in this section have mixed gate requirements. `hub_list_apps` (scope=insta
 }
 ```
 
-**Expected**: AI uses the HPM app ID discovered in setup, then calls `hub_read_apps_code(tool='hub_list_app_pages', args={appId: <discovered_id>})`. Returns a `pages` list including at least `prefOptions`, `prefPkgUninstall`, `prefPkgModify`, `prefPkgInstall`, `prefPkgMatchUp`. AI lists the available page names and explains their roles (e.g. prefPkgUninstall = full installed-package list). Tool is accessed via the `hub_read_apps_code` gateway.
+**Expected**: AI reads HPM's default page with `hub_read_apps_code(tool='hub_get_app_config', args={appId: <discovered_id>})` and lists the pages under `page.hrefs` with their titles: on a configured HPM the default page is `prefOptions` and links `prefPkgInstall`, `prefPkgUpdate`, `prefPkgModify`, `prefPkgRepair`, `prefPkgUninstall`, `prefPkgMatchUp`, `prefPkgView` and `prefSettings`. AI does not guess page names that the page does not link.
 
-### T218 — hub_list_app_pages for Rule Machine rule (linked sub-pages)
+### T218 — Rule Machine rule page discovery (linked sub-pages)
 
 ```json
 {
@@ -3032,7 +3032,7 @@ Tools in this section have mixed gate requirements. `hub_list_apps` (scope=insta
 }
 ```
 
-**Expected**: AI uses the Rule Machine app ID discovered in setup, then calls `hub_read_apps_code(tool='hub_list_app_pages', args={appId: <discovered_id>})`. Returns a `pages` list with `{name: 'mainPage', role: 'primary'}` plus the sub-pages the rule's page links (`selectTriggers` and `selectActions`, `role: 'sub-page'`), and a `note` pointing at `hub_set_rule`'s shortcuts for RM rules. AI lists the pages and says rules are authored through `hub_set_rule` rather than by driving those pages.
+**Expected**: AI reads the rule's default page with `hub_read_apps_code(tool='hub_get_app_config', args={appId: <discovered_id>})` and lists `mainPage` plus the sub-pages in `page.hrefs` (`selectTriggers` and `selectActions`). AI says rules are authored through `hub_set_rule` rather than by driving those pages.
 
 ### T219 — hub_get_custom_rule on a Rule Machine rule ID (redirect hint)
 

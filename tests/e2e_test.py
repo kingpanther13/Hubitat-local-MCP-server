@@ -6144,12 +6144,12 @@ class TestRunner:
             cfg = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config", "args": {"appId": app_id}})
             assert (cfg.get("app") or {}).get("name") == "Room Lights", f"unexpected Room Lights config: {cfg}"
 
-            # The page links its sub-pages; the listing reads them instead of claiming a single page.
-            pages = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_app_pages", "args": {"appId": app_id}})
-            names = [p.get("name") for p in (pages.get("pages") or [])]
-            assert {"onMeansPage", "offMeansPage"} <= set(names), f"Room Lights sub-pages not listed: {pages}"
-            assert "onMeansPage" in [h.get("page") for h in ((cfg.get("page") or {}).get("hrefs") or [])], \
-                f"hub_get_app_config should expose the page's sub-page links: {cfg.get('page')}"
+            # The default page's hrefs name its sub-pages, and each one renders by that name.
+            names = [h.get("page") for h in ((cfg.get("page") or {}).get("hrefs") or [])]
+            assert {"onMeansPage", "offMeansPage"} <= set(names), f"Room Lights sub-pages not in page.hrefs: {cfg.get('page')}"
+            sub = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config", "args": {"appId": app_id, "pageName": "onMeansPage"}})
+            assert (sub.get("page") or {}).get("name") == "onMeansPage", f"onMeansPage did not render: {sub.get('page')}"
 
             # #460: the {id: label} map shape the read returns is accepted on write...
             wr = self._native_app("update", {"fields": {"roomDevsL": {switch_a: "a", switch_b: "b"}}}, app_id)
