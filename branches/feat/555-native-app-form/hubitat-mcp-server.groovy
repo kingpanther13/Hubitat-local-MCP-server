@@ -25449,7 +25449,7 @@ private Map _naReadBack(Long id, Map page, Map written) {
 private String _naRemoveUnfinished(Long id) {
     String failure = null
     try {
-        _requireUnprotectedAppDeletion(id.toInteger())
+        _requireUnprotectedAppMutation(id, 'delete')
         _rmForceDeleteApp(id.toInteger())
         if (getAppByAppId(id) != null) failure = 'the app still exists after its force delete'
     } catch (Exception error) { failure = (error.message ?: error.toString()).toString() }
