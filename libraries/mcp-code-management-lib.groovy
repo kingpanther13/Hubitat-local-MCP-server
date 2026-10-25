@@ -592,6 +592,8 @@ def toolGetAppConfig(args) {
             def text = stripAppConfigHtml(rawHtml)
             if (!text || text == "Click to set") continue
             // Rule Machine wraps a disabled action or trigger, and its legend, in a red italic span.
+            // That span is what Rule Machine's thisActionLabel renders for a user-disabled action; <strike> appears
+            // only in its runtime log strings, never on the page.
             boolean disabled = isRmRule && (rawHtml =~ /(?i)<span\s+style=['"]\s*color:\s*red;?\s*['"]\s*>\s*<i>/).find()
             paragraphs << (disabled ? [text: text, disabled: true] : text)
         }
