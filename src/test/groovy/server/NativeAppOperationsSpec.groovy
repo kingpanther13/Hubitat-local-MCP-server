@@ -781,7 +781,7 @@ class NativeAppOperationsSpec extends ToolSpecBase {
     // ---------------------------------------------------------------- review round 2
 
     @Unroll
-    def 'a created child that is not the requested type under the parent is removed and its id named: #label'() {
+    def 'a created child that is not the requested type under the parent is left in place and its id named: #label'() {
         given:
         parentAt(40L, 'notifierChild', 'Notifier')
         replies.createdId = 90L
@@ -794,8 +794,9 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         !result.success
         result.app_id == 90L
         result.error.contains('Created app 90 did not match the native parent and child type')
-        result.orphan_cleanup == 'removed'
-        deleted == [90]
+        result.error.contains('left in place')
+        result.note.contains('hub_get_app_config(appId=90)')
+        deleted.isEmpty()
         posts.isEmpty()
         !gets.contains('/installedapp/configure/json/90')
 
