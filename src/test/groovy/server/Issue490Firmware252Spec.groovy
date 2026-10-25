@@ -322,12 +322,11 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         raw << ['["accountEmails","a@b.c"]', '{"accountEmails":["a@b.c"]', 'accountEmails=a@b.c']
     }
 
-    // ---------------- performance: cloud calls ----------------
+    // ---------------- Logs page: cloud calls ----------------
 
-    def "includeCloudCalls groups the hourly series per app, newest first, sorted by total"() {
+    def "cloudCalls lists each app's calls with its hourly series newest first, busiest app first"() {
         given:
         settingsMap.enableRead = true
-        hubGet.register('/logs/json') { p -> JsonOutput.toJson([uptime: '1d', deviceStats: [[id: 1, name: 'D', pct: 1.0, cloudCallCount: 4]], appStats: []]) }
         hubGet.register('/logs/cloudCalls/json') { p ->
             JsonOutput.toJson([apps: [[id: 72, name: 'Google Home', installed: true, total: 57, currentHour: 2],
                                       [id: 194, name: 'MCP Rule Server', installed: true, total: 159, currentHour: 0]],
@@ -336,46 +335,37 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         }
 
         when:
-        def r = script.toolGetPerformanceStats([includeCloudCalls: true])
+        def r = script.toolGetHubLogs([mode: 'cloudCalls'])
+        def one = script.toolGetHubLogs([mode: 'cloudCalls', appId: '72'])
 
         then:
-        r.deviceStats[0].cloudCalls == 4
-        r.cloudCalls.apps*.name == ['MCP Rule Server', 'Google Home']
-        r.cloudCalls.apps[1].hourly*.count == [3, 2]
-        r.cloudCalls.timeZone == 'US/Eastern'
+        r.entries*.name == ['MCP Rule Server', 'Google Home']
+        r.entries[1].hours*.count == [3, 2]
+        r.entries[1].installed == true
+        r.entries[1].currentHour == 2
+        r.timeZone == 'US/Eastern'
+        r.countingSince != null
+        one.entries*.id == [72]
     }
 
-    def "a cloud-calls answer of an unexpected shape is reported as such, and hourly keeps 48 hours"() {
+    def "cloudCalls keeps the newest 48 hours of an app's series"() {
         given:
         settingsMap.enableRead = true
-        hubGet.register('/logs/json') { p -> JsonOutput.toJson([uptime: '1d', deviceStats: [], appStats: []]) }
-        int calls = 0
         hubGet.register('/logs/cloudCalls/json') { p ->
-            calls++
-            calls == 1 ? JsonOutput.toJson([apps: [[id: 1, name: 'A', total: 1]], hours: [[appId: 1, hourStart: 'soon', count: 1]]]) :
-                         JsonOutput.toJson([apps: [[id: 1, name: 'A', total: 99]], hours: (1..60).collect { [appId: 1, hourStart: it * 3600000L, count: 1] }])
+            JsonOutput.toJson([apps: [[id: 1, name: 'A', total: 99]], hours: (1..60).collect { [appId: 1, hourStart: it * 3600000L, count: 1] }])
         }
 
-        when:
-        def bad = script.toolGetPerformanceStats([includeCloudCalls: true])
-        def good = script.toolGetPerformanceStats([includeCloudCalls: true])
-
-        then:
-        bad.cloudCalls.error.contains('unexpected shape')
-        good.cloudCalls.apps[0].hourly.size() == 48
+        expect:
+        script.toolGetHubLogs([mode: 'cloudCalls']).entries[0].hours.size() == 48
     }
 
-    def "an unreadable cloud-calls endpoint is an error block, not a failed stats read"() {
+    def "stats rows carry each device's own cloud-call count"() {
         given:
         settingsMap.enableRead = true
-        hubGet.register('/logs/json') { p -> JsonOutput.toJson([uptime: '1d', deviceStats: [], appStats: []]) }
+        hubGet.register('/logs/json') { p -> JsonOutput.toJson([uptime: '1d', deviceStats: [[id: 1, name: 'D', pct: 1.0, cloudCallCount: 4]], appStats: []]) }
 
-        when:
-        def r = script.toolGetPerformanceStats([includeCloudCalls: true])
-
-        then:
-        r.uptime == '1d'
-        r.cloudCalls.error.contains('/logs/cloudCalls/json')
+        expect:
+        script.toolGetHubLogs([mode: 'devices']).entries[0].cloudCallCount == 4
     }
 
     // ---------------- radio reads ----------------
@@ -1600,7 +1590,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         r.platformLookup == 'unavailable'
     }
 
-    def "until bounds the location history window"() {
+    def "until bounds the location events window"() {
         given:
         settingsMap.enableRead = true
         hubGet.register('/logs/eventsJson') { p ->
@@ -1610,11 +1600,10 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         }
 
         when:
-        def r = script.toolGetDeviceHistory([since: '2026-10-08T02:00:00.000+0000', until: '2026-10-08T02:15:00.000+0000'])
+        def r = script.toolGetHubLogs([mode: 'locationEvents', since: '2026-10-08T02:00:00.000+0000', until: '2026-10-08T02:15:00.000+0000'])
 
         then:
-        r.events*.value == ['Day']
-        r.untilTimestamp != null
+        r.entries*.value == ['Day']
     }
 
     def "until on its own routes a device read to the bounded history, not the latest events"() {
@@ -2468,5 +2457,22 @@ class Issue490Firmware252Spec extends ToolSpecBase {
 
         expect:
         script._typeName([a: 1]) == 'LinkedHashMap'
+    }
+
+    def "until bounds the location history window"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/logs/eventsJson') { p ->
+            JsonOutput.toJson([[name: 'mode', value: 'Night', date: '2026-10-08T03:00:00.000+0000'],
+                               [name: 'mode', value: 'Day', date: '2026-10-08T02:10:00.000+0000'],
+                               [name: 'mode', value: 'Away', date: '2026-10-08T01:00:00.000+0000']])
+        }
+
+        when:
+        def r = script.toolGetDeviceHistory([since: '2026-10-08T02:00:00.000+0000', until: '2026-10-08T02:15:00.000+0000'])
+
+        then:
+        r.events*.value == ['Day']
+        r.untilTimestamp != null
     }
 }

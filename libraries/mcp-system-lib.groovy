@@ -1312,27 +1312,45 @@ def toolSetHsm(armCommand) {
 // — is consolidated there under the hub_manage_backup gateway).
 
 def toolRebootHub(args) {
+    // A non-boolean option would reboot without it, so it is refused before the reboot.
+    ["rebuildDatabase", "purgeLogs"].each { String opt ->
+        if (args[opt] != null && !(args[opt] instanceof Boolean)) {
+            throw new IllegalArgumentException("${opt} must be true or false (got '${args[opt]}')")
+        }
+    }
     requireDestructiveConfirm(args.confirm)
 
-    mcpLog("warn", "hub-admin", "Hub reboot initiated by MCP")
+    boolean rebuildDatabase = args.rebuildDatabase == true
+    boolean purgeLogs = args.purgeLogs == true
+    mcpLog("warn", "hub-admin", "Hub reboot initiated by MCP${rebuildDatabase ? ' with database rebuild' : ''}${purgeLogs ? ' with past-log purge' : ''}")
 
     try {
-        def responseText = hubInternalPost("/hub/reboot")
-        return [
+        def responseText = _hubReboot(rebuildDatabase, purgeLogs)
+        Map out = [
             success: true,
             message: "Hub reboot initiated. The hub will be unreachable for 1-3 minutes.",
             lastBackup: formatTimestamp(state.lastBackupTimestamp),
             warning: "All automations and device communications will stop during reboot. The hub will restart automatically.",
             response: responseText?.take(500)
         ]
+        if (rebuildDatabase) out.rebuildDatabase = true
+        if (purgeLogs) out.purgeLogs = true
+        return out
     } catch (Exception e) {
         mcpLogError("hub-admin", "Hub reboot failed", e)
         return [
             success: false,
+            isError: true,
             error: "Reboot failed: ${e.message}",
-            note: "The reboot command could not be sent. Check Hub Security credentials or try rebooting manually from the Hubitat web UI at Settings → Reboot Hub."
+            note: "If the request reached the hub it may already be restarting: wait 3 minutes and check hub_get_info before trying again. Otherwise check Hub Security credentials or reboot from the Hubitat web UI at Settings → Reboot Hub."
         ]
     }
+}
+
+// The hub's Reboot dialog request; its two advanced options ride in the JSON body.
+def _hubReboot(boolean rebuildDatabase, boolean purgeLogs) {
+    return _hubRequest('POST', '/hub/reboot', [body: groovy.json.JsonOutput.toJson([rebuildDatabase: rebuildDatabase, purgeLogs: purgeLogs]),
+                                               requestContentType: "application/json", timeout: 30, returnShape: 'text'])
 }
 
 def toolShutdownHub(args) {
@@ -1683,7 +1701,9 @@ PRE-FLIGHT: 1) Ensure backup <24h old 2) Tell user 3) Get explicit confirmation 
             inputSchema: [
                 type: "object",
                 properties: [
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved the reboot."]
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved the reboot."],
+                    rebuildDatabase: [type: "boolean", description: "Rebuild the hub database while restarting (a Reboot dialog advanced option)."],
+                    purgeLogs: [type: "boolean", description: "Ask the hub to purge its past logs while restarting (a Reboot dialog advanced option)."]
                 ],
                 required: ["confirm"]
             ]

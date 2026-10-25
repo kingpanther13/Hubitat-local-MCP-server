@@ -221,6 +221,15 @@ RULES = [
         "pattern": r"\.(?:methods|fields|declaredFields)\b(?!\s*\()",
         "message": "`.methods`, `.fields` and `.declaredFields` property reads are blocked by the Hubitat sandbox at runtime, even on a Map. Use map.get(\"<name>\") or another key.",
         "severity": "error",
+    },    {
+        # The sandbox allows a method pointer only on the script itself: `set.&contains` fails at
+        # runtime with "Method pointers are not allowed on java.util.LinkedHashSet" (live, ephemeral
+        # hub e2e), while the Spock harness accepts it. The receiver can be a property chain
+        # (`state.jobs.&contains`, `this.cache.&get`); only a bare `this` is allowed.
+        "id": "SANDBOX-018",
+        "pattern": r"(?<![\w.])(?!this\s*\.&)[A-Za-z_]\w*(?:\s*\??\.\s*[A-Za-z_]\w*)*\s*\.&\s*[A-Za-z_]",
+        "message": "Method pointer on something other than `this` -- the Hubitat sandbox refuses it at runtime ('Method pointers are not allowed on <class>'). Use `this.&name` or an inline closure.",
+        "severity": "error",
     },
 ]
 
@@ -2438,18 +2447,18 @@ READ_WRITE_SPLIT_SELF_TEST_CASES = [
     (
         "read reachable ONLY through a hub_manage_* gateway -- flags stranded (must-catch)",
         _build_read_write_split_corpus(
-            {"hub_manage_logs": ["hub_get_logs", "hub_delete_debug_logs"]},
+            {"hub_manage_logs": ["hub_get_logs", "hub_delete_logs"]},
             ["hub_get_logs"],
-            ["hub_get_logs", "hub_delete_debug_logs"],
+            ["hub_get_logs", "hub_delete_logs"],
         ),
         {"read-write-split-stranded-read"},
     ),
     (
         "read in no gateway at all and not flat -- flags stranded, empty holders (must-catch)",
         _build_read_write_split_corpus(
-            {"hub_manage_logs": ["hub_delete_debug_logs"]},
+            {"hub_manage_logs": ["hub_delete_logs"]},
             ["hub_ghost_read"],
-            ["hub_delete_debug_logs"],
+            ["hub_delete_logs"],
         ),
         {"read-write-split-stranded-read"},
     ),
@@ -5017,8 +5026,8 @@ def check_sandbox_map_subscripts(
 def check_logs_json_snapshot_guard() -> list[dict]:
     """Slow-read guard for the hub's /logs/json page. That one document carries every device and
     app stat plus the job tables, so its fetch time grows with hub size and a synchronous read
-    built on it outruns the cloud relay on a large hub (hub_get_jobs and
-    hub_get_performance_stats both 502'd that way). Two source-level invariants keep the fix in
+    built on it outruns the cloud relay on a large hub (the job and stats reads 502'd that
+    way before the snapshot). Two source-level invariants keep the fix in
     place: (1) the only hubInternalGet of "/logs/json" lives in _logsJsonFetchAndPublish, the
     single fetch implementation behind the JVM snapshot (invoked inline on an unbudgeted request
     and by the scheduled worker otherwise); (2) every tool whose implementation reads the

@@ -30,38 +30,36 @@ import e2e_test as et  # noqa: E402 -- must follow the importorskip above (e2e_t
 @pytest.mark.parametrize("refetched", [False, True])
 def test_jobs_cursor_checks_multiple_pages_without_pinning_expired_snapshot(refetched):
     first = {
-        "scheduledJobs": {"jobs": [{"name": str(i)} for i in range(100)], "count": 100, "total": 101},
-        "runningJobs": {"jobs": [], "count": 0}, "hubActions": {"actions": [], "count": 0},
+        "entries": [{"name": str(i)} for i in range(5)], "count": 5, "matched": 6, "total": 6,
         "snapshot": {"fetchedAt": 1000}, "nextCursor": "next-page",
     }
     second = {
-        "scheduledJobs": {"jobs": [{"name": "last"}], "count": 1, "total": 102 if refetched else 101},
-        "runningJobs": {"jobs": ["new"] if refetched else [], "count": 1 if refetched else 0},
-        "hubActions": {"actions": [], "count": 0},
+        "entries": [{"name": "last"}], "count": 1, "matched": 7 if refetched else 6,
         "snapshot": {"fetchedAt": 32000 if refetched else 1000},
     }
     calls = []
 
     def call_tool(gateway, args):
         calls.append(args)
-        if args["tool"] == "hub_get_performance_stats":
+        if args["args"]["mode"] == "devices":
             return {"uptime": "1d"}
         return first if args["args"]["cursor"] == "" else second
 
     runner = object.__new__(et.TestRunner)
     runner.client = SimpleNamespace(call_tool=call_tool)
-    runner.test_get_hub_jobs_cursor()
+    runner.test_get_logs_scheduled_jobs_cursor()
     assert [call["args"].get("cursor") for call in calls[:2]] == ["", "next-page"]
+    assert [call["args"].get("pageSize") for call in calls[:2]] == [5, 5]
     if not refetched:
-        second["scheduledJobs"]["jobs"] = []
-        second["scheduledJobs"]["count"] = 0
+        second["entries"] = []
+        second["count"] = 0
         with pytest.raises(AssertionError, match="pages summed"):
-            runner.test_get_hub_jobs_cursor()
+            runner.test_get_logs_scheduled_jobs_cursor()
 
 
 @pytest.mark.parametrize("refetched", [False, True])
 def test_jobs_provenance_accepts_shared_snapshot_from_another_transport(refetched):
-    jobs = {"scheduledJobs": {}, "snapshot": {
+    jobs = {"entries": [], "snapshot": {
         "fetchedAt": 1000, "ageMs": 500, "background": False, "budgeted": True,
     }}
     stats = {"uptime": "1d", "snapshot": {
@@ -70,11 +68,11 @@ def test_jobs_provenance_accepts_shared_snapshot_from_another_transport(refetche
     }}
     runner = object.__new__(et.TestRunner)
     runner.client = SimpleNamespace(call_tool=lambda gateway, args:
-                                    jobs if args["tool"] == "hub_get_jobs" else stats)
-    runner.test_get_hub_jobs_snapshot_provenance()
+                                    jobs if args["args"]["mode"] == "scheduledJobs" else stats)
+    runner.test_get_logs_snapshot_provenance()
     stats["snapshot"]["ageMs"] = 30001
     with pytest.raises(AssertionError, match="stale snapshot"):
-        runner.test_get_hub_jobs_snapshot_provenance()
+        runner.test_get_logs_snapshot_provenance()
 
 
 def _raw_tool_body(body, *, is_error=False):
@@ -164,7 +162,7 @@ def test_health_probes_require_completed_bounded_transport(method, failure):
     def call_tool(tool, args):
         if tool == "hub_get_logs":
             assert failure == "relay"
-            return {"logs": [{"message": "native network timeout"}]}
+            return {"entries": [{"message": "native network timeout"}]}
         assert tool == "hub_get_device_health"
         if failure == "relay":
             raise et.McpError("504 Gateway Timeout")
@@ -296,7 +294,11 @@ def test_bypass_boundary_preserves_existing_preferences_and_requires_unknown_nam
             if name == "hub_get_logs":
                 assert arguments == {"deviceId": "10", "limit": 5}
                 log_bypasses.append(bypass)
-                return {"logs": [{"deviceId": "10", "message": "Unselected device log"}]}
+                return {"entries": [{"deviceId": "10", "message": "Unselected device log"}]}
+            if name == "hub_manage_logs":
+                assert not bypass and arguments["args"]["jobId"] == "dev10Once.x"
+                raise et.McpToolError("hub_delete_logs", "Job dev10Once.x belongs to device 10, which is outside "
+                                      "this server's device access, so it cannot be deleted here.")
             if not bypass:
                 assert arguments["deviceId"] == "10"
                 denied_tools.append(name)
@@ -390,7 +392,11 @@ def test_bypass_boundary_restores_exact_native_label_after_a_committed_rename_fa
             if name == "hub_get_logs":
                 assert arguments == {"deviceId": "10", "limit": 5}
                 log_bypasses.append(bypass)
-                return {"logs": [{"deviceId": "10", "message": "Unselected device log"}]}
+                return {"entries": [{"deviceId": "10", "message": "Unselected device log"}]}
+            if name == "hub_manage_logs":
+                assert not bypass and arguments["args"]["jobId"] == "dev10Once.x"
+                raise et.McpToolError("hub_delete_logs", "Job dev10Once.x belongs to device 10, which is outside "
+                                      "this server's device access, so it cannot be deleted here.")
             if not bypass:
                 assert arguments["deviceId"] == "10"
                 denied_tools.append(name)
@@ -919,10 +925,10 @@ def test_load_snapshot_is_read_only_redacted_and_preserves_failed_operation(caps
         if unavailable:
             raise et.McpToolError(name, "sensitive response detail")
         if name == "hub_read_diagnostics":
-            assert arguments["tool"] == "hub_get_performance_stats"
-            return {"uptime": 42, "appStats": [
-                {"id": i, "totalMs": 100 - i, "name": "private app name"} for i in range(6)
-            ] + [{"id": 38, "totalMs": 5}]}
+            assert arguments["tool"] == "hub_get_logs" and arguments["args"]["mode"] == "apps"
+            return {"uptime": 42, "entries": [
+                {"id": i, "total": 100 - i, "name": "private app name"} for i in range(6)
+            ] + [{"id": 38, "total": 5}]}
         assert name == "hub_get_hub_mesh"
         return {"hubMeshEnabled": True, "hubMeshToken": "secret token",
                 "peers": [{"token": "peer secret"}], "sharedDevices": []}
@@ -1091,9 +1097,9 @@ def test_capture_504_context_names_the_failed_call_and_anchors_the_window(capsys
 
         def _send(self, method, params, headers=None):
             sent.append(params)
-            if params["arguments"]["args"]["mode"] == "hub":
-                return _logs_body({"logs": [{"name": "2026-09-26 06:07:01.100", "level": "WARN",
-                                             "message": "app|38|MCP|[hubrt] slow GET"}]})
+            if params["arguments"]["args"]["mode"] == "past":
+                return _logs_body({"entries": [{"name": "2026-09-26 06:07:01.100", "level": "WARN",
+                                                "message": "app|38|MCP|[hubrt] slow GET"}]})
             return _logs_body({"entries": [{"timestamp": 1790402821000, "level": "debug",
                                             "component": "mrtr", "message": "slice scheduled"}]})
 
@@ -1107,7 +1113,7 @@ def test_capture_504_context_names_the_failed_call_and_anchors_the_window(capsys
     runner._capture_504_context("test_visual_rule_editor_form_lifecycle", exc, failed_at)
 
     out = capsys.readouterr().out
-    assert [p["arguments"]["args"]["mode"] for p in sent] == ["hub", "mcp"]
+    assert [p["arguments"]["args"]["mode"] for p in sent] == ["past", "mcp"]
     assert sent[0]["arguments"]["args"]["appId"] == 38
     assert sent[0]["arguments"]["args"]["since"] == "2026-09-26T13:03:29Z"   # failed_at - (10.3s + 120s)
     assert "failed op hub_set_visual_rule 10.3s [err]" in out
@@ -1119,7 +1125,7 @@ def test_capture_504_context_names_the_failed_call_and_anchors_the_window(capsys
 @pytest.mark.parametrize("main_reply", [
     pytest.param("raise", id="main-read-504"),
     pytest.param(_logs_body({"status": "in_progress", "retryable": True}), id="snapshot-still-loading"),
-    pytest.param(_logs_body({"logs": [], "error": "Unexpected log format from hub"}), id="error-body"),
+    pytest.param(_logs_body({"entries": [], "error": "Unexpected log format from hub"}), id="error-body"),
     pytest.param({"resultType": "input_required", "requestState": "x"}, id="continuation-not-followed"),
     pytest.param({"isError": True, "content": [{"text": "{}"}]}, id="is-error"),
 ])
@@ -1130,7 +1136,7 @@ def test_capture_504_context_falls_back_to_the_watchdog_when_the_main_read_is_un
         _last_op = None
 
         def _send(self, method, params, headers=None):
-            if params["arguments"]["args"]["mode"] == "hub":
+            if params["arguments"]["args"]["mode"] == "past":
                 if main_reply == "raise":
                     raise et.RelayLostResponseError("504 Gateway Timeout on tools/call")
                 return main_reply
@@ -3025,7 +3031,7 @@ def test_lan_fixture_identity_waits_for_its_nonce_and_never_accepts_stale_observ
             runner.client._last_op = ("hub_get_logs", 0.2, not logs_fail)
             if logs_fail:
                 raise et.McpToolError("hub_get_logs", "diagnostic unavailable")
-            return {"logs": [{"message": "fixture command rejected"}]}
+            return {"entries": [{"message": "fixture command rejected"}]}
         assert name == "hub_get_device_attribute", "identity wait must not repeat the observer command"
         runner.client._last_op = ("hub_get_device_attribute", 0.1, True)
         assert arguments == {"deviceId": "10", "attribute": "nativeDeviceInfo"}
