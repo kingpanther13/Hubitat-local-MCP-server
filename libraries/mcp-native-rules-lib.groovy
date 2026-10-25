@@ -3064,7 +3064,9 @@ private Object _naComparable(Map field, Object value, boolean written) {
 }
 
 // Reads the app back once after its Done and names every written field whose stored value differs.
-// A password is never read back as a value; only whether one is stored.
+// A password is never read back as a value; only whether one is stored. A field that the same page no
+// longer renders and the app did not store was consumed by the page's own code (a table editor's row
+// picker adds the row and drops the input), so it is reported as consumed, not as lost.
 private Map _naReadBack(Long id, Map page, Map written) {
     Map model = _nfPage(id)
     Map stored = model.settings instanceof Map ? model.settings : [:]
@@ -3074,7 +3076,20 @@ private Map _naReadBack(Long id, Map page, Map written) {
         if (field.type == 'password') return (written.get(name) != '') != (value != null && value != '')
         _naComparable(field, value, false) != _naComparable(field, written.get(name), true)
     }.collect { it.toString() }
-    [model: model, not_landed: notLanded]
+    Map rendered = null
+    if (notLanded) {
+        try { rendered = _nfContext(id, model) }
+        catch (IllegalStateException unreadable) { mcpLog('debug', 'rm-native', "hub_set_native_app read-back: page of app ${id} not parsed (${unreadable.message})") }
+    }
+    List consumed = rendered?.page?.name?.toString() == page.page.name?.toString() ? notLanded.findAll { name ->
+        Map field = page.get('fields').get(name)
+        !field.app_field && !rendered.get('fields').containsKey(name) && _naComparable(field, stored.get(name), false) == null
+    } : []
+    [model: model, not_landed: notLanded - consumed, consumed: consumed]
+}
+
+private String _naConsumedNote(List consumed) {
+    "The app handled the value written for ${consumed.join(', ')} in its own code instead of storing it; read the page with hub_get_app_config or operation:'form' to see the effect."
 }
 
 // Whether a page render failed because the hub has no such app or page: the HTTP status the exception
@@ -3213,7 +3228,8 @@ private Map _naCreate(Map args) {
                     note: "Check it with hub_get_app_config(appId=${childId}, includeSettings=true) before changing it; do not create it again.${guide}".toString()] + report
         }
         Map result = [success: back.not_landed.isEmpty(), app_id: childId, app_type: type, label: back.model.app?.label?.toString(),
-                      fields_applied: written.keySet().collect { it.toString() } - back.not_landed] + report
+                      fields_applied: written.keySet().collect { it.toString() } - back.not_landed - back.consumed] + report
+        if (back.consumed) result.fields_consumed = back.consumed
         List notes = [type == 'rule_machine' ?
             "Created Rule Machine rule ${childId}. Author its triggers and actions with hub_set_rule(operation:'update', rule_id:${childId}, args:{changes:[...]}, confirm:true)." :
             "Created ${type} app ${childId}. Set more inputs with hub_set_native_app(operation:'update', app_id:${childId}, args:{fields:{...}}, confirm:true) or drive its pages with operation:'form'."]
@@ -3221,6 +3237,7 @@ private Map _naCreate(Map args) {
             result.fields_not_landed = back.not_landed
             notes << "The hub did not store the value written for ${back.not_landed.join(', ')}; inspect the page with operation:'form' before retrying."
         }
+        if (back.consumed) notes << _naConsumedNote(back.consumed)
         if (back.model.app?.installed != true) {
             result.installed = false
             notes << (!saved.done ? 'Its page renders no Done yet, so the app stays uninstalled until operation:\'form\' completes it.' :
@@ -3383,11 +3400,15 @@ private Map _naUpdate(Long id, Map args) {
                     note: ((uncommitted ? uncommitted + ' ' : '') + "Check it with hub_get_app_config(appId=${id}, includeSettings=true) before changing it again.${guide}").toString()] + report
         }
         Map result = [success: back.not_landed.isEmpty() && !refused, app_id: id] + (refused ? [error: uncommitted] : [:]) +
-            [fields_applied: fields.keySet().collect { it.toString() } - back.not_landed, backup: backup] + report
+            [fields_applied: fields.keySet().collect { it.toString() } - back.not_landed - back.consumed, backup: backup] + report
         List notes = []
         if (back.not_landed) {
             result.fields_not_landed = back.not_landed
             notes << "The hub did not store the value written for ${back.not_landed.join(', ')}; inspect the page with operation:'form' before retrying."
+        }
+        if (back.consumed) {
+            result.fields_consumed = back.consumed
+            notes << _naConsumedNote(back.consumed)
         }
         if (refused) notes << 'fields_applied lists the fields the hub stored although it refused the Done.'
         else if (uncommitted) notes << uncommitted
@@ -3458,7 +3479,7 @@ A button_rule takes args:{app_type:"button_rule",controller_id,button_number,eve
 
 ### update
 
-operation:"update" with args:{fields:{input name:value},page?} opens the page (the default page, or page), sets the fields and presses that page's Done. hub_get_app_config shows a page's inputs, their values and, under page.hrefs, the pages it links to. A sub-page's Done returns to the main page, whose Done then commits the app and re-initializes it, as the browser's Done does. A submitOnChange input posts the page first, as the browser does, and the Done is pressed on the page that post renders; if that page asks for a required input it revealed, the call stops before the Done, reports partial and says what was saved. Inputs not given keep their stored values; unset inputs with a page default save that default (defaults_posted). Device inputs take device IDs (a list for a multiple input) or the {id:label} map hub_get_app_config returns; a multi-select enum takes a list; a mode input takes mode IDs as the page's options list them. A field the page does not render, a button, a disabled input, a bad value or device ID, or a required input left empty is refused before anything is written. An input that appears only after another choice needs that choice saved by an earlier update, or a form workflow. The result reports fields_applied and fields_not_landed (with success:false) from one read-back after the Done, and committed:false when the app's own Done did not run: with a note when the page renders none, and with success:false and the reason as error when the hub rendered the page again instead of accepting the Done (fields_applied still lists what it stored).
+operation:"update" with args:{fields:{input name:value},page?} opens the page (the default page, or page), sets the fields and presses that page's Done. hub_get_app_config shows a page's inputs, their values and, under page.hrefs, the pages it links to. A sub-page's Done returns to the main page, whose Done then commits the app and re-initializes it, as the browser's Done does. A submitOnChange input posts the page first, as the browser does, and the Done is pressed on the page that post renders; if that page asks for a required input it revealed, the call stops before the Done, reports partial and says what was saved. Inputs not given keep their stored values; unset inputs with a page default save that default (defaults_posted). Device inputs take device IDs (a list for a multiple input) or the {id:label} map hub_get_app_config returns; a multi-select enum takes a list; a mode input takes mode IDs as the page's options list them. A field the page does not render, a button, a disabled input, a bad value or device ID, or a required input left empty is refused before anything is written. An input that appears only after another choice needs that choice saved by an earlier update, or a form workflow. The result reports fields_applied and fields_not_landed (with success:false) from one read-back after the Done, and committed:false when the app's own Done did not run: with a note when the page renders none, and with success:false and the reason as error when the hub rendered the page again instead of accepting the Done (fields_applied still lists what it stored). A written input that the page no longer renders after the save, and that the app did not store, is listed under fields_consumed without failing the call: the app's own code used the value (a table editor adding a row, for one), so read the page to see the effect.
 
 Each update first takes a recovery point, before it renders any page: an exact export for a Rule Machine rule, otherwise a File Manager baseline of the app, reused for one hour unless every-write backups are on, and none while pre-edit backups are off. backup.backupKey restores it with hub_restore_backup.
 

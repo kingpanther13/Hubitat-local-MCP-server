@@ -159,7 +159,10 @@ Supporting files:
   A page's own `label` element posts the same `label` plus `label.type`, its `mode`
   element the same `mode[mode]`. A `label` posted in the same request as
   `mode[mode]` is not stored; the next request that posts `mode[mode]` applies it.
-  Posted alone it is stored at once, with or without a Done.
+  Posted alone it is stored at once, with or without a Done. The partial posts
+  `label` with every `mode[mode]`; a `mode[mode]` posted without it can leave the
+  app showing the label it had before the last rename, so the form engine posts
+  the current label with a mode write.
 - **No `image` element.** Apps have no `image()` method (a page calling it errors
   with "No signature of method ... image()"); main.js draws images only as an
   `href`'s `image:` option.

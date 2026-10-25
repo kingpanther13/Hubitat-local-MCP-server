@@ -633,6 +633,46 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         result.fields_applied == []
     }
 
+    // Thermostat Scheduler's mode table: posting perX adds the row and the page stops rendering perX.
+    def 'a submitOnChange field the read-back page no longer renders and the app did not store is consumed, not lost'() {
+        given:
+        existing(76L, 'Thermostat Scheduler 2.0')
+        List picker = [input('origLabel', 'text'), input('perX', 'enum', [multiple: true, submitOnChange: true, options: ['1', '2']])]
+        List row = [input('origLabel', 'text'), input('tsFM1', 'decimal')]
+        pages['/installedapp/configure/json/76'] = [page(76L, picker), page(76L, row, [settings: [tsFM1: 68]])]
+        replies['/installedapp/update/json'] = [page(76L, row), DONE]
+
+        when:
+        def result = update(76L, [fields: [perX: ['1']]])
+
+        then:
+        result.success
+        result.fields_consumed == ['perX']
+        result.fields_applied == []
+        !result.containsKey('fields_not_landed')
+        result.note.contains('handled the value written for perX in its own code')
+        posts.size() == 2
+        posts[0].body['settings[perX]'] == '["1"]'
+        posts[1].body._action_update == 'Done'
+    }
+
+    def 'a submitOnChange field the read-back page still renders with another value is not landed'() {
+        given:
+        existing(76L, 'Thermostat Scheduler 2.0')
+        List picker = [input('origLabel', 'text'), input('perX', 'enum', [multiple: true, submitOnChange: true, options: ['1', '2']])]
+        pages['/installedapp/configure/json/76'] = [page(76L, picker), page(76L, picker, [settings: [perX: ['2']]])]
+        replies['/installedapp/update/json'] = [page(76L, picker, [settings: [perX: ['2']]]), DONE]
+
+        when:
+        def result = update(76L, [fields: [perX: ['1']]])
+
+        then:
+        !result.success
+        result.fields_not_landed == ['perX']
+        result.fields_applied == []
+        !result.containsKey('fields_consumed')
+    }
+
     def 'a password is written and read back by presence only, and never returned'() {
         given:
         existing(72L, 'Community App')
@@ -1171,6 +1211,7 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         result.success == landed
         posts.size() == 1
         posts[0].body['mode[mode]'] == '["1"]'
+        posts[0].body.label == 'G'
         posts[0].body._action_update == 'Done'
         result.fields_applied == (landed ? ['mode[mode]'] : [])
         result.fields_not_landed == (landed ? null : ['mode[mode]'])

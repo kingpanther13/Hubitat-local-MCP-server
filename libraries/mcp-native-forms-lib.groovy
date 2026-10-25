@@ -263,12 +263,14 @@ private String _nfReloadPath(Long id, Map context) {
 }
 
 private void _nfCache(String key, Map context) {
-    // Retain only execution descriptors. Titles, messages, values and option labels stay in the current response.
+    // Retain only execution descriptors. Titles, messages, values and option labels stay in the current response,
+    // except the app's label, which a mode[mode] submit posts again.
     Map cached = [app_id: context.app_id, page: [name: context.page.name], envelope: context.envelope, expires: context.expires,
                   fields: [:], controls: [:], backup: context.backup]
     context.get('fields').each { name, field ->
         Map descriptor = field.findAll { k, v -> k in ['name', 'type', 'multiple', 'required', 'supported', 'device', 'disabled', 'present', 'capability', 'ignore', 'range', 'min', 'max', 'step', 'default_value', 'app_field', 'sidecars'] }
         descriptor.option_keys = field.options == null ? null : field.options*.value
+        if (field.app_field && name == 'label') descriptor.value = field.value
         cached.get('fields').put(name, descriptor)
     }
     context.controls.each { name, control ->
@@ -373,6 +375,9 @@ private Map _nfPrepare(Long id, Map context, Map supplied, String activate, Stri
         if (!field) throw new IllegalArgumentException("Field is not present on the current native page: ${name}")
         body.putAll(_nfWire(field, _nfValue(field, value)))
     }
+    // The browser posts label with every mode[mode]; a mode post without it puts back the label the hub last persisted.
+    Map label = context.get('fields').get('label')
+    if (body.containsKey('mode[mode]') && !body.containsKey('label') && label?.app_field && label.present) body.putAll(_nfWire(label, _nfValue(label, label.value)))
     // The browser posts every input on the page, so an unset input saves its default.
     List defaults = []
     List rejected = []

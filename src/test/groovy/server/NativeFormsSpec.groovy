@@ -658,6 +658,30 @@ class NativeFormsSpec extends ToolSpecBase {
         calls.empty
     }
 
+    def 'a mode[mode] write posts the current label with it, as the browser does, and a label write posts no mode[mode]'() {
+        given:
+        model.defaultFields = true
+        model.modeMap = ['1': 'Day', '2': 'Night']
+        model.app.label = "<span style='color:green'>Porch</span>"
+        model.app.trueLabel = 'Porch'
+        when:
+        assert open().success
+        calls.clear()
+        def modes = submit(['mode[mode]': ['1']])
+        def modeBody = calls.find { it.path == '/installedapp/update/json' }.body
+        assert open().success
+        calls.clear()
+        def label = submit([label: 'Back porch'])
+        def labelBody = calls.find { it.path == '/installedapp/update/json' }.body
+        then:
+        modes.success
+        modeBody['mode[mode]'] == '["1"]'
+        modeBody.label == 'Porch'
+        label.success
+        labelBody.label == 'Back porch'
+        !labelBody.keySet().any { it.startsWith('mode[mode]') }
+    }
+
     def 'the label field reads trueLabel, the label without the HTML an app decorates it with'() {
         given:
         model.defaultFields = true
