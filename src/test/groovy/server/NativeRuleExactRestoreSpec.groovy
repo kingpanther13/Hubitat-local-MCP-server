@@ -572,10 +572,8 @@ class NativeRuleExactRestoreSpec extends ToolSpecBase {
     def 'the restore lock also refuses a form started during undo capture'() {
         given:
         script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason, boolean strict, String protectedKey ->
-            boolean refused = false
-            try { script.toolCallAppForm([app_id: 42, steps: [[kind: 'open']], confirm: true]) }
-            catch (IllegalStateException failure) { refused = failure.message.contains('active form operation') }
-            assert refused
+            def busy = script.toolCallAppForm([app_id: 42, steps: [[kind: 'open']], confirm: true])
+            assert busy.success == false && busy.error.contains('active form operation')
             [backupKey: 'rm-rule_42_undo']
         }
         when:
