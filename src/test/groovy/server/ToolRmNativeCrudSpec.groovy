@@ -582,7 +582,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "delete_rm_rule reports a structured refusal when the pre-delete snapshot cannot be taken"() {
         given:
         enableWrite()
-        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason, boolean native = false, String key = null, String page = null ->
+        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason, boolean exact = false, String key = null, String page = null ->
             throw new IllegalStateException("the app's settings could not be read, so no snapshot was taken; nothing was changed")
         }
         def rawCalls = []
