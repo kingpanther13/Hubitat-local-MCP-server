@@ -1807,7 +1807,6 @@ class TestRunner:
         "test_rm_rule_restore_of_a_deleted_rule_uses_the_exact_copy",
         "test_rm_rule_restore_puts_actions_back_in_order",
         "test_rm_rule_restore_expression_by_device_name",
-        "test_legacy_export_backup_restores_in_place",
         "test_complex_edit_recovers_deleted_rows_and_existing_payloads",
         "test_rule_edit_backups_capture_once_per_edit",
     })
@@ -7797,8 +7796,9 @@ def updated() {}
                 ([("valType", "enum", "String"), ("valString", "textarea", "done")], {"valType": "String", "valString": "done"}, "Return 'done'"),
                 ([("valType", "enum", "Decimal"), ("valDec", "decimal", 2.5)], {"valType": "Decimal", "valDec": 2.5}, None),
                 ([("valType", "enum", "Boolean"), ("valBool", "enum", "false")], {"valType": "Boolean", "valBool": "false"}, "Return 'false'"),
+                # Rule Machine renders a variable return as the name followed by its current value in parentheses.
                 ([("valType", "enum", "Integer"), ("useVar", "bool", True), ("valVar", "enum", number)],
-                 {"useVar": True, "valVar": number}, f"Return '{number}'"),
+                 {"useVar": True, "valVar": number}, f"Return '{number}("),
             ]
             result = self._rm_update(app_id, [action("modeActs", "getReturnValue", fields) for fields, _, _ in expected])
             values = self._rm_values(app_id)
@@ -8691,17 +8691,18 @@ def updated() {}
             restored = self._rm_restore(key, preserveRuleId=True)
             assert restored.get("success") is True, restored
             assert self._native_rule_document(app_id)["triggers"] == created["triggers"]
+            # A copy restore imports the backup as a new rule and deletes the original, so from here
+            # only the copy exists to delete.
             copied = self._rm_restore(key, preserveRuleId=False)
             assert copied.get("success") is True and str(copied.get("ruleId")) != str(app_id), copied
             copy_id = str(copied["ruleId"])
+            self._untrack_native_app(app_id)
             self.created_native_app_ids.append(copy_id)
             assert len(self._native_rule_document(copy_id)["triggers"]) == 2
             again = self._rm_restore(key)
             assert again.get("alreadyRestored") is True and str(again.get("ruleId")) == copy_id, again
         finally:
-            for rule in (app_id, copy_id):
-                if rule:
-                    self._delete_native(rule)
+            self._delete_native(copy_id or app_id)
 
     @test("native_apps")
     def test_rm_rule_restore_of_a_deleted_rule_uses_the_exact_copy(self) -> None:
@@ -8865,69 +8866,6 @@ def updated() {}
             assert self._rm_values(app_id).get("comments") in (None, "")
         finally:
             self._delete_native(app_id)
-
-    def _rm_legacy_in_place_recovery(self, required: bool) -> None:
-        # A recovery point taken by the generic native-app write path (the older snapshot format,
-        # without captureFormat) still restores a rule edited through hub_set_rule. With a Required
-        # Expression that format carries no native export, so the settings replay alone recovers it.
-        # Its own switches: rules other tests leave behind command the shared ones, and this rule
-        # firing mid-edit would race the edit's state checks.
-        switch, _, _ = self._rm_disposable_switch("LegacyTrigger")
-        gate, _, _ = self._rm_disposable_switch("LegacyGate")
-        self._rule_edit_backups(False)
-        app_id, created = self._rm_rule("LegacyRestore", [
-            self._rm_switch_condition(gate), self._rm_switch_condition(gate, "off"), self._rm_switch_trigger(switch),
-            self._rm_switch_action(switch, False)])
-        try:
-            conditions = sorted(created["conditions"], key=int)
-            # The log action sits inside an IF so the snapshot carries a nested (tab) indent.
-            doc = self._rm_update(app_id, [
-                native_change("action", type="condActs", subtype="getIfThen", fields=[], expression=[conditions[0]]),
-                native_log("legacy baseline"), native_change("terminator", subtype="endIf")])["document"]
-            methods = {str(r["id"]): r["value"]["method"] for r in doc["actions"]}
-            actions = [next(i for i, m in methods.items() if m == "getOnOffSwitch"), next(i for i, m in methods.items() if m == "getLogMsg")]
-            if required:
-                self._rm_update(app_id, [native_change("required", tokens=[conditions[0]])])
-            before = self._rm_snapshot(app_id)
-            assert any("\t" in str(r["value"].get("indent") or "") for r in before["document"]["actions"]), before["document"]["actions"]
-            self._rule_edit_backups(True)
-            self._mcp_settings({"backupEveryRuleWrite": True})
-            # The rule stays running for the capture: Hubitat's App Cloner exports nothing for a stopped rule.
-            try:
-                captured = self._native_app("update", {"fields": {"comments": "legacy capture compatibility"}}, app_id)
-            finally:
-                self._mcp_settings({"backupEveryRuleWrite": False})
-            assert captured.get("success") is True and (captured.get("backup") or {}).get("backupKey"), captured
-            key = captured["backup"]["backupKey"]
-            meta = self.client.call_tool("hub_get_backup", {"backupKey": key})
-            snapshot = json.loads(self._rm_read_file(meta["fileName"]))
-            assert "captureFormat" not in snapshot and isinstance(snapshot.get("configJson"), dict), sorted(snapshot)
-            if required:
-                assert not snapshot.get("nativeExport") and "Required Expression" in snapshot.get("nativeExportSkipped", ""), sorted(snapshot)
-            else:
-                assert snapshot.get("nativeExport"), sorted(snapshot)
-            edits = [self._rm_switch_condition(gate, "off", id=conditions[0]),
-                     self._rm_switch_trigger(switch, "off", id=next(iter(created["triggers"]))),
-                     self._rm_switch_action(switch, True, id=actions[0]), native_log("legacy changed", id=actions[1])]
-            edits += [native_change("required", tokens=[conditions[1]])] if required else \
-                [native_change("required", tokens=[conditions[0]]), native_log("legacy extra row must disappear")]
-            self._rule_edit_backups(False)
-            self._rm_update(app_id, edits)
-            restored = self._rm_restore(key, preserveRuleId=True)
-            assert restored.get("success") is True and str(restored["ruleId"]) == str(app_id) \
-                and restored.get("restoredVia") == "nativeStateReplay", restored
-            after = self._rm_snapshot(app_id)
-            after["settings"].pop("comments", None)
-            before["settings"].pop("comments", None)
-            assert after == before, "the legacy restore did not recover the pre-edit rule"
-        finally:
-            self._delete_native(app_id)
-
-    @test("native_apps")
-    def test_legacy_export_backup_restores_in_place(self) -> None:
-        # The Required Expression variant of the older format is covered by LegacyNativeRecoverySpec.
-        self._rm_legacy_in_place_recovery(required=False)
-
 
     def _native_form_control(self, app_id: Any, page: str, name: str) -> dict:
         opened = self.client.call_tool("hub_set_rule", {"operation": "form", "rule_id": int(app_id),

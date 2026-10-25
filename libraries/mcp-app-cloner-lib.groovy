@@ -1383,7 +1383,7 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
         throw new IllegalArgumentException("Backup references unknown appType '${savedAppType}'. Supported: ${_appTypeRegistry().keySet().join(', ')}")
     }
     if (savedAppType == "app" && !exists) {
-        return [success: false, type: "rm-rule", ruleId: savedId, originalRuleId: savedId,
+        return [success: false, type: "rm-rule", originalRuleId: savedId,
                 error: "App ${savedId} no longer exists and its type '${savedTypeName}' is not a built-in app type, so this backup cannot recreate it. Nothing was created.".toString(),
                 note: "Reinstall the app from its app code, then set its settings again from this backup (hub_get_backup shows them) with hub_set_native_app(operation:'update'). See hub_get_tool_guide(section='set_native_app_reference')."]
     }
