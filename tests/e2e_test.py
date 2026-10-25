@@ -6312,8 +6312,11 @@ def updated() {}
                 "appId": instance_id, "force": True, "confirm": True}})
             assert gone.get("success") is True, f"deleting the password app instance failed: {gone}"
             instance_id = None
+            # The delete's own snapshot is the newest backup: on a hub at its storage budget the
+            # earlier rolling baseline may already be evicted, which is retention, not a refusal.
+            recreate_key = (gone.get("backup") or {}).get("backupKey") or key
             try:
-                recreate = self._rm_restore(key)
+                recreate = self._rm_restore(recreate_key)
             except McpToolError as exc:
                 try:
                     payload = json.loads(exc.content_text)
