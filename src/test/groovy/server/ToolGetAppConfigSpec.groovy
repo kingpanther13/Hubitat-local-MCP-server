@@ -1091,6 +1091,46 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         'unparseable body' | 'not json'
     }
 
+    def "raw settings are withheld when the setting types leave a non-empty neutral-named value uncovered"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson([
+            settings: [customField: 'HubAdmin-S3cret!', ruleEnable: true, authToken: 'tok-456', spare: '', flag: false]
+        ]) }
+        // customField is missing from statusJson and nothing about its name says secret: the map is withheld.
+        registerStatusJson([ruleEnable: 'bool'])
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeSettings: true])
+
+        then:
+        result.success == true
+        !result.containsKey('settings')
+        result.settingsNote.contains('withheld')
+        result.settingsNote.contains('customField')
+        !result.settingsNote.contains('authToken')
+        !JsonOutput.toJson(result).contains('HubAdmin-S3cret!')
+        !JsonOutput.toJson(result).contains('tok-456')
+    }
+
+    def "untyped settings that are empty, boolean or credential-named do not withhold the map"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson([
+            settings: [authToken: 'tok-456', spare: '', flag: false, ruleEnable: true]
+        ]) }
+        registerStatusJson([ruleEnable: 'bool'])
+
+        when:
+        def s = script.toolGetAppConfig([appId: 35, includeSettings: true]).settings
+
+        then:
+        s.authToken == '***redacted (password)***'
+        s.spare == ''
+        s.flag == false
+        s.ruleEnable == true
+    }
+
     def "raw settings are withheld when the statusJson read throws"() {
         given:
         settingsMap.enableRead = true

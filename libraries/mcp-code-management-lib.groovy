@@ -850,8 +850,16 @@ def toolGetAppConfig(args) {
             // password named outside the credential-name pattern cannot be told apart, so fail
             // closed: withhold the map rather than return it partly redacted.
             Map settingTypes = _appConfigSettingTypes(appIdStr as Integer)
+            // A value the types do not cover and no safe rule classifies is the same gap: fail closed.
+            List untyped = settingTypes == null ? [] : rawSettings.findAll { k, v ->
+                String key = k?.toString()
+                !passwordInputNames.contains(key) && !settingTypes.containsKey(key) && !_appConfigEmptyValue(v) && !(v instanceof Boolean) && !_appConfigSecretName(key)
+            }.keySet().collect { it.toString() }
             if (settingTypes == null) {
                 result.settingsNote = "Raw settings withheld: the app's setting types could not be read from /installedapp/statusJson/${appIdStr}, so password values could not be identified for redaction. Retry; the config page above is unaffected.".toString()
+            } else if (untyped) {
+                mcpLog("warn", "hub-admin", "hub_get_app_config: statusJson for app ${appIdStr} types none of ${untyped}; raw settings withheld")
+                result.settingsNote = "Raw settings withheld: /installedapp/statusJson/${appIdStr} carries no type for ${untyped.take(5).join(', ')}${untyped.size() > 5 ? " and ${untyped.size() - 5} more" : ''}, so a password among them could not be told apart. Retry; the config page above is unaffected.".toString()
             } else {
                 def redacted = [:]
                 rawSettings.each { k, v ->
@@ -898,15 +906,19 @@ private Map _appConfigSettingTypes(Integer appId) {
 // is a Boolean or the input type cannot hold free text (a "usePassword" toggle, a "tokenDevice"
 // picker). Number types stay in scope on purpose: a numeric PIN/passcode is still a secret.
 private boolean _appConfigIsSecretSetting(name, type, value) {
-    if (value == null) return false
-    if (value instanceof CharSequence && value.toString().isEmpty()) return false
-    if ((value instanceof Collection || value instanceof Map) && value.isEmpty()) return false
+    if (_appConfigEmptyValue(value)) return false
     String t = type?.toString()
     if (t == "password") return true
     if (value instanceof Boolean) return false
     if (t && (t in ["bool", "boolean", "enum", "mode", "time", "date", "button", "href", "hub", "icon", "color"] ||
               t.startsWith("capability") || t.startsWith("device"))) return false
     return _appConfigSecretName(name)
+}
+
+private boolean _appConfigEmptyValue(value) {
+    if (value == null) return true
+    if (value instanceof CharSequence && value.toString().isEmpty()) return true
+    (value instanceof Collection || value instanceof Map) && value.isEmpty()
 }
 
 // Credential-shaped setting names. The name is split into lowercase words at camelCase, acronym,
