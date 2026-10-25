@@ -767,7 +767,7 @@ Duplicates an existing MCP custom-engine rule into a new, independent rule with 
 - There is no count limit: backups are removed only when all MCP backups together exceed the storage budget. Another item's backup never replaces this one, but once the shared budget is exceeded any new backup can evict older backups of any item: **rolling** steps first, then **pinned** baselines, oldest first. The backup just taken and an active restore target are never removed.
 - The budget is the Advanced setting "Backup storage budget (MB)" (`backupBudgetMb`): default 10, at least 1, at most 1000000 (1 TB). The Advanced page takes any number and the server clamps it to that range. With Developer Mode on, hub_update_mcp_settings also sets it and refuses a value that is not a whole number in that range.
 - Apps, drivers and libraries keep one **pinned** baseline, replaced by that item's next backup after the one-hour window.
-- A rule's first snapshot in an editing session is **pinned**, and so is every pre-delete, pre-forcedelete and replaceRequiredExpression snapshot. With `backupEveryRuleWrite` on, the rule's other snapshots in that session are **rolling** steps, so "before I started" outlasts the per-write steps when space runs short. An editing session ends once an hour passes with no snapshot of that rule; with `backupEveryRuleWrite` on, a continuous chain of writes keeps it open.
+- A rule's first snapshot in an editing session is **pinned**, and so is every pre-delete, pre-forcedelete and pre-restore snapshot. With `backupEveryRuleWrite` on, the rule's other snapshots in that session are **rolling** steps, so "before I started" outlasts the per-write steps when space runs short. An editing session ends once an hour passes with no snapshot of that rule; with `backupEveryRuleWrite` on, a continuous chain of writes keeps it open.
 - Where each response says it:
   - Rule Machine writes and deletes: the `backup` object carries `retention` (`pinned` or `rolling`) and `retentionNote`, and the restoreHint ends with that note.
   - hub_delete_item / library deletes: `backupRetention` and `backupRetentionNote`; the restoreHint ends with the note.
@@ -1201,9 +1201,9 @@ List a Rule Machine rule's LOCAL variables (per-rule, distinct from hub globals)
 - Hub globals are covered by hub_list_variables; native locals are read/written through hub_set_rule(operation='read') / hub_set_rule(operation='update') variable changes.
 - Reads the rule's `statusJson` appState: names and types from `allLocalVars`, current values from each variable's live `lv_<name>` entry (`allLocalVars` keeps the old value after an action sets the variable until someone opens the rule's page).
 - Pure read -- no wizard, no mutation.
-- Returns `{appId, localVariables:[{name, type, value}], total}`. `type` is the hub's internal token, not the `addLocalVariable` enum. Map it back before reuse: integer→Number, bigdecimal→Decimal, string→String, boolean→Boolean, datetime→DateTime.
+- Returns `{appId, localVariables:[{name, type, value}], total}`. `type` is the hub's internal token, not the type a hub_set_rule variable change takes. Map it back before reuse: integer→Number, bigdecimal→Decimal, string→String, boolean→Boolean, datetime→DateTime.
 
-- Use to confirm a local exists (and its type) before targeting it with the `setLocalVariable` action or `removeLocalVariable` shortcut.
+- Use to confirm a local exists (and its type) before targeting it with a Set Variable action or a hub_set_rule variable change.
 
 ### hub_delete_native_app
 

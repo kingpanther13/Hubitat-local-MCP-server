@@ -1947,10 +1947,10 @@ private Map _rmBuildRuleSnapshot(Integer ruleId, String reason, String activePag
 
 private Map _rmWriteRuleSnapshotLocked(Integer ruleId, String reason, Map snapshot, Map config, String protectedKey = null) {
     // Under strict per-write backups an edit inside an editing session is a rolling step. The
-    // session's first snapshot, and a delete's or Required Expression replacement's recovery
-    // point, stay pinned. Decided under the lock, against the committed index.
+    // session's first snapshot, and a delete's or restore's recovery point, stay pinned. Decided
+    // under the lock, against the committed index.
     boolean editStep = _effectiveBackupSetting('backupEveryRuleWrite') == 'true' &&
-        !(reason in ["pre-delete", "pre-forcedelete", "pre-replaceRequiredExpression", "pre-native-restore"])
+        !(reason in ["pre-delete", "pre-forcedelete", "pre-native-restore"])
     String retention = editStep && _rmRecentRuleBackup(_itemBackupManifest(), ruleId, now()) != null ? "rolling" : "pinned"
     def ts = new Date(now()).format("yyyyMMdd-HHmmss-SSS")
     String namePrefix = "mcp-rm-backup-${ruleId}-"
@@ -2682,10 +2682,10 @@ Map _rmRestoreRequiredExpression(Integer appId, Map snapshot) {
             state = trimmed ? "the pre-restore expression was left in place" : "the live expression may be partly rebuilt -- inspect it with hub_get_app_config"
         } else if (!baseTokens.isEmpty()) {
             out.requiredExpressionPartial = true
-            state = trimmed ? "only the snapshot's first condition is committed -- finish the expression with replaceRequiredExpression" :
+            state = trimmed ? "only the snapshot's first condition is committed -- finish the expression with a hub_set_rule 'required' change" :
                 "part of the snapshot's expression is committed and the editor may be open -- inspect it with hub_get_app_config"
         } else {
-            state = "no expression was committed, so the rule runs without its Required Expression (ungated) -- rebuild it with addRequiredExpression"
+            state = "no expression was committed, so the rule runs without its Required Expression (ungated) -- rebuild it with a hub_set_rule 'required' change"
         }
         def leftover = (created ?: []).findAll { !(removed*.toString()).contains(it.toString()) }
         if (leftover) out.leftoverConditionIds = leftover
@@ -2901,7 +2901,7 @@ Map _rmBackupBeforeEdit(Integer ruleId, String reason, String activePage = null)
 
 
 private Map _rmBackupBeforeEditLocked(Integer ruleId, String reason, String activePage = null) {
-    if (_effectiveBackupSetting('backupEveryRuleWrite') == 'true' || reason == "pre-replaceRequiredExpression") return null
+    if (_effectiveBackupSetting('backupEveryRuleWrite') == 'true') return null
 
     long nowMs = now()
     def mfst = _itemBackupManifest()

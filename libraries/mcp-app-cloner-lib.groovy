@@ -495,9 +495,8 @@ Map _appClonerExportJson(Integer sourceAppId) {
                 // back to the generic wire-format explanation for rules without one.
                 reason = "no JSON content could be extracted (looked for configPage.sections[].input[].filecontent). " +
                     "Known cause: if the source rule has a Required Expression, appCloner export currently fails for it -- " +
-                    "delete the Required Expression in the Rule Machine UI, export, then re-add it (no MCP tool removes a " +
-                    "Required Expression: replaceRequiredExpression only swaps one for another); or edit the rule in place " +
-                    "via hub_set_rule instead of export/import. " +
+                    "delete the Required Expression in the Rule Machine UI, export, then re-add it (a hub_set_rule 'required' " +
+                    "change only swaps one expression for another); or edit the rule in place via hub_set_rule instead of export/import. " +
                     "If the rule has NO Required Expression, the cloner wire format may have changed"
             }
             throw new IllegalStateException("appCloner export fired but ${reason} for cloner ${clonerAppId}")

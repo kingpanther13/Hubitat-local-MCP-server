@@ -752,27 +752,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         backupIndex.containsKey("rm-rule_77_other")
     }
 
-    def "a strict-mode replaceRequiredExpression snapshot stays pinned inside a session"() {
-        given:
-        enableWrite()
-        settingsMap.backupEveryRuleWrite = true
-        def clock = [1234567890000L]
-        NOW_OVERRIDE.set({ -> clock[0] })
-        hubGet.register('/installedapp/configure/json/504') { params -> ruleConfigJson(504, "strict-re") }
-        hubGet.register('/installedapp/statusJson/504') { params -> statusJson(504) }
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-
-        when:
-        def first = script._rmBackupRuleSnapshot(504, "pre-addAction")
-        clock[0] += 1000L
-        def replace = script._rmBackupRuleSnapshot(504, "pre-replaceRequiredExpression")
-
-        then:
-        first.retention == "pinned"
-        replace.retention == "pinned"
-        replace.backupKey != first.backupKey
-    }
-
     private List strictRule504(String label) {
         enableWrite()
         settingsMap.backupEveryRuleWrite = true
@@ -3159,7 +3138,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then: "the throw names the Required Expression as the likely cause + a workaround"
         def e = thrown(IllegalStateException)
         e.message.contains("Required Expression")
-        e.message.contains("replaceRequiredExpression")
+        e.message.contains("hub_set_rule 'required' change")
         e.message.contains("appCloner export")
     }
 
