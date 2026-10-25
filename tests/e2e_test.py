@@ -6335,6 +6335,108 @@ def updated() {}
                 except (McpError, McpToolError, requests.HTTPError) as exc:
                     print(f"  [WARN] password snapshot cleanup: delete code {code_id} failed: {exc}")
 
+    FORM_WIZARD_APP: ClassVar[str] = """definition(name: "Deadman Test Target Form Wizard", namespace: "mcptest",
+    author: "ci", description: "Throwaway app code for a wizard whose second page names a next and a done page",
+    category: "Utility", iconUrl: "", iconX2Url: "")
+
+preferences {
+    page(name: "pageOne")
+    page(name: "pageTwo")
+    page(name: "pageThree")
+}
+
+def pageOne() {
+    dynamicPage(name: "pageOne", title: "Step one", nextPage: "pageTwo", uninstall: true) {
+        section { input "first", "text", title: "First", required: false }
+    }
+}
+
+def pageTwo() {
+    dynamicPage(name: "pageTwo", title: "Step two", nextPage: "pageThree", donePage: "pageThree") {
+        section { input "second", "text", title: "Second", required: true }
+    }
+}
+
+def pageThree() {
+    dynamicPage(name: "pageThree", title: "Step three", install: true, uninstall: true) {
+        section { input "third", "text", title: "Third", required: false }
+    }
+}
+
+def installed() {}
+def updated() {}
+"""
+
+    FORM_DEFAULTS_APP: ClassVar[str] = """definition(name: "Deadman Test Target Form Defaults", namespace: "mcptest",
+    author: "ci", description: "Throwaway app code whose preferences hold sections and no pages", category: "Utility",
+    iconUrl: "", iconX2Url: "")
+
+preferences {
+    section("Settings") { input "note", "text", title: "Note", required: false }
+}
+
+def installed() {}
+def updated() {}
+"""
+
+    @test("native_apps")
+    def test_set_native_app_form_done_page_and_default_fields(self) -> None:
+        # A wizard page that names both a next and a done page offers its Done as _action_done, which
+        # the hub answers by saving the page and rendering it again. An app whose preferences hold no
+        # pages shows the hub's own name and mode fields; update renames the app and restricts its
+        # modes through them, one call each, since the hub drops a label posted with mode[mode].
+        codes: list = []
+        instances: list = []
+        try:
+            for source in (self.FORM_WIZARD_APP, self.FORM_DEFAULTS_APP):
+                created = self.client.call_tool("hub_manage_code", {"tool": "hub_create_app", "args": {"source": source, "confirm": True}})
+                assert created.get("appId"), f"creating the throwaway app code failed: {created}"
+                codes.append(created["appId"])
+                inst = self.client.call_tool("hub_manage_code", {"tool": "hub_create_app", "args": {"codeAppId": created["appId"], "confirm": True}})
+                assert inst.get("instanceAppId"), f"creating the throwaway app instance failed: {inst}"
+                instances.append(inst["instanceAppId"])
+            wizard, defaults = instances
+
+            form = self._native_app_form(wizard, {"kind": "open"})
+            assert form["page"]["name"] == "pageOne", f"the wizard opened on {form['page']}"
+            form = self._native_app_form(wizard, self._rm_step(form, {"first": "one"}, self._rm_control(form, name="_action_next")))
+            assert form["page"]["name"] == "pageTwo", f"Next did not reach pageTwo: {form['page']}"
+            done = self._rm_control(form, name="_action_done")
+            assert done["kind"] == "navigation" and not form.get("unsupported"), f"pageTwo should offer _action_done and nothing unsupported: {form}"
+            form = self._native_app_form(wizard, self._rm_step(form, {"second": "two"}, done))
+            assert form["page"]["name"] == "pageTwo", f"the hub should answer _action_done by rendering pageTwo again: {form['page']}"
+            stored = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config", "args": {"appId": wizard, "includeSettings": True}})
+            settings = stored.get("settings") or {}
+            assert settings.get("first") == "one" and settings.get("second") == "two", f"the wizard's pages were not saved: {settings}"
+
+            form = self._native_app_form(defaults, {"kind": "open"})
+            label = self._native_app_field(form, "label")
+            modes = self._native_app_field(form, "mode[mode]")
+            assert label.get("value") == "Deadman Test Target Form Defaults" and modes.get("multiple") is True and modes.get("options"),                 f"the default fields should carry the app's name and the hub's modes: {label} {modes}"
+            assert not form.get("unsupported") or all("label" not in str(u) for u in form["unsupported"]), form["unsupported"]
+            renamed = "Deadman Test Target Form Defaults Renamed"
+            relabel = self._native_app("update", {"fields": {"label": renamed}}, defaults)
+            assert relabel.get("success") is True and relabel.get("fields_applied") == ["label"], f"renaming through the label field failed: {relabel}"
+            mode_id = modes["options"][0]["value"]
+            restrict = self._native_app("update", {"fields": {"mode[mode]": [mode_id]}}, defaults)
+            assert restrict.get("success") is True, f"restricting the modes failed: {restrict}"
+            form = self._native_app_form(defaults, {"kind": "open"})
+            assert self._native_app_field(form, "label").get("value") == renamed, f"the rename did not hold: {form['fields']}"
+            assert self._native_app_field(form, "mode[mode]").get("value") == [mode_id], f"the mode restriction did not hold: {form['fields']}"
+        finally:
+            for app_id in instances:
+                try:
+                    self.client.call_tool("hub_manage_native_rules_and_apps", {"tool": "hub_delete_native_app", "args": {
+                        "appId": app_id, "force": True, "confirm": True}})
+                except (McpError, McpToolError, requests.HTTPError) as exc:
+                    print(f"  [WARN] form fixture cleanup: delete instance {app_id} failed: {exc}")
+            for code_id in codes:
+                try:
+                    self.client.call_tool("hub_manage_code", {"tool": "hub_delete_item", "args": {
+                        "type": "app", "item_id": code_id, "confirm": True}})
+                except (McpError, McpToolError, requests.HTTPError) as exc:
+                    print(f"  [WARN] form fixture cleanup: delete code {code_id} failed: {exc}")
+
     @test("native_apps")
     def test_button_rule_create_via_controller(self) -> None:
         # A Button Rule is a grandchild of a Button Controller and

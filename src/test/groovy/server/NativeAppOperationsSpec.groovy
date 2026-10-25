@@ -109,6 +109,7 @@ class NativeAppOperationsSpec extends ToolSpecBase {
                      configPage: [name: opts.page ?: 'mainPage', title: 'Page', install: opts.containsKey('install') ? opts.install : true, sections: [[input: inputs]]],
                      settings: opts.settings ?: [:]]
         if (opts.modeMap) model.modeMap = opts.modeMap
+        if (opts.defaultFields) model.defaultFields = true
         model
     }
 
@@ -251,7 +252,7 @@ class NativeAppOperationsSpec extends ToolSpecBase {
 
         then:
         !result.success
-        result.error.contains('renders no label input (origLabel or name)')
+        result.error.contains("renders no label input (origLabel, name or the app's own label)")
         result.error.contains('The new app was removed, so nothing was created.')
         deleted == [92]
         posts.isEmpty()
@@ -865,6 +866,28 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         posts.size() == 1
         posts[0].body['settings[name]'] == 'Hall group'
         !posts[0].body.containsKey('settings[origLabel]')
+    }
+
+    def 'a create whose first page renders only the hub default fields writes name to their label, not to a setting'() {
+        given:
+        parentAt(48L, 'childGroups', 'Group-2.1')
+        List inputs = [input('members', 'capability.switch', [multiple: true])]
+        Map opts = [defaultFields: true, modeMap: ['1': 'Day', '2': 'Night']]
+        childAt(97L, 48L, 'Group-2.1', [page(97L, inputs, opts), page(97L, inputs, opts + [label: 'Porch group', installed: true])])
+
+        when:
+        def result = create([app_type: 'groups_scenes', name: 'Porch group'])
+
+        then:
+        result.success
+        result.app_id == 97L
+        result.label == 'Porch group'
+        result.fields_applied == ['label']
+        posts.size() == 1
+        posts[0].body.label == 'Porch group'
+        posts[0].body._action_update == 'Done'
+        !posts[0].body.keySet().any { it.startsWith('settings[') }
+        !posts[0].body.containsKey('mode[mode]')
     }
 
     def 'a create whose Done the hub answers by rendering the page again reports the app not installed'() {

@@ -142,6 +142,31 @@ private void _nfControl(Map controls, Map control) {
     controls.put(key, control)
 }
 
+// The app's own name and mode restriction: the page shows app.label and app.restrictedModes, and the
+// browser posts them as label and mode[mode], never as settings.
+private Object _nfAppValue(Map model, boolean mode) {
+    def value = mode ? model.app?.restrictedModes : model.app?.label
+    if (!mode) return value
+    (value instanceof Map ? value.keySet() : (value instanceof Collection ? value : (value == null ? [] : [value]))).collect { it.toString() }
+}
+
+private void _nfAppField(Map fields, Map model, boolean mode, Map node) {
+    def current = _nfAppValue(model, mode)
+    Map field = [name: mode ? 'mode[mode]' : 'label', title: mode ? 'Set for specific mode(s)' : (_nfText(node.title) ?: 'Assign a name'), type: mode ? 'mode' : 'text',
+                 multiple: mode, required: !mode && _nfTrue(node.required), submit_on_change: !mode && _nfTrue(node.submitOnChange), supported: true, device: false,
+                 disabled: false, app_field: true, value: current, value_source: 'stored', present: current != null && current != '' && !(current instanceof Collection && current.isEmpty())]
+    if (mode) field.options = _nfOptions(model.modeMap)
+    field.sidecars = mode ? ['mode[mode].multiple': 'true'] : (node.name && node.type ? [("${node.name}.type".toString()): node.type.toString()] : [:])
+    if (fields.containsKey(field.name) && fields[field.name] != field) throw new IllegalStateException('Native form contains ambiguous fields')
+    fields.put(field.name, field)
+}
+
+// The keys the browser posts for one input.
+private Map _nfWire(Map field, String encoded) {
+    if (field.app_field) return [(field.name): encoded] + (field.sidecars ?: [:])
+    [("settings[${field.name}]".toString()): encoded, ("${field.name}.type".toString()): field.type, ("${field.name}.multiple".toString()): field.multiple.toString()]
+}
+
 private void _nfWalk(Object node, Map fields, Map controls, List messages, List unsupported, Map model, int position = 0) {
     if (node instanceof List) { node.eachWithIndex { item, index -> _nfWalk(item, fields, controls, messages, unsupported, model, index) }; return }
     if (!(node instanceof Map)) return
@@ -178,13 +203,15 @@ private void _nfWalk(Object node, Map fields, Map controls, List messages, List 
         }
     } else if (node.element == 'app' && node.namespace == 'hubitat' && node.appName instanceof String && node.appName && node.name && node.appId?.toString() == model.app?.id?.toString()) {
         _nfControl(controls, [name: node.name.toString(), value: node.appName, kind: 'create_child', title: _nfText(node.title)])
+    } else if (node.element in ['label', 'mode']) {
+        _nfAppField(fields, model, node.element == 'mode', node)
     } else if (node.element == 'href') {
         if (node.page && !node.url) {
             String name = "_action_href_${node.name ?: 'name'}|${node.page}|${position + 1}"
             _nfControl(controls, [name: name, kind: 'href', title: _nfText(node.title), page: node.page.toString(),
                                   value: '', params: node.params instanceof Map ? node.params : null])
         } else unsupported << "Navigation requires a browser: ${_nfText(node.title)}"
-    } else if (node.element && !(node.element in ['paragraph', 'section', 'label', 'image', 'input'])) {
+    } else if (node.element && !(node.element in ['paragraph', 'section', 'input'])) {
         unsupported << "Native element: ${node.element}"
     }
     ['title', 'description', 'text'].each { key ->
@@ -203,15 +230,15 @@ private Map _nfContext(Long id, Map model, String from = null) {
     Map fields = [:], controls = [:]
     List messages = [], unsupported = []
     _nfWalk(page, fields, controls, messages, unsupported, model)
+    if (model.defaultFields) [false, true].each { mode -> if (!fields.containsKey(mode ? 'mode[mode]' : 'label')) _nfAppField(fields, model, mode, [:]) }
     String trail = model.pageBreadcrumbs && model.pageBreadcrumbs != '%5B%5D' ? model.pageBreadcrumbs.toString() :
         (from ? _nfEncode(groovy.json.JsonOutput.toJson([from])) : '%5B%5D')
     if (page.install || model.doneButton) _nfControl(controls, [name: '_action_update', value: 'Done', kind: 'navigation', title: model.cancelButton ? 'Save' : 'Done'])
     else if (page.nextPage && !page.donePage) _nfControl(controls, [name: '_action_next', value: page.nextPageLabel ?: 'Next', kind: 'navigation', title: page.nextPageLabel ?: 'Next'])
-    else if (page.nextPage && page.donePage) unsupported << 'Native _action_done browser navigation'
+    else if (page.nextPage && page.donePage) _nfControl(controls, [name: '_action_done', value: 'Done', kind: 'navigation', title: 'Done'])
     else if (trail != '%5B%5D') _nfControl(controls, [name: '_action_previous', value: 'Done', kind: 'navigation', title: 'Done (previous page)'])
     if (model.cancelButton) _nfControl(controls, [name: '_action_update', value: 'Cancel', kind: 'navigation', title: 'Cancel'])
     if (model.removeButton) unsupported << 'Remove app: use the dedicated native-app deletion tool'
-    if (model.defaultFields) unsupported << 'Default app label and mode controls'
     Map envelope = [id: id.toString(), currentPage: page.name ?: '', pageBreadcrumbs: trail]
     ['returnPath', 'referrer', 'url', 'formAction'].each { key -> if (model.containsKey(key)) envelope[key] = model[key] }
     ['nextPage', 'donePage'].each { key -> if (page[key]) envelope[key] = page[key] }
@@ -239,7 +266,7 @@ private void _nfCache(String key, Map context) {
     Map cached = [app_id: context.app_id, page: [name: context.page.name], envelope: context.envelope, expires: context.expires,
                   fields: [:], controls: [:], backup: context.backup]
     context.get('fields').each { name, field ->
-        Map descriptor = field.findAll { k, v -> k in ['name', 'type', 'multiple', 'required', 'supported', 'device', 'disabled', 'present', 'capability', 'ignore', 'range', 'min', 'max', 'step', 'default_value'] }
+        Map descriptor = field.findAll { k, v -> k in ['name', 'type', 'multiple', 'required', 'supported', 'device', 'disabled', 'present', 'capability', 'ignore', 'range', 'min', 'max', 'step', 'default_value', 'app_field', 'sidecars'] }
         descriptor.option_keys = field.options == null ? null : field.options*.value
         cached.get('fields').put(name, descriptor)
     }
@@ -264,7 +291,7 @@ private List _nfDevices(Map field) {
 }
 
 private String _nfValue(Map field, Object value) {
-    if (!field.supported || field.disabled || field.name =~ /[\[\]\r\n]/) throw new IllegalArgumentException("Unsupported or disabled native field: ${field.name}")
+    if (!field.supported || field.disabled || (!field.app_field && field.name =~ /[\[\]\r\n]/)) throw new IllegalArgumentException("Unsupported or disabled native field: ${field.name}")
     // A device input also takes the {id: label} map a configuration read returns.
     if (field.device && value instanceof Map) {
         List ids = value.keySet().collect { it.toString() }
@@ -288,7 +315,7 @@ private String _nfValue(Map field, Object value) {
 private Map _nfPublic(Map context, List optionsFor) {
     List fields = context.get('fields').values().collect { field ->
         Map result = [:] + field
-        result.remove('device'); result.remove('ignore'); result.remove('capability'); result.remove('present'); result.remove('default_value')
+        ['device', 'ignore', 'capability', 'present', 'default_value', 'app_field', 'sidecars'].each { result.remove(it) }
         if (field.type == 'password') result.redacted = true
         if (field.device && field.name in optionsFor) result.options = _nfDevices(field)
         if (field.device) result.options_available = true
@@ -341,9 +368,7 @@ private Map _nfPrepare(Long id, Map context, Map supplied, String activate, Stri
         Map field = context.get('fields').get(name)
         if (!field && context.controls.values().any { it.kind == 'button' && it.name == name }) throw new IllegalArgumentException("${name} is a button on the current native page, not a field; activate its control_id instead")
         if (!field) throw new IllegalArgumentException("Field is not present on the current native page: ${name}")
-        body["settings[${name}]".toString()] = _nfValue(field, value)
-        body["${name}.type".toString()] = field.type
-        body["${name}.multiple".toString()] = field.multiple.toString()
+        body.putAll(_nfWire(field, _nfValue(field, value)))
     }
     // The browser posts every input on the page, so an unset input saves its default.
     List defaults = []
@@ -358,9 +383,7 @@ private Map _nfPrepare(Long id, Map context, Map supplied, String activate, Stri
             return
         }
         defaults << name
-        body["settings[${name}]".toString()] = encoded
-        body["${name}.type".toString()] = field.type
-        body["${name}.multiple".toString()] = field.multiple.toString()
+        body.putAll(_nfWire(field, encoded))
     }
     Map control = null
     String reloadPath = null
@@ -373,8 +396,10 @@ private Map _nfPrepare(Long id, Map context, Map supplied, String activate, Stri
         if (control.kind == 'button' && !control.submit_on_change && supplied) throw new IllegalArgumentException('Submit fields separately before a button that reloads the native page')
         if (control.kind == 'button' && !control.submit_on_change) reloadPath = _nfReloadPath(id, context)
         if (control.kind in ['href', 'navigation'] && control.value != 'Cancel') {
-            List missing = context.get('fields').values().findAll { field -> field.required && !field.disabled &&
-                !(body.containsKey("settings[${field.name}]".toString()) ? !(body["settings[${field.name}]".toString()] in ['', '[]']) : field.present) }*.name
+            List missing = context.get('fields').values().findAll { field ->
+                String key = _nfWire(field, '').keySet().first()
+                field.required && !field.disabled && !(body.containsKey(key) ? !(body[key] in ['', '[]']) : field.present)
+            }*.name
             if (missing) throw new IllegalArgumentException("Complete required native fields before navigating: ${missing.join(', ')}")
         }
     }

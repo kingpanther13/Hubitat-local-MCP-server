@@ -581,6 +581,111 @@ class NativeFormsSpec extends ToolSpecBase {
         refused.message.contains('requires page')
     }
 
+    def 'a page with a next and a done page offers _action_done, posted like the other navigation after the required check'() {
+        given: 'the firmware renders _action_done instead of Next when the page names both'
+        model.doneButton = false
+        model.cancelButton = false
+        model.configPage = [name: 'pageTwo', title: 'Step two', nextPage: 'pageThree', donePage: 'pageThree',
+                            sections: [[input: [[element: 'input', name: 'second', type: 'text', required: true]]]]]
+        model.settings = [:]
+        def opened = script.toolCallAppForm([app_id: 42, steps: [[kind: 'open']], confirm: true])
+        calls.clear()
+        when:
+        def missing = script.toolCallAppForm([app_id: 42, confirm: true, steps: [[kind: 'submit', expect_page: 'pageTwo', activate: '_action_done|Done|']]])
+        then:
+        opened.controls*.control_id == ['_action_done|Done|']
+        opened.controls[0].kind == 'navigation'
+        opened.unsupported.isEmpty()
+        !missing.success
+        missing.error.contains('second')
+        calls.empty
+        when:
+        assert open().success
+        calls.clear()
+        def done = script.toolCallAppForm([app_id: 42, confirm: true, steps: [[kind: 'submit', expect_page: 'pageTwo', fields: [second: 'two'], activate: '_action_done|Done|']]])
+        then:
+        done.success
+        calls*.path == ['/installedapp/update/json']
+        calls[0].body._action_done == 'Done'
+        calls[0].body['settings[second]'] == 'two'
+        calls[0].body.nextPage == 'pageThree'
+        calls[0].body.donePage == 'pageThree'
+        !calls[0].body.containsKey('_action_next')
+    }
+
+    def 'the hub default fields are the app label and mode restriction, posted as label and mode[mode]'() {
+        given:
+        model.defaultFields = true
+        model.modeMap = ['1': 'Day', '2': 'Night']
+        model.app.label = 'Porch'
+        model.app.restrictedModes = [2]
+        when:
+        def opened = open()
+        def label = opened.fields.find { it.name == 'label' }
+        def modes = opened.fields.find { it.name == 'mode[mode]' }
+        then:
+        label.type == 'text'
+        label.title == 'Assign a name'
+        label.value == 'Porch'
+        !label.containsKey('app_field') && !label.containsKey('sidecars')
+        modes.type == 'mode'
+        modes.multiple
+        modes.value == ['2']
+        modes.options == [[value: '1', label: 'Day'], [value: '2', label: 'Night']]
+        opened.unsupported.every { !it.contains('label') }
+        when:
+        calls.clear()
+        def saved = submit([label: 'Back <b>porch</b>', 'mode[mode]': ['1', '2']])
+        def body = calls.find { it.path == '/installedapp/update/json' }.body
+        then:
+        saved.success
+        body.label == 'Back porch'
+        body['mode[mode]'] == '["1","2"]'
+        body['mode[mode].multiple'] == 'true'
+        !body.keySet().any { it in ['settings[label]', 'settings[mode[mode]]', 'label.type', 'mode[mode].type'] }
+        when: 'an unset default field is not posted, and a mode outside the options is refused before any request'
+        assert open().success
+        calls.clear()
+        submit([count: 1])
+        def plain = calls.find { it.path == '/installedapp/update/json' }.body
+        assert open().success
+        calls.clear()
+        def refused = submit(['mode[mode]': ['9']])
+        then:
+        !plain.containsKey('label') && !plain.containsKey('mode[mode]')
+        !refused.success
+        !refused.partial
+        calls.empty
+    }
+
+    def 'a page own label and mode elements are the same fields, the label posted with its type and checked when required'() {
+        given:
+        model.modeMap = ['1': 'Day']
+        model.app.label = ''
+        model.configPage.sections[0].input += [[element: 'label', name: 'label', type: 'text', title: 'Name this app', required: true],
+                                               [element: 'mode', title: 'Only in modes']]
+        when:
+        def opened = open()
+        calls.clear()
+        def missing = submit([:], '_action_update|Done|')
+        then:
+        opened.fields.find { it.name == 'label' }.title == 'Name this app'
+        opened.fields.find { it.name == 'label' }.required
+        opened.fields.find { it.name == 'mode[mode]' }.title == 'Set for specific mode(s)'
+        opened.unsupported.every { !it.contains('mode') }
+        !missing.success
+        missing.error.contains('label')
+        calls.empty
+        when:
+        def done = submit([label: 'Kitchen'], '_action_update|Done|')
+        def body = calls.find { it.path == '/installedapp/update/json' }.body
+        then:
+        done.success
+        body.label == 'Kitchen'
+        body['label.type'] == 'text'
+        body._action_update == 'Done'
+    }
+
     def 'button reload after native href uses the current page and breadcrumbs'() {
         given:
         def opened = open()

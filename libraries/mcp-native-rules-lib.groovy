@@ -3082,7 +3082,7 @@ private Map _naReadBack(Long id, Map page, Map written) {
     Map stored = model.settings instanceof Map ? model.settings : [:]
     List notLanded = written.keySet().findAll { name ->
         Map field = page.get('fields').get(name)
-        def value = stored.get(name)
+        def value = field.app_field ? _nfAppValue(model, field.name == 'mode[mode]') : stored.get(name)
         if (field.type == 'password') return (written.get(name) != '') != (value != null && value != '')
         _naComparable(field, value, false) != _naComparable(field, written.get(name), true)
     }.collect { it.toString() }
@@ -3162,8 +3162,8 @@ private Map _naCreate(Map args) {
             childId = made.created_id
             child = _nfContext(childId, _nfPage(childId))
             if (name) {
-                String labelInput = ['origLabel', 'name'].find { child.get('fields').containsKey(it) }
-                if (!labelInput) throw new IllegalArgumentException("The first page of a new ${type} renders no label input (origLabel or name), so name cannot be set there; omit name and set the label later with update or form.".toString())
+                String labelInput = ['origLabel', 'name', 'label'].find { child.get('fields').containsKey(it) }
+                if (!labelInput) throw new IllegalArgumentException("The first page of a new ${type} renders no label input (origLabel, name or the app's own label), so name cannot be set there; omit name and set the label later with update or form.".toString())
                 if (supplied.containsKey(labelInput)) throw new IllegalArgumentException("Pass the label once, as name or as fields.${labelInput}".toString())
                 supplied.put(labelInput, name)
             }
@@ -3431,7 +3431,7 @@ hub_set_native_app works on classic Hubitat apps (dynamicPage apps), user and co
 
 ### create
 
-operation:"create" with args:{app_type,name?,fields?} does what Apps does: it opens the type's parent app (installing it first when the hub lacks it), presses that page's Create control, fills the new app's first page with fields and presses its Done, which installs the app. name goes to the label input the first page renders (origLabel or name); a type whose first page renders neither (Button Controller, Basic Rule, Thermostat Scheduler and Controller) refuses name. fields are checked against that page before anything is saved: an input it does not render, a button, a disabled input, a bad value or device ID, or a required input left empty for the Done is refused with success:false, and the new app is removed. Inputs that a choice reveals belong to update or form. The result reports app_id, label, fields_applied, and fields_not_landed (with success:false) for any field the hub did not store as written. installed:false means the first page has no Done (Basic Rule: finish it with form) or the hub rendered the page again instead of accepting the Done. app_type rule_machine makes only an empty rule.
+operation:"create" with args:{app_type,name?,fields?} does what Apps does: it opens the type's parent app (installing it first when the hub lacks it), presses that page's Create control, fills the new app's first page with fields and presses its Done, which installs the app. name goes to the label input the first page renders (origLabel, name, or the hub's own label field); a type whose first page renders none of them (Button Controller, Basic Rule, Thermostat Scheduler and Controller) refuses name. fields are checked against that page before anything is saved: an input it does not render, a button, a disabled input, a bad value or device ID, or a required input left empty for the Done is refused with success:false, and the new app is removed. Inputs that a choice reveals belong to update or form. The result reports app_id, label, fields_applied, and fields_not_landed (with success:false) for any field the hub did not store as written. installed:false means the first page has no Done (Basic Rule: finish it with form) or the hub rendered the page again instead of accepting the Done. app_type rule_machine makes only an empty rule.
 
 A button_rule takes args:{app_type:"button_rule",controller_id,button_number,event} and no name or fields. It runs the Button Controller's own Add Button, the button number, then that event's Create Button Rule control. The controller needs its button device assigned first. A button number the controller does not offer returns success:false after its page's Cancel, with the controller as before. The controller seeds the trigger; add the actions with hub_set_rule(operation:"update",rule_id:<returned app_id>).
 

@@ -140,6 +140,29 @@ Supporting files:
   its parent's link the trail is `["<parent>"]`; supplying that trail on the
   submit (`pageBreadcrumbs=%5B%22<parent>%22%5D` with `_action_previous=Done`) makes
   the Done return to the parent as the browser's would.
+- **`_action_done` (platform 2.5.2.135).** A page with both `nextPage` and
+  `donePage` (a `dynamicPage(..., nextPage:, donePage:)` without `install`) renders
+  `<button name="_action_done" value="Done">` with no `type="button"`, so appUI.js's
+  click handler never sees it and the browser natively GETs
+  `/installedapp/configure/<id>/<crumbs>/<page>?<every input>&_action_done=Done`.
+  That GET saves no input: the hub stores the whole query as the setting
+  `hubitatQueryString` (a JSON list of `{name,value}`) and renders the same page.
+  Posted to `/installedapp/update/json` instead, the fields save and the same page
+  renders again; neither path returns a `location` or the done page, installed or not.
+- **Default fields.** Only an app whose `preferences` holds sections and no pages
+  makes the hub send `defaultFields: true` (and `modeMap`); dynamic pages, static
+  `page()` blocks and pages with their own `label`/`mode` elements do not, and no
+  built-in app's first page does. The partial renders `<input name="label">`
+  (value `app.label`) and `<select name="mode[mode]" multiple>` with the hidden
+  `mode[mode].multiple=true`; the browser posts `label=<text>` and
+  `mode[mode]=<JSON array of mode ids>` (`[]` when none), never as `settings[...]`.
+  A page's own `label` element posts the same `label` plus `label.type`, its `mode`
+  element the same `mode[mode]`. A `label` posted in the same request as
+  `mode[mode]` is not stored; the next request that posts `mode[mode]` applies it.
+  Posted alone it is stored at once, with or without a Done.
+- **No `image` element.** Apps have no `image()` method (a page calling it errors
+  with "No signature of method ... image()"); main.js draws images only as an
+  `href`'s `image:` option.
 
 ### On the "Rule Machine is a black box" note
 
