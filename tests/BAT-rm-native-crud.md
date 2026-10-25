@@ -1005,7 +1005,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: One `hub_set_rule(operation="update")` whose changes delete the existing action by its native ID and append the three new actions returns success. `hub_get_app_config.actions.length === 3` with new commands; old single-action list is gone. [INV-1] `configPage.error == null`. [INV-2] does not apply to this time-only trigger: `statusJson.scheduledJobs` still lists the Certain Time job.
+**Expected**: One `hub_set_rule(operation="update")` whose changes delete the existing action by its native ID and append the three new actions returns success. `hub_set_rule(operation="read", args={sections:["actions"]})` (following `nextCursor` if present) lists exactly the three new actions with their commands; the old action is gone. [INV-1] `configPage.error == null`. [INV-2] does not apply to this time-only trigger: `statusJson.scheduledJobs` still lists the Certain Time job.
 
 ### T378 — Delete rule (soft) then delete with force
 
