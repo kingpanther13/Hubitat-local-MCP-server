@@ -616,6 +616,6 @@ class BackupRetentionSpec extends ToolSpecBase {
     def 'the retention note states the one eviction rule'() {
         expect:
         script._itemBackupRetentionNote() ==
-            "Backups are removed only when all MCP backups together exceed the 10 MB storage budget, oldest first; an item's newest backup is never removed."
+            "Backups are removed only when all MCP backups together exceed the 10 MB storage budget, oldest first; an item's newest backup is never removed, so the budget can stay exceeded once every item is down to one."
     }
 }
