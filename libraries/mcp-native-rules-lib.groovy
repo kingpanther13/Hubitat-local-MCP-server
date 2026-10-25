@@ -261,8 +261,8 @@ private Set _rmValidRuleIds() {
     return ids
 }
 
-// List all Rule Machine rules (RM 4.x + 5.x, deduped by id) via RMUtils, with the ids of
-// deleted rules that RM's rule-list variables still carry filtered against /hub2/appsList. The RMUtils lookup and
+// List all Rule Machine rules (RM 4.x + 5.x, deduped by id) via RMUtils, with deleted rules whose ids
+// RM's rule-list variables still carry dropped by a /hub2/appsList cross-check. The RMUtils lookup and
 // ghost filter live in _rmCollectFilteredRmRules (shared with the rule-target
 // existence guard); this tool formats, paginates, and classifies the result.
 def toolListRmRules(args) {
@@ -1441,33 +1441,16 @@ private void _rmSubmitSubPageDone(Integer appId, String page, String parentPage,
 // [done: false, reason: <why>] so callers can surface the miss: the Done
 // is the session's only lifecycle event, so a silent miss matters.
 Map _rmSubmitMainPageDone(Integer appId) {
-    // Most app types commit on mainPage -- fetch it directly so the common path stays a SINGLE config
-    // render (no per-edit regression). Button Rule-5.1's commit page is 'selectActions' instead, so a
-    // mainPage fetch fails there ("Cannot find page 'mainPage'"); ONLY on that miss do we probe the app
-    // type from the root config and retry on the resolved page.
-    def commitPage = "mainPage"
+    // The commit page is the app's own root page (mainPage for most built-in apps, selectActions for
+    // Button Rule-5.1, whatever a user app declares first), so the root render names it; one render.
     def cfg
-    try {
-        cfg = _rmFetchConfigJson(appId, commitPage)
-    } catch (Exception mainExc) {
-        String resolved = null
-        try {
-            def rootCfg = _rmFetchConfigJson(appId)
-            if (rootCfg?.app?.appType?.name == "Button Rule-5.1") resolved = "selectActions"
-        } catch (Exception probeExc) {
-            mcpLog("warn", "rm-native", "_rmSubmitMainPageDone: page-graph probe failed for app ${appId} after a mainPage miss (${probeExc.message})")
-        }
-        if (resolved == null) {
-            mcpLog("warn", "rm-native", "_rmSubmitMainPageDone: mainPage fetch failed for app ${appId} (${mainExc.message}) -- skipping Done click; lingering state markers (state.editAct/state.editCond) may corrupt subsequent edits")
-            return [done: false, reason: "mainPage fetch failed: ${mainExc.message}".toString()]
-        }
-        commitPage = resolved
-        try { cfg = _rmFetchConfigJson(appId, commitPage) }
-        catch (Exception reExc) {
-            mcpLog("warn", "rm-native", "_rmSubmitMainPageDone: ${commitPage} fetch failed for app ${appId} (${reExc.message}) -- skipping Done click")
-            return [done: false, reason: "${commitPage} fetch failed: ${reExc.message}".toString()]
-        }
+    try { cfg = _rmFetchConfigJson(appId) }
+    catch (Exception rootExc) {
+        mcpLog("warn", "rm-native", "_rmSubmitMainPageDone: root page fetch failed for app ${appId} (${rootExc.message}) -- skipping Done click; lingering state markers (state.editAct/state.editCond) may corrupt subsequent edits")
+        return [done: false, reason: "root page fetch failed: ${rootExc.message}".toString()]
     }
+    String commitPage = cfg?.configPage?.name?.toString()
+    if (!commitPage) return [done: false, reason: "the app's root page carries no name"]
     def schema = _rmCollectInputSchema(cfg?.configPage)
     def status
     try { status = _rmFetchStatusJson(appId) }
@@ -1802,7 +1785,7 @@ private Map _rmBuildNativeEditSnapshot(Integer ruleId, String reason, String cap
     [snapshot: snapshot, config: config]
 }
 
-// activePage: the page a form workflow is on. Its render is read instead of the app's main page,
+// activePage: the page a form workflow is on. Its render is read instead of the app's default page,
 // which resets a stateful wizard (HPM clears its pending install settings there).
 private Map _rmBuildRuleSnapshot(Integer ruleId, String reason, String activePage = null) {
     def config
@@ -1826,9 +1809,9 @@ private Map _rmBuildRuleSnapshot(Integer ruleId, String reason, String activePag
     try {
         status = _rmFetchStatusJson(ruleId)
     } catch (Exception e) {
-        // Status failure is tolerable for a pre-write snapshot — the
-        // config JSON alone is enough to restore. Record the failure in
-        // the snapshot so post-mortem sees why status was absent.
+        // Tolerated only for an app with no settings (the guard below): statusJson is the one
+        // read that types every setting, so without it a password could not be told apart.
+        // Record the failure in the snapshot so post-mortem sees why status was absent.
         mcpLog("warn", "rm-native", "Backup for rule ${ruleId}: statusJson failed -- ${e.message}")
         status = [error: e.message ?: e.toString()]
     }
@@ -1838,9 +1821,8 @@ private Map _rmBuildRuleSnapshot(Integer ruleId, String reason, String activePag
         throw new IllegalStateException("the app's settings could not be read, so no snapshot was taken; nothing was changed")
     }
 
-    // Detect appType from the config's appType.name so the restore path
-    // can route to the right registry entry. RM 5.1 = "rule_machine";
-    // future appTypes get reverse-mapped from the registry.
+    // Detect appType from the config's appType.name so the restore path can route to the right
+    // registry entry; a type the registry lacks is recorded as "app".
     def detectedAppType = config == null ? "visual_rule" : "rule_machine"
     def configAppName = config?.app?.appType?.name
     if (configAppName) {
@@ -2731,8 +2713,12 @@ def toolDeleteNativeApp(args) {
     try { backup = _rmBackupRuleSnapshot(appId, force ? "pre-forcedelete" : "pre-delete") }
     catch (Exception backupErr) {
         Map unavailable = _itemBackupIndexUnavailableResult(backupErr)
-        if (unavailable == null) throw backupErr
-        return unavailable + [appId: appId]
+        if (unavailable != null) return unavailable + [appId: appId]
+        // A snapshot the app's state cannot support (its settings unreadable, so a password could not
+        // be told apart) is a runtime refusal: nothing was deleted, and the caller gets the reason.
+        if (backupErr instanceof IllegalStateException) return [success: false, appId: appId, error: backupErr.message?.toString(),
+            note: "Nothing was deleted: the pre-delete snapshot could not be taken. Check that hub_get_app_config(appId=${appId}) and hub_list_backups answer, then retry.".toString()]
+        throw backupErr
     }
 
     try {
@@ -3045,7 +3031,7 @@ private String _naDone(Map context) { ['_action_update|Done|', '_action_previous
 // Sets the fields and presses the page's Done as the browser does. A submitOnChange input posts the
 // page as soon as it changes, and the Done is pressed on the page that post renders, so the inputs it
 // reveals save their defaults too. The caller has already checked the fields against the first page.
-private Map _naSave(Long id, Map context, Map supplied, String from) {
+private Map _naSave(Long id, Map context, Map supplied, String from, boolean existing) {
     List posted = []
     List rejected = []
     Map page = context
@@ -3065,7 +3051,7 @@ private Map _naSave(Long id, Map context, Map supplied, String from) {
     try { plan = _nfPrepare(id, page, pending, done, 'hub_set_native_app') }
     catch (IllegalArgumentException refused) {
         if (!changed) throw refused
-        throw new IllegalArgumentException("${supplied.keySet().join(', ')} saved, but the page that save rendered refused its Done (${refused.message}); its Done was not pressed. Set what it now asks for in another call.".toString())
+        throw new IllegalArgumentException("${supplied.keySet().join(', ')} saved, but the page that save rendered refused its Done (${refused.message}); its Done was not pressed.${existing ? ' Set what it now asks for in another call.' : ''}".toString())
     }
     Map answer = (pending || done) ? _nfExecute(id, plan) : null
     if (answer?.posted) { posted.addAll(plan.defaults); rejected.addAll(plan.rejected) }
@@ -3149,9 +3135,10 @@ private Map _naCreate(Map args) {
                     note: (cleanup == null ? 'The unfinished app was removed; nothing was created.' : "Delete app ${childId} with hub_delete_native_app before creating again.").toString() + guide]
         }
         Map saved
-        try { saved = _naSave(childId, child, supplied, null) }
+        try { saved = _naSave(childId, child, supplied, null, false) }
         catch (IllegalArgumentException refused) {
-            // Only an input the first post revealed can be refused here; the app was never finished.
+            // Only an input the first post revealed can be refused here: that post saved the page, but
+            // the Done never ran, so the app is removed like any other refused create.
             String cleanup = _naRemoveUnfinished(childId)
             String reason = refused.message?.toString()?.replaceFirst(/\.?$/, '.')
             if (cleanup == null) throw new IllegalArgumentException("${reason} The new app was removed, so nothing was created.".toString())
@@ -3187,7 +3174,7 @@ private Map _naCreate(Map args) {
         }
         result.note = notes.join(' ') + guide
         return result
-    } finally { _nfRelease(parentId) }
+    } finally { _nfForget(parentId); _nfRelease(parentId) }
 }
 
 private Map _naSetBut(Map context, String name) { context.controls.values().find { it.kind == 'button' && it.stateAttribute == 'setBut' && it.name == name } }
@@ -3265,7 +3252,7 @@ private Map _naUpdate(Long id, Map args) {
     def nativeApp = getAppByAppId(id)
     if (nativeApp?.id?.toString() != id.toString()) throw new IllegalArgumentException('app_id must identify an installed app')
     if (nativeApp.disabled == true) throw new IllegalArgumentException('Enable the app before updating it')
-    boolean subPage = page != null && page != 'mainPage'
+    boolean subPage = false
     _nfAcquire(id)
     Map backup = null
     boolean attempted = false
@@ -3274,15 +3261,24 @@ private Map _naUpdate(Long id, Map args) {
     try {
         backup = _nfBackup(id, nativeApp, page)
         Map context
-        try { context = _nfContext(id, _nfPage(id, page), subPage ? 'mainPage' : null) }
-        catch (Exception unreadable) {
-            if (unreadable.message?.contains('404')) throw new IllegalArgumentException("App ${id} renders no page '${page ?: 'mainPage'}'; hub_list_app_pages lists its pages. Nothing was written.".toString())
+        String root = null
+        try {
+            if (page) {
+                // The root page's name comes from the hub (a user app's first page need not be mainPage):
+                // a sub-page's Done returns to it, so its breadcrumb must name the real root.
+                Map rootContext = _nfContext(id, _nfPage(id))
+                root = rootContext.page.name?.toString()
+                subPage = page != root
+                context = subPage ? _nfContext(id, _nfPage(id, page), root) : rootContext
+            } else context = _nfContext(id, _nfPage(id))
+        } catch (Exception unreadable) {
+            if (unreadable.message?.contains('404')) throw new IllegalArgumentException("App ${id} renders no page '${page ?: 'its default page'}'; hub_list_app_pages lists its pages. Nothing was written.".toString())
             throw unreadable
         }
         if (page && context.page.name != page) throw new IllegalArgumentException("App ${id} renders no page '${page}' (the hub rendered '${context.page.name}'); hub_list_app_pages lists its pages. Nothing was written.".toString())
         _nfPrepare(id, context, fields, _naDone(context), 'hub_set_native_app')
         attempted = true
-        Map saved = _naSave(id, context, fields, subPage ? 'mainPage' : null)
+        Map saved = _naSave(id, context, fields, subPage ? root : null, true)
         posted.addAll(saved.posted)
         notPosted.addAll(saved.rejected)
         if (saved.done == '_action_previous|Done|') {

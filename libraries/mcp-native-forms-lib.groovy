@@ -294,10 +294,11 @@ private Map _nfPublic(Map context, List optionsFor) {
     }, messages: context.messages, unsupported: context.unsupported]
 }
 
-// The recovery point a form workflow takes before its first render: Rule Machine rules use their
-// exact native export, the Rule Machine parent has no child state to restore, and every other
-// classic app uses the generic configuration snapshot of the page being worked on (page is null for
-// the main page), since rendering another page can reset a stateful wizard.
+// The recovery point a form workflow takes before its first render: Rule Machine rules and Button
+// Rules use their exact native export, the Rule Machine parent has no child state to restore, and
+// every other classic app uses the generic configuration snapshot of the page being worked on (page
+// is null for the default page), since rendering another page can reset a stateful wizard. Skipped
+// when pre-edit backups are off.
 private Map _nfBackup(Long id, def nativeApp, String page) {
     boolean builtIn = nativeApp?.appType?.namespace == 'hubitat'
     if (builtIn && nativeApp.appType.name == 'Rule Machine') return [skipped: true, reason: 'Parent creation/navigation has no existing child state to restore; opening a child starts its own protected workflow']

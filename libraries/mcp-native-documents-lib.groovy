@@ -231,10 +231,9 @@ private void _ndValidateChange(Object change) {
     }
 }
 
-// The rows of one native collection a batch can name as it proceeds: the existing ids, one
-// placeholder per row the batch appends (its id is assigned only by the write), and the ids the
-// batch has deleted, which stay gone. Returns true for an existing row, false when the id may name
-// a row the batch appended.
+// Whether a batch may name this row of one native collection: true for an existing row, false when
+// the id may name a row the batch appended (its id is assigned only by the write), and a refusal
+// with `missing` for an id the batch already deleted or that never existed.
 private boolean _ndKnownRow(Map rows, String rowId, String missing) {
     if (rowId in rows.deleted) throw new IllegalArgumentException(missing)
     if (rowId in rows.ids) return true
@@ -323,7 +322,12 @@ private void _ndPreflight(Long id, List changes) {
                 actionOrder = actionOrder.findAll { it != target }
             }
             if (change.part in ['expression', 'required']) {
-                expressions.put(change.part == 'required' ? '0' : value.id.toString(), value.tokens)
+                String evalId = change.part == 'required' ? '0' : value.id.toString()
+                expressions.put(evalId, value.tokens)
+                // The newest write to an eval entry wins: an action edited earlier in the batch reads its expression from here.
+                projectedActions.each { key, action ->
+                    if (action instanceof Map && action.containsKey('tokens') && action.rule?.toString() == evalId) projectedActions.put(key, action.findAll { it.key != 'tokens' })
+                }
                 if (change.part == 'required') projectedPredicate = value.tokens.findAll { it?.toString()?.isInteger() }.collect { it.toString() }
             }
             if (change.part == 'delete' && value.part == 'condition') {

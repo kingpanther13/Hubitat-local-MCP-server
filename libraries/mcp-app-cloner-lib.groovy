@@ -1346,10 +1346,9 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
     def savedSettings = (snapshot?.configJson?.settings ?: [:]) as Map
     def savedLabel = snapshot?.appLabel
 
-    // Backup snapshots from before the appType-aware code path stored
-    // type="rm-rule" without an appType field. Treat those as RM (the
-    // only app type the original snapshots covered) for the recreate
-    // path. Future snapshots can carry an explicit savedAppType field.
+    // Backup snapshots from before the appType-aware code path stored type="rm-rule" without an
+    // appType field. Treat those as RM (the only app type the original snapshots covered) for the
+    // recreate path; current snapshots carry appType and appTypeName.
     def savedAppType = snapshot?.appType ?: "rule_machine"
     // Older snapshots recorded any app the registry lacks (user, community) as rule_machine.
     String savedTypeName = snapshot?.appTypeName?.toString() ?: snapshot?.configJson?.app?.appType?.name?.toString()
@@ -1621,7 +1620,7 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
 
 // Empty every non-button setting the app has that the backup does not, through the same update
 // endpoint as the replay (an emptied setting reads as unset; the hub keeps no way to delete one).
-// Returns the keys emptied.
+// keep names settings to leave alone (the passwords a snapshot redacts). Returns the keys emptied.
 List _rmClearSettingsNotInBackup(Integer appId, Map savedSettings, Collection keep = []) {
     def status = _rmFetchStatusJson(appId)
     if (!(status?.appSettings instanceof List)) return []

@@ -805,6 +805,23 @@ class NativeDocumentsSpec extends ToolSpecBase {
         noExceptionThrown()
     }
 
+    def 'an expression written after an action edit in the same batch is the one a condition delete is checked against'() {
+        given:
+        nativeState.capabsfalse = ['1': 'Switch is on', '5': 'Switch is off']
+        nativeState.actionList = ['1', '2']
+        nativeState.actions = ['1': [method: 'getIfThen', rule: 1], '2': [method: 'getEndIf']]
+        nativeState.eval = ['0': [], '1': ['1']]
+        when:
+        script._ndPreflight(42L, script._ndChanges([
+            [part: 'action', value: [id: '1', type: 'condActs', subtype: 'getIfThen', fields: [], expression: ['1']]],
+            [part: 'expression', value: [id: '1', tokens: ['5']]],
+            [part: 'delete', value: [part: 'condition', id: '5']]
+        ]))
+        then:
+        def error = thrown(IllegalArgumentException)
+        error.message == 'changes[2]: Referenced native conditions must be detached before deletion'
+    }
+
     def 'a condition only a deleted IF expression names can be deleted while a remaining IF still holds its condition'() {
         given:
         nativeState.capabsfalse = ['4': 'Switch is on', '8': 'Switch is off']

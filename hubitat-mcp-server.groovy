@@ -10340,8 +10340,8 @@ private String _classicAppFormat(Map cfg) {
  * detection arrays are always present) plus the cross-engine fields broken /
  * source / ruleFormat / validationErrors; predicate is added only when read.
  *
- * Write paths attach this report to mutation success AND error responses so
- * an LLM sees broken state immediately.
+ * hub_set_visual_rule attaches this report to its mutation responses so an LLM
+ * sees broken state immediately.
  */
 // Empty health-verdict shell: the stable keys of _rmCheckRuleHealth's report with
 // nothing detected, kept beside the main report shape so the two stay in lockstep.
@@ -10356,8 +10356,7 @@ private Map _rmEmptyHealthVerdict(Map overrides) {
 }
 
 Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
-    // Defensive guard: error paths can call in with a
-    // null appId if the failure happened before the id resolved. Reading rule state for a null id
+    // Defensive guard against a null appId. Reading rule state for a null id
     // would fire redundant HTTP calls (/app/ruleBuilderJson/null, /installedapp/configure/json/null)
     // that just throw -- short-circuit instead. (Gemini review, PR #276.) The verdict is unhealthy
     // AND unreadable: nothing was checked, so ok||unreadable gates treat it as couldn't-check.

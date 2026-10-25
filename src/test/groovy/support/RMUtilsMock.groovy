@@ -106,7 +106,7 @@ class RMUtilsMock {
         // getRuleList: no-arg (RM 4.x) AND String-version (RM 5.x).
         hubitat.helper.RMUtils.metaClass.static.getRuleList = { -> self.getRuleList() }
         hubitat.helper.RMUtils.metaClass.static.getRuleList = { String v -> self.getRuleList(v) }
-        // sendAction: three production forms
+        // sendAction: the three platform overloads
         //   (Long, String)                       -- legacy simple form
         //   (List, String, String)               -- platform 3-arg form (never called by production)
         //   (List, String, String, String)       -- PR-79 preferred 4-arg form

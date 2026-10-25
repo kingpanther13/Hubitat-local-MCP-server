@@ -6018,10 +6018,9 @@ class TestRunner:
                 f"hub_get_rule_health should classify a Basic Rule as basic-rule: {bh}"
             assert bh.get("broken") is None, f"a classic app has no compiled broken boolean: {bh}"
 
-            # EDIT: write the Notes field. NO updateRule click fires (Basic Rule
-            # is submitOnChange), so the render stays clean. On a 504 the response
-            # (configPageError/success) is gone; verify the note landed via read-back
-            # so the no-poison + success assertions only bind on the normal path.
+            # EDIT: write the Notes field, then read the app back: the note must have landed and
+            # the page must render without error (the old wizard poisoned it with "For input
+            # string: updateRule"). On a 504 the response is gone, so only the read-back binds.
             ew = self._soft_write(
                 lambda: self._native_app("update", {"fields": {"comments": f"{PREFIX}note"}}, app_id),
                 lambda: True,  # verified by the comments read-back below
@@ -6040,9 +6039,14 @@ class TestRunner:
                 print("    basic_rule edit: response-field assertions skipped (relay 504); note verified via read-back")
             else:
                 edited = ew["response"]
-                assert "updateRule" not in str(edited.get("configPageError") or ""), \
-                    f"Basic Rule edit poisoned the render with the updateRule error: {edited}"
-                assert edited.get("success") is not False, f"Basic Rule edit reported failure: {edited}"
+                assert edited.get("success") is True and "comments" in (edited.get("fields_applied") or []), \
+                    f"Basic Rule edit did not report the note applied: {edited}"
+                rb = self.client.call_tool("hub_read_apps_code", {
+                    "tool": "hub_get_app_config", "args": {"appId": app_id, "includeSettings": True}})
+                assert f"{PREFIX}note" in str(((rb.get("settings") or {}).get("comments")) or ""), \
+                    f"basic_rule notes edit did not land: {rb}"
+                assert not (rb.get("app") or {}).get("configPageError"), \
+                    f"basic_rule render poisoned after the edit: {rb}"
 
             # Restoring that edit's baseline in place puts the Basic Rule back as it was: settings it
             # gained afterwards are emptied, and it is finished with Done, never the updateRule click
@@ -6170,7 +6174,7 @@ class TestRunner:
             assert form["page"]["name"] == "mainPage", f"onMeansPage Done did not return to mainPage: {form['page']}"
             assert motion in (settings().get("motions") or {}), f"motions not set: {settings().get('motions')}"
 
-            # A sub-page opens directly when the open names its parent page, which `from` requires.
+            # `from` names a sub-page's parent, so an open with `from` and no `page` is refused.
             try:
                 bad = self._native_app("form", {"steps": [{"kind": "open", "from": "mainPage"}]}, app_id)
             except McpToolError as exc:
@@ -6210,15 +6214,25 @@ class TestRunner:
     author: "ci", description: "Throwaway app code for the pre-write snapshot password check", category: "Utility",
     iconUrl: "", iconX2Url: "")
 
-preferences { page(name: "mainPage") }
+preferences {
+    page(name: "pagePw")
+    page(name: "pageMore")
+}
 
-def mainPage() {
-    dynamicPage(name: "mainPage", title: "Password snapshot", install: true, uninstall: true) {
+def pagePw() {
+    dynamicPage(name: "pagePw", title: "Password snapshot", install: true, uninstall: true) {
         section {
             input "p", "password", title: "Password", required: false
             input "note", "text", title: "Note", required: false
             paragraph "p-state: ${settings.p == 'SECRET_VALUE' ? 'kept' : 'changed'}"
+            href "pageMore", title: "More", description: "open"
         }
+    }
+}
+
+def pageMore() {
+    dynamicPage(name: "pageMore", title: "More") {
+        section { input "note2", "text", title: "Second note", required: false }
     }
 }
 
@@ -6231,8 +6245,10 @@ def updated() {}
         # #552: a pre-write snapshot never stores a password-typed setting, and an in-place restore of
         # that snapshot leaves the live password alone. The throwaway app's page reports whether its
         # password still holds the value set here, so the check never has to read the password back.
-        # Once the app is deleted, the snapshot of this user app is not recreated: the restore asks
-        # for the app code to be reinstalled and its settings set again.
+        # Its root page is not named mainPage, so the sub-page update and the restore's closing Done
+        # prove the root page's name comes from the hub. Once the app is deleted, the snapshot of this
+        # user app is not recreated: the restore asks for the app code to be reinstalled and its
+        # settings set again.
         secret = "BAT-E2E-redact-me-552"
         label = "Deadman Test Target Password Snapshot"
         code_id = instance_id = None
@@ -6247,6 +6263,9 @@ def updated() {}
             assert inst.get("committed") is True and instance_id, f"creating the password app instance failed: {inst}"
             first = self._native_app("update", {"fields": {"p": secret}}, instance_id)
             assert first.get("success") is True, f"setting the password failed: {first}"
+            more = self._native_app("update", {"fields": {"note2": "sub edit"}, "page": "pageMore"}, instance_id)
+            assert more.get("success") is True and more.get("page") == "pageMore", \
+                f"the sub-page update under a root page not named mainPage failed: {more}"
             # A same-app baseline is otherwise reused for an hour; the second edit needs its own snapshot.
             self._mcp_settings({"backupEveryRuleWrite": True})
             try:

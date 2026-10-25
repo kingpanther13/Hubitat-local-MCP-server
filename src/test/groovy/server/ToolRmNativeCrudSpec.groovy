@@ -327,7 +327,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Rebuilding the Done form from `value` alone posts settings[buttonDev]=""
         // with _action_update=Done, which actively CLEARS the assignment
         // (verified live on fw 2.5.0.143 -- the button-rule e2e buttonDev wipe).
-        hubGet.register('/installedapp/configure/json/600/mainPage') { params ->
+        hubGet.register('/installedapp/configure/json/600') { params ->
             JsonOutput.toJson([
                 app: [id: 600, name: "Button Controller-5.1", label: "BC", installed: true, version: 3,
                       appType: [name: "Button Controller-5.1", namespace: "hubitat"]],
@@ -424,7 +424,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // The session-end Done is best-effort: a thrown POST must degrade to a
         // structured [done:false, reason:...] signal (so a restore can surface
         // the miss) rather than bubbling an exception up to its caller.
-        hubGet.register('/installedapp/configure/json/660/mainPage') { params ->
+        hubGet.register('/installedapp/configure/json/660') { params ->
             JsonOutput.toJson([
                 app: [id: 660, name: "Rule-5.1", label: "r", installed: true, version: 2,
                       appType: [name: "Rule-5.1", namespace: "hubitat"]],
@@ -454,7 +454,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // rebuilding the form would submit EVERY input as "" (the all-fields variant
         // of the capability wipe). The helper must skip the Done entirely -- NOT POST
         // a form that blanks the page's inputs.
-        hubGet.register('/installedapp/configure/json/670/mainPage') { params ->
+        hubGet.register('/installedapp/configure/json/670') { params ->
             JsonOutput.toJson([
                 app: [id: 670, name: "Rule-5.1", label: "r", installed: true, version: 2,
                       appType: [name: "Rule-5.1", namespace: "hubitat"]],
@@ -577,6 +577,50 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def snapshot = new JsonSlurper().parseText(backup.source)
         snapshot.appId == 200
         snapshot.appLabel == 'to-delete'
+    }
+
+    def "delete_rm_rule reports a structured refusal when the pre-delete snapshot cannot be taken"() {
+        given:
+        enableWrite()
+        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason, boolean native = false, String key = null, String page = null ->
+            throw new IllegalStateException("the app's settings could not be read, so no snapshot was taken; nothing was changed")
+        }
+        def rawCalls = []
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 -> rawCalls << path; [status: 302, location: "/installedapps", data: ""] }
+
+        when:
+        def result = script.toolDeleteNativeApp([appId: 202, force: true, confirm: true])
+
+        then:
+        result.success == false
+        result.appId == 202
+        result.error.contains("no snapshot was taken")
+        result.note.contains("Nothing was deleted")
+        rawCalls.isEmpty()
+    }
+
+    def "_rmSubmitMainPageDone presses the Done of the app's own root page, whatever it is named"() {
+        given:
+        hubGet.register('/installedapp/configure/json/681') { params ->
+            JsonOutput.toJson([app: [id: 681, name: "BAT user app", label: "u", installed: true, version: 1, appType: [name: "BAT user app", namespace: "mcptest"]],
+                configPage: [name: "pageMain", install: true, error: null, sections: [[title: "", input: [[name: "note", type: "text"]]]]],
+                settings: [note: "root"], childApps: []])
+        }
+        hubGet.register('/installedapp/statusJson/681') { params ->
+            JsonOutput.toJson([installedApp: [id: 681], appSettings: [[name: "note", type: "text", value: "root", multiple: false]]])
+        }
+        def bodies = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> bodies << body; [status: 200, data: '{"location":"/installedapp/list"}'] }
+
+        when:
+        def r = script._rmSubmitMainPageDone(681)
+
+        then:
+        r.done == true
+        bodies.size() == 1
+        bodies[0].currentPage == "pageMain"
+        bodies[0]._action_update == "Done"
+        bodies[0]["settings[note]"] == "root"
     }
 
     def "delete_rm_rule soft-delete surfaces hubMessage on refusal"() {
@@ -4163,7 +4207,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "_rmSubmitMainPageDone returns done:false uiBlocked instead of posting a Done the UI would refuse"() {
         given:
-        hubGet.register('/installedapp/configure/json/653/mainPage') { params ->
+        hubGet.register('/installedapp/configure/json/653') { params ->
             JsonOutput.toJson([app: [id: 653, name: "Group-2.1", version: 1, appType: [name: "Group-2.1", namespace: "hubitat"]],
                 configPage: [name: "mainPage", install: true, error: null, sections: [[title: "", input: [[name: "name", type: "text", required: true, title: "Select name for Group"]]]]],
                 settings: [:], childApps: []])

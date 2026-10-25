@@ -9,9 +9,10 @@ import support.ToolSpecBase
 /**
  * hub_set_native_app create and update run the native form engine the way the browser does
  * (issue #561): the parent's create_child control, the new app's first page and its Done; on an
- * existing app the page's Done, and on a sub-page the Done of the page it returns to. Every
- * refusal fires before a write (a refused create removes the child it made), and one read-back
- * after the Done reports what the hub stored.
+ * existing app the page's Done, and on a sub-page the Done of the page it returns to. A refusal
+ * fires before the page is posted (a refused create removes the child it made); the one exception
+ * is an input whose own save reveals a required one, which stops before the Done and reports
+ * partial. One read-back after the Done reports what the hub stored.
  */
 class NativeAppOperationsSpec extends ToolSpecBase {
     @Shared TestChildApp serverApp = new TestChildApp(id: 1L, label: 'MCP')
@@ -165,6 +166,21 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         raws == ['/installedapp/createchild/hubitat/Rule-5.1/parent/43']
         posts*.body*._action_update == ['Done']
         result.note.contains("hub_set_rule(operation:'update', rule_id:91")
+    }
+
+    def 'a create drops the caller cached form context of the parent page it changed'() {
+        given:
+        parentAt(40L, 'notifierChild', 'Notifier')
+        childAt(90L, 40L, 'Notifier', [page(90L, notifierInputs()),
+            page(90L, notifierInputs(), [label: 'N', installed: true, settings: [origLabel: 'N']])])
+        sharedMap('NATIVE_FORM_CONTEXTS')[script._nfCallerKey()] = [app_id: 40L, page: [name: 'mainPage']]
+
+        when:
+        def result = create([app_type: 'notifier', name: 'N'])
+
+        then:
+        result.success
+        !sharedMap('NATIVE_FORM_CONTEXTS').containsKey(script._nfCallerKey())
     }
 
     def 'a parent page without a create control for the type refuses before anything is created'() {
@@ -415,6 +431,46 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         posts[1].body._action_update == 'Done'
     }
 
+    def 'a sub-page update on an app whose root page is not named mainPage returns to that root'() {
+        given:
+        apps[73L] = [id: 73L, appType: [namespace: 'mcptest', name: 'BAT user app'], disabled: false]
+        List sub = [input('subNote', 'text')]
+        List main = [input('note', 'text')]
+        pages['/installedapp/configure/json/73'] = page(73L, main, [page: 'pageMain', settings: [note: 'root', subNote: 'x']])
+        pages['/installedapp/configure/json/73/pageSub'] = page(73L, sub, [page: 'pageSub', install: false])
+        replies['/installedapp/update/json'] = [page(73L, main, [page: 'pageMain', settings: [note: 'root']]), [status: 'success']]
+
+        when:
+        def result = update(73L, [fields: [subNote: 'x'], page: 'pageSub'])
+
+        then:
+        result.success
+        result.fields_applied == ['subNote']
+        posts.size() == 2
+        posts[0].body.currentPage == 'pageSub'
+        posts[0].body.pageBreadcrumbs == '%5B%22pageMain%22%5D'
+        posts[0].body._action_previous == 'Done'
+        posts[1].body.currentPage == 'pageMain'
+        posts[1].body._action_update == 'Done'
+    }
+
+    def 'naming the root page itself is not a sub-page update, whatever the root is called'() {
+        given:
+        apps[73L] = [id: 73L, appType: [namespace: 'mcptest', name: 'BAT user app'], disabled: false]
+        pages['/installedapp/configure/json/73'] = [page(73L, [input('note', 'text')], [page: 'pageMain']),
+            page(73L, [input('note', 'text')], [page: 'pageMain', settings: [note: 'root']])]
+
+        when:
+        def result = update(73L, [fields: [note: 'root'], page: 'pageMain'])
+
+        then:
+        result.success
+        posts.size() == 1
+        posts[0].body.currentPage == 'pageMain'
+        posts[0].body._action_update == 'Done'
+        !gets.any { it.endsWith('/pageMain') }
+    }
+
     @Unroll
     def 'an update the page refuses writes nothing: #label'() {
         given:
@@ -458,7 +514,8 @@ class NativeAppOperationsSpec extends ToolSpecBase {
     def 'a page the hub renders under another name is refused before any write'() {
         given:
         existing(70L)
-        pages['/installedapp/configure/json/70/noSuchPage'] = page(70L, notifierInputs())
+        pages['/installedapp/configure/json/70'] = page(70L, notifierInputs())
+        pages['/installedapp/configure/json/70/noSuchPage'] = page(70L, notifierInputs(), [page: ''])
 
         when:
         update(70L, [fields: [logging: true], page: 'noSuchPage'])
@@ -564,6 +621,7 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         given:
         existing(71L, 'Room Lights')
         List sub = [input('onMeans', 'enum', [multiple: true, submitOnChange: true, options: ['motion becomes active']])]
+        pages['/installedapp/configure/json/71'] = page(71L, [input('origLabel', 'text')])
         pages['/installedapp/configure/json/71/onMeansPage'] = page(71L, sub, [page: 'onMeansPage', install: false])
         replies['/installedapp/update/json'] = [page(71L, sub + [input('motions', 'capability.switch', [multiple: true, required: true])],
             [page: 'onMeansPage', install: false, settings: [onMeans: ['motion becomes active']]])]
