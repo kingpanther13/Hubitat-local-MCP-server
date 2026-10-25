@@ -5082,8 +5082,15 @@ def _toolDisplayMeta_partItemBackups() {
 }
 def toolGetDebugLogs(args) {
     initDebugLogs()
-    def limit = args.limit != null ? Math.min(args.limit as Integer, 200) : 50
-    def level = args.level ?: "all"
+    if (args.limit != null && !_isWholeNumberIn(args.limit, 0L, Integer.MAX_VALUE)) {
+        throw new IllegalArgumentException("limit must be a whole number: 0 for every entry, or the most entries to return (got '${args.limit}')")
+    }
+    if (args.level != null && !(args.level.toString().toLowerCase() in ["trace", "debug", "info", "warn", "error", "all"])) {
+        throw new IllegalArgumentException("level must be one of trace, debug, info, warn, error, all (got '${args.level}')")
+    }
+    int limit = 50
+    if (args.limit != null) limit = (args.limit as Long) == 0L ? 200 : (Math.min(args.limit as Long, 200L) as int)
+    def level = args.level?.toString()?.toLowerCase() ?: "all"
     def component = args.component
     def ruleId = args.ruleId
     def history = getDebugLogReadResult(args)
@@ -5131,14 +5138,6 @@ def toolGetDebugLogs(args) {
         if (paged.nextCursor != null) result.nextCursor = paged.nextCursor
     }
     return result
-}
-def toolClearDebugLogs(args) {
-    initDebugLogs()
-    def cleared = clearDebugLogEntries(args)
-    if (cleared.status == "in_progress") return cleared + [tool: "hub_delete_debug_logs"]
-    def detail = cleared.countIncomplete ? "previous entry count unavailable" : "${cleared.clearedCount} entries removed"
-    mcpLog("info", "server", "Debug logs cleared (${detail})")
-    return [success: true] + cleared
 }
 def toolSetLogLevel(args) {
     def level = args.level
@@ -5544,7 +5543,7 @@ private List _bugReportPreflight(String issueType, boolean includeRawLogs, Strin
         }
     }
     String mcpNote = includeRawLogs ? "error/warn already attached" : (privacyMode == "public" ? "error/warn withheld in public mode" : "error/warn withheld: includeRawLogs=false")
-    steps << "Attach logs from every source: hub_get_logs(mode='hub') for native hub logs around the failure, mode='mcp' for MCP entries (${mcpNote}), and your client host's own MCP logs via clientLogs.".toString()
+    steps << "Attach logs from every source: hub_get_logs(mode='past') for native hub logs around the failure, mode='mcp' for MCP entries (${mcpNote}), and your client host's own MCP logs via clientLogs.".toString()
     steps << verbatimStep
     return steps
 }
@@ -5784,11 +5783,6 @@ private String _bugReportRawSection(String heading, String body, boolean include
 def _getAllToolDefinitions_partDebugLogging() {
     return [
         [
-            name: "hub_delete_debug_logs",
-            description: "Clear the structured MCP history view read by hub_get_logs(mode='mcp').[[FLAT_TRIM]] A durable clear marker keeps old native entries from reappearing after reload. Use before reproducing an issue. Does NOT touch Hubitat system logs (hub_get_logs) or captured device states (hub_delete_captured_state).[[/FLAT_TRIM]] Cannot be undone.",
-            inputSchema: [type: "object", properties: [:]]
-        ],
-        [
             name: "hub_set_log_level",
             description: "Set the minimum log level threshold. Logs below this level won't be stored.",
             inputSchema: [
@@ -5834,13 +5828,12 @@ def _readOnlyToolNames_partDebugLogging() {
 }
 def _idempotentWriteToolNames_partDebugLogging() {
     return [
-        "hub_set_log_level", "hub_delete_debug_logs"
+        "hub_set_log_level"
     ]
 }
 def _toolDisplayMeta_partDebugLogging() {
     return [
         hub_report_issue: [title: "Generate Diagnostic Report", summary: "Generate a comprehensive diagnostic report for bug reports."],
-        hub_delete_debug_logs: [title: "Clear MCP Debug Logs", summary: "Clear all MCP debug log entries."],
         hub_set_log_level: [title: "Set MCP Log Level", summary: "Set the MCP log level (debug, info, warn, error)."]
     ]
 }
@@ -6287,175 +6280,355 @@ def runNativeLogFetch(Map job = [:]) {
         }
     }
 }
-def toolGetHubLogs(args) {
-    String mode = args.mode == null ? "hub" : args.mode.toString().toLowerCase()
-    if (!(mode in ["hub", "mcp", "status"])) throw new IllegalArgumentException("Invalid log mode: ${args.mode}. Valid modes: hub, mcp, status")
-    def incompatible = mode == "hub" ? ["component", "ruleId"] :
-        mode == "mcp" ? ["source", "appId", "deviceId", "pattern", "patterns", "patternMode", "since", "until"] :
-        ["component", "ruleId", "source", "appId", "deviceId", "pattern", "patterns", "patternMode", "since", "until", "level", "limit", "cursor"]
-    def supplied = incompatible.findAll { args[it] != null }
-    if (supplied) throw new IllegalArgumentException("Parameters ${supplied.join(', ')} do not apply to log mode '${mode}'")
-    if (mode == "mcp") return toolGetDebugLogs(args)
-    if (mode == "status") return toolGetLoggingStatus(args)
-    def maxLimit = 500
-    def limit = Math.min(args.limit ?: 100, maxLimit)
-    def levelFilter = args.level?.toString()?.toLowerCase() == "all" ? null : args.level
-    def sourceFilter = args.source
-    def deviceIdFilter = args.deviceId?.toString()?.trim()
-    def appIdFilter = args.appId?.toString()?.trim()
-    if (deviceIdFilter && appIdFilter) {
-        throw new IllegalArgumentException("deviceId and appId are mutually exclusive: set only one")
+private Map _logsModeArgs() {
+    List shared = ["pattern", "patterns", "patternMode", "limit", "cursor", "pageSize"]
+    return [
+        past: shared + ["level", "deviceId", "appId", "since", "until"],
+        devices: shared + ["deviceId", "sortBy"],
+        apps: shared + ["appId", "sortBy"],
+        cloudCalls: shared + ["appId"],
+        locationEvents: shared + ["since", "until"],
+        hubEvents: shared + ["since", "until"],
+        scheduledJobs: shared + ["deviceId", "appId"],
+        runningJobs: shared + ["deviceId", "appId"],
+        hubActions: shared + ["deviceId", "appId"],
+        mcp: ["level", "component", "ruleId", "limit", "cursor"],
+        status: []
+    ]
+}
+private List _logsSearchFields(String mode) {
+    switch (mode) {
+        case "past": return ["name", "message"]
+        case "scheduledJobs": case "runningJobs": return ["name", "methodName"]
+        case "locationEvents": case "hubEvents": return ["name", "descriptionText", "value"]
+        default: return ["name"]
     }
+}
+private Map _logsOwner(link) {
+    def m = (link?.toString() ?: "") =~ /^\/(installedapp\/configure|device\/edit)\/(\d+)$/
+    if (!m.matches()) return null
+    return [type: m.group(1) == "device/edit" ? "device" : "app", id: m.group(2) as Integer]
+}
+private Map _logsPatterns(Map args) {
     if (args.pattern != null && !(args.pattern instanceof String)) {
         throw new IllegalArgumentException("pattern must be a string (got ${args.pattern instanceof List ? 'list' : 'non-string'})")
     }
     if (args.patterns != null && !(args.patterns instanceof List)) {
         throw new IllegalArgumentException("patterns must be a list of strings (got ${args.patterns instanceof String ? 'string' : 'non-list'})")
     }
-    if (args.patterns instanceof List) {
-        for (int i = 0; i < args.patterns.size(); i++) {
-            def pi = args.patterns[i]
-            if (pi != null && !(pi instanceof String)) {
-                throw new IllegalArgumentException("patterns[${i}] must be a string (got ${pi instanceof List ? 'list' : pi instanceof Number ? 'number' : 'non-string'})")
-            }
-        }
+    String patternMode = args.patternMode?.toString()?.toLowerCase()
+    if (patternMode != null && !(patternMode in ["any", "all"])) {
+        throw new IllegalArgumentException("patternMode must be 'any' or 'all' (got '${args.patternMode}')")
     }
-    if (args.since != null && !(args.since instanceof String)) {
-        throw new IllegalArgumentException("since must be a string (ISO-8601 timestamp or relative offset like '30m', '2h', '1d')")
-    }
-    if (args.until != null && !(args.until instanceof String)) {
-        throw new IllegalArgumentException("until must be a string (same format as since)")
-    }
-    def compiledPattern = null
-    if (args.pattern != null) {
-        def rawPat = args.pattern.toString()
-        if (rawPat.isEmpty()) {
-            throw new IllegalArgumentException("pattern must not be empty (got empty string); omit pattern arg to skip pattern filter")
-        }
-        if (rawPat.length() > 100) {
-            throw new IllegalArgumentException("pattern exceeds 100 char limit (was ${rawPat.length()} chars)")
-        }
+    def compile = { String label, p ->
+        if (p != null && !(p instanceof String)) throw new IllegalArgumentException("${label} must be a string")
+        if (!p) throw new IllegalArgumentException("${label} must not be null or empty")
+        if (p.length() > 100) throw new IllegalArgumentException("${label} exceeds 100 char limit (was ${p.length()} chars)")
         try {
-            compiledPattern = java.util.regex.Pattern.compile(rawPat, java.util.regex.Pattern.CASE_INSENSITIVE)
+            return java.util.regex.Pattern.compile(p, java.util.regex.Pattern.CASE_INSENSITIVE)
         } catch (java.util.regex.PatternSyntaxException e) {
-            throw new IllegalArgumentException("Invalid regex pattern '${rawPat}': ${e.message}")
+            throw new IllegalArgumentException("Invalid regex ${label} '${p}': ${e.message}")
         }
     }
-    def compiledPatterns = []
-    def patternModeAll = (args.patternMode?.toString()?.toLowerCase() == "all")
-    if (args.patternMode != null) {
-        def pm = args.patternMode.toString().toLowerCase()
-        if (pm != 'any' && pm != 'all') {
-            throw new IllegalArgumentException("patternMode must be 'any' or 'all' (got '${args.patternMode}')")
-        }
+    List list = []
+    (args.patterns ?: []).eachWithIndex { p, int i -> list << compile("patterns[${i}]", p) }
+    return [single: args.pattern != null ? compile("pattern", args.pattern) : null, list: list, all: patternMode == "all"]
+}
+private boolean _logsRowMatches(Map row, List fields, Map patterns) {
+    List texts = fields.collect { row[it] == null ? "" : row[it].toString() }
+    def hit = { java.util.regex.Pattern p -> texts.any { p.matcher(it).find() } }
+    if (patterns.single != null && !hit(patterns.single)) return false
+    if (!patterns.list) return true
+    return patterns.all ? patterns.list.every(hit) : patterns.list.any(hit)
+}
+private boolean _logsOutsideWindow(Date at, Map query) {
+    return (query.since != null && !at.after(query.since)) || (query.until != null && at.after(query.until))
+}
+private Date _logsTimeArg(String name, value) {
+    if (value == null) return null
+    if (!(value instanceof String) && !(value instanceof Number)) {
+        throw new IllegalArgumentException("${name} must be a string or epoch milliseconds")
     }
-    if (args.patterns instanceof List && args.patterns) {
-        for (int pi = 0; pi < args.patterns.size(); pi++) {
-            def rawPat = args.patterns[pi]
-            if (rawPat == null) {
-                throw new IllegalArgumentException("patterns[${pi}] must not be null or empty")
+    String s = value.toString().trim()
+    String formats = "use a relative age like '30m', '2h' or '1d', a time like '2026-06-23 10:00:00' (hub time) or '2026-06-23T16:00:00Z', or epoch milliseconds"
+    def rel = s =~ /^(\d+)([mhd])$/
+    if (rel.matches()) {
+        long ms = rel.group(1).toLong() * ([m: 60000L, h: 3600000L, d: 86400000L][rel.group(2)] as Long)
+        if (ms > 30L * 86400000L) {
+            throw new IllegalArgumentException("${name} exceeds the 30d cap (got '${s}'); use an ISO-8601 time for older bounds")
+        }
+        return new Date(now() - ms)
+    }
+    if (s.isLong()) {
+        if (s.toLong() < 946684800000L) throw new IllegalArgumentException("Cannot read ${name}='${s}' as a time: ${formats}")
+        return new Date(s.toLong())
+    }
+    def stamp = s =~ /^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})(\.\d{1,3})?(.*)$/
+    if (!stamp.matches()) throw new IllegalArgumentException("Cannot parse ${name}='${s}': ${formats}")
+    def strict = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss")
+    strict.setLenient(false)
+    String zone = stamp.group(4)
+    strict.setTimeZone(zone ? TimeZone.getTimeZone("UTC") : _hubTimeZone())
+    Date local
+    try {
+        local = strict.parse("${stamp.group(1)} ${stamp.group(2)}".toString())
+    } catch (Exception e) {
+        throw new IllegalArgumentException("Cannot parse ${name}='${s}': no such date and time")
+    }
+    if (!zone) {
+        long fractionMs = stamp.group(3) ? (stamp.group(3).substring(1) + "00").take(3).toLong() : 0L
+        return new Date(local.time + fractionMs)
+    }
+    Date parsed = _parseSinceArg(s)
+    if (parsed == null) throw new IllegalArgumentException("Cannot parse ${name}='${s}': ${formats}")
+    return parsed
+}
+private Map _logsQuery(Map args, String mode) {
+    if (args.deviceId != null && args.appId != null) {
+        throw new IllegalArgumentException("deviceId and appId are mutually exclusive: set only one")
+    }
+    String deviceId = args.deviceId?.toString()?.trim() ?: null
+    String appId = args.appId?.toString()?.trim() ?: null
+    if (deviceId) _validateNativeDeviceId(deviceId)
+    if (appId && !appId.isInteger()) throw new IllegalArgumentException("appId must be numeric: ${appId}")
+    if (args.sortBy != null && !(args.sortBy in ["pct", "count", "total", "stateSize", "name"])) {
+        throw new IllegalArgumentException("sortBy must be one of pct, count, total, stateSize, name (got '${args.sortBy}')")
+    }
+    if (args.level != null && !(args.level.toString().toLowerCase() in ["trace", "debug", "info", "warn", "error", "all"])) {
+        throw new IllegalArgumentException("level must be one of trace, debug, info, warn, error, all (got '${args.level}')")
+    }
+    Map patterns = _logsPatterns(args)
+    Date since = _logsTimeArg("since", args.since)
+    Date until = _logsTimeArg("until", args.until)
+    if (since != null && until != null && !until.after(since)) {
+        throw new IllegalArgumentException("until must be later than since (relative ages count back from now, so since='2h' is earlier than until='1h')")
+    }
+    if (args.limit != null && !_isWholeNumberIn(args.limit, 0L, Integer.MAX_VALUE)) {
+        throw new IllegalArgumentException("limit must be a whole number: 0 for every row, or the most rows to return (got '${args.limit}')")
+    }
+    _logsCheckPageSize(args.pageSize)
+    int limit
+    if (args.limit != null) limit = args.limit as Integer
+    else if (mode in ["devices", "apps"]) limit = 20
+    else if (mode in ["past", "locationEvents", "hubEvents"]) limit = 100
+    else limit = 0
+    return [patterns: patterns, since: since, until: until, limit: limit, deviceId: deviceId, appId: appId,
+            sortBy: args.sortBy ?: "pct", level: args.level?.toString()?.toLowerCase(),
+            cursor: args.cursor != null ? args.cursor : (args.pageSize != null ? "" : null),
+            pageSize: args.pageSize != null ? (args.pageSize as Integer) : 100]
+}
+private void _logsCheckPageSize(pageSize) {
+    if (pageSize != null && !_isWholeNumberIn(pageSize, 1L, 100L)) {
+        throw new IllegalArgumentException("pageSize must be a whole number from 1 to 100 (got '${pageSize}')")
+    }
+}
+private TimeZone _hubTimeZone() {
+    return location?.timeZone ?: TimeZone.getTimeZone("UTC")
+}
+def toolGetHubLogs(args) {
+    Map modeArgs = _logsModeArgs()
+    List allModeArgs = modeArgs.values().flatten().unique()
+    List unknown = args.keySet()*.toString().findAll(this.&_logsUnknownArg.curry(allModeArgs))
+    if (unknown) {
+        throw new IllegalArgumentException("Unknown parameter${unknown.size() == 1 ? '' : 's'} for hub_get_logs: ${unknown.join(', ')}. Search a row's name and text with pattern, and scope with deviceId or appId.")
+    }
+    List modes = args.mode instanceof List ? args.mode*.toString().unique() : [args.mode == null ? "past" : args.mode.toString()]
+    if (!modes) throw new IllegalArgumentException("mode must name at least one tab")
+    for (m in modes) {
+        if (!modeArgs.containsKey(m)) {
+            throw new IllegalArgumentException("Invalid log mode: ${m}. Valid modes: ${modeArgs.keySet().join(', ')}")
+        }
+        def supplied = (allModeArgs - modeArgs[m]).findAll(this.&_argPresent.curry(args))
+        if (args.mode instanceof List && m in ["mcp", "status"]) supplied -= ["pageSize"]
+        if (supplied) throw new IllegalArgumentException("Parameters ${supplied.join(', ')} do not apply to log mode '${m}'")
+    }
+    if (args.mode instanceof List) {
+        if (args.cursor != null) throw new IllegalArgumentException("cursor pages one mode: each listed tab returns its first page; call that mode alone with its nextCursor")
+        _logsCheckPageSize(args.pageSize)
+        (modes - ["mcp", "status"]).each(this.&_logsQuery.curry(args))
+        Map results = [:]
+        boolean pending = false
+        for (m in modes) {
+            if (pending && m in ["cloudCalls", "locationEvents", "hubEvents", "status"]) continue
+            Map paging = [:]
+            if (modeArgs[m].contains("pageSize")) paging = [cursor: "", pageSize: args.pageSize != null ? args.pageSize : 50]
+            else if (modeArgs[m].contains("cursor")) paging = [cursor: ""]
+            Map tabArgs = args
+            if (m in ["mcp", "status"] && args.pageSize != null) {
+                tabArgs = args.subMap(args.keySet() - ["pageSize"])
+                if (m == "mcp" && args.limit == null) tabArgs.limit = args.pageSize
             }
-            rawPat = rawPat.toString()
-            if (rawPat.isEmpty()) {
-                throw new IllegalArgumentException("patterns[${pi}] must not be null or empty")
-            }
-            if (rawPat.length() > 100) {
-                throw new IllegalArgumentException("patterns[${pi}] exceeds 100 char limit (was ${rawPat.length()} chars)")
-            }
+            Map r
             try {
-                compiledPatterns << java.util.regex.Pattern.compile(rawPat, java.util.regex.Pattern.CASE_INSENSITIVE)
-            } catch (java.util.regex.PatternSyntaxException e) {
-                throw new IllegalArgumentException("Invalid regex pattern '${rawPat}' (patterns[${pi}]): ${e.message}")
+                r = toolGetHubLogs(tabArgs + [mode: m] + paging)
+            } catch (IllegalArgumentException e) {
+                throw e
+            } catch (Exception e) {
+                mcpLogError("monitoring", "hub_get_logs tab ${m} failed", e)
+                r = [success: false, isError: true, error: e.message ?: e.class.simpleName, note: "Call hub_get_logs(mode='${m}') alone to retry it."]
             }
+            if (r.status == "in_progress") pending = true
+            r.remove("mode")
+            results.put(m, r)
+        }
+        if (pending) {
+            return [status: "in_progress", tool: "hub_get_logs", retryable: true,
+                    note: "Some tabs are still loading on the hub. Continue with requestState, or repeat the same call on a legacy client."]
+        }
+        Map out = [modes: results]
+        List shared = results.values().findAll(this.&_logsHasFetchSnapshot)
+        if (shared.size() > 1 && shared*.snapshot*.fetchedAt.unique(false).size() == 1 && shared*.uptime.unique(false).size() == 1) {
+            out.uptime = shared[0].uptime
+            out.snapshot = shared[0].snapshot
+            shared*.remove("uptime")
+            shared*.remove("snapshot")
+        }
+        List failed = results.findAll(this.&_logsTabFailed).keySet() as List
+        if (failed) {
+            out.failedModes = failed
+            if (failed.size() == results.size()) {
+                out.success = false
+                out.isError = true
+                out.error = "Every listed tab failed: ${failed.join(', ')}"
+            }
+        }
+        return out
+    }
+    String mode = modes[0]
+    if (mode == "mcp") return toolGetDebugLogs(args)
+    if (mode == "status") return toolGetLoggingStatus(args)
+    Map query = _logsQuery(args, mode)
+    if (mode == "past") {
+        Map past = _pastLogs(args, query)
+        if (query.deviceId && past.status != "in_progress") {
+            past.deviceIdResolved = past.matched > 0 || _fetchDeviceFullJson(query.deviceId)?.device?.id?.toString() == query.deviceId
+        }
+        return past
+    }
+    List rows
+    Map result = [mode: mode]
+    Map logsJsonTables = [devices: "deviceStats", apps: "appStats", scheduledJobs: "jobs", runningJobs: "runningJobs", hubActions: "hubCommands"]
+    if (logsJsonTables.containsKey(mode)) {
+        def snap
+        try {
+            snap = _logsJsonSnapshot(args)
+        } catch (Exception e) {
+            mcpLogError("monitoring", "Failed to read the Logs page", e)
+            return _logsJsonFailure("hub_get_logs", e.message ?: e.class.simpleName)
+        }
+        if (snap.state == "failed") return _logsJsonFailure("hub_get_logs", snap.error)
+        if (snap.state == "pending") return _logsJsonInProgress("hub_get_logs")
+        Map data = snap.snapshot
+        rows = data[logsJsonTables[mode]] ?: []
+        result.uptime = data.uptime
+        if (mode == "devices") result.summary = [devicesUptime: data.devicesUptime, totalDevicesRuntime: data.totalDevicesRuntime, devicePct: data.devicePct]
+        if (mode == "apps") result.summary = [appsUptime: data.appsUptime, totalAppsRuntime: data.totalAppsRuntime, appPct: data.appPct]
+        result.snapshot = _logsJsonProvenance(data)
+    } else {
+        String path = [cloudCalls: "/logs/cloudCalls/json", locationEvents: "/logs/eventsJson", hubEvents: "/hub/eventsJson"][mode]
+        def parsed
+        try {
+            def text
+            if (mode == "cloudCalls") text = hubInternalGet("/logs/cloudCalls/json", null, 30)
+            else if (mode == "hubEvents") text = hubInternalGet("/hub/eventsJson", null, 30)
+            else text = hubInternalGet("/logs/eventsJson", null, 30)
+            parsed = text?.toString()?.trim() ? new groovy.json.JsonSlurper().parseText(text.toString()) : null
+        } catch (Exception e) {
+            mcpLogError("monitoring", "${path} read failed", e)
+            return [success: false, isError: true, error: "Could not read ${path}: ${e.message ?: e.class.simpleName}",
+                    note: "Retry once; the same endpoint feeds the hub's Logs page."]
+        }
+        boolean shaped = mode == "cloudCalls" ? parsed instanceof Map : parsed instanceof List && !parsed.any { !(it instanceof Map) }
+        if (!shaped) {
+            return [success: false, isError: true, error: "${path} returned an unexpected shape",
+                    note: "The hub's Logs page format may have changed; report it with hub_report_issue."]
+        }
+        rows = mode == "cloudCalls" ? _cloudCallRows(parsed) : parsed
+        if (mode == "cloudCalls") {
+            result.timeZone = parsed.timeZone
+            if (parsed.startedAt != null) result.countingSince = formatTimestamp(parsed.startedAt as Long)
         }
     }
-    def maxRelativeMs = 30L * 24 * 60 * 60 * 1000
-    def logTimeFmts = [
-        "yyyy-MM-dd HH:mm:ss.SSS",
-        "yyyy-MM-dd HH:mm:ss",
-        "yyyy-MM-dd'T'HH:mm:ss.SSSZ",
-        "yyyy-MM-dd'T'HH:mm:ssZ",
-        "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'",
-        "yyyy-MM-dd'T'HH:mm:ss'Z'",
-        "yyyy-MM-dd'T'HH:mm:ss"
-    ]
-    Closure parseTimeArg = { String argName, String val ->
-        if (!val) return null
-        def relMatcher = val =~ /^(\d+)([mhd])$/
-        if (relMatcher.matches()) {
-            long n = relMatcher.group(1).toLong()
-            def unit = relMatcher.group(2)
-            long ms
-            switch (unit) {
-                case 'm': ms = n * 60L * 1000; break
-                case 'h': ms = n * 3600L * 1000; break
-                case 'd': ms = n * 86400L * 1000; break
-                default: ms = 0
-            }
-            if (ms > maxRelativeMs) {
-                throw new IllegalArgumentException("${argName} exceeds 30d cap (got '${val}'); use ISO-8601 for longer ranges (e.g. '2024-01-15T00:00:00Z')")
-            }
-            return new Date(now() - ms)
-        }
-        if (val.endsWith("Z")) {
-            def utcTz = TimeZone.getTimeZone("UTC")
-            def bare = val[0..-2]
-            def isoFmtsNoZ = ["yyyy-MM-dd'T'HH:mm:ss.SSS", "yyyy-MM-dd'T'HH:mm:ss"]
-            for (fmt in isoFmtsNoZ) {
-                try {
-                    def sdf2 = new java.text.SimpleDateFormat(fmt)
-                    sdf2.setTimeZone(utcTz)
-                    sdf2.setLenient(false)
-                    return sdf2.parse(bare)
-                } catch (java.text.ParseException ignored) {}
-            }
-        }
-        if (val.contains('T') && !val.endsWith('Z')) {
-            def utcTz = TimeZone.getTimeZone("UTC")
-            def isoNoTzFmts = ["yyyy-MM-dd'T'HH:mm:ss.SSS", "yyyy-MM-dd'T'HH:mm:ss"]
-            for (fmt in isoNoTzFmts) {
-                try {
-                    def sdf = new java.text.SimpleDateFormat(fmt)
-                    sdf.setTimeZone(utcTz)
-                    sdf.setLenient(false)
-                    return sdf.parse(val)
-                } catch (java.text.ParseException ignored) {}
-            }
-        }
-        def utcTzFallback = TimeZone.getTimeZone("UTC")
-        for (fmt in logTimeFmts) {
-            try {
-                if (!fmt.contains("Z") && !fmt.contains("'Z'")) {
-                    def sdf = new java.text.SimpleDateFormat(fmt)
-                    sdf.setTimeZone(utcTzFallback)
-                    sdf.setLenient(false)
-                    return sdf.parse(val)
-                }
-                return Date.parse(fmt, val)
-            } catch (java.text.ParseException ignored) {}
-        }
-        throw new IllegalArgumentException("Cannot parse ${argName}='${val}' -- use ISO-8601 (e.g. '2024-01-15T10:30:00Z') or a relative offset like '30m', '2h', '1d'")
+    return result + _logsPage(mode, rows, query)
+}
+private boolean _argPresent(Map args, key) {
+    return args[key] != null
+}
+private boolean _logsUnknownArg(List allowed, String key) {
+    return !(key in allowed) && key != "mode" && !key.startsWith("__")
+}
+private boolean _logsHasFetchSnapshot(r) {
+    return r.snapshot instanceof Map && r.snapshot.background != null
+}
+private boolean _logsTabFailed(mode, r) {
+    return r.isError == true
+}
+private List _cloudCallRows(Map raw) {
+    Map hoursByApp = [:]
+    (raw.hours instanceof List ? raw.hours : []).each { h ->
+        if (!(h instanceof Map) || h.appId == null || h.hourStart == null) return
+        String key = h.appId.toString()
+        if (!hoursByApp.containsKey(key)) hoursByApp.put(key, [])
+        hoursByApp.get(key) << [epoch: h.hourStart as Long, count: h.count]
     }
-    def sinceDate = parseTimeArg("since", args.since?.toString()?.trim())
-    def untilDate = parseTimeArg("until", args.until?.toString()?.trim())
-    if (sinceDate != null && untilDate != null && sinceDate.after(untilDate)) {
-        throw new IllegalArgumentException("since='${args.since}' resolves later than until='${args.until}' -- window is empty (relative offsets are subtracted from now, so since='2h' means 2 hours ago)")
-    }
-    def query = null
-    if (deviceIdFilter) {
-        _validateNativeDeviceId(deviceIdFilter)
-        query = [type: "dev", id: deviceIdFilter]
-    } else if (appIdFilter) {
-        if (!appIdFilter.isInteger()) {
-            throw new IllegalArgumentException("appId must be numeric: ${appIdFilter}")
+    return (raw.apps instanceof List ? raw.apps : []).findAll { it instanceof Map }.collect { a ->
+        List series = (hoursByApp.get(a.id?.toString()) ?: []).sort { -(it.epoch as long) }
+        a + [hours: series.take(48).collect { [hourStart: formatTimestamp(it.epoch as Long), count: it.count] }]
+    }.sort { -((it.total ?: 0) as long) }
+}
+private Map _logsPage(String mode, List rows, Map query) {
+    List fields = _logsSearchFields(mode)
+    boolean owned = mode in ["scheduledJobs", "runningJobs", "hubActions"]
+    boolean timed = mode in ["locationEvents", "hubEvents"]
+    int unparseable = 0
+    List matched = []
+    String wantId = query.deviceId ?: query.appId
+    String wantType = query.deviceId ? "device" : "app"
+    String statType = mode == "devices" ? "device" : "app"
+    for (row in rows) {
+        if (!(row instanceof Map)) continue
+        Map owner = owned ? _logsOwner(row.link) : null
+        Map entry = owner != null ? row + [owner: owner] : row
+        if (wantId) {
+            Map scope = owned ? owner : [type: statType, id: row.id]
+            if (scope?.type != wantType || scope.id?.toString() != wantId) continue
         }
-        query = [type: "app", id: appIdFilter]
+        if (!_logsRowMatches(entry, fields, query.patterns)) continue
+        if (timed && (query.since != null || query.until != null)) {
+            Date at = row.date != null ? _parseSinceArg(row.date) : null
+            if (at == null) unparseable++
+            else if (_logsOutsideWindow(at, query)) continue
+        }
+        matched << entry
     }
-    mcpLog("info", "monitoring", "Fetching hub logs (level=${levelFilter}, source=${sourceFilter}, deviceId=${deviceIdFilter}, appId=${appIdFilter}, limit=${limit})")
-    def responseText = null
+    if (mode in ["devices", "apps"]) {
+        if (query.sortBy == "name") matched.sort { (it.name ?: "").toString().toLowerCase() }
+        else matched.sort { -((it[query.sortBy] ?: 0) as double) }
+    }
+    Map out = [total: rows.size(), matched: matched.size()]
+    if (query.limit > 0 && matched.size() > query.limit) matched = matched.take(query.limit)
+    def paged = _paginateList(matched, query.cursor, query.pageSize as int, "hub_get_logs")
+    Set nullFields = new TreeSet()
+    out.entries = paged.page.collect { Map row ->
+        row.findAll { k, v ->
+            if (v == null) nullFields << k.toString()
+            v != null
+        }
+    }
+    if (nullFields) out.nullFields = nullFields as List
+    out.count = paged.page.size()
+    if (paged.nextCursor != null) out.nextCursor = paged.nextCursor
+    if (unparseable > 0) out.timeFilterUnparseable = unparseable
+    return out
+}
+private Map _pastLogs(Map args, Map query) {
+    Map scope = null
+    if (query.deviceId) scope = [type: "dev", id: query.deviceId]
+    else if (query.appId) scope = [type: "app", id: query.appId]
+    def responseText
     def fetchedAt = null
     try {
-        def snapshot = _nativeLogSnapshot(query, args)
+        def snapshot = _nativeLogSnapshot(scope, args)
         if (snapshot.state == "pending") {
             return [status: "in_progress", tool: "hub_get_logs", retryable: true,
                     note: "Native log history is still loading. Continue with requestState, or repeat the same call on a legacy client."]
@@ -6466,137 +6639,118 @@ def toolGetHubLogs(args) {
         mcpLogError("monitoring", "Failed to fetch hub logs", e)
         throw new IllegalStateException("Failed to fetch hub logs: ${e.message}")
     }
-    if (!responseText) {
-        return [logs: [], message: "No log data returned from hub", count: 0] +
-            (fetchedAt == null ? [:] : [snapshot: [fetchedAt: fetchedAt]])
-    }
-    def logs = []
-    def logArray = []
-    try {
-        logArray = new groovy.json.JsonSlurper().parseText(responseText)
-    } catch (Exception e) {
-        mcpLog("debug", "monitoring", "Hub logs response not JSON, falling back to line-split: ${e.message}")
-        logArray = responseText.split("\n").toList()
-    }
-    if (!(logArray instanceof List)) {
-        return [logs: [], error: "Unexpected log format from hub", count: 0]
-    }
-    logArray = logArray.reverse()
-    def totalParsed = logArray.size()
-    def hubLogUtcTz = TimeZone.getTimeZone("UTC")
-    def hubLogSdfs = logTimeFmts
-        .findAll { !it.contains("Z") && !it.contains("'Z'") }
-        .collect { fmt ->
-            def sdf = new java.text.SimpleDateFormat(fmt)
-            sdf.setTimeZone(hubLogUtcTz)
-            sdf.setLenient(false)
-            sdf
+    def rows = []
+    if (responseText) {
+        try {
+            rows = new groovy.json.JsonSlurper().parseText(responseText)
+        } catch (Exception e) {
+            rows = responseText.toString().split("\n").toList()
         }
-    def hubLogIsoFmts = logTimeFmts.findAll { it.contains("Z") && !it.contains("'Z'") }
-    def hubLogLocalSdfs = hubLogSdfs.collect { utcParser ->
-        def parser = new java.text.SimpleDateFormat(utcParser.toPattern())
-        parser.setTimeZone(location?.timeZone ?: TimeZone.getTimeZone("UTC"))
-        parser.setLenient(false)
-        return parser
     }
-    def timeFilterUnparseable = 0
-    def filterExcluded = 0
-    for (logEntry in logArray) {
-        def entry = _parseHubLogLine(logEntry?.toString())
+    if (!(rows instanceof List)) throw new IllegalStateException("Unexpected /logs/past/json response: expected a JSON array")
+    TimeZone hubZone = _hubTimeZone()
+    List fields = _logsSearchFields("past")
+    List entries = []
+    int unparseable = 0
+    for (line in rows.reverse()) {
+        Map entry = _parseHubLogLine(line?.toString())
         if (entry == null) continue
-        boolean hubLocalTime = entry.remove("hubLocalTime") == true
+        boolean hubLocal = entry.remove("hubLocalTime") == true
         entry.remove("sourceId")
-        if (levelFilter && entry.level?.toLowerCase() != levelFilter.toLowerCase()) { filterExcluded++; continue }
-        if (sourceFilter) {
-            def src = sourceFilter.toLowerCase()
-            if (!entry.message?.toLowerCase()?.contains(src) && !entry.name?.toLowerCase()?.contains(src)) { filterExcluded++; continue }
+        if (query.level && query.level != "all" && entry.level?.toLowerCase() != query.level) continue
+        if (!_logsRowMatches(entry, fields, query.patterns)) continue
+        if (query.since != null || query.until != null) {
+            Date at = _pastLogTime(entry, hubLocal ? hubZone : TimeZone.getTimeZone("UTC"))
+            if (at == null) unparseable++
+            else if (_logsOutsideWindow(at, query)) continue
         }
-        if (compiledPattern != null) {
-            if (!compiledPattern.matcher(entry.message ?: "").find()) { filterExcluded++; continue }
+        entries << entry
+    }
+    Map out = [mode: "past"] + _logsPage("past", entries, query + [patterns: [single: null, list: []], since: null, until: null, deviceId: null, appId: null])
+    out.total = rows.size()
+    if (unparseable > 0) out.timeFilterUnparseable = unparseable
+    if (fetchedAt != null) out.snapshot = [fetchedAt: fetchedAt, ageMs: Math.max(0L, now() - (fetchedAt as Long))]
+    if ((out.entries.sum(0) { (it.message?.length() ?: 0) + (it.name?.length() ?: 0) + 120 } as int) > _responseSizeLimitBytes()) {
+        out.entries.each { it.message = it.message?.take(200) }
+        out.truncated = true
+        out.note = "Log messages truncated to fit response size limit"
+    }
+    int noise = out.entries.count { _isBenignRmInternalNoise(it.message) }
+    if (noise > 0) {
+        out.benignRmNoiseCount = noise
+        out.benignRmNoiseNote = "${noise} of these entr${noise == 1 ? 'y is' : 'ies are'} known-benign RM-internal noise (RM 5.1's own 'periodic' method logging an NPE on params.n while it renders the periodic sub-page during a periodic-trigger build). NON-FATAL, NOT an MCP-tool failure -- the trigger bakes correctly. Safe to ignore."
+    }
+    return out
+}
+private Date _pastLogTime(Map entry, TimeZone zone) {
+    String text = entry.time?.toString()?.trim() ?: entry.name?.toString()?.trim()
+    if (!text) return null
+    def m = text =~ /^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})(\.\d{1,3})?$/
+    if (!m.matches()) return _parseSinceArg(text)
+    def sdf = new java.text.SimpleDateFormat(m.group(2) ? "yyyy-MM-dd HH:mm:ss.SSS" : "yyyy-MM-dd HH:mm:ss")
+    sdf.setTimeZone(zone)
+    return sdf.parse(text)
+}
+def toolDeleteLogs(args) {
+    String mode = args.mode?.toString()
+    if (!(mode in ["mcp", "scheduledJobs"])) {
+        throw new IllegalArgumentException("mode must be 'mcp' (clear the MCP log) or 'scheduledJobs' (delete one scheduled job). The hub's past logs have no delete; its Reboot dialog offers a log purge: hub_reboot(confirm=true, purgeLogs=true).")
+    }
+    if (mode == "mcp") {
+        def stray = ["jobId", "confirm"].findAll(this.&_argPresent.curry(args))
+        if (stray) throw new IllegalArgumentException("Parameters ${stray.join(', ')} apply to mode='scheduledJobs' only")
+        Map cleared = clearDebugLogEntries()
+        mcpLog("info", "server", "MCP log cleared (${cleared.clearedCount != null ? "${cleared.clearedCount} entries" : 'entry count not loaded'})")
+        return [success: true, mode: mode] + cleared
+    }
+    if (args.jobId != null && !(args.jobId instanceof String)) throw new IllegalArgumentException("jobId must be a string, e.g. app12Recur.poll")
+    String jobId = args.jobId?.trim()
+    if (!jobId) throw new IllegalArgumentException("jobId is required: the id of a row from hub_get_logs(mode='scheduledJobs'), e.g. app12Recur.poll")
+    def key = jobId =~ /^([^.]+)\.(.+)$/
+    if (!key.matches()) throw new IllegalArgumentException("jobId '${jobId}' is not a scheduled-job id (group.name, e.g. app12Recur.poll)")
+    if (jobId.startsWith("system.")) throw new IllegalArgumentException("System jobs cannot be deleted; the Logs page offers no Delete for them either")
+    def ownerMatch = key.group(1) =~ /^(app|dev)(\d+)(Recur|Once)$/
+    if (ownerMatch.matches() && ownerMatch.group(2).length() > 9) {
+        throw new IllegalArgumentException("jobId '${jobId}' names no app or device on this hub; read current ids with hub_get_logs(mode='scheduledJobs')")
+    }
+    Map owner = ownerMatch.matches() ? [type: ownerMatch.group(1) == "dev" ? "device" : "app", id: ownerMatch.group(2) as Integer] : null
+    if (owner?.type == "device") {
+        try {
+            _requireDeviceToolAccess(owner.id.toString())
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("Job ${jobId} belongs to device ${owner.id}, which is outside this server's device access, so it cannot be deleted here.")
         }
-        if (compiledPatterns) {
-            def msg = entry.message ?: ""
-            if (patternModeAll) {
-                if (!compiledPatterns.every { it.matcher(msg).find() }) { filterExcluded++; continue }
-            } else {
-                if (!compiledPatterns.any { it.matcher(msg).find() }) { filterExcluded++; continue }
-            }
+    } else if (owner?.type == "app") {
+        String ownerId = owner.id.toString()
+        if (callerClient != null && ownerId == app.id?.toString()) {
+            throw new IllegalArgumentException("A per-client access token cannot delete the MCP Rule Server app's own scheduled jobs.")
         }
-        if (sinceDate != null || untilDate != null) {
-            def entryTime = null
-            def timeStr = entry.time?.trim() ?: entry.name?.trim()
-            if (timeStr) {
-                for (sdf in (hubLocalTime ? hubLogLocalSdfs : hubLogSdfs)) {
-                    try {
-                        entryTime = sdf.parse(timeStr)
-                        break
-                    } catch (java.text.ParseException ignored) {}
-                }
-                if (entryTime == null) {
-                    for (fmt in hubLogIsoFmts) {
-                        try {
-                            entryTime = Date.parse(fmt, timeStr)
-                            break
-                        } catch (java.text.ParseException ignored) {}
-                    }
-                }
-                if (entryTime == null) {
-                    mcpLog("debug", "monitoring", "Could not parse log entry time '${timeStr?.take(30)}' for time-window filter -- entry not excluded")
-                    timeFilterUnparseable++
-                }
-            } else {
-                timeFilterUnparseable++
-            }
-            if (entryTime != null) {
-                if (sinceDate != null && entryTime.before(sinceDate)) { filterExcluded++; continue }
-                if (untilDate != null && entryTime.after(untilDate)) { filterExcluded++; continue }
-            }
+        if (_protectedAppIds().contains(ownerId)) {
+            throw new IllegalArgumentException("App ${ownerId} is protected, so its scheduled jobs cannot be deleted. Manage Protected apps on the Advanced page of the MCP server's Hubitat app.")
         }
-        logs << entry
-        if (logs.size() >= limit) break
     }
-    def cursor = args?.cursor
-    def fullLogs = logs.toList()
-    def paged = _paginateList(fullLogs, cursor, 100, "hub_get_logs")
-    def result = [logs: paged.page, count: paged.page.size(), totalParsed: totalParsed, appliedLimit: limit]
-    if (deviceIdFilter) {
-        result.deviceIdResolved = fullLogs ? true :
-            (_fetchDeviceFullJson(deviceIdFilter)?.device?.id?.toString() == deviceIdFilter)
+    if (args.confirm != true) throw new IllegalArgumentException("Deleting scheduled job ${jobId} needs confirm=true")
+    String reply
+    try {
+        reply = hubInternalGet("/hub/advanced/deleteScheduledJob", [id: jobId], 30)?.toString()?.trim()
+    } catch (Exception e) {
+        mcpLogError("monitoring", "deleteScheduledJob ${jobId} failed", e)
+        return [success: false, isError: true, jobId: jobId, error: "The delete request failed: ${e.message ?: e.class.simpleName}",
+                note: "Check hub_get_logs(mode='scheduledJobs') before retrying: the job may already be gone."]
     }
-    if (fetchedAt != null) result.snapshot = [fetchedAt: fetchedAt, ageMs: Math.max(0L, now() - (fetchedAt as Long))]
-    if (cursor != null) {
-        result.total = fullLogs.size()
-        if (paged.nextCursor != null) result.nextCursor = paged.nextCursor
+    if (reply == "done") {
+        synchronized (LOGS_JSON_SNAPSHOT) { LOGS_JSON_SNAPSHOT.remove("snapshot") }
+        mcpLog("info", "monitoring", "Deleted scheduled job ${jobId}")
+        Map out = [success: true, mode: mode, jobId: jobId,
+                   note: "Only this scheduled run is gone. Its owner is unchanged and schedules it again if its own code does, for example when its settings are saved."]
+        if (owner) out.owner = owner
+        return out
     }
-    def estimatedJsonSize = paged.page.sum(0) { (it.message?.length() ?: 0) + (it.name?.length() ?: 0) + 120 }
-    if (estimatedJsonSize > _responseSizeLimitBytes()) {
-        paged.page.each { it.message = it.message?.take(200) }
-        result.truncated = true
-        result.note = "Log messages truncated to fit response size limit"
+    if (reply == "job does not exist") {
+        return [success: false, isError: true, jobId: jobId, error: "No scheduled job ${jobId} exists",
+                note: "A one-time job is gone once it has run, and an earlier delete of it may already have worked. Read current ids with hub_get_logs(mode='scheduledJobs')."]
     }
-    def hasFilters = levelFilter || sourceFilter || compiledPattern != null || compiledPatterns || sinceDate != null || untilDate != null
-    if (hasFilters) {
-        if (filterExcluded > 0) result.filteredOut = filterExcluded
-        def applied = [:]
-        if (levelFilter)                applied.level       = levelFilter
-        if (sourceFilter)               applied.source      = sourceFilter
-        if (args.pattern != null)       applied.pattern     = args.pattern
-        if (args.patterns instanceof List && args.patterns) applied.patterns = args.patterns
-        if (compiledPatterns)           applied.patternMode = args.patternMode ?: 'any'
-        if (args.since != null)         applied.since       = args.since
-        if (args.until != null)         applied.until       = args.until
-        result.appliedFilters = applied
-    }
-    if ((sinceDate != null || untilDate != null) && timeFilterUnparseable > 0) {
-        result.timeFilterUnparseable = timeFilterUnparseable
-    }
-    def benignRmNoiseCount = paged.page.count { _isBenignRmInternalNoise(it.message) }
-    if (benignRmNoiseCount > 0) {
-        result.benignRmNoiseCount = benignRmNoiseCount
-        result.benignRmNoiseNote = "${benignRmNoiseCount} of these entr${benignRmNoiseCount == 1 ? 'y is' : 'ies are'} known-benign RM-internal noise (RM 5.1's own 'periodic' method logging an NPE on params.n while it renders the periodic sub-page during a periodic-trigger build). NON-FATAL, NOT an MCP-tool failure -- the trigger bakes correctly. Safe to ignore."
-    }
-    mcpLog("info", "monitoring", "Retrieved ${logs.size()} hub log entries (${totalParsed} total parsed)")
-    return result
+    return [success: false, isError: true, jobId: jobId, error: "The hub did not delete ${jobId}: ${reply ?: 'empty reply'}"]
 }
 def _logsJsonSnapshotTtlMs() { 30000L }
 def _logsJsonFetchStaleMs() { 45000L }
@@ -6608,22 +6762,8 @@ def _logsJsonObserveWaitMs() {
     return Math.max(1L, Math.min(cap, budget - 1500L))
 }
 def _logsJsonUsesBackgroundFetch() { _mrtrReadContinuationActive() }
-private List _logsJsonTrimStats(statsList) {
-    if (!(statsList instanceof List)) return []
-    return statsList.collect { stat ->
-        def trimmed = [
-            id: stat.id, name: stat.name, count: stat.count, pct: stat.pct, total: stat.total,
-            average: stat.average, stateSize: stat.stateSize, formattedPct: stat.formattedPct,
-            formattedPctTotal: stat.formattedPctTotal, hubActionCount: stat.hubActionCount,
-            pendingEventsCount: stat.pendingEventsCount, cloudCallCount: stat.cloudCallCount
-        ]
-        if (stat.customAttributes instanceof Map) {
-            trimmed.customAttributes = [eventsCount: stat.customAttributes.eventsCount,
-                                        statesCount: stat.customAttributes.statesCount]
-        }
-        if (stat.largeState) trimmed.largeState = true
-        return trimmed
-    }
+private List _logsJsonStats(List statsList) {
+    return statsList.collect { stat -> stat.findAll { k, v -> !k.toString().startsWith("formatted") } }
 }
 private List _logsJsonTable(Map data, String key) {
     def table = data[key]
@@ -6646,16 +6786,12 @@ def _logsJsonFetchAndPublish(Long fetchId = null, boolean background = false) {
     def snap = [
         at: now(), fetchMs: now() - t0, background: background,
         uptime: data.uptime,
-        totalDevicesRuntime: data.totalDevicesRuntime, devicePct: data.devicePct,
-        totalAppsRuntime: data.totalAppsRuntime, appPct: data.appPct,
-        deviceStats: _logsJsonTrimStats(_logsJsonTable(data, "deviceStats")),
-        appStats: _logsJsonTrimStats(_logsJsonTable(data, "appStats")),
-        jobs: _logsJsonTable(data, "jobs").collect { job ->
-            [id: job.id, name: job.name, recurring: job.recurring, method: job.methodName, nextRun: job.nextRun]
-        },
-        runningJobs: _logsJsonTable(data, "runningJobs").collect { job ->
-            [id: job.id, name: job.name, method: job.methodName]
-        },
+        devicesUptime: data.devicesUptime, totalDevicesRuntime: data.totalDevicesRuntime, devicePct: data.devicePct,
+        appsUptime: data.appsUptime, totalAppsRuntime: data.totalAppsRuntime, appPct: data.appPct,
+        deviceStats: _logsJsonStats(_logsJsonTable(data, "deviceStats")),
+        appStats: _logsJsonStats(_logsJsonTable(data, "appStats")),
+        jobs: _logsJsonTable(data, "jobs"),
+        runningJobs: _logsJsonTable(data, "runningJobs"),
         hubCommands: _logsJsonTable(data, "hubCommands")
     ]
     synchronized (LOGS_JSON_SNAPSHOT) {
@@ -6768,160 +6904,8 @@ private Map _logsJsonFailure(String tool, String detail) {
     return [
         success: false, isError: true, tool: tool,
         error: "${tool} could not read the hub's Logs page: ${reason}",
-        note: "Repeat the identical call once; a fresh fetch is already scheduled. If it fails again, check hub_get_logs for the hub-side error, then see hub_get_tool_guide(section='slow_ops')."
+        note: "Repeat the identical call once; a fresh fetch is already scheduled. If it fails again, read hub_get_logs(mode='mcp') for the hub-side error."
     ]
-}
-def toolGetPerformanceStats(args) {
-    def type = args.type ?: "device"
-    def sortBy = args.sortBy ?: "pct"
-    def limit = args.limit != null ? args.limit : 20
-    mcpLog("info", "monitoring", "Fetching performance stats (type=${type}, sortBy=${sortBy}, limit=${limit})")
-    def data
-    try {
-        def snap = _logsJsonSnapshot(args)
-        if (snap.state == "failed") return _logsJsonFailure("hub_get_performance_stats", snap.error)
-        if (snap.state == "pending") return _logsJsonInProgress("hub_get_performance_stats")
-        data = snap.snapshot
-    } catch (Exception e) {
-        mcpLogError("monitoring", "Failed to fetch performance stats", e)
-        return _logsJsonFailure("hub_get_performance_stats", e.message ?: e.class.simpleName)
-    }
-    def result = [
-        uptime: data.uptime,
-        snapshot: _logsJsonProvenance(data)
-    ]
-    def formatStats = { cached ->
-        if (!cached) return []
-        def statsList = new ArrayList(cached)
-        switch (sortBy) {
-            case "count": statsList = statsList.sort { -(it.count ?: 0) }; break
-            case "stateSize": statsList = statsList.sort { -(it.stateSize ?: 0) }; break
-            case "totalMs": statsList = statsList.sort { -(it.total ?: 0) }; break
-            case "name": statsList = statsList.sort { (it.name ?: "").toLowerCase() }; break
-            default: statsList = statsList.sort { -(it.pct ?: 0) }; break
-        }
-        if (limit > 0 && statsList.size() > limit) {
-            statsList = statsList.take(limit)
-        }
-        return statsList.collect { entry ->
-            def item = [
-                id: entry.id,
-                name: entry.name,
-                count: entry.count,
-                pctBusy: entry.formattedPct,
-                pctTotal: entry.formattedPctTotal,
-                stateSize: entry.stateSize,
-                totalMs: entry.total,
-                averageMs: entry.average != null ? Math.round(entry.average * 100) / 100.0 : null,
-                totalEvents: entry.customAttributes?.eventsCount,
-                states: entry.customAttributes?.statesCount,
-                hubActions: entry.hubActionCount,
-                pendingEvents: entry.pendingEventsCount,
-                cloudCalls: entry.cloudCallCount
-            ]
-            if (entry.largeState) item.largeState = true
-            return item
-        }
-    }
-    if (type == "device" || type == "both") {
-        result.deviceSummary = [
-            totalRuntime: data.totalDevicesRuntime,
-            pctOfUptime: data.devicePct,
-            deviceCount: data.deviceStats?.size() ?: 0
-        ]
-        result.deviceStats = formatStats(data.deviceStats)
-    }
-    if (type == "app" || type == "both") {
-        result.appSummary = [
-            totalRuntime: data.totalAppsRuntime,
-            pctOfUptime: data.appPct,
-            appCount: data.appStats?.size() ?: 0
-        ]
-        result.appStats = formatStats(data.appStats)
-    }
-    if (args.includeCloudCalls == true) result.cloudCalls = _cloudCallsSummary()
-    def statsCount = (result.deviceStats?.size() ?: 0) + (result.appStats?.size() ?: 0)
-    if (limit == 0) {
-        result.note = "Returning all ${statsCount} entries. Use limit parameter to reduce response size."
-    }
-    mcpLog("info", "monitoring", "Retrieved performance stats: ${statsCount} entries (type=${type})")
-    return result
-}
-private Map _cloudCallsSummary() {
-    def raw
-    try {
-        def txt = hubInternalGet("/logs/cloudCalls/json")
-        raw = txt ? new groovy.json.JsonSlurper().parseText(txt) : null
-    } catch (Exception e) {
-        mcpLogError("monitoring", "cloud-call history read failed", e)
-        def out = [error: "Could not read the cloud-call history: ${e.message}"]
-        if (_hubFirmwareBefore("2.5.2.129")) out.note = "Cloud-call history needs firmware 2.5.2.129 or later."
-        return out
-    }
-    if (!(raw instanceof Map)) return [error: "/logs/cloudCalls/json returned an unexpected shape."]
-    try {
-        return _shapeCloudCalls(raw)
-    } catch (Exception e) {
-        mcpLogError("monitoring", "cloud-call history has an unexpected shape", e)
-        return [error: "The cloud-call history has an unexpected shape: ${e.message}"]
-    }
-}
-private Map _shapeCloudCalls(Map raw) {
-    def hoursByApp = [:]
-    (raw.hours instanceof List ? raw.hours : []).each { h ->
-        if (!(h instanceof Map) || h.appId == null || h.hourStart == null) return
-        def key = h.appId.toString()
-        if (!hoursByApp.get(key)) hoursByApp.put(key, [])
-        hoursByApp.get(key) << [epoch: h.hourStart as Long, count: h.count]
-    }
-    def apps = (raw.apps instanceof List ? raw.apps : []).findAll { it instanceof Map }.collect { a ->
-        def series = (hoursByApp.get(a.id?.toString()) ?: []).sort { -(it.epoch as long) }
-                                                            .collect { [hourStart: formatTimestamp(it.epoch as Long), count: it.count] }
-        [id: a.id, name: a.name, installed: a.installed, total: a.total, currentHour: a.currentHour,
-         hourly: series.take(48)]
-    }.sort { -((it.total ?: 0) as long) }
-    return [apps: apps, timeZone: raw.timeZone,
-            countingSince: raw.startedAt != null ? formatTimestamp(raw.startedAt as Long) : null,
-            note: "Calls each app made to Hubitat cloud services. hourly lists the newest hours first (at most 48 per app)."]
-}
-def toolGetHubJobs(args) {
-    def cursor = args?.cursor
-    mcpLog("info", "monitoring", "Fetching hub jobs")
-    def data
-    try {
-        def snap = _logsJsonSnapshot(args)
-        if (snap.state == "failed") return _logsJsonFailure("hub_get_jobs", snap.error)
-        if (snap.state == "pending") return _logsJsonInProgress("hub_get_jobs")
-        data = snap.snapshot
-    } catch (Exception e) {
-        mcpLogError("monitoring", "Failed to fetch hub jobs", e)
-        return _logsJsonFailure("hub_get_jobs", e.message ?: e.class.simpleName)
-    }
-    def scheduledJobs = data.jobs
-    def runningJobs = data.runningJobs
-    def hubActions = data.hubCommands
-    def paged = _paginateList(scheduledJobs, cursor, 100, "hub_get_jobs")
-    def result = [
-        uptime: data.uptime,
-        snapshot: _logsJsonProvenance(data),
-        scheduledJobs: [
-            count: paged.page.size(),
-            jobs: paged.page
-        ],
-        runningJobs: [
-            count: runningJobs.size(),
-            jobs: runningJobs
-        ],
-        hubActions: [
-            count: hubActions.size(),
-            actions: hubActions
-        ]
-    ]
-    if (cursor != null) {
-        result.scheduledJobs.total = scheduledJobs.size()
-        if (paged.nextCursor != null) result.nextCursor = paged.nextCursor
-    }
-    return result
 }
 def toolGetHubPerformance(args) {
     def recordSnapshot = args.recordSnapshot == true
@@ -8199,48 +8183,39 @@ def _getAllToolDefinitions_partDiagnostics() {
     def defs = { [
         [
             name: "hub_get_logs",
-            description: """Read log history and MCP logging status. mode='hub' (default) returns native hub logs; mode='mcp' returns structured MCP entries with component/rule filters; mode='status' returns MCP log level, counts, and capacity.[[FLAT_TRIM]] MCP history recovers from native Past Logs after reload; retention follows the hub's shared log limit.[[/FLAT_TRIM]][[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]""",
+            description: """Read tabs of the hub's Logs page, one or a list, or the MCP app's own log. The stats and job tabs are cached for 30 s.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    mode: [type: "string", enum: ["hub", "mcp", "status"], default: "hub", description: "hub = native app/device logs; mcp = structured MCP history; status = MCP logging configuration and counts."],
-                    component: [type: "string", description: "MCP mode: component substring filter (for example server or rule)."],
-                    ruleId: [type: "string", description: "MCP mode: filter by custom rule ID."],
-                    level: [type: "string", description: "Filter by log level. Default: all levels.", enum: ["trace", "debug", "info", "warn", "error", "all"]],
-                    source: [type: "string", description: "Hub mode: Filter by source/app name (case-insensitive substring match against the log entry)"],
-                    deviceId: [type: "string", description: "Hub mode: Filter hub-wide history by numeric device ID, regardless of device selection or bypass (mutually exclusive with appId)."],
-                    appId: [type: "string", description: "Hub mode: Scope to a single app's log entries (server-side filter, mutually exclusive with deviceId)"],
-                    limit: [type: "integer", description: "Max entries: hub default 100/max 500; MCP default 50/max 100."],
-                    pattern: [type: "string", description: "Hub mode: Case-insensitive regex applied to the log message field only.[[FLAT_TRIM]] Use source for app/device-name substring matching.[[/FLAT_TRIM]]"],
-                    patterns: [type: "array", items: [type: "string"], description: "Hub mode: Multiple regex patterns; combine via patternMode. Same matching rules and caveats as `pattern`."],
-                    patternMode: [type: "string", description: "Hub mode: How patterns array is combined: 'any' (default) = OR; 'all' = AND.", enum: ["any", "all"]],
-                    since: [type: "string", description: "Hub mode: Return only entries at or after this time; ISO-8601 or relative offset like '2h'.[[FLAT_TRIM]] Full forms: ISO-8601 timestamp (e.g. '2024-01-15T10:30:00Z') or relative '30m'/'2h'/'1d'/'7d'; max relative offset 30d.[[/FLAT_TRIM]][[FLAT_TRIM]] Timestamps without a TZ marker (e.g. '2024-01-15T10:30:00' or '2024-01-15 10:30:00.000') are parsed as UTC. Use '0m' / '0d' as a degenerate since to filter out everything older than now -- useful for testing harnesses but rarely otherwise.[[/FLAT_TRIM]]"],
-                    until: [type: "string", description: "Hub mode: Return only entries at or before this time. Same format as since. Default: now (no upper bound)."],
-                    cursor: [type: "string", description: "Opt-in pagination cursor.[[FLAT_TRIM]] Pass \"\" for the first page, iterate nextCursor (page size 100).[[/FLAT_TRIM]]"]
+                    mode: [anyOf: [[type: "string", enum: _logsModeArgs().keySet() as List], [type: "array", items: [type: "string", enum: _logsModeArgs().keySet() as List]]], default: "past", description: "A Logs page tab, or a list of them. past = log history; devices/apps = runtime stats; locationEvents = mode, HSM and variable changes; hubEvents = reboots and low memory; mcp = this app's own log; status = its level."],
+                    level: [type: "string", enum: ["trace", "debug", "info", "warn", "error", "all"], description: "past and mcp."],
+                    deviceId: [type: "string", description: "Numeric device id to scope past logs, stats or jobs to."],
+                    appId: [type: "string", description: "Numeric app id, the same way."],
+                    pattern: [type: "string", description: "Case-insensitive regex over the row's name, and its message, methodName, descriptionText or value where it has one."],
+                    patterns: [type: "array", items: [type: "string"], description: "More regexes, combined by patternMode."],
+                    patternMode: [type: "string", enum: ["any", "all"], description: "Default any."],
+                    since: [type: ["string", "integer"], description: "past and events: rows after this time, so a returned time never repeats. '30m', '2h', '7d', a time as rows show it (no zone = hub time), ISO-8601 with a zone, or epoch ms."],
+                    until: [type: ["string", "integer"], description: "Rows at or before this time."],
+                    sortBy: [type: "string", enum: ["pct", "count", "total", "stateSize", "name"], description: "devices and apps; default pct (% busy)."],
+                    limit: [type: "integer", description: "Max rows; 0 = all."],
+                    component: [type: "string", description: "mcp: component substring."],
+                    ruleId: [type: "string", description: "mcp: custom rule id."],
+                    cursor: [type: "string", description: "\"\" for the first page, then nextCursor."],
+                    pageSize: [type: "integer", description: "Rows per page, 1-100."]
                 ]
             ]
         ],
         [
-            name: "hub_get_performance_stats",
-            description: "Get device and/or app performance stats from the hub's logs page.[[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]",
+            name: "hub_delete_logs",
+            description: """Clear the MCP app's own log (mode='mcp'), or delete one scheduled job like the Logs page's Delete button (mode='scheduledJobs'). Only that timer goes; its app or device schedules it again only if its own code does. Cannot be undone. The hub's past logs have no delete; its Reboot dialog offers a log purge: hub_reboot(confirm=true, purgeLogs=true).""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    type: [type: "string", description: "Which stats to return. Default: device.", enum: ["device", "app", "both"], default: "device"],
-                    sortBy: [type: "string", description: "Sort results by field. Default: pct (% busy).", enum: ["pct", "count", "stateSize", "totalMs", "name"], default: "pct"],
-                    limit: [type: "integer", description: "Max entries to return. Default: 20, 0 for all.", default: 20],
-                    includeCloudCalls: [type: "boolean", description: "[[FLAT_TRIM]]Also return per-app cloud-call counts under cloudCalls. Default false.[[/FLAT_TRIM]]"]
-                ]
-            ]
-        ],
-        [
-            name: "hub_get_jobs",
-            description: "Get scheduled jobs, running jobs, and hub actions from the hub's logs page.[[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    cursor: [type: "string", description: "Opaque pagination cursor for scheduledJobs. Omit for the full list; pass '' for the first page of 100, then the returned nextCursor. runningJobs and hubActions stay in full on every page. Pages read a snapshot cached for 30 s, so a traversal that takes longer is best-effort."]
-                ]
+                    mode: [type: "string", enum: ["mcp", "scheduledJobs"]],
+                    jobId: [type: "string", description: "Job id from hub_get_logs(mode='scheduledJobs')."],
+                    confirm: [type: "boolean", description: "Must be true to delete a job."]
+                ],
+                required: ["mode"]
             ]
         ],
         [
@@ -8435,14 +8410,14 @@ Requires Write master.""",
 def _readOnlyToolNames_partDiagnostics() {
     return [
         "hub_list_captured_states",
-        "hub_get_logs", "hub_get_performance_stats", "hub_get_jobs", "hub_get_memory_history", "hub_get_radio_details",
+        "hub_get_logs", "hub_get_memory_history", "hub_get_radio_details",
         "hub_get_metrics",
         "hub_get_device_health"
     ]
 }
 def _idempotentWriteToolNames_partDiagnostics() {
     return [
-        "hub_delete_captured_state",
+        "hub_delete_captured_state", "hub_delete_logs",
         "hub_set_zwave", "hub_set_zigbee"
     ]
 }
@@ -8454,9 +8429,8 @@ def _openWorldToolNames_partDiagnostics() {
 }
 def _toolDisplayMeta_partDiagnostics() {
     return [
-        hub_get_logs: [title: "Get Logs", summary: "Hub log history, structured MCP history, or MCP logging status."],
-        hub_get_performance_stats: [title: "Get Performance Stats", summary: "Device and app performance statistics, optionally with per-app cloud-call counts."],
-        hub_get_jobs: [title: "Get Scheduled Jobs", summary: "Scheduled jobs, running jobs, and hub actions."],
+        hub_get_logs: [title: "Get Logs", summary: "Any Logs page tab (log history, stats, cloud calls, events, jobs, hub actions) or the MCP log."],
+        hub_delete_logs: [title: "Delete Logs", summary: "Clear the MCP log or delete one scheduled job, as the Logs page's Delete button does."],
         hub_get_metrics: [title: "Get Hub Metrics", summary: "Hub metrics with CSV trend history."],
         hub_get_memory_history: [title: "Get Memory History", summary: "Free-memory and CPU-load history with summary stats."],
         hub_call_gc: [title: "Force Garbage Collection", summary: "Force JVM garbage collection and report freed memory."],
@@ -9432,25 +9406,40 @@ def toolSetHsm(armCommand) {
     ]
 }
 def toolRebootHub(args) {
+    ["rebuildDatabase", "purgeLogs"].each { String opt ->
+        if (args[opt] != null && !(args[opt] instanceof Boolean)) {
+            throw new IllegalArgumentException("${opt} must be true or false (got '${args[opt]}')")
+        }
+    }
     requireDestructiveConfirm(args.confirm)
-    mcpLog("warn", "hub-admin", "Hub reboot initiated by MCP")
+    boolean rebuildDatabase = args.rebuildDatabase == true
+    boolean purgeLogs = args.purgeLogs == true
+    mcpLog("warn", "hub-admin", "Hub reboot initiated by MCP${rebuildDatabase ? ' with database rebuild' : ''}${purgeLogs ? ' with past-log purge' : ''}")
     try {
-        def responseText = hubInternalPost("/hub/reboot")
-        return [
+        def responseText = _hubReboot(rebuildDatabase, purgeLogs)
+        Map out = [
             success: true,
             message: "Hub reboot initiated. The hub will be unreachable for 1-3 minutes.",
             lastBackup: formatTimestamp(state.lastBackupTimestamp),
             warning: "All automations and device communications will stop during reboot. The hub will restart automatically.",
             response: responseText?.take(500)
         ]
+        if (rebuildDatabase) out.rebuildDatabase = true
+        if (purgeLogs) out.purgeLogs = true
+        return out
     } catch (Exception e) {
         mcpLogError("hub-admin", "Hub reboot failed", e)
         return [
             success: false,
+            isError: true,
             error: "Reboot failed: ${e.message}",
-            note: "The reboot command could not be sent. Check Hub Security credentials or try rebooting manually from the Hubitat web UI at Settings → Reboot Hub."
+            note: "If the request reached the hub it may already be restarting: wait 3 minutes and check hub_get_info before trying again. Otherwise check Hub Security credentials or reboot from the Hubitat web UI at Settings → Reboot Hub."
         ]
     }
+}
+def _hubReboot(boolean rebuildDatabase, boolean purgeLogs) {
+    return _hubRequest('POST', '/hub/reboot', [body: groovy.json.JsonOutput.toJson([rebuildDatabase: rebuildDatabase, purgeLogs: purgeLogs]),
+                                               requestContentType: "application/json", timeout: 30, returnShape: 'text'])
 }
 def toolShutdownHub(args) {
     requireDestructiveConfirm(args.confirm)
@@ -9754,7 +9743,9 @@ PRE-FLIGHT: 1) Ensure backup <24h old 2) Tell user 3) Get explicit confirmation 
             inputSchema: [
                 type: "object",
                 properties: [
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved the reboot."]
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved the reboot."],
+                    rebuildDatabase: [type: "boolean", description: "Rebuild the hub database while restarting (a Reboot dialog advanced option)."],
+                    purgeLogs: [type: "boolean", description: "Ask the hub to purge its past logs while restarting (a Reboot dialog advanced option)."]
                 ],
                 required: ["confirm"]
             ]
@@ -28541,6 +28532,12 @@ def mainPage() {
         }
     }
 }
+private Long _snapshotFetchedAt(part) {
+    return part instanceof Map && part.snapshot instanceof Map && part.snapshot.fetchedAt instanceof Number ? part.snapshot.fetchedAt as Long : null
+}
+private boolean _isWholeNumberIn(value, long min, long max) {
+    return (value instanceof Integer || value instanceof Long) && (value as Long) >= min && (value as Long) <= max
+}
 def formatTimestamp(timestamp) {
     if (!timestamp) return "Never"
     try {
@@ -30324,7 +30321,7 @@ private void _writeAuditLog(Map audit, String phase, Map extra) {
 }
 private List _writeTargetKeys() {
     return ["appId", "nativeAppId", "ruleId", "deviceId", "device_id",
-        "driverId", "roomId", "room_id", "variableName", "name", "id", "type", "action", "scope",
+        "driverId", "roomId", "room_id", "variableName", "name", "id", "jobId", "type", "action", "scope",
         "backupKey", "ref", "mode", "fileName", "filename", "path"]
 }
 private Map _writeTargetSummary(String leaf, String outer, args) {
@@ -30410,8 +30407,8 @@ def _maxConcurrentWrites() {
 def _budgetAwareTools() {
     return ["hub_set_native_app", "hub_call_rule", "hub_clone_native_app",
             "hub_import_native_app", "hub_call_device_command",
-            "hub_get_jobs", "hub_get_performance_stats", "hub_get_logs", "hub_get_info",
-            "hub_report_issue", "hub_get_custom_rule", "hub_delete_debug_logs",
+            "hub_get_logs", "hub_get_info",
+            "hub_report_issue", "hub_get_custom_rule",
             "hub_get_device", "hub_list_devices", "hub_get_device_health", "hub_list_libraries",
             "hub_get_device_attribute", "hub_list_rules"] as Set
 }
@@ -30419,11 +30416,11 @@ def _mrtrWriteTools() {
     return ["hub_set_native_app", "hub_set_rule", "hub_call_rule",
             "hub_clone_native_app", "hub_import_native_app",
             "hub_create_driver", "hub_update_driver", "hub_delete_item",
-            "hub_delete_debug_logs", "hub_manage_virtual_device", "hub_update_device",
+            "hub_manage_virtual_device", "hub_update_device",
             "hub_restore_backup", "hub_create_backup"] as Set
 }
 def _mrtrReadTools() {
-    return ["hub_get_jobs", "hub_get_performance_stats", "hub_get_logs", "hub_get_info",
+    return ["hub_get_logs", "hub_get_info",
             "hub_report_issue", "hub_get_custom_rule", "hub_get_device", "hub_list_devices",
             "hub_get_device_health", "hub_list_libraries", "hub_list_rules"] as Set
 }
@@ -31254,8 +31251,7 @@ private Map _mrtrContinuation(String leafTool, Map executionArgs, result, Map re
             result.updatesRemaining instanceof List && !result.updatesRemaining.isEmpty()) {
         nextLeaf.updates = result.updatesRemaining
         kind = "driver_updates"
-    } else if ((_mrtrReadTools().contains(leafTool) || leafTool == "hub_delete_debug_logs")
-            && result.status == "in_progress") {
+    } else if (_mrtrReadTools().contains(leafTool) && result.status == "in_progress") {
         kind = "slow_read"
     }
     if (kind == null) return null
@@ -31337,7 +31333,7 @@ private Map _mrtrCommitSlice(String stateId, Map rec, Map claim, Map executionAr
                 capped.ruleIds = cappedBank.ruleIds
                 def cappedFailed = banked.findAll { it instanceof Map && it.success != true }
                 if (!cappedFailed.isEmpty()) {
-                    capped.failedRuleIds = cappedFailed.collect { it.ruleId }.findAll { it != null }.unique()
+                    capped.failedRuleIds = (cappedFailed*.ruleId - [null]).unique()
                 }
                 if (result instanceof Map && result.remainingRuleIds instanceof List
                         && !(result.remainingRuleIds as List).isEmpty()) {
@@ -31362,10 +31358,8 @@ private Map _mrtrCommitSlice(String stateId, Map rec, Map claim, Map executionAr
                     "operation."
             }
             if (continuation.kind in ["walk_steps", "driver_installs", "driver_updates"]) {
-                ["appId", "page", "operation", "stepsRemaining", "installsRemaining", "updatesRemaining",
-                 "backup", "repairHints", "resume"].each { key ->
-                    if (result.containsKey(key)) capped.put(key, result.get(key))
-                }
+                capped.putAll(result.subMap(["appId", "page", "operation", "stepsRemaining", "installsRemaining",
+                                             "updatesRemaining", "backup", "repairHints", "resume"]))
                 capped.note = "aggregate records completed work. Inspect the remaining-work fields " +
                     "and resume guidance before submitting a new call with only that remainder. " +
                     "This requestState now replays the terminal continuation_limit result."
@@ -31482,8 +31476,9 @@ private boolean _mrtrStoreTerminal(String stateId, Map originalRec, Map claim, r
             rec.updatedAt = rec.finishedAt
             rec.expiresAt = rec.finishedAt + (readLeaf ? _mrtrReadTerminalTtlMs() : _mrtrTerminalTtlMs())
             def fetchedAt = readLeaf ? originalRec.readSnapshotFetchedAt : null
-            if (!(fetchedAt instanceof Number) && readLeaf && result instanceof Map && result.snapshot instanceof Map) {
-                fetchedAt = result.snapshot.fetchedAt
+            if (!(fetchedAt instanceof Number) && readLeaf && result instanceof Map) {
+                List parts = [result] + (result.modes instanceof Map ? (result.modes as Map).values().toList() : [])
+                fetchedAt = (parts.collect(this.&_snapshotFetchedAt) - [null]).min()
             }
             if (fetchedAt instanceof Number) {
                 rec.expiresAt = Math.min(rec.expiresAt as Long, (fetchedAt as Long) + _logsJsonSnapshotTtlMs())
@@ -32027,13 +32022,9 @@ def _responseTooLargeSuggestion(String toolName) {
         case "hub_get_memory_history":
             return "Pass a smaller limit (e.g. 100). limit=0 returns the entire hub ring buffer which can be thousands of entries."
         case "hub_get_logs":
-            return "Narrow with deviceId/appId/level/source/pattern, set a smaller limit, or filter by time window (since/until). The tool already truncates per-entry messages but cannot trim the entry count below the requested limit."
+            return "Narrow with deviceId/appId/level/pattern, set a smaller limit, filter by time window (since/until), or page with cursor=''. With a list of modes, lower pageSize or ask for fewer tabs per call. Past logs already cut long messages, but no mode trims the row count below the requested limit."
         case "hub_export_native_app":
             return "Large app payloads can exceed the inline cap. Pass saveAs=<filename.json> to write the export to the hub File Manager instead of returning it inline."
-        case "hub_get_jobs":
-            return "Pass cursor='' to page scheduledJobs 100 at a time (then follow nextCursor); runningJobs and hubActions stay in full on every page."
-        case "hub_get_performance_stats":
-            return "Pass a smaller limit (default 20; limit=0 returns every device and app) or narrow type to device or app."
         case "hub_get_info":
         case "hub_get_metrics":
             return "Hub status payload is unusually large -- consider polling at a lower frequency or fetching a single subsection via the matching sub-tool if available."
@@ -32198,13 +32189,13 @@ def getGatewayConfig() {
             description: "DESTRUCTIVE hub operations: reboot, shutdown, permanent device deletion, radio network/fabric resets + firmware flashes, network disconnects, and cloud-controller disable. All operations are irreversible or cause significant downtime — confirm with user first.",
             tools: ["hub_reboot", "hub_shutdown", "hub_delete_device", "hub_call_destructive_ops"],
             summaries: [
-                hub_reboot: "Reboot the hub (DISRUPTIVE, 1-3 min downtime). To install a pending hub firmware update instead, use hub_update_firmware. Args: confirm=true",
+                hub_reboot: "Reboot the hub (DISRUPTIVE, 1-3 min downtime), optionally rebuilding the database or purging past logs. To install a pending hub firmware update instead, use hub_update_firmware. Args: confirm=true, rebuildDatabase, purgeLogs",
                 hub_shutdown: "Power OFF the hub (EXTREME, requires physical restart). Args: confirm=true",
                 hub_delete_device: "Permanently delete any device (MOST DESTRUCTIVE, no undo). Args: deviceId, confirm=true",
                 hub_call_destructive_ops: "Destructive ops by target: radio reset/firmware (target=zwave|zigbee|matter), network disconnect (target=network, disconnect_wifi|disconnect_ethernet), or cloud controller disable/enable (target=cloud). Args: target, action, confirm=true"
             ],
             searchHints: [
-                hub_reboot: "restart reset power cycle boot",
+                hub_reboot: "restart reset power cycle boot rebuild database purge delete past logs",
                 hub_shutdown: "power off turn off stop halt",
                 hub_delete_device: "remove ghost orphan zwave zigbee stuck failed pairing",
                 hub_call_destructive_ops: "reset wipe zwave zigbee matter network fabric exclude all firmware flash chip radio ota brick factory disconnect wifi ethernet cloud disable alexa google dashboard subscription"
@@ -32285,20 +32276,16 @@ def getGatewayConfig() {
             ]
         ],
         hub_manage_logs: [
-            description: "System logs, performance stats, and log settings: hub logs, device/app performance stats, scheduled jobs, MCP debug logs, and log level configuration. (Device/app/location event history: use the core hub_list_device_events tool.)",
-            tools: ["hub_get_logs", "hub_get_performance_stats", "hub_get_jobs", "hub_delete_debug_logs", "hub_set_log_level"],
+            description: "The hub's Logs page and MCP log settings: log history, device/app runtime stats, cloud calls, location and hub events, scheduled and running jobs, hub actions, the MCP log, deleting a scheduled job, and the MCP log level. (Device and app event history: use hub_list_device_events.)",
+            tools: ["hub_get_logs", "hub_delete_logs", "hub_set_log_level"],
             summaries: [
-                hub_get_logs: "Read logs: mode=hub (default) for native history, mcp for structured MCP history, status for MCP logging status. Hub filters: level, source, pattern/patterns, since/until, deviceId|appId, limit. MCP filters: level, component, ruleId, limit",
-                hub_get_performance_stats: "Get device/app performance stats (count, % busy, total ms, state size, events, cloud calls, large state flag). Args: type (device/app/both), sortBy (pct/count/stateSize/totalMs/name), limit, includeCloudCalls?",
-                hub_get_jobs: "Get scheduled jobs, running jobs, and hub actions. Args: cursor? (pages scheduledJobs, 100 per page)",
-                hub_delete_debug_logs: "Clear all MCP debug log entries",
+                hub_get_logs: "Read Logs page tabs or the MCP log. Args: mode (one tab or a list: past default, devices, apps, cloudCalls, locationEvents, hubEvents, scheduledJobs, runningJobs, hubActions, mcp, status), level, deviceId|appId, pattern/patterns, since/until, sortBy, limit, cursor, pageSize (50 per tab when several are listed)",
+                hub_delete_logs: "Clear the MCP log, or delete one scheduled job like the Logs page's Delete button; past logs have no delete, only the reboot's log purge: hub_reboot(confirm=true, purgeLogs=true). Args: mode (mcp|scheduledJobs), jobId, confirm",
                 hub_set_log_level: "Set minimum log level threshold. Args: level (debug/info/warn/error)"
             ],
             searchHints: [
-                hub_get_logs: "mcp internal debug logging status buffer capacity errors warnings trace syslog recent device app regex time window since until",
-                hub_get_performance_stats: "slow cpu busy resource usage hog bottleneck",
-                hub_get_jobs: "scheduled cron timer recurring what is running next automation",
-                hub_delete_debug_logs: "wipe reset mcp internal",
+                hub_get_logs: "errors warnings trace syslog recent device app regex time window since until performance stats slow cpu busy hog state size cloud calls location events mode hsm hub events reboot low memory scheduled jobs cron timer recurring running hub actions mcp internal status",
+                hub_delete_logs: "wipe reset clear mcp log remove cancel unschedule scheduled job timer",
                 hub_set_log_level: "verbosity debug trace quiet"
             ]
         ],
@@ -32361,12 +32348,10 @@ def getGatewayConfig() {
             ]
         ],
         hub_read_diagnostics: [
-            description: "Read-only hub health, logs, and diagnostics: system logs, performance stats, scheduled jobs, MCP debug logs, hub metrics, free-memory/CPU history, device health/staleness, Z-Wave/Zigbee radio details, and saved state snapshots. All operations are read-only; the matching writes (gc, Z-Wave repair, clear logs, set log level, delete snapshots) live in hub_manage_logs / hub_manage_diagnostics.",
-            tools: ["hub_get_logs", "hub_get_performance_stats", "hub_get_jobs", "hub_get_metrics", "hub_get_memory_history", "hub_get_device_health", "hub_get_radio_details", "hub_list_captured_states"],
+            description: "Read-only hub health, logs, and diagnostics: the Logs page (log history, runtime stats, cloud calls, location and hub events, jobs, hub actions), the MCP log, hub metrics, free-memory/CPU history, device health/staleness, Z-Wave/Zigbee radio details, and saved state snapshots. All operations are read-only; the matching writes (gc, Z-Wave repair, clear the MCP log, delete a scheduled job, set log level, delete snapshots) live in hub_manage_logs / hub_manage_diagnostics.",
+            tools: ["hub_get_logs", "hub_get_metrics", "hub_get_memory_history", "hub_get_device_health", "hub_get_radio_details", "hub_list_captured_states"],
             summaries: [
-                hub_get_logs: "Read logs: mode=hub (default) for native history, mcp for structured MCP history, status for MCP logging status. Hub filters: level, source, pattern/patterns, since/until, deviceId|appId, limit. MCP filters: level, component, ruleId, limit",
-                hub_get_performance_stats: "Get device/app performance stats (count, % busy, total ms, state size, events, cloud calls). Args: type, sortBy, limit, includeCloudCalls?",
-                hub_get_jobs: "Get scheduled jobs, running jobs, and hub actions. Args: cursor? (pages scheduledJobs, 100 per page)",
+                hub_get_logs: "Read Logs page tabs or the MCP log. Args: mode (one tab or a list: past default, devices, apps, cloudCalls, locationEvents, hubEvents, scheduledJobs, runningJobs, hubActions, mcp, status), level, deviceId|appId, pattern/patterns, since/until, sortBy, limit, cursor, pageSize (50 per tab when several are listed)",
                 hub_get_metrics: "Get hub metrics (memory, temp, DB) with CSV trend history + the hub's own health alerts (radio offline, backup failures, low memory, DB bloat, safeMode). Read-only by default; pass recordSnapshot=true to also append a snapshot to the File Manager. Args: recordSnapshot?, trendPoints?",
                 hub_get_memory_history: "Get free OS memory and CPU load history with summary stats. Args: limit",
                 hub_get_device_health: "Check device staleness; run network diagnostics (ICMP-ping arbitrary IPs, traceroute to one IPv4, WAN download speedtest); and/or blink the hub identify-LED. Args: staleHours, includeHealthy, pingHosts, pingCount, tracerouteHost, speedtest, identifyHub",
@@ -32374,9 +32359,7 @@ def getGatewayConfig() {
                 hub_list_captured_states: "List saved device state snapshots"
             ],
             searchHints: [
-                hub_get_logs: "errors warnings messages trace syslog output recent latest device app scope regex pattern filter time window since until",
-                hub_get_performance_stats: "slow cpu busy resource usage hog bottleneck",
-                hub_get_jobs: "scheduled cron timer recurring what is running next automation",
+                hub_get_logs: "errors warnings messages trace syslog output recent latest device app scope regex pattern filter time window since until performance stats slow cpu busy hog state size cloud calls location events mode hsm hub events reboot low memory scheduled jobs cron timer recurring running next hub actions",
                 hub_get_metrics: "temperature database size trending monitoring memory over time snapshot history health alerts safe mode radio offline backup failed weak mesh",
                 hub_get_memory_history: "ram free used leak trending over time java heap nio",
                 hub_get_device_health: "stale offline dead unresponsive battery not reporting ping icmp reachable network ip lan host router traceroute route hops speedtest bandwidth wan download internet speed identify led blink locate",
@@ -33150,7 +33133,6 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
         case "hub_update_hub_mesh": return toolUpdateHubMesh(args)
         case "hub_list_captured_states": return toolListCapturedStates(args)
         case "hub_delete_captured_state": return toolDeleteCapturedState(args)
-        case "hub_delete_debug_logs": return toolClearDebugLogs(args)
         case "hub_set_log_level": return toolSetLogLevel(args)
         case "hub_report_issue": return toolGenerateBugReport(args)
         case "hub_export_custom_rule": return toolExportRule(args)
@@ -33162,8 +33144,7 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
         case "hub_list_libraries": return toolListLibraries(args)
         case "hub_get_radio_details": return toolGetRadioDetails(args)
         case "hub_get_logs": return toolGetHubLogs(args)
-        case "hub_get_performance_stats": return toolGetPerformanceStats(args)
-        case "hub_get_jobs": return toolGetHubJobs(args)
+        case "hub_delete_logs": return toolDeleteLogs(args)
         case "hub_get_metrics": return toolGetHubPerformance(args)
         case "hub_get_device_health": return toolDeviceHealthCheck(args)
         case "hub_get_memory_history": return toolGetMemoryHistory(args)
@@ -33262,7 +33243,7 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
                 def visibleNames = getToolDefinitions()*.name as Set
                 def subTools = (getGatewayConfig()[toolName]?.tools ?: []).findAll { visibleNames.contains(it) }
                 def hint = subTools
-                    ? "Call the underlying tool directly: ${subTools.collect { _externalToolName(it as String) }.join(', ')}. Refresh tools/list to see the flat catalog."
+                    ? "Call the underlying tool directly: ${subTools.collect(this.&_externalToolName).join(', ')}. Refresh tools/list to see the flat catalog."
                     : "All sub-tools of this gateway are also disabled by other server toggles (Read/Write masters or Custom Rule Engine). Enable those toggles or refresh tools/list."
                 return [
                     isError: true,
@@ -35093,12 +35074,10 @@ def getDebugLogReadResult(Map args = [:]) {
         return [entries: null, retryable: true, error: "MCP log history unavailable: ${e.message ?: e.class.simpleName}".toString()]
     }
 }
-def clearDebugLogEntries(Map args = [:]) {
-    def history = getDebugLogReadResult(args)
-    if (history.status == "in_progress") return history
+def clearDebugLogEntries() {
     def buffer = initDebugLogs()
     synchronized (buffer) {
-        int count = buffer.entries.size()
+        Integer count = buffer.hydrated ? buffer.entries.size() : null
         String generation = java.util.UUID.randomUUID().toString()
         atomicState.debugLogGeneration = generation
         if (atomicState.reportErrors != null) atomicState.reportErrors = []
@@ -35109,12 +35088,7 @@ def clearDebugLogEntries(Map args = [:]) {
         buffer.remove("fetchClaimId")
         buffer.remove("fetchStartedAt")
         buffer.remove("fetchError")
-        def result = [clearedCount: history.error ? null : count]
-        if (history.error) {
-            result.countIncomplete = true
-            result.logReadError = history.error
-        }
-        return result
+        return [clearedCount: count]
     }
 }
 def setDebugLogLevel(String level) {
@@ -36999,25 +36973,8 @@ Use after hub_list_files to fetch a named file (config, backup, exported rule/ap
 **Cursor pagination.** List tools that take `cursor` return the whole list when it is omitted, subject to the guard; `hub_list_backups` (scope=source) is the exception and always returns one page, with `hasMore: true` and `nextCursor` when more backups follow. Pass `cursor: ""` for the first page, then pass each returned `nextCursor` until it is absent. A malformed or out-of-range cursor is rejected as a validation error. Page sizes:
 - 25: `hub_list_hpm_packages`.
 - 50: `hub_list_apps` (pages the filtered set), `hub_list_drivers`, `hub_list_libraries`, `hub_list_bundles`, `hub_list_rules`, `hub_get_custom_rule` (list mode), `hub_list_captured_states`, `hub_list_backups` (scope=source, newest first), and `hub_list_devices`. For `hub_list_devices`, 50 applies when `limit` is unset (virtual filter included); the cursor is an alternative to `offset`, and the two cannot be combined.
-- 100: `hub_list_variables` (hubVariables; ruleVariables stay whole), `hub_list_files`, `hub_list_rooms`, `hub_list_device_dependents` (appsUsing), `hub_get_logs`, `hub_get_memory_history`, `hub_get_device_health` (staleDevices), and `hub_get_jobs` (scheduledJobs).
+- 100: `hub_list_variables` (hubVariables; ruleVariables stay whole), `hub_list_files`, `hub_list_rooms`, `hub_list_device_dependents` (appsUsing), `hub_get_logs` (50 per tab when several are listed), `hub_get_memory_history`, and `hub_get_device_health` (staleDevices).
 - `hub_get_device` and `hub_get_tool_guide` page oversized responses automatically.
-
-### hub_get_logs (history, logging status, and filters)
-
-Use mode='hub' (default) for native app/device logs, mode='mcp' for structured MCP entries, or mode='status' for MCP log level, counts, and capacity. MCP mode keeps level/component/ruleId/limit/cursor filters and the existing diagnostic fields used by hub_report_issue. Debug and info are retained alongside warnings and errors when admitted by the configured threshold. After reload, MCP history recovers from this app's native Past Logs; retention shares Hubitat's approximately 1 MB rolling history with other apps and devices. The memory view keeps up to 100 entries without storing the ring in app state.
-
-The following filter pipeline applies to hub mode. Current three-column native timestamps use the hub's timezone; timezone-free since/until arguments still mean UTC.
-
-- Device scope: `deviceId` filters hub-wide history regardless of device selection or bypass (logs are hub diagnostics, including history for deleted devices). The hub answers an empty list for an unknown id and a quiet device alike, so a device-filtered read carries `deviceIdResolved` (true when an entry or a native identity read proves the id; false means the id names no device on the hub).
-- Filter pipeline order: scope (deviceId/appId, server-side) -> level -> source -> pattern -> patterns -> time window (since/until) -> limit.
-- `pattern` / `patterns`: the regex matches the log message field ONLY (use `source` for app/device-name substring matching); it is compiled once and throws on invalid regex syntax. A pathological regex like `(.*)*` may hang the matcher -- prefer simple alternation (`error|fail`) or anchored prefixes.
-- `pattern` and `patterns` are compatible: when both are supplied, both apply simultaneously.
-- `patternMode` is case-insensitive ('ANY' and 'any' both work).
-- `since`/`until` relative offsets are subtracted from now; the max relative offset is 30d and a larger offset throws -- use an ISO-8601 timestamp for longer ranges.
-- Timestamps without a TZ marker (e.g. '2024-01-15T10:30:00' or '2024-01-15 10:30:00.000') are parsed as UTC. '0m' / '0d' is a degenerate `since` that filters out everything older than now (useful for test harnesses, rarely otherwise).
-- `until` defaults to now (no upper bound); pair it with `since` for a window, e.g. since='2h', until='1h' means '1 to 2 hours ago'.
-- `cursor`: filters + limit apply first, then the cursor pages within the filtered result (page size 100).
-- Hub mode returns the newest entries first, so `limit` keeps the most recent. MCP-mode entries keep up to 500 characters of message and 1,000 of exception/stack text. The native log line keeps the full message.
 
 ### hub_get_radio_details (read-only Z-Wave/Zigbee/Matter radio surface)
 
@@ -37056,13 +37013,6 @@ The following filter pipeline applies to hub mode. Current three-column native t
 - limit caps the most-recent entries returned (default 100); limit=0 returns all (the hub may hold thousands of rows)
 - Cursor mode pages within the limit-filtered entries; with limit=0 + cursor it pages the FULL ring buffer (every history row, not just a limit-filtered window). Pass "" for the first page and iterate nextCursor (page size 100)
 
-### hub_get_performance_stats (per-device/app metrics it reports)
-
-- Reports per device/app: method call counts, % busy, state size, events, states, hub actions, and pending events.
-- The `sortBy` enum maps onto these columns: `pct` = % busy (default), `count` = method call count, `stateSize` = state size, `totalMs` = total ms, `name` = device/app name.
-- Each entry also carries `cloudCalls`, its count of calls to Hubitat cloud services (firmware 2.5.2.129+).
-- `includeCloudCalls=true` adds a top-level `cloudCalls` block: per app `{id, name, installed, total, currentHour, hourly:[{hourStart, count}]}` (newest hour first, at most 48), sorted by total, plus `countingSince` and `timeZone`. Use it to find which integration is calling the cloud most.
-
 **hub_list_captured_states (list saved device-state snapshots):**
 - Storage limit is configurable (default 20; `maxCapturedStates` setting). When the store is full, the oldest snapshot is auto-deleted to make room for a new capture.
 - The response reports `maxLimit` (the retention cap) and, when near/at the cap, a `warning` field: "Approaching limit" within 4 slots of the cap, "At maximum capacity" once full (the next capture will evict the oldest).
@@ -37072,19 +37022,15 @@ The following filter pipeline applies to hub mode. Current three-column native t
 - Returns free memory before and after GC in KB (`beforeFreeMemoryKB`, `afterFreeMemoryKB`).
 - Reports the reclaimed amount as `deltaKB` plus a `memoryReclaimed` boolean (true when free memory increased); both are present only when both readings succeeded.
 
-### hub_delete_debug_logs
-
-Clears the MCP history view read by hub_get_logs(mode='mcp') using a durable clear marker, so old native entries do not return after reload. Hubitat system logs (hub_get_logs) and captured device states (hub_delete_captured_state) are unchanged. Use it before reproducing an issue.
-
 ### hub_report_issue
 
-With the opt-in advanced setting "Keep recent errors for bug reports" (off by default), reports include up to ten recent server errors kept in app state (they survive native log rollover), in a section ahead of the native log history. With it off, reports read errors from the native log history only. On a bug report with no `failingTool`, the newest retained error inside the report's log window that names a tool supplies it for the title and the prefilled form field only; the result marks it `failingToolSource: "retained_error"`, and the log scope stays whatever the caller passed. Privacy controls also apply to retained errors; hub_delete_debug_logs clears them.
+With the opt-in advanced setting "Keep recent errors for bug reports" (off by default), reports include up to ten recent server errors kept in app state (they survive native log rollover), in a section ahead of the native log history. With it off, reports read errors from the native log history only. On a bug report with no `failingTool`, the newest retained error inside the report's log window that names a tool supplies it for the title and the prefilled form field only; the result marks it `failingToolSource: "retained_error"`, and the log scope stays whatever the caller passed. Privacy controls also apply to retained errors; hub_delete_logs(mode='mcp') clears them.
 
 Rule routing: a legacy custom MCP rule-engine rule id goes in the `ruleId` param; a native Rule Machine rule/app goes in the `nativeAppId` param. They are different engines -- do not cross them (each scopes the report's logs to its own engine).
 
 Issue-type routing: `issueType` picks the GitHub issue template behind `submitUrl` -- `bug` opens the bug-report template, `enhancement` the feature template, `agent_behavior` the agent-behavior template -- and sets the report heading and the title prefix (`[bug]` / `[feature]` / `[agent-behavior]`) with it. Filing a feature request as a bug lands the user on the wrong form, so pick the type before you call.
 
-**Before filing a bug.** The result carries `preflight` (bug and agent_behavior reports) and `missingContext`; resolve both before handing the user the link. On a bug, preflight asks you to raise the MCP log level to debug (`hub_set_log_level`), reproduce the failure, and then attach the debug lines from `hub_get_logs(mode='mcp')` via `clientLogs` -- the report itself only embeds error/warn entries, so debug output reaches the maintainer only if you paste it. That step is present only when the level is not already debug. Then attach logs from EVERY source -- `hub_get_logs(mode='hub')` for the native hub log around the failure and the client host's own MCP log via `clientLogs`. In `privacyMode='public'` the verbatim and client-log sections and the raw log text are withheld unconditionally -- a placeholder names how many lines were held back, and there is no override; `includeRawLogs` only matters in private mode, where `false` withholds the same content. The link also prefills the MCP server version, hub firmware, client and failing tool, and labels the issue `diag-prefilled` so a tool-generated report is recognisable. In both modes credentials are redacted -- the same redaction also runs over `expected`, `actual`, `stepsToReproduce`, the title and the embedded log block. The settings snapshot prints posture only (no hostname, no token), which is why it is kept in public mode.
+**Before filing a bug.** The result carries `preflight` (bug and agent_behavior reports) and `missingContext`; resolve both before handing the user the link. On a bug, preflight asks you to raise the MCP log level to debug (`hub_set_log_level`), reproduce the failure, and then attach the debug lines from `hub_get_logs(mode='mcp')` via `clientLogs` -- the report itself only embeds error/warn entries, so debug output reaches the maintainer only if you paste it. That step is present only when the level is not already debug. Then attach logs from EVERY source -- `hub_get_logs(mode='past')` for the native hub log around the failure and the client host's own MCP log via `clientLogs`. In `privacyMode='public'` the verbatim and client-log sections and the raw log text are withheld unconditionally -- a placeholder names how many lines were held back, and there is no override; `includeRawLogs` only matters in private mode, where `false` withholds the same content. The link also prefills the MCP server version, hub firmware, client and failing tool, and labels the issue `diag-prefilled` so a tool-generated report is recognisable. In both modes credentials are redacted -- the same redaction also runs over `expected`, `actual`, `stepsToReproduce`, the title and the embedded log block. The settings snapshot prints posture only (no hostname, no token), which is why it is kept in public mode.
 
 **What to pass.** `llmClient` is the host app plus version (`Claude Code 2.1`, `Claude Desktop`, `Claude.ai web`, `ChatGPT desktop`, `Cursor`); `Claude` alone is not enough -- ask the user. When the server has no client self-report, or it names a transport wrapper (mcp-remote, mcp-proxy, fastmcp-remote, supergateway, or the Python SDK default identity those bridges send -- `mcp 0.1.0`, or `mcp` with no version), the result says so in missingContext: ask the user and never infer the host app or model from context. Wrapper detection reads only what THIS request self-reported; nothing is carried over from an earlier one. A legacy client names itself on `initialize` alone, so an ordinary tool call from one reports `not reported on this request` and the tool asks the user instead. `llmModel` is the model behind it (`Claude Opus 5`, `Sonnet 5`, `Haiku 4.5`, `GPT-5`); ask if unknown. `verbatimToolCalls` takes the exact failing call (tool name and args JSON) and the exact raw response or error text copied from the transcript -- never a paraphrase, the real wording is usually the diagnosis. `clientLogs` takes raw log lines from the client host for the failure window (Claude Desktop writes `mcp-server-*.log`; Claude Code has its own debug log), and also takes pasted `hub_get_logs` output. An `agent_behavior` report asks for `stepsToReproduce`, `verbatimToolCalls` and `clientLogs` exactly as a bug does, and renders the same sections.
 
@@ -37617,72 +37563,12 @@ To move EXISTING devices into an existing room, set each device's room via hub_u
 
 Renaming a room preserves device assignments, but may require updating automations/dashboards that reference the room by name.
 ''',
-        slow_ops: '''## Slow operations over Streamable HTTP
+        slow_ops: '''## Slow operations
 
-Hubitat's cloud relay can end one HTTP request while hub-side work continues. MCP 2026-07-28 request-to-request continuation solves this without changing transport, installing an extension, or asking the caller to invent a token.
+The cloud relay can end a request while the hub keeps working; a modern client continues the call by itself. Each slow-operation response (`in_progress`, `continuation_limit`, `too_many_writes_in_flight`, `slow_read_timeout`) says what to do next.
 
-### Automatic request-to-request continuation
-
-The modern path applies to `hub_set_native_app`, `hub_set_rule(operation='create')`, `hub_set_rule(operation='update')`, `hub_set_rule(operation='form')`, multi-rule stop/start batches through `hub_call_rule`, `hub_clone_native_app`, `hub_import_native_app`, the slow driver-code lifecycle writes `hub_create_driver`, `hub_update_driver`, and `hub_delete_item(type="driver")`, `hub_delete_debug_logs`, `hub_manage_virtual_device`, `hub_update_device`, and `hub_restore_backup` for a rule backup (`scope=source` with an `rm-rule_` key or a `sourceFile` snapshot). When the transport carries a time budget, device, log and diagnostic reads also continue as described below.
-
-The first write request reserves the operation and starts its first slice at once; a write that finishes within that request's wait budget returns an ordinary `resultType: "complete"` result in one round trip, so a client that never echoes `requestState` still completes fast writes. Only work still running at the budget returns `resultType: "input_required"` with an opaque `requestState`; compatible MCP clients repeat the same tool call with that state, subject to their retry limit. A resumed request either advances work or observes an internal worker within the request's wait budget. Detached workers use a separate 120-second cooperative target at safe batch boundaries; individual wizard operations may exceed it. A terminal `resultType: "complete"` describes the operation's outcome; neither successful completion nor completion within a particular client's retry limit is guaranteed.
-
-The state is bound to the original leaf tool and exact original arguments. A mismatched, unknown, or expired state executes nothing. A fresh identical call while the original is active rejoins that same `requestState` and observes the running owner; every response to that replay is marked `rejoined: true`, and it cannot reserve or run a second write. This lets a client safely replay a first request whose HTTP response was lost while the work is still running. To INTENTIONALLY run the same write twice while the first record is still live, vary the arguments or wait out the record TTL -- a byte-identical repeat always coalesces. The terminal result remains replayable briefly under the same requestState so losing only the final HTTP response does not rerun the operation. A write that completed within its first request has no state the client could echo, so a lost response there is the same exposure as any single-request write: read the target before repeating it. A client that cannot render `input_required` shows a generic client-side error with no result body while the hub keeps running the write; the same rule applies -- read the target, and know that an identical repeat within the active window joins the running write rather than starting a second one.
-
-### Worker checkpoints and limits
-
-Driver bulk installs/updates pause between drivers. Each saved checkpoint retains the untouched remainder, renews the active window, and advances the owner generation; the next original-argument request with the same state starts a fresh worker slice. If no client request resumes a checkpoint within about five seconds, the server resumes it itself and keeps going to completion or the eight-slice cap, so a client that never continues still gets the whole write; a client request that arrives later observes or replays as usual. Clone and import checkpoints resume the same way (their later phases read only the checkpoint, so the import JSON is not retained). `hub_get_info` returns `recentWrites`: the last ten continuation-eligible writes with their status (`running`, `paused_resuming`, `finished`, `finished_with_error`) and identifiers, so a client that saw only a generic error can learn what happened with one read. Every state-only reply, every background completion and every paused write that expires unresumed is logged in the MCP log (`hub_get_logs` with `mode="mcp"`, component `mrtr`) at info or warn, so a client-side error can be traced without enabling debug logging.
-
-Native Rule Machine document and form operations run in one worker without item checkpoints. Their replies can still use request-to-request continuation while that worker runs. A large changes batch does not yield at the worker target; use smaller batches when necessary and inspect any partial result before continuing. Individual driver operations also remain uninterrupted. The worker target is not a hard execution deadline or a guarantee of recovery from a platform kill.
-
-If eight owner slices leave work unfinished, the terminal `continuation_limit` result retains the completed aggregate, exact remaining-work fields and any deferred-finalization guidance. Inspect that result before making a new, smaller call containing only the remainder. Replaying the old state only returns the same terminal result.
-
-### The `mrtr` block
-
-A result that ran through request-to-request continuation carries `mrtr: {continued, rounds, startedAt}`: `continued` is always true there, `rounds` is how many owner work slices ran (1 when the background worker finished it in one), and `startedAt` is when the first slice started (epoch ms). A replayed or joined result also carries `rejoined: true`. A successful result without `mrtr` ran inside its first request. An error result can lack `mrtr` even after earlier slices ran (a later slice that could not be scheduled ends the write there), so read the target before retrying it.
-
-### Client retry limits and resume
-
-The official Python SDK pinned by this project (2.2.0) defaults to ten automatic continuation retries. Contention and worker-coordination responses consume client rounds; the server's `mrtr.rounds` counts owner work slices instead. Its eight-slice cap does not bound a client's retries, and ten retries is an SDK policy, not an MCP requirement. Cloud wait budgets reduce rapid polling but cannot make an arbitrary-duration worker finish within that limit.
-
-For integrations that control the SDK, configure `Client(..., input_required_max_rounds=...)` for the expected operation size, or use `client.session.call_tool(..., allow_input_required=True)` and retain each returned `request_state` before the next request. Resume with the same outer tool, original arguments and exact state; do not send only the remaining arguments. Hubitat keeps one state string for the logical call. The SDK also accepts `client.call_tool(..., request_state=saved_state)` to resume its automatic loop. Choose state capture before starting: `InputRequiredRoundsExceededError` does not contain the last state. A worked example and offline SDK coverage are in `docs/testing.md`, "Client retry policy".
-
-Stopping client retries does not cancel an executing worker or free its write slot. Replaying the saved state retrieves the retained outcome without repeating the write. Retention is finite: idle active records expire after three minutes; executing workers remain protected while their live marker exists; write terminal results expire after ten minutes and may be evicted earlier under record pressure. If state expires or is lost, inspect the actual target before deciding on a new write. A fresh identical call after completion is a NEW operation, not a terminal replay. Clients with an unconfigurable limit cannot be promised completion for arbitrary operation sizes.
-
-### Global write concurrency cap
-
-Every actual write obtains a server-side lease, whether it uses MRTR or completes in one request. `maxConcurrentWrites` defaults to 2 (1 fully serializes writes; 0 disables the cap). A new write at capacity is refused as `too_many_writes_in_flight` before dispatch, so parallel agents or a client burst cannot overwhelm the hub. Active MRTR calls and the background `hub_update_package` worker keep their slot until completion; abandoned leases expire automatically. Reads, gateway catalog calls, schema-only probes, `hub_call_device_replace(list_options=true)`, and `hub_update_package(dryRun=true)` do not count. No client token or extra argument is involved.
-
-### Older clients
-
-Clients negotiated below MCP 2026-07-28 do not understand requestState. They retain the existing `status: "in_progress"` remainder envelope for bounded multi-step writes. Completed steps are already committed; reissue only the returned remaining work. This is a compatibility fallback, not a second polling protocol. Their writes never appear in `recentWrites`; when a response is lost, use the write records described under "Other writes and write records" and read the target.
-
-Native log reads through `hub_get_logs` and cold MCP log recovery use the same continuation. Recovery also serves logging status, `hub_get_info`, `hub_report_issue`, and detailed `hub_get_custom_rule` diagnostics. `hub_delete_debug_logs` waits for recovery before clearing and retains its small terminal result for safe replay. Reload recovery reads the existing native history; old state-backed entries are discarded once when updating to native storage. No log content is stored in the continuation record.
-A legacy client that receives `status: "in_progress"` from a log read or from `hub_delete_debug_logs` repeats the identical call.
-
-`hub_get_device` (every mode), `hub_list_devices` (including virtual devices), and `hub_get_device_health` use background reads on budgeted modern requests. Fast reads finish in one response. Each independent call fetches fresh data; only continuation/replay shares its snapshot, including any device-details pagination cursor. Device access changes or a lost snapshot reject continuation. Device payloads remain in bounded memory, outside persisted continuation records. Legacy device calls remain synchronous; a legacy `hub_list_devices` page that reaches the request budget ends early with `budgetLimited: true` and a cursor to continue from (see the `performance_devices` section). Health retains its 30-second traceroute and 90-second speedtest timeouts, but eight observation slices or a client's retry limit can end the wait before a long probe finishes. A health `slow_read_timeout` does not cancel probes or the optional identify LED blink; do not automatically retry it as a new call.
-
-Two reads use the same continuation: `hub_get_jobs` and `hub_get_performance_stats` both come from the hub's `/logs/json` page, one document that carries every device and app stat plus the job tables, so its fetch time grows with hub size and on a large hub can outrun the relay. When the request's transport has a time budget (`relayBudgetMs` over the cloud relay, `lanBudgetMs` on the LAN) the fetch runs in a background worker and its trimmed result is cached for 30 s; a modern client's first call already runs the read (a cached or quickly landed snapshot answers in one round trip) and only a still-pending fetch hands back `requestState` to continue, a legacy client that receives `status: "in_progress"` repeats the identical call, and a failed fetch is returned as an ordinary `isError` result with a retry already scheduled. Reads never hold a write lease or count toward `maxConcurrentWrites`, and their terminal record carries no payload (a replay re-runs the read from the cache). With no budget on the transport the fetch runs inline and the call is a single ordinary response.
-
-The advanced `relayBudgetMs` setting (default 6000 ms, 0 disables) controls cloud slices. Both transport budgets automatically use at least 6000 ms when enabled. `lanBudgetMs` defaults to 0; enable it only when the LAN client timeout leaves room for that minimum plus request overhead.
-
-### Package deployment
-
-`hub_update_package` is intentionally asynchronous instead of MRTR because a full repair can take minutes and recompiles this app. A real call validates and schedules the repair, then immediately returns `status: "in_progress"` with `requestId`. Do not submit it again: the server retains the reservation until that exact worker clears it or a matching terminal `lastSelfDeploy.requestId` proves it finished. Poll `hub_get_info.lastSelfDeploy` until its `requestId` matches; its `success` and `error` fields are the terminal outcome. During normal execution, keep polling rather than retrying the write. If a worker is abandoned, the next write may remove its marker only after the 10-minute recovery lease has expired and no live worker owns it; retry the deploy only after that recovery condition. `dryRun: true` remains synchronous.
-
-### Other writes and write records
-
-No custom operation-token or deployment-job protocol is exposed. `recentWrites` covers only continuation-eligible writes made by a 2026-07-28 client. Every other write -- every write from an older client, and a modern client's writes outside the continuation list -- leaves concise records in the MCP log instead: component `write`, level info, recorded whatever the MCP log level is set to. Read them with `hub_get_logs(mode="mcp", component="write")`; they are also this app's `[MCP1]` lines in the native hub log.
-
-Each write leaves a `started` record when it takes its write slot and a `finished` record when it ends; a write refused at capacity leaves one `refused` record instead. The `details` of each carry `phase`, `tool` (the leaf), `gateway` (when called through one), `writeId` (a correlation id shared by the started and finished records), `rpcId` (the JSON-RPC id the client sent), `transport` (`legacy` or `modern`), and `target` (identifier arguments only, such as `appId`, `deviceId`, `ruleId`, `name` or `type`; never values, code, settings or full arguments). A finished record adds `outcome`, `durationMs` and, unless it completed, a short `error`; a refused record adds `reason`. Outcomes:
-
-- `completed` -- the tool reported success.
-- `failed` -- the tool reported failure or refused the call (a refused validation changed nothing).
-- `partial` -- some steps applied and the rest did not, or the write paused with remaining work in its result.
-- `accepted` -- the call scheduled background work that is still running (for example `hub_update_package`; follow `hub_get_info.lastSelfDeploy`).
-- `unknown` -- the request ended without a classifiable result, or the write ran but its state readback failed; the hub may have changed.
-
-To trace a write whose response never arrived, match the `rpcId` you sent, then the tool, target and timestamp; the `writeId` pairs its started and finished records. A started record with no finished record means the write was still running or the request was cut off. A lost response leaves the outcome uncertain, and the log is not a complete history: the MCP log keeps the last 100 entries and native history is bounded, and a request the hub never received, a hub restart, ring rollover or `hub_delete_debug_logs` leaves no record. A missing record therefore does not prove nothing happened -- always read the target itself before deciding whether to repeat the write, because repeating a finished write performs it again.
+- Make writes one at a time and split a large Rule Machine change batch; parallel writes are refused once the hub's write cap is full.
+- A write that fails with no result body, or whose response is lost, may still be running on the hub or may already have finished. Wait about 15 seconds. A continuation write from a 2026-07-28 client shows in `recentWrites` in `hub_get_info`, and an identical repeat while it is still active joins it instead of running it twice. Every other write leaves started and finished records in `hub_get_logs(mode="mcp", component="write")`, each carrying the JSON-RPC id you sent and the outcome (completed, failed, partial, accepted or unknown). A missing record does not prove the write never ran: read the target before repeating it, because repeating a finished write performs it again.
 '''
     ]
 }
@@ -37707,9 +37593,7 @@ def getToolGuideSubSections() {
             performance_overview: [],
             performance_devices: ["hub_list_devices", "hub_list_device_events", "hub_get_device",
                                   "hub_get_compatible_devices"],
-            performance_diagnostics: ["hub_get_logs", "hub_get_radio_details", "hub_get_metrics",
-                                      "hub_get_performance_stats", "hub_delete_debug_logs",
-                                      "hub_report_issue"]
+            performance_diagnostics: ["hub_get_radio_details", "hub_get_metrics", "hub_report_issue"]
         ],
         builtin_app_tools: [
             builtin_app_tools_overview: [],
