@@ -22102,19 +22102,21 @@ private List _rmUnredactedSettings(Long id, List redacted) {
 private List _rmRedactedSettings(Map snapshot) {
     snapshot?.redactedSettings instanceof List ? snapshot.redactedSettings.collect { it.toString() } : []
 }
-private void _rmReportPasswords(Map out, Map snapshot, Integer appId, List liveRows = null) {
+private void _rmReportPasswords(Map out, Map snapshot, Integer appId, Closure readRows = null) {
     List names = _rmRedactedSettings(snapshot)
     if (!names) return
-    List rows = liveRows
+    List rows = null
+    try {
+        def read = readRows != null ? readRows.call() : _rmFetchStatusJson(appId)?.appSettings
+        if (read instanceof List) rows = read
+        else mcpLog("warn", "rm-native", "Restore of app ${appId}: its settings read returned no settings list, so the kept passwords could not be confirmed")
+    } catch (Exception unreadable) {
+        mcpLog("warn", "rm-native", "Restore of app ${appId}: its settings could not be read to confirm the kept passwords (${unreadable.message})")
+    }
     if (rows == null) {
-        try {
-            def settings = _rmFetchStatusJson(appId)?.appSettings
-            rows = settings instanceof List ? settings : []
-        }
-        catch (Exception unreadable) {
-            mcpLog("warn", "rm-native", "Restore of app ${appId}: its settings could not be read to confirm the kept passwords (${unreadable.message})")
-            rows = []
-        }
+        out.passwordsUnverified = names
+        out.note = "${out.note ?: ''} Password settings ${names.join(', ')} are not stored in backups, and the app's settings could not be read to confirm them; check them in the app's native page.".toString().trim()
+        return
     }
     List kept = names.findAll { name -> rows.any { it instanceof Map && it.name?.toString() == name && it.value != null && it.value.toString() != '' } }
     List missing = names - kept
@@ -22276,7 +22278,7 @@ private Map _rmRestoreNativeEdit(Map snapshot, String sourceBackupKey) {
         Map restored = [success: true, type: 'rm-rule', ruleId: id, originalRuleId: id, restoredVia: 'nativeStateReplay', backup: undo,
          stateVerified: true, settingsVerified: true, localVariablesVerified: true, broken: rebuilt.broken, stopped: rebuilt.stopped, paused: rebuilt.paused,
          eventSubscriptions: rebuilt.eventSubscriptions, scheduledJobs: rebuilt.scheduledJobs]
-        _rmReportPasswords(restored, snapshot, id.toInteger(), _rmNativeCurrentSettings(id))
+        _rmReportPasswords(restored, snapshot, id.toInteger()) { _rmNativeCurrentSettings(id) }
         restored
     } catch (Exception failure) {
         if (!attempted) throw failure
@@ -24173,29 +24175,14 @@ private void _rmSubmitSubPageDone(Integer appId, String page, String parentPage,
     _rmCacheInvalidate(cache, appId)
 }
 Map _rmSubmitMainPageDone(Integer appId) {
-    def commitPage = "mainPage"
     def cfg
-    try {
-        cfg = _rmFetchConfigJson(appId, commitPage)
-    } catch (Exception mainExc) {
-        String resolved = null
-        try {
-            def rootCfg = _rmFetchConfigJson(appId)
-            if (rootCfg?.app?.appType?.name == "Button Rule-5.1") resolved = "selectActions"
-        } catch (Exception probeExc) {
-            mcpLog("warn", "rm-native", "_rmSubmitMainPageDone: page-graph probe failed for app ${appId} after a mainPage miss (${probeExc.message})")
-        }
-        if (resolved == null) {
-            mcpLog("warn", "rm-native", "_rmSubmitMainPageDone: mainPage fetch failed for app ${appId} (${mainExc.message}) -- skipping Done click; lingering state markers (state.editAct/state.editCond) may corrupt subsequent edits")
-            return [done: false, reason: "mainPage fetch failed: ${mainExc.message}".toString()]
-        }
-        commitPage = resolved
-        try { cfg = _rmFetchConfigJson(appId, commitPage) }
-        catch (Exception reExc) {
-            mcpLog("warn", "rm-native", "_rmSubmitMainPageDone: ${commitPage} fetch failed for app ${appId} (${reExc.message}) -- skipping Done click")
-            return [done: false, reason: "${commitPage} fetch failed: ${reExc.message}".toString()]
-        }
+    try { cfg = _rmFetchConfigJson(appId) }
+    catch (Exception rootExc) {
+        mcpLog("warn", "rm-native", "_rmSubmitMainPageDone: root page fetch failed for app ${appId} (${rootExc.message}) -- skipping Done click; lingering state markers (state.editAct/state.editCond) may corrupt subsequent edits")
+        return [done: false, reason: "root page fetch failed: ${rootExc.message}".toString()]
     }
+    String commitPage = cfg?.configPage?.name?.toString()
+    if (!commitPage) return [done: false, reason: "the app's root page carries no name"]
     def schema = _rmCollectInputSchema(cfg?.configPage)
     def status
     try { status = _rmFetchStatusJson(appId) }
@@ -24452,7 +24439,8 @@ private Map _rmBuildRuleSnapshot(Integer ruleId, String reason, String activePag
         status = [error: e.message ?: e.toString()]
     }
     if (!(status?.appSettings instanceof List) && config?.settings instanceof Map && !config.settings.isEmpty()) {
-        throw new IllegalStateException("the app's settings could not be read, so no snapshot was taken; nothing was changed")
+        String cause = status?.error ? status.error.toString() : 'its status read returned no settings list'
+        throw new IllegalStateException("App ${ruleId}: its settings could not be read (${cause}), so no snapshot was taken; nothing was changed. Retry; or delete it from the hub's Apps page; or turn off pre-edit backups for edits.".toString())
     }
     def detectedAppType = config == null ? "visual_rule" : "rule_machine"
     def configAppName = config?.app?.appType?.name
@@ -25155,8 +25143,10 @@ def toolDeleteNativeApp(args) {
     try { backup = _rmBackupRuleSnapshot(appId, force ? "pre-forcedelete" : "pre-delete") }
     catch (Exception backupErr) {
         Map unavailable = _itemBackupIndexUnavailableResult(backupErr)
-        if (unavailable == null) throw backupErr
-        return unavailable + [appId: appId]
+        if (unavailable != null) return unavailable + [appId: appId]
+        if (backupErr instanceof IllegalStateException) return [success: false, appId: appId, error: backupErr.message?.toString(),
+            note: "Nothing was deleted: the pre-delete snapshot could not be taken. Check that hub_get_app_config(appId=${appId}) and hub_list_backups answer, then retry.".toString()]
+        throw backupErr
     }
     try {
         if (force) {
@@ -25398,7 +25388,6 @@ private void _naValidateCreate(Map args) {
     } else {
         List stray = buttonKeys.findAll { args.containsKey(it) }
         if (stray) throw new IllegalArgumentException("${stray.join(', ')} apply only to app_type button_rule".toString())
-        if (args.containsKey('name') && !args.name.toString().trim()) throw new IllegalArgumentException('name must not be blank')
         if (args.containsKey('fields') && !args.get('fields')) throw new IllegalArgumentException('fields must name at least one input; omit it to create the app with its page defaults')
     }
 }
@@ -25407,13 +25396,14 @@ private void _naValidateUpdate(Map args) {
     if (args.page != null && !(args.page ==~ /[A-Za-z_][A-Za-z0-9_.-]*/)) throw new IllegalArgumentException('page must be a native page name (letters, digits, underscore, dot or hyphen); hub_list_app_pages lists them')
 }
 private String _naDone(Map context) { ['_action_update|Done|', '_action_previous|Done|'].find { context.controls.containsKey(it) } }
-private Map _naSave(Long id, Map context, Map supplied, String from) {
+private Map _naSave(Long id, Map context, Map supplied, String from, boolean existing) {
     List posted = []
     List rejected = []
     Map page = context
     Map pending = supplied
     boolean changed = false
-    if (_naDone(context) && supplied.keySet().any { context.get('fields').get(it)?.submit_on_change }) {
+    List revealing = supplied.keySet().findAll { context.get('fields').get(it)?.submit_on_change }.collect { it.toString() }
+    if (_naDone(context) && revealing) {
         Map change = _nfPrepare(id, page, pending, null, 'hub_set_native_app')
         Map answer = _nfExecute(id, change)
         changed = true
@@ -25427,18 +25417,23 @@ private Map _naSave(Long id, Map context, Map supplied, String from) {
     try { plan = _nfPrepare(id, page, pending, done, 'hub_set_native_app') }
     catch (IllegalArgumentException refused) {
         if (!changed) throw refused
+        if (!existing) throw new IllegalArgumentException("The first page accepted ${revealing.join(', ')}, but the page that save rendered needs more before its Done (${refused.message})".toString())
         throw new IllegalArgumentException("${supplied.keySet().join(', ')} saved, but the page that save rendered refused its Done (${refused.message}); its Done was not pressed. Set what it now asks for in another call.".toString())
     }
     Map answer = (pending || done) ? _nfExecute(id, plan) : null
     if (answer?.posted) { posted.addAll(plan.defaults); rejected.addAll(plan.rejected) }
-    [answer: answer, done: done, wrote: changed || answer?.posted == true, posted: posted, rejected: rejected]
+    [answer: answer, done: done, page: page.page.name?.toString(), committed: done == '_action_update|Done|' && answer?.model?.location != null,
+     wrote: changed || answer?.posted == true, posted: posted, rejected: rejected]
 }
 private Object _naComparable(Map field, Object value, boolean written) {
     if (value == null || value == '' || (value instanceof Collection && value.isEmpty())) return null
     if (field.device) return (value instanceof Map ? value.keySet().toList() : (value instanceof List ? value : [value])).collect { it.toString() }.sort()
     if (written && !field.multiple && !(field.type in ['bool', 'enum', 'mode', 'number', 'decimal', 'time'])) return _nfValue(field, value)
     try { return _nrComparableSetting(field.type, value) }
-    catch (Exception unreadable) { return value instanceof List ? value.collect { it.toString() }.sort() : value.toString() }
+    catch (Exception unreadable) {
+        mcpLog('debug', 'rm-native', "hub_set_native_app read-back: ${field.name} compared as text (${unreadable.message})")
+        return value instanceof List ? value.collect { it.toString() }.sort() : value.toString()
+    }
 }
 private Map _naReadBack(Long id, Map page, Map written) {
     Map model = _nfPage(id)
@@ -25452,11 +25447,21 @@ private Map _naReadBack(Long id, Map page, Map written) {
     [model: model, not_landed: notLanded]
 }
 private String _naRemoveUnfinished(Long id) {
-    try { _rmForceDeleteApp(id.toInteger()); return null }
-    catch (Exception failure) {
-        mcpLog('warn', 'rm-native', "hub_set_native_app create: removing unfinished app ${id} failed: ${failure.message}")
-        return (failure.message ?: failure.toString()).toString()
-    }
+    String failure = null
+    try {
+        _rmForceDeleteApp(id.toInteger())
+        if (getAppByAppId(id) != null) failure = 'the app still exists after its force delete'
+    } catch (Exception error) { failure = (error.message ?: error.toString()).toString() }
+    if (failure) mcpLog('warn', 'rm-native', "hub_set_native_app create: removing unfinished app ${id} failed: ${failure}")
+    failure
+}
+private Map _naRefusedCreate(String type, Long childId, String message, String guide, String advice = null) {
+    String reason = message?.toString()?.replaceFirst(/\.?$/, '.')
+    String cleanup = _naRemoveUnfinished(childId)
+    if (cleanup == null) return [success: false, app_type: type, error: "${reason} The new app was removed, so nothing was created${advice ? '; ' + advice : ''}.".toString(),
+        note: "Correct the arguments and create again.${guide}".toString()]
+    [success: false, app_type: type, app_id: childId, error: "${reason} Removing the unfinished app then failed: ${cleanup}".toString(),
+     note: "Delete app ${childId} with hub_delete_native_app before creating again.${guide}".toString()]
 }
 private Map _naCreate(Map args) {
     String type = args.app_type
@@ -25471,13 +25476,23 @@ private Map _naCreate(Map args) {
         Map child = null
         Map supplied = new LinkedHashMap(args.get('fields') ?: [:])
         try {
-            Map parent = _nfContext(parentId, _nfPage(parentId))
+            Map parent
+            try { parent = _nfContext(parentId, _nfPage(parentId)) }
+            catch (Exception unreadable) {
+                if (!unreadable.message?.contains('404')) throw unreadable
+                Map ids = [:] + (atomicState.parentAppIds ?: [:])
+                ids.remove(type)
+                atomicState.parentAppIds = ids
+                throw new IllegalArgumentException("The ${reg.parentTypeName} app recorded for this type no longer exists; retry to install or find it again. Nothing was created.".toString())
+            }
             Map create = parent.controls.values().find { it.kind == 'create_child' && it.value == reg.appName }
             if (!create) {
                 List offered = parent.controls.values().findAll { it.kind == 'create_child' }*.value
                 throw new IllegalArgumentException("The ${reg.parentTypeName} page offers no control that creates ${reg.appName}; it offers ${offered ?: 'none'}. Nothing was created.".toString())
             }
-            childId = _nfExecute(parentId, _nfPrepare(parentId, parent, [:], create.control_id, 'hub_set_native_app')).created_id
+            Map made = _nfExecute(parentId, _nfPrepare(parentId, parent, [:], create.control_id, 'hub_set_native_app'))
+            childId = made.created_id
+            if (made.created_mismatch) throw new IllegalStateException(made.created_mismatch)
             child = _nfContext(childId, _nfPage(childId))
             if (name) {
                 String labelInput = ['origLabel', 'name'].find { child.get('fields').containsKey(it) }
@@ -25488,11 +25503,7 @@ private Map _naCreate(Map args) {
             _nfPrepare(childId, child, supplied, _naDone(child), 'hub_set_native_app')
         } catch (IllegalArgumentException refused) {
             if (childId == null) throw refused
-            String cleanup = _naRemoveUnfinished(childId)
-            String reason = refused.message?.toString()?.replaceFirst(/\.?$/, '.')
-            if (cleanup == null) throw new IllegalArgumentException("${reason} The new app was removed, so nothing was created.".toString())
-            return [success: false, app_type: type, app_id: childId, error: "${reason} Removing the unfinished app then failed: ${cleanup}".toString(),
-                    note: "Delete app ${childId} with hub_delete_native_app before creating again.${guide}".toString()]
+            return _naRefusedCreate(type, childId, refused.message, guide)
         } catch (Exception failure) {
             mcpLogError('rm-native', "hub_set_native_app create of ${type} failed before its page was saved", failure)
             if (childId == null) return [success: false, app_type: type, error: failure.message?.toString(),
@@ -25502,13 +25513,11 @@ private Map _naCreate(Map args) {
                     note: (cleanup == null ? 'The unfinished app was removed; nothing was created.' : "Delete app ${childId} with hub_delete_native_app before creating again.").toString() + guide]
         }
         Map saved
-        try { saved = _naSave(childId, child, supplied, null) }
+        try { saved = _naSave(childId, child, supplied, null, false) }
         catch (IllegalArgumentException refused) {
-            String cleanup = _naRemoveUnfinished(childId)
-            String reason = refused.message?.toString()?.replaceFirst(/\.?$/, '.')
-            if (cleanup == null) throw new IllegalArgumentException("${reason} The new app was removed, so nothing was created.".toString())
-            return [success: false, app_type: type, app_id: childId, error: "${reason} Removing the unfinished app then failed: ${cleanup}".toString(),
-                    note: "Delete app ${childId} with hub_delete_native_app before creating again.${guide}".toString()]
+            List revealing = supplied.keySet().findAll { child.get('fields').get(it)?.submit_on_change }.collect { it.toString() }
+            return _naRefusedCreate(type, childId, refused.message, guide,
+                "supply the revealed input in fields, or create without ${revealing.join(', ')} and finish with update or form".toString())
         } catch (Exception failure) {
             mcpLogError('rm-native', "hub_set_native_app create: saving the first page of new app ${childId} failed", failure)
             return [success: false, partial: true, app_type: type, app_id: childId, error: failure.message?.toString(),
@@ -25533,13 +25542,15 @@ private Map _naCreate(Map args) {
             result.fields_not_landed = back.not_landed
             notes << "The hub did not store the value written for ${back.not_landed.join(', ')}; inspect the page with operation:'form' before retrying."
         }
-        if (back.model.app?.installed != true) {
+        if (back.model.app?.installed != true || (saved.done && !saved.committed)) {
             result.installed = false
-            notes << (saved.done ? 'The hub reports the app not installed after its Done; open it with operation:\'form\'.' : 'Its page renders no Done yet, so the app stays uninstalled until operation:\'form\' completes it.')
+            notes << (!saved.done ? 'Its page renders no Done yet, so the app stays uninstalled until operation:\'form\' completes it.' :
+                (saved.committed ? 'The hub reports the app not installed after its Done; open it with operation:\'form\'.' :
+                 'The hub rendered the page again instead of accepting its Done, so the app is not installed; open it with operation:\'form\' to see what it asks for.'))
         }
         result.note = notes.join(' ') + guide
         return result
-    } finally { _nfRelease(parentId) }
+    } finally { _nfForget(parentId); _nfRelease(parentId) }
 }
 private Map _naSetBut(Map context, String name) { context.controls.values().find { it.kind == 'button' && it.stateAttribute == 'setBut' && it.name == name } }
 private Map _naCreateButtonRule(Map args) {
@@ -25557,6 +25568,7 @@ private Map _naCreateButtonRule(Map args) {
     _nfAcquire(controllerId)
     Map backup = null
     boolean attempted = false
+    Long openedId = null
     try {
         backup = _nfBackup(controllerId, controller, null)
         Map context = _nfContext(controllerId, _nfPage(controllerId))
@@ -25573,8 +25585,14 @@ private Map _naCreateButtonRule(Map args) {
                 Map cancel = context.controls.values().find { it.kind == 'button' && it.name == 'cancelBtn' }
                 if (!cancel) throw new IllegalStateException("The Add Button picker does not offer button ${number} and the page renders no Cancel".toString())
                 _nfExecute(controllerId, _nfPrepare(controllerId, context, [:], cancel.control_id, 'hub_set_native_app'))
-                attempted = false
-                throw new IllegalArgumentException("The controller's Add Button picker offers buttons ${offered ?: 'none'}, not ${number}; a button already defined is not offered again. The controller was left unchanged.".toString())
+                Map after = _nfContext(controllerId, _nfPage(controllerId))
+                String refusal = "The controller's Add Button picker offers buttons ${offered ?: 'none'}, not ${number}; a button already defined is not offered again."
+                if (after.get('fields').containsKey('newBut') || !after.controls.values().any { it.kind == 'button' && it.stateAttribute == 'addBut' }) {
+                    throw new IllegalStateException("${refusal} Its Cancel was pressed, but the controller still renders the Add Button picker".toString())
+                }
+                return [success: false, app_type: 'button_rule', controller_id: controllerId, button_number: number, event: event, backup: backup,
+                        error: "${refusal} The controller was left unchanged.".toString(),
+                        note: "Cancel was pressed; the controller renders as before. Choose a button number the picker offers.${guide}".toString()]
             }
             _nfExecute(controllerId, _nfPrepare(controllerId, context, [newBut: [number.toString()]], null, 'hub_set_native_app'))
             context = _nfContext(controllerId, _nfPage(controllerId))
@@ -25585,6 +25603,7 @@ private Map _naCreateButtonRule(Map args) {
         Map answer = _nfExecute(controllerId, _nfPrepare(controllerId, context, [:], setBut.control_id, 'hub_set_native_app'))
         Map opened = answer.navigation ?: _nfNavigation(controllerId, answer.model)
         Long ruleId = opened?.app_id == controllerId ? null : opened?.app_id
+        openedId = ruleId
         def rule = ruleId == null ? null : getAppByAppId(ruleId)
         if (rule?.parentAppId?.toString() != controllerId.toString() || rule?.appType?.name != _appTypeRegistry().button_rule.appName) {
             throw new IllegalStateException('The controller did not open a new Button Rule')
@@ -25595,9 +25614,12 @@ private Map _naCreateButtonRule(Map args) {
         if (failure instanceof IllegalArgumentException && !attempted) throw failure
         mcpLogError('rm-native', "hub_set_native_app create: button rule under controller ${controllerId} failed", failure)
         if (!attempted) return [success: false, app_type: 'button_rule', controller_id: controllerId, error: failure.message?.toString(), backup: backup, note: "Nothing was changed.${guide}".toString()]
-        return [success: false, partial: true, app_type: 'button_rule', controller_id: controllerId, button_number: number, event: event, error: failure.message?.toString(), backup: backup,
-         note: ("The controller may now hold button ${number} or a new rule. Open it with hub_set_native_app(operation:'form', app_id:${controllerId}, args:{steps:[{kind:'open'}]}, confirm:true) before retrying" +
-                (backup?.backupKey ? "; hub_restore_backup(backupKey:'${backup.backupKey}') returns it to its state before this call." : '.') + guide).toString()]
+        Map partial = [success: false, partial: true, app_type: 'button_rule', controller_id: controllerId, button_number: number, event: event, error: failure.message?.toString(), backup: backup]
+        if (openedId != null) partial.opened_app_id = openedId
+        partial.note = ("The controller may now hold button ${number} or a new rule" + (openedId != null ? " (it opened app ${openedId})" : '') +
+            ". Open it with hub_set_native_app(operation:'form', app_id:${controllerId}, args:{steps:[{kind:'open'}]}, confirm:true) before retrying" +
+            (backup?.backupKey ? "; hub_restore_backup(backupKey:'${backup.backupKey}') returns it to its state before this call." : '.') + guide).toString()
+        return partial
     } finally { _nfForget(controllerId); _nfRelease(controllerId) }
 }
 private Map _naUpdate(Long id, Map args) {
@@ -25608,7 +25630,7 @@ private Map _naUpdate(Long id, Map args) {
     def nativeApp = getAppByAppId(id)
     if (nativeApp?.id?.toString() != id.toString()) throw new IllegalArgumentException('app_id must identify an installed app')
     if (nativeApp.disabled == true) throw new IllegalArgumentException('Enable the app before updating it')
-    boolean subPage = page != null && page != 'mainPage'
+    boolean subPage = false
     _nfAcquire(id)
     Map backup = null
     boolean attempted = false
@@ -25617,33 +25639,53 @@ private Map _naUpdate(Long id, Map args) {
     try {
         backup = _nfBackup(id, nativeApp, page)
         Map context
-        try { context = _nfContext(id, _nfPage(id, page), subPage ? 'mainPage' : null) }
-        catch (Exception unreadable) {
-            if (unreadable.message?.contains('404')) throw new IllegalArgumentException("App ${id} renders no page '${page ?: 'mainPage'}'; hub_list_app_pages lists its pages. Nothing was written.".toString())
+        String root = null
+        try {
+            if (page) {
+                Map rootContext = _nfContext(id, _nfPage(id))
+                root = rootContext.page.name?.toString()
+                subPage = page != root
+                context = subPage ? _nfContext(id, _nfPage(id, page), root) : rootContext
+            } else context = _nfContext(id, _nfPage(id))
+        } catch (Exception unreadable) {
+            if (unreadable.message?.contains('404')) throw new IllegalArgumentException("App ${id} renders no page '${page ?: 'its default page'}'; hub_list_app_pages lists its pages. Nothing was written.".toString())
             throw unreadable
         }
         if (page && context.page.name != page) throw new IllegalArgumentException("App ${id} renders no page '${page}' (the hub rendered '${context.page.name}'); hub_list_app_pages lists its pages. Nothing was written.".toString())
         _nfPrepare(id, context, fields, _naDone(context), 'hub_set_native_app')
         attempted = true
-        Map saved = _naSave(id, context, fields, subPage ? 'mainPage' : null)
+        Map saved = _naSave(id, context, fields, subPage ? root : null, true)
         posted.addAll(saved.posted)
         notPosted.addAll(saved.rejected)
+        boolean committed = saved.committed
+        String uncommitted = null
         if (saved.done == '_action_previous|Done|') {
             Map parent = _nfContext(id, saved.answer.model)
             if (parent.controls.containsKey('_action_update|Done|')) {
                 Map commit = _nfPrepare(id, parent, [:], '_action_update|Done|', 'hub_set_native_app')
-                if (_nfExecute(id, commit).posted) { posted.addAll(commit.defaults); notPosted.addAll(commit.rejected) }
-            }
+                Map reply = _nfExecute(id, commit)
+                if (reply.posted) { posted.addAll(commit.defaults); notPosted.addAll(commit.rejected) }
+                committed = reply.model?.location != null
+                if (!committed) uncommitted = "The hub rendered page '${parent.page.name}' again instead of accepting its Done, so the app's update did not run; open it with operation:'form' to see what it asks for."
+            } else uncommitted = "Page '${parent.page.name}', which the sub-page returned to, renders no Done, so the app's update did not run."
+        } else if (!saved.done) uncommitted = "Page '${saved.page}' renders no Done, so the fields were saved as the page posts them and the app's update did not run."
+        else if (!committed) uncommitted = "The hub rendered page '${saved.page}' again instead of accepting its Done, so the app's update did not run; open it with operation:'form' to see what it asks for."
+        Map report = (page ? [page: page] : [:]) + _nfDefaultsReport(posted, notPosted) + (committed ? [:] : [committed: false])
+        Map back
+        try { back = _naReadBack(id, context, fields) }
+        catch (Exception failure) {
+            mcpLogError('rm-native', "hub_set_native_app update: reading back app ${id} failed", failure)
+            return [success: false, app_id: id, fields_unverified: fields.keySet().collect { it.toString() }, backup: backup,
+                    error: "App ${id} was updated, but reading it back failed: ${failure.message}".toString(),
+                    note: ((uncommitted ? uncommitted + ' ' : '') + "Check it with hub_get_app_config(appId=${id}, includeSettings=true) before changing it again.${guide}").toString()] + report
         }
-        Map back = _naReadBack(id, context, fields)
-        Map result = [success: back.not_landed.isEmpty(), app_id: id, fields_applied: fields.keySet().collect { it.toString() } - back.not_landed, backup: backup] +
-            (page ? [page: page] : [:]) + _nfDefaultsReport(posted, notPosted)
+        Map result = [success: back.not_landed.isEmpty(), app_id: id, fields_applied: fields.keySet().collect { it.toString() } - back.not_landed, backup: backup] + report
         List notes = []
         if (back.not_landed) {
             result.fields_not_landed = back.not_landed
             notes << "The hub did not store the value written for ${back.not_landed.join(', ')}; inspect the page with operation:'form' before retrying."
         }
-        if (!saved.done) notes << "Page '${context.page.name}' renders no Done, so the fields were saved as the page posts them and the app's update did not run."
+        if (uncommitted) notes << uncommitted
         if (notes) result.note = notes.join(' ') + guide
         return result
     } catch (IllegalArgumentException refused) {
@@ -25689,13 +25731,13 @@ hub_set_native_app works on classic Hubitat apps (dynamicPage apps): Room Lighti
 
 ### create
 
-hub_set_native_app(operation:"create",args:{app_type,name?,fields?},confirm:true) does what Apps does: it opens the type's parent app (installing it first when the hub lacks it), uses the Create control that page renders, fills the new app's first page with fields and presses that page's Done, which installs the app. name is written to the label input the first page renders (origLabel or name); a type whose first page renders neither (Button Controller, Basic Rule, Thermostat Scheduler and Controller) refuses name. Before anything is saved, fields are checked against that page: an input it does not render, a button, a disabled input, a bad value or device ID, or a required input still empty for the Done is refused, the new app is removed, and nothing is left behind. Inputs a choice reveals later belong to update or form. The result reports app_id, label, fields_applied, and fields_not_landed (with success:false) for any field the hub did not store as written. A first page with no Done (Basic Rule) is saved as the page posts it and reports installed:false; finish it with form. app_type rule_machine makes only an empty rule; author its triggers and actions with hub_set_rule.
+hub_set_native_app(operation:"create",args:{app_type,name?,fields?},confirm:true) does what Apps does: it opens the type's parent app (installing it first when the hub lacks it), uses the Create control that page renders, fills the new app's first page with fields and presses that page's Done, which installs the app. name is written to the label input the first page renders (origLabel or name); a type whose first page renders neither (Button Controller, Basic Rule, Thermostat Scheduler and Controller) refuses name. Before anything is saved, fields are checked against that page: an input it does not render, a button, a disabled input, a bad value or device ID, or a required input still empty for the Done is refused with success:false, the new app is removed, and nothing is left behind. Inputs a choice reveals later belong to update or form. The result reports app_id, label, fields_applied, and fields_not_landed (with success:false) for any field the hub did not store as written. A first page with no Done (Basic Rule) is saved as the page posts it and reports installed:false; finish it with form. installed:false is also reported when the hub renders the page again instead of accepting its Done. app_type rule_machine makes only an empty rule; author its triggers and actions with hub_set_rule.
 
-A button_rule takes args:{app_type:"button_rule",controller_id,button_number,event} and no name or fields. It runs the Button Controller's own page: Add Button, the button number, then that event's Create Button Rule control, which opens the new rule. The controller needs its button device assigned first; a button number the controller does not offer is refused after its page's Cancel. The controller seeds the trigger; author the actions with hub_set_rule(operation:"update",rule_id:<returned app_id>).
+A button_rule takes args:{app_type:"button_rule",controller_id,button_number,event} and no name or fields. It runs the Button Controller's own page: Add Button, the button number, then that event's Create Button Rule control, which opens the new rule. The controller needs its button device assigned first; a button number the controller does not offer returns success:false after its page's Cancel, once a fresh render shows the controller as before. The controller seeds the trigger; author the actions with hub_set_rule(operation:"update",rule_id:<returned app_id>).
 
 ### update
 
-hub_set_native_app(operation:"update",app_id,args:{fields:{input name:value},page?},confirm:true) opens the page (the main page by default, or the sub-page page names; hub_list_app_pages lists them, hub_get_app_config shows inputs and values), sets the fields and presses that page's Done. On a sub-page the Done returns to the main page, whose Done then commits the app. A submitOnChange input posts the page first, as the browser does, and the Done is pressed on the page that post renders; when that page asks for a required input it revealed, the call stops before the Done, reports partial, and says what was saved. Inputs the page does not set keep their stored values; unset inputs with a page default save that default, as the browser posts them (defaults_posted). Device inputs take device IDs (a list for a multiple input) or the {id:label} map hub_get_app_config returns; a multi-select enum takes a list, and a mode input takes mode IDs as the page's options list them. A field the page does not render, a button, a disabled input, a bad value or device ID, or a required input left empty is refused before anything is written. An input that appears only after another choice is saved needs that choice in an earlier update, or a form workflow. The result reports fields_applied and fields_not_landed (with success:false) from one read-back after the Done.
+hub_set_native_app(operation:"update",app_id,args:{fields:{input name:value},page?},confirm:true) opens the page (the main page by default, or the sub-page page names; hub_list_app_pages lists them, hub_get_app_config shows inputs and values), sets the fields and presses that page's Done. On a sub-page the Done returns to the main page, whose Done then commits the app. A submitOnChange input posts the page first, as the browser does, and the Done is pressed on the page that post renders; when that page asks for a required input it revealed, the call stops before the Done, reports partial, and says what was saved. Inputs the page does not set keep their stored values; unset inputs with a page default save that default, as the browser posts them (defaults_posted). Device inputs take device IDs (a list for a multiple input) or the {id:label} map hub_get_app_config returns; a multi-select enum takes a list, and a mode input takes mode IDs as the page's options list them. A field the page does not render, a button, a disabled input, a bad value or device ID, or a required input left empty is refused before anything is written. An input that appears only after another choice is saved needs that choice in an earlier update, or a form workflow. The result reports fields_applied and fields_not_landed (with success:false) from one read-back after the Done, and committed:false with the reason when the app's own Done did not run (the page renders none, or the hub rendered the page again instead of accepting it).
 
 Each update first takes the same recovery point as form (an exact export for Rule Machine rules, otherwise a File Manager baseline of the app, reused for one hour unless every-write backups are on; off when pre-edit backups are disabled); backup.backupKey restores it with hub_restore_backup.
 
@@ -26884,7 +26926,11 @@ private void _ndPreflight(Long id, List changes) {
                 actionOrder = actionOrder.findAll { it != target }
             }
             if (change.part in ['expression', 'required']) {
-                expressions.put(change.part == 'required' ? '0' : value.id.toString(), value.tokens)
+                String evalId = change.part == 'required' ? '0' : value.id.toString()
+                expressions.put(evalId, value.tokens)
+                projectedActions.each { key, action ->
+                    if (action instanceof Map && action.containsKey('tokens') && action.rule?.toString() == evalId) projectedActions.put(key, action.findAll { it.key != 'tokens' })
+                }
                 if (change.part == 'required') projectedPredicate = value.tokens.findAll { it?.toString()?.isInteger() }.collect { it.toString() }
             }
             if (change.part == 'delete' && value.part == 'condition') {
@@ -27197,15 +27243,19 @@ private String _nfCallerKey() { "${app.id}:caller:${callerClient == null ? 'main
 private Map _nfJson(Object value) {
     def parsed
     try { parsed = value instanceof Map ? value : new groovy.json.JsonSlurper().parseText(value?.toString() ?: '') }
-    catch (Exception ignored) { throw new IllegalStateException('Native form returned unreadable JSON; inspect the app before retrying') }
+    catch (Exception unreadable) {
+        String reason = (unreadable.message ?: unreadable.toString()).toString()
+        throw new IllegalStateException("Native form returned unreadable JSON (${reason.take(200)}); inspect the app before retrying".toString())
+    }
     if (!(parsed instanceof Map)) throw new IllegalStateException('Native form returned an invalid response')
     if (parsed.status && parsed.status != 'success') throw new IllegalStateException('Native form rejected the request')
-    if (parsed.error || parsed.errorMessage || parsed.configPage?.error) throw new IllegalStateException('Native form reported an error; inspect the native editor and logs')
+    def reported = parsed.configPage instanceof Map && parsed.configPage.error ? parsed.configPage.error : (parsed.error ?: parsed.errorMessage)
+    if (reported) throw new IllegalStateException("Native form reported an error: ${reported}; inspect the native editor and logs".toString())
     parsed
 }
 private Map _nfPost(String path, Map values) {
     def response = hubInternalPostFormRaw(path, _nfBody(values))
-    if (response?.status != 200) throw new IllegalStateException('Native form request did not return HTTP 200; inspect the app before retrying')
+    if (response?.status != 200) throw new IllegalStateException("Native form request returned HTTP ${response?.status ?: 'no status'}; inspect the app before retrying".toString())
     _nfJson(response.data)
 }
 private List _nfOptions(Object options) {
@@ -27524,8 +27574,9 @@ private Map _nfExecute(Long id, Map plan) {
         Long createdId = _nrCreatedAppId(hubInternalGetRaw("/installedapp/createchild/hubitat/${control.value}/parent/${id}"))
         if (createdId == null) throw new IllegalStateException('Native child creation did not return an app ID; inspect the parent before retrying')
         def child = getAppByAppId(createdId)
-        if (child?.parentAppId?.toString() != id.toString() || child?.appType?.namespace != 'hubitat' || child?.appType?.name != control.value) throw new IllegalStateException('Created app did not match the native parent and child type')
-        return [model: [location: 'child_created'], created_id: createdId]
+        boolean matches = child?.parentAppId?.toString() == id.toString() && child?.appType?.namespace == 'hubitat' && child?.appType?.name == control.value
+        return [model: [location: 'child_created'], created_id: createdId,
+                created_mismatch: matches ? null : "Created app ${createdId} did not match the native parent and child type".toString()]
     }
     if (control?.kind == 'button') {
         Map button = [id: id, name: control.name]
@@ -27597,6 +27648,7 @@ Map toolCallAppForm(Map args, String toolName = 'hub_set_rule') {
                 model = answer.model
                 if (answer.navigation) navigation = answer.navigation
                 if (answer.created_id != null) createdId = answer.created_id
+                if (answer.created_mismatch) throw new IllegalStateException(answer.created_mismatch)
                 if (answer.posted) {
                     defaultsPosted.addAll(plan.defaults)
                     defaultsNotPosted.addAll(plan.rejected)
@@ -36029,7 +36081,7 @@ Duplicates an existing MCP custom-engine rule into a new, independent rule with 
 ### Rule Backups (Automatic)
 - With `backupBeforeRuleEdits` enabled (default), hub_set_rule takes one fresh snapshot before an update batch and one before a native rule form workflow. Subsequent submissions in that workflow reuse its snapshot. Snapshot failure prevents the edit. Creating a new rule or navigating its parent does not have a previous child rule to restore.
 - hub_set_native_app updates and form workflows on other classic apps take one baseline snapshot first while `backupBeforeRuleEdits` is on, reused for the same app for one hour unless `backupEveryRuleWrite` is on. Its creates take none; a button_rule create takes one of its Button Controller.
-- Password-typed settings are not stored in pre-write snapshots: the snapshot lists them in `redactedSettings`. A restore leaves a live password unchanged (`passwordsKept`); an app recreated by restore needs them re-entered in the native UI (`passwordsToReenter`).
+- Password-typed settings are not stored in pre-write snapshots: the snapshot lists them in `redactedSettings`. A restore leaves a live password unchanged (`passwordsKept`); an app recreated by restore needs them re-entered in the native UI (`passwordsToReenter`); when the restored app's settings cannot be read to confirm them, they are listed in `passwordsUnverified`.
 - hub_delete_custom_rule auto-backs up to File Manager as mcp_rule_backup_<name>_<timestamp>.json
 - Restore via: hub_read_file → hub_import_custom_rule
 - Skip backup: set testRule=true when creating/updating
