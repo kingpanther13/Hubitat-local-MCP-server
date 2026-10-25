@@ -10714,8 +10714,8 @@ def updated() {}
 
     # -----------------------------------------------------------------------
     # GROUP 4f: installed_app_reads (6 tests) -- the thin app-summary mode of
-    # hub_get_app_config (/installedapp/json/<id>) plus its RM disabled-action
-    # marking, its modeInputs projection, the appTypeId join from hub_list_apps(instances)
+    # hub_get_app_config (/installedapp/json/<id>) plus its page controls and RM
+    # disabled-action flag, its mode input values, the appTypeId join from hub_list_apps(instances)
     # rows to the type catalog, the app-type catalog fields (menu tab + built-in vs
     # community) on hub_list_apps(types), the per-app events mode of
     # hub_list_device_events (/installedapp/eventsJson/<id>), the redactAccessTokens
@@ -10727,8 +10727,8 @@ def updated() {}
         # summary:true returns the thin identity payload WITHOUT the rendered config
         # page -- the cheap existence/identity probe for installed apps. Pin it on a
         # throwaway RM rule so the identity fields are deterministic. The same rule then
-        # carries the disabled-action marking checks (three actions, index 2 removed, so
-        # the rows are indices 1 and 3 and disable<N> is pinned to the index, not the row).
+        # carries the disabled-action checks (three actions, index 2 removed, so the rows
+        # are indices 1 and 3 and disable<N> is pinned to the index, not the row).
         app_id = self._create_native_rule("CfgSummary", [native_log("disabled-mark one"), native_log("disabled-mark two"), native_log("disabled-mark three")])
         try:
             result = self.client.call_tool("hub_read_apps_code", {
@@ -10795,68 +10795,54 @@ def updated() {}
                 return [p for sect in ((res.get("page") or {}).get("sections") or [])
                         for p in (sect.get("paragraphs") or [])]
 
-            def embedded_of(res: dict) -> dict:
-                return {a.get("name"): a for sect in ((res.get("page") or {}).get("sections") or [])
-                        for a in (sect.get("embeddedActions") or [])}
+            def flagged(res: dict) -> list:
+                return [p for p in paragraphs_of(res) if isinstance(p, dict) and p.get("disabled") is True]
 
-            # (a) Nothing disabled yet: no list, no mark; the disable buttons follow the action
-            # index (1 and 3), not the row position.
+            def buttons_of(res: dict) -> dict:
+                return {c.get("name"): c for c in (res.get("controls") or []) if c.get("kind") == "button"}
+
+            # (a) Nothing disabled yet: no flagged paragraph; the disable buttons follow the action
+            # index (1 and 3), not the row position, and each carries a control_id.
             main = read()
-            assert "disabledActions" not in main, f"live rule reported disabledActions: {main.get('disabledActions')}"
-            assert not any("[DISABLED]" in p for p in paragraphs_of(main)), \
-                f"live rule paragraph carries [DISABLED]: {paragraphs_of(main)}"
+            assert not flagged(main), f"live rule paragraph flagged disabled: {paragraphs_of(main)}"
             rows = read("selectActions")
-            assert "disabledActions" not in rows, f"live rule reported disabledActions: {rows.get('disabledActions')}"
-            assert not any("[DISABLED]" in p for p in paragraphs_of(rows)), \
-                f"live selectActions paragraph carries [DISABLED]: {paragraphs_of(rows)}"
-            buttons = embedded_of(rows)
+            assert not flagged(rows), f"live selectActions paragraph flagged disabled: {paragraphs_of(rows)}"
+            buttons = buttons_of(rows)
             assert buttons.get("disable1", {}).get("title") == "Disable Action", f"disable1 missing/wrong: {buttons}"
             assert buttons.get("disable3", {}).get("title") == "Disable Action", f"disable3 missing/wrong: {buttons}"
+            assert buttons["disable3"].get("control_id"), f"disable3 carries no control_id: {buttons['disable3']}"
             assert "disable2" not in buttons, f"disable2 present after removing action index 2: {sorted(buttons)}"
 
             # (b) RM's own per-row Disable button for action index 3. It is a toggle, so click once.
             self._native_form_control(app_id, "selectActions", "disable3")
 
-            # (c) mainPage: the span is the only carrier there.
+            # (c) mainPage: the hub's own markup flags the paragraph holding the disabled action.
             main = read()
-            disabled = main.get("disabledActions") or []
-            assert len(disabled) == 1 and "disabled-mark three" in str(disabled[0].get("text")), \
-                f"expected exactly the third action in disabledActions: {disabled}"
-            assert "[DISABLED]" in str(main.get("disabledActionsNote") or ""), \
-                f"disabledActionsNote missing or does not explain the mark: {main}"
-            lines = [ln for p in paragraphs_of(main) for ln in p.splitlines()]
-            three = [ln for ln in lines if "disabled-mark three" in ln]
-            one = [ln for ln in lines if "disabled-mark one" in ln]
-            assert len(three) == 1 and "[DISABLED]" in three[0], f"third action not marked: {lines}"
-            assert len(one) == 1 and "[DISABLED]" not in one[0], f"live first action marked: {lines}"
-            assert not any("<span" in p for p in paragraphs_of(main)), f"HTML leaked into paragraphs: {paragraphs_of(main)}"
+            marked = flagged(main)
+            assert len(marked) == 1 and "disabled-mark three" in str(marked[0].get("text")), \
+                f"expected exactly one flagged paragraph holding the third action: {paragraphs_of(main)}"
+            assert not any("[DISABLED]" in str(p) or "<span" in str(p) for p in paragraphs_of(main)), \
+                f"a text mark or HTML leaked into paragraphs: {paragraphs_of(main)}"
 
-            # (d) selectActions: the row flag, the flipped button title, and the paired button name.
+            # (d) selectActions: which action is disabled and the control that re-enables it.
             rows = read("selectActions")
-            embedded = [a for sect in ((rows.get("page") or {}).get("sections") or [])
-                        for a in (sect.get("embeddedActions") or [])]
-            flagged = [a for a in embedded if a.get("disabled") is True]
-            assert len(flagged) == 1, f"expected exactly one disabled:true row: {embedded}"
-            assert flagged[0].get("name") == "3.0.false", f"disabled row is not action index 3: {flagged}"
-            assert "disabled-mark three" in str(flagged[0].get("description")), f"disabled row text wrong: {flagged}"
-            buttons = embedded_of(rows)
+            buttons = buttons_of(rows)
             assert buttons.get("disable3", {}).get("title") == "Enable Action", f"disable3 did not flip: {buttons}"
             assert buttons.get("disable1", {}).get("title") == "Disable Action", f"disable1 changed: {buttons}"
-            listed = rows.get("disabledActions") or []
-            assert len(listed) == 1 and listed[0].get("disableButton") == "disable3", \
-                f"selectActions disabledActions must name disable3 exactly once: {listed}"
-            # The header legend ("Disabled Action" / "Disabled Actions") uses the same markup.
-            assert not any(re.fullmatch(r"Disabled Actions?", str(d.get("text")).strip()) for d in listed), \
-                f"selectActions legend reported as a disabled action: {listed}"
+            assert "disabled-mark three" in str(buttons.get("3.0.false", {}).get("title")), \
+                f"action index 3's edit control does not carry its text: {buttons.get('3.0.false')}"
+            assert flagged(rows), f"selectActions paragraph not flagged while an action is disabled: {paragraphs_of(rows)}"
+            for legacy in ("disabledActions", "disabledActionsNote"):
+                assert legacy not in main and legacy not in rows, f"{legacy} still returned"
         finally:
             self._delete_native(app_id)
 
     @test("installed_app_reads")
     def test_get_app_config_mode_inputs(self) -> None:
-        # modeInputs surfaces each type='mode' input on a config page with its CONFIGURED list
-        # (issue #431 item 3; the review-2 fix reads `modes` from the page JSON settings[name], not
-        # the always-null defaultValue). A Notifier carries a `modes` type='mode' RESTRICT input on
-        # its moreOptions sub-page; set it, then read it back and assert the list is the one written.
+        # A type='mode' input reads its CONFIGURED list as its value (issue #431 item 3: the page
+        # JSON stores it in settings[name]; defaultValue is always null). A Notifier carries a
+        # `modes` type='mode' RESTRICT input on its moreOptions sub-page; set it, then read it back
+        # and assert the value is the list written.
         # A create its first page refuses removes the child it made and returns success:false.
         modes = self.client.call_tool("hub_list_modes").get("modes") or []
         assert len(modes) >= 1, "hub_list_modes returned no modes -- cannot set a mode restriction"
@@ -10881,16 +10867,17 @@ def updated() {}
             # Write the type='mode' `modes` restriction on the moreOptions sub-page.
             updated = self._native_app("update", {"page": "moreOptions", "fields": {"modes": want}}, app_id)
             assert updated.get("success") is True and updated.get("fields_applied") == ["modes"], updated
-            # Read the sub-page back; modeInputs[].modes must equal the configured list (not null).
+            # Read the sub-page back; the input's value must equal the configured list (not null).
             cfg = self.client.call_tool("hub_read_apps_code", {
                 "tool": "hub_get_app_config", "args": {"appId": app_id, "pageName": "moreOptions"}})
-            mode_inputs = cfg.get("modeInputs") or []
-            entry = next((mi for mi in mode_inputs if mi.get("name") == "modes"), None)
-            assert entry is not None, \
-                f"moreOptions did not surface a `modes` type='mode' input in modeInputs: {cfg.get('modeInputs')}"
-            assert sorted(entry.get("modes") or []) == sorted(want), \
-                f"modeInputs modes must equal the configured list {want}, got: {entry.get('modes')}"
-            assert cfg.get("modeInputsNote"), f"modeInputs present without a modeInputsNote: {cfg}"
+            entry = next((i for sect in ((cfg.get("page") or {}).get("sections") or [])
+                          for i in (sect.get("inputs") or []) if i.get("name") == "modes"), None)
+            assert entry is not None and entry.get("type") == "mode", \
+                f"moreOptions did not render the `modes` type='mode' input: {cfg.get('page')}"
+            value = entry.get("value")
+            assert isinstance(value, list) and sorted(str(v) for v in value) == sorted(want), \
+                f"the mode input's value must be the configured list {want}, got: {value!r}"
+            assert "modeInputs" not in cfg, f"modeInputs still returned: {cfg.get('modeInputs')}"
         finally:
             self._delete_native(app_id, gateway="hub_manage_native_rules_and_apps")
 

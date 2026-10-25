@@ -6,7 +6,8 @@ library(name: "McpNativeFormsLib", namespace: "mcp", author: "kingpanther13", de
 private String _nfEncode(Object value) { java.net.URLEncoder.encode(value == null ? '' : value.toString(), 'UTF-8') }
 private String _nfBody(Map values) { values.collect { key, value -> "${_nfEncode(key)}=${_nfEncode(value)}" }.join('&') }
 private boolean _nfTrue(Object value) { value == true || value == 'true' }
-private String _nfText(Object value) { _nfEntities(value?.toString()?.replaceAll(/(?s)<[^>]*>/, '') ?: '') }
+// A tag starts with a name, / or !: Rule Machine renders its less-than comparator as a raw '<'.
+private String _nfText(Object value) { _nfEntities(value?.toString()?.replaceAll(/(?s)<\/?[A-Za-z!][^>]*>/, '') ?: '') }
 private String _nfEntities(String value) {
     value.replace('&quot;', '"').replace('&#39;', "'").replace('&apos;', "'").replace('&lt;', '<').replace('&gt;', '>').replace('&nbsp;', ' ').replace('&amp;', '&')
 }

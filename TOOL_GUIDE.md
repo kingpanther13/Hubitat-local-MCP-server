@@ -1035,21 +1035,22 @@ A single tool can also be switched off under **Advanced: Per-tool Overrides**. A
 - **hub_list_device_dependents** — check it before deleting, disabling or replacing a device. `appsUsing` rows carry id, name (the app type), label, trueLabel and disabled.
 - **hub_get_app_config** renders one page as opening it in the UI does, which runs the app's page code.
   - The pages a page links to are in `page.hrefs` as `{page, title}`; a sub-page's own links are in its `page.hrefs` (Room Lighting's optionsOnPage is linked from onMeansPage). A linked page's inputs are not in `sections`: read them with `pageName`.
-  - `embeddedActions` are buttons a page's paragraphs carry. Press one only through the control IDs that hub_set_rule(operation='form') (Rule Machine) or hub_set_native_app(operation='form') returns.
-  - A Rule Machine action disabled in the UI is prefixed `[DISABLED]` in paragraphs, listed in `disabledActions` (`{text, disableButton}`), and marked `disabled: true` on its selectActions (Button Rule: selectActionsX) row in embeddedActions. The button toggles: never replay a click whose response was lost. hub_set_app_disabled disables the whole app.
+  - `controls` are the page's buttons and links as hub_set_rule(operation='form') (Rule Machine) or hub_set_native_app(operation='form') returns them; activate one there by its control_id after opening the same page.
+  - On a Rule Machine rule a paragraph holding a disabled action or trigger reads `{text, disabled: true}`. On selectActions (Button Rule: selectActionsX) a disabled action's `disable<N>` control reads 'Enable Action', and the control named `<N>.0.<bool>` carries that action's text; N is the action index, not the row position. The button toggles: never replay a click whose response was lost. hub_set_app_disabled disables the whole app.
+  - `pageNote` appears when the hub rendered another page than `pageName`: the app reaches that page only through its link, so open it in a form workflow.
   - `appType.system` and `appType.menu` are the fields hub_list_apps(scope='types') gives for every type at once.
   - `includeSettings=true` adds the raw settings map: 500-1000 app-encoded keys on large apps (Room Lighting stores per-device scene levels as `dm~<deviceId>~<scene>`). Secrets read `***redacted (password)***`: every setting the hub types as a password, on any page, and free-text settings with credential-shaped names (password, pass, secret, token, API key, credential, ...). OAuth accessToken settings follow the Hide access tokens setting. Page inputs are redacted the same way. When the setting types cannot be read the map is withheld and `settingsNote` says why.
-  - **modeInputs** lists the page's framework mode inputs (type="mode") as {name, modes, section}. Their meaning is app-specific: an "only during these modes" restriction, or per-mode overrides (Day Lights has ten, for per-mode levels, gated by `useModeOverrides`). They are found only on the page read, often a sub-page, and not for apps that gate on mode in their own settings or code, so their absence does not mean an app ignores mode.
+  - A type='mode' input's `value` is its stored setting. Day Lights uses ten of them for per-mode levels, gated by `useModeOverrides`; most apps use one as an "only during these modes" restriction.
   - **Mode gating in the built-in apps.** The hub has no "modes in use by" list, so read each app; resolve mode IDs with hub_list_modes.
-    - **Notifier** — `modes` (mode names) on `moreOptions`; restricts.
+    - **Notifier** — `modes` (mode ids) on `moreOptions`; restricts.
     - **Motion Lighting** — `onModes` / `offModes` (names) on `onOptions` / `offOptions`, gated by `useModes`: the modes in which turning on or off is disabled.
-    - **Room Lights** — `modes` holds mode IDs (e.g. ["1","2","3","5"]) with `schedTypeL:"Hub Modes"`: per-mode settings, not a type='mode' input, so not in modeInputs.
-    - **Thermostat Scheduler** — `modesR` (names, `moreOptions`) restricts; `schedTypeL:"Hub Modes"` on the main page selects per-mode settings. modeInputs catches only `modesR`.
+    - **Room Lights** — `modes` holds mode IDs (e.g. ["1","2","3","5"]) with `schedTypeL:"Hub Modes"`: per-mode settings, not a type='mode' input.
+    - **Thermostat Scheduler** — `modesR` (names, `moreOptions`) restricts; `schedTypeL:"Hub Modes"` on the main page selects per-mode settings. Only `modesR` is a type='mode' input.
     - **Simple Automation Rules** — `modes` (names); restricts.
     - **Button Controller** — no app-level mode key; each child Button Rule uses Rule Machine Mode conditions.
-    - **Basic Rules** — `trigCapab:"System Mode"` with `mode` (names, titled "Becomes") is a trigger, not a restriction, although modeInputs lists it. "Set mode" is one of its actions.
+    - **Basic Rules** — `trigCapab:"System Mode"` with `mode` (names, titled "Becomes") is a trigger, not a restriction, although it is a type='mode' input. "Set mode" is one of its actions.
     - **Rule Machine** — mode restrictions and Mode conditions, read with the rule tools.
-    Community apps show type='mode' inputs in modeInputs; otherwise only their source tells.
+    For a community app, read its type='mode' inputs or its source.
 
 ### hub_list_hpm_packages — HPM package state introspection (in hub_read_apps_code; Read master required)
 
