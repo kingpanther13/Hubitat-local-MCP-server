@@ -9454,61 +9454,23 @@ private Integer normalizeRuleId(def ruleId) {
 // list-of-devices code paths. _rmBuildSettingsBody emits the full group
 // from the input schema automatically, so callers never have to remember.
 
-/**
- * Native app types hub_set_native_app can create: each entry names the createchild namespace,
- * child appName and parent type; edit, delete and backup work on any app id. Entries:
- *   rule_machine (Rule-5.1), button_controller (Button Controller-5.1), button_rule (Button Rule-5.1,
- *   under a controller), basic_rule (Basic Rule-1.0), room_lighting (Room Lights),
- *   groups_scenes (Group-2.1), scene (Scene-1.2), notifier (Notifier),
- *   thermostat_scheduler / thermostat_controller (Thermostat Scheduler/Controller 2.0),
- *   visual_rule (Visual Rule Builder).
- */
+// Built-in app types hub_set_native_app can create, by the child appName the parent's create control
+// carries and the parent type name. Edit, delete and backup work on any app id. visual_rule stays so a
+// snapshot can name the type and its parent can be found; VRB children are Vue-JSON apps with no
+// classic page, served by the hub_*_visual_rule tools.
 private Map _appTypeRegistry() {
-    // Optional `commitButton` field: the page-transition button clicked after a
-    // create/edit to commit + re-initialize. Defaults to "updateRule" (RM's
-    // framework-default) when absent. Set explicitly to null for submitOnChange
-    // apps that have NO commit button -- their inputs auto-commit on change, and
-    // clicking a non-existent "updateRule" button poisons the page render with
-    // "For input string: updateRule" (verified live on Basic Rule).
     return [
-        rule_machine: [namespace: "hubitat", appName: "Rule-5.1", parentTypeName: "Rule Machine"],
-        // Button Controller-5.1's mainPage is submitOnChange (selecting buttonDev
-        // re-renders to reveal the button-action table) with NO updateRule button,
-        // so commitButton is null -- same class as basic_rule. (The buttonDev-wipe
-        // failure mode on these app types is a separate mechanism, documented and
-        // fixed at _rmLiveSettingsFromStatus.)
-        button_controller: [namespace: "hubitat", appName: "Button Controller-5.1", parentTypeName: "Button Controllers", commitButton: null],
-        // Group-2.1 takes its label from its own required `name` input (no origLabel input);
-        // writing `name` relabels the app immediately (verified live, fw 2.5.1.181).
-        // Group-2.1 and Notifier render no buttons at all, so they commit through the page's Done
-        // alone; Visual Rule Builder has no classic page, so nothing is ever clicked on it.
-        groups_scenes: [namespace: "hubitat", appName: "Group-2.1", parentTypeName: "Groups and Scenes", labelInput: "name", commitButton: null],
-        notifier: [namespace: "hubitat", appName: "Notifier", parentTypeName: "Notifications", commitButton: null],
-        // visual_rule stays registered so a snapshot can name the type and its parent can be found,
-        // but it is never created or restored as a classic app: VRB children are Vue-JSON apps
-        // (/installedapp/configure renders no classic configPage), served by the hub_*_visual_rule tools.
-        visual_rule: [namespace: "hubitat", appName: "Visual Rule Builder", parentTypeName: "Visual Rules Builder", commitButton: null],
-        // Basic Rule is a classic dynamicPage app (configure/json renders a real
-        // configPage and generic createchild works), NOT a Vue SPA like Visual
-        // Rule. But its inputs are submitOnChange with no updateRule button, so
-        // commitButton is null. Verified live: appName="Basic Rule-1.0",
-        // parentType="Basic Rules", generic createchild -> 302 configure/<id>.
-        basic_rule: [namespace: "hubitat", appName: "Basic Rule-1.0", parentTypeName: "Basic Rules", commitButton: null],
-        // Button Rule-5.1's page graph shifts one level (root page named
-        // selectActions, not mainPage) and it is submitOnChange with no
-        // updateRule button, so commitButton is null -- _resolveCommitButton
-        // then returns null (real verdict) instead of defaulting to "updateRule".
-        button_rule: [namespace: "hubitat", appName: "Button Rule-5.1", parentTypeName: "Button Controllers", commitButton: null],
-        // Room Lights instances live under the "Room Lighting" parent. Its page has no updateRule:
-        // the clicked "updateRule" is a silent no-op, so written settings never reached the running
-        // instance. The page's own "Update" button (btn name=update) re-initializes subscriptions,
-        // exactly as the UI does (verified live, fw 2.5.1.181).
-        room_lighting: [namespace: "hubitat", appName: "Room Lights", parentTypeName: "Room Lighting", commitButton: "update"],
-        scene: [namespace: "hubitat", appName: "Scene-1.2", parentTypeName: "Groups and Scenes", labelInput: "name", commitButton: "update"],
-        thermostat_scheduler: [namespace: "hubitat", appName: "Thermostat Scheduler 2.0", parentTypeName: "Thermostat Schedulers", commitButton: "update"],
-        thermostat_controller: [namespace: "hubitat", appName: "Thermostat Controller 2.0", parentTypeName: "Thermostat Controllers", commitButton: "update"]
-        // button_controller, groups_scenes, notifier and room_lighting child appName values were
-        // verified on the live hub.
+        rule_machine: [appName: "Rule-5.1", parentTypeName: "Rule Machine"],
+        button_controller: [appName: "Button Controller-5.1", parentTypeName: "Button Controllers"],
+        groups_scenes: [appName: "Group-2.1", parentTypeName: "Groups and Scenes"],
+        notifier: [appName: "Notifier", parentTypeName: "Notifications"],
+        visual_rule: [appName: "Visual Rule Builder", parentTypeName: "Visual Rules Builder"],
+        basic_rule: [appName: "Basic Rule-1.0", parentTypeName: "Basic Rules"],
+        button_rule: [appName: "Button Rule-5.1", parentTypeName: "Button Controllers"],
+        room_lighting: [appName: "Room Lights", parentTypeName: "Room Lighting"],
+        scene: [appName: "Scene-1.2", parentTypeName: "Groups and Scenes"],
+        thermostat_scheduler: [appName: "Thermostat Scheduler 2.0", parentTypeName: "Thermostat Schedulers"],
+        thermostat_controller: [appName: "Thermostat Controller 2.0", parentTypeName: "Thermostat Controllers"]
     ]
 }
 
@@ -10378,9 +10340,8 @@ private String _classicAppFormat(Map cfg) {
  * detection arrays are always present) plus the cross-engine fields broken /
  * source / ruleFormat / validationErrors; predicate is added only when read.
  *
- * Callers (_applyNativeAppEdit, _createNativeAppShell, toolCheckRuleHealth,
- * _rmBuildUpdateErrorResponse, toolSetVisualRule) attach this report to
- * mutation success AND error responses so an LLM sees broken state immediately.
+ * Write paths attach this report to mutation success AND error responses so
+ * an LLM sees broken state immediately.
  */
 // Empty health-verdict shell: the stable keys of _rmCheckRuleHealth's report with
 // nothing detected, kept beside the main report shape so the two stay in lockstep.
@@ -10395,7 +10356,7 @@ private Map _rmEmptyHealthVerdict(Map overrides) {
 }
 
 Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
-    // Defensive guard: error paths (_rmBuildUpdateErrorResponse and friends) can call in with a
+    // Defensive guard: error paths can call in with a
     // null appId if the failure happened before the id resolved. Reading rule state for a null id
     // would fire redundant HTTP calls (/app/ruleBuilderJson/null, /installedapp/configure/json/null)
     // that just throw -- short-circuit instead. (Gemini review, PR #276.) The verdict is unhealthy
@@ -11916,7 +11877,7 @@ Duplicates an existing MCP custom-engine rule into a new, independent rule with 
 
 ### Rule Backups (Automatic)
 - With `backupBeforeRuleEdits` enabled (default), hub_set_rule takes one fresh snapshot before an update batch and one before a native rule form workflow. Subsequent submissions in that workflow reuse its snapshot. Snapshot failure prevents the edit. Creating a new rule or navigating its parent does not have a previous child rule to restore.
-- hub_set_native_app updates on other classic apps take a baseline snapshot first, reused for the same app for one hour unless `backupEveryRuleWrite` is on; its forms take that baseline once per workflow while `backupBeforeRuleEdits` is on.
+- hub_set_native_app updates and form workflows on other classic apps take one baseline snapshot first while `backupBeforeRuleEdits` is on, reused for the same app for one hour unless `backupEveryRuleWrite` is on. Its creates take none; a button_rule create takes one of its Button Controller.
 - Password-typed settings are not stored in pre-write snapshots: the snapshot lists them in `redactedSettings`. A restore leaves a live password unchanged (`passwordsKept`); an app recreated by restore needs them re-entered in the native UI (`passwordsToReenter`).
 - hub_delete_custom_rule auto-backs up to File Manager as mcp_rule_backup_<name>_<timestamp>.json
 - Restore via: hub_read_file → hub_import_custom_rule

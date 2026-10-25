@@ -5981,22 +5981,24 @@ class TestRunner:
     @test("native_apps")
     def test_set_native_app_basic_rule_lifecycle(self) -> None:
         # basic_rule is a registered app_type (a classic dynamicPage app, not a
-        # Vue SPA). Create via generic createchild, edit a setting -- which must
-        # NOT poison the page with the "For input string: updateRule" error
-        # (the commitButton=null fix) -- then delete.
-        create_label = f"{PREFIX}BasicRule"
+        # Vue SPA). Create through the Basic Rules page, edit a setting -- which must
+        # NOT poison the page with the "For input string: updateRule" error -- then
+        # delete. Its first page renders no label input, so the create takes no name
+        # and a dropped response is matched by the Basic Rule it added.
+        before = {str(r.get("id")) for r in self._installed_app_rows() if r.get("type") == "Basic Rule-1.0"}
         cw = self._soft_write(
-            lambda: self._native_app("create", {"app_type": "basic_rule", "name": create_label}),
-            lambda: self._find_app_id_by_label(create_label),
+            lambda: self._native_app("create", {"app_type": "basic_rule"}),
+            lambda: next((str(r.get("id")) for r in self._installed_app_rows()
+                          if r.get("type") == "Basic Rule-1.0" and str(r.get("id")) not in before), None),
             "basic_rule create",
         )
         if cw["relayDropped"]:
-            assert cw["committed"], f"basic_rule create lost to relay 504 and never committed ({create_label})"
+            assert cw["committed"], "basic_rule create lost to relay 504 and never committed"
             app_id = cw["evidence"]
         else:
             created = cw["response"]
-            app_id = created.get("appId")
-            assert app_id, f"basic_rule create did not return an appId: {created}"
+            app_id = created.get("app_id")
+            assert app_id, f"basic_rule create did not return an app_id: {created}"
         self.created_native_app_ids.append(str(app_id))
 
         app_live = True
@@ -6125,8 +6127,8 @@ class TestRunner:
             assert cw["committed"], f"room_lighting create lost to relay 504 and never committed ({create_label})"
             app_id = cw["evidence"]
         else:
-            app_id = cw["response"].get("appId")
-            assert app_id, f"room_lighting create did not return an appId: {cw['response']}"
+            app_id = cw["response"].get("app_id")
+            assert app_id, f"room_lighting create did not return an app_id: {cw['response']}"
         self.created_native_app_ids.append(str(app_id))
 
         def settings() -> dict:
@@ -6150,7 +6152,7 @@ class TestRunner:
             assert wr.get("success") is True, f"device-map write failed: {wr}"
             assert set((settings().get("roomDevsL") or {}).keys()) == {switch_a, switch_b}, \
                 f"roomDevsL should hold both switches: {settings().get('roomDevsL')}"
-            # ...and takes effect: the Update commit re-subscribes the instance to the new devices.
+            # ...and takes effect: the page's Done re-subscribes the instance to the new devices.
             health = self.client.call_tool("hub_read_rules", {"tool": "hub_get_rule_health", "args": {"appId": app_id}})
             assert (health.get("eventSubscriptionCount") or 0) >= 2, \
                 f"the write must reach the running instance (subscriptions), not just storage: {health}"
@@ -6324,7 +6326,7 @@ def updated() {}
         # _discoverParentAppId (via the Add Built-In App / sysApp endpoint) when absent,
         # so this runs on a clean hub (e.g. the CI test hub) that doesn't have it yet.
         controller_id = None
-        ctrl_label = f"{PREFIX}BtnCtrl"
+        known_controllers: set = set()
         try:
             # This test is a tightly-coupled CHAIN: each step's RESPONSE feeds the next
             # (device id -> controller -> buttonDev write -> button_rule create -> action).
@@ -6337,19 +6339,22 @@ def updated() {}
             # button rule, not device creation).
             device_id = self._ensure_perm_fixture("button")
 
-            # Button Controller-5.1 instance + assign its button device.
+            # Button Controller-5.1 instance + assign its button device. Its first page renders no
+            # label input and its Done needs the device, so the create binds it and takes no name; a
+            # dropped response is matched by the controller it added.
+            known_controllers = {str(r.get("id")) for r in self._installed_app_rows() if r.get("type") == "Button Controller-5.1"}
             ctrl = self._write_once("hub_manage_native_rules_and_apps", "hub_set_native_app",
-                {"operation": "create", "args": {"app_type": "button_controller", "name": ctrl_label}, "confirm": True},
+                {"operation": "create", "args": {"app_type": "button_controller", "fields": {"buttonDev": [device_id]}}, "confirm": True},
                 "button controller create")
-            controller_id = ctrl.get("appId")
-            assert controller_id, f"button controller create did not return an appId: {ctrl}"
+            controller_id = ctrl.get("app_id")
+            assert controller_id, f"button controller create did not return an app_id: {ctrl}"
             self.created_native_app_ids.append(str(controller_id))
             assigned = self._write_once("hub_manage_native_rules_and_apps", "hub_set_native_app",
                 {"operation": "update", "app_id": int(controller_id), "args": {"fields": {"buttonDev": [device_id]}},
                  "confirm": True},
                 "buttonDev assignment")
             assert assigned.get("success") is not False, f"buttonDev settings write reported failure: {assigned}"
-            assert "buttonDev" in (assigned.get("fieldsApplied") or []), f"buttonDev was not applied: {assigned}"
+            assert "buttonDev" in (assigned.get("fields_applied") or []), f"buttonDev was not applied: {assigned}"
             # Read the assignment back BEFORE the button_rule create. The write used
             # to report success while the trailing mainPage Done re-submitted
             # settings[buttonDev]="" and wiped it (statusJson reports value=null
@@ -6380,13 +6385,11 @@ def updated() {}
                 {"operation": "create", "args": {"app_type": "button_rule", "controller_id": int(controller_id),
                  "button_number": 1, "event": "pushed"}, "confirm": True},
                 "button_rule create")
-            rule_id = br.get("buttonRuleId")
-            assert br.get("success") and rule_id and br.get("appId") == rule_id, f"button_rule create failed: {br}"
+            rule_id = br.get("app_id")
+            assert br.get("success") and rule_id and br.get("controller_id") == int(controller_id), f"button_rule create failed: {br}"
 
-            # The rule is RM-wire-format: author an action via hub_set_rule, and the
-            # health should be clean (it renders -- not the broken orphan a bare
-            # createchild produces).
-            assert (br.get("health") or {}).get("ok") is not False, f"new button rule is unhealthy: {br}"
+            # The rule is RM-wire-format: author an action via hub_set_rule; its document's
+            # native health below shows it renders (not the broken orphan a bare createchild produces).
             acted = self._write_once("hub_manage_rule_machine", "hub_set_rule",
                 {"operation": "update", "rule_id": int(rule_id),
                  "args": {"changes": [native_log("E2E button rule")]}, "confirm": True},
@@ -6403,10 +6406,11 @@ def updated() {}
             if "504" not in str(exc):
                 raise
             # A dropped response mid-chain leaves no trustworthy id/shape to continue
-            # from. If the controller create was the casualty, adopt it by label so the
+            # from. If the controller create was the casualty, adopt the controller it added so the
             # finally + cleanup sweep reap it, then skip (never soft-pass).
             if controller_id is None:
-                adopted = self._find_app_id_by_label(ctrl_label)
+                adopted = next((str(r.get("id")) for r in self._installed_app_rows()
+                                if r.get("type") == "Button Controller-5.1" and str(r.get("id")) not in known_controllers), None)
                 if adopted:
                     controller_id = adopted
                     self.created_native_app_ids.append(str(adopted))
@@ -6444,9 +6448,9 @@ def updated() {}
         label = f"{PREFIX}RM_ParentBootstrap_{_run_artifact_suffix()}"
         created = self.client.call_tool("hub_set_native_app", {
             "operation": "create", "args": {"app_type": "rule_machine", "name": label}, "confirm": True})
-        assert created.get("success") is True and created.get("appId"), created
-        self.created_native_app_ids.append(str(created["appId"]))
-        self._delete_native(created["appId"])
+        assert created.get("success") is True and created.get("app_id"), created
+        self.created_native_app_ids.append(str(created["app_id"]))
+        self._delete_native(created["app_id"])
 
     def _native_rule_document(self, app_id: Any) -> dict:
         doc = self.client.call_tool("hub_set_rule", {"operation": "read", "rule_id": int(app_id)})
@@ -8224,7 +8228,8 @@ def updated() {}
         return self._native_app_form(app_id, self._rm_step(form, control=self._rm_control(
             form, name=step["press"], kind="button", **match)))
 
-    def _ensure_builtin_app_fixture(self, rows: list[dict], key: str, configure: list[dict]) -> str:
+    def _ensure_builtin_app_fixture(self, rows: list[dict], key: str, configure: list[dict],
+                                    create_fields: dict | None = None) -> str:
         """A BUILTIN_APP_FIXTURES app's id: found by label, else created by app_type and configured with
         `configure` (_native_app_configure steps, in order). A half-built instance is deleted, not kept,
         so the next run does not find a fixture missing part of its setup."""
@@ -8232,12 +8237,12 @@ def updated() {}
         found = self._app_row_by_label(rows, label)
         if found is not None:
             return str(found["id"])
-        created = self.client.call_tool("hub_set_native_app", {
-            "operation": "create", "args": {"app_type": app_type, "name": label}, "confirm": True})
-        app_id = created.get("appId")
-        # The thermostat apps take their name only once a thermostat is set, so their create reports
-        # the label unverified; configure ends by writing it.
-        assert app_id and created.get("appType") == app_type and created.get("parentAppId") is not None, created
+        # The thermostat apps' first page renders no label input and needs its thermostat for the
+        # Done, so they are created with create_fields and labelled by their last configure step.
+        create_args = {"app_type": app_type, "fields": create_fields} if create_fields else {"app_type": app_type, "name": label}
+        created = self.client.call_tool("hub_set_native_app", {"operation": "create", "args": create_args, "confirm": True})
+        app_id = created.get("app_id")
+        assert app_id and created.get("app_type") == app_type, created
         try:
             for step in configure:
                 done = self._native_app_configure(app_id, step)
@@ -8344,14 +8349,14 @@ def updated() {}
                 return {"fields": {"origLabel": self.BUILTIN_APP_FIXTURES[key][0]}}
             # The sensors are a separate write: written together with therm they are skipped.
             controller = self._ensure_builtin_app_fixture(rows, "therm_ctl", [
-                {"fields": {"therm": [int(t1)]}}, {"fields": {"tempSensors": [int(temp_a)]}}, label("therm_ctl")])
+                {"fields": {"tempSensors": [int(temp_a)]}}, label("therm_ctl")], {"therm": [int(t1)]})
             scheduler = self._ensure_builtin_app_fixture(rows, "sched_time", [
-                {"fields": {"therm": [int(t1)]}}, {"fields": {"schedTypeL": "Time Periods"}}, label("sched_time")])
+                {"fields": {"schedTypeL": "Time Periods"}}, label("sched_time")], {"therm": [int(t1)]})
             # A Day row through the scheduler's own table editor, as the UI fills it.
             self._ensure_builtin_app_fixture(rows, "sched_modes", [
-                {"fields": {"therm": [int(t2)]}}, {"fields": {"schedTypeL": "Hub Modes"}},
+                {"fields": {"schedTypeL": "Hub Modes"}},
                 {"press": "addMode", "state": "addMode"}, {"fields": {"perX": [day]}},
-                {"press": day, "state": "tsH"}, {"fields": {"tempX": 68}}, {"press": "update"}, label("sched_modes")])
+                {"press": day, "state": "tsH"}, {"fields": {"tempX": 68}}, {"press": "update"}, label("sched_modes")], {"therm": [int(t2)]})
             on_t1 = ["Thermostat Scheduler for", t1_name]
             ctl_name = self.BUILTIN_APP_FIXTURES["therm_ctl"][0]
             sched = self._rm_action
@@ -9060,9 +9065,21 @@ def updated() {}
             # bind TARGET -- the assertions are about the controller's form, never the device's state.
             device_id = self._ensure_perm_fixture("button")
 
-            ctrl = self._native_app("create", {"app_type": "button_controller", "name": f"{PREFIX}FormBtnCtrl"})
-            controller_id = ctrl.get("appId")
-            assert controller_id, f"button controller create did not return an appId: {ctrl}"
+            # An unbound controller comes from the Button Controllers page's own create control: a
+            # create through hub_set_native_app presses the first page's Done, which needs the device.
+            parent = next((r for r in self._installed_app_rows() if r.get("type") == "Button Controllers"), None)
+            if parent is None:
+                # The parent installs with its first controller, which is removed again.
+                first = self._native_app("create", {"app_type": "button_controller", "fields": {"buttonDev": [device_id]}})
+                assert first.get("app_id"), f"bootstrapping the Button Controllers parent failed: {first}"
+                self.created_native_app_ids.append(str(first["app_id"]))
+                self._delete_native(first["app_id"], gateway="hub_manage_native_rules_and_apps")
+                parent = next(r for r in self._installed_app_rows() if r.get("type") == "Button Controllers")
+            page = self._native_app_form(parent["id"], {"kind": "open"})
+            made = self._native_app_form(parent["id"], self._rm_step(page, control=self._rm_control(
+                page, kind="create_child", value="Button Controller-5.1")))
+            controller_id = made.get("created_app_id")
+            assert controller_id, f"the Button Controllers page did not create a controller: {made}"
             self.created_native_app_ids.append(str(controller_id))
 
             form = self._native_app_form(controller_id, {"kind": "open"})
@@ -10783,12 +10800,13 @@ def updated() {}
         # its moreOptions sub-page; set it, then read it back and assert the list is the one written.
         modes = self.client.call_tool("hub_list_modes").get("modes") or []
         assert len(modes) >= 1, "hub_list_modes returned no modes -- cannot set a mode restriction"
-        want = [m["name"] for m in modes[:2]]
+        # A mode input's options are the hub's mode ids, which is what its page posts.
+        want = [str(m["id"]) for m in modes[:2]]
 
         label = f"{PREFIX}NotifierModes"
         created = self._native_app("create", {"app_type": "notifier", "name": label})
-        app_id = (created or {}).get("appId") or self._find_app_id_by_label(label)
-        assert app_id, f"notifier create did not return an appId: {created}"
+        app_id = (created or {}).get("app_id") or self._find_app_id_by_label(label)
+        assert app_id, f"notifier create did not return an app_id: {created}"
         self.created_native_app_ids.append(str(app_id))
         try:
             # Write the type='mode' `modes` restriction on the moreOptions sub-page.
@@ -15496,7 +15514,7 @@ def updated() {}
                 lambda: self._find_app_id_by_label(label),
                 "keyed hub_set_native_app create",
             )
-            app_id = cw["evidence"] if cw["relayDropped"] else cw["response"].get("appId")
+            app_id = cw["evidence"] if cw["relayDropped"] else cw["response"].get("app_id")
             assert app_id, f"keyed hub_set_native_app create did not commit: {cw}"
             self.created_native_app_ids.append(str(app_id))
         finally:

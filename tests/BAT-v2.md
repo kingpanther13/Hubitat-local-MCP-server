@@ -2887,7 +2887,7 @@ Tools in this section have mixed gate requirements. `hub_list_apps` (scope=insta
 }
 ```
 
-**Expected**: AI calls `hub_manage_native_rules_and_apps.hub_set_native_app` (operation='create', args={app_type: 'room_lighting', name: 'BAT Study Lights'}). Room Lighting creation is supported: the tool installs the Room Lighting parent app first when the hub does not have it, then creates the child and returns its appId. AI reports the new instance and does not fabricate a result.
+**Expected**: AI calls `hub_manage_native_rules_and_apps.hub_set_native_app` (operation='create', args={app_type: 'room_lighting', name: 'BAT Study Lights'}). Room Lighting creation is supported: the tool installs the Room Lighting parent app first when the hub does not have it, then creates the child through that page's create control, presses its first page's Done and returns its app_id and label. AI reports the new instance and does not fabricate a result.
 
 ### T209 — Pause and resume an RM rule (reversible)
 

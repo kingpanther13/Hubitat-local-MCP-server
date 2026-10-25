@@ -260,6 +260,11 @@ private List _nfDevices(Map field) {
 
 private String _nfValue(Map field, Object value) {
     if (!field.supported || field.disabled || field.name =~ /[\[\]\r\n]/) throw new IllegalArgumentException("Unsupported or disabled native field: ${field.name}")
+    // A device input also takes the {id: label} map a configuration read returns.
+    if (field.device && value instanceof Map) {
+        List ids = value.keySet().collect { it.toString() }
+        value = field.multiple ? ids : (ids.size() == 1 ? ids[0] : ids)
+    }
     Map descriptor = [:] + field
     descriptor.option_keys = field.containsKey('option_keys') ? field.option_keys : (field.options == null ? null : field.options*.value)
     _nrValidateInput(descriptor, value, true)
@@ -305,6 +310,106 @@ private Map _nfDefaultsReport(List posted, List rejected) {
     (posted ? [defaults_posted: posted.unique()] : [:]) + (rejected ? [defaults_not_posted: rejected] : [:])
 }
 
+// One form operation at a time per caller and per app.
+private void _nfAcquire(Long id) {
+    String key = _nfCallerKey()
+    if (NATIVE_FORM_BUSY.putIfAbsent(key, true) != null) throw new IllegalStateException('This caller already has an active form operation')
+    if (NATIVE_FORM_BUSY.putIfAbsent(_nfKey(id), true) != null) {
+        NATIVE_FORM_BUSY.remove(key)
+        throw new IllegalStateException('This app already has an active form operation')
+    }
+}
+
+private void _nfRelease(Long id) { NATIVE_FORM_BUSY.remove(_nfKey(id)); NATIVE_FORM_BUSY.remove(_nfCallerKey()) }
+
+private Map _nfPage(Long id, String page = null) {
+    _nfJson(hubInternalGet("/installedapp/configure/json/${id}" + (page ? "/${_nfEncode(page)}" : '')))
+}
+
+// One submit of the current page, checked in full before anything is written: the supplied fields,
+// the page defaults the browser posts with them, the activated control, and the required inputs a
+// navigation would leave empty.
+private Map _nfPrepare(Long id, Map context, Map supplied, String activate, String toolName) {
+    Map body = [:] + context.envelope
+    supplied.each { name, value ->
+        Map field = context.get('fields').get(name)
+        if (!field && context.controls.values().any { it.kind == 'button' && it.name == name }) throw new IllegalArgumentException("${name} is a button on the current native page, not a field; activate its control_id instead")
+        if (!field) throw new IllegalArgumentException("Field is not present on the current native page: ${name}")
+        body["settings[${name}]".toString()] = _nfValue(field, value)
+        body["${name}.type".toString()] = field.type
+        body["${name}.multiple".toString()] = field.multiple.toString()
+    }
+    // The browser posts every input on the page, so an unset input saves its default.
+    List defaults = []
+    List rejected = []
+    context.get('fields').each { name, field ->
+        if (supplied.containsKey(name) || field.present || !field.containsKey('default_value') || field.disabled || !field.supported) return
+        String encoded
+        try { encoded = _nfValue(field, field.default_value) }
+        catch (IllegalArgumentException refused) {
+            mcpLog('debug', 'rm-native', "${toolName} form: page default of ${name} on app ${id} not posted: ${refused.message}")
+            rejected << [name: name, reason: refused.message]
+            return
+        }
+        defaults << name
+        body["settings[${name}]".toString()] = encoded
+        body["${name}.type".toString()] = field.type
+        body["${name}.multiple".toString()] = field.multiple.toString()
+    }
+    Map control = null
+    String reloadPath = null
+    if (activate) {
+        control = context.controls[activate]
+        if (!control) throw new IllegalArgumentException('Choose one exact returned native control_id')
+        if (control.disabled) throw new IllegalArgumentException('The native control is disabled')
+        if (control.kind == 'local_app' && supplied) throw new IllegalArgumentException('Submit fields separately before opening another native app form')
+        if (control.kind == 'create_child' && supplied) throw new IllegalArgumentException('Submit parent fields separately before creating a child')
+        if (control.kind == 'button' && !control.submit_on_change && supplied) throw new IllegalArgumentException('Submit fields separately before a button that reloads the native page')
+        if (control.kind == 'button' && !control.submit_on_change) reloadPath = _nfReloadPath(id, context)
+        if (control.kind in ['href', 'navigation'] && control.value != 'Cancel') {
+            List missing = context.get('fields').values().findAll { field -> field.required && !field.disabled &&
+                !(body.containsKey("settings[${field.name}]".toString()) ? !(body["settings[${field.name}]".toString()] in ['', '[]']) : field.present) }*.name
+            if (missing) throw new IllegalArgumentException("Complete required native fields before navigating: ${missing.join(', ')}")
+        }
+    }
+    [body: body, control: control, reload: reloadPath, defaults: defaults, rejected: rejected]
+}
+
+// Performs a prepared submit as the browser does. Returns the hub's answer as model, plus created_id
+// for a child it created, navigation for an app link, and posted when the page itself was posted.
+private Map _nfExecute(Long id, Map plan) {
+    Map control = plan.control
+    Map body = plan.body
+    if (control?.kind == 'local_app') return [model: [location: 'local_app'], navigation: _nfVerifyNavigation(id, [app_id: control.value.toString().toLong(), page: control.stateAttribute])]
+    if (control?.kind == 'create_child') {
+        // The native HTTP client encodes the path; pre-encoding names escapes percent signs twice.
+        Long createdId = _nrCreatedAppId(hubInternalGetRaw("/installedapp/createchild/hubitat/${control.value}/parent/${id}"))
+        if (createdId == null) throw new IllegalStateException('Native child creation did not return an app ID; inspect the parent before retrying')
+        def child = getAppByAppId(createdId)
+        if (child?.parentAppId?.toString() != id.toString() || child?.appType?.namespace != 'hubitat' || child?.appType?.name != control.value) throw new IllegalStateException('Created app did not match the native parent and child type')
+        return [model: [location: 'child_created'], created_id: createdId]
+    }
+    if (control?.kind == 'button') {
+        Map button = [id: id, name: control.name]
+        button["settings[${control.name}]".toString()] = 'clicked'
+        button["${control.name}.type".toString()] = 'button'
+        if (control.stateAttribute) button.stateAttribute = control.stateAttribute
+        _nfPost('/installedapp/btn', button)
+        if (!control.submit_on_change) return [model: _nfJson(hubInternalGet(plan.reload))]
+    } else if (control) {
+        body = [:] + body
+        body.put(control.name, control.value ?: '')
+        if (control.params != null) body["params_for${control.name}".toString()] = _nfEncode(groovy.json.JsonOutput.toJson(control.params))
+    }
+    [model: _nfPost('/installedapp/update/json', body), posted: true]
+}
+
+// A write outside a form workflow leaves this caller's cached page of that app stale.
+private void _nfForget(Long id) {
+    String key = _nfCallerKey()
+    if (NATIVE_FORM_CONTEXTS[key]?.app_id == id) NATIVE_FORM_CONTEXTS.remove(key)
+}
+
 Map toolCallAppForm(Map args, String toolName = 'hub_set_rule') {
     if (args.keySet().any { !(it in ['app_id', 'steps', 'options_for', 'confirm', 'bestPracticeKey']) } || !args.app_id?.toString()?.isLong() || args.app_id.toString().toLong() < 1) throw new IllegalArgumentException('A positive app_id is required')
     if (!(args.steps instanceof List) || args.steps.size() < 1 || args.steps.size() > 16) throw new IllegalArgumentException('Provide 1 through 16 open/submit steps')
@@ -326,12 +431,7 @@ Map toolCallAppForm(Map args, String toolName = 'hub_set_rule') {
     if (nativeApp?.id?.toString() != id.toString()) throw new IllegalArgumentException('app_id must identify an installed app')
     if (nativeApp.disabled == true) throw new IllegalArgumentException('Enable the app before editing its form')
     String key = _nfCallerKey()
-    String appKey = _nfKey(id)
-    if (NATIVE_FORM_BUSY.putIfAbsent(key, true) != null) throw new IllegalStateException('This caller already has an active form operation')
-    if (NATIVE_FORM_BUSY.putIfAbsent(appKey, true) != null) {
-        NATIVE_FORM_BUSY.remove(key)
-        throw new IllegalStateException('This app already has an active form operation')
-    }
+    _nfAcquire(id)
     List completed = []
     List defaultsPosted = []
     List defaultsNotPosted = []
@@ -352,80 +452,20 @@ Map toolCallAppForm(Map args, String toolName = 'hub_set_rule') {
                 context = null
                 if (backup == null) backup = _nfBackup(id, nativeApp, step.page)
                 attempted = true
-                model = _nfJson(hubInternalGet("/installedapp/configure/json/${id}" + (step.page ? "/${_nfEncode(step.page)}" : '')))
+                model = _nfPage(id, step.page)
             } else {
                 if (!context) throw new IllegalArgumentException('Open the native form first; its context has expired or is unavailable')
                 if (step.expect_page != context.page.name) throw new IllegalArgumentException('expect_page does not match the last returned native page')
-                Map body = [:] + context.envelope
-                Map supplied = step.get('fields') ?: [:]
-                supplied.each { name, value ->
-                    Map field = context.get('fields').get(name)
-                    if (!field) throw new IllegalArgumentException("Field is not present on the current native page: ${name}")
-                    body["settings[${name}]".toString()] = _nfValue(field, value)
-                    body["${name}.type".toString()] = field.type
-                    body["${name}.multiple".toString()] = field.multiple.toString()
-                }
-                // The browser posts every input on the page, so an unset input saves its default.
-                List stepDefaults = []
-                List stepRejected = []
-                context.get('fields').each { name, field ->
-                    if (supplied.containsKey(name) || field.present || !field.containsKey('default_value') || field.disabled || !field.supported) return
-                    String encoded
-                    try { encoded = _nfValue(field, field.default_value) }
-                    catch (IllegalArgumentException rejected) {
-                        mcpLog('debug', 'rm-native', "${toolName} form: page default of ${name} on app ${id} not posted: ${rejected.message}")
-                        stepRejected << [name: name, reason: rejected.message]
-                        return
-                    }
-                    stepDefaults << name
-                    body["settings[${name}]".toString()] = encoded
-                    body["${name}.type".toString()] = field.type
-                    body["${name}.multiple".toString()] = field.multiple.toString()
-                }
-                Map control = null
-                String reloadPath = null
-                if (step.activate) {
-                    control = context.controls[step.activate]
-                    if (!control) throw new IllegalArgumentException('Choose one exact returned native control_id')
-                    if (control.disabled) throw new IllegalArgumentException('The native control is disabled')
-                    if (control.kind == 'local_app' && step.get('fields')) throw new IllegalArgumentException('Submit fields separately before opening another native app form')
-                    if (control.kind == 'create_child' && step.get('fields')) throw new IllegalArgumentException('Submit parent fields separately before creating a child')
-                    if (control.kind == 'button' && !control.submit_on_change && step.get('fields')) throw new IllegalArgumentException('Submit fields separately before a button that reloads the native page')
-                    if (control.kind == 'button' && !control.submit_on_change) reloadPath = _nfReloadPath(id, context)
-                    if (control.kind in ['href', 'navigation'] && control.value != 'Cancel') {
-                        List missing = context.get('fields').values().findAll { field -> field.required && !field.disabled &&
-                            !(body.containsKey("settings[${field.name}]".toString()) ? !(body["settings[${field.name}]".toString()] in ['', '[]']) : field.present) }*.name
-                        if (missing) throw new IllegalArgumentException("Complete required native fields before navigating: ${missing.join(', ')}")
-                    }
-                }
+                Map plan = _nfPrepare(id, context, step.get('fields') ?: [:], step.activate, toolName)
                 if (backup == null) backup = _nfBackup(id, nativeApp, context.page.name ?: null)
                 attempted = true
-                if (control?.kind == 'local_app') {
-                    navigation = _nfVerifyNavigation(id, [app_id: control.value.toString().toLong(), page: control.stateAttribute])
-                    model = [location: 'local_app']
-                } else if (control?.kind == 'create_child') {
-                    // The native HTTP client encodes the path; pre-encoding names escapes percent signs twice.
-                    String childName = control.value.toString()
-                    createdId = _nrCreatedAppId(hubInternalGetRaw("/installedapp/createchild/hubitat/${childName}/parent/${id}"))
-                    if (createdId == null) throw new IllegalStateException('Native child creation did not return an app ID; inspect the parent before retrying')
-                    def child = getAppByAppId(createdId)
-                    if (child?.parentAppId?.toString() != id.toString() || child?.appType?.namespace != 'hubitat' || child?.appType?.name != control.value) throw new IllegalStateException('Created app did not match the native parent and child type')
-                    model = [location: 'child_created']
-                } else if (control?.kind == 'button') {
-                    Map button = [id: id, name: control.name]
-                    button["settings[${control.name}]".toString()] = 'clicked'
-                    button["${control.name}.type".toString()] = 'button'
-                    if (control.stateAttribute) button.stateAttribute = control.stateAttribute
-                    _nfPost('/installedapp/btn', button)
-                    if (!control.submit_on_change) model = _nfJson(hubInternalGet(reloadPath))
-                } else if (control) {
-                    body.put(control.name, control.value ?: '')
-                    if (control.params != null) body["params_for${control.name}".toString()] = _nfEncode(groovy.json.JsonOutput.toJson(control.params))
-                }
-                if (model == null) {
-                    model = _nfPost('/installedapp/update/json', body)
-                    defaultsPosted.addAll(stepDefaults)
-                    defaultsNotPosted.addAll(stepRejected)
+                Map answer = _nfExecute(id, plan)
+                model = answer.model
+                if (answer.navigation) navigation = answer.navigation
+                if (answer.created_id != null) createdId = answer.created_id
+                if (answer.posted) {
+                    defaultsPosted.addAll(plan.defaults)
+                    defaultsNotPosted.addAll(plan.rejected)
                 }
             }
             if (!navigation) navigation = _nfNavigation(id, model)
@@ -447,6 +487,6 @@ Map toolCallAppForm(Map args, String toolName = 'hub_set_rule') {
         if (attempted) NATIVE_FORM_CONTEXTS.remove(key)
         [success: false, app_id: id, partial: attempted, completed: completed, error: failure.message?.toString(),
          reopen_required: attempted, remaining_steps: args.steps.size() - completed.size()] + _nfDefaultsReport(defaultsPosted, defaultsNotPosted) + (backup == null ? [:] : [backup: backup]) + (navigation ? [navigated_app_id: navigation.app_id, navigated_page: navigation.page, closed: true] : [:]) + (createdId == null ? [:] : [created_app_id: createdId])
-    } finally { NATIVE_FORM_BUSY.remove(appKey); NATIVE_FORM_BUSY.remove(key) }
+    } finally { _nfRelease(id) }
 }
 

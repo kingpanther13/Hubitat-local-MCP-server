@@ -20,6 +20,8 @@ class RestoreRuleStructureSpec extends ToolSpecBase {
         script.metaClass._rmDeleteAction = { Integer appId, Integer idx, boolean skip = false -> calls << "action ${idx}".toString(); [success: true] }
         script.metaClass._rmDeleteExpressionConditions = { Integer appId, Collection ids -> calls << "conditions ${ids}".toString(); ids as List }
         script.metaClass._rmClickAppButton = { Integer appId, String btn, String attr = null, String page = null, Map cache = null -> calls << btn; [status: 200] }
+        // A settings-replay restore finishes with the app's page Done.
+        script.metaClass._rmSubmitMainPageDone = { Integer appId -> calls << "Done"; [done: true] }
     }
 
     private Map snapshotState(Map st) {
@@ -375,11 +377,13 @@ class RestoreRuleStructureSpec extends ToolSpecBase {
         out.success == true
     }
 
-    def "a Rule Machine restore still finishes with updateRule and keeps its Rule Machine steps"() {
+    def "a Rule Machine restore finishes with its page Done, as every app type does, and keeps its Rule Machine steps"() {
         given:
         def rmPaths = []
+        def done = []
         script.metaClass._rmRejectDisabledAppEdit = { Integer id, String what -> }
         script.metaClass._rmUpdateAppSettings = { Integer id, Map st, Map schema -> }
+        script.metaClass._rmSubmitMainPageDone = { Integer id -> done << id; [done: true] }
         script.metaClass._rmRestoreRequiredExpression = { Integer id, Map snap -> rmPaths << "expression"; [:] }
         script.metaClass._rmReconcileRuleStructure = { Integer id, Map snap -> rmPaths << "reconcile"; [:] }
         hubGet.register('/installedapp/configure/json/100') { params -> '{"app":{"id":100},"configPage":{"sections":[]},"settings":{}}' }
@@ -390,7 +394,8 @@ class RestoreRuleStructureSpec extends ToolSpecBase {
         def out = script._rmRestoreFromBackup([fileName: "f.json"], snapshot, true)
 
         then:
-        calls.contains("updateRule")
+        done == [100]
+        !calls.contains("updateRule")
         rmPaths == ["expression", "reconcile"]
         !out.containsKey("settingsCleared")
     }
@@ -583,7 +588,7 @@ class RestoreRuleStructureSpec extends ToolSpecBase {
         'older snapshot recorded as an RM rule' | communitySnapshot(appType: "rule_machine", appTypeName: null)
     }
 
-    def "a user or community app still restores in place, committing through its Done instead of updateRule"() {
+    def "a user or community app still restores in place, committing through its Done"() {
         given:
         def rec = nativeStubs()
         hubGet.register('/installedapp/configure/json/100') { params -> '{"app":{"id":100,"appType":{"name":"BAT555 Stateful Wizard"}},"configPage":{"sections":[]},"settings":{}}' }

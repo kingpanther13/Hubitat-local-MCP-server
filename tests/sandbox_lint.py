@@ -2796,6 +2796,7 @@ DEVICE_GATE_SELF_TEST_CASES = [
 # path literal can never reach the hub through them. Every entry is checked for staleness.
 NATIVE_WRAPPER_UNANCHORED = {
     "_deleteItemViaEndpoint": "path is its third argument and toolDeleteItem fixes it to the app/driver code-editor delete endpoints; no caller-supplied literal reaches it",
+    "_nfExecute": "its second argument is the plan _nfPrepare returns; plan.reload is the /installedapp/configure/json page path _nfReloadPath builds from the app's own breadcrumbs, never a caller-supplied path",
 }
 
 _NATIVE_WRAPPER_DECL = re.compile(

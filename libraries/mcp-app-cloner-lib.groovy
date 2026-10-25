@@ -1402,10 +1402,6 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
         }
     }
 
-    // Finish the way the app type commits: Rule Machine's updateRule, or for an app without that
-    // button (Basic Rule, Button Controller) the page's Done -- clicking updateRule there stores it
-    // as a pending action delete and the page then fails to load.
-    String commitButton = reg.containsKey("commitButton") ? reg.commitButton : _resolveCommitButton(snapshot?.configJson?.app?.appType?.name?.toString())
     def ruleId
     if (exists) {
         ruleId = savedId
@@ -1415,13 +1411,12 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
     } else {
         def parentId = _discoverParentAppId(savedAppType)
         _requireUnprotectedAppMutation(parentId, "restore a child app under")
-        ruleId = _rmCreateChildApp(parentId, reg.namespace, reg.appName)
+        ruleId = _rmCreateChildApp(parentId, "hubitat", reg.appName)
         try {
             def firstPage = _rmFetchConfigJson(ruleId)
             def firstSchema = _rmCollectInputSchema(firstPage?.configPage)
             def seedBody = _rmBuildSettingsBody(ruleId, [origLabel: savedLabel ?: "restored-app-${savedId}"], firstSchema)
             hubInternalPostForm("/installedapp/update/json", seedBody)
-            if (commitButton) _rmClickAppButton(ruleId, commitButton)
         } catch (Exception e) {
             try { _rmForceDeleteApp(ruleId) } catch (Exception ce) {
                 mcpLog("warn", "rm-native", "_rmRestoreFromBackup: orphan cleanup of newly-created app ${ruleId} failed after recreate error (${ce.message}) -- app may be left in an empty-label state; clean up manually via hub_delete_native_app(appId=${ruleId})")
@@ -1451,7 +1446,7 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
         }
     }
     // Two steps that fail differently: a rejected replay leaves the rule as it was (nothing is
-    // committed on a 4xx/5xx), while a failed updateRule click after a committed replay leaves the
+    // committed on a 4xx/5xx), while a failed closing Done after a committed replay leaves the
     // restored settings in place with subscriptions not yet rebuilt. Name the step, and log it --
     // a caller reading only the envelope could not tell the two apart (seen live: a 500 on rule 37).
     // A button input has no persisted value: RM keeps its row buttons (edit/insert/cut/disable, and
@@ -1512,17 +1507,12 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
                 clearMiss = clearExc.message ?: clearExc.toString()
             }
         }
-        if (commitButton) {
-            step = "the final ${commitButton} click".toString()
-            _rmClickAppButton(ruleId, commitButton)
-        } else {
-            step = "the closing Done"
-            def done = _rmSubmitMainPageDone(ruleId)
-            if (done?.done != true) commitMiss = done?.reason ?: "the page's Done did not commit"
-        }
+        // The app's page Done runs its update, as the browser's Done does for every app type.
+        step = "the closing Done"
+        def done = _rmSubmitMainPageDone(ruleId)
+        if (done?.done != true) commitMiss = done?.reason ?: "the page's Done did not commit"
     } catch (Exception e) {
         mcpLog("error", "rm-native", "restore of rule ${ruleId} from ${fileName} failed during ${step}: ${e.message}")
-        String commitName = commitButton ?: 'Done'
         // Rule Machine rules take their form through hub_set_rule; every other app through hub_set_native_app.
         String formCall = savedAppType in ['rule_machine', 'button_rule'] ? "hub_set_rule(operation:\"form\", rule_id:${ruleId}" : "hub_set_native_app(operation:\"form\", app_id:${ruleId}"
         return [
@@ -1536,7 +1526,7 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
             error: "Restore applied partially; failed during ${step}: ${e.message}",
             note: (step == "settings replay"
                 ? "Rule ${ruleId} exists but may have incomplete settings. Inspect with hub_get_app_config(appId=${ruleId}) and compare against hub_get_backup(backupKey) before retrying."
-                : "The settings were replayed but the app's ${commitName} did not run, so its subscriptions may still reflect the pre-restore state: click ${commitName == 'updateRule' ? 'Update Rule' : commitName} in the app, or run ${formCall}, args:{steps:[{kind:\"open\"},{kind:\"submit\",expect_page:\"<returned page>\",activate:\"<the ${commitName} control_id>\"}]}, confirm:true).").toString()
+                : "The settings were replayed but the app's Done did not run, so its subscriptions may still reflect the pre-restore state: press Done in the app, or run ${formCall}, args:{steps:[{kind:\"open\"},{kind:\"submit\",expect_page:\"<returned page>\",activate:\"_action_update|Done|\"}]}, confirm:true).").toString()
         ]
     }
 

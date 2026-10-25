@@ -139,7 +139,7 @@ library is registered in the `#include`→path map (dev tool) and in `LIBS` (bun
 - **`#include` facts (from recon):** no lane resolves `#include` today (`HubitatAppSandbox` has no
   include hook). No `@Field static` in the file; closures are method-scoped (extract whole methods).
   `preferences{}` (32-37) + `mappings{}` (651-665) must stay file-scope. Wizard mega-methods
-  `_rmClickAppButton` (16208-20954) + `_createNativeAppShell` (22361-24107) are whole-only extractions
+  `_rmClickAppButton` (16208-20954) + `_createNativeAppShell` (22361-24107, since removed by #561) are whole-only extractions
   (much later). The smoke-test lib: `libraries/mcp-smoke-test-lib.groovy` =
   `library(name:"McpSmokeTestLib", namespace:"mcp", ...)` + `String mcpSmokeTestMarker(){ "smoke-ok-v1" }`.
 
