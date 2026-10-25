@@ -39,6 +39,8 @@ class AccessTokenRedactionSpec extends ToolSpecBase {
         ])
     }
 
+    void cleanup() { script.callerClient = null }
+
     @spock.lang.Unroll
     def "tokens come back unchanged when redactAccessTokens is off (useGateways=#useGateways)"() {
         given:
@@ -89,6 +91,18 @@ class AccessTokenRedactionSpec extends ToolSpecBase {
 
         where:
         useGateways << [true, false]
+    }
+
+    def "a client caller reads an accessToken page input redacted with the toggle off"() {
+        given:
+        script.callerClient = [id: 'c1']
+        hubGet.register('/installedapp/configure/json/35') { params -> appPageJson() }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35])
+
+        then:
+        result.page.sections[0].inputs.find { it.name == 'accessToken' }.value == MARKER
     }
 
     def "a token key holding a structure is walked, not replaced"() {

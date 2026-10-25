@@ -100,6 +100,26 @@ class SnapshotPasswordRedactionSpec extends ToolSpecBase {
         uploads.isEmpty()
     }
 
+    def "a snapshot whose status read returns no settings list says so instead of naming a failure"() {
+        given:
+        List uploads = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> uploads << fn }
+        hubGet.register('/installedapp/configure/json/78') { params ->
+            JsonOutput.toJson([app: [id: 78, name: 'Notifier', label: 'A', installed: true, appType: [name: 'Notifier', namespace: 'hubitat']],
+                configPage: [name: 'mainPage', sections: []], settings: [subPagePassword: 'live-secret'], childApps: []])
+        }
+        hubGet.register('/installedapp/statusJson/78') { params -> JsonOutput.toJson([installedApp: [id: 78]]) }
+
+        when:
+        script._rmBackupRuleSnapshot(78, 'pre-update')
+
+        then:
+        def failure = thrown(IllegalStateException)
+        failure.message == "App 78: its settings could not be read (its status read returned no settings list), so no snapshot was taken; nothing was changed. " +
+            "Retry; or delete it from the hub's Apps page; or turn off pre-edit backups for edits."
+        uploads.isEmpty()
+    }
+
     def "a user or community app is snapshotted under its own type, not as a Rule Machine rule"() {
         given:
         List uploads = []

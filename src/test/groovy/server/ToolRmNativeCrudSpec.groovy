@@ -597,6 +597,26 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         rawCalls.isEmpty()
     }
 
+    def "_rmSubmitMainPageDone on a root page that carries no name returns done:false and posts nothing"() {
+        given:
+        hubGet.register('/installedapp/configure/json/682') { params ->
+            JsonOutput.toJson([app: [id: 682, name: "BAT user app", label: "u", installed: true, version: 1, appType: [name: "BAT user app", namespace: "mcptest"]],
+                configPage: [install: true, error: null, sections: [[title: "", input: [[name: "note", type: "text"]]]]],
+                settings: [note: "root"], childApps: []])
+        }
+        def bodies = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> bodies << body; [status: 200, data: '{"location":"/installedapp/list"}'] }
+
+        when:
+        def r = script._rmSubmitMainPageDone(682)
+
+        then:
+        r.done == false
+        r.reason == "the app's root page carries no name"
+        bodies.isEmpty()
+        !hubGet.calls.any { it.path == '/installedapp/statusJson/682' }
+    }
+
     def "_rmSubmitMainPageDone presses the Done of the app's own root page, whatever it is named"() {
         given:
         hubGet.register('/installedapp/configure/json/681') { params ->

@@ -572,16 +572,17 @@ def toolGetAppConfig(args) {
             def desc = stripAppConfigHtml(i.description)
             if (desc && desc != "Click to set") input.description = desc
             if (i.options) input.options = stripOptionsHtml(i.options)
-            // A device input's defaultValue true only flags a selection (its label is in the description).
+            // A device input's defaultValue true only flags a selection (its label is in the description);
+            // a bool's true is its value.
             if (i.defaultValue != null && (i.defaultValue != true || i.type == "bool")) input.value = i.defaultValue
             else if (i.value != null && (i.value != true || i.type == "bool")) input.value = i.value
             // A mode input renders no value; it is stored in settings, as the form engine reads it.
             if (i.type == "mode" && parsed.settings instanceof Map && parsed.settings.containsKey(i.name)) input.value = parsed.settings[i.name]
             if (i.type == "password" && i.name) passwordInputNames << i.name.toString()
             if (input.containsKey("value") && _appConfigIsSecretSetting(i.name, i.type, input.value)) input.value = redactedPw
-            // An accessToken input stores its token under "value", which the whole-result
-            // _redactAccessTokens pass (keyed on the setting NAME) cannot see, so apply the toggle here.
-            else if (input.containsKey("value") && settings.redactAccessTokens == true && input.value instanceof CharSequence &&
+            // An accessToken input stores its token under "value", which the whole-result pass (keyed on
+            // the setting NAME) cannot see, so its rule applies here: the toggle, or a client caller.
+            else if (input.containsKey("value") && _redactsAccessTokens() && input.value instanceof CharSequence &&
                      i.name?.toString() ==~ /(?i)access_?token/) input.value = _accessTokenRedactedMarker()
             section.inputs << input
         }
@@ -591,10 +592,18 @@ def toolGetAppConfig(args) {
             def rawHtml = (b.description ?: b.title)?.toString()
             def text = stripAppConfigHtml(rawHtml)
             if (!text || text == "Click to set") continue
-            // Rule Machine wraps a disabled action or trigger, and its legend, in a red italic span.
-            // The page never strikes a disabled action through; that span is its only marker, so do not key on <strike>.
-            boolean disabled = isRmRule && (rawHtml =~ /(?i)<span\s+style=['"]\s*color:\s*red;?\s*['"]\s*>\s*<i>/).find()
-            paragraphs << (disabled ? [text: text, disabled: true] : text)
+            // Rule Machine wraps each disabled action or trigger row, and its "Disabled Action" legend, in a
+            // red italic span. The page never strikes a disabled action through; that span is its only marker,
+            // so do not key on <strike>. One paragraph can hold a rule's whole action block.
+            List disabled = []
+            if (isRmRule) {
+                def rows = rawHtml =~ /(?is)<span\s+style=['"]\s*color:\s*red;?\s*['"]\s*>\s*<i>(.*?)<\/i>\s*<\/span>/
+                while (rows.find()) {
+                    String row = stripAppConfigHtml(rows.group(1))?.trim()
+                    if (row && !(row ==~ /(?i)Disabled Actions?/)) disabled << row
+                }
+            }
+            paragraphs << (disabled ? [text: text, disabled: disabled] : text)
         }
         if (paragraphs) section.paragraphs = paragraphs
         sections << section
@@ -630,6 +639,7 @@ def toolGetAppConfig(args) {
     try {
         result.controls = _nfPublic(_nfContext(appIdStr as Long, parsed as Map), []).controls
     } catch (IllegalStateException unreadable) {
+        mcpLog("warn", "hub-admin", "hub_get_app_config app ${appIdStr}: page controls unreadable: ${unreadable.message}")
         result.controlsError = unreadable.message
     }
 
@@ -640,9 +650,9 @@ def toolGetAppConfig(args) {
         if (!rawSettings) {
             result.settings = rawSettings
         } else {
-            // configure/json carries no types for settings declared on other pages. statusJson's
-            // appSettings types every setting of the app (the hub's own App Status page masks
-            // type=="password" rows from it), so one extra GET covers all pages. Without it a
+            // configure/json carries no types for settings declared on other pages. statusJson lists
+            // every setting with its type, passwords included; only the App Status page hides those
+            // rows, so one extra GET covers all pages. Without it a
             // password named outside the credential-name pattern cannot be told apart, so fail
             // closed: withhold the map rather than return it partly redacted.
             Map settingTypes = _appConfigSettingTypes(appIdStr as Integer)
@@ -692,7 +702,8 @@ private Map _appConfigSettingTypes(Integer appId) {
     }
     Map types = [:]
     for (rec in (status.appSettings as List)) {
-        if (rec instanceof Map && rec.name != null) types.put(rec.name.toString(), rec.type?.toString())
+        // A row with no type is left out, so the caller's untyped check withholds the map.
+        if (rec instanceof Map && rec.name != null && rec.type != null) types.put(rec.name.toString(), rec.type.toString())
     }
     return types
 }

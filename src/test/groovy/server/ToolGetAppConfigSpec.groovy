@@ -23,8 +23,8 @@ import support.ToolSpecBase
  *    can't render): clean 'app not found (404)' degrade at warn, full + summary modes
  *  - HTML stripping: span tags removed from labels
  *  - controls: the form engine's controls for the page (button titles, control_ids, navigation)
- *  - RM disabled actions: a paragraph with RM's red italic span reads {text, disabled: true};
- *    *BROKEN* spans and non-RM apps stay plain text
+ *  - RM disabled actions: a paragraph with RM's red italic spans reads {text, disabled: [row text, ...]};
+ *    the legend, *BROKEN* spans and non-RM apps stay out
  *  - mode inputs read their stored setting as value; pageNote on a page-name mismatch
  *
  * Each direct-call feature has a parallel "via dispatch" feature that fires
@@ -1143,6 +1143,24 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         !JsonOutput.toJson(result).contains('tok-456')
     }
 
+    def "a statusJson row with a name but no type does not count as typed, so the map is withheld"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson([
+            settings: [customField: 'HubAdmin-S3cret!', ruleEnable: true]
+        ]) }
+        registerStatusJson([ruleEnable: 'bool', customField: null])
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeSettings: true])
+
+        then:
+        result.success == true
+        !result.containsKey('settings')
+        result.settingsNote.contains('carries no type for customField')
+        !JsonOutput.toJson(result).contains('HubAdmin-S3cret!')
+    }
+
     def "untyped settings that are empty, boolean or credential-named do not withhold the map"() {
         given:
         settingsMap.enableRead = true
@@ -1423,6 +1441,23 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
 
         where:
         useGateways << [true, false]
+    }
+
+    def "a configure page fetch that throws a 410 is the same clean not-found"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/9999') { params ->
+            throw new FakeHttpException(410)
+        }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 9999])
+
+        then:
+        result.success == false
+        result.fingerprint == 'app not found (404)'
+        result.status == 410
+        result.error.contains('not found (HTTP 410')
     }
 
     def "summary=true returns a clean not-found when the identity fetch throws a 404"() {
@@ -2233,7 +2268,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         rmSelectActionsRow(3, "<span style='color:red'><i>Log: 'three'\n</i></span>", 'Enable Action') +
         "</table>"
 
-    def "a Rule Machine paragraph holding a disabled action reads {text, disabled: true}; others stay plain text"() {
+    def "a Rule Machine paragraph holding a disabled action lists exactly that row's text; others stay plain text"() {
         given:
         settingsMap.enableRead = true
         def p2 = "\tLog: live4\n\tOn: Lamp <span style='color:red'>*BROKEN*</span>"
@@ -2249,8 +2284,8 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         def result = script.toolGetAppConfig([appId: 35])
         def para = result.page.sections[0].paragraphs[0]
 
-        then: 'the flag is the hub markup itself: the text is the stripped paragraph, no mark of ours'
-        para.disabled == true
+        then: 'of three actions, only the one in the hub marker is listed; the text is the stripped paragraph, no mark of ours'
+        para.disabled == ["Notify Pushover: 'Fixed mismatch'"]
         para.text.contains("\tNotify Pushover: 'Fixed mismatch'\n")
         para.text.contains("\tNotify Pushover: 'still cooling'")
         para.text.contains("On: Lamp *BROKEN*")
@@ -2287,8 +2322,8 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         named('3.0.false').title.trim() == "Log: 'three'"
         named('1.0.false').title.trim() == "Log: 'one'"
 
-        and: 'the paragraph carries the hub marker (the legend is shown only while an action is disabled)'
-        result.page.sections[0].paragraphs[0].disabled == true
+        and: 'the paragraph lists the disabled row, not the legend shown while an action is disabled'
+        result.page.sections[0].paragraphs[0].disabled == ["Log: 'three'"]
         !result.page.sections[0].paragraphs[0].text.contains('[DISABLED]')
 
         and: 'controls use the form tools public shape'
@@ -2417,7 +2452,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_get_app_config via dispatch returns controls and the disabled paragraph flag (useGateways=#useGateways)"() {
+    def "hub_get_app_config via dispatch returns controls and the disabled rows (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableRead = true
@@ -2431,7 +2466,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         !response.result.isError
         def inner = mcpDriver.parseInner(response)
         inner.success == true
-        inner.page.sections[0].paragraphs[0].disabled == true
+        inner.page.sections[0].paragraphs[0].disabled == ["Log: 'three'"]
         inner.controls.find { it.name == 'disable3' }.title == 'Enable Action'
 
         where:

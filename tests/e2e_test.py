@@ -5985,7 +5985,16 @@ class TestRunner:
         # NOT poison the page with the "For input string: updateRule" error -- then
         # delete. Its first page renders no label input, so the create takes no name
         # and a dropped response is matched by the Basic Rule it added.
-        before = {str(r.get("id")) for r in self._installed_app_rows() if r.get("type") == "Basic Rule-1.0"}
+        def basic_rules() -> set[str]:
+            return {str(r.get("id")) for r in self._installed_app_rows() if r.get("type") == "Basic Rule-1.0"}
+
+        before = basic_rules()
+        # A create its first page refuses (a field the page does not render) removes the child it
+        # made and returns success:false, so the hub gains no Basic Rule.
+        refused = self._native_app("create", {"app_type": "basic_rule", "fields": {"nope": 1}})
+        assert refused.get("success") is False and "removed" in str(refused.get("error")), refused
+        left = basic_rules() - before
+        assert not left, f"a refused Basic Rule create left app(s) {sorted(left)} behind: {refused}"
         cw = self._soft_write(
             lambda: self._native_app("create", {"app_type": "basic_rule"}),
             lambda: next((str(r.get("id")) for r in self._installed_app_rows()
@@ -6018,8 +6027,8 @@ class TestRunner:
                 f"hub_get_rule_health should classify a Basic Rule as basic-rule: {bh}"
             assert bh.get("broken") is None, f"a classic app has no compiled broken boolean: {bh}"
 
-            # EDIT: write the Notes field, then read the app back: the note must have landed and
-            # the page must render without error (the old wizard poisoned it with "For input
+            # EDIT: write the Notes field, then read the app back: the note must have landed and the
+            # read must carry no configPageError (the old wizard poisoned the page with "For input
             # string: updateRule"). On a 504 the response is gone, so only the read-back binds.
             ew = self._soft_write(
                 lambda: self._native_app("update", {"fields": {"comments": f"{PREFIX}note"}}, app_id),
@@ -6032,20 +6041,22 @@ class TestRunner:
                 note = str(((rb.get("settings") or {}).get("comments")) or "")
                 assert f"{PREFIX}note" in note, \
                     f"basic_rule notes edit lost to relay 504 and did not commit (settings.comments={note!r})"
-                # The hub did not page-error on a committed write (the configPageError
-                # check the response would have carried); the clean read-back is the proxy.
-                assert not (rb.get("app") or {}).get("configPageError"), \
+                # The page the read renders carries no configPageError after the dropped write.
+                assert not rb.get("configPageError"), \
                     f"basic_rule render poisoned after the dropped edit: {rb}"
                 print("    basic_rule edit: response-field assertions skipped (relay 504); note verified via read-back")
             else:
                 edited = ew["response"]
                 assert edited.get("success") is True and "comments" in (edited.get("fields_applied") or []), \
                     f"Basic Rule edit did not report the note applied: {edited}"
+                # A Basic Rule page renders no Done, so the edit saves the page and says the app's update did not run.
+                assert edited.get("committed") is False and "renders no Done" in str(edited.get("note")), \
+                    f"the no-Done Basic Rule edit should report committed:false: {edited}"
                 rb = self.client.call_tool("hub_read_apps_code", {
                     "tool": "hub_get_app_config", "args": {"appId": app_id, "includeSettings": True}})
                 assert f"{PREFIX}note" in str(((rb.get("settings") or {}).get("comments")) or ""), \
                     f"basic_rule notes edit did not land: {rb}"
-                assert not (rb.get("app") or {}).get("configPageError"), \
+                assert not rb.get("configPageError"), \
                     f"basic_rule render poisoned after the edit: {rb}"
 
             # Restoring that edit's baseline in place puts the Basic Rule back as it was: settings it
@@ -6384,7 +6395,7 @@ def updated() {}
         # A wizard page that names both a next and a done page offers its Done as _action_done, which
         # the hub answers by saving the page and rendering it again. An app whose preferences hold no
         # pages shows the hub's own name and mode fields; update renames the app and restricts its
-        # modes through them, one call each, since the hub drops a label posted with mode[mode].
+        # modes through them, one call each, since a label posted with mode[mode] is stored one save late.
         codes: list = []
         instances: list = []
         try:
@@ -6426,14 +6437,18 @@ def updated() {}
         finally:
             for app_id in instances:
                 try:
-                    self.client.call_tool("hub_manage_native_rules_and_apps", {"tool": "hub_delete_native_app", "args": {
+                    gone = self.client.call_tool("hub_manage_native_rules_and_apps", {"tool": "hub_delete_native_app", "args": {
                         "appId": app_id, "force": True, "confirm": True}})
+                    if gone.get("success") is not True:
+                        print(f"  [WARN] form fixture cleanup: delete instance {app_id} reported failure: {gone}")
                 except (McpError, McpToolError, requests.HTTPError) as exc:
                     print(f"  [WARN] form fixture cleanup: delete instance {app_id} failed: {exc}")
             for code_id in codes:
                 try:
-                    self.client.call_tool("hub_manage_code", {"tool": "hub_delete_item", "args": {
+                    gone = self.client.call_tool("hub_manage_code", {"tool": "hub_delete_item", "args": {
                         "type": "app", "item_id": code_id, "confirm": True}})
+                    if gone.get("success") is not True:
+                        print(f"  [WARN] form fixture cleanup: delete code {code_id} reported failure: {gone}")
                 except (McpError, McpToolError, requests.HTTPError) as exc:
                     print(f"  [WARN] form fixture cleanup: delete code {code_id} failed: {exc}")
 
@@ -6508,6 +6523,18 @@ def updated() {}
                 "button_rule create")
             rule_id = br.get("app_id")
             assert br.get("success") and rule_id and br.get("controller_id") == int(controller_id), f"button_rule create failed: {br}"
+
+            # A button number the controller's Add Button picker does not offer (the permanent button has
+            # fewer than 99) is refused after the page's Cancel, with the recovery point it took first.
+            refused = self._native_app("create", {"app_type": "button_rule", "controller_id": int(controller_id),
+                                                  "button_number": 99, "event": "pushed"})
+            assert refused.get("success") is False and not refused.get("partial") and "backup" in refused, \
+                f"a button number the picker does not offer should be refused with its backup: {refused}"
+            assert "not 99" in str(refused.get("error")) and "left unchanged" in str(refused.get("error")), refused
+            ctrl_form = self._native_app_form(controller_id, {"kind": "open"})
+            assert any(c.get("title") == "Add Button" for c in ctrl_form.get("controls") or []) and \
+                not any(f.get("name") == "newBut" for f in ctrl_form.get("fields") or []), \
+                f"the controller should render its Add Button and no picker after the refusal: {ctrl_form}"
 
             # The rule is RM-wire-format: author an action via hub_set_rule; its document's
             # native health below shows it renders (not the broken orphan a bare createchild produces).
@@ -10897,8 +10924,8 @@ def updated() {}
                 return [p for sect in ((res.get("page") or {}).get("sections") or [])
                         for p in (sect.get("paragraphs") or [])]
 
-            def flagged(res: dict) -> list:
-                return [p for p in paragraphs_of(res) if isinstance(p, dict) and p.get("disabled") is True]
+            def disabled_rows(res: dict) -> list:
+                return [row for p in paragraphs_of(res) if isinstance(p, dict) for row in (p.get("disabled") or [])]
 
             def buttons_of(res: dict) -> dict:
                 return {c.get("name"): c for c in (res.get("controls") or []) if c.get("kind") == "button"}
@@ -10906,9 +10933,9 @@ def updated() {}
             # (a) Nothing disabled yet: no flagged paragraph; the disable buttons follow the action
             # index (1 and 3), not the row position, and each carries a control_id.
             main = read()
-            assert not flagged(main), f"live rule paragraph flagged disabled: {paragraphs_of(main)}"
+            assert not disabled_rows(main), f"live rule paragraph lists disabled rows: {paragraphs_of(main)}"
             rows = read("selectActions")
-            assert not flagged(rows), f"live selectActions paragraph flagged disabled: {paragraphs_of(rows)}"
+            assert not disabled_rows(rows), f"live selectActions paragraph lists disabled rows: {paragraphs_of(rows)}"
             buttons = buttons_of(rows)
             assert buttons.get("disable1", {}).get("title") == "Disable Action", f"disable1 missing/wrong: {buttons}"
             assert buttons.get("disable3", {}).get("title") == "Disable Action", f"disable3 missing/wrong: {buttons}"
@@ -10918,11 +10945,12 @@ def updated() {}
             # (b) RM's own per-row Disable button for action index 3. It is a toggle, so click once.
             self._native_form_control(app_id, "selectActions", "disable3")
 
-            # (c) mainPage: the hub's own markup flags the paragraph holding the disabled action.
+            # (c) mainPage: the paragraph holding the whole action block lists only the disabled
+            # action, by its row text; the live first action is not listed.
             main = read()
-            marked = flagged(main)
-            assert len(marked) == 1 and "disabled-mark three" in str(marked[0].get("text")), \
-                f"expected exactly one flagged paragraph holding the third action: {paragraphs_of(main)}"
+            marked = disabled_rows(main)
+            assert marked == ["Log: 'disabled-mark three'"], \
+                f"expected exactly the third action listed as disabled: {paragraphs_of(main)}"
             assert not any("[DISABLED]" in str(p) or "<span" in str(p) for p in paragraphs_of(main)), \
                 f"a text mark or HTML leaked into paragraphs: {paragraphs_of(main)}"
 
@@ -10933,7 +10961,8 @@ def updated() {}
             assert buttons.get("disable1", {}).get("title") == "Disable Action", f"disable1 changed: {buttons}"
             assert "disabled-mark three" in str(buttons.get("3.0.false", {}).get("title")), \
                 f"action index 3's edit control does not carry its text: {buttons.get('3.0.false')}"
-            assert flagged(rows), f"selectActions paragraph not flagged while an action is disabled: {paragraphs_of(rows)}"
+            assert disabled_rows(rows) == [str(buttons["3.0.false"].get("title")).strip()], \
+                f"selectActions should list exactly the disabled action, as its edit control names it: {paragraphs_of(rows)}"
             for legacy in ("disabledActions", "disabledActionsNote"):
                 assert legacy not in main and legacy not in rows, f"{legacy} still returned"
         finally:
@@ -10945,20 +10974,10 @@ def updated() {}
         # JSON stores it in settings[name]; defaultValue is always null). A Notifier carries a
         # `modes` type='mode' RESTRICT input on its moreOptions sub-page; set it, then read it back
         # and assert the value is the list written.
-        # A create its first page refuses removes the child it made and returns success:false.
         modes = self.client.call_tool("hub_list_modes").get("modes") or []
         assert len(modes) >= 1, "hub_list_modes returned no modes -- cannot set a mode restriction"
         # A mode input's options are the hub's mode ids, which is what its page posts.
         want = [str(m["id"]) for m in modes[:2]]
-
-        def notifiers() -> set[str]:
-            return {str(r.get("id")) for r in self._installed_app_rows() if r.get("type") == "Notifier"}
-
-        before = notifiers()
-        refused = self._native_app("create", {"app_type": "notifier", "fields": {"nope": 1}})
-        assert refused.get("success") is False and "removed" in str(refused.get("error")), refused
-        left = notifiers() - before
-        assert not left, f"a refused Notifier create left app(s) {sorted(left)} behind: {refused}"
 
         label = f"{PREFIX}NotifierModes"
         created = self._native_app("create", {"app_type": "notifier", "name": label})
@@ -11134,10 +11153,11 @@ def updated() {}
         # page prefOptions has no inputs. Neither has to be configured on this hub: the check is
         # that no credential-named key comes back holding a plain non-empty value. The deterministic
         # cross-page proof (a password-typed setting with a harmless name) is in
-        # test_update_app_code_trigger_updated, whose fixture stores one. Assertion messages name
-        # keys only, never values.
+        # test_update_app_code_trigger_updated, whose fixture stores one. OAuth accessToken settings
+        # follow the Hide access tokens setting instead, so they are not checked here. Assertion
+        # messages name keys only, never values.
         marker = "***redacted (password)***"
-        secret_suffixes = ("password", "passwd", "secret")
+        secret_suffixes = ("password", "passwd", "secret", "token", "key", "apikey")
 
         def check(app_id: Any, what: str) -> int:
             cfg = self.client.call_tool("hub_read_apps_code", {
@@ -11151,7 +11171,8 @@ def updated() {}
                 assert "any page" in note, f"{what}: settingsRedactionNote does not describe all-page redaction"
                 assert "#" not in note, f"{what}: settingsRedactionNote carries an issue reference"
             leaked = [k for k, v in settings.items()
-                      if isinstance(v, str) and v and v != marker and k.lower().endswith(secret_suffixes)]
+                      if isinstance(v, str) and v and v != marker and k.lower().endswith(secret_suffixes)
+                      and not re.fullmatch(r"(?i)access_?token", k)]
             assert not leaked, f"{what}: credential-named settings returned unredacted: {sorted(leaked)}"
             return len(settings)
 

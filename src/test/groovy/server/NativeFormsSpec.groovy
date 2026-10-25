@@ -658,6 +658,36 @@ class NativeFormsSpec extends ToolSpecBase {
         calls.empty
     }
 
+    def 'the label field reads trueLabel, the label without the HTML an app decorates it with'() {
+        given:
+        model.defaultFields = true
+        model.app.label = "<span style='color:green'>Porch</span>"
+        model.app.trueLabel = 'Porch'
+        when:
+        def opened = open()
+        then:
+        opened.fields.find { it.name == 'label' }.value == 'Porch'
+    }
+
+    @Unroll
+    def 'an accessToken input reads #shown when the toggle is #toggle and the caller is #caller'() {
+        given:
+        settingsMap.redactAccessTokens = toggle
+        if (caller == 'a client') script.callerClient = [id: 'c1']
+        model.settings.accessToken = '0f8e2c1a-token'
+        model.configPage.sections[0].input << [element: 'input', name: 'accessToken', type: 'text']
+        when:
+        def field = open().fields.find { it.name == 'accessToken' }
+        then:
+        field.value == (shown == 'redacted' ? '***redacted (access token)***' : '0f8e2c1a-token')
+        field.value_source == 'stored'
+        where:
+        toggle | caller       | shown
+        false  | 'the main'   | 'its value'
+        true   | 'the main'   | 'redacted'
+        false  | 'a client'   | 'redacted'
+    }
+
     def 'a page own label and mode elements are the same fields, the label posted with its type and checked when required'() {
         given:
         model.modeMap = ['1': 'Day']

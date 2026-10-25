@@ -4971,7 +4971,7 @@ private def _renderToolResult(id, toolName, reactiveToolName, args, result, bool
         }
     }
     // A client token never sees another token, whatever the redaction setting says.
-    if (settings.redactAccessTokens == true || callerClient != null) rendered = _redactAccessTokens(rendered)
+    if (_redactsAccessTokens()) rendered = _redactAccessTokens(rendered)
     // ChatGPT shows `{}` for any result whose JSON text has a top-level `content` key, while every
     // other client reads it (issue #565). Only its requests get the renamed key.
     if (rendered instanceof Map && rendered.containsKey("content") && _openAiClientRequest()) {
@@ -5017,12 +5017,15 @@ private def _renderToolResult(id, toolName, reactiveToolName, args, result, bool
     return [__preserialized: candidateJson]
 }
 
+private String _accessTokenRedactedMarker() { return "***redacted (access token)***" }
+
+// A client token never sees another token, whatever the redaction setting says.
+private boolean _redactsAccessTokens() { settings.redactAccessTokens == true || callerClient != null }
+
 // redactAccessTokens (Advanced page). Covers the three shapes a token reaches a tool result in:
 // an access_token= URL parameter (app page paragraphs), an accessToken/access_token map key
 // (app settings and state) or the clientTokens map of per-client tokens, and that same key
 // inside JSON carried as a string (a file read or an exported setting).
-private String _accessTokenRedactedMarker() { return "***redacted (access token)***" }
-
 private def _redactAccessTokens(value) {
     String marker = _accessTokenRedactedMarker()
     if (value instanceof Map) {
@@ -12134,7 +12137,7 @@ A single tool can also be switched off under **Advanced: Per-tool Overrides**. A
 - **hub_get_app_config** renders one page as opening it in the UI does, which runs the app's page code.
   - The pages a page links to are in `page.hrefs` as `{page, title}`; a sub-page's own links are in its `page.hrefs` (Room Lighting's optionsOnPage is linked from onMeansPage). A linked page's inputs are not in `sections`: read them with `pageName`.
   - `controls` are the page's buttons and links as hub_set_rule(operation='form') (Rule Machine) or hub_set_native_app(operation='form') returns them; activate one there by its control_id after opening the same page.
-  - On a Rule Machine rule a paragraph holding a disabled action or trigger reads `{text, disabled: true}`. On selectActions (Button Rule: selectActionsX) a disabled action's `disable<N>` control reads 'Enable Action', and the control named `<N>.0.<bool>` carries that action's text; N is the action index, not the row position. The button toggles: never replay a click whose response was lost. hub_set_app_disabled disables the whole app.
+  - On a Rule Machine rule a paragraph holding a disabled action or trigger reads `{text, disabled: [...]}`, listing the text of each disabled row it holds. On selectActions (Button Rule: selectActionsX) a disabled action's `disable<N>` control reads 'Enable Action', and the control named `<N>.0.<bool>` carries that action's text; N is the action index, not the row position. The button toggles: never replay a click whose response was lost. hub_set_app_disabled disables the whole app.
   - `pageNote` appears when the hub rendered another page than `pageName`: the app reaches that page only through its link, so open it in a form workflow.
   - `appType.system` and `appType.menu` are the fields hub_list_apps(scope='types') gives for every type at once.
   - `includeSettings=true` adds the raw settings map: 500-1000 app-encoded keys on large apps (Room Lighting stores per-device scene levels as `dm~<deviceId>~<scene>`). Secrets read `***redacted (password)***`: every setting the hub types as a password, on any page, and free-text settings with credential-shaped names (password, pass, secret, token, API key, credential, ...). OAuth accessToken settings follow the Hide access tokens setting. Page inputs are redacted the same way. When the setting types cannot be read the map is withheld and `settingsNote` says why.

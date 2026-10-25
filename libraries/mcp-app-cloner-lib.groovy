@@ -1349,7 +1349,7 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
 
     // Backup snapshots from before the appType-aware code path stored type="rm-rule" without an
     // appType field. Treat those as RM (the only app type the original snapshots covered) for the
-    // recreate path; current snapshots carry appType and appTypeName.
+    // recreate path; current snapshots carry appType, and appTypeName only for apps the registry lacks.
     def savedAppType = snapshot?.appType ?: "rule_machine"
     // Older snapshots recorded any app the registry lacks (user, community) as rule_machine.
     String savedTypeName = snapshot?.appTypeName?.toString() ?: snapshot?.configJson?.app?.appType?.name?.toString()

@@ -142,10 +142,11 @@ private void _nfControl(Map controls, Map control) {
     controls.put(key, control)
 }
 
-// The app's own name and mode restriction: the page shows app.label and app.restrictedModes, and the
-// browser posts them as label and mode[mode], never as settings.
+// The app's own name and mode restriction: the page shows the label and app.restrictedModes, and the
+// browser posts them as label and mode[mode], never as settings. trueLabel is the label without the
+// HTML an app may decorate it with.
 private Object _nfAppValue(Map model, boolean mode) {
-    def value = mode ? model.app?.restrictedModes : model.app?.label
+    def value = mode ? model.app?.restrictedModes : (model.app?.trueLabel ?: model.app?.label)
     if (!mode) return value
     (value instanceof Map ? value.keySet() : (value instanceof Collection ? value : (value == null ? [] : [value]))).collect { it.toString() }
 }
@@ -317,6 +318,8 @@ private Map _nfPublic(Map context, List optionsFor) {
         Map result = [:] + field
         ['device', 'ignore', 'capability', 'present', 'default_value', 'app_field', 'sidecars'].each { result.remove(it) }
         if (field.type == 'password') result.redacted = true
+        // The whole-result pass keys on a setting's name, and here the token sits under value.
+        else if (field.name ==~ /(?i)access_?token/ && result.value instanceof CharSequence && result.value && _redactsAccessTokens()) result.value = _accessTokenRedactedMarker()
         if (field.device && field.name in optionsFor) result.options = _nfDevices(field)
         if (field.device) result.options_available = true
         result
