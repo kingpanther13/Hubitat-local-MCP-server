@@ -220,8 +220,8 @@ per-action; `<N>` is the action index unless noted.
   via `/installedapp/btn` (no `stateAttribute`) TOGGLES it (live-verified; a second
   click re-enables, and a click on a nonexistent `disable<N>` still reports
   success). A `hub_set_rule(operation:'form')` control is what clicks it; `hub_get_app_config` only
-  reads the span (`[DISABLED]` mark + `disabledActions`, with `disableButton` on a
-  `selectActions` read).
+  reads the span: on a Rule Machine rule, a paragraph that holds disabled rows is returned as
+  `{text, disabled: [<row text>...]}` (the `Disabled Action(s)` legend is excluded).
 - **String `*contains*` comparator** — for a STRING-typed variable or a
   free-valued Custom Attribute, the comparator field (`RelrDev_<N>` on the
   condition wizard, `ReltDev<N>` on the trigger row) offers `=`, `≠` (the

@@ -74,7 +74,7 @@ Teardown prompts SHOULD explicitly call `hub_delete_native_app(appId=<id>, force
 | T320–T349 (30 tests) | §2 Triggers + conditions | Device-state / time-date / hub-system / HTTP trigger capabilities; trigger options (conditional, and-stays, multiple-triggers, multi-device marshal flag) |
 | T350–T387 (38 tests; T388–T399 reserved) | §3 Actions across all categories | Every action category (switches, dimmers, shades/fans, HSM, thermostats, messages/HTTP, audio, variables, cross-rule, state-mgmt, repeat, delay/wait/exit) |
 | T400–T429 (30 tests) | §4 Expressions, variables, private boolean, control flow | Expression operators + nesting, IF-THEN-ELSE chains, REPEAT variants, local+hub variables, variable math, built-in `%var%` substitution, Private Boolean |
-| T430–T452 (22 tests; T445 retired) | §5 HTTP endpoints + edge cases | Local/Cloud Endpoint triggers + verbs, setHubVariable endpoints, orphan cleanup, multi-device flag preservation, stale `editCond` recovery, negative paths (update/delete on bogus IDs), MCP feature-flag gating |
+| T430–T459 (29 tests; T445 retired) | §5 HTTP endpoints + edge cases | Local/Cloud Endpoint triggers + verbs, setHubVariable endpoints, orphan cleanup, multi-device flag preservation, stale `editCond` recovery, negative paths (update/delete on bogus IDs), MCP feature-flag gating |
 | T460–T464 (5 tests) | §6 RM recreation bundle | HSM as an action, switch "only switches that are on/off", waitEvents per-event "and stays for" duration, string `*contains*` comparator, shade open action |
 
 Each section below lives in its own `## Section N` heading. Sections are appended in order; don't rely on global ordering within a section being monotonic after renumbers.
@@ -1005,7 +1005,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: One `hub_set_rule(operation="update")` whose changes delete the existing action by its native ID and append the three new actions returns success. `hub_get_app_config.actions.length === 3` with new commands; old single-action list is gone. [INV-1] `configPage.error == null`. [INV-2] `statusJson.eventSubscriptions.length > 0` still true.
+**Expected**: One `hub_set_rule(operation="update")` whose changes delete the existing action by its native ID and append the three new actions returns success. `hub_get_app_config.actions.length === 3` with new commands; old single-action list is gone. [INV-1] `configPage.error == null`. [INV-2] does not apply to this time-only trigger: `statusJson.scheduledJobs` still lists the Certain Time job.
 
 ### T378 — Delete rule (soft) then delete with force
 
@@ -1537,7 +1537,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 
 **Expected**: All four Run Custom Action actions are written, each with its command and one string parameter. `hub_get_app_config` paragraphs show each action rendering with its parameter value (e.g. "setDisplay(on)", "setChildLock(on)", etc.). No action shows a missing/empty parameter. RM allocates each action's parameter slot (`cpType<P>.<N>` / `cpVal<P>.<N>`) on its own action page, so actions 2-4 must not reuse action 1's slot. [INV-1] `configPage.error == null`.
 
-## Section 5: HTTP endpoints + edge cases (T430–T449)
+## Section 5: HTTP endpoints + edge cases (T430–T459)
 
 ### T430 — Local End Point trigger with /runRuleAct verb
 
