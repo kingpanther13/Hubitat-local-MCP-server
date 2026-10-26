@@ -226,8 +226,9 @@ RULES = [
         # runtime with "Method pointers are not allowed on java.util.LinkedHashSet" (live, ephemeral
         # hub e2e), while the Spock harness accepts it. Any receiver but a bare `this` is refused: a
         # property chain (`this.cache.&get`), a call (`getJobs().&contains`), an index or a parenthesis.
+        # The match starts right after the receiver, so whitespace before `.&` stays allowed after `this`.
         "id": "SANDBOX-018",
-        "pattern": r"(?<!\bthis)(?<!\bthis\s)\.&\s*[A-Za-z_]",
+        "pattern": r"(?<!\bthis)(?<!\s)\s*\.&\s*[A-Za-z_]",
         "message": "Method pointer on something other than `this` -- the Hubitat sandbox refuses it at runtime ('Method pointers are not allowed on <class>'). Use `this.&name` or an inline closure.",
         "severity": "error",
     },

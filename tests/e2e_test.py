@@ -12977,8 +12977,11 @@ class TestRunner:
         def location_page(**extra) -> dict:
             return self.client.call_tool("hub_read_diagnostics", {
                 "tool": "hub_get_logs", "args": {"mode": "locationEvents", "pageSize": 2, **extra}})
+        def row_key(r):
+            return (r.get("date"), r.get("name"), str(r.get("value")))
         first_page = location_page()
-        if first_page.get("nextCursor"):
+        older = location_page(cursor=first_page["nextCursor"])["entries"] if first_page.get("nextCursor") else []
+        if older:
             variable = self._ensure_perm_variables("sv_number")["sv_number"]
             def set_number(value: str) -> None:
                 self.client.call_tool("hub_manage_variables", {
@@ -12986,13 +12989,17 @@ class TestRunner:
             set_number("562")
             try:
                 deadline = time.time() + 10.0
-                while variable not in str(location_page()["entries"][:1]) and time.time() < deadline:
-                    time.sleep(1.0)
+                arrived = False
+                while not arrived and time.time() < deadline:
+                    arrived = variable in str(location_page()["entries"][:1])
+                    if not arrived:
+                        time.sleep(1.0)
                 second_page = location_page(cursor=first_page["nextCursor"])
             finally:
                 set_number(self.PERM_VARIABLES["sv_number"][2])
-            def row_key(r):
-                return (r.get("date"), r.get("name"), str(r.get("value")))
+            assert arrived, f"setting {variable} must add a location event: {location_page()}"
+            assert second_page["entries"][:1] and row_key(second_page["entries"][0]) == row_key(older[0]), \
+                f"the second page must start at the row it started at before the new event: {older} then {second_page}"
             assert not {row_key(r) for r in second_page["entries"]} & {row_key(r) for r in first_page["entries"]}, \
                 f"the second page repeated a first-page row: {first_page['entries']} then {second_page['entries']}"
             assert all(_hub_event_time(r["date"]) <= _hub_event_time(first_page["entries"][-1]["date"])

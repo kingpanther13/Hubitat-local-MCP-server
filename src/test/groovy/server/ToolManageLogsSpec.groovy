@@ -2354,6 +2354,26 @@ class ToolManageLogsSpec extends ToolSpecBase {
         listed.entries == []
     }
 
+    def "a delete during an inline Logs page fetch keeps that fetch's pre-delete copy out of the cache"() {
+        given:
+        def gone = new java.util.concurrent.atomic.AtomicBoolean(false)
+        hubGet.register('/hub/advanced/deleteScheduledJob') { params -> gone.set(true); 'done' }
+        hubGet.register('/logs/json') { params ->
+            if (gone.get()) return NO_JOBS
+            script.toolDeleteLogs([mode: 'scheduledJobs', jobId: 'app40Recur.poll', confirm: true])
+            logsJsonWithJobs(1)
+        }
+
+        when: 'the delete lands while an unbudgeted read is fetching the page'
+        def during = script.toolGetHubLogs([mode: 'scheduledJobs'])
+        def next = script.toolGetHubLogs([mode: 'scheduledJobs'])
+
+        then: 'that read answers from its own fetch, and the next read fetches again'
+        during.count == 1
+        next.entries == []
+        runInMillisCalls.isEmpty()
+    }
+
     def "a read waiting on a fetch that a delete fences off schedules the replacement within the same wait"() {
         given:
         settingsMap.enableRead = true
