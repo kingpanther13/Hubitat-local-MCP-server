@@ -26766,9 +26766,11 @@ private void _ndValidateChange(Object change) {
 private boolean _ndKnownRow(Map rows, String rowId, String missing) {
     if (rowId in rows.deleted) throw new IllegalArgumentException(missing)
     if (rowId in rows.ids) return true
-    List used = ((rows.ids as Collection) + (rows.deleted as Collection)).findAll { it.toString().isInteger() }.collect { it.toString().toInteger() }
+    Collection all = rows.all instanceof Map ? rows.all.values() : [rows]
+    List used = all.collectMany { ((it.ids as Collection) + (it.deleted as Collection)).toList() }.findAll { it.toString().isInteger() }.collect { it.toString().toInteger() }
     int next = (used ? used.max() : 0) + 1
-    if (rows.added > 0 && rowId.isInteger() && rowId.toInteger() >= next && rowId.toInteger() < next + rows.added) return false
+    int added = all.sum { it.added ?: 0 } as int
+    if (added > 0 && rowId.isInteger() && rowId.toInteger() >= next && rowId.toInteger() < next + added) return false
     throw new IllegalArgumentException(missing)
 }
 private void _ndDropRow(Map rows, String rowId, String missing) {
@@ -26788,6 +26790,7 @@ private void _ndPreflight(Long id, List changes) {
     Map rows = [action: [ids: (actionOrder + projectedActions.keySet()) as Set, added: 0, deleted: [] as Set],
                 condition: [ids: conditions.keySet().collect { it.toString() } as Set, added: 0, deleted: [] as Set],
                 trigger: [ids: triggers.keySet().collect { it.toString() } as Set, added: 0, deleted: [] as Set]]
+    rows.values().each { it.all = rows }
     int newAction = 0
     boolean appendedActions = false
     Map locals = id == null ? [:] : null
