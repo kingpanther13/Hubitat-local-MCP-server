@@ -7055,11 +7055,22 @@ class TestRunner:
                 assert gone.get("success") is True and gone.get("owner") == owner, gone
             assert not self._logs_jobs(app_id), "a deleted job is still listed"
             # Saving the rule runs its own scheduling again. The save reports the rule's jobs from a fresh
-            # read; the Logs page is a 30 s snapshot, so it is not re-read here.
+            # read, while the Logs page still holds the empty table read above for 30 s.
             saved = self._rm_update(app_id, [native_log("periodic deletion baseline", id=before["actions"][0]["id"])])
             assert saved["document"]["triggers"] == finalized["document"]["triggers"], saved
             assert [job.get("handler") for job in saved["scheduledJobs"]] == [job["methodName"] for job in owned], \
                 f"saving the rule must schedule its trigger again: {saved['scheduledJobs']}"
+            # A delete the hub answers with "no such job" drops that cached table too, so the read its note
+            # names lists the job the save scheduled.
+            try:
+                missing = self.client.call_tool("hub_manage_logs", {"tool": "hub_delete_logs", "args": {
+                    "mode": "scheduledJobs", "jobId": f"app{app_id}Once.e2eNoSuchJob", "confirm": True}})
+                raise AssertionError(f"deleting a job that does not exist must be refused: {missing}")
+            except McpToolError as exc:
+                assert "No scheduled job" in str(exc), exc
+            relisted = self._logs_jobs(app_id)
+            assert [job["id"] for job in relisted] == [job["id"] for job in owned], \
+                f"after a no-such-job delete the Logs page must be re-read: {relisted}"
             deleted = self._rm_update(app_id, [native_delete("trigger", periodic.pop())])
             assert deleted["document"]["triggers"] == before["triggers"] and deleted["document"]["actions"] == before["actions"], deleted
             assert not deleted["scheduledJobs"] and deleted["eventSubscriptions"], deleted
@@ -12962,6 +12973,38 @@ class TestRunner:
                 assert all(_hub_event_time(r["date"]) > mark
                            for r in after.get("entries") or [] if r.get("date")), \
                     f"{mode}: since must return only events after the bookmark: {after}"
+        # A location event arriving between pages neither repeats nor skips a row: the cursor is anchored.
+        def location_page(**extra) -> dict:
+            return self.client.call_tool("hub_read_diagnostics", {
+                "tool": "hub_get_logs", "args": {"mode": "locationEvents", "pageSize": 2, **extra}})
+        def row_key(r):
+            return (r.get("date"), r.get("name"), str(r.get("value")))
+        first_page = location_page()
+        older = location_page(cursor=first_page["nextCursor"])["entries"] if first_page.get("nextCursor") else []
+        if older:
+            variable = self._ensure_perm_variables("sv_number")["sv_number"]
+            def set_number(value: str) -> None:
+                self.client.call_tool("hub_manage_variables", {
+                    "tool": "hub_set_variable", "args": {"name": variable, "value": value}})
+            set_number("562")
+            try:
+                deadline = time.time() + 10.0
+                arrived = False
+                while not arrived and time.time() < deadline:
+                    arrived = variable in str(location_page()["entries"][:1])
+                    if not arrived:
+                        time.sleep(1.0)
+                second_page = location_page(cursor=first_page["nextCursor"])
+            finally:
+                set_number(self.PERM_VARIABLES["sv_number"][2])
+            assert arrived, f"setting {variable} must add a location event: {location_page()}"
+            assert second_page["entries"][:1] and row_key(second_page["entries"][0]) == row_key(older[0]), \
+                f"the second page must start at the row it started at before the new event: {older} then {second_page}"
+            assert not {row_key(r) for r in second_page["entries"]} & {row_key(r) for r in first_page["entries"]}, \
+                f"the second page repeated a first-page row: {first_page['entries']} then {second_page['entries']}"
+            assert all(_hub_event_time(r["date"]) <= _hub_event_time(first_page["entries"][-1]["date"])
+                       for r in second_page["entries"] if r.get("date")), \
+                f"the second page must continue after the first page: {second_page}"
         # A past row's own time (hub time, no zone) works as a bookmark the same way.
         first = self.client.call_tool("hub_read_diagnostics", {"tool": "hub_get_logs", "args": {"mode": "past", "pageSize": 1}})
         assert first.get("entries"), f"past logs: {first}"

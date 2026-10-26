@@ -228,7 +228,15 @@ def test_sandbox_018_method_pointer_off_this():
     assert "SANDBOX-018" in hits("def names = tools.findAll(visible.&contains)")
     assert "SANDBOX-018" in hits("def kept = ids.findAll(state.jobs.&contains)")
     assert "SANDBOX-018" in hits("def kept = ids.findAll(this.cache.&containsKey)")
+    assert "SANDBOX-018" in hits("def kept = ids.findAll(getJobs().&contains)")
+    assert "SANDBOX-018" in hits("def run = jobs[0].&run")
+    assert "SANDBOX-018" in hits("def kept = ids.findAll((jobs).&contains)")
     assert "SANDBOX-018" not in hits("def names = tools.findAll(this.&_visible)")
+    assert "SANDBOX-018" not in hits("def names = tools.findAll(this .&_visible)")
+    assert "SANDBOX-018" not in hits("def names = tools.findAll(this   .&_visible)")
+    assert "SANDBOX-018" not in hits("def names = tools.findAll(this\t\t.&_visible)")
+    assert "SANDBOX-018" in hits("def names = tools.findAll(visible   .&contains)")
+    assert "SANDBOX-018" in hits("def names = tools.findAll(getthis  .&contains)")
 
 
 def test_clean_source_no_findings():
