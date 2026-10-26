@@ -2026,6 +2026,46 @@ class ToolManageLogsSpec extends ToolSpecBase {
         served.modes.locationEvents.count == 3
     }
 
+    def "an inline tab listed before a tab that goes pending is not read on the pending leg, and keeps its place in the answer"() {
+        given:
+        settingsMap.relayBudgetMs = 6000
+        script.metaClass._isCloudRequest = { -> true }
+        hubGet.register('/logs/json') { params -> logsJsonWithJobs(3) }
+        hubGet.register('/logs/eventsJson') { params -> LOCATION_ROWS }
+        def virtualNow = new java.util.concurrent.atomic.AtomicLong(1234567890000L)
+        NOW_OVERRIDE.set({ -> virtualNow.get() })
+        PAUSE_EXECUTION_OVERRIDE.set({ Long ms -> virtualNow.addAndGet(ms) })
+
+        when:
+        def first = script.toolGetHubLogs([mode: ['locationEvents', 'scheduledJobs'], __reqT0: virtualNow.get()])
+
+        then:
+        first.status == 'in_progress'
+        hubGet.calls.findAll { it.path == '/logs/eventsJson' }.empty
+
+        when:
+        script.runLogsJsonFetch(runInMillisCalls[0][2].data as Map)
+        def served = script.toolGetHubLogs([mode: ['locationEvents', 'scheduledJobs'], __reqT0: virtualNow.get()])
+
+        then:
+        hubGet.calls.findAll { it.path == '/logs/eventsJson' }.size() == 1
+        served.modes.keySet() as List == ['locationEvents', 'scheduledJobs']
+        served.modes.locationEvents.count == 3
+        served.modes.scheduledJobs.count == 3
+    }
+
+    def "a non-object hub actions row fails the Logs page read instead of being counted and dropped"() {
+        given:
+        hubGet.register('/logs/json') { params -> JsonOutput.toJson([uptime: '1d', jobs: [], runningJobs: [], hubCommands: ['Porch']]) }
+
+        when:
+        def result = script.toolGetHubLogs([mode: 'hubActions'])
+
+        then:
+        result.isError == true
+        result.error.contains("'hubCommands' contains a non-object entry")
+    }
+
     @Unroll
     def "a LAN request with lanBudgetMs=#lanBudget uses the background fetch and waits #expectedWait"() {
         given: 'budget - 1500 below the 6000 LAN cap (distinct from the 4500 cloud cap), the cap above it'

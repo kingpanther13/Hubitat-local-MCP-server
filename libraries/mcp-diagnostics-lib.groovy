@@ -776,13 +776,15 @@ def toolGetHubLogs(args) {
         // status check their own arguments when they run.
         _logsCheckPageSize(args.pageSize)
         (modes - ["mcp", "status"]).each(this.&_logsQuery.curry(args))
-        // Every tab is answered under its own key, each paged tab as its first page with its own nextCursor. Once a
-        // background read is pending the call answers in_progress, so the inline tabs are skipped for
-        // this leg while the other background reads still start, and one continuation collects them all.
+        // Every tab is answered under its own key, in the listed order, each paged tab as its first page with
+        // its own nextCursor. Once a background read is pending the call answers in_progress, so the tabs
+        // that can go pending run first and the inline tabs are read only on the leg that answers.
+        List inline = ["cloudCalls", "locationEvents", "hubEvents", "status"]
         Map results = [:]
+        for (m in modes) results.put(m, null)
         boolean pending = false
-        for (m in modes) {
-            if (pending && m in ["cloudCalls", "locationEvents", "hubEvents", "status"]) continue
+        for (m in (modes - inline) + (modes - (modes - inline))) {
+            if (pending && m in inline) continue
             Map paging = [:]
             if (modeArgs[m].contains("pageSize")) paging = [cursor: "", pageSize: args.pageSize != null ? args.pageSize : 50]
             else if (modeArgs[m].contains("cursor")) paging = [cursor: ""]
@@ -1173,7 +1175,7 @@ private List _logsJsonTable(Map data, String key) {
     def table = data[key]
     if (table == null) return []
     if (!(table instanceof List)) throw new IllegalStateException("Unexpected /logs/json response: '${key}' is not an array")
-    if (key != "hubCommands" && table.any { !(it instanceof Map) }) {
+    if (table.any { !(it instanceof Map) }) {
         throw new IllegalStateException("Unexpected /logs/json response: '${key}' contains a non-object entry")
     }
     return table
