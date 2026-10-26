@@ -6791,6 +6791,7 @@ private List _logsJsonTable(Map data, String key) {
     return table
 }
 def _logsJsonFetchAndPublish(Long fetchId = null, boolean background = false) {
+    if (fetchId == null) fetchId = _logsJsonFetchId()
     long t0 = now()
     def responseText = hubInternalGet("/logs/json", null, 30)
     if (!responseText) throw new RuntimeException("No data returned from /logs/json")
@@ -6811,7 +6812,7 @@ def _logsJsonFetchAndPublish(Long fetchId = null, boolean background = false) {
         hubCommands: _logsJsonTable(data, "hubCommands")
     ]
     synchronized (LOGS_JSON_SNAPSHOT) {
-        if (fetchId != null && LOGS_JSON_SNAPSHOT.fetchId != fetchId) return snap
+        if (_logsJsonFetchId() != fetchId) return snap
         LOGS_JSON_SNAPSHOT.snapshot = snap
         LOGS_JSON_SNAPSHOT.remove("fetchError")
     }
@@ -6830,11 +6831,16 @@ private Map _logsJsonFreshSnapshot() {
         return null
     }
 }
+private long _logsJsonFetchId() {
+    synchronized (LOGS_JSON_SNAPSHOT) {
+        return (LOGS_JSON_SNAPSHOT.fetchId instanceof Long) ? (LOGS_JSON_SNAPSHOT.fetchId as Long) : 0L
+    }
+}
 private void _logsJsonInvalidate() {
     synchronized (LOGS_JSON_SNAPSHOT) {
         LOGS_JSON_SNAPSHOT.remove("snapshot")
         LOGS_JSON_SNAPSHOT.remove("fetchStartedAt")
-        LOGS_JSON_SNAPSHOT.fetchId = ((LOGS_JSON_SNAPSHOT.fetchId instanceof Long) ? (LOGS_JSON_SNAPSHOT.fetchId as Long) : 0L) + 1L
+        LOGS_JSON_SNAPSHOT.fetchId = _logsJsonFetchId() + 1L
     }
 }
 private void _logsJsonEnsureFetchScheduled() {
@@ -6842,7 +6848,7 @@ private void _logsJsonEnsureFetchScheduled() {
     synchronized (LOGS_JSON_SNAPSHOT) {
         def startedAt = LOGS_JSON_SNAPSHOT.fetchStartedAt
         if (startedAt instanceof Long && now() - (startedAt as Long) < _logsJsonFetchStaleMs()) return
-        fetchId = ((LOGS_JSON_SNAPSHOT.fetchId instanceof Long) ? (LOGS_JSON_SNAPSHOT.fetchId as Long) : 0L) + 1L
+        fetchId = _logsJsonFetchId() + 1L
         LOGS_JSON_SNAPSHOT.fetchId = fetchId
         LOGS_JSON_SNAPSHOT.fetchStartedAt = now()
     }
