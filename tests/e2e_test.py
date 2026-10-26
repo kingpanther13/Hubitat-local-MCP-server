@@ -7055,25 +7055,25 @@ class TestRunner:
                 assert gone.get("success") is True and gone.get("owner") == owner, gone
             assert not self._logs_jobs(app_id), "a deleted job is still listed"
             # Saving the rule runs its own scheduling again. The save reports the rule's jobs from a fresh
-            # read; the Logs page is a 30 s snapshot, so it is not re-read here.
+            # read, while the Logs page still holds the empty table read above for 30 s.
             saved = self._rm_update(app_id, [native_log("periodic deletion baseline", id=before["actions"][0]["id"])])
             assert saved["document"]["triggers"] == finalized["document"]["triggers"], saved
             assert [job.get("handler") for job in saved["scheduledJobs"]] == [job["methodName"] for job in owned], \
                 f"saving the rule must schedule its trigger again: {saved['scheduledJobs']}"
-            # Cache the Logs page with the job listed, then let the rule unschedule it: a delete the hub
-            # answers with "no such job" still drops the cached page, so the read its note names is fresh.
+            # A delete the hub answers with "no such job" drops that cached table too, so the read its note
+            # names lists the job the save scheduled.
+            try:
+                missing = self.client.call_tool("hub_manage_logs", {"tool": "hub_delete_logs", "args": {
+                    "mode": "scheduledJobs", "jobId": f"app{app_id}Once.e2eNoSuchJob", "confirm": True}})
+                raise AssertionError(f"deleting a job that does not exist must be refused: {missing}")
+            except McpToolError as exc:
+                assert "No scheduled job" in str(exc), exc
             relisted = self._logs_jobs(app_id)
-            assert relisted, "the saved rule's job is not listed"
+            assert [job["id"] for job in relisted] == [job["id"] for job in owned], \
+                f"after a no-such-job delete the Logs page must be re-read: {relisted}"
             deleted = self._rm_update(app_id, [native_delete("trigger", periodic.pop())])
             assert deleted["document"]["triggers"] == before["triggers"] and deleted["document"]["actions"] == before["actions"], deleted
             assert not deleted["scheduledJobs"] and deleted["eventSubscriptions"], deleted
-            try:
-                missing = self.client.call_tool("hub_manage_logs", {"tool": "hub_delete_logs", "args": {
-                    "mode": "scheduledJobs", "jobId": relisted[0]["id"], "confirm": True}})
-                raise AssertionError(f"deleting an unscheduled job must report it gone: {missing}")
-            except McpToolError as exc:
-                assert "No scheduled job" in str(exc), exc
-            assert not self._logs_jobs(app_id), "a job the hub says does not exist is still listed"
             assert cron["name"] not in self._rm_settings(app_id), "the deleted periodic trigger left its cron setting"
         finally:
             self._delete_native(app_id)
