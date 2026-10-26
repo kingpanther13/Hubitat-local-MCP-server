@@ -612,6 +612,27 @@ class ToolManageLogsSpec extends ToolSpecBase {
         !firstPage.containsKey('nextCursor')
     }
 
+    def "hub_get_logs event cursor neither repeats nor skips a row when an event arrives between pages"() {
+        given: 'the hub lists one more event, newest first, by the time the second page is read'
+        String newer = '{"name":"mode","value":"Day","descriptionText":"Mode changed to Day","date":"2009-02-13T23:00:00.000+0000"},'
+        def reads = 0
+        hubGet.register('/logs/eventsJson') { params -> reads++ == 0 ? LOCATION_ROWS : LOCATION_ROWS.replaceFirst(/\[/, '[' + newer) }
+
+        when:
+        def first = script.toolGetHubLogs([mode: 'locationEvents', pageSize: 2])
+        def second = script.toolGetHubLogs([mode: 'locationEvents', pageSize: 2, cursor: first.nextCursor])
+        def fresh = script.toolGetHubLogs([mode: 'locationEvents', pageSize: 2])
+
+        then: 'the second page holds the row after the first page, not the first page\'s last row again'
+        first.entries*.name == ['mode', 'hsmStatus']
+        second.entries*.name == ['variable:guestCount']
+        second.total == 4
+        !second.containsKey('nextCursor')
+
+        and: 'a new first page starts from the newest event'
+        fresh.entries*.value == ['Day', 'Night']
+    }
+
     @Unroll
     def "hub_get_logs #mode reports an unreadable endpoint as an error result"() {
         given:
@@ -651,6 +672,9 @@ class ToolManageLogsSpec extends ToolSpecBase {
         'status'         | [limit: 5]                      || 'do not apply'
         'devices'        | [sortBy: 'totalMs']             || 'sortBy must be one of'
         'past'           | [since: '31d']                  || '30d cap'
+        'past'           | [since: '43201m']               || '30d cap'
+        'locationEvents' | [since: '999999999999999d']     || '30d cap'
+        'past'           | [until: '9999999999999999999m'] || '30d cap'
         'past'           | [since: 'yesterday']            || 'Cannot parse since'
         'past'           | [since: '1h', until: '2h']      || 'until must be later than since'
         'past'           | [deviceId: '5', appId: '6']     || 'mutually exclusive'
@@ -1791,6 +1815,8 @@ class ToolManageLogsSpec extends ToolSpecBase {
 
     // -------- hub_get_logs: scheduled jobs, running jobs, hub actions --------
 
+    private static final String NO_JOBS = JsonOutput.toJson([uptime: '1d', jobs: [], runningJobs: [], hubCommands: []])
+
     private String logsJsonWithJobs(int jobCount) {
         JsonOutput.toJson([
             uptime: '1d',
@@ -2232,20 +2258,60 @@ class ToolManageLogsSpec extends ToolSpecBase {
         script.callerClient = null
     }
 
-    def "hub_delete_logs keeps the cached Logs page when the delete request itself fails"() {
+    @Unroll
+    def "hub_delete_logs drops the cached Logs page when the hub answers #label, so the read its note names is fresh"() {
         given:
-        hubGet.register('/logs/json') { params -> logsJsonWithJobs(1) }
-        hubGet.register('/hub/advanced/deleteScheduledJob') { params -> throw new RuntimeException('timeout') }
+        def deleted = new java.util.concurrent.atomic.AtomicBoolean(false)
+        hubGet.register('/logs/json') { params -> deleted.get() ? NO_JOBS : logsJsonWithJobs(1) }
+        hubGet.register('/hub/advanced/deleteScheduledJob') { params -> deleted.set(true); reply() }
         script.toolGetHubLogs([mode: 'scheduledJobs'])
 
         when:
         def result = script.toolDeleteLogs([mode: 'scheduledJobs', jobId: 'app40Recur.poll', confirm: true])
+        def listed = script.toolGetHubLogs([mode: 'scheduledJobs'])
 
         then:
         result.success == false
-        result.error.contains('The delete request failed')
-        result.note.contains('before retrying')
-        (scriptStaticField('LOGS_JSON_SNAPSHOT') as Map).containsKey('snapshot')
+        result.error.contains(says)
+        result.note.contains("hub_get_logs(mode='scheduledJobs')")
+        listed.entries == []
+
+        where:
+        label                | reply                                     || says
+        'with an exception'  | { throw new RuntimeException('timeout') } || 'The delete request failed'
+        'job does not exist' | { 'job does not exist' }                  || 'No scheduled job app40Recur.poll exists'
+    }
+
+    def "a delete fences off a Logs page fetch already in flight, so its pre-delete copy is never served"() {
+        given:
+        settingsMap.enableRead = true
+        settingsMap.relayBudgetMs = 6000
+        script.metaClass._isCloudRequest = { -> true }
+        def gone = new java.util.concurrent.atomic.AtomicBoolean(false)
+        hubGet.register('/logs/json') { params -> gone.get() ? NO_JOBS : logsJsonWithJobs(1) }
+        hubGet.register('/hub/advanced/deleteScheduledJob') { params -> gone.set(true); 'done' }
+        def virtualNow = new java.util.concurrent.atomic.AtomicLong(1234567890000L)
+        NOW_OVERRIDE.set({ -> virtualNow.get() })
+        PAUSE_EXECUTION_OVERRIDE.set({ Long ms -> virtualNow.addAndGet(ms) })
+
+        when: 'a read schedules a worker, which fetches before the delete and publishes after it'
+        script.toolGetHubLogs([mode: 'scheduledJobs', __reqT0: virtualNow.get()])
+        Map inFlight = runInMillisCalls[0][2].data as Map
+        def deleted = script.toolDeleteLogs([mode: 'scheduledJobs', jobId: 'app40Recur.poll', confirm: true])
+        hubGet.register('/logs/json') { params -> logsJsonWithJobs(1) }
+        script.runLogsJsonFetch(inFlight)
+        hubGet.register('/logs/json') { params -> NO_JOBS }
+        def next = script.toolGetHubLogs([mode: 'scheduledJobs', __reqT0: virtualNow.get()])
+        Map replacement = runInMillisCalls[1][2].data as Map
+        script.runLogsJsonFetch(replacement)
+        def listed = script.toolGetHubLogs([mode: 'scheduledJobs', __reqT0: virtualNow.get()])
+
+        then: 'the in-flight copy is not published, and the next read schedules a fresh fetch at once'
+        deleted.success == true
+        next.status == 'in_progress'
+        runInMillisCalls.size() == 2
+        replacement.fetchId == (inFlight.fetchId as Long) + 2L
+        listed.entries == []
     }
 
     def "hub_delete_logs refuses a job of a device outside the server's device access, and allows a selected one"() {

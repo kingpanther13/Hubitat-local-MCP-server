@@ -651,6 +651,10 @@ private boolean _logsOutsideWindow(Date at, Map query) {
     return (query.since != null && !at.after(query.since)) || (query.until != null && at.after(query.until))
 }
 
+private Long _logsRowTime(Map row) {
+    return row.date != null ? _parseSinceArg(row.date)?.time : null
+}
+
 // since/until for past and the event tabs: a relative age ('30m', '2h', '7d'; at most 30 days),
 // ISO-8601 with an offset or Z, epoch milliseconds, or a time without a zone, read in the hub's own
 // time zone because that is how current past rows give their time.
@@ -663,11 +667,12 @@ private Date _logsTimeArg(String name, value) {
     String formats = "use a relative age like '30m', '2h' or '1d', a time like '2026-06-23 10:00:00' (hub time) or '2026-06-23T16:00:00Z', or epoch milliseconds"
     def rel = s =~ /^(\d+)([mhd])$/
     if (rel.matches()) {
-        long ms = rel.group(1).toLong() * ([m: 60000L, h: 3600000L, d: 86400000L][rel.group(2)] as Long)
-        if (ms > 30L * 86400000L) {
+        long unitMs = [m: 60000L, h: 3600000L, d: 86400000L][rel.group(2)] as Long
+        // Compare the count before multiplying: a huge count would overflow into a future time.
+        if (rel.group(1).length() > 9 || rel.group(1).toLong() > (30L * 86400000L).intdiv(unitMs)) {
             throw new IllegalArgumentException("${name} exceeds the 30d cap (got '${s}'); use an ISO-8601 time for older bounds")
         }
-        return new Date(now() - ms)
+        return new Date(now() - rel.group(1).toLong() * unitMs)
     }
     if (s.isLong()) {
         // A small bare number is a missing unit ('30' for '30m'), not a time in 1970.
@@ -861,10 +866,7 @@ def toolGetHubLogs(args) {
         String path = [cloudCalls: "/logs/cloudCalls/json", locationEvents: "/logs/eventsJson", hubEvents: "/hub/eventsJson"][mode]
         def parsed
         try {
-            def text
-            if (mode == "cloudCalls") text = hubInternalGet("/logs/cloudCalls/json", null, 30)
-            else if (mode == "hubEvents") text = hubInternalGet("/hub/eventsJson", null, 30)
-            else text = hubInternalGet("/logs/eventsJson", null, 30)
+            def text = hubInternalGet(path, null, 30)
             parsed = text?.toString()?.trim() ? new groovy.json.JsonSlurper().parseText(text.toString()) : null
         } catch (Exception e) {
             mcpLogError("monitoring", "${path} read failed", e)
@@ -950,9 +952,24 @@ private Map _logsPage(String mode, List rows, Map query) {
         if (query.sortBy == "name") matched.sort { (it.name ?: "").toString().toLowerCase() }
         else matched.sort { -((it[query.sortBy] ?: 0) as double) }
     }
+    // The event tabs are re-read on every page, newest first, so an event arriving between pages would
+    // shift an offset. Their cursor also carries the newest row's time; later pages skip newer rows.
+    def cursor = query.cursor
+    Long anchor = null
+    if (timed && cursor != null) {
+        def keyed = cursor.toString() =~ /^(\d+)@(\d+)$/
+        if (keyed.matches()) {
+            cursor = keyed.group(1)
+            anchor = keyed.group(2).toLong()
+            matched = matched.findAll { Map row -> Long at = _logsRowTime(row); at == null || at <= anchor }
+        } else {
+            anchor = matched.collect { Map row -> _logsRowTime(row) }.findAll { it != null }.max()
+        }
+    }
     Map out = [total: rows.size(), matched: matched.size()]
     if (query.limit > 0 && matched.size() > query.limit) matched = matched.take(query.limit)
-    def paged = _paginateList(matched, query.cursor, query.pageSize as int, "hub_get_logs")
+    def paged = _paginateList(matched, cursor, query.pageSize as int, "hub_get_logs")
+    if (paged.nextCursor != null && anchor != null) paged.nextCursor = "${paged.nextCursor}@${anchor}".toString()
     // Null fields are left out of each row and named once in nullFields, so a row without a listed
     // field had it null (location events, for example, have no device fields).
     Set nullFields = new TreeSet()
@@ -1099,9 +1116,12 @@ def toolDeleteLogs(args) {
         mcpLogError("monitoring", "deleteScheduledJob ${jobId} failed", e)
         return [success: false, isError: true, jobId: jobId, error: "The delete request failed: ${e.message ?: e.class.simpleName}",
                 note: "Check hub_get_logs(mode='scheduledJobs') before retrying: the job may already be gone."]
+    } finally {
+        // Whatever the hub answered, the cached jobs table may now be wrong, and so may the copy a
+        // fetch already in flight is about to publish.
+        _logsJsonInvalidate()
     }
     if (reply == "done") {
-        synchronized (LOGS_JSON_SNAPSHOT) { LOGS_JSON_SNAPSHOT.remove("snapshot") }
         mcpLog("info", "monitoring", "Deleted scheduled job ${jobId}")
         Map out = [success: true, mode: mode, jobId: jobId,
                    note: "Only this scheduled run is gone. Its owner is unchanged and schedules it again if its own code does, for example when its settings are saved."]
@@ -1204,6 +1224,16 @@ private Map _logsJsonFreshSnapshot() {
         if (snap instanceof Map && snap.at instanceof Long
                 && now() - (snap.at as Long) < _logsJsonSnapshotTtlMs()) return snap
         return null
+    }
+}
+
+// Drop the snapshot and fence off any fetch in flight: advancing fetchId keeps its worker from
+// publishing, and clearing its marker lets the next read schedule a new one at once.
+private void _logsJsonInvalidate() {
+    synchronized (LOGS_JSON_SNAPSHOT) {
+        LOGS_JSON_SNAPSHOT.remove("snapshot")
+        LOGS_JSON_SNAPSHOT.remove("fetchStartedAt")
+        LOGS_JSON_SNAPSHOT.fetchId = ((LOGS_JSON_SNAPSHOT.fetchId instanceof Long) ? (LOGS_JSON_SNAPSHOT.fetchId as Long) : 0L) + 1L
     }
 }
 

@@ -7060,9 +7060,20 @@ class TestRunner:
             assert saved["document"]["triggers"] == finalized["document"]["triggers"], saved
             assert [job.get("handler") for job in saved["scheduledJobs"]] == [job["methodName"] for job in owned], \
                 f"saving the rule must schedule its trigger again: {saved['scheduledJobs']}"
+            # Cache the Logs page with the job listed, then let the rule unschedule it: a delete the hub
+            # answers with "no such job" still drops the cached page, so the read its note names is fresh.
+            relisted = self._logs_jobs(app_id)
+            assert relisted, "the saved rule's job is not listed"
             deleted = self._rm_update(app_id, [native_delete("trigger", periodic.pop())])
             assert deleted["document"]["triggers"] == before["triggers"] and deleted["document"]["actions"] == before["actions"], deleted
             assert not deleted["scheduledJobs"] and deleted["eventSubscriptions"], deleted
+            try:
+                missing = self.client.call_tool("hub_manage_logs", {"tool": "hub_delete_logs", "args": {
+                    "mode": "scheduledJobs", "jobId": relisted[0]["id"], "confirm": True}})
+                raise AssertionError(f"deleting an unscheduled job must report it gone: {missing}")
+            except McpToolError as exc:
+                assert "No scheduled job" in str(exc), exc
+            assert not self._logs_jobs(app_id), "a job the hub says does not exist is still listed"
             assert cron["name"] not in self._rm_settings(app_id), "the deleted periodic trigger left its cron setting"
         finally:
             self._delete_native(app_id)
@@ -12962,6 +12973,30 @@ class TestRunner:
                 assert all(_hub_event_time(r["date"]) > mark
                            for r in after.get("entries") or [] if r.get("date")), \
                     f"{mode}: since must return only events after the bookmark: {after}"
+        # A location event arriving between pages neither repeats nor skips a row: the cursor is anchored.
+        def location_page(**extra) -> dict:
+            return self.client.call_tool("hub_read_diagnostics", {
+                "tool": "hub_get_logs", "args": {"mode": "locationEvents", "pageSize": 2, **extra}})
+        first_page = location_page()
+        if first_page.get("nextCursor"):
+            variable = self._ensure_perm_variables("sv_number")["sv_number"]
+            def set_number(value: str) -> None:
+                self.client.call_tool("hub_manage_variables", {
+                    "tool": "hub_set_variable", "args": {"name": variable, "value": value}})
+            set_number("562")
+            try:
+                deadline = time.time() + 10.0
+                while variable not in str(location_page()["entries"][:1]) and time.time() < deadline:
+                    time.sleep(1.0)
+                second_page = location_page(cursor=first_page["nextCursor"])
+            finally:
+                set_number(self.PERM_VARIABLES["sv_number"][2])
+            row = lambda r: (r.get("date"), r.get("name"), str(r.get("value")))
+            assert not {row(r) for r in second_page["entries"]} & {row(r) for r in first_page["entries"]}, \
+                f"the second page repeated a first-page row: {first_page['entries']} then {second_page['entries']}"
+            assert all(_hub_event_time(r["date"]) <= _hub_event_time(first_page["entries"][-1]["date"])
+                       for r in second_page["entries"] if r.get("date")), \
+                f"the second page must continue after the first page: {second_page}"
         # A past row's own time (hub time, no zone) works as a bookmark the same way.
         first = self.client.call_tool("hub_read_diagnostics", {"tool": "hub_get_logs", "args": {"mode": "past", "pageSize": 1}})
         assert first.get("entries"), f"past logs: {first}"

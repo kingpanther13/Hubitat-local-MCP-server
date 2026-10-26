@@ -224,10 +224,10 @@ RULES = [
     },    {
         # The sandbox allows a method pointer only on the script itself: `set.&contains` fails at
         # runtime with "Method pointers are not allowed on java.util.LinkedHashSet" (live, ephemeral
-        # hub e2e), while the Spock harness accepts it. The receiver can be a property chain
-        # (`state.jobs.&contains`, `this.cache.&get`); only a bare `this` is allowed.
+        # hub e2e), while the Spock harness accepts it. Any receiver but a bare `this` is refused: a
+        # property chain (`this.cache.&get`), a call (`getJobs().&contains`), an index or a parenthesis.
         "id": "SANDBOX-018",
-        "pattern": r"(?<![\w.])(?!this\s*\.&)[A-Za-z_]\w*(?:\s*\??\.\s*[A-Za-z_]\w*)*\s*\.&\s*[A-Za-z_]",
+        "pattern": r"(?<!\bthis)(?<!\bthis\s)\.&\s*[A-Za-z_]",
         "message": "Method pointer on something other than `this` -- the Hubitat sandbox refuses it at runtime ('Method pointers are not allowed on <class>'). Use `this.&name` or an inline closure.",
         "severity": "error",
     },
