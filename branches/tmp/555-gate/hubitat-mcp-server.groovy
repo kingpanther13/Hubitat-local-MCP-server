@@ -27570,6 +27570,7 @@ private Map _nfRelabel(Long id, Map plan, Map answer) {
         shown = _nfLabelText(field, app?.trueLabel ?: app?.label)
     }
     if (shown != wanted) return [label_lost: [posted: wanted, shown: shown]]
+    if (answer.location != null) return [label_restored: true]
     [label_restored: true] + (rendered ? [model: rendered] : (answer.configPage instanceof Map ? [model: answer + [app: app]] : [:]))
 }
 private String _nfLabelRestoredNote() { "The hub's mode write put back an older label, so the label was posted again on its own." }
