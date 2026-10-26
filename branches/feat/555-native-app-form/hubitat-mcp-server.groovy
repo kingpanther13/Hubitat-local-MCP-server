@@ -17648,7 +17648,7 @@ def toolGetAppConfig(args) {
     }
     try {
         result.controls = _nfPublic(_nfContext(appIdStr as Long, parsed as Map), []).controls
-    } catch (IllegalStateException unreadable) {
+    } catch (Exception unreadable) {
         mcpLog("warn", "hub-admin", "hub_get_app_config app ${appIdStr}: page controls unreadable: ${unreadable.message}")
         result.controlsError = unreadable.message
     }
@@ -17724,7 +17724,7 @@ private boolean _appConfigSecretName(name) {
     if (raw ==~ /(?i)access_?token/) return false
     String lower = raw.toLowerCase()
     if (!(lower.contains("pass") || lower.contains("pwd") || lower.contains("secret") || lower.contains("token") ||
-          lower.contains("key") || lower.contains("credential") || lower.contains("psk"))) return false
+          lower.contains("key") || lower.contains("credential") || lower.contains("psk") || lower.contains("pin") || lower.contains("code"))) return false
     String spaced = raw.replaceAll(/([a-z0-9])([A-Z])/, '$1 $2').replaceAll(/([A-Z]+)([A-Z][a-z])/, '$1 $2')
     List words = spaced.toLowerCase().split(/[^a-z]+/).findAll { part -> part }
     Set metadata = ["count", "counter", "cnt", "expiry", "expires", "expire", "expired", "expiration", "time",
@@ -17740,7 +17740,9 @@ private boolean _appConfigSecretName(name) {
             w.contains("accesskey") || (w.contains("secret") && !w.startsWith("secretar")) ||
             w.endsWith("token") || w.endsWith("tokens") || w.startsWith("credential") || w == "psk" ||
             (w == "pass" && prev != "by" && (next == null || next in ["word", "phrase", "code", "key"])) ||
-            (keyQualifiers.contains(w) && (next == "key" || next == "keys"))
+            (keyQualifiers.contains(w) && (next == "key" || next == "keys")) ||
+            w == "pin" || w == "pincode" ||
+            (w == "code" && prev in ["lock", "user", "access", "pass", "disarm", "alarm", "security", "unlock", "auth", "pin", "entry", "keypad", "arm"])
         if (!hit) continue
         String after = (next == "key" || next == "keys") && keyQualifiers.contains(w) ? (idx + 2 < words.size() ? words[idx + 2] : null) : next
         if (after != null && metadata.contains(after)) continue
@@ -24089,6 +24091,11 @@ Map _rmSubmitMainPageDone(Integer appId) {
         mcpLog("warn", "rm-native", "_rmSubmitMainPageDone: Done POST for app ${appId} returned status ${resp.status}")
         return [done: false, reason: "Done POST returned status ${resp.status}".toString()]
     }
+    def reply = null
+    try { reply = resp?.data ? new groovy.json.JsonSlurper().parseText(resp.data.toString()) : null } catch (Exception ignored) { reply = null }
+    if (reply instanceof Map && reply.location == null && reply.configPage instanceof Map) {
+        return [done: false, reason: "the hub rendered page '${commitPage}' again instead of accepting its Done".toString()]
+    }
     return [done: true]
 }
 private Map _rmWriteSubPageField(Integer appId, String page, String parentPage, String hrefName, Integer hrefIndex, Map hrefParams, String key, Object value, Map cache = null) {
@@ -24219,11 +24226,12 @@ Map _rmBackupRuleSnapshot(Integer ruleId, String reason, boolean requireNativeEx
 private Set _rmRedactSnapshotPasswords(Map config, Map status) {
     Set names = [] as Set
     if (status?.appSettings instanceof List) status.appSettings.each { row ->
-        if (row instanceof Map && row.type?.toString() == 'password' && row.name) { names << row.name.toString(); row.value = null }
+        if (row instanceof Map && row.name && (row.type?.toString() == 'password' || _appConfigIsSecretSetting(row.name, row.type, row.value))) { names << row.name.toString(); row.value = null }
     }
     (config?.configPage?.sections ?: []).each { section ->
         (section instanceof Map && section.input instanceof List ? section.input : []).each { input ->
-            if (input instanceof Map && input.type?.toString() == 'password' && input.name) {
+            if (input instanceof Map && input.name && (input.type?.toString() == 'password' || input.name.toString() in names ||
+                    _appConfigIsSecretSetting(input.name, input.type, input.value != null ? input.value : input.defaultValue))) {
                 names << input.name.toString()
                 ['value', 'defaultValue'].each { key -> if (input.containsKey(key)) input.put(key, null) }
             }
@@ -25232,7 +25240,7 @@ private void _naValidateUpdate(Map args) {
     if (!args.get('fields')) throw new IllegalArgumentException('update requires at least one field')
     if (args.page != null && !(args.page ==~ /[A-Za-z_][A-Za-z0-9_.-]*/)) throw new IllegalArgumentException('page must be a native page name (letters, digits, underscore, dot or hyphen) from page.hrefs in hub_get_app_config.')
 }
-private String _naDone(Map context) { ['_action_update|Done|', '_action_previous|Done|'].find { context.controls.containsKey(it) } }
+private String _naDone(Map context) { ['_action_update|Done|', '_action_previous|Done|', '_action_done|Done|'].find { context.controls.containsKey(it) } }
 private Map _naSave(Long id, Map context, Map supplied, String from, boolean existing) {
     List posted = []
     List rejected = []
@@ -25286,13 +25294,12 @@ private Object _naComparable(Map field, Object value, boolean written) {
         return value instanceof List ? value.collect { it.toString() }.sort() : value.toString()
     }
 }
-private Map _naReadBack(Long id, Map page, Map written) {
-    Map model = _nfPage(id)
+private Map _naReadBack(Long id, Map page, Map written, String pageName = null) {
+    Map model = pageName ? _nfPage(id, pageName) : _nfPage(id)
     Map stored = model.settings instanceof Map ? model.settings : [:]
     List notLanded = written.keySet().findAll { name ->
         Map field = page.get('fields').get(name)
         def value = field.app_field ? _nfAppValue(model, field.name == 'mode[mode]') : stored.get(name)
-        if (field.type == 'password') return (written.get(name) != '') != (value != null && value != '')
         _naComparable(field, value, false) != _naComparable(field, written.get(name), true)
     }.collect { it.toString() }
     Map rendered = null
@@ -25366,6 +25373,8 @@ private Map _naCreate(Map args) {
                 return [success: false, app_type: type, error: "The ${reg.parentTypeName} page offers no control that creates ${reg.appName}; it offers ${offered ?: 'none'}. Nothing was created.".toString(),
                         note: "Open the ${reg.parentTypeName} app with operation:'form' to see what it offers.${guide}".toString()]
             }
+            String twice = name ? ['origLabel', 'name', 'label'].find { supplied.containsKey(it) } : null
+            if (twice) throw new IllegalArgumentException("Pass the label once, as name or as fields.${twice}".toString())
             Map made = _nfExecute(parentId, _nfPrepare(parentId, parent, [:], create.control_id, 'hub_set_native_app'))
             if (made.created_mismatch) {
                 mcpLog('warn', 'rm-native', "hub_set_native_app create of ${type}: ${made.created_mismatch}; left in place")
@@ -25403,7 +25412,7 @@ private Map _naCreate(Map args) {
             return [success: false, partial: true, app_type: type, app_id: childId, error: failure.message?.toString(),
                     note: "App ${childId} exists and its page may already be saved. Open it with hub_set_native_app(operation:'form', app_id:${childId}, args:{steps:[{kind:'open'}]}, confirm:true) to see its state, then finish or delete it; do not create it again.${guide}".toString()]
         }
-        if (saved.done && !saved.committed) {
+        if (saved.done && !saved.committed && saved.done != '_action_done|Done|') {
             List asks = []
             try {
                 Map model = saved.answer?.model?.configPage instanceof Map ? saved.answer.model : _nfPage(childId)
@@ -25570,13 +25579,14 @@ private Map _naUpdate(Long id, Map args) {
                 if (refused) uncommitted = "The hub rendered page '${parent.page.name}' again instead of accepting its Done, so the app's update did not run; open it with operation:'form' to see what it asks for."
             } else uncommitted = "Page '${parent.page.name}', which the sub-page returned to, renders no Done, so the app's update did not run."
         } else if (!saved.done) uncommitted = "Page '${saved.page}' renders no Done, so the fields were saved as the page posts them and the app's update did not run."
+        else if (saved.done == '_action_done|Done|') uncommitted = "Page '${saved.page}' names both a next and a done page, so the hub answers its Done by saving and rendering the page again; the app's update did not run."
         else if (!committed) {
             refused = true
             uncommitted = "The hub rendered page '${saved.page}' again instead of accepting its Done, so the app's update did not run; open it with operation:'form' to see what it asks for."
         }
         Map report = (page ? [page: page] : [:]) + _nfDefaultsReport(posted, notPosted) + (committed ? [:] : [committed: false])
         Map back
-        try { back = _naReadBack(id, context, fields) }
+        try { back = _naReadBack(id, context, fields, subPage ? page : null) }
         catch (Exception failure) {
             mcpLogError('rm-native', "hub_set_native_app update: reading back app ${id} failed", failure)
             return [success: false, app_id: id, fields_unverified: fields.keySet().collect { it.toString() }, backup: backup,
@@ -25648,7 +25658,7 @@ A button_rule takes args:{app_type:"button_rule",controller_id,button_number,eve
 
 ### update
 
-operation:"update" with args:{fields:{input name:value},page?} opens the page (the default page, or page), sets the fields and presses that page's Done. hub_get_app_config shows a page's inputs, their values and, under page.hrefs, the pages it links to. A sub-page's Done returns to the main page, whose Done then commits the app and re-initializes it, as the browser's Done does. A submitOnChange input posts the page first, as the browser does, and the Done is pressed on the page that post renders; if that page asks for a required input it revealed, the call stops before the Done, reports partial and says what was saved. Inputs not given keep their stored values; unset inputs with a page default save that default (defaults_posted). Device inputs take device IDs (a list for a multiple input) or the {id:label} map hub_get_app_config returns; a multi-select enum takes a list; a mode input takes mode IDs as the page's options list them. A field the page does not render, a button, a disabled input, a bad value or device ID, or a required input left empty is refused before anything is written. An input that appears only after another choice needs that choice saved by an earlier update, or a form workflow. The result reports fields_applied and fields_not_landed (with success:false) from one read-back after the Done, and committed:false when the app's own Done did not run: with a note when the page renders none, and with success:false and the reason as error when the hub rendered the page again instead of accepting the Done (fields_applied still lists what it stored). A written input that the page no longer renders after the save, and that the app did not store, is listed under fields_consumed without failing the call: the app's own code used the value (a table editor adding a row, for one), so read the page to see the effect.
+operation:"update" with args:{fields:{input name:value},page?} opens the page (the default page, or page), sets the fields and presses that page's Done. hub_get_app_config shows a page's inputs, their values and, under page.hrefs, the pages it links to. A sub-page's Done returns to the root page, whose Done then commits the app and re-initializes it, as the browser's Done does; learning the root page's name renders the app's default page first, so a stateful wizard whose default page resets its progress is driven with operation:'form' and open.from instead. The read-back renders the page that was written. A page that names both a next and a done page has that Done pressed, which the hub answers by saving and rendering the page again (committed:false). A submitOnChange input posts the page first, as the browser does, and the Done is pressed on the page that post renders; if that page asks for a required input it revealed, the call stops before the Done, reports partial and says what was saved. Inputs not given keep their stored values; unset inputs with a page default save that default (defaults_posted). Device inputs take device IDs (a list for a multiple input) or the {id:label} map hub_get_app_config returns; a multi-select enum takes a list; a mode input takes mode IDs as the page's options list them. A field the page does not render, a button, a disabled input, a bad value or device ID, or a required input left empty is refused before anything is written. An input that appears only after another choice needs that choice saved by an earlier update, or a form workflow. The result reports fields_applied and fields_not_landed (with success:false) from one read-back after the Done, and committed:false when the app's own Done did not run: with a note when the page renders none, and with success:false and the reason as error when the hub rendered the page again instead of accepting the Done (fields_applied still lists what it stored). A written input that the page no longer renders after the save, and that the app did not store, is listed under fields_consumed without failing the call: the app's own code used the value (a table editor adding a row, for one), so read the page to see the effect.
 
 Each update first takes a recovery point, before it renders any page: an exact export for a Rule Machine rule, otherwise a File Manager baseline of the app, reused for one hour unless every-write backups are on, and none while pre-edit backups are off. backup.backupKey restores it with hub_restore_backup.
 
@@ -26756,7 +26766,11 @@ private void _ndValidateChange(Object change) {
 private boolean _ndKnownRow(Map rows, String rowId, String missing) {
     if (rowId in rows.deleted) throw new IllegalArgumentException(missing)
     if (rowId in rows.ids) return true
-    if (rows.added > 0) return false
+    Collection all = rows.all instanceof Map ? rows.all.values() : [rows]
+    List used = all.collectMany { ((it.ids as Collection) + (it.deleted as Collection)).toList() }.findAll { it.toString().isInteger() }.collect { it.toString().toInteger() }
+    int next = (used ? used.max() : 0) + 1
+    int added = all.sum { it.added ?: 0 } as int
+    if (added > 0 && rowId.isInteger() && rowId.toInteger() >= next && rowId.toInteger() < next + added) return false
     throw new IllegalArgumentException(missing)
 }
 private void _ndDropRow(Map rows, String rowId, String missing) {
@@ -26776,6 +26790,7 @@ private void _ndPreflight(Long id, List changes) {
     Map rows = [action: [ids: (actionOrder + projectedActions.keySet()) as Set, added: 0, deleted: [] as Set],
                 condition: [ids: conditions.keySet().collect { it.toString() } as Set, added: 0, deleted: [] as Set],
                 trigger: [ids: triggers.keySet().collect { it.toString() } as Set, added: 0, deleted: [] as Set]]
+    rows.values().each { it.all = rows }
     int newAction = 0
     boolean appendedActions = false
     Map locals = id == null ? [:] : null
@@ -27134,7 +27149,7 @@ Example changes: [{part:"action",value:{type:"messageActs",subtype:"getLogMsg",f
 
 hub_set_rule(operation:"form",rule_id,args:{steps:[{kind:"open"}]},confirm:true) operates an enabled Rule-5.1 or Button Rule-5.1 rule, or its Rule Machine parent; hub_set_native_app(operation:"form",app_id,...) runs the same steps on any other classic app. Read action variants, input names and option values from the returned forms instead of guessing them. Even open renders execute app code and can change state or cause side effects. An open's optional page names a registered native page, and from names the page that links to it, so a sub-page opened directly offers its Done back to that parent. Follow returned controls for page parameters and breadcrumbs. A create_child control creates the parent's native child type, returns created_app_id and closes the parent context; open the child separately to configure it. Apps are deleted with hub_delete_native_app.
 
-Submit with {kind:"submit",expect_page:"last returned page",fields:{"native field name":value},activate:"returned control_id"}; without activate it saves the fields and refreshes the page. Control IDs tell apart native buttons that share a name, such as editing and deleting the same variable. A page with both a next page and a done page renders its Done as the _action_done control, which the hub answers by saving the page and rendering that same page again. An app without pages also shows the hub's default fields, label (the app's name) and mode[mode] (a list of mode IDs from its options), and a page's own label and mode elements are the same two fields; the hub does not always keep the label posted with mode[mode], so after such a submit the label is checked and posted again on its own when the hub put back an older one (label_restored). Native enum keys, device IDs, booleans and single/multiple cardinality are checked before the request. Each submit posts the supplied settings and, as the browser does, the shown default of every other input with no stored value; a password's default is never posted, and page code can still change its own settings. args.options_for:["device field name"] expands device choices on the final returned page.
+Submit with {kind:"submit",expect_page:"last returned page",fields:{"native field name":value},activate:"returned control_id"}; without activate it saves the fields and refreshes the page. Control IDs tell apart native buttons that share a name, such as editing and deleting the same variable. Form results mask password-typed fields and fields whose names look like credentials (API keys, tokens, passwords, PINs, lock codes) with the same marker hub_get_app_config uses. A page with both a next page and a done page renders its Done as the _action_done control, which the hub answers by saving the page and rendering that same page again. An app without pages also shows the hub's default fields, label (the app's name) and mode[mode] (a list of mode IDs from its options), and a page's own label and mode elements are the same two fields; the hub does not always keep the label posted with mode[mode], so after such a submit the label is checked and posted again on its own when the hub put back an older one (label_restored). Native enum keys, device IDs, booleans and single/multiple cardinality are checked before the request. Each submit posts the supplied settings and, as the browser does, the shown default of every other input with no stored value; a password's default is never posted, and page code can still change its own settings. args.options_for:["device field name"] expands device choices on the final returned page.
 
 A batch holds 1 through 16 steps, each using the form the step before it returned, so dependent fields require another submit after they appear. A button handler runs before its step's fields are saved, as in the browser: submit the fields it needs in an earlier step. A button without submitOnChange reloads and needs a separate field submission.
 
@@ -27429,6 +27444,7 @@ private Map _nfPublic(Map context, List optionsFor) {
         ['device', 'ignore', 'capability', 'present', 'default_value', 'app_field', 'sidecars', 'hub_default'].each { result.remove(it) }
         if (field.type == 'password') result.redacted = true
         else if (field.name ==~ /(?i)access_?token/ && result.value instanceof CharSequence && result.value && _redactsAccessTokens()) result.value = _accessTokenRedactedMarker()
+        else if (_appConfigIsSecretSetting(field.name, field.type, result.value)) { result.value = _appConfigRedactedMarker(); result.redacted = true }
         if (field.device && field.name in optionsFor) result.options = _nfDevices(field)
         if (field.device) result.options_available = true
         result
@@ -27542,16 +27558,19 @@ private Map _nfRelabel(Long id, Map plan, Map answer) {
     Map app = answer.app instanceof Map ? answer.app : _nfPage(id).app
     String shown = _nfLabelText(field, app?.trueLabel ?: app?.label)
     if (shown == wanted) return [:]
+    Map rendered = null
     for (int attempt = 1; attempt <= 2 && shown != wanted; attempt++) {
         mcpLog('warn', 'rm-native', "App ${id}: the hub's mode write left the label '${shown}' instead of '${wanted}'; posting the label again (${attempt} of 2)")
-        Map repair = [:] + plan.envelope + _nfWire(field, plan.relabel.value) + [_action_update: 'Done']
+        Map action = plan.control?.kind == 'navigation' ? [(plan.control.name): plan.control.value] : [:]
+        Map repair = [:] + plan.envelope + _nfWire(field, plan.relabel.value) + action
         if (app?.containsKey('version')) repair.version = app.version
         Map reply = _nfPost('/installedapp/update/json', repair)
+        if (reply.configPage instanceof Map) rendered = reply
         app = reply.app instanceof Map ? reply.app : _nfPage(id).app
         shown = _nfLabelText(field, app?.trueLabel ?: app?.label)
     }
     if (shown != wanted) return [label_lost: [posted: wanted, shown: shown]]
-    [label_restored: true] + (answer.configPage instanceof Map ? [model: answer + [app: app]] : [:])
+    [label_restored: true] + (rendered ? [model: rendered] : (answer.configPage instanceof Map ? [model: answer + [app: app]] : [:]))
 }
 private String _nfLabelRestoredNote() { "The hub's mode write put back an older label, so the label was posted again on its own." }
 private String _nfLabelLostError(Map lost) {
@@ -28182,7 +28201,7 @@ private Set _clientHiddenTools() {
     boolean noWrite = !_clientAllows(id, "clientWrite")
     return _toolCatalogIndexes().names.findAll { name ->
         !allowed.contains(name) || (!always.contains(name) &&
-            (name == "hub_set_rule" ? (noRead && noWrite) : (readOnly.contains(name) ? noRead : noWrite)))
+            (name in ["hub_set_rule", "hub_set_native_app"] ? (noRead && noWrite) : (readOnly.contains(name) ? noRead : noWrite)))
     } as Set
 }
 Map _clientAccessInfo() {
@@ -28320,7 +28339,7 @@ def advancedOverridesPage() {
                   description: "ON by default. If the snapshot cannot be saved, the edit is refused. One snapshot covers the whole batch or editor workflow, rather than every individual step.",
                   defaultValue: true
             input "backupEveryRuleWrite", "bool", title: "Take a fresh snapshot before every edit",
-                  description: "OFF (default): a native app form edit within an hour of that app's last snapshot reuses it. ON: every edit takes its own fresh snapshot first.",
+                  description: "OFF (default): a native app form edit within an hour of that app's last snapshot reuses it. ON: every edit takes its own fresh snapshot first; with the budget full, oldest-first eviction then removes a rule's earlier snapshot while its later ones stay.",
                   defaultValue: false
         }
         section("Backup storage") {
