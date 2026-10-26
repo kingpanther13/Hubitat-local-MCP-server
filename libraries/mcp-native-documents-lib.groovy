@@ -237,11 +237,14 @@ private void _ndValidateChange(Object change) {
 private boolean _ndKnownRow(Map rows, String rowId, String missing) {
     if (rowId in rows.deleted) throw new IllegalArgumentException(missing)
     if (rowId in rows.ids) return true
-    // Rule Machine numbers appended rows from the next id after the highest it has used, so a
-    // batch may name an appended row only by one of those ids; any other unknown id is a refusal.
-    List used = ((rows.ids as Collection) + (rows.deleted as Collection)).findAll { it.toString().isInteger() }.collect { it.toString().toInteger() }
+    // Rule Machine numbers every row of a rule from one counter, so an appended row takes the next id
+    // after the highest any collection has used; a batch may name an appended row only by one of
+    // those ids (one per append in the batch), and any other unknown id is a refusal.
+    Collection all = rows.all instanceof Map ? rows.all.values() : [rows]
+    List used = all.collectMany { ((it.ids as Collection) + (it.deleted as Collection)).toList() }.findAll { it.toString().isInteger() }.collect { it.toString().toInteger() }
     int next = (used ? used.max() : 0) + 1
-    if (rows.added > 0 && rowId.isInteger() && rowId.toInteger() >= next && rowId.toInteger() < next + rows.added) return false
+    int added = all.sum { it.added ?: 0 } as int
+    if (added > 0 && rowId.isInteger() && rowId.toInteger() >= next && rowId.toInteger() < next + added) return false
     throw new IllegalArgumentException(missing)
 }
 
@@ -263,6 +266,7 @@ private void _ndPreflight(Long id, List changes) {
     Map rows = [action: [ids: (actionOrder + projectedActions.keySet()) as Set, added: 0, deleted: [] as Set],
                 condition: [ids: conditions.keySet().collect { it.toString() } as Set, added: 0, deleted: [] as Set],
                 trigger: [ids: triggers.keySet().collect { it.toString() } as Set, added: 0, deleted: [] as Set]]
+    rows.values().each { it.all = rows }
     int newAction = 0
     boolean appendedActions = false
     Map locals = id == null ? [:] : null

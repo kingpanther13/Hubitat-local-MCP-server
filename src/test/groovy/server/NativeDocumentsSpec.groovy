@@ -756,8 +756,8 @@ class NativeDocumentsSpec extends ToolSpecBase {
         when:
         def result = script.toolUpdateRuleDocument([rule_id: 42, confirm: true, changes: [
             logChange(),
-            [part: 'delete', value: [part: 'action', id: '4']],
-            [part: 'delete', value: [part: 'action', id: '5']]
+            [part: 'delete', value: [part: 'action', id: '6']],
+            [part: 'delete', value: [part: 'action', id: '7']]
         ]])
         then:
         !result.success

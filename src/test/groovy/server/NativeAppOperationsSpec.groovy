@@ -251,6 +251,10 @@ class NativeAppOperationsSpec extends ToolSpecBase {
     }
 
     def 'a label passed as name and in fields is refused before the parent creates anything'() {
+        given:
+        parentAt(40L, 'notifierChild', 'Notifier')
+        childAt(90L, 40L, 'Notifier', [page(90L, notifierInputs())])
+
         when:
         create([app_type: 'notifier', name: 'N', fields: [origLabel: 'M']])
 
@@ -473,7 +477,7 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         existing(71L, 'Room Lights')
         List sub = [input('motions', 'capability.switch', [multiple: true, required: true])]
         List main = [input('origLabel', 'text')]
-        pages['/installedapp/configure/json/71/onMeansPage'] = page(71L, sub, [page: 'onMeansPage', install: false])
+        pages['/installedapp/configure/json/71/onMeansPage'] = page(71L, sub, [page: 'onMeansPage', install: false, settings: [origLabel: 'Room', motions: ['8': 'Fan']]])
         pages['/installedapp/configure/json/71'] = page(71L, main, [settings: [origLabel: 'Room', motions: ['8': 'Fan']]])
         replies['/installedapp/update/json'] = [page(71L, main, [settings: [origLabel: 'Room']]), DONE]
 
@@ -501,7 +505,7 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         List sub = [input('subNote', 'text')]
         List main = [input('note', 'text')]
         pages['/installedapp/configure/json/73'] = page(73L, main, [page: 'pageMain', settings: [note: 'root', subNote: 'x']])
-        pages['/installedapp/configure/json/73/pageSub'] = page(73L, sub, [page: 'pageSub', install: false])
+        pages['/installedapp/configure/json/73/pageSub'] = page(73L, sub, [page: 'pageSub', install: false, settings: [note: 'root', subNote: 'x']])
         replies['/installedapp/update/json'] = [page(73L, main, [page: 'pageMain', settings: [note: 'root']]), DONE]
 
         when:
@@ -1102,7 +1106,7 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         existing(71L, 'Room Lights')
         List sub = [input('motions', 'capability.switch', [multiple: true, required: true])]
         List main = [input('origLabel', 'text')]
-        pages['/installedapp/configure/json/71/onMeansPage'] = page(71L, sub, [page: 'onMeansPage', install: false])
+        pages['/installedapp/configure/json/71/onMeansPage'] = page(71L, sub, [page: 'onMeansPage', install: false, settings: [origLabel: 'Room', motions: ['8': 'Fan']]])
         pages['/installedapp/configure/json/71'] = page(71L, main, [settings: [origLabel: 'Room', motions: ['8': 'Fan']]])
         replies['/installedapp/update/json'] = [page(71L, main, [install: false, settings: [origLabel: 'Room']])]
 
@@ -1143,7 +1147,7 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         existing(71L, 'Room Lights')
         List sub = [input('motions', 'capability.switch', [multiple: true, required: true])]
         List main = [input('origLabel', 'text')]
-        pages['/installedapp/configure/json/71/onMeansPage'] = page(71L, sub, [page: 'onMeansPage', install: false])
+        pages['/installedapp/configure/json/71/onMeansPage'] = page(71L, sub, [page: 'onMeansPage', install: false, settings: [origLabel: 'Room', motions: ['8': 'Fan']]])
         pages['/installedapp/configure/json/71'] = page(71L, main, [settings: [origLabel: 'Room', motions: ['8': 'Fan']]])
         replies['/installedapp/update/json'] = [page(71L, main, [settings: [origLabel: 'Room']]), [status: 'success']]
 

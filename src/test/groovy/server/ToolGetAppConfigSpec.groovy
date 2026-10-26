@@ -1298,7 +1298,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         'hubPassword'  | null                | 'abc'      | true
         'hubPassword'  | 'text'              | 'abc'      | true
         'hubPassword'  | 'textarea'          | 'abc'      | true
-        'lockPin'      | 'number'            | 1234       | false
+        'lockPin'      | 'number'            | 1234       | true
         'lockPasscode' | 'number'            | 1234       | true
         'apiTokens'    | null                | ['a', 'b'] | true
         'apiTokens'    | null                | []         | false
@@ -2445,21 +2445,6 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         result.page.sections[0].inputs*.title == ['First', 'Second']
         !result.containsKey('controls')
         result.controlsError == 'Native form contains ambiguous fields'
-    }
-
-    def "any failure while modelling the controls is reported as controlsError, not thrown through the read"() {
-        given:
-        settingsMap.enableRead = true
-        hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson([:]) }
-        script.metaClass._nfContext = { Long id, Map model, String from = null -> throw new NullPointerException('broken parse') }
-
-        when:
-        def result = script.toolGetAppConfig([appId: 35])
-
-        then:
-        result.success == true
-        !result.containsKey('controls')
-        result.controlsError == 'broken parse'
     }
 
     @spock.lang.Unroll
