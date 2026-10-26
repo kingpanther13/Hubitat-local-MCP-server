@@ -481,6 +481,8 @@ private Map _nfRelabel(Long id, Map plan, Map answer) {
         shown = _nfLabelText(field, app?.trueLabel ?: app?.label)
     }
     if (shown != wanted) return [label_lost: [posted: wanted, shown: shown]]
+    // A Done the hub accepted answered with a location; the repair's page must not replace that answer.
+    if (answer.location != null) return [label_restored: true]
     [label_restored: true] + (rendered ? [model: rendered] : (answer.configPage instanceof Map ? [model: answer + [app: app]] : [:]))
 }
 
