@@ -642,7 +642,7 @@ def toolGetAppConfig(args) {
     // The controls hub_set_native_app / hub_set_rule(operation:'form') would offer on this page.
     try {
         result.controls = _nfPublic(_nfContext(appIdStr as Long, parsed as Map), []).controls
-    } catch (IllegalStateException unreadable) {
+    } catch (Exception unreadable) {
         mcpLog("warn", "hub-admin", "hub_get_app_config app ${appIdStr}: page controls unreadable: ${unreadable.message}")
         result.controlsError = unreadable.message
     }
@@ -746,7 +746,7 @@ private boolean _appConfigSecretName(name) {
     // Cheap prefilter: a large app has 500-1000 keys and almost none can match.
     String lower = raw.toLowerCase()
     if (!(lower.contains("pass") || lower.contains("pwd") || lower.contains("secret") || lower.contains("token") ||
-          lower.contains("key") || lower.contains("credential") || lower.contains("psk"))) return false
+          lower.contains("key") || lower.contains("credential") || lower.contains("psk") || lower.contains("pin") || lower.contains("code"))) return false
     String spaced = raw.replaceAll(/([a-z0-9])([A-Z])/, '$1 $2').replaceAll(/([A-Z]+)([A-Z][a-z])/, '$1 $2')
     List words = spaced.toLowerCase().split(/[^a-z]+/).findAll { part -> part }
     Set metadata = ["count", "counter", "cnt", "expiry", "expires", "expire", "expired", "expiration", "time",
@@ -764,7 +764,11 @@ private boolean _appConfigSecretName(name) {
             // "pass" alone is a password only as the final word ("mqttPass") or split from its
             // own suffix ("passWord"); "passThrough", "passMode", and "byPass" are not.
             (w == "pass" && prev != "by" && (next == null || next in ["word", "phrase", "code", "key"])) ||
-            (keyQualifiers.contains(w) && (next == "key" || next == "keys"))
+            (keyQualifiers.contains(w) && (next == "key" || next == "keys")) ||
+            // "pin" as its own word ("disarmPin", "pinCode"); "pinned" and "spinner" are not. A "code" is a
+            // secret when a lock, user, access, alarm or entry word qualifies it; "zipCode" is not.
+            w == "pin" || w == "pincode" ||
+            (w == "code" && prev in ["lock", "user", "access", "pass", "disarm", "alarm", "security", "unlock", "auth", "pin", "entry", "keypad", "arm"])
         if (!hit) continue
         // A metadata word right after the hit ("passwordSet", "tokenCount"); for the two-word
         // "api key" form the metadata word follows "key".

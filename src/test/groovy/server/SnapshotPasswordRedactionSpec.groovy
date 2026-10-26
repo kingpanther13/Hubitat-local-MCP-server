@@ -39,6 +39,33 @@ class SnapshotPasswordRedactionSpec extends ToolSpecBase {
         snap.configJson.configPage.sections[0].input[0].value == null
     }
 
+    def "a snapshot drops a credential-named text setting the way hub_get_app_config redacts it"() {
+        given:
+        List uploads = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> uploads << new String(b, 'UTF-8') }
+        hubGet.register('/installedapp/configure/json/78') { params ->
+            JsonOutput.toJson([
+                app: [id: 78, name: 'Bridge', label: 'Bridge', trueLabel: 'Bridge', installed: true, appType: [name: 'Bridge', namespace: 'someDeveloper']],
+                configPage: [name: 'mainPage', sections: [[input: [[name: 'apiKey', type: 'text', value: 'ak-live-1'], [name: 'disarmPin', type: 'text', value: '4321'], [name: 'zipCode', type: 'text', value: '02134']]]]],
+                settings: [apiKey: 'ak-live-1', disarmPin: '4321', zipCode: '02134'],
+                childApps: []])
+        }
+        hubGet.register('/installedapp/statusJson/78') { params ->
+            JsonOutput.toJson([installedApp: [id: 78], appState: [],
+                appSettings: [[name: 'apiKey', type: 'text', value: 'ak-live-1'], [name: 'disarmPin', type: 'text', value: '4321'], [name: 'zipCode', type: 'text', value: '02134']]])
+        }
+
+        when:
+        script._rmBackupRuleSnapshot(78, 'pre-update')
+        def snap = new JsonSlurper().parseText(uploads[0])
+
+        then:
+        !uploads[0].contains('ak-live-1')
+        !uploads[0].contains('4321')
+        snap.redactedSettings == ['apiKey', 'disarmPin']
+        snap.configJson.settings == [zipCode: '02134']
+    }
+
     def "a snapshot without password settings carries no redactedSettings"() {
         given:
         List uploads = []

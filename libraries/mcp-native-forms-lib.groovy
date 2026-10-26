@@ -325,6 +325,8 @@ private Map _nfPublic(Map context, List optionsFor) {
         if (field.type == 'password') result.redacted = true
         // The whole-result pass keys on a setting's name, and here the token sits under value.
         else if (field.name ==~ /(?i)access_?token/ && result.value instanceof CharSequence && result.value && _redactsAccessTokens()) result.value = _accessTokenRedactedMarker()
+        // The same name rule as hub_get_app_config: a free-text apiKey or brokerPassword is a secret too.
+        else if (_appConfigIsSecretSetting(field.name, field.type, result.value)) { result.value = _appConfigRedactedMarker(); result.redacted = true }
         if (field.device && field.name in optionsFor) result.options = _nfDevices(field)
         if (field.device) result.options_available = true
         result
@@ -467,16 +469,20 @@ private Map _nfRelabel(Long id, Map plan, Map answer) {
     Map app = answer.app instanceof Map ? answer.app : _nfPage(id).app
     String shown = _nfLabelText(field, app?.trueLabel ?: app?.label)
     if (shown == wanted) return [:]
+    Map rendered = null
     for (int attempt = 1; attempt <= 2 && shown != wanted; attempt++) {
         mcpLog('warn', 'rm-native', "App ${id}: the hub's mode write left the label '${shown}' instead of '${wanted}'; posting the label again (${attempt} of 2)")
-        Map repair = [:] + plan.envelope + _nfWire(field, plan.relabel.value) + [_action_update: 'Done']
+        // The same action the repaired submit used: a Done only when that submit pressed one.
+        Map action = plan.control?.kind == 'navigation' ? [(plan.control.name): plan.control.value] : [:]
+        Map repair = [:] + plan.envelope + _nfWire(field, plan.relabel.value) + action
         if (app?.containsKey('version')) repair.version = app.version
         Map reply = _nfPost('/installedapp/update/json', repair)
+        if (reply.configPage instanceof Map) rendered = reply
         app = reply.app instanceof Map ? reply.app : _nfPage(id).app
         shown = _nfLabelText(field, app?.trueLabel ?: app?.label)
     }
     if (shown != wanted) return [label_lost: [posted: wanted, shown: shown]]
-    [label_restored: true] + (answer.configPage instanceof Map ? [model: answer + [app: app]] : [:])
+    [label_restored: true] + (rendered ? [model: rendered] : (answer.configPage instanceof Map ? [model: answer + [app: app]] : [:]))
 }
 
 private String _nfLabelRestoredNote() { "The hub's mode write put back an older label, so the label was posted again on its own." }

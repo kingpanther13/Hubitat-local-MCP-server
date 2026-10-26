@@ -756,8 +756,8 @@ class NativeDocumentsSpec extends ToolSpecBase {
         when:
         def result = script.toolUpdateRuleDocument([rule_id: 42, confirm: true, changes: [
             logChange(),
-            [part: 'delete', value: [part: 'action', id: '99']],
-            [part: 'delete', value: [part: 'action', id: '98']]
+            [part: 'delete', value: [part: 'action', id: '4']],
+            [part: 'delete', value: [part: 'action', id: '5']]
         ]])
         then:
         !result.success
@@ -771,18 +771,33 @@ class NativeDocumentsSpec extends ToolSpecBase {
         def trigger = [part: 'trigger', value: [capability: 'Switch', fields: [
             [name: 'tDev#', type: 'capability.switch', value: ['789']], [name: 'tstate#', type: 'enum', value: 'on']]]]
         when:
-        script._ndPreflight(42L, script._ndChanges([trigger, [part: 'trigger', value: trigger.value + [id: '99']]]))
+        script._ndPreflight(42L, script._ndChanges([trigger, [part: 'trigger', value: trigger.value + [id: '6']]]))
         then:
         noExceptionThrown()
         when:
         script._ndPreflight(42L, script._ndChanges([
             trigger,
-            [part: 'delete', value: [part: 'trigger', id: '99']],
-            [part: 'delete', value: [part: 'trigger', id: '98']]
+            [part: 'delete', value: [part: 'trigger', id: '6']],
+            [part: 'delete', value: [part: 'trigger', id: '7']]
         ]))
         then:
         def refused = thrown(IllegalArgumentException)
         refused.message == 'changes[2]: Native row does not exist'
+    }
+
+    def 'an unknown id outside the ids the appends will take is refused before any write, even after an append'() {
+        given:
+        def condition = [part: 'condition', value: [capability: 'Switch',
+            fields: [[name: 'rDev_#', type: 'capability.switch', value: ['7']], [name: 'state_#', type: 'enum', value: 'on']]]]
+        when:
+        script._ndPreflight(42L, script._ndChanges([condition, [part: 'required', value: [tokens: ['999999']]]]))
+        then:
+        def refused = thrown(IllegalArgumentException)
+        refused.message == 'changes[1]: Expression references an unknown condition'
+        when: 'the id the append will take is accepted'
+        script._ndPreflight(42L, script._ndChanges([condition, [part: 'required', value: [tokens: ['6']]]]))
+        then:
+        noExceptionThrown()
     }
 
     def 'a condition deleted after an append cannot be named by a later Required Expression'() {

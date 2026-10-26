@@ -1038,11 +1038,13 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson([
             settings: [mqttPassword: 'mqtt-pw-value', cloudApiKey: 'ak-123', authToken: 'tok-456',
                        tokenCount: 7, usePassword: true, passThrough: 'yes', bypassMode: 'strict',
-                       emptyPassword: '', ruleEnable: true]
+                       emptyPassword: '', ruleEnable: true, disarmPin: '4321', lockCode: 1234, pinCode: '9', userCode: '77',
+                       zipCode: '02134', pinnedBaseline: 'b', spinnerSpeed: 'fast', lockCodeLength: 4]
         ]) }
         // mqttPassword, cloudApiKey, authToken: missing from statusJson, so only the name decides.
         registerStatusJson([tokenCount: 'number', usePassword: 'bool', passThrough: 'text', bypassMode: 'enum',
-                            emptyPassword: 'text', ruleEnable: 'bool'])
+                            emptyPassword: 'text', ruleEnable: 'bool', disarmPin: 'text', lockCode: 'number', pinCode: 'text',
+                            userCode: 'text', zipCode: 'text', pinnedBaseline: 'text', spinnerSpeed: 'text', lockCodeLength: 'number'])
 
         when:
         def s = script.toolGetAppConfig([appId: 35, includeSettings: true]).settings
@@ -1051,6 +1053,16 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         s.mqttPassword == '***redacted (password)***'
         s.cloudApiKey == '***redacted (password)***'
         s.authToken == '***redacted (password)***'
+
+        and: 'PINs and lock or user codes are secrets too'
+        s.disarmPin == '***redacted (password)***'
+        s.lockCode == '***redacted (password)***'
+        s.pinCode == '***redacted (password)***'
+        s.userCode == '***redacted (password)***'
+        s.zipCode == '02134'
+        s.pinnedBaseline == 'b'
+        s.spinnerSpeed == 'fast'
+        s.lockCodeLength == 4
 
         and: 'metadata, toggles, look-alike names, and empty values are left as they are'
         s.tokenCount == 7
@@ -2433,6 +2445,21 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         result.page.sections[0].inputs*.title == ['First', 'Second']
         !result.containsKey('controls')
         result.controlsError == 'Native form contains ambiguous fields'
+    }
+
+    def "any failure while modelling the controls is reported as controlsError, not thrown through the read"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson([:]) }
+        script.metaClass._nfContext = { Long id, Map model, String from = null -> throw new NullPointerException('broken parse') }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35])
+
+        then:
+        result.success == true
+        !result.containsKey('controls')
+        result.controlsError == 'broken parse'
     }
 
     @spock.lang.Unroll

@@ -711,7 +711,7 @@ class NativeFormsSpec extends ToolSpecBase {
         posts[0].body['mode[mode]'] == '["1"]'
         posts[0].body.label == 'Porch'
         posts[1].body.label == 'Porch'
-        posts[1].body._action_update == 'Done'
+        !posts[1].body.containsKey('_action_update')
         posts[1].body.version == '5'
         !posts[1].body.keySet().any { it.startsWith('mode[mode]') }
         result.fields.find { it.name == 'label' }.value == 'Porch'
@@ -759,6 +759,24 @@ class NativeFormsSpec extends ToolSpecBase {
         def opened = open()
         then:
         opened.fields.find { it.name == 'label' }.value == 'Porch'
+    }
+
+    def 'a credential-named text input reads the password marker in form fields'() {
+        given:
+        model.settings.apiKey = 'ak-live-123'
+        model.settings.disarmPin = '4321'
+        model.settings.zipCode = '02134'
+        model.configPage.sections[0].input << [element: 'input', name: 'apiKey', type: 'text']
+        model.configPage.sections[0].input << [element: 'input', name: 'disarmPin', type: 'text']
+        model.configPage.sections[0].input << [element: 'input', name: 'zipCode', type: 'text']
+        when:
+        def fields = open().fields
+        then:
+        fields.find { it.name == 'apiKey' }.value == '***redacted (password)***'
+        fields.find { it.name == 'apiKey' }.redacted == true
+        fields.find { it.name == 'disarmPin' }.value == '***redacted (password)***'
+        fields.find { it.name == 'zipCode' }.value == '02134'
+        !fields.find { it.name == 'zipCode' }.containsKey('redacted')
     }
 
     @Unroll

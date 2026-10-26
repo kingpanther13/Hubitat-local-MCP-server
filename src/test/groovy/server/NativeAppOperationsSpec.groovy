@@ -9,7 +9,7 @@ import support.ToolSpecBase
 
 /**
  * hub_set_native_app create and update run the native form engine the way the browser does
- * (issue #561): the parent's create_child control, the new app's first page and its Done; on an
+ * the parent's create_child control, the new app's first page and its Done; on an
  * existing app the page's Done, and on a sub-page the Done of the page it returns to. A refusal
  * fires before the page is posted; a create refused once its child exists removes the child and
  * returns success:false. An update input whose own save reveals a required one stops before the
@@ -248,7 +248,18 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         'unknown device id'       | [app_type: 'notifier', name: 'N', fields: [switches: ['99']]]          | 'Invalid native choice for switches'
         'device cardinality'      | [app_type: 'notifier', name: 'N', fields: [switches: '7']]             | 'Incorrect cardinality for switches'
         'required empty for Done' | [app_type: 'notifier']                                                 | 'Complete required native fields before navigating: origLabel'
-        'label given twice'       | [app_type: 'notifier', name: 'N', fields: [origLabel: 'M']]            | 'Pass the label once'
+    }
+
+    def 'a label passed as name and in fields is refused before the parent creates anything'() {
+        when:
+        create([app_type: 'notifier', name: 'N', fields: [origLabel: 'M']])
+
+        then:
+        def refused = thrown(IllegalArgumentException)
+        refused.message == 'Pass the label once, as name or as fields.origLabel'
+        deleted.isEmpty()
+        posts.isEmpty()
+        raws.isEmpty()
     }
 
     def 'name is refused, and the new app removed, when the first page renders no label input'() {
@@ -433,6 +444,30 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         gets.count { it == '/installedapp/configure/json/70' } == 2
     }
 
+    def 'an update on a page that names both a next and a done page presses that Done, which the hub answers with the page'() {
+        given:
+        existing(73L, 'Community App')
+        apps[73L].appType.namespace = 'someDeveloper'
+        List inputs = [input('second', 'text')]
+        Map two = page(73L, inputs, [page: 'pageTwo', install: false])
+        two.configPage.nextPage = 'pageThree'
+        two.configPage.donePage = 'pageDone'
+        pages['/installedapp/configure/json/73'] = page(73L, [input('first', 'text')], [page: 'pageOne', install: false])
+        pages['/installedapp/configure/json/73/pageTwo'] = [two, page(73L, inputs, [page: 'pageTwo', install: false, settings: [second: 'two']])]
+        replies['/installedapp/update/json'] = [two]
+
+        when:
+        def result = update(73L, [fields: [second: 'two'], page: 'pageTwo'])
+
+        then:
+        result.success
+        result.committed == false
+        result.fields_applied == ['second']
+        posts.size() == 1
+        posts[0].body._action_done == 'Done'
+        result.note.contains("names both a next and a done page, so the hub answers its Done by saving and rendering the page again")
+    }
+
     def 'a sub-page update presses its Done back to the main page, whose Done then commits the app'() {
         given:
         existing(71L, 'Room Lights')
@@ -450,6 +485,7 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         !result.containsKey('committed')
         result.page == 'onMeansPage'
         result.fields_applied == ['motions']
+        gets.last() == '/installedapp/configure/json/71/onMeansPage'
         posts.size() == 2
         posts[0].body.currentPage == 'onMeansPage'
         posts[0].body.pageBreadcrumbs == '%5B%22mainPage%22%5D'
@@ -673,7 +709,24 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         !result.containsKey('fields_consumed')
     }
 
-    def 'a password is written and read back by presence only, and never returned'() {
+    def 'a password the hub did not keep is reported not landed, and its value never returned'() {
+        given:
+        existing(72L, 'Community App')
+        apps[72L].appType.namespace = 'someDeveloper'
+        List inputs = [input('p', 'password')]
+        pages['/installedapp/configure/json/72'] = [page(72L, inputs), page(72L, inputs, [settings: [p: 'old-secret']])]
+
+        when:
+        def result = update(72L, [fields: [p: 'BAT-secret']])
+
+        then:
+        !result.success
+        result.fields_not_landed == ['p']
+        !JsonOutput.toJson(result).contains('BAT-secret')
+        !JsonOutput.toJson(result).contains('old-secret')
+    }
+
+    def 'a password is written and read back by value in process, and never returned'() {
         given:
         existing(72L, 'Community App')
         apps[72L].appType.namespace = 'someDeveloper'

@@ -908,7 +908,7 @@ private Set _clientHiddenTools() {
     boolean noWrite = !_clientAllows(id, "clientWrite")
     return _toolCatalogIndexes().names.findAll { name ->
         !allowed.contains(name) || (!always.contains(name) &&
-            (name == "hub_set_rule" ? (noRead && noWrite) : (readOnly.contains(name) ? noRead : noWrite)))
+            (name in ["hub_set_rule", "hub_set_native_app"] ? (noRead && noWrite) : (readOnly.contains(name) ? noRead : noWrite)))
     } as Set
 }
 
@@ -1076,7 +1076,7 @@ def advancedOverridesPage() {
                   description: "ON by default. If the snapshot cannot be saved, the edit is refused. One snapshot covers the whole batch or editor workflow, rather than every individual step.",
                   defaultValue: true
             input "backupEveryRuleWrite", "bool", title: "Take a fresh snapshot before every edit",
-                  description: "OFF (default): a native app form edit within an hour of that app's last snapshot reuses it. ON: every edit takes its own fresh snapshot first.",
+                  description: "OFF (default): a native app form edit within an hour of that app's last snapshot reuses it. ON: every edit takes its own fresh snapshot first; with the budget full, oldest-first eviction then removes a rule's earlier snapshot while its later ones stay.",
                   defaultValue: false
         }
         section("Backup storage") {

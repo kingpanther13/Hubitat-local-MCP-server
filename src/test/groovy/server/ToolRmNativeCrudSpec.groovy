@@ -318,6 +318,27 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         !(atomicStateMap.parentAppIds?.containsKey("button_controller"))
     }
 
+    def "_rmSubmitMainPageDone reports a Done the hub answers by rendering the page again as not done"() {
+        given:
+        hubGet.register('/installedapp/configure/json/601') { params ->
+            JsonOutput.toJson([app: [id: 601, name: "Notifier", label: "N", installed: true, version: 2, appType: [name: "Notifier", namespace: "hubitat"]],
+                configPage: [name: "mainPage", install: true, error: null, sections: []], settings: [:], childApps: []])
+        }
+        hubGet.register('/installedapp/statusJson/601') { params ->
+            JsonOutput.toJson([installedApp: [id: 601], appSettings: [], eventSubscriptions: [], scheduledJobs: [], appState: [:], childAppCount: 0, childDeviceCount: 0])
+        }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: JsonOutput.toJson([app: [id: 601], configPage: [name: "mainPage", sections: []]])]
+        }
+
+        when:
+        def outcome = script._rmSubmitMainPageDone(601)
+
+        then:
+        outcome.done == false
+        outcome.reason == "the hub rendered page 'mainPage' again instead of accepting its Done"
+    }
+
     def "_rmSubmitMainPageDone re-submits capability device ids from statusJson #idsField (value is null for device settings)"() {
         given:
         // Button Controller-5.1 keeps its device picker ON mainPage (unlike RM,

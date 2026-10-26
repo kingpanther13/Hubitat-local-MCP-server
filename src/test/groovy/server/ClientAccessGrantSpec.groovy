@@ -371,6 +371,18 @@ class ClientAccessGrantSpec extends ToolSpecBase {
         script._clientToolDenial('hub_set_rule', [operation: 'form', rule_id: 12, confirm: true, args: [steps: [[kind: 'open']]]]) != null
     }
 
+    def "a write-off client still sees hub_set_native_app and hub_set_rule in its catalog, whose help calls are reads"() {
+        given:
+        settingsMap['clientTools_1'] = ['hub_set_rule', 'hub_set_native_app', 'hub_list_modes']
+        settingsMap['clientWrite_1'] = false
+        asClient('1')
+
+        expect:
+        !script.getHiddenToolNames().contains('hub_set_native_app')
+        !script.getHiddenToolNames().contains('hub_set_rule')
+        script.getHiddenToolNames().contains('hub_call_rule')
+    }
+
     def "the guide and tool search are always available to a client, even with its Read switch off"() {
         given:
         asClient('2')

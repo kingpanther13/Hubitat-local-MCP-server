@@ -5994,6 +5994,14 @@ class TestRunner:
         assert refused.get("success") is False and "removed" in str(refused.get("error")), refused
         left = basic_rules() - before
         assert not left, f"a refused Basic Rule create left app(s) {sorted(left)} behind: {refused}"
+        # A label passed as name and in fields is an argument error, refused before the parent creates anything.
+        twice_label = f"{PREFIX}LabelTwice"
+        try:
+            self._native_app("create", {"app_type": "notifier", "name": twice_label, "fields": {"origLabel": twice_label}})
+            raise AssertionError("a label passed twice was accepted")
+        except McpToolError as exc:
+            assert "Pass the label once" in str(exc), str(exc)
+        assert not self._find_app_id_by_label(twice_label), "a label passed twice still created an app"
         cw = self._soft_write(
             lambda: self._native_app("create", {"app_type": "basic_rule"}),
             lambda: next((str(r.get("id")) for r in self._installed_app_rows()
@@ -6233,6 +6241,8 @@ def pagePw() {
     dynamicPage(name: "pagePw", title: "Password snapshot", install: true, uninstall: true) {
         section {
             input "p", "password", title: "Password", required: false
+            input "apiKey", "text", title: "API key", required: false
+            input "disarmPin", "text", title: "Disarm PIN", required: false
             input "note", "text", title: "Note", required: false
             paragraph "p-state: ${settings.p == 'SECRET_VALUE' ? 'kept' : 'changed'}"
             href "pageMore", title: "More", description: "open"
@@ -6271,8 +6281,18 @@ def updated() {}
             inst = self.client.call_tool("hub_manage_code", {"tool": "hub_create_app", "args": {"codeAppId": code_id, "confirm": True}})
             instance_id = inst.get("instanceAppId")
             assert inst.get("committed") is True and instance_id, f"creating the password app instance failed: {inst}"
-            first = self._native_app("update", {"fields": {"p": secret}}, instance_id)
+            api_key, pin = "ak-e2e-5d1f", "pin-9731"
+            first = self._native_app("update", {"fields": {"p": secret, "apiKey": api_key, "disarmPin": pin}}, instance_id)
             assert first.get("success") is True, f"setting the password failed: {first}"
+            # Credential-named text inputs: the form result masks them like hub_get_app_config does.
+            form = self._native_app_form(instance_id, {"kind": "open"})
+            shown = {f["name"]: f.get("value") for f in form.get("fields", []) if f["name"] in ("apiKey", "disarmPin")}
+            assert shown == {"apiKey": "***redacted (password)***", "disarmPin": "***redacted (password)***"}, \
+                f"the form returned credential-named values in clear: {shown}"
+            named = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config", "args": {
+                "appId": instance_id, "includeSettings": True}}).get("settings") or {}
+            assert named.get("apiKey") == "***redacted (password)***" and named.get("disarmPin") == "***redacted (password)***", \
+                f"includeSettings returned credential-named values in clear: {named}"
             more = self._native_app("update", {"fields": {"note2": "sub edit"}, "page": "pageMore"}, instance_id)
             assert more.get("success") is True and more.get("page") == "pageMore", \
                 f"the sub-page update under a root page not named mainPage failed: {more}"
@@ -6287,8 +6307,9 @@ def updated() {}
             meta = self.client.call_tool("hub_get_backup", {"backupKey": key})
             content = self._rm_read_file(meta["fileName"])
             assert secret not in content, "the pre-write snapshot stores the password in plain text"
-            assert "p" in (json.loads(content).get("redactedSettings") or []), \
-                f"the snapshot does not list the redacted password: {sorted(json.loads(content))}"
+            assert api_key not in content and pin not in content, "the pre-write snapshot stores a credential-named text value"
+            assert {"p", "apiKey", "disarmPin"} <= set(json.loads(content).get("redactedSettings") or []), \
+                f"the snapshot does not list the redacted settings: {sorted(json.loads(content))}"
 
             restored = self._rm_restore(key, preserveRuleId=True)
             assert restored.get("success") is True and "p" in (restored.get("passwordsKept") or []), \
@@ -6304,8 +6325,8 @@ def updated() {}
             assert cleared.get("success") is True, f"clearing the password failed: {cleared}"
             again = self._rm_restore(key, preserveRuleId=True)
             assert again.get("success") is True and again.get("passwordsToReenter") == ["p"] \
-                and not again.get("passwordsKept"), \
-                f"an in-place restore over an empty password should ask for it again: {again}"
+                and sorted(again.get("passwordsKept") or []) == ["apiKey", "disarmPin"], \
+                f"an in-place restore over an empty password should ask for it again and keep the live text secrets: {again}"
             assert "enter" in str(again.get("note")).lower(), f"the restore note should say to enter the password again: {again}"
 
             gone = self.client.call_tool("hub_manage_native_rules_and_apps", {"tool": "hub_delete_native_app", "args": {
@@ -6435,6 +6456,10 @@ def updated() {}
             stored = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config", "args": {"appId": wizard, "includeSettings": True}})
             settings = stored.get("settings") or {}
             assert settings.get("first") == "one" and settings.get("second") == "two", f"the wizard's pages were not saved: {settings}"
+            # update presses that page's _action_done too; the hub saves and renders the page again, so committed is false.
+            pressed = self._native_app("update", {"page": "pageTwo", "fields": {"second": "two-again"}}, wizard)
+            assert pressed.get("success") is True and pressed.get("committed") is False and pressed.get("fields_applied") == ["second"] \
+                and "names both a next and a done page" in str(pressed.get("note")), f"update on the done-page page: {pressed}"
             # The hub stores the posted number input as the string it received.
             assert settings.get("retries") == "3" and "flavor" not in settings, f"only the usable default should be stored: {settings}"
             # A page method that returns another page renders that page, and pageNote names both.
@@ -8335,6 +8360,10 @@ def updated() {}
         app_id = self._ensure_wizard_walk_fixture()
         passed = False
         try:
+            # update on the sub-page reads back that page, not the default page that would reset it.
+            written = self._native_app("update", {"page": "prefPkgInstallUrl", "fields": {"pkgInstall": "https://example.invalid/update-manifest.json"}}, app_id)
+            assert written.get("success") is True and written.get("fields_applied") == ["pkgInstall"] and written.get("committed") is False, \
+                f"update on the wizard sub-page: {written}"
             form = self._native_app_form(app_id, {"kind": "open"})
             # This test runs with pre-edit backups on: the backup's own config read must not reset the
             # form's page (#543), so a key must come back and the page must survive.
@@ -8720,6 +8749,11 @@ def updated() {}
                                                           native_log("trigger recovery")])
         copy_id = None
         try:
+            # An append gives a batch exactly the ids the hub will assign; any other unknown id is refused
+            # before any write.
+            self._rm_refuse(app_id, [self._rm_switch_condition(switch), native_change("required", tokens=["999999"])])
+            assert self._native_rule_document(app_id)["triggers"] == created["triggers"] \
+                and not self._native_rule_document(app_id).get("conditions"), "a refused batch wrote a row"
             removed = self._rm_update(app_id, [native_delete("trigger", max(created["triggers"], key=int))])
             key = removed["backup"]["backupKey"]
             restored = self._rm_restore(key, preserveRuleId=True)
@@ -14206,6 +14240,19 @@ def updated() {}
             names = {tool["name"] for tool in client.list_tools()["tools"]}
             assert names == {"hub_get_tool_guide", "hub_search_tools", "hub_list_modes"}, sorted(names)
             assert "modes" in client.call_tool("hub_list_modes", {})
+            # A write-off client keeps hub_set_native_app, whose help and schema calls are reads, in its catalog.
+            readonly = manage({"action": "create", "label": label + "_ro", "access": {"write": False, "tools": ["hub_set_native_app", "hub_set_rule"]}})
+            assert readonly.get("success") is True, readonly
+            _ephemeral_literals.add(readonly["token"])
+            try:
+                ro = HubitatMcpClient(self.client.hub_url, self.client.app_id, readonly["token"])
+                ro.session.trust_env = False
+                catalog = ro.call_tool("hub_manage_native_rules_and_apps", {})
+                listed = {t.get("name") for t in (catalog.get("tools") or [])}
+                assert "hub_set_native_app" in listed, f"a write-off client's catalog lacks hub_set_native_app: {sorted(listed)}"
+                assert ro.call_tool("hub_manage_native_rules_and_apps", {"tool": "hub_set_native_app", "args": {}}).get("operations") == ["create", "update", "form"]
+            finally:
+                manage({"action": "revoke", "clientId": readonly["clientId"]})
             try:
                 client.call_tool("hub_get_info", {})
                 raise AssertionError("a client token without hub_get_info was allowed to call it")
