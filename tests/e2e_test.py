@@ -12991,9 +12991,9 @@ class TestRunner:
                 second_page = location_page(cursor=first_page["nextCursor"])
             finally:
                 set_number(self.PERM_VARIABLES["sv_number"][2])
-            def row(r):
+            def row_key(r):
                 return (r.get("date"), r.get("name"), str(r.get("value")))
-            assert not {row(r) for r in second_page["entries"]} & {row(r) for r in first_page["entries"]}, \
+            assert not {row_key(r) for r in second_page["entries"]} & {row_key(r) for r in first_page["entries"]}, \
                 f"the second page repeated a first-page row: {first_page['entries']} then {second_page['entries']}"
             assert all(_hub_event_time(r["date"]) <= _hub_event_time(first_page["entries"][-1]["date"])
                        for r in second_page["entries"] if r.get("date")), \
