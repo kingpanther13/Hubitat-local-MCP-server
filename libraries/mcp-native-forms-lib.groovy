@@ -472,9 +472,8 @@ private Map _nfRelabel(Long id, Map plan, Map answer) {
     Map rendered = null
     for (int attempt = 1; attempt <= 2 && shown != wanted; attempt++) {
         mcpLog('warn', 'rm-native', "App ${id}: the hub's mode write left the label '${shown}' instead of '${wanted}'; posting the label again (${attempt} of 2)")
-        // The same action the repaired submit used: a Done only when that submit pressed one.
-        Map action = plan.control?.kind == 'navigation' ? [(plan.control.name): plan.control.value] : [:]
-        Map repair = [:] + plan.envelope + _nfWire(field, plan.relabel.value) + action
+        // The label alone: the submit's Done or Next already ran once and must not run again.
+        Map repair = [:] + plan.envelope + _nfWire(field, plan.relabel.value)
         if (app?.containsKey('version')) repair.version = app.version
         Map reply = _nfPost('/installedapp/update/json', repair)
         if (reply.configPage instanceof Map) rendered = reply

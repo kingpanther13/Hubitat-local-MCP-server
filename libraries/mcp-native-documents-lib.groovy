@@ -237,20 +237,22 @@ private void _ndValidateChange(Object change) {
 private boolean _ndKnownRow(Map rows, String rowId, String missing) {
     if (rowId in rows.deleted) throw new IllegalArgumentException(missing)
     if (rowId in rows.ids) return true
-    // Rule Machine numbers every row of a rule from one counter, so an appended row takes the next id
-    // after the highest any collection has used; a batch may name an appended row only by one of
-    // those ids (one per append in the batch), and any other unknown id is a refusal.
-    Collection all = rows.all instanceof Map ? rows.all.values() : [rows]
-    List used = all.collectMany { ((it.ids as Collection) + (it.deleted as Collection)).toList() }.findAll { it.toString().isInteger() }.collect { it.toString().toInteger() }
-    int next = (used ? used.max() : 0) + 1
-    int added = all.sum { it.added ?: 0 } as int
-    if (added > 0 && rowId.isInteger() && rowId.toInteger() >= next && rowId.toInteger() < next + added) return false
+    if (rowId in rows.predicted) return false
     throw new IllegalArgumentException(missing)
+}
+
+// Rule Machine numbers every row of a rule from one counter, so an appended row takes the next id
+// after the highest any collection has used or will take; the batch may name that row by this id.
+private void _ndPredictAppend(Map rows, String part) {
+    List used = rows.values().collectMany { ((it.ids as Collection) + (it.deleted as Collection) + (it.predicted as Collection)).toList() }
+        .findAll { it.toString().isInteger() }.collect { it.toString().toInteger() }
+    rows.get(part).predicted << (((used ? used.max() : 0) + 1).toString())
+    rows.get(part).added++
 }
 
 private void _ndDropRow(Map rows, String rowId, String missing) {
     if (_ndKnownRow(rows, rowId, missing)) rows.ids.remove(rowId)
-    else rows.added--
+    else { rows.predicted.remove(rowId); rows.added-- }
     rows.deleted << rowId
 }
 
@@ -263,10 +265,9 @@ private void _ndPreflight(Long id, List changes) {
     Map projectedActions = before.actions instanceof Map ? before.actions.collectEntries { key, value -> [(key.toString()): value] } : [:]
     List projectedOrder = new ArrayList(actionOrder)
     List projectedPredicate = before.predCapabs instanceof List ? before.predCapabs.collect { it?.toString() } : []
-    Map rows = [action: [ids: (actionOrder + projectedActions.keySet()) as Set, added: 0, deleted: [] as Set],
-                condition: [ids: conditions.keySet().collect { it.toString() } as Set, added: 0, deleted: [] as Set],
-                trigger: [ids: triggers.keySet().collect { it.toString() } as Set, added: 0, deleted: [] as Set]]
-    rows.values().each { it.all = rows }
+    Map rows = [action: [ids: (actionOrder + projectedActions.keySet()) as Set, added: 0, deleted: [] as Set, predicted: [] as Set],
+                condition: [ids: conditions.keySet().collect { it.toString() } as Set, added: 0, deleted: [] as Set, predicted: [] as Set],
+                trigger: [ids: triggers.keySet().collect { it.toString() } as Set, added: 0, deleted: [] as Set, predicted: [] as Set]]
     int newAction = 0
     boolean appendedActions = false
     Map locals = id == null ? [:] : null
@@ -301,10 +302,10 @@ private void _ndPreflight(Long id, List changes) {
                     } else locals.remove(value.name)
                 }
             }
-            if (change.part in ['condition', 'trigger'] && !value.containsKey('id')) rows.get(change.part).added++
+            if (change.part in ['condition', 'trigger'] && !value.containsKey('id')) _ndPredictAppend(rows, change.part)
             if (change.part in ['action', 'terminator']) {
                 boolean newRow = !value.containsKey('id')
-                if (newRow) { rows.action.added++; appendedActions = true }
+                if (newRow) { _ndPredictAppend(rows, 'action'); appendedActions = true }
                 String actionId = newRow ? "new:${newAction++}".toString() : value.id.toString()
                 if (newRow) projectedOrder << actionId
                 String method = change.part == 'terminator' ? ND_TERMINATOR_METHODS.get(value.subtype) : value.subtype

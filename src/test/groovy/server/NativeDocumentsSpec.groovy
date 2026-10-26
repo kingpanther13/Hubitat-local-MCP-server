@@ -798,6 +798,13 @@ class NativeDocumentsSpec extends ToolSpecBase {
         script._ndPreflight(42L, script._ndChanges([condition, [part: 'required', value: [tokens: ['6']]]]))
         then:
         noExceptionThrown()
+        when: 'the id an appended trigger will take is not a condition'
+        def trigger = [part: 'trigger', value: [capability: 'Switch', fields: [
+            [name: 'tDev#', type: 'capability.switch', value: ['789']], [name: 'tstate#', type: 'enum', value: 'on']]]]
+        script._ndPreflight(42L, script._ndChanges([trigger, [part: 'required', value: [tokens: ['6']]]]))
+        then:
+        def wrongKind = thrown(IllegalArgumentException)
+        wrongKind.message == 'changes[1]: Expression references an unknown condition'
     }
 
     def 'a condition deleted after an append cannot be named by a later Required Expression'() {

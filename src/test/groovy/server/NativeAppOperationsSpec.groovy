@@ -1296,7 +1296,7 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         result.success == restored
         posts.size() == (restored ? 2 : 3)
         posts[0].body['mode[mode]'] == '["1"]'
-        posts.drop(1).every { it.body.label == 'G' && it.body._action_update == 'Done' && !it.body.containsKey('mode[mode]') }
+        posts.drop(1).every { it.body.label == 'G' && !it.body.containsKey('_action_update') && !it.body.containsKey('mode[mode]') }
         result.fields_applied == ['mode[mode]']
         result.label_restored == (restored ? true : null)
         result.fields_not_landed == (restored ? null : ['label'])
