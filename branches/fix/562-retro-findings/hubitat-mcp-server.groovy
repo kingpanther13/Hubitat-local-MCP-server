@@ -6449,10 +6449,12 @@ def toolGetHubLogs(args) {
         if (args.cursor != null) throw new IllegalArgumentException("cursor pages one mode: each listed tab returns its first page; call that mode alone with its nextCursor")
         _logsCheckPageSize(args.pageSize)
         (modes - ["mcp", "status"]).each(this.&_logsQuery.curry(args))
+        List inline = ["cloudCalls", "locationEvents", "hubEvents", "status"]
         Map results = [:]
+        for (m in modes) results.put(m, null)
         boolean pending = false
-        for (m in modes) {
-            if (pending && m in ["cloudCalls", "locationEvents", "hubEvents", "status"]) continue
+        for (m in (modes - inline) + (modes - (modes - inline))) {
+            if (pending && m in inline) continue
             Map paging = [:]
             if (modeArgs[m].contains("pageSize")) paging = [cursor: "", pageSize: args.pageSize != null ? args.pageSize : 50]
             else if (modeArgs[m].contains("cursor")) paging = [cursor: ""]
@@ -6783,7 +6785,7 @@ private List _logsJsonTable(Map data, String key) {
     def table = data[key]
     if (table == null) return []
     if (!(table instanceof List)) throw new IllegalStateException("Unexpected /logs/json response: '${key}' is not an array")
-    if (key != "hubCommands" && table.any { !(it instanceof Map) }) {
+    if (table.any { !(it instanceof Map) }) {
         throw new IllegalStateException("Unexpected /logs/json response: '${key}' contains a non-object entry")
     }
     return table
