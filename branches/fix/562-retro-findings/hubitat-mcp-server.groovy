@@ -6902,6 +6902,7 @@ def _logsJsonSnapshot(Map args) {
         if (fresh != null) return [state: "ready", snapshot: fresh]
         failure = _logsJsonRecentFetchError()
         if (failure != null) return [state: "failed", error: failure.message]
+        _logsJsonEnsureFetchScheduled()
         long remaining = Math.min(remainingBudget, Math.max(0L, deadline - now()))
         if (remaining <= 0L) return [state: "pending"]
         long sleepMs = Math.min(WORKER_POLL_MS, remaining)
