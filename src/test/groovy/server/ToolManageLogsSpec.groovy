@@ -2314,6 +2314,29 @@ class ToolManageLogsSpec extends ToolSpecBase {
         listed.entries == []
     }
 
+    def "a read waiting on a fetch that a delete fences off schedules the replacement within the same wait"() {
+        given:
+        settingsMap.enableRead = true
+        settingsMap.relayBudgetMs = 6000
+        script.metaClass._isCloudRequest = { -> true }
+        hubGet.register('/logs/json') { params -> NO_JOBS }
+        hubGet.register('/hub/advanced/deleteScheduledJob') { params -> 'done' }
+        def virtualNow = new java.util.concurrent.atomic.AtomicLong(1234567890000L)
+        NOW_OVERRIDE.set({ -> virtualNow.get() })
+        def pauses = new java.util.concurrent.atomic.AtomicInteger(0)
+        PAUSE_EXECUTION_OVERRIDE.set({ Long ms ->
+            virtualNow.addAndGet(ms)
+            if (pauses.incrementAndGet() == 1) script.toolDeleteLogs([mode: 'scheduledJobs', jobId: 'app40Recur.poll', confirm: true])
+        })
+
+        when:
+        script.toolGetHubLogs([mode: 'scheduledJobs', __reqT0: virtualNow.get()])
+
+        then:
+        runInMillisCalls.size() == 2
+        (runInMillisCalls[1][2].data as Map).fetchId == ((runInMillisCalls[0][2].data as Map).fetchId as Long) + 2L
+    }
+
     def "hub_delete_logs refuses a job of a device outside the server's device access, and allows a selected one"() {
         given:
         settingsMap.selectedDevices = [new TestDevice(id: 5, name: 'Lamp', label: 'Lamp')]
