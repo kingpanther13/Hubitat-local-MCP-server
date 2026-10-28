@@ -27066,9 +27066,8 @@ Map toolCreateRuleDocument(Map args) {
         [success: false, partial: true, rule_id: verifiedChild ? id : null, created: verifiedChild, error: failure.message?.toString(), note: verifiedChild ? _ndFailureNote(true, true) : 'No rule was created.']
     }
 }
-boolean _isNativeReadCall(String toolName, args) {
-    toolName in ['hub_set_rule', 'hub_set_native_app'] && args instanceof Map &&
-        (!args.containsKey('operation') || args.confirm != true || (toolName == 'hub_set_rule' && args.operation == 'read'))
+boolean _isRuleReadCall(String toolName, args) {
+    toolName == 'hub_set_rule' && args instanceof Map && (!args.containsKey('operation') || args.operation == 'read' || args.confirm != true)
 }
 private Map _ndOperationSchema(String operation) {
     def changes = [type: 'array', minItems: operation == 'create' ? 0 : 1, maxItems: 100,
@@ -28217,7 +28216,7 @@ String _clientToolDenial(String toolName, args = null) {
         return "${ext} cannot target the MCP Rule Server app itself from ${who}."
     }
     if (_alwaysGrantedToolNames().contains(toolName)) return null
-    boolean isRead = getReadOnlyToolNames().contains(toolName) || _isDeviceReplaceOptionsOnlyCall(toolName, a) || _isNativeReadCall(toolName, a)
+    boolean isRead = getReadOnlyToolNames().contains(toolName) || _isDeviceReplaceOptionsOnlyCall(toolName, a) || _isRuleReadCall(toolName, a)
     if (isRead && !_clientAllows(id, "clientRead")) return "Read tools are disabled for ${who}, so ${ext} cannot run."
     if (!isRead && !_clientAllows(id, "clientWrite")) return "Write tools are disabled for ${who}, so ${ext} cannot run."
     return null
@@ -28232,7 +28231,7 @@ private Set _clientHiddenTools() {
     boolean noWrite = !_clientAllows(id, "clientWrite")
     return _toolCatalogIndexes().names.findAll { name ->
         !allowed.contains(name) || (!always.contains(name) &&
-            (name in ["hub_set_rule", "hub_set_native_app"] ? (noRead && noWrite) : (readOnly.contains(name) ? noRead : noWrite)))
+            (name == "hub_set_rule" ? (noRead && noWrite) : (readOnly.contains(name) ? noRead : noWrite)))
     } as Set
 }
 Map _clientAccessInfo() {
@@ -29775,7 +29774,7 @@ def _mrtrEligibleCall(outerToolName, leafToolName, args) {
             !(getGatewayConfig()[outer]?.tools?.contains(leaf)))) return false
     def leafArgs = _mrtrLeafArguments(outerToolName?.toString(), leaf, args as Map)
     if (!(leafArgs instanceof Map)) return false
-    if (_isNativeReadCall(leaf, leafArgs)) return false
+    if (_isRuleReadCall(leaf, leafArgs)) return false
     if (leaf == "hub_delete_item") return leafArgs.type?.toString() == "driver"
     if (leaf == "hub_restore_backup") {
         return (leafArgs.scope == null || leafArgs.scope.toString() == "source") &&
@@ -29798,7 +29797,7 @@ private boolean _isActualWriteCall(outerToolName, leafToolName, args) {
     if (leaf == "hub_get_metrics") return safeArgs.recordSnapshot == true
     if (leaf == "hub_update_firmware" && safeArgs.statusOnly == true) return false
     if (getReadOnlyToolNames().contains(leaf)) return false
-    if (_isDeviceReplaceOptionsOnlyCall(leaf, safeArgs) || _isNativeReadCall(leaf, safeArgs)) return false
+    if (_isDeviceReplaceOptionsOnlyCall(leaf, safeArgs) || _isRuleReadCall(leaf, safeArgs)) return false
     if (leaf == "hub_update_package" && safeArgs.dryRun == true) return false
     return true
 }
@@ -31887,7 +31886,7 @@ def getHiddenToolNames() {
     if (settings.enableRead == false) hide.addAll(readOnly)
     if (settings.enableWrite == false) {
         _toolCatalogIndexes().names.each {
-            if (!readOnly.contains(it) && !(it in ["hub_set_rule", "hub_set_native_app"] && settings.enableRead != false)) hide << it
+            if (!readOnly.contains(it) && !(it == "hub_set_rule" && settings.enableRead != false)) hide << it
         }
     }
     def mode = getCustomEngineMode()
@@ -32304,7 +32303,7 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
     }
     def isGatewayName = getGatewayConfig().containsKey(toolName)
     if (!isGatewayName) {
-        boolean isReadShapedWrite = _isDeviceReplaceOptionsOnlyCall(toolName, args) || _isNativeReadCall(toolName, args)
+        boolean isReadShapedWrite = _isDeviceReplaceOptionsOnlyCall(toolName, args) || _isRuleReadCall(toolName, args)
         if (isReadShapedWrite) {
             if (settings.enableRead == false) {
                 throw new IllegalArgumentException("Read tools are disabled. Enable 'Read Tools' in MCP Rule Server app settings to use ${toolName} for this read operation.")
@@ -32323,7 +32322,7 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
             && !getReadOnlyToolNames().contains(toolName)
             && !(toolName in ['hub_get_tool_guide', 'hub_update_mcp_settings'])
             && !_isDeviceReplaceOptionsOnlyCall(toolName, args ?: [:])
-            && !_isNativeReadCall(toolName, args ?: [:])
+            && !_isRuleReadCall(toolName, args ?: [:])
             && !(toolName == 'hub_update_package' && args instanceof Map && args.dryRun == true)
             && !bpsChecked) {
         String bpsSection = _bpsSectionForTool(toolName)
