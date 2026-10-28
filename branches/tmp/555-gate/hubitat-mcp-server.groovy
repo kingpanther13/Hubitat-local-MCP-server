@@ -27069,6 +27069,9 @@ Map toolCreateRuleDocument(Map args) {
 boolean _isRuleReadCall(String toolName, args) {
     toolName == 'hub_set_rule' && args instanceof Map && (!args.containsKey('operation') || args.operation == 'read' || args.confirm != true)
 }
+boolean _isNativeAppSchemaOnlyCall(args) {
+    args instanceof Map && (!args.containsKey('operation') || args.confirm != true)
+}
 private Map _ndOperationSchema(String operation) {
     def changes = [type: 'array', minItems: operation == 'create' ? 0 : 1, maxItems: 100,
         items: [type: 'object', additionalProperties: false, properties: [part: [type: 'string', enum: ['condition', 'trigger', 'action', 'expression', 'required', 'variable', 'terminator', 'delete', 'order']], value: [type: 'object']], required: ['part', 'value']]]
@@ -29775,6 +29778,7 @@ def _mrtrEligibleCall(outerToolName, leafToolName, args) {
     def leafArgs = _mrtrLeafArguments(outerToolName?.toString(), leaf, args as Map)
     if (!(leafArgs instanceof Map)) return false
     if (_isRuleReadCall(leaf, leafArgs)) return false
+    if (leaf == 'hub_set_native_app' && _isNativeAppSchemaOnlyCall(leafArgs)) return false
     if (leaf == "hub_delete_item") return leafArgs.type?.toString() == "driver"
     if (leaf == "hub_restore_backup") {
         return (leafArgs.scope == null || leafArgs.scope.toString() == "source") &&
@@ -29798,6 +29802,7 @@ private boolean _isActualWriteCall(outerToolName, leafToolName, args) {
     if (leaf == "hub_update_firmware" && safeArgs.statusOnly == true) return false
     if (getReadOnlyToolNames().contains(leaf)) return false
     if (_isDeviceReplaceOptionsOnlyCall(leaf, safeArgs) || _isRuleReadCall(leaf, safeArgs)) return false
+    if (leaf == 'hub_set_native_app' && _isNativeAppSchemaOnlyCall(safeArgs)) return false
     if (leaf == "hub_update_package" && safeArgs.dryRun == true) return false
     return true
 }
@@ -32323,6 +32328,7 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
             && !(toolName in ['hub_get_tool_guide', 'hub_update_mcp_settings'])
             && !_isDeviceReplaceOptionsOnlyCall(toolName, args ?: [:])
             && !_isRuleReadCall(toolName, args ?: [:])
+            && !(toolName == 'hub_set_native_app' && _isNativeAppSchemaOnlyCall(args))
             && !(toolName == 'hub_update_package' && args instanceof Map && args.dryRun == true)
             && !bpsChecked) {
         String bpsSection = _bpsSectionForTool(toolName)
