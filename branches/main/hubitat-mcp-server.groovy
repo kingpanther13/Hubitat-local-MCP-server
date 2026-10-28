@@ -29772,6 +29772,9 @@ private boolean _mcpClientIsWrapper(String name, String version) {
     if (lower == "mcp") return version == null || version == "0.1.0"
     return ["mcp-remote", "mcp-proxy", "fastmcp-remote", "supergateway"].contains(lower)
 }
+private boolean _openAiClientRequest() {
+    return mcpClientIdentity()?.client?.name == "openai-mcp"
+}
 private String _mcpClientString(value) {
     if (value == null) return null
     String s = value.toString().replaceAll(/[\r\n\t`]/, " ").replaceAll(/ {2,}/, " ").trim()
@@ -31953,6 +31956,9 @@ private def _renderToolResult(id, toolName, reactiveToolName, args, result, bool
         }
     }
     if (settings.redactAccessTokens == true || callerClient != null) rendered = _redactAccessTokens(rendered)
+    if (rendered instanceof Map && rendered.containsKey("content") && _openAiClientRequest()) {
+        rendered = rendered.collectEntries { k, v -> [(k == "content" ? "contentText" : k): v] }
+    }
     String jsonText
     try {
         jsonText = groovy.json.JsonOutput.toJson(rendered)
@@ -36731,7 +36737,7 @@ Details mode does not inline event or log history; it points to the read tools f
 For smaller expanded reads, pass `fields=[]` to discover `availableFields`, then select exact names. Configuration selection applies to preference names, editable property names and device-info keys. Details selection applies to section keys; attributes also accepts an individual attribute name. Commands and jobs use the row indices returned by `availableFields`, so duplicate or unnamed rows remain selectable. Omitting `fields` retains the full selected sections.
 Examples: `fields=["txtEnable"]` in configuration mode, or `sections=["state"], fields=["lastRefresh"]` in details mode.
 
-If even one selected value exceeds the response budget, the tool returns `contentFormat="json-fragment"`, a `content` string and `nextCursor`. Repeat the same read with that cursor, concatenate the fragments in order, then parse the joined JSON. Pages retain the original redacted snapshot despite later telemetry changes. Continue within five minutes with the same device, mode, sections and fields. Expiry, eviction or a server reload requires restarting without cursor. At most eight snapshots and 2,097,152 characters of serialized JSON are retained in memory; select fewer fields if the budget is exceeded. Device authorization is checked on every page.
+If even one selected value exceeds the response budget, the tool returns `contentFormat="json-fragment"`, a `content` string (`contentText` for ChatGPT) and `nextCursor`. Repeat the same read with that cursor, concatenate the fragments in order, then parse the joined JSON. Pages retain the original redacted snapshot despite later telemetry changes. Continue within five minutes with the same device, mode, sections and fields. Expiry, eviction or a server reload requires restarting without cursor. At most eight snapshots and 2,097,152 characters of serialized JSON are retained in memory; select fewer fields if the budget is exceeded. Device authorization is checked on every page.
 
 Every update requires the Write master and applicable tool permissions. When mandatory best-practice acknowledgment is enabled, put `bestPracticeKey` inside the gateway's `args` alongside the patch.
 
