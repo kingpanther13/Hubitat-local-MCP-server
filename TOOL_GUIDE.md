@@ -1152,7 +1152,7 @@ List a Rule Machine rule's LOCAL variables (per-rule, distinct from hub globals)
 - Hub globals are covered by hub_list_variables; native locals are read/written through hub_set_rule(operation='read') / hub_set_rule(operation='update') variable changes.
 - Reads the rule's `statusJson` appState: names and types from `allLocalVars`, current values from each variable's live `lv_<name>` entry (`allLocalVars` keeps the old value after an action sets the variable until someone opens the rule's page).
 - Pure read -- no wizard, no mutation.
-- Returns `{appId, localVariables:[{name, type, value}], total}`. `type` is the hub's internal token, not the type a hub_set_rule variable change takes. Map it back before reuse: integer→Number, bigdecimal→Decimal, string→String, boolean→Boolean, datetime→DateTime.
+- Returns `{appId, localVariables:[{name, type, value}], total}`. `type` is Rule Machine's own token (integer, bigdecimal, string, boolean, datetime), the same value a hub_set_rule variable change takes; the rule page shows it as Number, Decimal, String, Boolean, DateTime.
 
 - Use to confirm a local exists (and its type) before targeting it with a Set Variable action or a hub_set_rule variable change.
 

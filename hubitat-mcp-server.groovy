@@ -5767,7 +5767,7 @@ def getHiddenToolNames() {
     if (settings.enableRead == false) hide.addAll(readOnly)
     if (settings.enableWrite == false) {
         _toolCatalogIndexes().names.each {
-            if (!readOnly.contains(it) && !(it == "hub_set_rule" && settings.enableRead != false)) hide << it
+            if (!readOnly.contains(it) && !(it in ["hub_set_rule", "hub_set_native_app"] && settings.enableRead != false)) hide << it
         }
     }
     // Legacy custom-rule engine visibility.
@@ -10429,6 +10429,17 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
     // guess at why. Keying it on ruleFormat=='rm' missed the case that motivates the note most: a
     // compiled read that came back empty without erroring leaves ruleFormat null, and the
     // config-page leg then identifies an RM rule and scans anyway.
+    // A user or community app's default page runs its own code, which can drop a wizard's pending
+    // input (Hubitat Package Manager clears a pending install there), so a health read never renders it.
+    def installed = null
+    if (runHtml) { try { installed = getAppByAppId(appId as Long) } catch (Exception lookup) { installed = null } }
+    def namespace = installed?.appType?.namespace?.toString()
+    if (runHtml && namespace && namespace != "hubitat") {
+        runHtml = false
+        label = installed.label?.toString()
+        if (ruleFormat == null) ruleFormat = "classic-app"
+        checkErrors << "the default page of app ${appId} was not rendered: it is a user or community app, whose page code can change its own state when rendered; read it with hub_get_app_config to check its page".toString()
+    }
     if (runHtml && compiledActionList == null) {
         String why = !useRuleBuilder ? "source='configPage' skips ruleBuilderJson" :
                      (compiledReadError != null ? "ruleBuilderJson could not be read" :
@@ -12247,7 +12258,7 @@ List a Rule Machine rule's LOCAL variables (per-rule, distinct from hub globals)
 - Hub globals are covered by hub_list_variables; native locals are read/written through hub_set_rule(operation='read') / hub_set_rule(operation='update') variable changes.
 - Reads the rule's `statusJson` appState: names and types from `allLocalVars`, current values from each variable's live `lv_<name>` entry (`allLocalVars` keeps the old value after an action sets the variable until someone opens the rule's page).
 - Pure read -- no wizard, no mutation.
-- Returns `{appId, localVariables:[{name, type, value}], total}`. `type` is the hub's internal token, not the type a hub_set_rule variable change takes. Map it back before reuse: integer→Number, bigdecimal→Decimal, string→String, boolean→Boolean, datetime→DateTime.
+- Returns `{appId, localVariables:[{name, type, value}], total}`. `type` is Rule Machine's own token (integer, bigdecimal, string, boolean, datetime), the same value a hub_set_rule variable change takes; the rule page shows it as Number, Decimal, String, Boolean, DateTime.
 
 - Use to confirm a local exists (and its type) before targeting it with a Set Variable action or a hub_set_rule variable change.
 

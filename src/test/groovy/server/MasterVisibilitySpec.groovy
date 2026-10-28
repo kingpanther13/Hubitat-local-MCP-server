@@ -43,6 +43,17 @@ class MasterVisibilitySpec extends ToolSpecBase {
         !(tools*.name.contains("hub_manage_destructive_ops"))
     }
 
+    def "Write master OFF keeps hub_set_native_app and hub_set_rule in the native catalog, since their help and schema calls are reads"() {
+        given:
+        settingsMap.enableRead = true
+        settingsMap.enableWrite = false
+
+        expect:
+        !script.getHiddenToolNames().contains('hub_set_native_app')
+        !script.getHiddenToolNames().contains('hub_set_rule')
+        script.getHiddenToolNames().contains('hub_delete_native_app')
+    }
+
     def "both masters ON (default) -- full catalog of 36 in the default config"() {
         given:
         settingsMap.remove('enableRead')

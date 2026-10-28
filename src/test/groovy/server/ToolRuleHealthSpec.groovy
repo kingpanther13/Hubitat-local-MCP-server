@@ -564,6 +564,26 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         "Notifier-1.0"          | "classic-app"
     }
 
+    def "a user or community app's default page is never rendered by a health read"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/app/ruleBuilderJson/100') { '{}' }
+        hubGet.register('/app/ruleBuilder20Json/100') { '{"success":false}' }
+        hubGet.register('/installedapp/statusJson/100') { statusJson(100) }
+        script.metaClass.getAppByAppId = { Long id -> [id: id, label: 'Package Manager', appType: [name: 'Hubitat Package Manager', namespace: 'dcm.hpm']] }
+        List rendered = []
+        hubGet.register('/installedapp/configure/json/100') { rendered << 'default'; '{}' }
+
+        when:
+        def h = script._rmCheckRuleHealth(100)
+
+        then:
+        rendered.isEmpty()
+        h.ruleFormat == "classic-app"
+        h.label == "Package Manager"
+        h.checkErrors.any { it.contains("was not rendered: it is a user or community app") }
+    }
+
     def "auto: a LONE configPage fetch failure is a non-gating checkErrors diagnostic when ruleBuilderJson read clean"() {
         given: 'the compiled source reads clean; the HTML leg alone fails, so the fetch error must remain distinct from evidence of a broken rule'
         settingsMap.enableRead = true
