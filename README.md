@@ -1677,6 +1677,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v5.0.3** - fix: rename top-level content key in ChatGPT tool results. PRs: [#566](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/566)
 - **v5.0.2** - fix: hub_get_logs event cursors, cache after a job delete, relative-age overflow. PRs: [#564](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/564)
 - **v5.0.1** - feat: read every Logs page tab through hub_get_logs, delete scheduled jobs, reboot with purge. PRs: [#562](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/562)
 - **v5.0.0** - feat: rebuild hub_set_rule on Rule Machine's native model. PRs: [#559](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/559)
