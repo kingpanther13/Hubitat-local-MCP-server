@@ -2120,6 +2120,10 @@ private boolean _mcpClientIsWrapper(String name, String version) {
     return ["mcp-remote", "mcp-proxy", "fastmcp-remote", "supergateway"].contains(lower)
 }
 
+private boolean _openAiClientRequest() {
+    return mcpClientIdentity()?.client?.name == "openai-mcp"
+}
+
 // Client-supplied text is echoed into logs and into markdown headed for a public issue tracker,
 // so a defective client could otherwise bloat it or inject structure into the report it lands in.
 private String _mcpClientString(value) {
@@ -5016,6 +5020,11 @@ private def _renderToolResult(id, toolName, reactiveToolName, args, result, bool
     }
     // A client token never sees another token, whatever the redaction setting says.
     if (settings.redactAccessTokens == true || callerClient != null) rendered = _redactAccessTokens(rendered)
+    // ChatGPT shows `{}` for any result whose JSON text has a top-level `content` key, while every
+    // other client reads it (issue #565). Only its requests get the renamed key.
+    if (rendered instanceof Map && rendered.containsKey("content") && _openAiClientRequest()) {
+        rendered = rendered.collectEntries { k, v -> [(k == "content" ? "contentText" : k): v] }
+    }
     String jsonText
     try {
         jsonText = groovy.json.JsonOutput.toJson(rendered)
