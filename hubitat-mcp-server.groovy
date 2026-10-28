@@ -3133,6 +3133,7 @@ def _mrtrEligibleCall(outerToolName, leafToolName, args) {
     def leafArgs = _mrtrLeafArguments(outerToolName?.toString(), leaf, args as Map)
     if (!(leafArgs instanceof Map)) return false
     if (_isRuleReadCall(leaf, leafArgs)) return false
+    if (leaf == 'hub_set_native_app' && _isNativeAppSchemaOnlyCall(leafArgs)) return false
     // hub_delete_item also deletes app/library code. Only the driver branch has
     // live relay-failure evidence and detached-worker coverage; app deletion can
     // target this server and library deletion has different verification semantics.
@@ -3166,6 +3167,7 @@ private boolean _isActualWriteCall(outerToolName, leafToolName, args) {
     if (leaf == "hub_update_firmware" && safeArgs.statusOnly == true) return false
     if (getReadOnlyToolNames().contains(leaf)) return false
     if (_isDeviceReplaceOptionsOnlyCall(leaf, safeArgs) || _isRuleReadCall(leaf, safeArgs)) return false
+    if (leaf == 'hub_set_native_app' && _isNativeAppSchemaOnlyCall(safeArgs)) return false
     if (leaf == "hub_update_package" && safeArgs.dryRun == true) return false
     return true
 }
@@ -6508,6 +6510,7 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
             && !(toolName in ['hub_get_tool_guide', 'hub_update_mcp_settings'])
             && !_isDeviceReplaceOptionsOnlyCall(toolName, args ?: [:])
             && !_isRuleReadCall(toolName, args ?: [:])
+            && !(toolName == 'hub_set_native_app' && _isNativeAppSchemaOnlyCall(args))
             && !(toolName == 'hub_update_package' && args instanceof Map && args.dryRun == true)
             && !bpsChecked) {
         String bpsSection = _bpsSectionForTool(toolName)

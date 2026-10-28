@@ -32,10 +32,9 @@ class NativeAppRestorationSpec extends ToolSpecBase {
         !script._isActualWriteCall('hub_set_native_app', 'hub_set_native_app', [operation: 'update', app_id: 42])
     }
 
-    def 'help stays read shaped with writes off and points at the native app guide, which points at the form contract'() {
+    def 'help needs no best-practice key or hub read and points at the native app guide, which points at the form contract'() {
         given:
         settingsMap.enableRead = true
-        settingsMap.enableWrite = false
         settingsMap.enableMandatoryBPS = true
         script.metaClass.hubInternalGet = { Object... args -> throw new AssertionError('Help must not read the hub') }
         when:
@@ -48,6 +47,18 @@ class NativeAppRestorationSpec extends ToolSpecBase {
         guide.contains('button_rule')
         !guide.contains('walkStep')
         script.getToolGuideSections().set_rule_reference.contains('hub_set_native_app(operation:"form"')
+    }
+
+    def 'with writes off even its help is refused; the read-only guide still serves the reference'() {
+        given:
+        settingsMap.enableRead = true
+        settingsMap.enableWrite = false
+        when:
+        script.executeTool('hub_set_native_app', [:])
+        then:
+        def failure = thrown(IllegalArgumentException)
+        failure.message.contains('Write tools are disabled')
+        script.getToolGuideSections().set_native_app_reference.contains('operation:"create"')
     }
 
     def 'a confirmed write still needs the Write master'() {

@@ -530,6 +530,12 @@ boolean _isRuleReadCall(String toolName, args) {
     toolName == 'hub_set_rule' && args instanceof Map && (!args.containsKey('operation') || args.operation == 'read' || args.confirm != true)
 }
 
+// hub_set_native_app's help and unconfirmed schema replies write nothing, so they need no write worker,
+// write slot or best-practice key; they are still a write tool's calls, gated by the Write master.
+boolean _isNativeAppSchemaOnlyCall(args) {
+    args instanceof Map && (!args.containsKey('operation') || args.confirm != true)
+}
+
 private Map _ndOperationSchema(String operation) {
     def changes = [type: 'array', minItems: operation == 'create' ? 0 : 1, maxItems: 100,
         items: [type: 'object', additionalProperties: false, properties: [part: [type: 'string', enum: ['condition', 'trigger', 'action', 'expression', 'required', 'variable', 'terminator', 'delete', 'order']], value: [type: 'object']], required: ['part', 'value']]]
