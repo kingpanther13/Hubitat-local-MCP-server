@@ -526,11 +526,8 @@ Map toolCreateRuleDocument(Map args) {
     }
 }
 
-// A call that only reads: hub_set_rule's read, and the help and unconfirmed schema replies of
-// hub_set_rule and hub_set_native_app.
-boolean _isNativeReadCall(String toolName, args) {
-    toolName in ['hub_set_rule', 'hub_set_native_app'] && args instanceof Map &&
-        (!args.containsKey('operation') || args.confirm != true || (toolName == 'hub_set_rule' && args.operation == 'read'))
+boolean _isRuleReadCall(String toolName, args) {
+    toolName == 'hub_set_rule' && args instanceof Map && (!args.containsKey('operation') || args.operation == 'read' || args.confirm != true)
 }
 
 private Map _ndOperationSchema(String operation) {

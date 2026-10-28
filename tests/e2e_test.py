@@ -14240,7 +14240,7 @@ def updated() {}
             names = {tool["name"] for tool in client.list_tools()["tools"]}
             assert names == {"hub_get_tool_guide", "hub_search_tools", "hub_list_modes"}, sorted(names)
             assert "modes" in client.call_tool("hub_list_modes", {})
-            # A write-off client keeps hub_set_native_app, whose help and schema calls are reads, in its catalog.
+            # A write-off client loses hub_set_native_app like every write tool; its help stays in the read-only guide.
             readonly = manage({"action": "create", "label": label + "_ro", "access": {"write": False, "tools": ["hub_set_native_app", "hub_set_rule"]}})
             assert readonly.get("success") is True, readonly
             _ephemeral_literals.add(readonly["token"])
@@ -14249,8 +14249,9 @@ def updated() {}
                 ro.session.trust_env = False
                 catalog = ro.call_tool("hub_manage_native_rules_and_apps", {})
                 listed = {t.get("name") for t in (catalog.get("tools") or [])}
-                assert "hub_set_native_app" in listed, f"a write-off client's catalog lacks hub_set_native_app: {sorted(listed)}"
-                assert ro.call_tool("hub_manage_native_rules_and_apps", {"tool": "hub_set_native_app", "args": {}}).get("operations") == ["create", "update", "form"]
+                assert "hub_set_native_app" not in listed and "hub_set_rule" in listed, f"a write-off client's native catalog: {sorted(listed)}"
+                reference = json.dumps(ro.call_tool("hub_get_tool_guide", {"section": "set_native_app_reference"}))
+                assert "operation" in reference and "create" in reference, f"the read-only guide lacks hub_set_native_app's reference: {reference[:300]}"
             finally:
                 manage({"action": "revoke", "clientId": readonly["clientId"]})
             try:
