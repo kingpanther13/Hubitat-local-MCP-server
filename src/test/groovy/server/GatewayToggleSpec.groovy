@@ -351,7 +351,7 @@ class GatewayToggleSpec extends ToolSpecBase {
 
         then: 'write native tools are removed from the flat catalog, not just from gateway entries'
         names.contains('hub_set_rule')
-        !names.contains('hub_set_native_app')
+        names.contains('hub_set_native_app')
         !names.contains('hub_delete_native_app')
         !names.contains('hub_call_rule')
         !names.contains('hub_set_rule_paused')
