@@ -15741,6 +15741,33 @@ class TestRunner:
             f"a request without clientInfo must name nobody: {client2!r}"
 
     @test("protocol")
+    def test_openai_client_gets_content_key_renamed(self) -> None:
+        """ChatGPT renders a tool result whose JSON text has a top-level `content` key as `{}`
+        (issue #565), so a request naming `openai-mcp` gets that key as `contentText`; any
+        other client keeps `content`."""
+        def guide(client_name: str) -> dict:
+            resp = self.client.raw_request({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {
+                    "name": "hub_get_tool_guide",
+                    "arguments": {"section": "rooms"},
+                    "_meta": {
+                        "io.modelcontextprotocol/clientInfo": {"name": client_name, "version": "1.0.0"},
+                        "io.modelcontextprotocol/protocolVersion": MODERN_PROTOCOL_VERSION,
+                    },
+                },
+            })
+            assert resp.status_code == 200, f"guide call failed: {resp.status_code} {resp.text[:300]!r}"
+            return json.loads(resp.json()["result"]["content"][0]["text"])
+
+        openai = guide("openai-mcp")
+        assert "content" not in openai and openai.get("contentText", "").startswith("## Rooms"), \
+            f"openai-mcp must get the guide under contentText: {str(openai)[:300]}"
+        other = guide("hubitat-e2e-modern-probe")
+        assert other.get("content", "").startswith("## Rooms") and "contentText" not in other, \
+            f"other clients must keep content: {str(other)[:300]}"
+
+    @test("protocol")
     def test_modern_header_method_mismatch_rejected(self) -> None:
         """Mcp-Method mirrors the body `method`; a disagreement MUST be rejected with
         HTTP 400 + -32020 HeaderMismatch. This is the vulnerability the mirroring
