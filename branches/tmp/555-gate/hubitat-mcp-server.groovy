@@ -17707,7 +17707,7 @@ def toolGetAppConfig(args) {
                     redacted.put(k, _appConfigIsSecretSetting(key, type, v) ? redactedPw : v)
                 }
                 result.settings = redacted
-                result.settingsRedactionNote = "Secret values read ${redactedPw}: every setting the hub types as a password, on any page of the app, plus free-text settings whose names look like credentials (password, passwd, pwd, pass, passphrase, passcode, secret, token, API/access/private key, credential, psk). OAuth accessToken settings follow the Hide access tokens setting instead. Empty values are shown as-is. The secret itself is never returned; read or change it in the Hubitat UI.".toString()
+                result.settingsRedactionNote = "Secret values read ${redactedPw}: every setting the hub types as a password, on any page of the app, plus free-text settings whose names look like credentials (password, passwd, pwd, pass, passphrase, passcode, secret, token, API/access/private key, credential, psk, PIN, or a lock, user, access or alarm code). OAuth accessToken settings follow the Hide access tokens setting instead. Empty values are shown as-is. The secret itself is never returned; read or change it in the Hubitat UI.".toString()
             }
         }
     } else if (settingsCount > 0) {
@@ -17761,6 +17761,7 @@ private boolean _appConfigSecretName(name) {
                     "timestamp", "date", "length", "len", "type", "enabled", "enable", "set", "required", "url",
                     "uri", "endpoint", "timeout", "interval", "mode", "policy", "hint", "label", "name"] as Set
     Set keyQualifiers = ["api", "access", "private", "auth", "client", "secret", "encryption", "signing", "shared"] as Set
+    Set pinQualifiers = ["lock", "user", "access", "pass", "disarm", "arm", "alarm", "security", "unlock", "auth", "entry", "keypad", "door", "master", "admin", "guest"] as Set
     for (int idx = 0; idx < words.size(); idx++) {
         String w = words[idx]
         String prev = idx > 0 ? words[idx - 1] : null
@@ -17771,10 +17772,11 @@ private boolean _appConfigSecretName(name) {
             w.endsWith("token") || w.endsWith("tokens") || w.startsWith("credential") || w == "psk" ||
             (w == "pass" && prev != "by" && (next == null || next in ["word", "phrase", "code", "key"])) ||
             (keyQualifiers.contains(w) && (next == "key" || next == "keys")) ||
-            w == "pin" || w == "pincode" ||
-            (w == "code" && prev in ["lock", "user", "access", "pass", "disarm", "alarm", "security", "unlock", "auth", "pin", "entry", "keypad", "arm"])
+            (w in ["pin", "pins", "pincode", "pincodes"] && (prev == null || prev in pinQualifiers)) ||
+            (w in ["code", "codes"] && (prev in pinQualifiers || prev in ["pin", "pins"]))
         if (!hit) continue
-        String after = (next == "key" || next == "keys") && keyQualifiers.contains(w) ? (idx + 2 < words.size() ? words[idx + 2] : null) : next
+        boolean twoWords = ((next == "key" || next == "keys") && keyQualifiers.contains(w)) || (w in ["pin", "pins"] && next in ["code", "codes"])
+        String after = twoWords ? (idx + 2 < words.size() ? words[idx + 2] : null) : next
         if (after != null && metadata.contains(after)) continue
         return true
     }
@@ -24121,12 +24123,10 @@ Map _rmSubmitMainPageDone(Integer appId) {
         mcpLog("warn", "rm-native", "_rmSubmitMainPageDone: Done POST for app ${appId} returned status ${resp.status}")
         return [done: false, reason: "Done POST returned status ${resp.status}".toString()]
     }
-    def reply = null
-    try { reply = resp?.data ? new groovy.json.JsonSlurper().parseText(resp.data.toString()) : null } catch (Exception ignored) { reply = null }
-    if (reply instanceof Map && reply.location == null && reply.configPage instanceof Map) {
-        return [done: false, reason: "the hub rendered page '${commitPage}' again instead of accepting its Done".toString()]
-    }
-    return [done: true]
+    String replyText = resp?.data instanceof Map ? groovy.json.JsonOutput.toJson(resp.data) : (resp?.data?.toString() ?: '')
+    if (replyText.contains('"location"')) return [done: true]
+    return [done: false, reason: (replyText.contains('"configPage"') ? "the hub rendered page '${commitPage}' again instead of accepting its Done" :
+        "the hub's reply to the Done named no location").toString()]
 }
 private Map _rmWriteSubPageField(Integer appId, String page, String parentPage, String hrefName, Integer hrefIndex, Map hrefParams, String key, Object value, Map cache = null) {
     def hasRealParams = (hrefParams != null) && hrefParams.values().any { it != null }
@@ -24270,12 +24270,12 @@ private Set _rmRedactSnapshotPasswords(Map config, Map status) {
     if (config?.settings instanceof Map) names.each { config.settings.remove(it) }
     names
 }
-private String _rmRedactExportPasswords(String nativeExport, Set names) {
+private String _rmRedactExportSecrets(String nativeExport, Set names) {
     def payload = new groovy.json.JsonSlurper().parseText(nativeExport)
     boolean changed = false
     ((payload instanceof Map && payload.appData instanceof Map) ? payload.appData.values() : []).each { data ->
         (data instanceof Map && data.appSettings instanceof List ? data.appSettings : []).each { row ->
-            if (row instanceof Map && row.type?.toString() == 'password' && row.name) {
+            if (row instanceof Map && row.name && (row.type?.toString() == 'password' || _appConfigIsSecretSetting(row.name.toString(), row.type?.toString(), row.value))) {
                 names << row.name.toString()
                 if (row.value != null) { row.value = null; changed = true }
             }
@@ -24285,7 +24285,7 @@ private String _rmRedactExportPasswords(String nativeExport, Set names) {
 }
 private Map _rmBuildNativeEditSnapshot(Integer ruleId, String reason, String capturedExport) {
     Set redacted = [] as Set
-    String nativeExport = _rmRedactExportPasswords(capturedExport, redacted)
+    String nativeExport = _rmRedactExportSecrets(capturedExport, redacted)
     Map payload = new groovy.json.JsonSlurper().parseText(nativeExport) as Map
     Map identity = payload.appReplacements.find { key, value -> key.toString() == ruleId.toString() }.value as Map
     Map data = payload.appData.find { key, value -> key.toString() == ruleId.toString() }.value as Map
@@ -24401,7 +24401,7 @@ private Map _rmBuildRuleSnapshot(Integer ruleId, String reason, String activePag
         } else {
             def nat = _rmNativeExportForBackup(ruleId)
             if (nat?.json) {
-                try { snapshot.nativeExport = _rmRedactExportPasswords(nat.json.toString(), redacted) }
+                try { snapshot.nativeExport = _rmRedactExportSecrets(nat.json.toString(), redacted) }
                 catch (Exception unreadable) { snapshot.nativeExportSkipped = "the App Cloner export could not be parsed (${unreadable.message})".toString() }
             } else if (nat?.error || nat?.skipped) snapshot.nativeExportSkipped = (nat.error ?: nat.skipped).toString()
         }
@@ -25376,6 +25376,8 @@ private Map _naCreate(Map args) {
     String type = args.app_type
     Map reg = _appTypeRegistry()[type]
     String name = args.name?.toString()?.trim() ?: null
+    String twice = name && args.get('fields') instanceof Map ? ['origLabel', 'name', 'label'].find { args.get('fields').containsKey(it) } : null
+    if (twice) throw new IllegalArgumentException("Pass the label once, as name or as fields.${twice}".toString())
     Long parentId = _discoverParentAppId(type) as Long
     _requireUnprotectedAppMutation(parentId, 'create a child app under')
     String guide = " See hub_get_tool_guide(section='set_native_app_reference')."
@@ -25403,8 +25405,6 @@ private Map _naCreate(Map args) {
                 return [success: false, app_type: type, error: "The ${reg.parentTypeName} page offers no control that creates ${reg.appName}; it offers ${offered ?: 'none'}. Nothing was created.".toString(),
                         note: "Open the ${reg.parentTypeName} app with operation:'form' to see what it offers.${guide}".toString()]
             }
-            String twice = name ? ['origLabel', 'name', 'label'].find { supplied.containsKey(it) } : null
-            if (twice) throw new IllegalArgumentException("Pass the label once, as name or as fields.${twice}".toString())
             Map made = _nfExecute(parentId, _nfPrepare(parentId, parent, [:], create.control_id, 'hub_set_native_app'))
             if (made.created_mismatch) {
                 mcpLog('warn', 'rm-native', "hub_set_native_app create of ${type}: ${made.created_mismatch}; left in place")
@@ -25416,7 +25416,6 @@ private Map _naCreate(Map args) {
             if (name) {
                 String labelInput = ['origLabel', 'name', 'label'].find { child.get('fields').containsKey(it) }
                 if (!labelInput) throw new IllegalArgumentException("The first page of a new ${type} renders no label input (origLabel, name or the app's own label), so name cannot be set there; omit name and set the label later with update or form.".toString())
-                if (supplied.containsKey(labelInput)) throw new IllegalArgumentException("Pass the label once, as name or as fields.${labelInput}".toString())
                 supplied.put(labelInput, name)
             }
             _nfPrepare(childId, child, supplied, _naDone(child), 'hub_set_native_app')
@@ -25476,9 +25475,14 @@ private Map _naCreate(Map args) {
         }
         if (back.consumed) notes << _naConsumedNote(back.consumed)
         _naLabelResult(result, saved, notes)
+        boolean doneSaves = saved.done == '_action_done|Done|' && !saved.committed
+        if (doneSaves) {
+            result.committed = false
+            notes << "Its first page names both a next and a done page, so the hub answered its Done by saving and rendering the page again; the app did not install. Finish it with operation:'form'."
+        }
         if (back.model.app?.installed != true) {
             result.installed = false
-            notes << (!saved.done ? 'Its page renders no Done yet, so the app stays uninstalled until operation:\'form\' completes it.' :
+            if (!doneSaves) notes << (!saved.done ? 'Its page renders no Done yet, so the app stays uninstalled until operation:\'form\' completes it.' :
                 'The hub reports the app not installed after its Done; open it with operation:\'form\'.')
         }
         result.note = notes.join(' ') + guide
@@ -25678,7 +25682,7 @@ def _toolDisplayMeta_partNativeRM() {
 String _naGuide() {
     return '''## Set Native App Reference
 
-hub_set_native_app works on classic Hubitat apps (dynamicPage apps), user and community apps included; Rule Machine rules use hub_set_rule and Visual Rules hub_set_visual_rule. Call it without operation for help; a write operation without confirm returns its schema. Top-level app_id names the app for update and form. Writes need confirm=true and a recent hub backup. When mandatory guide acknowledgment is enabled, pass this section's key as top-level bestPracticeKey.
+hub_set_native_app works on classic Hubitat apps (dynamicPage apps), user and community apps included; Rule Machine rules use hub_set_rule and Visual Rules hub_set_visual_rule. With write access, call it without operation for help; a write operation without confirm returns its schema. Without write access the tool is hidden and this reference is its full description. Top-level app_id names the app for update and form. Writes need confirm=true and a recent hub backup. When mandatory guide acknowledgment is enabled, pass this section's key as top-level bestPracticeKey.
 
 ### create
 
@@ -26603,8 +26607,9 @@ private List _ndSettings(Long id) {
     if (!(response instanceof Map) || !(response.settings instanceof List)) throw new IllegalStateException('Native settings are unavailable')
     response.settings.collect { row ->
         if (!(row instanceof Map) || !(row.name instanceof String)) throw new IllegalStateException('Unexpected native setting row')
-        def setting = [name: row.name, type: row.type, multiple: row.multiple, value: row.type == 'password' ? null : row.value, device_ids: row.deviceList instanceof Map ? row.deviceList.keySet().collect { it.toString() }.sort() : null]
-        if (row.type == 'password') setting.redacted = true
+        boolean secret = row.type == 'password' || _appConfigIsSecretSetting(row.name, row.type, row.value)
+        def setting = [name: row.name, type: row.type, multiple: row.multiple, value: secret ? null : row.value, device_ids: row.deviceList instanceof Map ? row.deviceList.keySet().collect { it.toString() }.sort() : null]
+        if (secret) setting.redacted = true
         setting
     }
 }
@@ -26799,12 +26804,16 @@ private boolean _ndKnownRow(Map rows, String rowId, String missing) {
     if (rowId in rows.predicted) return false
     throw new IllegalArgumentException(missing)
 }
-private void _ndPredictAppend(Map rows, String part) {
-    List used = rows.values().collectMany { ((it.ids as Collection) + (it.deleted as Collection) + (it.predicted as Collection)).toList() }
-        .findAll { it.toString().isInteger() }.collect { it.toString().toInteger() }
-    rows.get(part).predicted << (((used ? used.max() : 0) + 1).toString())
+private String _ndPredictAppend(Map rows, Map counters, String part) {
+    String family = part == 'action' ? 'action' : 'condition'
+    int next = counters.get(family) as int
+    counters.put(family, next + 1)
+    String predicted = next.toString()
+    rows.get(part).predicted << predicted
     rows.get(part).added++
+    predicted
 }
+private int _ndCounter(Object value) { value != null && value.toString().isInteger() && value.toString().toInteger() > 0 ? value.toString().toInteger() : 1 }
 private void _ndDropRow(Map rows, String rowId, String missing) {
     if (_ndKnownRow(rows, rowId, missing)) rows.ids.remove(rowId)
     else { rows.predicted.remove(rowId); rows.added-- }
@@ -26822,7 +26831,7 @@ private void _ndPreflight(Long id, List changes) {
     Map rows = [action: [ids: (actionOrder + projectedActions.keySet()) as Set, added: 0, deleted: [] as Set, predicted: [] as Set],
                 condition: [ids: conditions.keySet().collect { it.toString() } as Set, added: 0, deleted: [] as Set, predicted: [] as Set],
                 trigger: [ids: triggers.keySet().collect { it.toString() } as Set, added: 0, deleted: [] as Set, predicted: [] as Set]]
-    int newAction = 0
+    Map counters = [condition: _ndCounter(before.ndx), action: _ndCounter(before.actNdx)]
     boolean appendedActions = false
     Map locals = id == null ? [:] : null
     Map inventory = null
@@ -26855,11 +26864,11 @@ private void _ndPreflight(Long id, List changes) {
                     } else locals.remove(value.name)
                 }
             }
-            if (change.part in ['condition', 'trigger'] && !value.containsKey('id')) _ndPredictAppend(rows, change.part)
+            if (change.part in ['condition', 'trigger'] && !value.containsKey('id')) _ndPredictAppend(rows, counters, change.part)
             if (change.part in ['action', 'terminator']) {
                 boolean newRow = !value.containsKey('id')
-                if (newRow) { _ndPredictAppend(rows, 'action'); appendedActions = true }
-                String actionId = newRow ? "new:${newAction++}".toString() : value.id.toString()
+                String actionId = newRow ? _ndPredictAppend(rows, counters, 'action') : value.id.toString()
+                if (newRow) appendedActions = true
                 if (newRow) projectedOrder << actionId
                 String method = change.part == 'terminator' ? ND_TERMINATOR_METHODS.get(value.subtype) : value.subtype
                 def prior = projectedActions.get(actionId)
@@ -27601,9 +27610,8 @@ private Map _nfRelabel(Long id, Map plan, Map answer) {
         app = reply.app instanceof Map ? reply.app : _nfPage(id).app
         shown = _nfLabelText(field, app?.trueLabel ?: app?.label)
     }
-    if (shown != wanted) return [label_lost: [posted: wanted, shown: shown]]
-    if (answer.location != null) return [label_restored: true]
-    [label_restored: true] + (rendered ? [model: rendered] : (answer.configPage instanceof Map ? [model: answer + [app: app]] : [:]))
+    Map current = answer.location != null ? [:] : (rendered ? [model: rendered] : (answer.configPage instanceof Map ? [model: answer + [app: app]] : [:]))
+    (shown == wanted ? [label_restored: true] : [label_lost: [posted: wanted, shown: shown]]) + current
 }
 private String _nfLabelRestoredNote() { "The hub's mode write put back an older label, so the label was posted again on its own." }
 private String _nfLabelLostError(Map lost) {
@@ -34944,9 +34952,13 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
     }
     boolean runHtml = useConfigPage && ruleFormat != "vrb-classic" && ruleFormat != "vrb-graph"
     def installed = null
-    if (runHtml) { try { installed = getAppByAppId(appId as Long) } catch (Exception lookup) { installed = null } }
+    String unidentified = null
+    if (runHtml) { try { installed = getAppByAppId(appId as Long) } catch (Exception lookup) { unidentified = lookup.message ?: lookup.toString() } }
     def namespace = installed?.appType?.namespace?.toString()
-    if (runHtml && namespace && namespace != "hubitat") {
+    if (runHtml && unidentified != null) {
+        runHtml = false
+        checkErrors << "the default page of app ${appId} was not rendered: the app could not be identified (${unidentified}), and a user or community app's page code can change its own state when rendered".toString()
+    } else if (runHtml && namespace && namespace != "hubitat") {
         runHtml = false
         label = installed.label?.toString()
         if (ruleFormat == null) ruleFormat = "classic-app"
@@ -35037,7 +35049,7 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
     def brokenMarkerCounts = [:]
     brokenMarkers.each { m -> brokenMarkerCounts.put(m, (brokenMarkerCounts.get(m) ?: 0) + 1) }
     def result = [
-        ok: issues.isEmpty() && broken != true && validationErrors.isEmpty(),
+        ok: !sourcesUsed.isEmpty() && issues.isEmpty() && broken != true && validationErrors.isEmpty(),
         unreadable: sourcesUsed.isEmpty(),
         broken: broken,
         source: (sourcesUsed ? sourcesUsed.join("+") : "none"),
@@ -36363,7 +36375,7 @@ A single tool can also be switched off under **Advanced: Per-tool Overrides**. A
 
 ### hub_read_apps_code — installed-app reads
 
-- **hub_list_apps(scope='instances')** lists every running app as a flat tree with `parentId` pointers. Built-in apps have `user=false`, user-installed apps `user=true`. A hidden parent is left out and its children move up to the nearest visible ancestor. `filter`: `builtin`, `user`, `disabled`, `parents` (apps with children, such as Rule Machine), `children` (individual rules and scenes). `appTypeId` is the type's code-class id, the same id as its scope='types' row, `hub_get_source(type='app', id)` and the hub's /app/editor/<id> page, or null when the hub omits it. Some built-in child types (Rule-5.1) are missing from scope='types'; for those, the parent's appTypeId names the parent app. A retired app type carries `deprecated: true`.
+- **hub_list_apps(scope='instances')** lists every installed app, disabled ones included, as a flat tree with `parentId` pointers. Built-in apps have `user=false`, user-installed apps `user=true`. A hidden parent is left out and its children move up to the nearest visible ancestor. `filter`: `builtin`, `user`, `disabled`, `parents` (apps with children, such as Rule Machine), `children` (individual rules and scenes). `appTypeId` is the type's code-class id, the same id as its scope='types' row, `hub_get_source(type='app', id)` and the hub's /app/editor/<id> page, or null when the hub omits it. Some built-in child types (Rule-5.1) are missing from scope='types'; for those, the parent's appTypeId names the parent app. A retired app type carries `deprecated: true`.
 - **hub_list_apps(scope='types')** lists community types (Apps Code, first) and built-in types. Each row adds `system`/`isBuiltIn` (true for built-in) and `menu`, the Apps/Automations/Integrations tab the type declares, null when it declares none or for a community type outside the hub's apps catalog (a child-app template). If the catalog read fails, community types still list, with `menu` null, no built-ins and a note.
 - **hub_list_device_dependents** — check it before deleting, disabling or replacing a device. `appsUsing` rows carry id, name (the app type), label, trueLabel and disabled.
 - **hub_get_app_config** renders one page as opening it in the UI does, which runs the app's page code.
