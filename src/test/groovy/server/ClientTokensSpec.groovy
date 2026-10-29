@@ -304,6 +304,7 @@ class ClientTokensSpec extends ToolSpecBase {
         when:
         settingsMap['clientTools_1'] = ['hub_list_modes']
         settingsMap['clientWrite_1'] = false
+        settingsMap.redactCredentials = false
         def listed = manage([action: 'list'])
 
         then:
@@ -381,6 +382,20 @@ class ClientTokensSpec extends ToolSpecBase {
 
         then:
         masked.clients*.token == ['***redacted (access token)***']
+    }
+
+    def "clientToken list hides stored tokens by default while create still returns the new one"() {
+        given:
+        stateMap.accessToken = 'main,client-a'
+        stateMap.clientTokens = ['1': [label: 'Alpha', token: 'client-a']]
+
+        when:
+        def listed = manage([action: 'list'])
+        def created = manage([action: 'create', label: 'Beta'])
+
+        then:
+        listed.clients*.token == ['***redacted (access token)***']
+        created.token != null && !created.token.startsWith('***')
     }
 
     def "clientToken is refused alongside settings, and the tool still needs Developer Mode"() {
