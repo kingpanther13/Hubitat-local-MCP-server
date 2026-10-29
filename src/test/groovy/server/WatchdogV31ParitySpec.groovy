@@ -27,7 +27,7 @@ class WatchdogV31ParitySpec extends WatchdogV31Harness {
     }
 
     def 'hub_update_mcp_settings takes the server allowlist minus its server-only keys'() {
-        given: 'mcpLogLevel needs the server-side cache refresh only the main tool does'
+        given: 'mcpLogLevel needs the server-side cache refresh only the main tool does; redactCredentials is set through the server only'
         def server = new File('libraries/mcp-self-admin-lib.groovy').getText('UTF-8') =~ /(?s)def allowedSettings = \[(.*?)\n    \]/
         def watchdog = new File('e2e-deadman-watchdog-v3-1.groovy').getText('UTF-8') =~ /(?s)Map types = \[(.*?)\]\n/
         assert server.find() && watchdog.find()
@@ -36,7 +36,7 @@ class WatchdogV31ParitySpec extends WatchdogV31Harness {
 
         expect:
         watchdogKeys.contains('backupBeforeRuleEdits')
-        watchdogKeys == serverKeys - ['mcpLogLevel']
+        watchdogKeys == serverKeys - ['mcpLogLevel', 'redactCredentials']
     }
 
     def 'v3.1 names itself apart from v3 and protects the code of both watchdogs'() {
