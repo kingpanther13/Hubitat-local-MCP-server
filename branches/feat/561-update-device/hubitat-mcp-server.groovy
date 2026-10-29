@@ -5444,7 +5444,7 @@ private List _bugReportSettingsLines(String privacyMode) {
             "- **Back up before every native app edit:** ${eff(settings.backupEveryRuleWrite, false)}",
             "- **Backup storage budget (MB):** ${effNum(settings.backupBudgetMb, _itemBackupBudgetMb())}",
             "- **Hide access tokens in responses:** ${eff(settings.redactAccessTokens, false)}",
-            "- **Hide credentials in responses:** ${eff(settings.redactCredentials, true)}",
+            "- **Hide credentials in responses:** ${eff(_redactsCredentials(), true)}",
             "- **Keep recent errors for bug reports:** ${eff(settings.retainReportErrors, false)}",
             "- **Max captured states:** ${effNum(settings.maxCapturedStates, getMaxCapturedStates())}",
             "- **Loop guard max executions:** ${effNum(settings.loopGuardMax, settings.loopGuardMax ?: 30)}",
@@ -17404,7 +17404,6 @@ private Map _appConfigSettingTypes(Integer appId) {
     }
     return types
 }
-private boolean _redactsCredentials() { settings.redactCredentials != false || callerClient != null }
 private boolean _appConfigMasksSetting(name, type, value) { _redactsCredentials() && _appConfigIsSecretSetting(name, type, value) }
 private boolean _appConfigIsSecretSetting(name, type, value) {
     if (_appConfigEmptyValue(value)) return false
@@ -17449,7 +17448,7 @@ private boolean _appConfigSecretName(name) {
             (w == "pass" && prev != "by" && (next == null || next in ["word", "phrase", "code", "key"])) ||
             (keyQualifiers.contains(w) && (next == "key" || next == "keys")) ||
             (w in ["pin", "pins", "pincode", "pincodes"] && (qualified || !(prev in hardwarePins))) ||
-            (w in ["code", "codes"] && (prev in pinQualifiers || prev in ["pin", "pins"])) ||
+            (w in ["code", "codes"] && (qualified || prev in ["pin", "pins"])) ||
             _appConfigQualifiedSuffix(w, pinQualifiers)
         if (!hit) continue
         boolean twoWords = ((next == "key" || next == "keys") && keyQualifiers.contains(w)) || (w in ["pin", "pins"] && next in ["code", "codes"])
@@ -20799,7 +20798,7 @@ def _getAllToolDefinitions_partSelfAdmin() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    settings: [type: "object", description: "Map of setting key → new value[[FLAT_TRIM]] (e.g. {\"mcpLogLevel\":\"warn\",\"enableCustomRuleEngine\":true})[[/FLAT_TRIM]]. Unlisted keys are rejected. bypassDeviceAllowlist (bool, default OFF): DANGEROUS escape hatch — when ON native device reads, writes, commands, inventory, health, dependents, swaps and replacements reach ANY hub device by id, IGNORING selectedDevices. Allowlisted keys: mcpLogLevel, debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableRead, enableCustomRuleEngine, useGateways, enableMandatoryBPS, bypassDeviceAllowlist, maxConcurrentWrites, backupBeforeRuleEdits, backupEveryRuleWrite, backupBudgetMb, enableLocalAccess, enableCloudAccess, redactAccessTokens, selectedDevices.[[FLAT_TRIM]] enableLocalAccess / enableCloudAccess (bool): allow requests over the LAN / Hubitat cloud endpoint; a call cannot turn off the connection it arrived on.[[/FLAT_TRIM]] mcpLogLevel: debug|info|warn|error. maxConcurrentWrites: integer 0-100[[FLAT_TRIM]] (default 2; 0 disables the server-side all-write concurrency cap)[[/FLAT_TRIM]]. backupBeforeRuleEdits (bool, default ON): take one fresh snapshot per native rule edit batch or form workflow. backupEveryRuleWrite (bool, default OFF): take a fresh snapshot before every edit instead of reusing the app's snapshot from the last hour.[[FLAT_TRIM]] backupBudgetMb: whole number of MB from 1 to 1000000 (default 10): code and rule backups are evicted only when together they exceed it, oldest first, and an item's newest backup is never evicted; see hub_get_tool_guide(section='backup').[[/FLAT_TRIM]][[FLAT_TRIM]] bypassDeviceAllowlist is independent of Developer Mode.[[/FLAT_TRIM]] selectedDevices = the device-access scope[[FLAT_TRIM]]: {mode:replace|add|remove, ids:[device id strings]}; a bare array is shorthand for a destructive replace[[/FLAT_TRIM]] — see hub_get_tool_guide(section='hub_admin_write_system') for per-mode semantics."],
+                    settings: [type: "object", description: "Map of setting key → new value[[FLAT_TRIM]] (e.g. {\"mcpLogLevel\":\"warn\",\"enableCustomRuleEngine\":true})[[/FLAT_TRIM]]. Unlisted keys are rejected. bypassDeviceAllowlist (bool, default OFF): DANGEROUS escape hatch — when ON native device reads, writes, commands, inventory, health, dependents, swaps and replacements reach ANY hub device by id, IGNORING selectedDevices. Allowlisted keys: mcpLogLevel, debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableRead, enableCustomRuleEngine, useGateways, enableMandatoryBPS, bypassDeviceAllowlist, maxConcurrentWrites, backupBeforeRuleEdits, backupEveryRuleWrite, backupBudgetMb, enableLocalAccess, enableCloudAccess, redactAccessTokens, redactCredentials, selectedDevices.[[FLAT_TRIM]] enableLocalAccess / enableCloudAccess (bool): allow requests over the LAN / Hubitat cloud endpoint; a call cannot turn off the connection it arrived on.[[/FLAT_TRIM]] mcpLogLevel: debug|info|warn|error. maxConcurrentWrites: integer 0-100[[FLAT_TRIM]] (default 2; 0 disables the server-side all-write concurrency cap)[[/FLAT_TRIM]]. backupBeforeRuleEdits (bool, default ON): take one fresh snapshot per native rule edit batch or form workflow. backupEveryRuleWrite (bool, default OFF): take a fresh snapshot before every edit instead of reusing the app's snapshot from the last hour.[[FLAT_TRIM]] backupBudgetMb: whole number of MB from 1 to 1000000 (default 10): code and rule backups are evicted only when together they exceed it, oldest first, and an item's newest backup is never evicted; see hub_get_tool_guide(section='backup').[[/FLAT_TRIM]][[FLAT_TRIM]] bypassDeviceAllowlist is independent of Developer Mode.[[/FLAT_TRIM]] selectedDevices = the device-access scope[[FLAT_TRIM]]: {mode:replace|add|remove, ids:[device id strings]}; a bare array is shorthand for a destructive replace[[/FLAT_TRIM]] — see hub_get_tool_guide(section='hub_admin_write_system') for per-mode semantics."],
                     clientToken: [type: "object", description: "Per-client tokens, instead of settings: see hub_get_tool_guide(section='hub_admin_write_system').[[FLAT_TRIM]] {action: list|create|update|rotate|revoke, ...}. Shape: clientId (update/rotate/revoke), label (create), access? {tools: [names]|\"all\", read, write, local, cloud, toolNumber: main|none|0-9}. create and rotate return the new token; a new client starts with every grantable tool on and access narrows it.[[/FLAT_TRIM]]"],
                     confirm: [type: "boolean", description: "REQUIRED: must be true to confirm the operation"]
                 ],
@@ -25171,9 +25170,9 @@ private Map _naCreate(Map args) {
         if (doneSaves) {
             result.committed = false
             notes << "Its first page names both a next and a done page, so the hub answered its Done by saving and rendering the page again" +
-                (back.model.app?.installed == true ? '.' : "; the app did not install. Finish it with operation:'form'.")
+                (back.model.app?.installed == false ? "; the app did not install. Finish it with operation:'form'." : '.')
         }
-        if (back.model.app?.installed != true) {
+        if (back.model.app?.installed == false) {
             result.installed = false
             if (!doneSaves) notes << (!saved.done ? 'Its page renders no Done yet, so the app stays uninstalled until operation:\'form\' completes it.' :
                 'The hub reports the app not installed after its Done; open it with operation:\'form\'.')
@@ -26504,7 +26503,7 @@ private boolean _ndKnownRow(Map rows, String rowId, String missing) {
 private String _ndPredictAppend(Map rows, Map counters, String part) {
     String family = part == 'action' ? 'action' : 'condition'
     List taken = family == 'action' ? [rows.action] : [rows.condition, rows.trigger]
-    int next = _ndCounter(counters.get(family), taken.any { !it.ids.isEmpty() })
+    int next = _ndCounter(counters.get(family), counters.hadRows.get(family))
     counters.put(family, next + 1)
     String predicted = next.toString()
     if (taken.any { predicted in it.ids }) throw new IllegalArgumentException("Rule Machine's next ${family} id ${predicted} is already in use; read the rule again before appending")
@@ -26534,7 +26533,8 @@ private void _ndPreflight(Long id, List changes) {
     Map rows = [action: [ids: (actionOrder + projectedActions.keySet()) as Set, added: 0, deleted: [] as Set, predicted: [] as Set],
                 condition: [ids: conditions.keySet().collect { it.toString() } as Set, added: 0, deleted: [] as Set, predicted: [] as Set],
                 trigger: [ids: triggers.keySet().collect { it.toString() } as Set, added: 0, deleted: [] as Set, predicted: [] as Set]]
-    Map counters = [condition: before.ndx, action: before.actNdx]
+    Map counters = [condition: before.ndx, action: before.actNdx,
+                    hadRows: [condition: !(rows.condition.ids.isEmpty() && rows.trigger.ids.isEmpty()), action: !rows.action.ids.isEmpty()]]
     boolean hasRequired = expressions.get('0') instanceof List && !expressions.get('0').isEmpty()
     boolean appendedActions = false
     Map locals = id == null ? [:] : null
@@ -26595,7 +26595,7 @@ private void _ndPreflight(Long id, List changes) {
                 projectedActions.remove(target)
                 actionOrder = actionOrder.findAll { it != target }
             }
-            if (change.part == 'required' && !hasRequired) { counters.put('condition', _ndCounter(counters.get('condition'), !(rows.condition.ids.isEmpty() && rows.trigger.ids.isEmpty())) + 1); hasRequired = true }
+            if (change.part == 'required' && !hasRequired) { counters.put('condition', _ndCounter(counters.get('condition'), counters.hadRows.condition) + 1); hasRequired = true }
             if (change.part in ['expression', 'required']) {
                 String evalId = change.part == 'required' ? '0' : value.id.toString()
                 expressions.put(evalId, value.tokens)
@@ -30972,6 +30972,7 @@ private def _renderToolResult(id, toolName, reactiveToolName, args, result, bool
 }
 private String _accessTokenRedactedMarker() { return "***redacted (access token)***" }
 private boolean _redactsAccessTokens() { settings.redactAccessTokens == true || callerClient != null }
+private boolean _redactsCredentials() { settings.redactCredentials != false || callerClient != null }
 private def _redactAccessTokens(value) {
     String marker = _accessTokenRedactedMarker()
     if (value instanceof Map) {
