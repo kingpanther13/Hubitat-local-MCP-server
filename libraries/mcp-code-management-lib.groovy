@@ -753,9 +753,12 @@ private boolean _appConfigSecretName(name) {
                     "timestamp", "date", "length", "len", "type", "enabled", "enable", "set", "required", "url",
                     "uri", "endpoint", "timeout", "interval", "mode", "policy", "hint", "label", "name"] as Set
     Set keyQualifiers = ["api", "access", "private", "auth", "client", "secret", "encryption", "signing", "shared"] as Set
-    Set pinQualifiers = ["lock", "user", "access", "pass", "disarm", "arm", "alarm", "security", "unlock", "auth", "entry", "keypad", "door", "master", "admin", "guest"] as Set
+    Set pinQualifiers = ["lock", "user", "access", "pass", "disarm", "arm", "alarm", "security", "unlock", "auth", "entry", "keypad", "door",
+                         "master", "admin", "guest", "installer", "duress", "gate", "garage", "hsm", "panel", "safe", "vault"] as Set
     Set hardwarePins = ["led", "gpio", "relay", "io", "digital", "analog", "data", "output", "input", "sensor", "pwm", "signal", "button",
                         "power", "reset", "enable", "interrupt", "irq", "clock", "clk", "sda", "scl", "tx", "rx", "servo", "motor", "trigger", "echo"] as Set
+    // A credential word anywhere in the name ("keypadInputPin", "alarmResetPin") outranks a hardware word.
+    boolean qualified = words.any { it in pinQualifiers }
     for (int idx = 0; idx < words.size(); idx++) {
         String w = words[idx]
         String prev = idx > 0 ? words[idx - 1] : null
@@ -770,8 +773,10 @@ private boolean _appConfigSecretName(name) {
             (keyQualifiers.contains(w) && (next == "key" || next == "keys")) ||
             // A PIN is a secret unless a hardware word names it a pin of a board ("ledPin", "gpioPin"); a
             // code only after a lock, user, access, alarm or entry word ("userCodes"; "zipCode" is not).
-            (w in ["pin", "pins", "pincode", "pincodes"] && !(prev in hardwarePins)) ||
-            (w in ["code", "codes"] && (prev in pinQualifiers || prev in ["pin", "pins"]))
+            (w in ["pin", "pins", "pincode", "pincodes"] && (qualified || !(prev in hardwarePins))) ||
+            (w in ["code", "codes"] && (prev in pinQualifiers || prev in ["pin", "pins"])) ||
+            // One-word forms: "userpin", "alarmcode", "HSMPIN".
+            _appConfigQualifiedSuffix(w, pinQualifiers)
         if (!hit) continue
         // A metadata word right after the hit ("passwordSet", "tokenCount"); for the two-word
         // "api key" form the metadata word follows "key".
@@ -779,6 +784,13 @@ private boolean _appConfigSecretName(name) {
         String after = twoWords ? (idx + 2 < words.size() ? words[idx + 2] : null) : next
         if (after != null && metadata.contains(after)) continue
         return true
+    }
+    return false
+}
+
+private boolean _appConfigQualifiedSuffix(String word, Set qualifiers) {
+    for (suffix in ["pincodes", "pincode", "pins", "pin", "codes", "code"]) {
+        if (word.length() > suffix.length() && word.endsWith(suffix) && word.substring(0, word.length() - suffix.length()) in qualifiers) return true
     }
     return false
 }

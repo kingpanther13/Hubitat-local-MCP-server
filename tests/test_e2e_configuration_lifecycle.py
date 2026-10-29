@@ -105,7 +105,7 @@ def test_matrix_establishes_pane_values_and_restores_actual_baseline(show, statu
             })
             return {"success": True}
         assert name == "hub_update_device", name
-        patch = {k: v for k, v in args.items() if k not in ("deviceId", "confirm", "preferences")}
+        patch = dict(args.get("fields", {}))
         writes.append(deepcopy(patch))
         setup = set(patch) == {"showOnHome", "defaultCurrentState"}
         body = str(patch.get("notes", "")).startswith("Native persistence:")
@@ -191,7 +191,7 @@ def test_canonical_reconcile_patches_only_what_drifted(drift):
             return {"preferences": [{"name": k, "value": v, "valuePresent": True} for k, v in prefs.items()],
                     "editableFields": [{"name": k, "value": v, "writable": True} for k, v in fields.items()]}
         assert name == "hub_update_device", name
-        writes.append({k: v for k, v in args.items() if k != "deviceId"})
+        writes.append({**args.get("fields", {}), **{k: v for k, v in args.items() if k not in ("deviceId", "fields")}})
         return {"success": True}
 
     runner = et.TestRunner(SimpleNamespace(call_tool=call_tool, app_id="38"))

@@ -249,12 +249,19 @@ private String _ndPredictAppend(Map rows, Map counters, String part) {
     int next = counters.get(family) as int
     counters.put(family, next + 1)
     String predicted = next.toString()
+    List taken = family == 'action' ? [rows.action] : [rows.condition, rows.trigger]
+    if (taken.any { predicted in it.ids }) throw new IllegalArgumentException("Rule Machine's next ${family} id ${predicted} is already in use; read the rule again before appending")
     rows.get(part).predicted << predicted
     rows.get(part).added++
     predicted
 }
 
-private int _ndCounter(Object value) { value != null && value.toString().isInteger() && value.toString().toInteger() > 0 ? value.toString().toInteger() : 1 }
+// A rule with no rows in a family may not carry its counter yet; one that has rows must.
+private int _ndCounter(Object value, boolean hasRows) {
+    if (value != null && value.toString().isInteger() && value.toString().toInteger() > 0) return value.toString().toInteger()
+    if (hasRows) throw new IllegalArgumentException("The rule's row counter is unreadable; read the rule again before appending")
+    return 1
+}
 
 private void _ndDropRow(Map rows, String rowId, String missing) {
     if (_ndKnownRow(rows, rowId, missing)) rows.ids.remove(rowId)
@@ -274,7 +281,8 @@ private void _ndPreflight(Long id, List changes) {
     Map rows = [action: [ids: (actionOrder + projectedActions.keySet()) as Set, added: 0, deleted: [] as Set, predicted: [] as Set],
                 condition: [ids: conditions.keySet().collect { it.toString() } as Set, added: 0, deleted: [] as Set, predicted: [] as Set],
                 trigger: [ids: triggers.keySet().collect { it.toString() } as Set, added: 0, deleted: [] as Set, predicted: [] as Set]]
-    Map counters = [condition: _ndCounter(before.ndx), action: _ndCounter(before.actNdx)]
+    Map counters = [condition: _ndCounter(before.ndx, !(rows.condition.ids.isEmpty() && rows.trigger.ids.isEmpty())),
+                    action: _ndCounter(before.actNdx, !rows.action.ids.isEmpty())]
     // A rule's first Required Expression advances ndx by one (live); later ones leave it.
     boolean hasRequired = expressions.get('0') instanceof List && !expressions.get('0').isEmpty()
     boolean appendedActions = false

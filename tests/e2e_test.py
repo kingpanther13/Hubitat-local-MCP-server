@@ -52,7 +52,7 @@ from sdk_conformance_helpers import (
 
 PREFIX = "BAT_E2E_"
 # Persistent scaffold FIXTURES (the shared switch + temp sensors that rule fixtures reference and the
-# poll tests read, plus the BAT_E2E_KEEP_Room the /device/updateRoom scenario moves a device into)
+# poll tests read, plus the BAT_E2E_KEEP_Room the room-assignment scenario moves a device into)
 # carry this marker so the cleanup sweeps SKIP them by name -- created once and reused across runs,
 # never deleted. Under-test fixtures use the bare PREFIX and are still reaped. A missing KEEP_
 # fixture is a hub-provisioning problem, not a test bug: the owning scenario says how to recreate it.
@@ -207,6 +207,13 @@ def _summarize_mrtr_e2e_proof(
 # ---------------------------------------------------------------------------
 # Exceptions
 # ---------------------------------------------------------------------------
+
+
+def device_update_args(device_id, patch):
+    """hub_update_device arguments for a flat patch: device fields go in `fields`, the rest stay top-level."""
+    top = {k: v for k, v in patch.items() if k in ("preferences", "confirm", "bestPracticeKey")}
+    fields = {k: v for k, v in patch.items() if k not in top}
+    return {"deviceId": device_id, **({"fields": fields} if fields else {}), **top}
 
 
 class McpError(Exception):
@@ -3725,7 +3732,7 @@ class TestRunner:
             # resolver treat the record as Z-Wave (a bare numeric id with no marker stays unlabelled).
             self.client.call_tool("hub_update_device", {
                 "deviceId": dev_id,
-                "dataValues": {"manufacturer": "634", "inClusters": "0x5E,0x25,0x70"}})
+                "fields": {"dataValues": {"manufacturer": "634", "inClusters": "0x5E,0x25,0x70"}}})
             result = self.client.call_tool("hub_get_device", {
                 "deviceId": dev_id, "mode": "details", "sections": ["data"]})
             data = (result.get("sections") or {}).get("data") or {}
@@ -3901,9 +3908,8 @@ class TestRunner:
             return snapshots
 
         def update(patch, *, require_data_change=True):
-            result = self._write_once("hub_manage_devices", "hub_update_device", {
-                "deviceId": device_id, **patch,
-            }, f"{profile['path']} configuration edit")
+            result = self._write_once("hub_manage_devices", "hub_update_device",
+                                      device_update_args(device_id, patch), f"{profile['path']} configuration edit")
             assert result.get("success") is True, f"Configuration edit failed: {result}"
             assert not result.get("errors"), f"Configuration edit reported success with rejected fields: {result}"
             assert result.get("mrtr", {}).get("continued") is True, f"Device update bypassed MRTR: {result}"
@@ -4083,9 +4089,8 @@ class TestRunner:
                                    if common_contract)
             for patch in invalid_patches:
                 try:
-                    refused = self._write_once("hub_manage_devices", "hub_update_device", {
-                        "deviceId": device_id, **patch,
-                    }, "invalid configuration fixture write")
+                    refused = self._write_once("hub_manage_devices", "hub_update_device",
+                                               device_update_args(device_id, patch), "invalid configuration fixture write")
                     assert refused.get("success") is False, f"Invalid write succeeded: {refused}"
                 except (McpToolError, McpError) as exc:
                     affected = next(iter(patch.get("preferences", patch)))
@@ -4377,17 +4382,23 @@ class TestRunner:
         # persistent scaffold switch -- a Home-page flag toggle is idempotent and does not
         # disturb the rule/poll fixtures that also read this device's state.
         dev_id = self.get_test_switch_id()
-        hide = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "showOnHome": False})
+        hide = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"showOnHome": False}})
         assert hide.get("success") is True, f"hide-from-home failed: {hide}"
         assert any(c.get("property") == "showOnHome" for c in (hide.get("changes") or [])), \
             f"showOnHome change not recorded: {hide}"
         # Restore so the device's Home visibility is unchanged across runs.
-        show = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "showOnHome": True})
+        show = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"showOnHome": True}})
         assert show.get("success") is True, f"show-on-home restore failed: {show}"
+        # A field passed beside fields instead of inside it is refused before any write.
+        try:
+            self.client.call_tool("hub_update_device", {"deviceId": dev_id, "showOnHome": False})
+            raise AssertionError("hub_update_device accepted a top-level field")
+        except (McpToolError, McpError) as exc:
+            assert "Unknown argument" in str(exc), f"Top-level field refusal was not explicit: {exc}"
 
     @test("devices")
     def test_update_device_room_assign_and_unassign(self) -> None:
-        """UNCONDITIONAL live proof of /device/updateRoom (name-keyed room assignment).
+        """UNCONDITIONAL live proof of room assignment through the Device Info save (by name and by id).
 
         The bypass-block leg that also touches this endpoint only runs when the arbitrarily-picked
         unlisted device happens to already be in a room, so it can skip an entire run. This one owns
@@ -4416,10 +4427,10 @@ class TestRunner:
         original_room = (before.get("room") or before.get("roomName")) if isinstance(before, dict) else None
 
         try:
-            # THE surface under test: name-keyed assignment via /device/updateRoom.
-            assigned = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "room": room_name})
+            # THE surface under test: assignment by room name, then by id, through the Device Info save.
+            assigned = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"room": room_name}})
             assert assigned.get("success") is True, \
-                f"hub_update_device room assign failed -- /device/updateRoom rejected it: {assigned}"
+                f"hub_update_device room assign failed: {assigned}"
             assert any(c.get("property") == "room" for c in (assigned.get("changes") or [])), \
                 f"room change not recorded: {assigned}"
 
@@ -4429,16 +4440,19 @@ class TestRunner:
             assert any(str(d.get("id")) == str(dev_id) for d in (got.get("devices") or [])), \
                 f"room '{room_name}' does not list device {dev_id} after the assign: {got}"
 
-            # The unassign leg shares the endpoint and has its own read-back guard in production.
-            unassigned = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "room": ""})
+            by_id = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"room": room_id}})
+            assert by_id.get("success") is True and any(
+                c.get("property") == "room" and c.get("newValue") == room_name for c in (by_id.get("changes") or [])),                 f"room assign by id did not read back as '{room_name}': {by_id}"
+
+            unassigned = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"room": ""}})
             assert unassigned.get("success") is True, f"hub_update_device room unassign failed: {unassigned}"
 
-            print(f"    ROOM_ASSIGN ok -- /device/updateRoom moved {dev_id} into '{room_name}' and out again")
+            print(f"    ROOM_ASSIGN ok -- moved {dev_id} into '{room_name}' by name and id, and out again")
         finally:
             # Restore prior membership; if it had none, the unassign above already left it correct.
             if original_room:
                 try:
-                    self.client.call_tool("hub_update_device", {"deviceId": dev_id, "room": str(original_room)})
+                    self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"room": str(original_room)}})
                 except Exception as exc:
                     print(f"  [WARN] room-assign cleanup: restoring device {dev_id} to '{original_room}' failed: {exc}")
 
@@ -4446,7 +4460,7 @@ class TestRunner:
     def test_update_device_default_current_state(self) -> None:
         # Intent: choose which attribute appears in the Status column for a device.
         dev_id = self.get_test_switch_id()
-        result = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "defaultCurrentState": "switch"})
+        result = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"defaultCurrentState": "switch"}})
         assert result.get("success") is True, f"set default current state failed: {result}"
         assert any(c.get("property") == "defaultCurrentState" for c in (result.get("changes") or [])), \
             f"defaultCurrentState change not recorded: {result}"
@@ -4491,7 +4505,7 @@ class TestRunner:
         try:
             form_before = preserved_form_fields()
             result = self.client.call_tool("hub_update_device", {
-                "deviceId": dev_id, "tags": ["kitchen", "downstairs"],
+                "deviceId": dev_id, "fields": {"tags": ["kitchen", "downstairs"]},
             })
             assert result.get("success") is True, f"tag edit failed: {result}"
             assert any(c.get("property") == "tags" for c in (result.get("changes") or [])), \
@@ -4564,16 +4578,11 @@ class TestRunner:
             assert isinstance(got, dict) and str(got.get("id")) == new_id, \
                 f"the device tools do not reach the created device {new_id}: {str(got)[:300]}"
 
-            # The label leg is /device/updateLabel -- and this is its only UNCONDITIONAL live proof.
-            # (The bypass-block leg that also exercises it is gated on the arbitrarily-picked device
-            # having a label, so it can skip entirely; see the [COVERAGE GAP] print there.) The envelope
-            # reports `label` as the APPLIED label, falling back to the driver's own default when the
-            # dedicated setter AND the wholesale /device/update fallback both missed -- so a requested
-            # label reading back means the leg worked, and a label warning is the tool's own admission
-            # that it did not.
+            # The label rides the native create (or, for a built-in driver, one Device Info save after it).
+            # The envelope reports `label` as the APPLIED label, so a requested label reading back means
+            # the leg worked, and a label warning is the tool's own admission that it did not.
             assert created.get("label") == f"{PREFIX}FromDriver", (
-                "hub_create_device did not apply the requested label -- /device/updateLabel and the "
-                f"wholesale /device/update fallback both missed: label={created.get('label')!r} "
+                f"hub_create_device did not apply the requested label: label={created.get('label')!r} "
                 f"warnings={created.get('warnings')!r}")
             assert not [w for w in (created.get("warnings") or []) if "label" in str(w).lower()], \
                 f"hub_create_device warned about the label: {created.get('warnings')!r}"
@@ -12897,7 +12906,7 @@ def updated() {}
         # hub_set_system_settings(darkMode) sets the admin-UI theme via an INDEPENDENT setter
         # (GET /hub/applyDarkMode/<bool>, HTTP 200 empty, no read-back -- /hub/details/json has no
         # dark/theme key). FIRMWARE-TOLERANT: /hub/applyDarkMode may not exist on older firmware
-        # (it 404s, the same way /device/setShowOnHome did on 2.5.0.157). The tool then returns a
+        # (it 404s there). The tool then returns a
         # structured {success:false, error:"Failed to apply dark mode: ..."} envelope (NOT isError,
         # so call_tool hands it back as a dict). Treat a genuine endpoint-absent failure as a CLEAN
         # SKIP, distinct from a flaky relay 504 (which the runner retries). Sets dark then reverts to
@@ -14811,7 +14820,7 @@ def updated() {}
                     steps.append({**pane_and_room, "preferences": record.get("preferences") or {}, "confirm": True})
                 for patch in steps:
                     result = self.client.call_tool("hub_manage_devices", {
-                        "tool": "hub_update_device", "args": {"deviceId": device_id, **patch}})
+                        "tool": "hub_update_device", "args": device_update_args(device_id, patch)})
                     if not isinstance(result, dict) or result.get("success") is not True or result.get("errors"):
                         raise AssertionError(f"restore patch {sorted(patch)} rejected: {result}")
                 readback = self.client.call_tool("hub_get_device", {"deviceId": device_id})
@@ -14850,7 +14859,7 @@ def updated() {}
                 try:
                     self._set_device_bypass(True)
                     result = self.client.call_tool("hub_manage_devices", {
-                        "tool": "hub_update_device", "args": {"deviceId": dev_id, "label": label}})
+                        "tool": "hub_update_device", "args": {"deviceId": dev_id, "fields": {"label": label}}})
                     assert result.get("success") is True and not result.get("errors"), result
                     print(f"    renamed '{candidates[0].get('label')}' (ID: {dev_id}) back to '{label}'")
                     candidates[0]["label"] = label
@@ -14935,7 +14944,7 @@ def updated() {}
                 steps.append(step)
             for patch in steps:
                 result = self.client.call_tool("hub_manage_devices", {
-                    "tool": "hub_update_device", "args": {"deviceId": device_id, **patch}})
+                    "tool": "hub_update_device", "args": device_update_args(device_id, patch)})
                 if not isinstance(result, dict) or result.get("success") is not True or result.get("errors"):
                     raise AssertionError(f"canonical patch {sorted(patch)} rejected: {result}")
             print(f"    reconciled '{profile['label']}' (ID: {device_id}) to the canonical baseline: "
@@ -15134,7 +15143,7 @@ def updated() {}
             ("hub_get_device", {"deviceId": unauth}),
             ("hub_get_device_attribute", {"deviceId": unauth, "attribute": "switch"}),
             ("hub_list_device_events", {"deviceId": unauth}),
-            ("hub_update_device", {"deviceId": unauth, "label": f"{SCAFFOLD_PREFIX}Configuration_StandaloneBypass"}),
+            ("hub_update_device", {"deviceId": unauth, "fields": {"label": f"{SCAFFOLD_PREFIX}Configuration_StandaloneBypass"}}),
             ("hub_call_device_command", {"deviceId": unauth, "command": "captureConfiguration", "parameters": ["0"]}),
             ("hub_list_device_dependents", {"deviceId": unauth}),
         ]
@@ -15193,13 +15202,13 @@ def updated() {}
             })
             label_field = next((field for field in configuration.get("editableFields", [])
                                 if field.get("name") == "label"), {})
-            orig_label = label_field.get("value") if label_field.get("valuePresent") is True else None
+            orig_label = label_field.get("value")
             cmd_names = [c.get("name") for c in (dev.get("commands") or []) if isinstance(c, dict)]
             orig_room = dev.get("room")
 
             assert isinstance(orig_label, str), f"Owned fixture label is not restorable: {label_field}"
             try:
-                up = self.client.call_tool("hub_update_device", {"deviceId": unauth, "label": f"{orig_label} _BWTEST"})
+                up = self.client.call_tool("hub_update_device", {"deviceId": unauth, "fields": {"label": f"{orig_label} _BWTEST"}})
                 assert up.get("success") is True, f"bypass label rename did not succeed: {up}"
                 assert any(c.get("property") == "label" for c in (up.get("changes") or [])), \
                     f"bypass label change not recorded: {up}"
@@ -15208,7 +15217,7 @@ def updated() {}
                 })
                 assert next(row["value"] for row in observed["editableFields"] if row["name"] == "label") == f"{orig_label} _BWTEST"
             finally:
-                restore = self.client.call_tool("hub_update_device", {"deviceId": unauth, "label": orig_label})
+                restore = self.client.call_tool("hub_update_device", {"deviceId": unauth, "fields": {"label": orig_label}})
                 assert restore.get("success") is True, f"bypass label restore did not succeed: {restore}"
                 observed = self.client.call_tool("hub_get_device", {
                     "deviceId": unauth, "mode": "configuration", "fields": ["label"],
@@ -15231,14 +15240,14 @@ def updated() {}
             observed = self.client.call_tool("hub_get_device_attribute", {"deviceId": unauth, "attribute": "nativeConfiguration"})
             assert json.loads(observed["value"]).get("nonce") == nonce, f"Bypass native command did not execute: {observed}"
 
-            # (c) room assign via /device/updateRoom, re-assigning to the SAME room (a no-op move that
-            # proves the NAME-keyed endpoint returns true without relocating the device).
+            # (c) room re-assign to the SAME room on an unlisted device (a no-op move through the
+            # Device Info save that must not relocate it).
             if not orig_room:
                 print(f"    [BYPASS LEG SKIPPED] leg (c): device {unauth} is in no room, so the "
-                      f"UNLISTED-device path for /device/updateRoom was not exercised this run "
+                      f"UNLISTED-device room path was not exercised this run "
                       f"(the endpoint itself is covered unconditionally elsewhere)")
             if orig_room:
-                rr = self.client.call_tool("hub_update_device", {"deviceId": unauth, "room": orig_room})
+                rr = self.client.call_tool("hub_update_device", {"deviceId": unauth, "fields": {"room": orig_room}})
                 assert rr.get("success") is True, f"bypass same-room re-assign did not succeed: {rr}"
                 assert any(c.get("property") == "room" for c in (rr.get("changes") or [])), \
                     f"bypass room change not recorded: {rr}"
@@ -15621,7 +15630,7 @@ def updated() {}
         self._set_bps(enableMandatoryBPS=False)
         try:
             self.client.call_tool("hub_manage_devices", {
-                "tool": "hub_update_device", "args": {"deviceId": "999999999", "label": "BAT_E2E_x"}})
+                "tool": "hub_update_device", "args": {"deviceId": "999999999", "fields": {"label": "BAT_E2E_x"}}})
             raise AssertionError("updating a bogus device should have errored")
         except McpError as e:
             msg = str(e)

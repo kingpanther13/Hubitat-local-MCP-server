@@ -4203,6 +4203,13 @@ private Map _applyDeviceEdit(deviceId, Map fj, Map fields, Map send, Map prefere
         if (!(after?.device instanceof Map)) { errors << [property: name, error: "Saved, but the device could not be read back to confirm it."]; continue }
         def actual = _deviceEditCurrentValue(name, after)
         def wanted = field.value
+        if (name == 'dataValues') {
+            for (item in wanted) {
+                if (actual instanceof Map && actual.get(item.key)?.toString() == item.value) changes << [property: "dataValue.${item.key}", newValue: item.value]
+                else errors << [property: "dataValue.${item.key}", error: "Saved, but the data value reads back as ${groovy.json.JsonOutput.toJson(actual instanceof Map ? actual.get(item.key) : null)}; inspect device data before retrying."]
+            }
+            continue
+        }
         if (name == 'room') wanted = send.roomName
         boolean matches = _deviceEditValuesMatch(name, wanted, actual)
         if (name == 'deviceNetworkId' && wanted == '0' && _deviceFlag(d.linkedDevice)) matches = actual == d.deviceNetworkId
@@ -4252,7 +4259,6 @@ private _deviceEditCurrentValue(String name, Map fj) {
 private boolean _deviceEditValuesMatch(String name, wanted, actual) {
     if (name == 'tags') return _normalizedDeviceTags(actual) == _normalizedDeviceTags(wanted)
     if (name == 'dashboardIds') return actual instanceof List && actual.collect { it.toString() }.sort() == wanted.collect { it.toString() }.sort()
-    if (name == 'dataValues') return actual instanceof Map && wanted.every { k, v -> actual.get(k)?.toString() == v }
     if (wanted instanceof Boolean) return (actual instanceof Boolean || actual?.toString() in ['true', 'false']) && _deviceFlag(actual) == wanted
     // A cleared text field reads back as null.
     return (actual == null ? '' : actual.toString()) == (wanted == null ? '' : wanted.toString())

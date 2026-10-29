@@ -10386,13 +10386,17 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
     // without being a rule, and its default page runs its own code, which can drop a wizard's pending
     // input (Hubitat Package Manager clears a pending install there).
     def installed = null
+    boolean identified = true
     try { installed = getAppByAppId(appId as Long) }
     catch (Exception lookup) {
-        useRuleBuilder = false; useConfigPage = false
-        checkErrors << "app ${appId} was not read: it could not be identified (${lookup.message ?: lookup.toString()}), and a user or community app is not read as a rule".toString()
+        // The compiled state runs no page code, so it is still read; the page is not.
+        identified = false
+        useConfigPage = false
+        checkErrors << "app ${appId}'s page was not read: the app could not be identified (${lookup.message ?: lookup.toString()}), and a user or community app's page runs its own code".toString()
     }
+    if (identified && installed == null) throw new IllegalArgumentException("App ${appId} not found; list installed apps with hub_list_apps")
     def namespace = installed?.appType?.namespace?.toString()
-    if (namespace && namespace != "hubitat") {
+    if (identified && namespace != "hubitat") {
         useRuleBuilder = false; useConfigPage = false
         label = installed.label?.toString()
         ruleFormat = "classic-app"

@@ -400,7 +400,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `hub_update_device` with `label` parameter. Verifies with `hub_get_device`.
+**Expected**: Calls `hub_update_device` with `fields.label`. Verifies with `hub_get_device`.
 
 ### T13b — hub_update_device (hide from Home page)
 
@@ -412,7 +412,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `hub_update_device` with `showOnHome=false`. Reports the device no longer shows on the Home page.
+**Expected**: Calls `hub_update_device` with `fields.showOnHome=false`. Reports the device no longer shows on the Home page.
 
 ### T13c — hub_update_device (default status attribute)
 
@@ -424,7 +424,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `hub_update_device` with `defaultCurrentState="switch"`. Reports the status attribute was set.
+**Expected**: Calls `hub_update_device` with `fields.defaultCurrentState="switch"`. Reports the status attribute was set.
 
 ### T13d — hub_update_device (tags)
 
@@ -436,7 +436,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `hub_update_device` with `tags=["kitchen","downstairs"]`. The wholesale device-edit form preserves the device's label/name; the response confirms the tags were applied (read back from the device).
+**Expected**: Calls `hub_update_device` with `fields.tags=["kitchen","downstairs"]`. The Device Info save keeps the device's label/name; the response confirms the tags were applied (read back from the device).
 
 ### T14 — hub_get_info
 
@@ -2694,7 +2694,7 @@ These operations are too destructive for automated testing. Test manually with e
 | Cloud controller disable/enable | `hub_call_destructive_ops` (target=cloud, disable\|enable) | hub_manage_destructive_ops | Disabling severs Alexa/Google, cloud dashboards, cloud firmware updates, subscriptions |
 | Network config (static IP / DHCP / Ethernet autoneg / WiFi) | `hub_set_system_settings` (network=...) | core | Can disconnect the hub; confirm-gated |
 | Enable/disable Hub Mesh | `hub_update_hub_mesh` (enabled=...) | hub_manage_devices | Needs a hub reboot to take effect; hub-wide sharing change |
-| Share a device / variable over Hub Mesh | `hub_update_device` (meshEnabled) / `hub_set_variable` (mesh_shared) | hub_manage_devices | Reversible; shares one entity into the LAN mesh |
+| Share a device / variable over Hub Mesh | `hub_update_device` (`fields.meshEnabled`) / `hub_set_variable` (mesh_shared) | hub_manage_devices | Reversible; shares one entity into the LAN mesh |
 | Link a peer hub's shared device / variable | `hub_create_device` / `hub_create_variable` (mesh_source_*) | hub_manage_devices | Creates a local proxy; needs the peer's mesh token if it has UI login security |
 | Unlink a Hub Mesh linked device | `hub_delete_device` | hub_manage_destructive_ops | Removes only the local link; the peer's source device is untouched |
 | Unlink a Hub Mesh linked variable | `hub_delete_variable` (decorated `"<var> on <peer>"` name) | hub_manage_variables | Removes only the local mirror; peer source untouched; `force` only if a real local app uses it (`inUseByApps`) |
