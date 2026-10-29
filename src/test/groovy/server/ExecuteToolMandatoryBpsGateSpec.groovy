@@ -95,6 +95,7 @@ class ExecuteToolMandatoryBpsGateSpec extends ToolSpecBase {
         tool                 | args                                     || section
         'hub_set_rule'       | SET_RULE_ARGS                            || 'set_rule_reference'
         'hub_set_rule' | [operation: 'form', rule_id: 42, args: [steps: [[kind: 'open']]], confirm: true]     || 'set_rule_reference'
+        'hub_set_native_app' | [operation: 'update', app_id: 42, args: [fields: [comments: 'x']], confirm: true] || 'set_native_app_reference'
         'hub_set_hsm'        | [armCommand: 'armHome']                  || 'best_practice_reference'
     }
 
@@ -102,6 +103,7 @@ class ExecuteToolMandatoryBpsGateSpec extends ToolSpecBase {
         given:
         settingsMap.enableMandatoryBPS = true
         script.metaClass.toolCallAppForm = { Map m -> [success: true, stubbed: true] }
+        script.metaClass.toolCallAppForm = { Map m, String caller -> [success: true, stubbed: true] }
 
         when: 'the right section key'
         def ok = script.executeTool(tool, args + [bestPracticeKey: key(own)])
@@ -121,6 +123,7 @@ class ExecuteToolMandatoryBpsGateSpec extends ToolSpecBase {
         'hub_set_rule'       | SET_RULE_ARGS                        | 'set_rule_reference'      | 'best_practice_reference'
         'hub_set_hsm'        | [armCommand: 'armHome']              | 'best_practice_reference' | 'set_rule_reference'
         'hub_set_rule' | [operation: 'form', rule_id: 42, args: [steps: [[kind: 'open']]], confirm: true] | 'set_rule_reference' | 'builtin_app_tools_rules'
+        'hub_set_native_app' | [operation: 'form', app_id: 42, args: [steps: [[kind: 'open']]], confirm: true] | 'set_native_app_reference' | 'builtin_app_tools_crud'
     }
 
     /** The value a caller offers for each refusal variant; the clock is the harness default T0. */

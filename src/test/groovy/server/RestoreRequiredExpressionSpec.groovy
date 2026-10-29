@@ -20,6 +20,7 @@ class RestoreRequiredExpressionSpec extends ToolSpecBase {
         settingsMap.enableRead = true
         stateMap.lastBackupTimestamp = 1234567890000L
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.getAppByAppId = { Long id -> [id: id, appType: [namespace: 'hubitat']] }
         fake = new FakeRmExpressionEditor()
         fake.install(script, hubGet)
     }
@@ -38,6 +39,18 @@ class RestoreRequiredExpressionSpec extends ToolSpecBase {
 
     private Map modeNightSnapshot() {
         snapshot([1], [rCapab_1: "Mode", modes1: ["3"]], ["1": "Mode is 3"])
+    }
+
+    def "the committed Required Expression is read from the rule state: eval 0, empty when absent, null when unreadable"() {
+        given:
+        hubGet.register('/app/ruleBuilderJson/101') { params -> JsonOutput.toJson([eval: ["0": ["1", "AND", "2"]]]) }
+        hubGet.register('/app/ruleBuilderJson/102') { params -> JsonOutput.toJson([eval: [:]]) }
+        hubGet.register('/app/ruleBuilderJson/103') { params -> throw new RuntimeException("timeout") }
+
+        expect:
+        script._rmRequiredTokens(101) == ["1", "AND", "2"]
+        script._rmRequiredTokens(102) == []
+        script._rmRequiredTokens(103) == null
     }
 
     def "condition texts drop the device's current value but keep a parenthesised device name"() {

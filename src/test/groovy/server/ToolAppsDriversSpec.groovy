@@ -973,7 +973,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         result.total == 0
         result.message.contains('No item backups')
         result.storageBudget.limitBytes == 10L * 1024L * 1024L
-        result.retentionPolicy.contains('rolling steps')
+        result.retentionPolicy == script._itemBackupRetentionNote()
     }
 
     @spock.lang.Unroll

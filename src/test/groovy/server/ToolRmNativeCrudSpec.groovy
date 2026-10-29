@@ -10,7 +10,7 @@ import spock.lang.Unroll
 
 class ToolRmNativeCrudSpec extends ToolSpecBase {
 
-    // The walker's app is an RM rule unless a test says otherwise: a non-RM app's walk reads its own page.
+    // Apps are RM rules unless a test says otherwise.
     def setup() {
         script.metaClass.getAppByAppId = { id -> [appType: [name: 'Rule-5.1']] }
     }
@@ -144,7 +144,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def posts = []
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             posts << [path: path, body: body]
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
 
         expect:
@@ -235,7 +235,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             posts << [path: path, body: body]
             if (commitThrows) throw new RuntimeException('transient commit failure')
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
         posts
     }
@@ -269,7 +269,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             '{"success":true,"appId":88}'
         }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
 
         when:
@@ -318,6 +318,46 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         !(atomicStateMap.parentAppIds?.containsKey("button_controller"))
     }
 
+    def "_rmSubmitMainPageDone reports a Done the hub answers by rendering the page again as not done"() {
+        given:
+        hubGet.register('/installedapp/configure/json/601') { params ->
+            JsonOutput.toJson([app: [id: 601, name: "Notifier", label: "N", installed: true, version: 2, appType: [name: "Notifier", namespace: "hubitat"]],
+                configPage: [name: "mainPage", install: true, error: null, sections: []], settings: [:], childApps: []])
+        }
+        hubGet.register('/installedapp/statusJson/601') { params ->
+            JsonOutput.toJson([installedApp: [id: 601], appSettings: [], eventSubscriptions: [], scheduledJobs: [], appState: [:], childAppCount: 0, childDeviceCount: 0])
+        }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: JsonOutput.toJson([app: [id: 601], configPage: [name: "mainPage", sections: []]])]
+        }
+
+        when:
+        def outcome = script._rmSubmitMainPageDone(601)
+
+        then:
+        outcome.done == false
+        outcome.reason == "the hub rendered page 'mainPage' again instead of accepting its Done"
+    }
+
+    def "_rmSubmitMainPageDone fails closed on a reply that names no location: #label"() {
+        given:
+        hubGet.register('/installedapp/configure/json/602') { JsonOutput.toJson([app: [id: 602], configPage: [name: 'mainPage', sections: []]]) }
+        hubGet.register('/installedapp/statusJson/602') { JsonOutput.toJson([appSettings: []]) }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, data: reply] }
+
+        when:
+        def outcome = script._rmSubmitMainPageDone(602)
+
+        then:
+        outcome == [done: false, reason: "the hub's reply to the Done named no location"]
+
+        where:
+        label            | reply
+        'no location'    | '{"status":"success"}'
+        'not JSON'       | '<html>error</html>'
+        'an empty reply' | ''
+    }
+
     def "_rmSubmitMainPageDone re-submits capability device ids from statusJson #idsField (value is null for device settings)"() {
         given:
         // Button Controller-5.1 keeps its device picker ON mainPage (unlike RM,
@@ -327,7 +367,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Rebuilding the Done form from `value` alone posts settings[buttonDev]=""
         // with _action_update=Done, which actively CLEARS the assignment
         // (verified live on fw 2.5.0.143 -- the button-rule e2e buttonDev wipe).
-        hubGet.register('/installedapp/configure/json/600/mainPage') { params ->
+        hubGet.register('/installedapp/configure/json/600') { params ->
             JsonOutput.toJson([
                 app: [id: 600, name: "Button Controller-5.1", label: "BC", installed: true, version: 3,
                       appType: [name: "Button Controller-5.1", namespace: "hubitat"]],
@@ -348,7 +388,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def posts = []
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             posts << [path: path, body: body]
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
 
         when:
@@ -422,10 +462,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "_rmSubmitMainPageDone returns done:false with the failure reason when the Done POST throws -- no exception propagates"() {
         given:
         // The session-end Done is best-effort: a thrown POST must degrade to a
-        // structured [done:false, reason:...] signal (so commitButton:null app
-        // types can surface the miss) rather than bubbling an exception up to the
-        // create/edit caller.
-        hubGet.register('/installedapp/configure/json/660/mainPage') { params ->
+        // structured [done:false, reason:...] signal (so a restore can surface
+        // the miss) rather than bubbling an exception up to its caller.
+        hubGet.register('/installedapp/configure/json/660') { params ->
             JsonOutput.toJson([
                 app: [id: 660, name: "Rule-5.1", label: "r", installed: true, version: 2,
                       appType: [name: "Rule-5.1", namespace: "hubitat"]],
@@ -455,7 +494,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // rebuilding the form would submit EVERY input as "" (the all-fields variant
         // of the capability wipe). The helper must skip the Done entirely -- NOT POST
         // a form that blanks the page's inputs.
-        hubGet.register('/installedapp/configure/json/670/mainPage') { params ->
+        hubGet.register('/installedapp/configure/json/670') { params ->
             JsonOutput.toJson([
                 app: [id: 670, name: "Rule-5.1", label: "r", installed: true, version: 2,
                       appType: [name: "Rule-5.1", namespace: "hubitat"]],
@@ -471,7 +510,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def posts = []
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             posts << [path: path, body: body]
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
 
         when:
@@ -486,10 +525,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "_rmSubmitMainPageDone commits on the selectActions page for Button Rule-5.1 (NOT mainPage)"() {
         given:
         // Button Rule-5.1's root/commit page is named selectActions (playing
-        // mainPage's role). The trailing Done must GET + POST selectActions; a
-        // hardcoded mainPage logs "Cannot find page 'mainPage'" and the fetch
-        // returns done:false. Only /selectActions is registered here, so a
-        // mainPage fetch would miss and the assertions below would fail.
+        // mainPage's role). The trailing Done renders the root page once and
+        // posts the Done to the page it names; a hardcoded mainPage would miss.
         def fetched = []
         hubGet.register('/installedapp/configure/json/710') { params ->
             fetched << "root"
@@ -509,29 +546,23 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def posts = []
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             posts << [path: path, body: body]
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
 
         when:
         def r = script._rmSubmitMainPageDone(710)
 
-        then: "the commit page (selectActions), not mainPage, is fetched and posted -- and the Done succeeds"
-        fetched.contains("selectActions")
+        then: "the root render names the commit page (selectActions), which is posted -- and the Done succeeds"
+        fetched == ["root"]
         def done = posts.find { it.path == "/installedapp/update/json" }
         done != null
         done.body.currentPage == "selectActions"
         r.done == true
     }
 
-    def "_appTypeRegistry registers button_rule with appName Button Rule-5.1 + commitButton null"() {
-        when:
-        def reg = script._appTypeRegistry()
-
-        then:
-        reg.button_rule == [namespace: "hubitat", appName: "Button Rule-5.1", parentTypeName: "Button Controllers", commitButton: null]
-
-        and: "_resolveCommitButton returns a real null verdict for it (submitOnChange, no updateRule button)"
-        script._resolveCommitButton("Button Rule-5.1") == null
+    def "_appTypeRegistry names Button Rule-5.1 under the Button Controllers parent"() {
+        expect:
+        script._appTypeRegistry().button_rule == [appName: "Button Rule-5.1", parentTypeName: "Button Controllers"]
     }
 
     def "native document reference is available through the read guide without write gates"() {
@@ -584,6 +615,70 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def snapshot = new JsonSlurper().parseText(backup.source)
         snapshot.appId == 200
         snapshot.appLabel == 'to-delete'
+    }
+
+    def "delete_rm_rule reports a structured refusal when the pre-delete snapshot cannot be taken"() {
+        given:
+        enableWrite()
+        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason, boolean exact = false, String key = null, String page = null ->
+            throw new IllegalStateException("the app's settings could not be read, so no snapshot was taken; nothing was changed")
+        }
+        def rawCalls = []
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 -> rawCalls << path; [status: 302, location: "/installedapps", data: ""] }
+
+        when:
+        def result = script.toolDeleteNativeApp([appId: 202, force: true, confirm: true])
+
+        then:
+        result.success == false
+        result.appId == 202
+        result.error.contains("no snapshot was taken")
+        result.note.contains("Nothing was deleted")
+        rawCalls.isEmpty()
+    }
+
+    def "_rmSubmitMainPageDone on a root page that carries no name returns done:false and posts nothing"() {
+        given:
+        hubGet.register('/installedapp/configure/json/682') { params ->
+            JsonOutput.toJson([app: [id: 682, name: "BAT user app", label: "u", installed: true, version: 1, appType: [name: "BAT user app", namespace: "mcptest"]],
+                configPage: [install: true, error: null, sections: [[title: "", input: [[name: "note", type: "text"]]]]],
+                settings: [note: "root"], childApps: []])
+        }
+        def bodies = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> bodies << body; [status: 200, data: '{"location":"/installedapp/list"}'] }
+
+        when:
+        def r = script._rmSubmitMainPageDone(682)
+
+        then:
+        r.done == false
+        r.reason == "the app's root page carries no name"
+        bodies.isEmpty()
+        !hubGet.calls.any { it.path == '/installedapp/statusJson/682' }
+    }
+
+    def "_rmSubmitMainPageDone presses the Done of the app's own root page, whatever it is named"() {
+        given:
+        hubGet.register('/installedapp/configure/json/681') { params ->
+            JsonOutput.toJson([app: [id: 681, name: "BAT user app", label: "u", installed: true, version: 1, appType: [name: "BAT user app", namespace: "mcptest"]],
+                configPage: [name: "pageMain", install: true, error: null, sections: [[title: "", input: [[name: "note", type: "text"]]]]],
+                settings: [note: "root"], childApps: []])
+        }
+        hubGet.register('/installedapp/statusJson/681') { params ->
+            JsonOutput.toJson([installedApp: [id: 681], appSettings: [[name: "note", type: "text", value: "root", multiple: false]]])
+        }
+        def bodies = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> bodies << body; [status: 200, data: '{"location":"/installedapp/list"}'] }
+
+        when:
+        def r = script._rmSubmitMainPageDone(681)
+
+        then:
+        r.done == true
+        bodies.size() == 1
+        bodies[0].currentPage == "pageMain"
+        bodies[0]._action_update == "Done"
+        bodies[0]["settings[note]"] == "root"
     }
 
     def "delete_rm_rule soft-delete surfaces hubMessage on refusal"() {
@@ -658,142 +753,64 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         atomicStateMap.parentAppIds == [scene: 202, thermostat_scheduler: '203']
     }
 
-    def "strict snapshots retain a pinned baseline and a rolling next step"() {
-        given:
+    private List editBackupRule504(String label, boolean everyWrite) {
         enableWrite()
-        settingsMap.backupEveryRuleWrite = true
-        def clock = [1234567890000L]
-        NOW_OVERRIDE.set({ -> clock[0] })
-        hubGet.register('/installedapp/configure/json/504') { params -> ruleConfigJson(504, "strict") }
-        hubGet.register('/installedapp/statusJson/504') { params -> statusJson(504) }
-        def uploads = []
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> uploads << fn }
-
-        when:
-        def first = script._rmBackupRuleSnapshot(504, "pre-addAction")
-        clock[0] += 1L
-        def second = script._rmBackupRuleSnapshot(504, "pre-walkStep")
-
-        then: 'the session baseline is pinned and the later per-write snapshot is a rolling step'
-        first.backupKey != second.backupKey
-        uploads.size() == 2
-        first.retention == "pinned"
-        first.retentionNote.startsWith("Pinned baseline")
-        second.retention == "rolling"
-        second.retentionNote.startsWith("Rolling step")
-        backupIndex[first.backupKey].retention == "pinned"
-        backupIndex[second.backupKey].retention == "rolling"
-    }
-
-    def "backupEveryRuleWrite keeps every rolling step while the budget has room"() {
-        given:
-        enableWrite()
-        settingsMap.backupEveryRuleWrite = true
-        def clock = [1234567890000L]
-        NOW_OVERRIDE.set({ -> clock[0] })
-        hubGet.register('/installedapp/configure/json/504') { params -> ruleConfigJson(504, "strict-cap") }
-        hubGet.register('/installedapp/statusJson/504') { params -> statusJson(504) }
-        def files = [:]
-        List deleted = []
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> files[fn] = b }
-        script.metaClass.deleteHubFile = { String fn -> deleted << fn; files.remove(fn) }
-        backupIndex = ["rm-rule_77_other": [type: "rm-rule", id: 77, ruleId: 77, fileName: "mcp-rm-backup-77-other.json",
-                                             timestamp: clock[0] - 120_000L, sourceLength: 10, sizeBytes: 10, retention: "rolling"]]
-
-        when: 'eight strict writes land inside one editing session'
-        List backups = (1..8).collect {
-            clock[0] += 1000L
-            script._rmBackupRuleSnapshot(504, "pre-update")
-        }
-
-        then: 'the first is pinned, the rest are rolling steps, and nothing is evicted by count'
-        backups[0].retention == "pinned"
-        backups.drop(1).every { it.retention == "rolling" }
-        def kept = backupIndex.findAll { k, v -> v.ruleId == 504 }.keySet()
-        kept == backups.collect { it.backupKey.toString() } as Set
-        deleted.isEmpty()
-
-        and: "another rule's rolling step is untouched"
-        backupIndex.containsKey("rm-rule_77_other")
-    }
-
-    def "a strict-mode replaceRequiredExpression snapshot stays pinned inside a session"() {
-        given:
-        enableWrite()
-        settingsMap.backupEveryRuleWrite = true
-        def clock = [1234567890000L]
-        NOW_OVERRIDE.set({ -> clock[0] })
-        hubGet.register('/installedapp/configure/json/504') { params -> ruleConfigJson(504, "strict-re") }
-        hubGet.register('/installedapp/statusJson/504') { params -> statusJson(504) }
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-
-        when:
-        def first = script._rmBackupRuleSnapshot(504, "pre-addAction")
-        clock[0] += 1000L
-        def replace = script._rmBackupRuleSnapshot(504, "pre-replaceRequiredExpression")
-
-        then:
-        first.retention == "pinned"
-        replace.retention == "pinned"
-        replace.backupKey != first.backupKey
-    }
-
-    private List strictRule504(String label) {
-        enableWrite()
-        settingsMap.backupEveryRuleWrite = true
+        settingsMap.backupEveryRuleWrite = everyWrite
         def clock = [1234567890000L]
         NOW_OVERRIDE.set({ -> clock[0] })
         hubGet.register('/installedapp/configure/json/504') { params -> ruleConfigJson(504, label) }
         hubGet.register('/installedapp/statusJson/504') { params -> statusJson(504) }
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        return clock
+        Map files = [:]
+        List deleted = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> files[fn] = b }
+        script.metaClass.downloadHubFile = { String fn -> files[fn] }
+        script.metaClass.deleteHubFile = { String fn -> deleted << fn; files.remove(fn) }
+        return [clock, files, deleted]
     }
 
-    def "a strict-mode snapshot more than an hour after the rule's last one starts a new pinned session"() {
+    def "backupEveryRuleWrite takes a fresh snapshot before every edit and keeps each while the budget has room"() {
         given:
-        def clock = strictRule504("strict-gap")
+        def (clock, files, deleted) = editBackupRule504("strict", true)
+        backupIndex = ["rm-rule_77_other": [type: "rm-rule", id: 77, ruleId: 77, fileName: "mcp-rm-backup-77-other.json",
+                                             timestamp: clock[0] - 120_000L, sourceLength: 10, sizeBytes: 10]]
 
-        when:
-        def first = script._rmBackupRuleSnapshot(504, "pre-addAction")
-        clock[0] += 61 * 60 * 1000L
-        def later = script._rmBackupRuleSnapshot(504, "pre-addAction")
-
-        then:
-        first.retention == "pinned"
-        later.retention == "pinned"
-    }
-
-    def "a continuous strict-mode chain keeps the session open past the baseline's hour"() {
-        given:
-        def clock = strictRule504("strict-chain")
-
-        when: 'writes every 40 minutes'
-        def steps = (0..3).collect {
-            if (it) clock[0] += 40 * 60 * 1000L
-            script._rmBackupRuleSnapshot(504, "pre-update")
+        when: 'eight edits a second apart'
+        List backups = (1..8).collect {
+            clock[0] += 1000L
+            script._rmBackupBeforeEdit(504, "pre-native-form")
         }
 
-        then: 'only the first is pinned, even two hours on'
-        steps*.retention == ["pinned", "rolling", "rolling", "rolling"]
+        then: 'each edit has its own snapshot file and key'
+        backups*.backupKey.collect { it.toString() }.unique().size() == 8
+        files.size() == 8
+        backups.every { it.baselineReused == false }
+        backupIndex.findAll { k, v -> v.ruleId == 504 }.keySet() == backups.collect { it.backupKey.toString() } as Set
+        deleted.isEmpty()
+        backupIndex.containsKey("rm-rule_77_other")
+
+        and: 'no retention kind, only the one eviction rule'
+        backups.every { !it.containsKey('retention') && it.retentionNote == script._itemBackupRetentionNote() }
+        backupIndex.values().every { !it.containsKey('retention') }
     }
 
-    def "strict-mode pre-delete and pre-forcedelete snapshots inside a session stay pinned"() {
+    def "without backupEveryRuleWrite an edit within the hour reuses the rule's snapshot"() {
         given:
-        def clock = strictRule504("strict-delete")
+        def (clock, files, deleted) = editBackupRule504("reuse", false)
 
         when:
-        script._rmBackupRuleSnapshot(504, "pre-update")
+        def first = script._rmBackupBeforeEdit(504, "pre-native-form")
         clock[0] += 1000L
-        def step = script._rmBackupRuleSnapshot(504, "pre-update")
-        clock[0] += 1000L
-        def delete = script._rmBackupRuleSnapshot(504, reason)
+        def second = script._rmBackupBeforeEdit(504, "pre-native-form")
+        clock[0] += 61 * 60 * 1000L
+        def later = script._rmBackupBeforeEdit(504, "pre-native-form")
 
-        then:
-        step.retention == "rolling"
-        delete.retention == "pinned"
-
-        where:
-        reason << ["pre-delete", "pre-forcedelete"]
+        then: 'the second edit reuses the first snapshot; an edit an hour later takes a new one'
+        second.backupKey == first.backupKey
+        second.baselineReused == true
+        later.backupKey != first.backupKey
+        later.baselineReused == false
+        files.size() == 2
+        !second.containsKey('retention')
     }
 
     def "hub_list_backups surfaces rm-rule entries with rule-specific metadata alongside app/driver entries"() {
@@ -828,6 +845,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "hub_restore_backup dispatches rm-rule entries through the rule restore path (in-place when rule exists)"() {
         given:
         enableWrite()
+        // The replay finishes with the rule page's Done; its own wire format has dedicated tests.
+        script.metaClass._rmSubmitMainPageDone = { Integer id -> [done: true] }
         def snapshot = [
             schemaVersion: 1,
             ruleId: 300,
@@ -864,7 +883,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             assert !Thread.holdsLock(scriptStaticField('ITEM_BACKUP_MANIFESTS'))
             posts << [path: path, body: body]
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
 
         when:
@@ -902,7 +921,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer timeout = 420 ->
             mutations << path
-            [status: 200, data: '{"status":"success"}']
+            [status: 200, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
 
         when:
@@ -932,6 +951,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "hub_restore_backup recreates a deleted rule with a fresh id (structuralContainer=#structuralContainer)"() {
         given:
         enableWrite()
+        // The replay finishes with the rule page's Done; its own wire format has dedicated tests.
+        script.metaClass._rmSubmitMainPageDone = { Integer id -> [done: true] }
         def snapshot = [
             schemaVersion: 1,
             ruleId: 400,
@@ -967,7 +988,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             [status: 302, location: "/installedapp/configure/401", data: ""]
         }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
 
         when:
@@ -987,6 +1008,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "hub_restore_backup uses rule_machine default when snapshot has no appType field (legacy snapshot)"() {
         given: 'a legacy rm-rule snapshot captured before the appType field was added'
         enableWrite()
+        // The replay finishes with the rule page's Done; its own wire format has dedicated tests.
+        script.metaClass._rmSubmitMainPageDone = { Integer id -> [done: true] }
         def snapshot = [
             schemaVersion: 1,
             ruleId: 350,
@@ -1021,7 +1044,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             [status: 302, location: "/installedapp/configure/351", data: ""]
         }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
 
         when:
@@ -1067,7 +1090,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/update/json")
                 throw new RuntimeException("hub returned 500 during settings replay")
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
 
@@ -1082,8 +1105,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.note?.contains("incomplete settings")
     }
 
-    def "a restore whose settings replay commits but whose updateRule click fails says so"() {
-        given: "the rule exists in place; the replay POST lands, the trailing button click does not"
+    def "a restore whose settings replay commits but whose closing Done fails says so"() {
+        given: "the rule exists in place; the replay POST lands, the closing Done does not"
         enableWrite()
         def snapshot = [
             schemaVersion: 1, ruleId: 361, reason: "pre-test", timestamp: 1000,
@@ -1109,25 +1132,57 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def posted = []
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             posted << [path: path, body: body]
-            if (path == "/installedapp/btn") throw new RuntimeException("status code: 500, reason phrase: Server Error")
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass._rmSubmitMainPageDone = { Integer id -> throw new RuntimeException("status code: 500, reason phrase: Server Error") }
 
         when:
         def result = script.toolRestoreItemBackup([backupKey: "rm-rule_361_w", confirm: true])
 
         then: "the envelope names the step and the recovery, instead of blaming the replay"
         result.success == false
-        result.failedStep == "the final updateRule click"
+        result.failedStep == "the closing Done"
         posted.any { it.path == "/installedapp/update/json" && it.body.containsKey("settings[origLabel]") }
-        result.error?.contains("failed during the final updateRule click")
-        result.note?.contains("Update Rule")
+        result.error?.contains("failed during the closing Done")
+        result.note?.contains("press Done")
+        result.note?.contains('hub_set_rule(operation:"form", rule_id:361, args:{steps:[{kind:"open"},{kind:"submit",expect_page:"<returned page>",activate:"_action_update|Done|"}]}, confirm:true)')
+        !posted.any { it.path == "/installedapp/btn" }
+        !result.note?.contains("button=")
+    }
+
+    def "a non-RM restore whose closing Done fails points at the Done control of a form"() {
+        given: "a Basic Rule replays in place, then its Done POST throws"
+        enableWrite()
+        def snapshot = [schemaVersion: 1, ruleId: 362, appType: "basic_rule", reason: "pre-test", timestamp: 1000, appLabel: "br",
+            configJson: [app: [id: 362, label: "br", appType: [name: "Basic Rule-1.0", namespace: "hubitat"]],
+                         configPage: [sections: [[title: "", input: [[name: "comments", type: "text"]]]]], settings: [comments: "x"]],
+            statusJson: [:]]
+        hubGet.register('/installedapp/configure/json/362') { params ->
+            JsonOutput.toJson([app: [id: 362, label: "br", appType: [name: "Basic Rule-1.0", namespace: "hubitat"]],
+                configPage: [name: "mainPage", sections: [[title: "", input: [[name: "comments", type: "text"]]]]], settings: [:], childApps: []])
+        }
+        hubGet.register('/installedapp/statusJson/362') { params -> statusJson(362) }
+        script.metaClass._rmRejectDisabledAppEdit = { Integer id, String what -> }
+        script.metaClass._rmClearSettingsNotInBackup = { Integer id, Map saved, Collection keep = [] -> [] }
+        script.metaClass._rmSubmitMainPageDone = { Integer id -> throw new RuntimeException("status code: 500") }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}'] }
+
+        when:
+        def result = script._rmRestoreFromBackup([fileName: "f.json"], snapshot, true)
+
+        then:
+        result.failedStep == "the closing Done"
+        result.note.contains('activate:"_action_update|Done|"')
+        result.note.contains('hub_set_native_app(operation:"form", app_id:362')
+        !result.note.contains("button=")
     }
 
     def "a restore replays value-bearing inputs only -- RM's button rows are never re-posted"() {
         given: "a snapshot whose settings carry RM's row buttons alongside real inputs"
         enableWrite()
+        // The replay finishes with the rule page's Done; its own wire format has dedicated tests.
+        script.metaClass._rmSubmitMainPageDone = { Integer id -> [done: true] }
         def snapshot = [
             schemaVersion: 1, ruleId: 362, reason: "pre-test", timestamp: 1000,
             timestampIso: "2026-01-01T00:00:00Z", appLabel: "btn-skip",
@@ -1156,7 +1211,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def posted = []
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             posted << [path: path, body: body]
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
 
@@ -1179,6 +1234,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "a restore replays a device picker as its ids, not as the snapshot's id-to-label map"() {
         given: "a snapshot whose switch picker is the {id: label} map configure/json renders"
         enableWrite()
+        // The replay finishes with the rule page's Done; its own wire format has dedicated tests.
+        script.metaClass._rmSubmitMainPageDone = { Integer id -> [done: true] }
         def snapshot = [
             schemaVersion: 1, ruleId: 363, reason: "pre-test", timestamp: 1000,
             timestampIso: "2026-01-01T00:00:00Z", appLabel: "picker",
@@ -1214,7 +1271,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def posted = []
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             posted << [path: path, body: body]
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
 
@@ -1242,6 +1299,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // skipped as a non-picker map (or posted as "[728]" and 500ed) and lost on restore.
         given:
         enableWrite()
+        // The replay finishes with the rule page's Done; its own wire format has dedicated tests.
+        script.metaClass._rmSubmitMainPageDone = { Integer id -> [done: true] }
         def snapshot = [
             schemaVersion: 1, ruleId: 364, reason: "pre-test", timestamp: 1000,
             timestampIso: "2026-01-01T00:00:00Z", appLabel: "diag",
@@ -1268,7 +1327,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def posted = []
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             posted << [path: path, body: body]
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
 
@@ -1475,55 +1534,23 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         cIdx == 7
     }
 
-    def "toolDeleteNativeApp force-delete drops the deferred predCapabs-clear flag"() {
-        // F. A deleted rule can't carry a deferred clear, so toolDeleteNativeApp drops the flag on a
-        // successful delete (both force and soft paths; lib ~12528/~12551) -- otherwise a later rule
-        // reusing the same appId would inherit a stale flag and fire a wasted ghost clear. Force path
-        // here (copies the existing force-delete spec's hubInternalGetRaw 302 stubbing).
-        given:
-        enableWrite()
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "to-delete") }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
-            [status: 302, location: "/installedapps", data: ""]
-        }
-        atomicStateMap.predClearPending = ["100": true]
-
-        when: "the rule is force-deleted while flagged"
-        def result = script.toolDeleteNativeApp([appId: 100, confirm: true, force: true])
-
-        then: "the delete succeeded"
-        result.success == true
-
-        and: "the deferred predCapabs-clear flag is dropped -- the rule is gone, no stale flag survives"
-        !atomicStateMap.predClearPending?.get("100")
-    }
-
     def "_rmSendActionErrorNote steers a load-failed pause AND resume to the single pausRule toggle button"() {
         // Pause and resume share ONE toggle page button, pausRule, whose title flips with the rule's run
         // state (like stopRule) -- clicking pausRule on a paused rule resumes it. There is no resRule button,
-        // so BOTH the pause and resume notes must steer to pausRule and neither may mention resRule. The
-        // per-app load limiter is sticky (an app disable/enable clears only the app instance's block, so a
-        // bounced retry can re-trip at once; only a reboot resets the counters), so the note must not
-        // advise a bare retry. A non-load failure keeps the plain note. Both-ways: re-introducing a resRule
-        // steer for resume makes the resume assertion red; dropping the sticky wording drops it from the
-        // note; dropping the marker gate makes an unrelated error emit the load steer.
-        expect: "a load-failed resume steers to the pausRule toggle and never resRule, with sticky-limiter wording"
+        // so BOTH the pause and resume notes must steer to pausRule and neither may mention resRule. A
+        // non-load failure keeps the plain note.
+        expect: "a load-failed resume steers to the pausRule toggle and never resRule"
         def resumeNote = script._rmSendActionErrorNote("resumeRule", [100], "App 100 generates excessive hub load")
         resumeNote.contains("pausRule")
-        resumeNote.contains("hub_set_rule")
-        resumeNote.contains("rule_id:100")
-        resumeNote.contains("returned pause control")
+        resumeNote.contains("hub_set_rule(operation:'form', rule_id:100, args:{steps:[{kind:'open'}]}, confirm:true)")
+        resumeNote.contains("load limiter")
         !resumeNote.contains("resRule")
-        resumeNote.contains("sticky")
+        !resumeNote.contains("reboot")
 
         and: "a load-failed pause steers to the same pausRule toggle and never resRule"
         def pauseNote = script._rmSendActionErrorNote("pauseRule", [100], "App 100 generates excessive hub load")
         pauseNote.contains("pausRule")
-        pauseNote.contains("returned pause control")
         !pauseNote.contains("resRule")
-        pauseNote.contains("sticky")
 
         and: "a load-failed MULTI-id pause steers to a per-rule pausRule drive naming every id"
         def multiNote = script._rmSendActionErrorNote("pauseRule", [100, 101], "App 100 generates excessive hub load")
@@ -1532,71 +1559,17 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         multiNote.contains("100, 101")
         multiNote.contains("CHECK EACH RULE'S CURRENT STATE FIRST")
         !multiNote.contains("resRule")
-        multiNote.contains("sticky")
 
-        and: "a non-pause/resume load failure gets the sticky-limiter note with no page button"
+        and: "a non-pause/resume load failure names the limiter with no page button"
         def genNote = script._rmSendActionErrorNote("runRuleAct", [100], "App 100 generates excessive hub load")
-        genNote.contains("sticky")
-        !genNote.contains("resRule")
+        genNote.contains("load limiter")
         !genNote.contains("pausRule")
+        !genNote.contains("sticky")
 
         and: "an unrelated (non-load) failure keeps the plain note -- the marker gate is closed"
         def plain = script._rmSendActionErrorNote("resumeRule", [100], "some other error")
         !plain.contains("pausRule")
-        !plain.contains("resRule")
-        !plain.contains("sticky")
-    }
-
-    def "walk schema keeps sandbox-sensitive enum option keys and labels"() {
-        given:
-        def options = [fields: 'Fields label', class: 'Class label', metaClass: 'Meta label', Fields: 'Upper label', getClass: 'Data label']
-        def page = [sections: [[input: [[name: 'choice', type: 'enum',
-                                       options: options.collect { key, value -> [(key): value] }]]]]]
-
-        when:
-        def result = script._rmCollectWalkSchema(page, [choice: 'fields'])
-
-        then:
-        result.inputs[0].options == options.collect { key, value -> [value: key, label: value] }
-        result.inputs[0].currentValue == 'fields'
-    }
-
-    private void registerEmptyRenderRule(int appId, Closure doActPageGet) {
-        hubGet.register("/installedapp/configure/json/${appId}") { params -> ruleConfigJson(appId, "r", []) }
-        hubGet.register("/installedapp/configure/json/${appId}/selectActions") { params ->
-            JsonOutput.toJson([
-                app: [id: appId, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true, version: 7,
-                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
-                configPage: [name: "selectActions", title: "A", install: false, error: null,
-                             sections: [[title: "", input: [], body: [[element: "href", name: "name", page: "doActPage"]]]]],
-                settings: [:], childApps: []
-            ])
-        }
-        hubGet.register("/installedapp/configure/json/${appId}/doActPage", doActPageGet)
-        hubGet.register("/installedapp/statusJson/${appId}") { params -> statusJson(appId) }
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        script.metaClass.pauseExecution = { Long ms -> }
-    }
-
-    def "a non-walker navigate (the commit-only callers) never re-reads an empty render"() {
-        given: "a direct call without the walker's opt-in"
-        enableWrite()
-        def rereads = 0
-        registerEmptyRenderRule(100) { params ->
-            rereads++
-            JsonOutput.toJson([app: [id: 100, version: 7], configPage: [name: "doActPage", sections: [[input: [[name: "actType.1", type: "enum"]]]]]])
-        }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            [status: 200, location: null, data: JsonOutput.toJson([app: [id: 100, version: 7], configPage: [name: "doActPage", sections: []]])]
-        }
-
-        when:
-        def navResp = script._rmNavigateToPage(100, "selectActions", "doActPage")
-
-        then: 'the empty render comes back as-is: no pause, no GET, no marker'
-        rereads == 0
-        navResp.configPage.sections == []
-        !navResp.containsKey("navRetried")
+        !plain.contains("load limiter")
     }
 
     def "hub_get_rule_health surfaces ok=true with no broken markers on a clean rule"() {
@@ -2349,11 +2322,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def posts = []
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             posts << [path: path, body: body]
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
         script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 ->
             posts << [path: path, body: decodeForm(encodedBody)]
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
 
         when:
@@ -2404,11 +2377,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def posts = []
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             posts << [path: path, body: body]
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
         script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 ->
             posts << [path: path, body: decodeForm(encodedBody)]
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
         def disablePosts = []
         script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
@@ -2451,10 +2424,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             [status: 302, location: "/apps/api/4242/app/100", data: ""]
         }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
         script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 ->
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
 
         when:
@@ -2488,11 +2461,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def posts = []
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             posts << [path: path, body: body]
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
         script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 ->
             posts << [path: path, body: decodeForm(encodedBody)]
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
 
         when:
@@ -2526,7 +2499,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             ]]
         ])
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
         script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 ->
             [status: 200, location: null, data: refreshResp]
@@ -2559,7 +2532,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             ]]
         ])
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
         script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 ->
             [status: 200, location: null, data: refreshResp]
@@ -2650,11 +2623,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def posts = []
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             posts << [path: path, body: body]
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
         script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 ->
             posts << [path: path, body: decodeForm(encodedBody)]
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
 
         when:
@@ -2710,8 +2683,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
             [status: 302, location: "/apps/api/4242/app/100", data: ""]
         }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success"}'] }
-        script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success"}'] }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}'] }
+        script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}'] }
         def disablePosts = []
         script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             disablePosts << [path: path, body: body]
@@ -2752,8 +2725,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
             [status: 302, location: "/apps/api/4242/app/100", data: ""]
         }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success"}'] }
-        script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success"}'] }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}'] }
+        script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}'] }
         script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 -> '{"status":"success"}' }
 
         when:
@@ -2788,8 +2761,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
             [status: 302, location: "/apps/api/4242/app/100", data: ""]
         }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success"}'] }
-        script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success"}'] }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}'] }
+        script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}'] }
         script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 -> '{"status":"success"}' }
 
         when:
@@ -2821,8 +2794,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
             [status: 302, location: "/apps/api/4242/app/100", data: ""]
         }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success"}'] }
-        script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success"}'] }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}'] }
+        script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}'] }
         script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 -> '{"status":"success"}' }
 
         when:
@@ -2858,8 +2831,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
             [status: 302, location: "/apps/api/4242/app/100", data: ""]
         }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success"}'] }
-        script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success"}'] }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}'] }
+        script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}'] }
         script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             if (path == "/installedapp/disable") {
                 disabledIds << new groovy.json.JsonSlurper().parseText(body).id
@@ -2970,8 +2943,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
             [status: 302, location: "/apps/api/4242/app/100", data: ""]
         }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success"}'] }
-        script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success"}'] }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}'] }
+        script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}'] }
 
         when:
         def result = script.toolCloneNativeApp([sourceAppId: 100, stageDisabled: true, confirm: true])
@@ -3038,10 +3011,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             [status: 302, location: "/apps/api/4242/app/100", data: ""]
         }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
         script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 ->
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
 
         when:
@@ -3082,12 +3055,12 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             if (path == "/installedapp/update/json") {
                 throw new IllegalStateException("cloner /update/json POSTs must use hubInternalPostFormRaw — the Map encoder mangles backslashes")
             }
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
         def rawBodies = []
         script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 ->
             rawBodies << encodedBody
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
 
         when:
@@ -3123,7 +3096,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             ]]
         ])
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
         script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 ->
             [status: 200, location: null, data: refreshResp]
@@ -3156,7 +3129,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
         def refreshResp = JsonOutput.toJson([configPage: [name: "main", sections: [[input: []]]]])
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
         script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 ->
             [status: 200, location: null, data: refreshResp]
@@ -3168,7 +3141,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then: "the throw names the Required Expression as the likely cause + a workaround"
         def e = thrown(IllegalStateException)
         e.message.contains("Required Expression")
-        e.message.contains("replaceRequiredExpression")
+        e.message.contains("hub_set_rule 'required' change")
         e.message.contains("appCloner export")
     }
 
@@ -3215,10 +3188,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             [status: 302, location: "/apps/api/4242/app/100", data: ""]
         }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
         script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 ->
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
 
         when:
@@ -3576,6 +3549,32 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
+    def "hub_set_native_app help without an operation returns its operations through public dispatch (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableWrite()
+        when:
+        def response = mcpDriver.callTool('hub_set_native_app', [:])
+        then:
+        response.result.isError != true
+        mcpDriver.parseInner(response).operations == ['create', 'update', 'form']
+        where:
+        useGateways << [true, false]
+    }
+
+    def "hub_set_native_app refuses a retired property through public dispatch, naming the accepted ones (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableWrite()
+        when:
+        def response = mcpDriver.callTool('hub_set_native_app', [appId: 100, settings: [origLabel: 'x'], confirm: true])
+        then:
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Unknown hub_set_native_app property; use operation, app_id, args and confirm')
+        where:
+        useGateways << [true, false]
+    }
+
     def "native create requires a name through public dispatch (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
@@ -3704,10 +3703,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             [status: 302, location: "/apps/api/4242/app/100", data: ""]
         }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
         script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 ->
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
 
         when:
@@ -3744,7 +3743,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             ]]
         ])
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
         script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 ->
             [status: 200, location: null, data: refreshResp]
@@ -3824,11 +3823,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def posts = []
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             posts << [path: path, body: body]
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
         script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 ->
             posts << [path: path, body: decodeForm(encodedBody)]
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
 
         when:
@@ -4068,27 +4067,16 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.toolGetToolGuide('set_rule_reference').content.contains('Native enum keys')
     }
 
-    def "_appTypeRegistry registers basic_rule with the live-verified triple + commitButton null"() {
-        when:
-        def reg = script._appTypeRegistry()
-
-        then: "basic_rule is a classic dynamicPage app (generic createchild works) but submitOnChange (commitButton null)"
-        reg.basic_rule == [namespace: "hubitat", appName: "Basic Rule-1.0", parentTypeName: "Basic Rules", commitButton: null]
-
+    def "_appTypeRegistry keys every type by its child appName and parent type name only"() {
+        expect:
+        script._appTypeRegistry().basic_rule == [appName: "Basic Rule-1.0", parentTypeName: "Basic Rules"]
+        script._appTypeRegistry().values().every { it.keySet() == (['appName', 'parentTypeName'] as Set) }
     }
 
-    def "_resolveCommitButton: null for submitOnChange Basic Rule, updateRule for RM-family/unknown (issue #185 item 3)"() {
+    def "native Rule create has no controller alias while the native app create takes a button_rule controller"() {
         expect:
-        script._resolveCommitButton("Basic Rule-1.0") == null
-        script._resolveCommitButton("Rule-5.1") == "updateRule"
-        script._resolveCommitButton("Some Unregistered App") == "updateRule"
-        script._resolveCommitButton(null) == "updateRule"
-    }
-
-    def "native Rule create has no controller alias while the generic native app tool retains it"() {
-        expect:
-        !script._ndOperationSchema('create').properties.containsKey('buttonRule')
-        script.getAllToolDefinitions().find { it.name == 'hub_set_native_app' }.inputSchema.properties.containsKey('buttonRule')
+        !script._ndOperationSchema('create').properties.containsKey('controller_id')
+        script._naOperationSchema('create').properties.keySet().containsAll(['controller_id', 'button_number', 'event'])
     }
 
     def "native create gateway preserves explicit parent and ordered changes"() {
@@ -4102,12 +4090,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then:
         result.rule_id == 974
         received == args.args + [confirm: true]
-    }
-
-    def "_resolveCommitButton: Room Lights commits with its own update button; the Room Lighting parent gets no commit click"() {
-        expect:
-        script._resolveCommitButton("Room Lights") == "update"
-        script._resolveCommitButton("Room Lighting") == null
     }
 
     def "_rmBuildSettingsBody sends a device picker's {id: label} map as its id list"() {
@@ -4203,33 +4185,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         !posts.any { it.body?._action_previous == "Done" }
     }
 
-    def "navigation that a default lets through also saves that default, as the page submits it"() {
-        given: "a page whose required number is unset but defaults to 7"
-        hubGet.register('/installedapp/configure/json/660/defPage') { params ->
-            JsonOutput.toJson([app: [id: 660, name: "Diag", version: 2, appType: [name: "Diag", namespace: "x"]],
-                configPage: [name: "defPage", error: null, sections: [[title: "", input: [
-                    [name: "defNum", type: "number", required: true, defaultValue: 7, title: "Default number"],
-                    [name: "otherText", type: "text", required: false]
-                ]]]], settings: [otherText: "keep"], childApps: []])
-        }
-        def posts = []
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            posts << [path: path, body: body]; [status: 200, location: null, data: '']
-        }
-
-        when:
-        script._rmNavigateToPage(660, "defPage", "mainPage", 0, "name", null, null, null, false, true)
-
-        then: "the navigation posts the default, and nothing for the input that already has a value"
-        posts.size() == 1
-        posts[0].body["settings[defNum]"] == "7"
-        posts[0].body["defNum.type"] == "number"
-        !posts[0].body.containsKey("settings[otherText]")
-    }
-
     def "_rmSubmitMainPageDone returns done:false uiBlocked instead of posting a Done the UI would refuse"() {
         given:
-        hubGet.register('/installedapp/configure/json/653/mainPage') { params ->
+        hubGet.register('/installedapp/configure/json/653') { params ->
             JsonOutput.toJson([app: [id: 653, name: "Group-2.1", version: 1, appType: [name: "Group-2.1", namespace: "hubitat"]],
                 configPage: [name: "mainPage", install: true, error: null, sections: [[title: "", input: [[name: "name", type: "text", required: true, title: "Select name for Group"]]]]],
                 settings: [:], childApps: []])
@@ -4237,7 +4195,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/653') { params -> statusJson(653, []) }
         def posts = []
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            posts << [path: path, body: body]; [status: 200, location: null, data: '{"status":"success"}']
+            posts << [path: path, body: body]; [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
 
         when:
@@ -4248,34 +4206,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         r.uiBlocked == true
         r.reason.contains("name (Select name for Group): required but empty")
         posts.isEmpty()
-    }
-
-    def "_rmNavigateToPage with uiValidate refuses to leave a page whose required input is empty; an internal re-render is not checked"() {
-        given:
-        hubGet.register('/installedapp/configure/json/652/onMeansPage') { params ->
-            JsonOutput.toJson([app: [id: 652, version: 2], configPage: [name: "onMeansPage", error: null, sections: [[title: "", input: [
-                [name: "motions", type: "capability.motionSensor", multiple: true, required: true, title: "Motion Sensors that become active"]]]]],
-                settings: [:]])
-        }
-        def posts = []
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            posts << [path: path, body: body]; [status: 200, location: null, data: '']
-        }
-
-        when: "a UI-link navigation (walkStep navigate)"
-        script._rmNavigateToPage(652, "onMeansPage", "optionsOnPage", 4, "name", null, null, null, false, true)
-
-        then:
-        def e = thrown(IllegalStateException)
-        e.message.contains("motions (Motion Sensors that become active): required but empty")
-        posts.isEmpty()
-
-        when: "an internal re-render of a page the caller is already working on"
-        script._rmNavigateToPage(652, "onMeansPage", "optionsOnPage", 4, "name", null, null, null, false, false)
-
-        then:
-        notThrown(IllegalStateException)
-        posts.size() == 1
     }
 
     def "pageBreadcrumbs carry forward: the trail the hub returned for a page is reused when submitting from that page"() {
@@ -4314,7 +4244,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "pageBreadcrumbs carry forward ignores answers without a rendered page and never throws"() {
         when:
-        script._rmNoteHubBreadcrumbs("2518", [status: 200, data: '{"status":"success"}'])
+        script._rmNoteHubBreadcrumbs("2518", [status: 200, data: '{"status":"success","location":"/installedapp/list?section=automations"}'])
         script._rmNoteHubBreadcrumbs("2518", [status: 500, data: null])
         script._rmNoteHubBreadcrumbs(null, [status: 200, data: '{"pageBreadcrumbs":"%5B%5D","configPage":{"name":"x"}}'])
 
@@ -4396,823 +4326,68 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
     }
 
-    def "hub_set_native_app create branch (no appId) builds a shell via _createNativeAppShell"() {
+    def "hub_set_native_app without an operation returns its help, and a write without confirm returns that operation's schema"() {
         given:
         enableWrite()
-        hubGet.register('/hub2/appsList') { params -> appsListJson(21) }
-        hubGet.register('/installedapp/configure/json/980') { params -> ruleConfigJson(980, "", [[name: "origLabel", type: "text"]]) }
-        hubGet.register('/installedapp/statusJson/980') { params -> statusJson(980) }
-        def createCalls = []
-        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
-            createCalls << path
-            [status: 302, location: "/installedapp/configure/980", data: ""]
-        }
-        def posts = []
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            posts << [path: path, body: body]
-            [status: 200, location: null, data: '{"status":"success"}']
-        }
-
-        when: "omit appId -> generic create branch"
-        def result = script.toolSetNativeApp([name: "BAT-generic-app", confirm: true])
-
-        then: "createchild fired and the label was set; result carries the new appId"
-        createCalls.any { it == "/installedapp/createchild/hubitat/Rule-5.1/parent/21" }
-        posts.find { it.path == "/installedapp/update/json" }?.body?.get("settings[origLabel]") == "BAT-generic-app"
-        result.appId == 980
-        result.name == "BAT-generic-app"
-    }
-
-
-    def "hub_set_native_app edit branch (appId present) writes settings via the shared edit engine"() {
-        given:
-        enableWrite()
-        hubGet.register('/installedapp/configure/json/100') { params ->
-            ruleConfigJson(100, "r", [[name: "origLabel", type: "text"]])
-        }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        def posts = []
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            posts << [path: path, body: body]
-            [status: 200, location: null, data: '{"status":"success"}']
-        }
-
-        when: "appId present + settings -> edit branch (settings fall-through)"
-        def result = script.toolSetNativeApp([appId: 100, settings: [origLabel: "renamed"], confirm: true])
-
-        then: "settings POSTed for the existing app via the shared engine"
-        def updatePost = posts.find { it.path == "/installedapp/update/json" }
-        updatePost.body["settings[origLabel]"] == "renamed"
-        updatePost.body.id == "100"
-        result.appId == 100
-    }
-
-
-    def "hub_set_native_app requires confirm=true"() {
-        given:
-        enableWrite()
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> throw new AssertionError('no write expected') }
 
         when:
-        script.toolSetNativeApp([name: "x"])
-
-        then: "pins the confirm gate specifically, not just any IllegalArgumentException"
-        def ex = thrown(IllegalArgumentException)
-        ex.message.contains("SAFETY CHECK FAILED")
-    }
-
-
-    def "hub_set_native_app create routes a NON-rule_machine appType to its registry parent"() {
-        given: "a Notifications parent on the hub (notifier appType)"
-        enableWrite()
-        hubGet.register('/hub2/appsList') { params ->
-            JsonOutput.toJson([apps: [
-                [data: [id: 42, name: "Notifications", type: "Notifications", user: false, hidden: false], children: []]
-            ]])
-        }
-        hubGet.register('/installedapp/configure/json/990') { params -> ruleConfigJson(990, "", [[name: "origLabel", type: "text"]]) }
-        hubGet.register('/installedapp/statusJson/990') { params -> statusJson(990) }
-        def createCalls = []
-        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
-            createCalls << path
-            [status: 302, location: "/installedapp/configure/990", data: ""]
-        }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            [status: 200, location: null, data: '{"status":"success"}']
-        }
-
-        when: "create a notifier (the generic tool's reason to exist vs hub_set_rule)"
-        def result = script.toolSetNativeApp([appType: "notifier", name: "BAT-notifier", confirm: true])
-
-        then: "createchild used the notifier namespace/appName under the Notifications parent"
-        createCalls.any { it == "/installedapp/createchild/hubitat/Notifier/parent/42" }
-        result.appId == 990
-        result.appType == "notifier"
-
-        and: "ruleId is present-but-null for a non-RM create (uniform output shape, not silently absent)"
-        // Both-ways: dropping the else-null branch makes ruleId absent and containsKey false.
-        result.containsKey("ruleId")
-        result.ruleId == null
-    }
-
-
-    def "hub_set_native_app retains the generic native page walker"() {
-        given:
-        enableWrite()
-        // Native page walking remains available independently of structured RM authoring.
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
-        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
-            ruleConfigJson(100, "r", [
-                [name: "tCapab1", type: "enum", options: ["Switch", "Motion"]],
-                [name: "moreCond", type: "button"]
-            ])
-        }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
-
-        when: "walkStep is passed to the GENERIC native-app tool (previously rejected outright)"
-        def result = script.toolSetNativeApp([appId: 100, walkStep: [page: "selectTriggers", operation: "introspect"], confirm: true])
-
-        then: "it flows to the shared edit engine and returns a walkStep result -- not a 'does not support' rejection"
-        result.success == true
-        result.page == "selectTriggers"
-        result.before?.inputs?.find { it.name == "tCapab1" } != null
-    }
-
-
-    def "a walk on an app that is not an RM rule never renders the app's default page"() {
-        given: "an app whose default page resets its wizard, as HPM's does"
-        enableWrite()
-        script.metaClass.getAppByAppId = { id -> [appType: [name: 'Hubitat Package Manager']] }
-        hubGet.register('/installedapp/configure/json/100/prefPkgInstallUrl') { params ->
-            ruleConfigJson(100, "r", [[name: "pkgInstall", type: "text"]])
-        }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
-
-        when:
-        def result = script.toolSetNativeApp([appId: 100, walkStep: [page: "prefPkgInstallUrl", operation: "introspect"], confirm: true])
-
-        then: "its backup and health check read the page the walk is on"
-        result.success == true
-        result.page == "prefPkgInstallUrl"
-        hubGet.calls.any { it.path == '/installedapp/configure/json/100/prefPkgInstallUrl' }
-        !hubGet.calls.any { it.path == '/installedapp/configure/json/100' }
-    }
-
-    def "hub_set_native_app surfaces an unknown appType as a caller-recoverable error"() {
-        given:
-        enableWrite()
-
-        when:
-        script.toolSetNativeApp([appType: "bogus_type", name: "x", confirm: true])
+        def help = script.toolSetNativeApp([:])
+        def schema = script.toolSetNativeApp([operation: 'update', app_id: 100, args: [fields: [origLabel: 'x']]])
+        def createSchema = script.toolSetNativeApp([operation: 'create'])
 
         then:
-        def ex = thrown(IllegalArgumentException)
-        ex.message.contains("Unknown appType")
+        help.operations == ['create', 'update', 'form']
+        help.usage.contains('set_native_app_reference')
+        schema.confirm_required == true
+        schema.inputSchema.required == ['operation', 'args', 'confirm', 'app_id']
+        schema.inputSchema.properties.args.required == ['fields']
+        !createSchema.inputSchema.properties.containsKey('app_id')
+        createSchema.inputSchema.properties.args.properties.app_type.enum.containsAll(['basic_rule', 'button_rule', 'notifier'])
+        !createSchema.inputSchema.properties.args.properties.app_type.enum.contains('visual_rule')
+        hubGet.calls.isEmpty()
     }
-
-    // ---------- issue #185: basic_rule registration + commitButton + buttonRule ----------
-
-
-    def "_appTypeRegistry registers basic_rule with the live-verified triple + commitButton null, and the create enum advertises it (issue #185 item 1)"() {
-        when:
-        def reg = script._appTypeRegistry()
-
-        then: "basic_rule is a classic dynamicPage app (generic createchild works) but submitOnChange (commitButton null)"
-        reg.basic_rule == [namespace: "hubitat", appName: "Basic Rule-1.0", parentTypeName: "Basic Rules", commitButton: null]
-
-        and: "the create tool advertises basic_rule in its appType enum"
-        def def_ = script.getAllToolDefinitions().find { it.name == 'hub_set_native_app' }
-        def_.inputSchema.properties.appType.enum.contains("basic_rule")
-    }
-
-
-    def "editing a Basic Rule does NOT fire the updateRule commit click that poisons its render (issue #185 item 3)"() {
-        given:
-        enableWrite()
-        def basicRuleConfig = JsonOutput.toJson([
-            app: [id: 500, name: "Basic Rule-1.0", label: "BR", installed: true, appType: [name: "Basic Rule-1.0", namespace: "hubitat"]],
-            configPage: [name: "mainPage", title: "Basic Rule", error: null, sections: [[title: "", input: [[name: "comments", type: "textarea"]]]]],
-            settings: [:], childApps: []
-        ])
-        hubGet.register('/installedapp/configure/json/500') { params -> basicRuleConfig }
-        hubGet.register('/installedapp/statusJson/500') { params -> statusJson(500) }
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        def posts = []
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            posts << [path: path, body: body]; [status: 200, location: null, data: '{"status":"success"}']
-        }
-
-        when: "write a setting to the Basic Rule"
-        def result = script.toolSetNativeApp([appId: 500, settings: [comments: "hi"], confirm: true])
-
-        then: "the setting is POSTed to update/json"
-        posts.any { it.path == "/installedapp/update/json" }
-
-        and: "but NO updateRule button click fires (Basic Rule is submitOnChange, has no updateRule button)"
-        !posts.any { it.path == "/installedapp/btn" && it.body?.name == "updateRule" }
-    }
-
-
-
-
-
-
-    def "editing an RM-family app still fires the updateRule commit click (commitButton default)"() {
-        given:
-        enableWrite()
-        hubGet.register('/installedapp/configure/json/501') { params -> ruleConfigJson(501, "R", [[name: "comments", type: "textarea"]]) }
-        hubGet.register('/installedapp/statusJson/501') { params -> statusJson(501) }
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        def posts = []
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            posts << [path: path, body: body]; [status: 200, location: null, data: '{"status":"success"}']
-        }
-
-        when:
-        script.toolSetNativeApp([appId: 501, settings: [comments: "hi"], confirm: true])
-
-        then: "updateRule fires for the RM-format app (app.appType.name = Rule-5.1)"
-        posts.any { it.path == "/installedapp/btn" && it.body?.name == "updateRule" }
-    }
-
-
-    def "creating a basic_rule uses generic createchild and skips the updateRule commit click (issue #185 items 1+3)"() {
-        given:
-        enableWrite()
-        hubGet.register('/hub2/appsList') { params ->
-            JsonOutput.toJson([apps: [[data: [id: 4, name: "Basic Rules", type: "Basic Rules", user: false, hidden: false], children: []]]])
-        }
-        hubGet.register('/installedapp/configure/json/777') { params ->
-            JsonOutput.toJson([app: [id: 777, name: "Basic Rule-1.0", installed: true, appType: [name: "Basic Rule-1.0", namespace: "hubitat"]],
-                configPage: [name: "mainPage", error: null, sections: [[title: "", input: [[name: "origLabel", type: "text"]]]]], settings: [:], childApps: []])
-        }
-        hubGet.register('/installedapp/statusJson/777') { params -> statusJson(777) }
-        def createCalls = []
-        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
-            createCalls << path; [status: 302, location: "/installedapp/configure/777", data: ""]
-        }
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        def posts = []
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            posts << [path: path, body: body]; [status: 200, location: null, data: '{"status":"success"}']
-        }
-
-        when:
-        def result = script.toolSetNativeApp([appType: "basic_rule", name: "BAT-BR", confirm: true])
-
-        then: "created under the Basic Rules parent via the GENERIC createchild (not a special endpoint)"
-        createCalls.any { it == "/installedapp/createchild/hubitat/Basic Rule-1.0/parent/4" }
-        result.appId == 777
-
-        and: "NO updateRule click (Basic Rule is submitOnChange)"
-        !posts.any { it.path == "/installedapp/btn" && it.body?.name == "updateRule" }
-    }
-
-
-    def "buttonRule rejects a controllerId that is not a Button Controller-5.1"() {
-        given:
-        enableWrite()
-        hubGet.register('/installedapp/configure/json/700') { params -> ruleConfigJson(700, "Not a controller", []) }
-        hubGet.register('/installedapp/statusJson/700') { params -> statusJson(700) }
-
-        when:
-        script.toolSetNativeApp([buttonRule: [controllerId: 700, buttonNumber: 1, event: "pushed"], confirm: true])
-
-        then:
-        def ex = thrown(IllegalArgumentException)
-        ex.message.contains("not a Button Controller-5.1")
-    }
-
-
-    def "buttonRule rejects an invalid event"() {
-        given:
-        enableWrite()
-
-        when:
-        script.toolSetNativeApp([buttonRule: [controllerId: 600, buttonNumber: 1, event: "wiggled"], confirm: true])
-
-        then:
-        def ex = thrown(IllegalArgumentException)
-        ex.message.contains("buttonRule.event must be one of")
-    }
-
-
-    def "buttonRule returns success:false with a backup and a 'did not produce' error when no new child spawns"() {
-        given:
-        // The controller flow discovers the new grandchild by diffing childApps
-        // before/after. If the final fetch shows the SAME children (no new id), the
-        // create did not spawn a rule -- the flow must NOT throw; it returns a
-        // structured success:false carrying the pre-flow backup so the caller can
-        // recover, with an error naming that nothing was produced.
-        enableWrite()
-        def sameJson = JsonOutput.toJson([
-            app: [id: 620, name: "Button Controller-5.1", label: "BC", installed: true, appType: [name: "Button Controller-5.1", namespace: "hubitat"]],
-            configPage: [name: "mainPage", error: null, sections: [[title: "", input: [
-                [name: "buttonDev", type: "capability.pushableButton", multiple: true],
-                [name: "origLabel", type: "text"]
-            ]]]],
-            settings: [buttonDev: ["43": "Virtual Button"], origLabel: "BC"],
-            childApps: []   // never gains a child -- before == after
-        ])
-        hubGet.register('/installedapp/configure/json/620') { params -> sameJson }
-        hubGet.register('/installedapp/statusJson/620') { params -> statusJson(620) }
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            [status: 200, location: null, data: '{"status":"success"}']
-        }
-
-        when:
-        def result = script.toolSetNativeApp([buttonRule: [controllerId: 620, buttonNumber: 1, event: "pushed"], confirm: true])
-
-        then: "no throw -- a structured failure carrying the backup and a clear error"
-        noExceptionThrown()
-        result.success == false
-        result.backup != null
-        result.error.contains("did not produce")
-    }
-
-
-    def "buttonRule is exclusive -- bundling any other operative param throws before any hub I/O"() {
-        given:
-        // buttonRule routes through a self-contained controller flow; every other
-        // operative param (settings, button, walkStep, ...) would be silently ignored.
-        // The exclusivity gate fires right after requireDestructiveConfirm, BEFORE any
-        // controller fetch -- so no hub stubs are needed. enableWrite() satisfies the
-        // confirm+backup gate so the exclusivity check (not the safety check) is what throws.
-        enableWrite()
-
-        when:
-        script.toolSetNativeApp([buttonRule: [controllerId: 1, buttonNumber: 1, event: "pushed"], settings: [x: 1], confirm: true])
-
-        then:
-        def ex = thrown(IllegalArgumentException)
-        ex.message.contains("buttonRule is exclusive")
-    }
-
-
-    def "buttonRule rejects a controller whose button device is unassigned, naming the missing assignment"() {
-        given:
-        // The controller must have a button device before a Button Rule can be
-        // spawned (the grandchild inherits the device context). A controller with
-        // buttonDev unset is a clear caller error -- reject it by name rather than
-        // letting the add-button flow produce an un-renderable orphan.
-        enableWrite()
-        def noDevJson = JsonOutput.toJson([
-            app: [id: 630, name: "Button Controller-5.1", label: "BC", installed: true, appType: [name: "Button Controller-5.1", namespace: "hubitat"]],
-            configPage: [name: "mainPage", error: null, sections: [[title: "", input: [
-                [name: "buttonDev", type: "capability.pushableButton", multiple: true],
-                [name: "origLabel", type: "text"]
-            ]]]],
-            settings: [buttonDev: null, origLabel: "BC"],
-            childApps: []
-        ])
-        hubGet.register('/installedapp/configure/json/630') { params -> noDevJson }
-        hubGet.register('/installedapp/statusJson/630') { params -> statusJson(630) }
-
-        when:
-        script.toolSetNativeApp([buttonRule: [controllerId: 630, buttonNumber: 1, event: "pushed"], confirm: true])
-
-        then:
-        def ex = thrown(IllegalArgumentException)
-        ex.message.contains("has no button device assigned")
-    }
-
-
-    def "hub_set_native_app CREATE rejects an arm shortcut (walkStep) it does not honor -- no silent empty shell"() {
-        given:
-        // The create arm of hub_set_native_app honors only appType+name; an edit-path
-        // shortcut like walkStep makes no sense on a brand-new empty app and would be
-        // silently dropped while the call still reported success. It must be loudly
-        // rejected (same honor-or-loudly-reject posture as hub_set_rule's create gate).
-        enableWrite()
-
-        when:
-        script.toolSetNativeApp([appType: "rule_machine", name: "BAT-x",
-                                 walkStep: [page: "mainPage", operation: "introspect"], confirm: true])
-
-        then:
-        def ex = thrown(IllegalArgumentException)
-        ex.message.contains("does not honor")
-    }
-
-
-    def "hub_set_native_app schema stays lean -- generic upsert params + the generic walkStep walker + buttonRule, but no FAT RM trigger/action sugar"() {
-        when:
-        def def_ = script.getAllToolDefinitions().find { it.name == 'hub_set_native_app' }
-        def props = def_.inputSchema.properties.keySet()
-
-        then: "the generic upsert params, plus the generic classic-page walkStep walker and buttonRule create helper (issue #185)"
-        props == (['appId', 'appType', 'name', 'settings', 'button', 'pageName', 'stateAttribute', 'buttonRule', 'walkStep', 'guide', 'confirm'] as Set)
-
-        and: "the FAT RM trigger/action authoring shortcuts still stay OUT of the schema (use hub_set_rule)"
-        ['addTrigger', 'addTriggers', 'addAction', 'addActions', 'addRequiredExpression',
-         'patches', 'replaceActions', 'removeAction', 'clearActions', 'moveAction',
-         'removeTrigger', 'modifyTrigger', 'addLocalVariable', 'removeLocalVariable'].every { !props.contains(it) }
-    }
-
-
-    def "hub_set_native_app dispatch-envelope through the native gateway routes to create"() {
-        given:
-        settingsMap.useGateways = true
-        enableWrite()
-        hubGet.register('/hub2/appsList') { params -> appsListJson(21) }
-        hubGet.register('/installedapp/configure/json/981') { params -> ruleConfigJson(981, "", [[name: "origLabel", type: "text"]]) }
-        hubGet.register('/installedapp/statusJson/981') { params -> statusJson(981) }
-        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
-            [status: 302, location: "/installedapp/configure/981", data: ""]
-        }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            [status: 200, location: null, data: '{"status":"success"}']
-        }
-
-        when:
-        def result = script.handleGateway('hub_manage_native_rules_and_apps', 'hub_set_native_app', [name: "BAT-gw-app", confirm: true])
-
-        then:
-        result instanceof Map
-        result.isError != true
-        result.appId == 981
-    }
-
-
-    // ---------- HSM as an action ----------
-
 
     @Unroll
-    def "creating #appType uses its native parent, label input, and update button"() {
+    def "hub_set_native_app refuses a malformed request before any hub call: #label"() {
         given:
         enableWrite()
-        hubGet.register('/hub2/appsList') { params ->
-            JsonOutput.toJson([apps: [[data: [id: 51, name: parentName, type: parentName, user: false, hidden: false], children: []]]])
-        }
-        hubGet.register('/installedapp/configure/json/780') { params ->
-            JsonOutput.toJson([app: [id: 780, name: childName, label: "Kitchen", installed: true, appType: [name: childName, namespace: "hubitat"]],
-                configPage: [name: "mainPage", error: null, sections: [[title: "", input: [[name: labelInput, type: "text"], [name: "update", type: "button"]]]]],
-                settings: [(labelInput): "Kitchen"], childApps: []])
-        }
-        hubGet.register('/installedapp/statusJson/780') { params -> statusJson(780, [[name: labelInput, type: "text", value: "Kitchen"]]) }
-        def createCalls = []
-        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
-            createCalls << path; [status: 302, location: "/installedapp/configure/780", data: ""]
-        }
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        def posts = []
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            posts << [path: path, body: body]; [status: 200, location: null, data: '{"status":"success"}']
-        }
 
         when:
-        def result = script.toolSetNativeApp([appType: appType, name: "Kitchen", confirm: true])
+        script.toolSetNativeApp(request)
 
         then:
-        createCalls.any { it == "/installedapp/createchild/hubitat/${childName}/parent/51".toString() }
-        result.appId == 780
-        posts.any { it.path == "/installedapp/update/json" && it.body["settings[${labelInput}]".toString()] == "Kitchen" }
-        posts.any { it.path == "/installedapp/btn" && it.body?.name == "update" }
-        !posts.any { it.path == "/installedapp/btn" && it.body?.name == "updateRule" }
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains(message)
+        hubGet.calls.isEmpty()
 
         where:
-        appType                 | childName                    | parentName               | labelInput
-        "room_lighting"         | "Room Lights"                | "Room Lighting"          | "origLabel"
-        "scene"                 | "Scene-1.2"                  | "Groups and Scenes"      | "name"
-        "thermostat_scheduler"  | "Thermostat Scheduler 2.0"   | "Thermostat Schedulers"  | "origLabel"
-        "thermostat_controller" | "Thermostat Controller 2.0"  | "Thermostat Controllers" | "origLabel"
+        label                         | request                                                                                       | message
+        'retired appId parameter'     | [appId: 100, settings: [a: 1], confirm: true]                                                 | 'Unknown hub_set_native_app property'
+        'args without an operation'   | [args: [fields: [a: 1]]]                                                                      | 'Choose an operation'
+        'unknown operation'           | [operation: 'walk']                                                                           | 'Unknown native app operation'
+        'unknown args key'            | [operation: 'create', args: [app_type: 'notifier', name: 'n', walkStep: [:]], confirm: true]  | 'Unknown args property'
+        'unknown app_type'            | [operation: 'create', args: [app_type: 'bogus_type', name: 'x'], confirm: true]               | 'Invalid args.app_type'
+        'visual rule create'          | [operation: 'create', args: [app_type: 'visual_rule', name: 'x'], confirm: true]              | 'hub_set_visual_rule'
+        'create with app_id'          | [operation: 'create', app_id: 5, args: [app_type: 'notifier', name: 'x'], confirm: true]      | 'create takes no app_id'
+        'update without app_id'       | [operation: 'update', args: [fields: [a: 1]], confirm: true]                                  | 'app_id is required'
+        'blank name'                  | [operation: 'create', args: [app_type: 'notifier', name: '  '], confirm: true]                | 'Invalid args.name'
+        'button keys on another type' | [operation: 'create', args: [app_type: 'notifier', name: 'n', controller_id: 7], confirm: true] | 'apply only to app_type button_rule'
+        'button_rule with a name'     | [operation: 'create', args: [app_type: 'button_rule', name: 'n', controller_id: 7, button_number: 1, event: 'pushed'], confirm: true] | 'button_rule takes no name'
+        'button_rule without event'   | [operation: 'create', args: [app_type: 'button_rule', controller_id: 7, button_number: 1], confirm: true] | 'button_rule requires event'
+        'invalid button event'        | [operation: 'create', args: [app_type: 'button_rule', controller_id: 7, button_number: 1, event: 'wiggled'], confirm: true] | 'Invalid args.event'
     }
 
-
-    def "creating a groups_scenes app writes the label to Group-2.1's own name input, not origLabel"() {
-        given:
-        enableWrite()
-        hubGet.register('/hub2/appsList') { params ->
-            JsonOutput.toJson([apps: [[data: [id: 53, name: "Groups and Scenes", type: "Groups and Scenes", user: false, hidden: false], children: []]]])
-        }
-        hubGet.register('/installedapp/configure/json/781') { params ->
-            JsonOutput.toJson([app: [id: 781, name: "Group-2.1", label: "Hall Group", installed: true, appType: [name: "Group-2.1", namespace: "hubitat"]],
-                configPage: [name: "mainPage", error: null, sections: [[title: "", input: [[name: "name", type: "text", required: true, title: "Select name for Group"]]]]],
-                settings: [name: "Hall Group"], childApps: []])
-        }
-        hubGet.register('/installedapp/statusJson/781') { params -> statusJson(781, [[name: "name", type: "text", value: "Hall Group"]]) }
-        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
-            [status: 302, location: "/installedapp/configure/781", data: ""]
-        }
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        def posts = []
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            posts << [path: path, body: body]; [status: 200, location: null, data: '{"status":"success"}']
-        }
-
+    def "hub_set_native_app schema is the operation envelope shared with hub_set_rule"() {
         when:
-        def result = script.toolSetNativeApp([appType: "groups_scenes", name: "Hall Group", confirm: true])
+        def def_ = script.getAllToolDefinitions().find { it.name == 'hub_set_native_app' }
 
         then:
-        posts.any { it.path == "/installedapp/update/json" && it.body["settings[name]"] == "Hall Group" }
-        !posts.any { it.body?.containsKey("settings[origLabel]") }
-        result.labelApplied == true
+        def_.inputSchema.properties.keySet() == (['operation', 'app_id', 'args', 'confirm', 'bestPracticeKey'] as Set)
+        def_.inputSchema.properties.operation.enum == ['create', 'update', 'form']
+        def_.inputSchema.additionalProperties == false
+        !def_.inputSchema.containsKey('required')
+        def_.description.contains('set_native_app_reference')
+        !def_.description.contains('[[FLAT_TRIM]]')
     }
-
-
-    def "a walkStep Done opens its sub-page once, and a refused Done says the page was opened but nothing submitted"() {
-        // Issue 489: the walker's BEFORE render and the Done each navigated into the page (two page
-        // renders), and the refusal claimed the app was untouched.
-        given:
-        enableWrite()
-        def page = { boolean filled ->
-            JsonOutput.toJson([app: [id: 650, name: "Room Lights", version: 3, appType: [name: "Room Lights", namespace: "hubitat"]],
-                configPage: [name: "offMeansPage", install: false, error: null, sections: [[title: "", input: [
-                    [name: "illumsOff", type: "capability.illuminanceMeasurement", multiple: true, required: true, title: "Illuminance Sensors that rise"]
-                ]]]], settings: [:], childApps: []])
-        }
-        hubGet.register('/installedapp/configure/json/650') { params -> ruleConfigJson(650, "rl", []) }
-        hubGet.register('/installedapp/configure/json/650/offMeansPage') { params -> page(false) }
-        hubGet.register('/installedapp/statusJson/650') { params ->
-            statusJson(650, [[name: "illumsOff", type: "capability.illuminanceMeasurement", multiple: true, value: null]])
-        }
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        def posts = []
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            posts << [path: path, body: body]
-            [status: 200, location: null, data: body.keySet().any { it.toString().startsWith("_action_href_") } ? page(false) : '']
-        }
-
-        when:
-        def result = script.toolSetNativeApp([appId: 650, confirm: true,
-            walkStep: [page: "offMeansPage", operation: "done", hrefContext: [fromPage: "mainPage"]]])
-
-        then: "one navigation into the page, no Done posted"
-        result.success == false
-        result.error.contains("illumsOff")
-        posts.count { p -> p.body.keySet().any { it.toString().startsWith("_action_href_") } } == 1
-        !posts.any { it.body?._action_previous == "Done" || it.body?._action_update == "Done" }
-
-        and: "the hint separates the withheld submit from the page render that already ran"
-        result.restoreHint.contains("no settings were written and no Done was sent")
-        result.restoreHint.contains("The page was still opened")
-        !result.restoreHint.contains("the app was not touched")
-    }
-
-
-    def "walkStep write of a multi-select enum matches the JSON-array string statusJson stores (valueEcho)"() {
-        given:
-        enableWrite()
-        def stored = [:]
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
-        hubGet.register('/installedapp/configure/json/100/onMeansPage') { params ->
-            ruleConfigJson(100, "r", [[name: "onMeans", type: "enum", multiple: true, options: ["motion becomes active", "illuminance falls"]]])
-        }
-        hubGet.register('/installedapp/statusJson/100') { params ->
-            statusJson(100, stored.collect { k, v -> [name: k, type: "enum", multiple: true, value: v] })
-        }
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            def key = body.keySet().collect { _settingKeyOf(it) }.find { it != null }
-            if (key != null) stored[key] = body["settings[${key}]".toString()]
-            [status: 200, location: null, data: '']
-        }
-
-        when:
-        def result = script.toolSetNativeApp([appId: 100, confirm: true,
-            walkStep: [page: "onMeansPage", operation: "write", write: [onMeans: ["motion becomes active", "illuminance falls"]]]])
-
-        then: "the hub keeps the UI's JSON-array string; the echo compares its members, not the raw text"
-        stored.onMeans == '["motion becomes active","illuminance falls"]'
-        result.valueEcho.match == true
-        result.silentRejection == false
-        result.success == true
-    }
-
-
-    def "walkStep sub-page device pick that committed is not reported as a silent_rejection skip"() {
-        given: "a device picker that reveals no further input when set (Room Lighting illumsOff)"
-        enableWrite()
-        def committed = []
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
-        hubGet.register('/installedapp/configure/json/100/offMeansPage') { params ->
-            ruleConfigJson(100, "r", [[name: "illumsOff", type: "capability.illuminanceMeasurement", multiple: true]])
-        }
-        hubGet.register('/installedapp/statusJson/100') { params ->
-            statusJson(100, [[name: "illumsOff", type: "capability.illuminanceMeasurement", multiple: true, value: null, deviceIdsForDeviceList: committed]])
-        }
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            def ids = body["settings[illumsOff]"]
-            if (ids) { committed.clear(); committed.addAll(ids.toString().split(",").collect { it as Integer }) }
-            [status: 200, location: null, data: '']
-        }
-
-        when:
-        def result = script.toolSetNativeApp([appId: 100, confirm: true,
-            walkStep: [page: "offMeansPage", operation: "write", write: [illumsOff: [696]]]])
-
-        then: "the ids landed, so the skip is the informational device-list reason, not silent_rejection"
-        committed == [696]
-        result.valueEcho.match == true
-        !(result.opResult.skipped ?: []).any { it.reason == "silent_rejection" }
-    }
-
-
-    def "walkStep device pick written as the {id: label} map is sent and echoed as its id list"() {
-        given:
-        enableWrite()
-        def committed = []
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
-        hubGet.register('/installedapp/configure/json/100/offMeansPage') { params ->
-            ruleConfigJson(100, "r", [[name: "illumsOff", type: "capability.illuminanceMeasurement", multiple: true]])
-        }
-        hubGet.register('/installedapp/statusJson/100') { params ->
-            statusJson(100, [[name: "illumsOff", type: "capability.illuminanceMeasurement", multiple: true, value: null, deviceIdsForDeviceList: committed]])
-        }
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        def sent = []
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            def ids = body["settings[illumsOff]"]
-            if (ids) { sent << ids; committed.clear(); committed.addAll(ids.toString().split(",").collect { it as Integer }) }
-            [status: 200, location: null, data: '']
-        }
-
-        when:
-        def result = script.toolSetNativeApp([appId: 100, confirm: true,
-            walkStep: [page: "offMeansPage", operation: "write", write: [illumsOff: ["696": "omni"]]]])
-
-        then:
-        sent == ["696"]
-        result.valueEcho.match == true
-        result.success == true
-        !(result.opResult.skipped ?: []).any { it.reason == "silent_rejection" }
-    }
-
-    @spock.lang.Unroll
-    def "walkStep writes a driver-specific device.* picker's map as its ids and echoes the stored ids: #label"() {
-        given:
-        enableWrite()
-        def committed = []
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
-        hubGet.register('/installedapp/configure/json/100/probePage') { params ->
-            ruleConfigJson(100, "r", [[name: "probeDevices", type: "device.VirtualSwitch", multiple: true]])
-        }
-        hubGet.register('/installedapp/statusJson/100') { params ->
-            statusJson(100, [asText ?
-                [name: "probeDevices", type: "device.VirtualSwitch", multiple: true, value: committed ? "[" + committed.join(", ") + "]" : null, deviceIdsForDeviceList: []] :
-                [name: "probeDevices", type: "device.VirtualSwitch", multiple: true, value: null, deviceIdsForDeviceList: committed]])
-        }
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        def sent = []
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            def ids = body["settings[probeDevices]"]
-            if (ids) { sent << ids; committed.clear(); committed.addAll(ids.toString().split(",").collect { it as Integer }) }
-            [status: 200, location: null, data: '']
-        }
-
-        when:
-        def result = script.toolSetNativeApp([appId: 100, confirm: true,
-            walkStep: [page: "probePage", operation: "write", write: [probeDevices: ["555": "BAT-Sw-A"]]]])
-
-        then: "the map is sent as ids (its text form 500s the hub), and the echo reads the stored ids"
-        sent == ["555"]
-        result.valueEcho.match == true
-        result.silentRejection == false
-
-        where:
-        label                            | asText
-        'ids in deviceIdsForDeviceList'  | false
-        'ids only as the value text'     | true
-    }
-
-
-    def "a walkStep done the page refuses says nothing was submitted instead of pointing at a backup restore"() {
-        given:
-        enableWrite()
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
-        hubGet.register('/installedapp/configure/json/100/onMeansPage') { params ->
-            ruleConfigJson(100, "r", [[name: "motions", type: "capability.motionSensor", multiple: true, required: true, title: "Motion Sensors that become active"]])
-        }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        def posts = []
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            posts << [path: path, body: body]; [status: 200, location: null, data: '']
-        }
-
-        when:
-        def result = script.toolSetNativeApp([appId: 100, confirm: true, walkStep: [page: "onMeansPage", operation: "done"]])
-
-        then:
-        result.success == false
-        result.error.contains("motions (Motion Sensors that become active): required but empty")
-        result.restoreHint.contains("nothing needs to be restored")
-        result.restoreHint.contains("no Done was sent")
-        !posts.any { it.body?._action_previous == "Done" }
-    }
-
-
-    def "the closing-Done repair hint names the fields when the page refused it, and the commit button otherwise"() {
-        expect:
-        def refused = script._rmMainPageDoneRepairHint(5, [done: false, uiBlocked: true, reason: "name (Select name for Group): required but empty"])
-        refused.contains("was refused")
-        refused.contains("hub_set_native_app(appId=5, settings=")
-        !refused.contains("updateRule")
-        script._rmMainPageDoneRepairHint(5, [done: false, reason: "status 500"]).contains("button='updateRule'")
-    }
-
-
-    def "a settings edit on an app type the registry does not know skips the updateRule click when its page has no such button"() {
-        given:
-        enableWrite()
-        def cfg = { boolean withButton ->
-            JsonOutput.toJson([app: [id: 101, name: "My App", label: "m", installed: true, appType: [name: "My App", namespace: "me"]],
-                configPage: [name: "mainPage", install: true, error: null, sections: [[title: "", input:
-                    [[name: "sw", type: "capability.switch", multiple: false]] + (withButton ? [[name: "updateRule", type: "button"]] : [])]]],
-                settings: [:], childApps: []])
-        }
-        def withButton = false
-        hubGet.register('/installedapp/configure/json/101') { params -> cfg(withButton) }
-        hubGet.register('/installedapp/configure/json/101/mainPage') { params -> cfg(withButton) }
-        hubGet.register('/installedapp/statusJson/101') { params -> statusJson(101) }
-        hubGet.register('/device/fullJson/555') { params -> '{"id":"555","name":"S"}' }
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        def posts = []
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            posts << [path: path, body: body]; [status: 200, location: null, data: '{"status":"success"}']
-        }
-
-        when: "the page offers no updateRule button"
-        script.toolSetNativeApp([appId: 101, settings: [sw: 555], confirm: true])
-
-        then:
-        !posts.any { it.path == "/installedapp/btn" && it.body?.name == "updateRule" }
-
-        when: "the page does offer it"
-        posts.clear()
-        withButton = true
-        script.toolSetNativeApp([appId: 101, settings: [sw: 555], confirm: true])
-
-        then:
-        posts.any { it.path == "/installedapp/btn" && it.body?.name == "updateRule" }
-    }
-
-
-    def "a settings object on a non-device input is refused before any backup or write; on a device input it is sent as ids"() {
-        given:
-        enableWrite()
-        hubGet.register('/installedapp/configure/json/100') { params ->
-            ruleConfigJson(100, "r", [[name: "roomDevsL", type: "capability.switch", multiple: true], [name: "mode", type: "enum", multiple: false]])
-        }
-        hubGet.register('/installedapp/statusJson/100') { params ->
-            statusJson(100, [[name: "roomDevsL", type: "capability.switch", multiple: true, value: null, deviceIdsForDeviceList: [11, 386]]])
-        }
-        def uploads = []
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> uploads << fn }
-        def posts = []
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            posts << [path: path, body: body]; [status: 200, location: null, data: '{"status":"success"}']
-        }
-
-        when:
-        def bad = script.toolSetNativeApp([appId: 100, settings: [mode: [a: "b"]], confirm: true])
-
-        then:
-        bad.success == false
-        bad.error.contains("only device inputs accept")
-        uploads.isEmpty()
-        posts.isEmpty()
-
-        when:
-        script.toolSetNativeApp([appId: 100, settings: [roomDevsL: ["11": "Lamp", "386": "Night 1"]], confirm: true])
-
-        then:
-        posts.any { it.path == "/installedapp/update/json" && it.body["settings[roomDevsL]"] == "11,386" }
-    }
-
-
-    def "a settings object on a driver-specific device.* input is sent as ids, not refused"() {
-        given:
-        enableWrite()
-        hubGet.register('/installedapp/configure/json/100') { params ->
-            ruleConfigJson(100, "r", [[name: "probeDevices", type: "device.VirtualSwitch", multiple: true]])
-        }
-        hubGet.register('/installedapp/statusJson/100') { params ->
-            statusJson(100, [[name: "probeDevices", type: "device.VirtualSwitch", multiple: true, value: null, deviceIdsForDeviceList: [555]]])
-        }
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        def posts = []
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            posts << [path: path, body: body]; [status: 200, location: null, data: '{"status":"success"}']
-        }
-
-        when:
-        def result = script.toolSetNativeApp([appId: 100, settings: [probeDevices: ["555": "BAT-Sw-A"]], confirm: true])
-
-        then:
-        !result.error?.toString()?.contains("only device inputs accept")
-        posts.any { it.path == "/installedapp/update/json" && it.body["settings[probeDevices]"] == "555" && it.body["deviceList"] == "probeDevices" }
-    }
-
-    // Live repro: patches:[{settings:{origLabel:{a:"b"}}}] saved the label as "{a=b}" and reported success.
-
-    def "a setting that is not on the page is skipped with a warning naming the sub-pages the page links to"() {
-        given:
-        enableWrite()
-        hubGet.register('/installedapp/configure/json/100') { params ->
-            JsonOutput.toJson([app: [id: 100, name: "Room Lights", label: "K", installed: true, appType: [name: "Room Lights", namespace: "hubitat"]],
-                configPage: [name: "mainPage", error: null, sections: [[title: "", input: [[name: "roomDevsL", type: "capability.switch", multiple: true]],
-                    body: [[element: "href", page: "onMeansPage", title: "Select Means to Activate Lights"], [element: "href", page: "offMeansPage", title: "Select Means to Turn Off Lights"]]]]],
-                settings: [:], childApps: []])
-        }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success"}'] }
-
-        when:
-        def result = script.toolSetNativeApp([appId: 100, settings: [motions: ["559"]], confirm: true])
-
-        then:
-        result.settingsSkipped == ["motions"]
-        result.unknownSettingsWarning.contains("[onMeansPage, offMeansPage]")
-        result.unknownSettingsWarning.contains("walkStep")
-    }
-
-
 }

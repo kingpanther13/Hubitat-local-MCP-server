@@ -31,13 +31,33 @@ Example changes: [{part:"action",value:{type:"messageActs",subtype:"getLogMsg",f
 
 ## Native Rule Forms
 
-Use hub_set_rule(operation:"form",rule_id,args:{steps:[{kind:"open"}]},confirm:true) to operate an enabled Rule-5.1 or Button Rule-5.1 rule, or its Rule Machine parent. Select operation:"form" without confirmation to inspect the schema. Discover native action variants, input names and option values through the returned forms rather than guessing a static catalogue. Even open renders execute app code and can change state or cause side effects. Start with steps:[{kind:"open"}]; an optional page names a registered native page. Follow returned controls for page parameters and breadcrumbs. A create_child control creates the native child type exposed by its parent, returns created_app_id and closes the parent context. Open that child separately to configure it; creation alone does not prove configuration is complete. App removal uses the dedicated deletion tool.
+hub_set_rule(operation:"form",rule_id,args:{steps:[{kind:"open"}]},confirm:true) operates an enabled Rule-5.1 or Button Rule-5.1 rule, or its Rule Machine parent; hub_set_native_app(operation:"form",app_id,...) runs the same steps on any other classic app. Read action variants, input names and option values from the returned forms instead of guessing them. Even open renders execute app code and can change state or cause side effects. An open's optional page names a registered native page, and from names the page that links to it, so a sub-page opened directly offers its Done back to that parent. Follow returned controls for page parameters and breadcrumbs. A create_child control creates the parent's native child type, returns created_app_id and closes the parent context; open the child separately to configure it. Apps are deleted with hub_delete_native_app.
 
-Submit with {kind:"submit",expect_page:"last returned page",fields:{"native field name":value},activate:"returned control_id"}. Omit activate to save the supplied fields and refresh the current page. Control IDs distinguish native buttons sharing a name, such as editing and deleting the same variable. Native enum keys, device IDs, booleans and single/multiple cardinality are checked before the request. Only supplied settings are posted; native page code can still change its own settings. Defaults are shown but are not automatically submitted; supply a required default explicitly before navigating. Use args.options_for:["device field name"] to expand device choices on the final returned page.
+Submit with {kind:"submit",expect_page:"last returned page",fields:{"native field name":value},activate:"returned control_id"}; without activate it saves the fields and refreshes the page. Control IDs tell apart native buttons that share a name, such as editing and deleting the same variable. Form results mask password-typed fields and fields whose names look like credentials (API keys, tokens, passwords, PINs, lock codes) with the same marker hub_get_app_config uses. A page with both a next page and a done page renders its Done as the _action_done control, which the hub answers by saving the page and rendering that same page again. An app without pages also shows the hub's default fields, label (the app's name) and mode[mode] (a list of mode IDs from its options), and a page's own label and mode elements are the same two fields; the hub does not always keep the label posted with mode[mode], so after such a submit the label is checked and posted again on its own when the hub put back an older one (label_restored). Native enum keys, device IDs, booleans and single/multiple cardinality are checked before the request. Each submit posts the supplied settings and, as the browser does, the shown default of every other input with no stored value; a password's default is never posted, and page code can still change its own settings. args.options_for:["device field name"] expands device choices on the final returned page.
 
-Batches contain 1 through 16 ordered steps. Each step uses the form returned by the preceding step, so dependent fields require another submit after they appear. A button handler runs before that step's fields are saved, as in the native browser; submit fields in a preceding step when the handler needs them. A button without submitOnChange reloads and requires a separate field submission.
+A batch holds 1 through 16 steps, each using the form the step before it returned, so dependent fields require another submit after they appear. A button handler runs before its step's fields are saved, as in the browser: submit the fields it needs in an earlier step. A button without submitOnChange reloads and needs a separate field submission.
 
-The execution context expires after five minutes and is lost on app reload. It retains no field values, messages or option labels; limits are 24 KiB of serialized descriptors per app, 96 KiB total, and eight caller workflows. Opening another app replaces only that caller's previous context; reopen the previous app before submitting it again. Other callers' contexts are retained. expect_page guards the latest tool context, not concurrent edits in another browser. Avoid concurrent editing. Errors can leave completed operations or an uncertain final operation; inspect the app and reopen instead of replaying buttons. Terminal navigation closes the context without following redirects. A verified local native link or script navigation to the same app or its direct child returns navigated_app_id and navigated_page with closed:true; open that target separately. No script is evaluated. App-authored JavaScript, custom HTML inputs, uploads, external links and unsupported browser controls are reported in unsupported; they are never silently executed. Success means the native form operation returned, not that the app's intended runtime behavior was independently verified.
+The context expires after five minutes or an app reload and keeps no field values, messages or option labels; limits are 24 KiB of descriptors per app, 96 KiB in all, and eight caller workflows. Opening another app replaces only that caller's context; reopen the previous app before submitting it again. expect_page guards the caller's latest context, not edits in a browser, so avoid editing concurrently. After an error, completed operations stay and the last can be uncertain: inspect the app and reopen instead of replaying buttons. Terminal navigation closes the context without following redirects; a local link or script navigation to the same app or its direct child returns navigated_app_id and navigated_page with closed:true, to open separately. No script is evaluated: app JavaScript, custom HTML inputs, uploads, external links and other unsupported browser controls are listed in unsupported. Success means the native form operation returned, not that the app's intended runtime behavior was independently verified.
+
+## Set Native App Reference
+
+hub_set_native_app works on classic Hubitat apps (dynamicPage apps), user and community apps included; Rule Machine rules use hub_set_rule and Visual Rules hub_set_visual_rule. With write access, call it without operation for help; a write operation without confirm returns its schema. Without write access the tool is hidden and this reference is its full description. Top-level app_id names the app for update and form. Writes need confirm=true and a recent hub backup. When mandatory guide acknowledgment is enabled, pass this section's key as top-level bestPracticeKey.
+
+### create
+
+operation:"create" with args:{app_type,name?,fields?} does what Apps does: it opens the type's parent app (installing it first when the hub lacks it), presses that page's Create control, fills the new app's first page with fields and presses its Done, which installs the app. name goes to the label input the first page renders (origLabel, name, or the hub's own label field); a type whose first page renders none of them (Button Controller, Basic Rule, Thermostat Scheduler and Controller) refuses name. fields are checked against that page before anything is saved: an input it does not render, a button, a disabled input, a bad value or device ID, or a required input left empty for the Done is refused with success:false, and the new app is removed. Inputs that a choice reveals belong to update or form. The result reports app_id, label, fields_applied, and fields_not_landed (with success:false) for any field the hub did not store as written. installed:false means the first page has no Done (Basic Rule: finish it with form). A Done the hub answers by rendering the first page again returns success:false with what that page asks for, and the new app is removed. app_type rule_machine makes only an empty rule.
+
+A button_rule takes args:{app_type:"button_rule",controller_id,button_number,event} and no name or fields. It runs the Button Controller's own Add Button, the button number, then that event's Create Button Rule control. The controller needs its button device assigned first. A button number the controller does not offer returns success:false after its page's Cancel, with the controller as before and the recovery point taken before the call rendered anything. The controller seeds the trigger; add the actions with hub_set_rule(operation:"update",rule_id:<returned app_id>).
+
+### update
+
+operation:"update" with args:{fields:{input name:value},page?} opens the page (the default page, or page), sets the fields and presses that page's Done. hub_get_app_config shows a page's inputs, their values and, under page.hrefs, the pages it links to. A sub-page's Done returns to the root page, whose Done then commits the app and re-initializes it, as the browser's Done does; learning the root page's name renders the app's default page first, so a stateful wizard whose default page resets its progress is driven with operation:'form' and open.from instead. The read-back renders the page that was written. A page that names both a next and a done page has that Done pressed, which the hub answers by saving and rendering the page again (committed:false). A submitOnChange input posts the page first, as the browser does, and the Done is pressed on the page that post renders; if that page asks for a required input it revealed, the call stops before the Done, reports partial and says what was saved. Inputs not given keep their stored values; unset inputs with a page default save that default (defaults_posted). Device inputs take device IDs (a list for a multiple input) or the {id:label} map hub_get_app_config returns; a multi-select enum takes a list; a mode input takes mode IDs as the page's options list them. A field the page does not render, a button, a disabled input, a bad value or device ID, or a required input left empty is refused before anything is written. An input that appears only after another choice needs that choice saved by an earlier update, or a form workflow. The result reports fields_applied and fields_not_landed (with success:false) from one read-back after the Done, and committed:false when the app's own Done did not run: with a note when the page renders none, and with success:false and the reason as error when the hub rendered the page again instead of accepting the Done (fields_applied still lists what it stored). A written input that the page no longer renders after the save, and that the app did not store, is listed under fields_consumed without failing the call: the app's own code used the value (a table editor adding a row, for one), so read the page to see the effect.
+
+Each update first takes a recovery point, before it renders any page: an exact export for a Rule Machine rule, otherwise a File Manager baseline of the app, reused for one hour unless every-write backups are on, and none while pre-edit backups are off. backup.backupKey restores it with hub_restore_backup.
+
+### form
+
+operation:"form" with args:{steps:[...],options_for?} runs the native form engine on any enabled classic app. Steps, control IDs, validation and limits are those of Native Rule Forms in set_rule_reference. While pre-edit backups are on (the default), a workflow takes the same recovery point as update before its first render. Protected and disabled apps are refused. A create_child control works only for built-in child app types.
 
 ## Device Authorization (CRITICAL)
 
@@ -82,7 +102,6 @@ If you are calling one of these tools, you must read its section for that sectio
 - hub_delete_native_app -> builtin_app_tools_crud
 - hub_export_native_app -> builtin_app_tools_crud
 - hub_import_native_app -> builtin_app_tools_crud
-- hub_set_native_app -> builtin_app_tools_crud
 - hub_call_rule -> builtin_app_tools_rules
 - hub_set_app_disabled -> builtin_app_tools_rules
 - hub_set_rule_paused -> builtin_app_tools_rules
@@ -115,6 +134,7 @@ If you are calling one of these tools, you must read its section for that sectio
 - hub_export_custom_rule -> rules
 - hub_import_custom_rule -> rules
 - hub_update_custom_rule -> rules
+- hub_set_native_app -> set_native_app_reference
 - hub_set_rule -> set_rule_reference
 - hub_update_device -> update_device
 - hub_manage_virtual_device -> virtual_devices
@@ -744,20 +764,20 @@ Duplicates an existing MCP custom-engine rule into a new, independent rule with 
 - Rapid source-code edits preserve the original for one hour. Rule edits take a fresh pre-edit snapshot as described below.
 
 ### Backup retention
-- There is no count limit: backups are removed only when all MCP backups together exceed the storage budget. Another item's backup never replaces this one, but once the shared budget is exceeded any new backup can evict older backups of any item: **rolling** steps first, then **pinned** baselines, oldest first. The backup just taken and an active restore target are never removed.
+- There is no count limit: backups are removed only when all MCP backups together exceed the storage budget, oldest first across every item and kind of backup. An item's newest backup is never removed, and neither are the backup just taken and an active restore target; the budget can therefore stay exceeded once every item is down to one backup.
 - The budget is the Advanced setting "Backup storage budget (MB)" (`backupBudgetMb`): default 10, at least 1, at most 1000000 (1 TB). The Advanced page takes any number and the server clamps it to that range. With Developer Mode on, hub_update_mcp_settings also sets it and refuses a value that is not a whole number in that range.
-- Apps, drivers and libraries keep one **pinned** baseline, replaced by that item's next backup after the one-hour window.
-- A rule's first snapshot in an editing session is **pinned**, and so is every pre-delete, pre-forcedelete and replaceRequiredExpression snapshot. With `backupEveryRuleWrite` on, the rule's other snapshots in that session are **rolling** steps, so "before I started" outlasts the per-write steps when space runs short. An editing session ends once an hour passes with no snapshot of that rule; with `backupEveryRuleWrite` on, a continuous chain of writes keeps it open.
 - Where each response says it:
-  - Rule Machine writes and deletes: the `backup` object carries `retention` (`pinned` or `rolling`) and `retentionNote`, and the restoreHint ends with that note.
-  - hub_delete_item / library deletes: `backupRetention` and `backupRetentionNote`; the restoreHint ends with the note.
-  - hub_restore_backup (app/driver source): `backupRetention` and `backupRetentionNote` describe the `preRestoreBackup` undo entry; the `undoHint` ends with the note.
+  - Rule Machine writes and deletes: the `backup` object carries `retentionNote`, and the restoreHint ends with that note.
+  - hub_delete_item / library deletes: `backupRetentionNote`; the restoreHint ends with the note.
+  - hub_restore_backup (app/driver source): `backupRetentionNote` accompanies the `preRestoreBackup` undo entry; the `undoHint` ends with the note.
   - hub_write_file / hub_delete_file: `backupRetention: "copies"` and `backupRetentionNote` for the `<name>_backup_<ts>` copy.
-  - hub_list_backups: `storageBudget` (`usedBytes` / `limitBytes`, pending deletions excluded), `retentionPolicy`, and each entry's `retention` and `sizeBytes`.
+  - hub_list_backups: `storageBudget` (`usedBytes` / `limitBytes`, pending deletions excluded), `retentionPolicy`, and each entry's `sizeBytes`.
 - If the index file is missing, it is rebuilt from the File Manager listing, which also brings backup files left by older versions under retention. An index file that is listed but cannot be read is never rebuilt over: backup reads and backup-taking writes return `success: false` until it reads again. An index file that is not valid JSON is copied to `mcp-backup-index.corrupt-<time>.json` before the rebuild.
 
 ### Rule Backups (Automatic)
 - With `backupBeforeRuleEdits` enabled (default), hub_set_rule takes one fresh snapshot before an update batch and one before a native rule form workflow. Subsequent submissions in that workflow reuse its snapshot. Snapshot failure prevents the edit. Creating a new rule or navigating its parent does not have a previous child rule to restore.
+- hub_set_native_app updates and form workflows on other classic apps take one baseline snapshot first while `backupBeforeRuleEdits` is on, reused for the same app for one hour unless `backupEveryRuleWrite` is on, which takes a fresh snapshot before every edit. Its creates take none; a button_rule create takes one of its Button Controller.
+- Password-typed settings are not stored in pre-write snapshots: the snapshot lists them in `redactedSettings`. A restore leaves a live password unchanged (`passwordsKept`); an app recreated by restore needs them re-entered in the native UI (`passwordsToReenter`); when the restored app's settings cannot be read to confirm them, they are listed in `passwordsUnverified`.
 - hub_delete_custom_rule auto-backs up to File Manager as mcp_rule_backup_<name>_<timestamp>.json
 - Restore via: hub_read_file → hub_import_custom_rule
 - Skip backup: set testRule=true when creating/updating
@@ -1008,48 +1028,27 @@ A single tool can also be switched off under **Advanced: Per-tool Overrides**. A
 
 ### hub_read_apps_code — installed-app reads
 
-- **hub_list_apps (scope='instances')** — enumerate ALL running app instances on the hub (built-in + user) with parent/child tree
-  - filter="all" (default) | "builtin" | "user" | "disabled" | "parents" | "children"
-  - Each entry: id, name, type, appTypeId, disabled, user, hidden, deprecated, parentId, hasChildren, childCount
-  - appTypeId is the app type's code-class id -- the same id as the type's row in scope='types', hub_get_source(type='app', id=appTypeId) for community code, and the hub's /app/editor/<id> page -- so an instance resolves to its code without matching on the type name (ambiguous for duplicate or versioned names). null when the hub omits it. Community child app types are listed in scope='types' like any other type, so their rows resolve directly by appTypeId. Some built-in child types (e.g. Rule-5.1) are absent from scope='types'; for those, the parent instance's appTypeId identifies the parent app, not the child's source.
-  - Built-in apps have user=false (Rule Machine, Room Lighting, Groups and Scenes, Mode Manager, HSM, Dashboards, Maker API, etc.)
-  - User apps have user=true (Awair, Ecobee, HPM, etc.)
-  - Parent/child tree is flattened with parentId pointers. Hidden parents are excluded from output but their children are promoted to the nearest visible ancestor.
-
-- **hub_list_apps (scope='types')** — enumerate the installed app-type catalog: community (user-installed Apps Code, listed first) AND built-in types, in one call
-  - Community entries preserve the code registry's native fields (id = code-class id, name, namespace, oauth, lastModified, usedBy, ...); built-in entries carry the hub's app-type fields. Both gain three added fields:
-  - **system** / **isBuiltIn** (booleans, same value) — true for a built-in Hubitat app type, false for a community/user-installed one. Answers "which of my installed app types are community vs built-in" without a per-app hub_get_app_config call.
-  - **menu** — the admin UI tab the app type declares in its definition() block: "Apps", "Automations", or "Integrations" (recent firmware splits the Apps page into these three tabs). null when the type declares no menu, or when a community type is not in the appsList catalog (e.g. a child-app template). Group types by menu to mirror the tab layout.
-  - Community types come from the Apps Code registry (/hub2/userAppTypes, preserving class ids + child-app templates); menu and the built-in types are layered on from one supplementary /hub2/appsList read. If that read fails, community types still list (menu null, no built-ins) with a note.
-
-- **hub_list_device_dependents** — find apps that reference a specific device
-  - Use BEFORE deleting a device, disabling a device, or troubleshooting unexpected behavior
-  - Returns appsUsing array with each app's id, name (type like "Room Lights" or "Rule-5.1"), label (user-visible), trueLabel (HTML-stripped), disabled
-  - Answers "if I delete this device, which automations break?"
-
-- **hub_get_app_config** — read an installed app's configuration page (Read master required)
-  - Returns app identity (label, type, disabled), config page sections/inputs/values, and child apps
-  - appType summary carries system (built-in vs community) and menu (the app type's declared Apps/Automations/Integrations tab, null if undeclared) — for the same fields across ALL app types in one call, use hub_list_apps(scope='types')
-  - **modeInputs** (present only when the page renders framework-standard mode inputs, type="mode") — a list of {name, modes, section}, plus **modeInputsNote**. `modes` is each input's configured list. IMPORTANT — the SEMANTICS are app-specific: a `type="mode"` input can be a "only run during these modes" RESTRICTION, or per-mode OVERRIDES (e.g. Day Lights uses ten `type="mode"` inputs for per-mode brightness/color overrides, gated by its own `useModeOverrides` bool — not a restriction). Read the input titles/settings to tell which. It detects ONLY the standard input on the page you read; the input often lives on a SUB-PAGE (walk hub_list_app_pages), and it does NOT detect apps that gate on mode through their own settings model (e.g. Room Lighting's useModes/onConds) or handler logic (`if (location.mode in ...)`). So the ABSENCE of modeInputs is NOT proof the app ignores mode — for an arbitrary non-RM app that is app-specific and may require reading its source. Rule Machine rules have first-class, always-inspectable mode restriction; classic apps have no universal equivalent.
-  - **Mode gating in the common built-in apps** (per-app-type reference). There is NO hub-native "modes in use by" (unlike hub variables), so mode gating must be read per app, and each built-in stores it differently. Resolve mode IDs to names via hub_list_modes.
-    - **Notifier** — `modes` (type='mode', mode NAMES) on the `moreOptions` sub-page. RESTRICT ("only when mode is"). Caught by modeInputs when that sub-page is read.
-    - **Motion Lighting** — `onModes` / `offModes` (type='mode', NAMES) on `onOptions` / `offOptions`, gated by the `useModes` bool. RESTRICT (modes in which to DISABLE turning on/off). Caught by modeInputs on those sub-pages.
-    - **Room Lights** — `modes` as mode **IDs** (e.g. ["1","2","3","5"]) with `schedTypeL:"Hub Modes"`; NOT a type='mode' input — it is per-mode SETTINGS (behavior varies per mode) in the lighting-period model. NOT caught by modeInputs.
-    - **Thermostat Scheduler** — BOTH mechanisms: `modesR` (type='mode', NAMES, `moreOptions` sub-page) = RESTRICT; and `schedTypeL:"Hub Modes"` (main page) = per-mode SETTINGS (per-mode period keys). modeInputs catches `modesR` only.
-    - **Simple Automation Rules** — `modes` (classic restrict input, NAMES).
-    - **Button Controller** — no app-level mode key; each child Button Rule gates via Rule Machine conditions (capability "Mode"). Inspect the child rule, not the parent.
-    - **Basic Rules** — a classic dynamicPage app; read it with hub_get_app_config. Mode is a TRIGGER here: `trigCapab:"System Mode"` plus `mode` (type='mode', NAMES, titled "Becomes") fires the rule when the mode becomes one of them -- not a restriction, even though modeInputs catches it. "Set mode" is one of its actions.
-    - **Rule Machine** — first-class, always-inspectable mode restriction + "Mode" conditions (use the RM tools).
-    Community (non-built-in) apps are case-by-case: type='mode' inputs surface via modeInputs when used; otherwise reading the app source is the only signal.
-  - summary=true is a fast identity-only mode: the hub's thin app record (id, name, type, disabled, user) with no config-page render -- use it for existence/identity checks on expensive apps
-  - Multi-page apps expose sub-pages via pageName. Native editor navigation and supported controls use hub_set_rule(operation='form'); rendering can mutate app state.
-  - includeSettings=true adds the raw internal settings map (large apps: 500-1000 keys with app-specific encoding)
-  - Workflow: hub_list_apps (scope='instances'; or hub_list_rules for RM rules specifically -- note that hub_get_custom_rule handles only MCP-native rules, not Hubitat's built-in Rule Machine) to find appId, then hub_get_app_config to inspect. For multi-page apps, consider hub_list_app_pages first.
-
-- **hub_list_app_pages** — discover what pageNames a given app accepts (Read master required)
-  - Input: appId
-  - Returns the live primary page plus every sub-page it links to (read from the page itself, any app type), with a curated directory added for HPM
-  - Cuts the page-name guessing cycle for multi-page apps. Especially useful for HPM which exposes multiple sub-pages (prefPkgUninstall / prefPkgModify / prefPkgInstall / prefPkgMatchUp) for different operations.
+- **hub_list_apps(scope='instances')** lists every installed app, disabled ones included, as a flat tree with `parentId` pointers. Built-in apps have `user=false`, user-installed apps `user=true`. A hidden parent is left out and its children move up to the nearest visible ancestor. `filter`: `builtin`, `user`, `disabled`, `parents` (apps with children, such as Rule Machine), `children` (individual rules and scenes). `appTypeId` is the type's code-class id, the same id as its scope='types' row, `hub_get_source(type='app', id)` and the hub's /app/editor/<id> page, or null when the hub omits it. Some built-in child types (Rule-5.1) are missing from scope='types'; for those, the parent's appTypeId names the parent app. A retired app type carries `deprecated: true`.
+- **hub_list_apps(scope='types')** lists community types (Apps Code, first) and built-in types. Each row adds `system`/`isBuiltIn` (true for built-in) and `menu`, the Apps/Automations/Integrations tab the type declares, null when it declares none or for a community type outside the hub's apps catalog (a child-app template). If the catalog read fails, community types still list, with `menu` null, no built-ins and a note.
+- **hub_list_device_dependents** — check it before deleting, disabling or replacing a device. `appsUsing` rows carry id, name (the app type), label, trueLabel and disabled.
+- **hub_get_app_config** renders one page as opening it in the UI does, which runs the app's page code.
+  - The pages a page links to are in `page.hrefs` as `{page, title}`; a sub-page's own links are in its `page.hrefs` (Room Lighting's optionsOnPage is linked from onMeansPage). A linked page's inputs are not in `sections`: read them with `pageName`.
+  - `controls` are the page's buttons and links as hub_set_rule(operation='form') (Rule Machine) or hub_set_native_app(operation='form') returns them; activate one there by its control_id after opening the same page.
+  - On a Rule Machine rule a paragraph holding a disabled action or trigger reads `{text, disabled: [...]}`, listing the text of each disabled row it holds. On selectActions (Button Rule: selectActionsX) a disabled action's `disable<N>` control reads 'Enable Action', and the control named `<N>.0.<bool>` carries that action's text; N is the action index, not the row position. The button toggles: never replay a click whose response was lost. hub_set_app_disabled disables the whole app.
+  - `pageNote` appears when the hub rendered another page than `pageName`: the app reaches that page only through its link, so open it in a form workflow.
+  - `appType.system` and `appType.menu` are the fields hub_list_apps(scope='types') gives for every type at once.
+  - `includeSettings=true` adds the raw settings map: 500-1000 app-encoded keys on large apps (Room Lighting stores per-device scene levels as `dm~<deviceId>~<scene>`). Secrets read `***redacted (password)***`: every setting the hub types as a password, on any page, and free-text settings with credential-shaped names (password, pass, secret, token, API key, credential, ...). OAuth accessToken settings follow the Hide access tokens setting. Page inputs are redacted the same way. When the setting types cannot be read the map is withheld and `settingsNote` says why.
+  - A type='mode' input's `value` is its stored setting. Day Lights uses ten of them for per-mode levels, gated by `useModeOverrides`; most apps use one as an "only during these modes" restriction.
+  - **Mode gating in the built-in apps.** The hub has no "modes in use by" list, so read each app; resolve mode IDs with hub_list_modes.
+    - **Notifier** — `modes` (mode ids) on `moreOptions`; restricts.
+    - **Motion Lighting** — `onModes` / `offModes` (names) on `onOptions` / `offOptions`, gated by `useModes`: the modes in which turning on or off is disabled.
+    - **Room Lights** — `modes` holds mode IDs (e.g. ["1","2","3","5"]) with `schedTypeL:"Hub Modes"`: per-mode settings, not a type='mode' input.
+    - **Thermostat Scheduler** — `modesR` (names, `moreOptions`) restricts; `schedTypeL:"Hub Modes"` on the main page selects per-mode settings. Only `modesR` is a type='mode' input.
+    - **Simple Automation Rules** — `modes` (names); restricts.
+    - **Button Controller** — no app-level mode key; each child Button Rule uses Rule Machine Mode conditions.
+    - **Basic Rules** — `trigCapab:"System Mode"` with `mode` (names, titled "Becomes") is a trigger, not a restriction, although it is a type='mode' input. "Set mode" is one of its actions.
+    - **Rule Machine** — mode restrictions and Mode conditions, read with the rule tools.
+    For a community app, read its type='mode' inputs or its source.
 
 ### hub_list_hpm_packages — HPM package state introspection (in hub_read_apps_code; Read master required)
 
@@ -1082,19 +1081,19 @@ RMUtils-based control surface (hub_list_rules = Read master; trigger/pause/priva
   - action="rule" (default): full evaluation (triggers + conditions + actions)
   - action="actions": run actions only, skip conditions
   - action="stop": stop running actions
-  - action="start": restart a stopped rule (re-initializes; resets private boolean)
+  - action="start": restart a stopped rule (clears stopped and re-initializes it; the private boolean is unchanged)
 - **hub_set_rule_paused** — pause (paused=true) or resume (paused=false) one or more rules in ONE call (ruleId takes an id or an array; multi-id batches existence-check every id first); reversible
 - **hub_set_rule_private_boolean** — set the private boolean of one or more rules (ruleId takes an id or an array; Boolean or lowercase "true"/"false" only)
 
-Native CRUD (hub admin-layer, additionally requires the Write master):
-- **hub_set_native_app** — create or edit other classic apps using the existing generic CRUD interface. Native RM rules are created and changed with hub_set_rule(operation:'create'|'update'), and their native editor forms are driven with hub_set_rule(operation:'form').
-- **hub_set_app_disabled** — enable or disable any installed app (red-X) via POST /installedapp/disable; reversible. Args: appId, disabled (bool). Read-back verified.
-- **hub_delete_native_app** — soft delete (default; refuses if children exist) or force=true. Args: appId, force, confirm. Auto-backs-up before deleting.
-- **hub_clone_native_app** — clone any classic SmartApp via Hubitat's first-party appCloner (deep: child apps and pause state copy, so a clone of an ACTIVE app lands ACTIVE). Args: sourceAppId, newName (opt), stageDisabled (opt: disable the clone + every descendant immediately; a staging failure returns success:false with per-app stageFailures -- do NOT re-clone, the app exists), confirm. Returns newAppId. Drives the appCloner's 4-step wizard (cloneRuleButton -> confirmation -> importRule sub-page -> importNow); typical clones complete in tens of seconds.
-- **hub_export_native_app** — export any classic SmartApp to its canonical JSON shape via Hubitat's first-party appCloner. Args: sourceAppId, saveAs (opt File Manager filename). Returns jsonContent. Self-contained document with appReplacements + deviceReplacements + full rule state; round-trips through hub_import_native_app.
-- **hub_import_native_app** — re-create a rule/app from a previously-exported JSON via Hubitat's first-party appCloner (the import lands ACTIVE). Args: jsonContent | fromFile, parentHintAppId, newName (opt), stageDisabled (opt: disable the import + every descendant immediately; failure contract as on clone), confirm. Returns newAppId. The cloner needs an existing rule under the target parent to seed itself (parentHintAppId).
+Native CRUD (also requires the Write master):
+- **hub_set_native_app** — create, update or drive the forms of every classic app other than Rule Machine rules (see set_native_app_reference). Rule Machine rules use hub_set_rule.
+- **hub_set_app_disabled** — the red-X enable or disable of any app; reversible, and read back after the write.
+- **hub_delete_native_app** — soft delete by default (refused while children exist), or force=true. It saves a snapshot first; hub_restore_backup re-creates the app from backup.backupKey.
+- **hub_clone_native_app** — Hubitat's appCloner copies the app with its child apps and pause state, so a clone of an active app is active; `stageDisabled` disables the clone and its descendants at once. A staging failure returns success:false with `stageFailures`: the clone exists, so do not clone again. Typical clones take tens of seconds.
+- **hub_export_native_app** — the appCloner's export JSON (appReplacements, deviceReplacements and the full app state), which hub_import_native_app re-creates.
+- **hub_import_native_app** — creates the app from that JSON under the parent of `parentHintAppId`; the import is active unless `stageDisabled`, with the same failure contract as clone.
 
-- Clone/import require a readable parent child-app snapshot before creation; a refusal says nothing was created and can be retried after restoring access. Discovery never guesses among ambiguous new children. If modern staging reaches its continuation limit, the terminal error retains newAppId, stagedDisabled, stageFailures and stageRemaining from the last slice. Disable the remaining/failed apps directly; do not repeat creation.
+- Clone and import read the parent's child apps first: if that read fails nothing is created and the call can be retried, and an ambiguous new child is never guessed at. When staging reaches its continuation limit, the error keeps newAppId, stagedDisabled, stageFailures and stageRemaining: disable those apps directly instead of creating again.
 - **hub_get_rule_health** — read-only health check on any installed app (Rule Machine AND Visual Rules Builder). Args: appId, source (auto|ruleBuilderJson|configPage, default auto). Prefers the compiled-state verdict: the classic RM `broken` boolean (/app/ruleBuilderJson) or a graph Visual Rule's validationErrors (/app/ruleBuilder20Json); for classic RM the HTML render scan is retained as cross-check + fallback. Returns ok / broken / source / ruleFormat / label / paused / stopped / configPageError / brokenMarkers / multipleFlagPoison / structuralIssues / orphanedActionRows (leftover actType/actSubType rows that are not among the rule's actions -- diagnostic only, never affects ok) / validationErrors / issues (+ predicate when read). Pause state comes from the rule's compiled Boolean or status state; tagged runtime decoration is a fallback. `paused:null` means unknown. Explicit stopped state outranks config-page markup. Literal `(Paused)` and `(Stopped)` name suffixes are preserved; Visual Rule labels come from their own document unless configPage is forced. Embedded write-response health carries compiled paused only; the standalone read adds status/markup fallbacks, stopped, and live subscription/job counts.
 
 For reading a native RM rule without editor renders, use hub_set_rule(operation='read'). hub_get_app_config remains available for native configuration diagnostics.
@@ -1102,36 +1101,15 @@ For reading a native RM rule without editor renders, use hub_set_rule(operation=
 For BACKUP enumeration and restore, use the unified **hub_list_backups** (in hub_read_apps_code) + **hub_restore_backup** (in hub_manage_backup) — RM rule snapshots have type="rm-rule" in those tools' output and hub_restore_backup auto-dispatches the rule-restore path.
 
 ### Safety model for native CRUD
-1. With backupBeforeRuleEdits enabled (default), each hub_set_rule update batch saves one fresh native snapshot in File Manager before editing. A native form workflow saves one snapshot before opening and reuses it for subsequent submissions. The response's backup.backupKey restores the configuration from before that batch or workflow. Snapshot failure prevents the edit.
-2. Native form writes validate native field types and cardinality before submission; omitted values remain unchanged.
-3. Inspect partial outcomes and native health after writes; a persisted setting alone does not prove runtime behavior.
-4. delete is soft by default. Pass force=true only when you know the rule has children you also want gone.
+1. With backupBeforeRuleEdits on (default), each hub_set_rule update batch, and a native form workflow before its first step, saves a native snapshot to File Manager; backup.backupKey restores the configuration from before it. A failed snapshot stops the edit.
+2. Native form writes check field types and cardinality before submitting. An omitted input keeps its stored value; an unset input with a page default is saved with that default, as the browser does.
+3. A stored setting does not prove runtime behavior: check partial outcomes and hub_get_rule_health after a write.
+4. Deletes are soft by default; force=true also removes children.
 
 ### CRUD workflow example
-  hub_set_rule(operation="create", args={parent_id:<Rule Machine parent>, name:"BAT-RM-demo", changes:[<native changes>]}, confirm=true)
-  hub_get_app_config(appId=974, includeSettings=true) → input schema + current settings
-
-
-  hub_get_rule_health(appId=974) → verify ok=true, no configPageError or brokenMarkers
-  hub_delete_native_app(appId=974, force=true, confirm=true) → {backup: {backupKey: "rm-rule_974_..."}}
-
-### hub_get_app_config (deferred internals: embeddedActions wire-format, disabled RM actions, includeSettings key encoding)
-
-- **embeddedActions in RM 5.1**: configuration diagnostics may expose native clickable controls; hub_set_rule(operation='form') supplies supported control IDs for editor operations.
-- **Disabled RM actions**: native configuration diagnostics expose disabled row markers. Use only returned native form controls to toggle a specific row; toggles must not be replayed after an uncertain response. hub_set_app_disabled disables the whole app.
-- **includeSettings raw-key encoding example**: large apps' raw app-internal settings keys use app-specific encoding — e.g. Room Lighting encodes per-device-per-scene keys as `dm~<deviceId>~<scene>`. (Set `includeSettings=true` only for power-user inspection; large apps can have 500-1000 such keys.)
-
-### hub_list_apps (scope='instances' filter — category meanings)
-
-The `filter` enum values select which category of instances to return (scope='instances' only):
-- **all** (default) — every instance
-- **builtin** — Hubitat native apps
-- **user** — custom Groovy apps
-- **disabled** — paused apps
-- **parents** — apps with children, e.g. Rule Machine, Room Lighting
-- **children** — individual rules, scenes
-
-Each instance carries `deprecated: true` when the hub has retired its app type (for example the legacy Sonos integration in firmware 2.5.2), so it can be flagged for replacement.
+  hub_set_rule(operation="create", args={parent_id:<Rule Machine parent>, name:"BAT-RM-demo", changes:[<native changes>]}, confirm=true) → app_id
+  hub_get_rule_health(appId=<app_id>) → ok=true, no configPageError or brokenMarkers
+  hub_delete_native_app(appId=<app_id>, force=true, confirm=true) → {backup: {backupKey: "rm-rule_<app_id>_..."}}
 
 ### hub_list_drivers (list device driver TYPES on the hub)
 
@@ -1141,11 +1119,6 @@ Each instance carries `deprecated: true` when the hub has retired its app type (
 - For an `include='all'` entry, its **id** is the driver-type id to pass to `hub_create_device`, while `hub_manage_virtual_device(customDriver={namespace, name})` takes that same entry's **namespace + name** (not the id).
 
 
-### hub_list_app_pages (curated page-name directory)
-
-Sub-pages are read from the live primary page: every page it links to is listed with its title, for any app type (Rule Machine rules link selectTriggers/selectActions; Room Lighting links onDevicesPage/onMeansPage/offMeansPage). Pages linked only from a sub-page (e.g. Room Lighting's optionsOnPage under onMeansPage) show up in hub_get_app_config(pageName=<sub-page>).hrefs. HPM additionally gets a curated directory: prefOptions (main menu), prefPkgUninstall (full installed-package list), prefPkgModify (modifiable subset), prefPkgInstall (install flow), prefPkgMatchUp (match-up flow).
-
-
 ### hub_call_rule
 
 `action` selects which Rule Machine verb to invoke (default `rule`):
@@ -1153,21 +1126,9 @@ Sub-pages are read from the live primary page: every page it links to is listed 
 - **`rule`** → `runRule`: re-evaluate the rule's conditions, then run the matching true/false action set.
 - **`actions`**: click the rule's Run Actions button (`runAction`) to run the action list directly, skipping condition evaluation.
 - **`stop`**: halt the rule's in-progress actions.
-- **`start`**: re-enable a stopped rule (also resets its private boolean).
+- **`start`**: restart a stopped rule (clears stopped and re-initializes it; the private boolean is unchanged).
 
 `actions`, `stop` and `start` drive RM's own page buttons (`runAction`, `stopRule`), not RMUtils: that is the route the hub UI takes, so the platform's per-app load limiter, which refuses RMUtils dispatches on a busy hub, does not apply to them. Only `rule` still goes through RMUtils (RMUtils has no startRule verb and there is no page button for a full re-evaluation).
-
-### hub_set_native_app
-
-Create or edit classic native apps through their native pages. Omit appId to create a shell with appType and name; provide appId to edit discovered settings, click a native button, or walk its pages. Read configuration fields with hub_get_app_config and discover linked pages with hub_list_app_pages. Native Rule Machine structures use hub_set_rule; this generic tool does not accept RM action, trigger, expression, local-variable or batch shortcuts.
-
-A settings object maps native input names to values. Device inputs accept ID lists or the {id:label} maps returned by configuration reads. pageName selects a sub-page; settings not exposed by that page are reported as skipped. Fields may appear only after another choice has been saved. The native type's own commit button and closing Done are used; Basic Rule and Button Controller do not have an updateRule button.
-
-walkStep preserves native navigation: introspect reads the current fields and controls; write submits its write object; click activates its click.name and optional stateAttribute; navigate follows navigate.targetPage; done submits the page's Done after validating required inputs. Set page and optional hrefContext={fromPage, hrefName, hrefIndex, hrefParams} from the native links. For ordered workflows use walkStep={operation:'drive',steps:[...]} and finish each sub-page with done. A drive can return stepsRemaining when its time budget is reached; completed steps have already run. Inspect per-step errors, valueEcho and health before retrying.
-
-buttonRule={controllerId,buttonNumber,event} creates a Button Rule through an existing Button Controller's add-button flow. The controller must have its button device assigned. The resulting buttonRuleId can be edited with hub_set_rule(operation='update') or through native fields; a Button Rule must not be created as a standalone shell.
-
-Write calls require confirm=true and a recent hub backup. Existing generic edits retain their File Manager baseline behavior: by default a same-app baseline is reused for one hour, or backupEveryRuleWrite requests a fresh snapshot for each edit. Returned backup metadata describes the rollback scope. A failed creation reports its child ID and cleanup attempt; inspect that result before retrying. Guide-only calls with appId and guide=true return this section without app mutation.
 
 ### hub_get_rule_health
 
@@ -1191,9 +1152,9 @@ List a Rule Machine rule's LOCAL variables (per-rule, distinct from hub globals)
 - Hub globals are covered by hub_list_variables; native locals are read/written through hub_set_rule(operation='read') / hub_set_rule(operation='update') variable changes.
 - Reads the rule's `statusJson` appState: names and types from `allLocalVars`, current values from each variable's live `lv_<name>` entry (`allLocalVars` keeps the old value after an action sets the variable until someone opens the rule's page).
 - Pure read -- no wizard, no mutation.
-- Returns `{appId, localVariables:[{name, type, value}], total}`. `type` is the hub's internal token, not the `addLocalVariable` enum. Map it back before reuse: integer→Number, bigdecimal→Decimal, string→String, boolean→Boolean, datetime→DateTime.
+- Returns `{appId, localVariables:[{name, type, value}], total}`. `type` is Rule Machine's own token (integer, bigdecimal, string, boolean, datetime), the same value a hub_set_rule variable change takes; the rule page shows it as Number, Decimal, String, Boolean, DateTime.
 
-- Use to confirm a local exists (and its type) before targeting it with the `setLocalVariable` action or `removeLocalVariable` shortcut.
+- Use to confirm a local exists (and its type) before targeting it with a Set Variable action or a hub_set_rule variable change.
 
 ### hub_delete_native_app
 

@@ -24,7 +24,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
         typedSettings = [:]
         lifecycle = [stopped: false, paused: false]
         nativeState = [actionList: ['3', '1'], actions: ['3': [method: 'getLogMsg'], '1': [method: 'getLogMsg']],
-                       capabsfalse: ['4': 'Switch is on'], capabstrue: ['5': 'Switch changed'], eval: ['0': ['4']],
+                       capabsfalse: ['4': 'Switch is on'], capabstrue: ['5': 'Switch changed'], eval: ['0': ['4']], ndx: 6, actNdx: 4,
                        allLocalVars: [counter: [type: 'integer', value: 0]]]
         settingsMap.enableMandatoryBPS = false
         // Snapshot behavior has dedicated NativeRuleEditBackupSpec coverage.
@@ -725,6 +725,185 @@ class NativeDocumentsSpec extends ToolSpecBase {
         events.empty
     }
 
+    def 'rows deleted after an append stay gone: a second delete of the same action or condition is refused before any write'() {
+        given:
+        nativeState.capabsfalse = ['4': 'Switch is on', '8': 'Switch is off']
+        def condition = [part: 'condition', value: [capability: 'Switch', fields: [
+            [name: 'rDev_#', type: 'capability.switch', value: ['789']], [name: 'state_#', type: 'enum', value: 'on']]]]
+        when:
+        def actions = script.toolUpdateRuleDocument([rule_id: 42, confirm: true, changes: [
+            logChange(),
+            [part: 'delete', value: [part: 'action', id: '1']],
+            [part: 'delete', value: [part: 'action', id: '1']]
+        ]])
+        then:
+        !actions.success
+        !actions.partial
+        actions.error == 'changes[2]: Native action does not exist'
+        events.empty
+        when:
+        script._ndPreflight(42L, script._ndChanges([
+            condition,
+            [part: 'delete', value: [part: 'condition', id: '8']],
+            [part: 'condition', value: condition.value + [id: '8']]
+        ]))
+        then:
+        def conditions = thrown(IllegalArgumentException)
+        conditions.message == 'changes[2]: Native row does not exist'
+    }
+
+    def 'one appended action leaves room for one unknown action id: a second unknown delete is refused before any write'() {
+        when:
+        def result = script.toolUpdateRuleDocument([rule_id: 42, confirm: true, changes: [
+            logChange(),
+            [part: 'delete', value: [part: 'action', id: '4']],
+            [part: 'delete', value: [part: 'action', id: '5']]
+        ]])
+        then:
+        !result.success
+        !result.partial
+        result.error == 'changes[2]: Native action does not exist'
+        events.empty
+    }
+
+    def 'an appended trigger lets a later change name one unknown trigger id as its placeholder, never two'() {
+        given:
+        def trigger = [part: 'trigger', value: [capability: 'Switch', fields: [
+            [name: 'tDev#', type: 'capability.switch', value: ['789']], [name: 'tstate#', type: 'enum', value: 'on']]]]
+        when:
+        script._ndPreflight(42L, script._ndChanges([trigger, [part: 'trigger', value: trigger.value + [id: '6']]]))
+        then:
+        noExceptionThrown()
+        when:
+        script._ndPreflight(42L, script._ndChanges([
+            trigger,
+            [part: 'delete', value: [part: 'trigger', id: '6']],
+            [part: 'delete', value: [part: 'trigger', id: '7']]
+        ]))
+        then:
+        def refused = thrown(IllegalArgumentException)
+        refused.message == 'changes[2]: Native row does not exist'
+    }
+
+    def 'an unknown id outside the ids the appends will take is refused before any write, even after an append'() {
+        given:
+        def condition = [part: 'condition', value: [capability: 'Switch',
+            fields: [[name: 'rDev_#', type: 'capability.switch', value: ['7']], [name: 'state_#', type: 'enum', value: 'on']]]]
+        when:
+        script._ndPreflight(42L, script._ndChanges([condition, [part: 'required', value: [tokens: ['999999']]]]))
+        then:
+        def refused = thrown(IllegalArgumentException)
+        refused.message == 'changes[1]: Expression references an unknown condition'
+        when: 'the id the append will take is accepted'
+        script._ndPreflight(42L, script._ndChanges([condition, [part: 'required', value: [tokens: ['6']]]]))
+        then:
+        noExceptionThrown()
+        when: 'the id an appended trigger will take is not a condition'
+        def trigger = [part: 'trigger', value: [capability: 'Switch', fields: [
+            [name: 'tDev#', type: 'capability.switch', value: ['789']], [name: 'tstate#', type: 'enum', value: 'on']]]]
+        script._ndPreflight(42L, script._ndChanges([trigger, [part: 'required', value: [tokens: ['6']]]]))
+        then:
+        def wrongKind = thrown(IllegalArgumentException)
+        wrongKind.message == 'changes[1]: Expression references an unknown condition'
+    }
+
+    def 'appended rows take the ids Rule Machine counters give them: ndx for triggers and conditions, actNdx for actions'() {
+        given: 'the condition counter is ahead of the highest condition, as after its highest row was deleted'
+        nativeState.ndx = 9
+        nativeState.actNdx = 7
+        def condition = [part: 'condition', value: [capability: 'Switch', fields: [
+            [name: 'rDev_#', type: 'capability.switch', value: ['789']], [name: 'state_#', type: 'enum', value: 'on']]]]
+        when:
+        script._ndPreflight(42L, script._ndChanges([condition, [part: 'required', value: [tokens: ['9']]]]))
+        then:
+        noExceptionThrown()
+        when: 'the next id above the highest row is not the one Rule Machine gives'
+        script._ndPreflight(42L, script._ndChanges([condition, [part: 'required', value: [tokens: ['6']]]]))
+        then:
+        def stale = thrown(IllegalArgumentException)
+        stale.message == 'changes[1]: Expression references an unknown condition'
+        when: 'an appended action takes actNdx, which is not a condition'
+        script._ndPreflight(42L, script._ndChanges([logChange(), [part: 'required', value: [tokens: ['7']]]]))
+        then:
+        def wrongKind = thrown(IllegalArgumentException)
+        wrongKind.message == 'changes[1]: Expression references an unknown condition'
+    }
+
+    def "a rule's first Required Expression advances the condition counter, so a later append takes the next id"() {
+        given:
+        nativeState.eval = [:]
+        def condition = [part: 'condition', value: [capability: 'Switch', fields: [
+            [name: 'rDev_#', type: 'capability.switch', value: ['789']], [name: 'state_#', type: 'enum', value: 'on']]]]
+        when:
+        script._ndPreflight(42L, script._ndChanges([[part: 'required', value: [tokens: ['4']]], condition, [part: 'required', value: [tokens: ['7']]]]))
+        then:
+        noExceptionThrown()
+        when:
+        script._ndPreflight(42L, script._ndChanges([[part: 'required', value: [tokens: ['4']]], condition, [part: 'required', value: [tokens: ['6']]]]))
+        then:
+        def stale = thrown(IllegalArgumentException)
+        stale.message == 'changes[2]: Expression references an unknown condition'
+        when: 'a rule that already has one keeps its counter'
+        nativeState.eval = ['0': ['4']]
+        script._ndPreflight(42L, script._ndChanges([[part: 'required', value: [tokens: ['4']]], condition, [part: 'required', value: [tokens: ['6']]]]))
+        then:
+        noExceptionThrown()
+    }
+
+    def 'an appended END-IF named by its id and deleted in the same batch leaves its IF open, refused before any write'() {
+        when:
+        def result = script.toolUpdateRuleDocument([rule_id: 42, confirm: true, changes: [
+            [part: 'action', value: [type: 'condActs', subtype: 'getIfThen', fields: [], expression: ['4']]],
+            [part: 'terminator', value: [subtype: 'endIf']],
+            [part: 'delete', value: [part: 'action', id: '5']]
+        ]])
+        then:
+        !result.success
+        !result.partial
+        result.error.contains('Native IF block has no END-IF')
+        events.empty
+    }
+
+    def 'a condition deleted after an append cannot be named by a later Required Expression'() {
+        given:
+        nativeState.capabsfalse = ['4': 'Switch is on', '8': 'Switch is off']
+        def condition = [part: 'condition', value: [capability: 'Switch', fields: [
+            [name: 'rDev_#', type: 'capability.switch', value: ['789']], [name: 'state_#', type: 'enum', value: 'on']]]]
+        when:
+        script._ndPreflight(42L, script._ndChanges([
+            condition,
+            [part: 'delete', value: [part: 'condition', id: '8']],
+            [part: 'required', value: [tokens: ['8']]]
+        ]))
+        then:
+        def error = thrown(IllegalArgumentException)
+        error.message == 'changes[2]: Expression references an unknown condition'
+    }
+
+    def 'an IF retargeted to another condition frees the old condition for deletion in the same batch'() {
+        given:
+        nativeState.capabsfalse = ['1': 'Switch 789 on', '2': 'Switch 746 on']
+        nativeState.actionList = ['1', '2', '3']
+        nativeState.actions = ['1': [method: 'getIfThen', rule: 1], '2': [method: 'getLogMsg'], '3': [method: 'getEndIf']]
+        nativeState.eval = ['1': ['1']]
+        when:
+        script._ndPreflight(42L, script._ndChanges([
+            [part: 'action', value: [id: '1', type: 'condActs', subtype: 'getIfThen', fields: [], expression: ['2']]],
+            [part: 'delete', value: [part: 'condition', id: '1']]
+        ]))
+        then:
+        noExceptionThrown()
+        when: 'a conditional action moved off a condition and then deleted no longer holds either condition'
+        nativeState.actions['2'] = [method: 'getLogMsg', cond: '2']
+        script._ndPreflight(42L, script._ndChanges([
+            [part: 'action', value: [id: '2', type: 'messageActs', subtype: 'getLogMsg', condition: '1', fields: []]],
+            [part: 'delete', value: [part: 'action', id: '2']],
+            [part: 'delete', value: [part: 'condition', id: '2']]
+        ]))
+        then:
+        noExceptionThrown()
+    }
+
     def 'an existing conditional action moved to another condition lets the batch delete the old one'() {
         given:
         nativeState.capabsfalse = ['4': 'Switch is on', '8': 'Switch is off']
@@ -736,6 +915,23 @@ class NativeDocumentsSpec extends ToolSpecBase {
         ]))
         then:
         noExceptionThrown()
+    }
+
+    def 'an expression written after an action edit in the same batch is the one a condition delete is checked against'() {
+        given:
+        nativeState.capabsfalse = ['1': 'Switch is on', '5': 'Switch is off']
+        nativeState.actionList = ['1', '2']
+        nativeState.actions = ['1': [method: 'getIfThen', rule: 1], '2': [method: 'getEndIf']]
+        nativeState.eval = ['0': [], '1': ['1']]
+        when:
+        script._ndPreflight(42L, script._ndChanges([
+            [part: 'action', value: [id: '1', type: 'condActs', subtype: 'getIfThen', fields: [], expression: ['1']]],
+            [part: 'expression', value: [id: '1', tokens: ['5']]],
+            [part: 'delete', value: [part: 'condition', id: '5']]
+        ]))
+        then:
+        def error = thrown(IllegalArgumentException)
+        error.message == 'changes[2]: Referenced native conditions must be detached before deletion'
     }
 
     def 'a condition only a deleted IF expression names can be deleted while a remaining IF still holds its condition'() {

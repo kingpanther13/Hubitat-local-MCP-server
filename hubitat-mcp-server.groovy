@@ -83,7 +83,7 @@ private String _effectiveBackupSetting(String key) {
 // parses and serialises the app's whole state blob.
 @groovy.transform.Field static final String ITEM_BACKUP_INDEX_FILE = "mcp-backup-index.json"
 // Default and ceiling for the backupBudgetMb setting: indexed backup bytes kept across every
-// item before rolling steps, then pinned baselines, are evicted oldest first. The ceiling
+// item before the oldest backups are evicted; each item's newest backup stays. The ceiling
 // (1 TB) keeps the byte count far from long overflow.
 @groovy.transform.Field static final long ITEM_BACKUP_DEFAULT_BUDGET_MB = 10L
 @groovy.transform.Field static final long ITEM_BACKUP_MAX_BUDGET_MB = 1000000L
@@ -100,9 +100,6 @@ private String _effectiveBackupSetting(String key) {
 // Diagnostics for _withBackupLock operations: current and last holder, so a worker
 // waiting on a slow hub call can say so. Direct synchronized helpers do not record holders.
 @groovy.transform.Field static final Map ITEM_BACKUP_LOCK_STATE = new java.util.HashMap()
-// Per-app mirror of atomicState.predClearPending holding generation tokens, so a worker
-// execution's stale snapshot cannot discard newer recovery intent. Guarded by its own monitor.
-@groovy.transform.Field static final Map PRED_CLEAR_STORES = new java.util.HashMap()
 // Snapshots of the two atomicState keys the reservation/MRTR machinery below reads:
 // every atomicState property access is a hub DB round trip, and one tool call reads
 // these keys many times over (the scheduled-worker observation re-reads mrtrRequests
@@ -671,7 +668,7 @@ Set _alwaysGrantedToolNames() { ["hub_get_tool_guide", "hub_search_tools"] as Se
 // Tools whose appId names an installed app. A client token may not point them at this app: its
 // pages and state carry every access token, and its settings are every client's access.
 private Set _installedAppTargetTools() {
-    return ["hub_get_app_config", "hub_list_app_pages", "hub_export_native_app", "hub_clone_native_app",
+    return ["hub_get_app_config", "hub_export_native_app", "hub_clone_native_app",
             "hub_set_native_app", "hub_delete_native_app", "hub_set_app_disabled",
             "hub_get_rule_health", "hub_list_rule_local_variables", "hub_get_visual_rule",
             "hub_set_visual_rule", "hub_delete_visual_rule", "hub_call_rule", "hub_set_rule_paused",
@@ -894,7 +891,6 @@ String _clientToolDenial(String toolName, args = null) {
         return "${ext} cannot target the MCP Rule Server app itself from ${who}."
     }
     if (_alwaysGrantedToolNames().contains(toolName)) return null
-    if (toolName == 'hub_set_native_app' && _isNativeAppSchemaOnlyCall(a)) return null
     boolean isRead = getReadOnlyToolNames().contains(toolName) || _isDeviceReplaceOptionsOnlyCall(toolName, a) || _isRuleReadCall(toolName, a)
     if (isRead && !_clientAllows(id, "clientRead")) return "Read tools are disabled for ${who}, so ${ext} cannot run."
     if (!isRead && !_clientAllows(id, "clientWrite")) return "Write tools are disabled for ${who}, so ${ext} cannot run."
@@ -1079,12 +1075,12 @@ def advancedOverridesPage() {
             input "backupBeforeRuleEdits", "bool", title: "Back up before editing a native rule",
                   description: "ON by default. If the snapshot cannot be saved, the edit is refused. One snapshot covers the whole batch or editor workflow, rather than every individual step.",
                   defaultValue: true
-            input "backupEveryRuleWrite", "bool", title: "Prioritize the first snapshot when pruning backups",
-                  description: "OFF (default): edit snapshots have equal retention priority. ON: keep the first snapshot in an editing session pinned and mark later snapshots as rolling, so they are removed first when the storage budget is exceeded. A session ends after one hour without a snapshot. This does not change how many snapshots each edit takes.",
+            input "backupEveryRuleWrite", "bool", title: "Take a fresh snapshot before every edit",
+                  description: "OFF (default): a native app form edit within an hour of that app's last snapshot reuses it. ON: every edit takes its own fresh snapshot first; with the budget full, oldest-first eviction then removes a rule's earlier snapshot while its later ones stay.",
                   defaultValue: false
         }
         section("Backup storage") {
-            paragraph "Automatic code and rule backups live in File Manager. File Manager files use hub storage and count toward a full local backup's 100 MiB file limit; database backups leave them out. Backups are removed only when they exceed this budget together: rolling steps first, then pinned baselines, oldest first. The backup just taken and a restore in progress are never removed."
+            paragraph "Automatic code and rule backups live in File Manager. File Manager files use hub storage and count toward a full local backup's 100 MiB file limit; database backups leave them out. Backups are removed only when they exceed this budget together, oldest first. An item's newest backup, the backup just taken and a restore in progress are never removed, so the budget can stay exceeded once every item is down to one."
             input "backupBudgetMb", "number", title: "Backup storage budget (MB)",
                   description: "Total size of the automatic code and rule backups (default: 10; range 1 to 1000000, values outside it use the nearest end).",
                   defaultValue: 10, required: false
@@ -1272,7 +1268,6 @@ def uninstalled() {
         ITEM_BACKUP_MANIFESTS.remove(appKey)
         ITEM_BACKUP_LEGACY_PENDING.remove(appKey)
     }
-    synchronized (PRED_CLEAR_STORES) { PRED_CLEAR_STORES.remove(appKey) }
     synchronized (WRITE_RESERVATION_LOCK) {
         MRTR_CLEANUP_SCHEDULES.remove(appKey)
         Map checks = [:] + MRTR_CLEANUP_CHECK_AT
@@ -3070,7 +3065,7 @@ def _maxConcurrentWrites() {
 // fetch under it, and the legacy hub_list_devices page that ends early under it. Only these
 // ever see the key; strict-arg leaves must not.
 def _budgetAwareTools() {
-    return ["hub_set_native_app", "hub_call_rule", "hub_clone_native_app",
+    return ["hub_call_rule", "hub_clone_native_app",
             "hub_import_native_app", "hub_call_device_command",
             "hub_get_logs", "hub_get_info",
             "hub_report_issue", "hub_get_custom_rule",
@@ -4121,13 +4116,6 @@ private Map _mrtrContinuation(String leafTool, Map executionArgs, result, Map re
         retryIds.addAll(result.remainingRuleIds)
         nextLeaf.ruleId = retryIds.unique()
         kind = "call_rule"
-    } else if (leafTool == 'hub_set_native_app' && result.status == 'in_progress' &&
-            result.stepsRemaining instanceof List && !result.stepsRemaining.isEmpty()) {
-        def spec = (nextLeaf.walkStep instanceof Map) ? _mrtrCopyMap(nextLeaf.walkStep as Map) : [:]
-        spec.steps = result.stepsRemaining
-        if (result.page != null) spec.page = result.page
-        nextLeaf.walkStep = spec
-        kind = 'walk_steps'
     } else if (leafTool == "hub_create_driver" && result.status == "in_progress" &&
             result.installsRemaining instanceof List && !result.installsRemaining.isEmpty()) {
         nextLeaf.installs = result.installsRemaining
@@ -4280,9 +4268,8 @@ private Map _mrtrCommitSlice(String stateId, Map rec, Map claim, Map executionAr
                     ", so a follow-up can resume from there rather than re-running the whole " +
                     "operation."
             }
-            if (continuation.kind in ["walk_steps", "driver_installs", "driver_updates"]) {
-                capped.putAll(result.subMap(["appId", "page", "operation", "stepsRemaining", "installsRemaining",
-                                             "updatesRemaining", "backup", "repairHints", "resume"]))
+            if (continuation.kind in ["driver_installs", "driver_updates"]) {
+                capped.putAll(result.subMap(["installsRemaining", "updatesRemaining", "resume"]))
                 capped.note = "aggregate records completed work. Inspect the remaining-work fields " +
                     "and resume guidance before submitting a new call with only that remainder. " +
                     "This requestState now replays the terminal continuation_limit result."
@@ -4357,24 +4344,6 @@ private def _mrtrAggregateTerminal(Map rec, result) {
                 if (!out.error) out.error = "One or more rule operations failed; inspect results[]."
             }
             out.remove("remainingRuleIds")
-            break
-        case "walk_steps":
-            out.steps = _mrtrWalkSteps(aggregate, out)
-            out.stepsRun = out.steps.size()
-            out.stepsRequested = Math.max(out.stepsRun as Integer,
-                Math.max((aggregate.stepsRequested ?: 0) as Integer, (out.stepsRequested ?: 0) as Integer))
-            def failedStep = out.steps.find { it?.success == false }
-            if (failedStep != null) {
-                out.error = "drive halted at step ${failedStep.step} (${failedStep.operation}): " +
-                    (failedStep.error ?: "step reported success:false -- inspect its valueEcho/silentRejection/health")
-                boolean recoveryExhausted = failedStep.error?.toString()?.contains("Automatic recovery was already attempted") == true
-                out.repairHints = ((out.repairHints ?: []) as List).findAll {
-                    !it?.toString()?.startsWith("Drive stopped at step ")
-                } + [(recoveryExhausted ?
-                    "Drive stopped at step ${failedStep.step} after its automatic recovery was already attempted. Do not re-run that step: its write may already be committed. Inspect steps[${failedStep.step - 1}] and hub_get_rule_health(appId=${out.appId}), and restore the pre-write backup if the rule is damaged." :
-                    "Drive stopped at step ${failedStep.step}. Inspect steps[${failedStep.step - 1}] for the failure detail, correct it, and re-run the drive from that step.").toString()]
-            }
-            out.partial = aggregate.anyPartial == true || out.partial == true
             break
         case "driver_installs":
         case "driver_updates":
@@ -4813,25 +4782,11 @@ private List _mrtrRuleResultRows(result) {
     return [row]
 }
 
-// Single formula for merging a call_rule round into its running ledger, used at bank time,
-// at the continuation cap, and at the terminal. Keeping the three in lockstep matters:
-// they must agree on collapsing per rule AND on how a scalar-path round contributes, or the
-// durable record and the envelope the client reads drift apart.
 // Merge one round's result into the running aggregate, in place. Used by the bank AND by the
 // continuation cap: the cap's whole purpose is to hand back what the record is holding, and
 // the round that triggered it has already run against the hub -- merging it there by a
 // separate path is how the two drift, which is exactly how the cap came to return an
 // aggregate one round stale.
-private List _mrtrWalkSteps(Map aggregate, Map result) {
-    def rows = ((aggregate.steps instanceof List) ? aggregate.steps : []) +
-        ((result.steps instanceof List) ? result.steps : [])
-    def numbered = []
-    rows.eachWithIndex { row, index ->
-        numbered << (row instanceof Map ? (row + [step: index + 1]) : row)
-    }
-    return numbered
-}
-
 private void _mrtrMergeAggregate(Map aggregate, String kind, result) {
     if (!(result instanceof Map)) return
     aggregate.kind = kind
@@ -4843,11 +4798,6 @@ private void _mrtrMergeAggregate(Map aggregate, String kind, result) {
             aggregate.results = banked.results
             aggregate.ruleIds = banked.ruleIds
             break
-        case "walk_steps":
-            aggregate.steps = _mrtrWalkSteps(aggregate, result as Map)
-            aggregate.stepsRequested = Math.max((aggregate.stepsRequested ?: 0) as Integer,
-                (result.stepsRequested ?: 0) as Integer)
-            break
         case "driver_installs":
         case "driver_updates":
             String driverField = kind == "driver_installs" ? "installs" : "updates"
@@ -4858,6 +4808,10 @@ private void _mrtrMergeAggregate(Map aggregate, String kind, result) {
     aggregate.anyPartial = aggregate.anyPartial == true || result.partial == true
 }
 
+// Single formula for merging a call_rule round into its running ledger, used at bank time,
+// at the continuation cap, and at the terminal. Keeping the three in lockstep matters:
+// they must agree on collapsing per rule AND on how a scalar-path round contributes, or the
+// durable record and the envelope the client reads drift apart.
 private Map _mrtrBankRuleResults(Map aggregate, resultLike) {
     def prior = (aggregate?.results instanceof List) ? aggregate.results as List : []
     def priorIds = (aggregate?.ruleIds instanceof List) ? aggregate.ruleIds as List : []
@@ -5019,7 +4973,7 @@ private def _renderToolResult(id, toolName, reactiveToolName, args, result, bool
         }
     }
     // A client token never sees another token, whatever the redaction setting says.
-    if (settings.redactAccessTokens == true || callerClient != null) rendered = _redactAccessTokens(rendered)
+    if (_redactsAccessTokens()) rendered = _redactAccessTokens(rendered)
     // ChatGPT shows `{}` for any result whose JSON text has a top-level `content` key, while every
     // other client reads it (issue #565). Only its requests get the renamed key.
     if (rendered instanceof Map && rendered.containsKey("content") && _openAiClientRequest()) {
@@ -5065,12 +5019,17 @@ private def _renderToolResult(id, toolName, reactiveToolName, args, result, bool
     return [__preserialized: candidateJson]
 }
 
+private String _accessTokenRedactedMarker() { return "***redacted (access token)***" }
+
+// A client token never sees another token, whatever the redaction setting says.
+private boolean _redactsAccessTokens() { settings.redactAccessTokens == true || callerClient != null }
+
 // redactAccessTokens (Advanced page). Covers the three shapes a token reaches a tool result in:
 // an access_token= URL parameter (app page paragraphs), an accessToken/access_token map key
 // (app settings and state) or the clientTokens map of per-client tokens, and that same key
 // inside JSON carried as a string (a file read or an exported setting).
 private def _redactAccessTokens(value) {
-    String marker = "***redacted (access token)***"
+    String marker = _accessTokenRedactedMarker()
     if (value instanceof Map) {
         return value.collectEntries { k, v ->
             // clientTokens (per-client tokens: id -> [label, token]): mask each token, keep the name.
@@ -5140,7 +5099,7 @@ def _responseTooLargeSuggestion(String toolName) {
         case "hub_list_apps":
             return "For scope='instances': set includeHidden=false (the default), narrow via filter (builtin / user / disabled / parents / children), or pass cursor to page through the apps list."
         case "hub_get_app_config":
-            return "Omit includeSettings -- Room Lighting / RM 5.1 apps can have 500-1000 settings keys. For multi-page apps, call hub_list_app_pages then hub_get_app_config with a specific pageName. If you only need identity, pass summary=true."
+            return "Omit includeSettings -- Room Lighting / RM 5.1 apps can have 500-1000 settings keys. For multi-page apps, read one page at a time with pageName, chosen from the page.hrefs a page returns. If you only need identity, pass summary=true."
         case "hub_list_files":
             return "Pagination here is OPT-IN: with no cursor the tool returns the WHOLE listing, so a large File Manager has no natural page break. Re-issue with cursor='0' to page through it, or narrow with filter='<substring of the name>'."
         case "hub_get_device_health":
@@ -5261,7 +5220,7 @@ def _cleanupRetiredToolState() {
         try {
             ['toolSearchCorpus', 'toolSearchTokens', 'toolSearchCorpusVersion',
              'toolSearchCorpusFingerprint', 'requiredParamsByTool',
-             'requiredParamsByToolFingerprint'].each { key ->
+             'requiredParamsByToolFingerprint', 'predClearPending'].each { key ->
                 if (atomicState.containsKey(key)) atomicState.remove(key)
                 if (state.containsKey(key)) state.remove(key)
             }
@@ -5366,7 +5325,7 @@ def getGatewayConfig() {
         ],
         hub_read_apps_code: [
             description: "Read-only inspection of installed apps, drivers, libraries, code bundles, code backups, and HPM packages: list apps (by code type or running instance), list drivers, view Groovy source, list installed bundles, browse code backups, inspect an installed app's config/pages, and list HPM-tracked packages. All operations are read-only; writes live in hub_manage_code.",
-            tools: ["hub_list_apps", "hub_list_drivers", "hub_get_source", "hub_list_libraries", "hub_list_bundles", "hub_list_backups", "hub_get_backup", "hub_list_device_dependents", "hub_get_app_config", "hub_list_app_pages", "hub_list_hpm_packages"],
+            tools: ["hub_list_apps", "hub_list_drivers", "hub_get_source", "hub_list_libraries", "hub_list_bundles", "hub_list_backups", "hub_get_backup", "hub_list_device_dependents", "hub_get_app_config", "hub_list_hpm_packages"],
             summaries: [
                 hub_list_apps: "List installed apps. scope='types' (all app TYPES: community + built-in, each with its menu tab) or 'instances' (running apps with parent/child tree). Args: scope, filter?, nameFilter?, includeHidden?, cursor?",
                 hub_list_drivers: "List device driver types. include='user' (default) = user-installed; include='all' = full catalog (system+virtual+user), each id usable with hub_create_device. Args: include?, nameFilter?, cursor?",
@@ -5376,8 +5335,7 @@ def getGatewayConfig() {
                 hub_list_backups: "List backups. scope=source (code) | hub_local | hub_cloud | hub | all (hub scopes also return the automatic-backup schedule and network-share settings). Args: scope?, cursor?",
                 hub_get_backup: "Get source from a backup. Args: backupKey",
                 hub_list_device_dependents: "List all apps that reference a device (Room Lighting, Rule Machine, Groups, etc.). Args: deviceId",
-                hub_get_app_config: "Read an installed app's configuration page (sections, inputs, current values). Works for Rule Machine, Room Lighting, Basic Rules, HPM, etc. Args: appId, pageName?, includeSettings?",
-                hub_list_app_pages: "List an app's page names: every sub-page its live page links to (any classic app), plus a curated directory for HPM. Args: appId",
+                hub_get_app_config: "Read an installed app's configuration page (sections, inputs, current values), its form controls and the pages it links to (page.hrefs). Works for Rule Machine, Room Lighting, Basic Rules, HPM, etc. Args: appId, pageName?, includeSettings?, summary?",
                 hub_list_hpm_packages: "List all HPM-tracked packages (name, version, beta flag, apps, drivers, files). includeDrift=true surfaces missing-required/orphan components. Args: hpmAppId?, includeDrift?, packageFilter?"
             ],
             searchHints: [
@@ -5389,8 +5347,7 @@ def getGatewayConfig() {
                 hub_list_backups: "list show backups code source whole hub database local cloud full backup restore points schedule frequency automatic daily time when backups run network share smb nas",
                 hub_get_backup: "view read saved previous version revision",
                 hub_list_device_dependents: "which apps use device reference inUseBy appsUsing dependencies affected by",
-                hub_get_app_config: "read inspect app configuration page settings inputs values rule machine room lighting hpm mode manager",
-                hub_list_app_pages: "page names sub-pages pageName multi-page hpm navigation discover",
+                hub_get_app_config: "read inspect app configuration page settings inputs values rule machine room lighting hpm mode manager page names sub-pages pageName multi-page navigation discover hrefs buttons controls disabled actions",
                 hub_list_hpm_packages: "package manager HPM tracked installed manifest version inventory community apps drivers drift orphan missing required"
             ]
         ],
@@ -5554,16 +5511,16 @@ def getGatewayConfig() {
             ]
         ],
         hub_manage_native_rules_and_apps: [
-            description: "Native app lifecycle and Rule Machine control. Use hub_set_rule for native RM read/create/update/form operations, and the dedicated tools to delete/clone/export/import apps or run/pause rules. Confirmed writes require a recent hub backup; inspect partial outcomes and native health before retrying. hub_set_native_app preserves generic native app creation and editing.",
+            description: "Native app lifecycle and Rule Machine control. Use hub_set_rule for native RM read/create/update/form operations, and the dedicated tools to delete/clone/export/import apps or run/pause rules. Confirmed writes require a recent hub backup; inspect partial outcomes and native health before retrying. hub_set_native_app creates, updates and drives the forms of every other classic app.",
             tools: ["hub_set_native_app", "hub_set_rule", "hub_list_rules", "hub_call_rule", "hub_set_rule_paused", "hub_set_rule_private_boolean", "hub_set_app_disabled", "hub_delete_native_app", "hub_clone_native_app", "hub_export_native_app", "hub_import_native_app", "hub_get_rule_health"],
             summaries: [
                 hub_set_rule: "Read, create, update or use native Rule Machine forms. Args: operation?, rule_id?, args?, confirm?. Omit operation for help; unconfirmed writes return schemas.",
 
                 hub_list_rules: "List all Rule Machine rules (RM 4.x + 5.x) with IDs and labels (uses RMUtils — RM only)",
-                hub_call_rule: "Trigger an RM rule lifecycle verb. Args: ruleId (id or array of ids), action (rule/actions/stop/start, default rule). rule uses RMUtils; actions clicks runAction; stop/start toggle stopRule (start resets private boolean).",
+                hub_call_rule: "Trigger an RM rule lifecycle verb. Args: ruleId (id or array of ids), action (rule/actions/stop/start, default rule). rule uses RMUtils; actions clicks runAction; stop/start toggle stopRule (start re-initializes the rule).",
                 hub_set_rule_paused: "Pause or resume one or more RM rules in one call (RMUtils). Args: ruleId (id or array of ids), paused (true=pause, false=resume)",
                 hub_set_rule_private_boolean: "Set the private boolean of one or more RM rules (RMUtils). Args: ruleId (id or array of ids), value (bool)",
-                hub_set_native_app: "Create or edit any classic native app (Room Lighting, Button Controller, Basic Rule, Notifier, Groups+Scenes, etc.) — generic upsert. Omit appId to create (appType, name); provide appId to edit via settings/button/walkStep. buttonRule={controllerId, buttonNumber, event} creates a Button Rule through its parent controller. Edits ensure a rollback baseline; same-app edits reuse it for one hour by default. For native Rule Machine structures use hub_set_rule. Args: appId (omit=create), appType, name, settings|button|walkStep|buttonRule, pageName (opt), stateAttribute (opt), confirm.",
+                hub_set_native_app: "Create, update or drive the native forms of classic apps (Room Lighting, Button Controller and Button Rule, Basic Rule, Notifier, Groups and Scenes, Thermostat Scheduler and Controller, user and community apps). Args: operation?, app_id?, args?, confirm?. Omit operation for help; unconfirmed writes return schemas. Rule Machine rules use hub_set_rule.",
                 hub_delete_native_app: "Delete any classic native app (soft by default, force=true for hard). Auto-backs-up first. Args: appId, force (opt), confirm",
                 hub_set_app_disabled: "Enable or disable any installed app without deleting it (reversible red-X). Args: appId, disabled (bool). Read-back verified. For RM rules prefer hub_set_rule_paused.",
                 hub_clone_native_app: "Clone an existing rule/app via Hubitat's first-party appCloner (deep: child apps and pause state copy too, so a clone of an ACTIVE app lands ACTIVE). Cheaper than rebuilding from scratch via the wizard. Args: appId (alias sourceAppId), newName (opt), stageDisabled (opt: disable clone + every descendant immediately), confirm. Returns newAppId.",
@@ -5578,7 +5535,7 @@ def getGatewayConfig() {
                 hub_call_rule: "trigger fire execute native rule machine rule",
                 hub_set_rule_paused: "pause resume disable enable stop unpause temporarily rule machine rule",
                 hub_set_rule_private_boolean: "private boolean flag rule machine rule condition",
-                hub_set_native_app: "create edit modify change native room lighting button controller notifier groups scenes basic rule visual rule classic smartapp settings button upsert app",
+                hub_set_native_app: "create edit update modify change configure native classic app room lighting button controller button rule notifier groups scenes basic rule thermostat user community smartapp settings fields form page button",
                 hub_delete_native_app: "remove delete destroy native rule machine room lighting button controller basic rule notifier app",
                 hub_set_app_disabled: "disable enable pause stop park red-x toggle installed app room lighting notifier groups scenes without deleting reversible",
                 hub_clone_native_app: "copy duplicate clone existing rule app appCloner template surgical edit",
@@ -5901,9 +5858,8 @@ def getReadOnlyToolNames() {
 //     is NOT; hub_export_native_app / hub_export_bundle are timestamp-free.
 //   * invoke-style writes (device commands, rule runs, GC, repair, reboot)
 //     are NOT -- a retry re-fires the action.
-//   * hub_set_native_app is an upsert whose no-appId mode CREATES, and
-//     hub_set_rule's create allocates a new child while its update re-runs
-//     each change -- both classified non-idempotent.
+//   * hub_set_native_app's and hub_set_rule's create allocate a new app, and
+//     their update and form re-run each change -- both classified non-idempotent.
 def getIdempotentWriteToolNames() {
     def cached = _toolMetadataGet("getIdempotentWriteToolNames")
     if (cached != null) return cached
@@ -6177,12 +6133,7 @@ def handleGateway(gatewayName, toolName, toolArgs, reqT0 = null, boolean bpsChec
     // An absent entry means no required params. Missing-param hints below still
     // build fresh definitions for their descriptions.
     def required = requiredParamsByTool()[toolName]
-    // Gate-bypassing meta-calls return pure static content with NO hub mutation and
-    // short-circuit at the very top of their handler (before any gate / appId check),
-    // so they must also bypass this required-param pre-validation -- otherwise the
-    // gateway rejects them for missing appId/confirm before the handler ever runs.
-    def isGatedMetaCall = toolName == "hub_set_native_app" && _isNativeAppSchemaOnlyCall(safeArgs)
-    if (required && !isGatedMetaCall) {
+    if (required) {
         def missing = required.findAll { !safeArgs.containsKey(it) }
         // A sub-tool hidden by the masters / custom-engine mode / dev-mode / #114
         // overrides must fall through to executeTool's canonical refusal -- returning
@@ -6532,11 +6483,7 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
             if (settings.enableRead == false) {
                 throw new IllegalArgumentException("Read tools are disabled. Enable 'Read Tools' in MCP Rule Server app settings to use ${toolName}.")
             }
-        } else if (settings.enableWrite == false
-                && !(toolName == 'hub_set_native_app' && _isNativeAppSchemaOnlyCall(args))) {
-            // A hub_set_native_app schema-only call (appId with guide:true) returns
-            // reference content and mutates nothing, so it stays reachable when writes
-            // are disabled; every actual write still hits this gate.
+        } else if (settings.enableWrite == false) {
             throw new IllegalArgumentException("Write tools are disabled. Enable 'Write Tools' in MCP Rule Server app settings to use ${toolName}.")
         }
     }
@@ -6556,7 +6503,7 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
     // computed above -- gateway names short-circuit (sub-tools gate on re-entry). Exempt, because
     // they mutate nothing or must never lock the caller out: hub_get_tool_guide (it publishes the
     // keys), hub_update_mcp_settings (the toggle-off escape hatch), a device replace options-only
-    // call, a hub_set_rule read or schema probe, a hub_set_native_app guide probe and a
+    // call, a hub_set_rule read, a hub_set_rule or hub_set_native_app help or schema probe, and a
     // hub_update_package dry run.
     if (!isGatewayName && settings.enableMandatoryBPS != false
             && !getReadOnlyToolNames().contains(toolName)
@@ -6768,7 +6715,6 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
         // Hub Admin App Configuration Read
         case "hub_set_rule": return toolSetRule(args)
         case "hub_get_app_config": return toolGetAppConfig(args)
-        case "hub_list_app_pages": return toolListAppPages(args)
 
         // Hub Admin App/Driver Management
         case "hub_get_source": return toolGetSource(args)
@@ -8579,7 +8525,7 @@ def _latestLocalHubBackupEpoch(String kind = "any") {
  * Metadata (timestamp, version, etc.) is indexed in the File Manager file ITEM_BACKUP_INDEX_FILE.
  * Files are accessible at http://<HUB_IP>/local/<filename> even if MCP fails.
  * If a non-pending backup of this item exists within the last hour, reuses it (preserving the
- * pre-edit original) and repairs an over-budget index. Each item keeps one pinned baseline.
+ * pre-edit original) and repairs an over-budget index.
  * Returns the manifest entry on success, or throws if the source cannot be retrieved
  * or the manifest cannot be published.
  */
@@ -8623,8 +8569,7 @@ private Map _backupItemSourceLocked(String type, String id) {
         version: parsed.version,
         timestamp: now(),
         sourceLength: parsed.source.length(),
-        sizeBytes: sourceBytes.length,
-        retention: "pinned"
+        sizeBytes: sourceBytes.length
     ]
     _publishUploadedItemBackup(key.toString(), entry)
     mcpLog("info", "hub-admin", "Backed up ${type} ID ${id} source code to File Manager: ${fileName} (version ${parsed.version}, ${parsed.source.length()} chars)")
@@ -8768,7 +8713,7 @@ private void _finishLegacyItemBackupMigration(String owner) {
 }
 
 // Index every managed backup file in File Manager by its name. Metadata the name does
-// not carry (version, rule label, undo hashes) is lost, and an adopted entry is pinned.
+// not carry (version, rule label, undo hashes) is lost.
 // Throws when the listing fails, so nothing is adopted or deleted.
 private Map _rebuildItemBackupIndex() {
     List files = _fileManagerRootFiles()
@@ -8787,7 +8732,7 @@ private Map _rebuildItemBackupIndex() {
             String base = (g[1] == "prerestore" ? "prerestore_" : "") + "${g[2]}_${g[3]}"
             if (f.size == null) unsized++
             found << [base: base, entry: [type: g[2], id: g[3].toString(), fileName: name, timestamp: listedAt ?: 0L,
-                                          sourceLength: f.size, sizeBytes: f.size, retention: "pinned"]]
+                                          sourceLength: f.size, sizeBytes: f.size]]
         } else if (rule.matches()) {
             List g = rule[0] as List
             if (!g[1].toString().isInteger()) {
@@ -8800,7 +8745,7 @@ private Map _rebuildItemBackupIndex() {
             catch (Exception parseErr) { mcpLog("debug", "hub-admin", "Backup index rebuild: '${name}' has no parseable time in its name (${parseErr.message}); using the listed date") }
             if (f.size == null) unsized++
             found << [base: "rm-rule_${ruleId}_${g[2]}".toString(), entry: [type: "rm-rule", id: ruleId, ruleId: ruleId, fileName: name,
-                     timestamp: namedAt ?: listedAt ?: 0L, sourceLength: f.size, sizeBytes: f.size, retention: "pinned"]]
+                     timestamp: namedAt ?: listedAt ?: 0L, sourceLength: f.size, sizeBytes: f.size]]
         }
     }
     // Newest file of an item keeps the key restore and reuse look up; older copies get a
@@ -8896,8 +8841,8 @@ void _publishUploadedItemBackup(String key, Map entry, String protectedKey = nul
 }
 
 // Backups are evicted only when the byte budget is exceeded; an app, driver or library key
-// is otherwise replaced in place by that item's next baseline. The published key and
-// protectedKey (an active restore target) are never evicted.
+// is otherwise replaced in place by that item's next baseline. The published key,
+// protectedKey (an active restore target) and each item's newest backup are never evicted.
 void _publishItemBackup(String key, Map entry, String protectedKey = null) {
     synchronized (ITEM_BACKUP_MANIFESTS) {
         // previous must survive the removals below: it is what finds the files no entry references any more.
@@ -8921,9 +8866,9 @@ void _publishItemBackup(String key, Map entry, String protectedKey = null) {
     }
 }
 
-// Keys to evict while indexed bytes exceed the backup budget: rolling steps first, then
-// pinned baselines, oldest first across all items. Pending entries are left to the
-// pending purge; keepKeys are never chosen.
+// Keys to evict while indexed bytes exceed the backup budget, oldest first across all items.
+// keepKeys and each item's newest backup (same type and id; a pre-restore undo counts for
+// its item) are never chosen. Pending entries are left to the pending purge.
 List _itemBackupRetentionVictims(Map manifest, Collection keepKeys) {
     long budget = _itemBackupByteBudget()
     long used = 0L
@@ -8931,9 +8876,16 @@ List _itemBackupRetentionVictims(Map manifest, Collection keepKeys) {
     List victims = []
     if (used <= budget) return victims
     Closure stamp = { k -> def t = manifest[k]?.timestamp; t instanceof Number ? (t as Long) : 0L }
-    Closure rolling = { k -> manifest[k]?.retention == "rolling" }
-    List candidates = manifest.keySet().findAll { !keepKeys.contains(it) && !manifest[it]?.deletePending }
-        .sort { a, b -> (rolling(a) ? 0 : 1) <=> (rolling(b) ? 0 : 1) ?: stamp(a) <=> stamp(b) }
+    Map newest = [:]
+    manifest.each { k, v ->
+        if (v?.deletePending) return
+        String item = "${v?.type}:${v?.ruleId != null ? v.ruleId : v?.id}".toString()
+        if (!newest.containsKey(item) || stamp(k) > stamp(newest.get(item))) newest.put(item, k)
+    }
+    Set kept = new HashSet(keepKeys)
+    kept.addAll(newest.values())
+    List candidates = manifest.keySet().findAll { !kept.contains(it) && !manifest[it]?.deletePending }
+        .sort { a, b -> stamp(a) <=> stamp(b) }
     for (k in candidates) {
         if (used <= budget) break
         victims << k
@@ -8982,22 +8934,10 @@ Map _itemBackupBudgetUsage(Map manifest) {
     return [usedBytes: used, limitBytes: _itemBackupByteBudget()]
 }
 
-// Plain-language eviction rule for one backup: the retentionNote / backupRetentionNote
-// field, and the tail of restore and undo hints.
-String _itemBackupRetentionNote(Map entry) {
-    String budget = "the ${_itemBackupBudgetMb()} MB budget shared by all MCP backups"
-    if (entry?.retention == "rolling") {
-        return "Rolling step: a per-write snapshot inside this rule's editing session. It is removed only when ${budget} is exceeded, and rolling steps are the first backups removed then, oldest first."
-    }
-    String replacedBy
-    if (entry?.type?.toString() == "rm-rule") {
-        replacedBy = "Backups of this or other rules never replace it"
-    } else if (entry?.undoForBackupKey) {
-        replacedBy = "This item's next pre-restore undo replaces it"
-    } else {
-        replacedBy = "This item's next backup after the one-hour reuse window replaces it; other items' backups never do"
-    }
-    return "Pinned baseline: ${replacedBy}. It is removed only when ${budget} is exceeded, after every rolling step and every older pinned baseline."
+// The eviction rule every backup answers with: the retentionNote / backupRetentionNote and
+// retentionPolicy fields, and the tail of restore and undo hints.
+String _itemBackupRetentionNote() {
+    return "Backups are removed only when all MCP backups together exceed the ${_itemBackupBudgetMb()} MB storage budget, oldest first; an item's newest backup is never removed, so the budget can stay exceeded once every item is down to one."
 }
 
 /** Remove manifest records that point at a File Manager file after that file is deleted. */
@@ -9055,65 +8995,6 @@ private Map _deleteHubFileAndUnlinkBackups(String fileName) {
                         : "The file is already deleted; do not repeat the deletion. It had no backup-manifest entry, so no metadata needs repair."]
         }
         return [:]
-    }
-}
-
-// ---- Native-rule predicate recovery records: per-app mirror over atomicState.predClearPending ----
-
-Map _rmPendingPredClearSnapshot() {
-    synchronized (PRED_CLEAR_STORES) {
-        String owner = _stateOwnerKey()
-        if (!PRED_CLEAR_STORES.containsKey(owner)) {
-            PRED_CLEAR_STORES.put(owner, new LinkedHashMap(atomicState.predClearPending ?: [:]))
-        }
-        return new LinkedHashMap(PRED_CLEAR_STORES[owner] as Map)
-    }
-}
-
-void _rmCommitPredClearPending(Map pending) {
-    String owner = _stateOwnerKey()
-    atomicState.predClearPending = pending
-    PRED_CLEAR_STORES.put(owner, new LinkedHashMap(pending))
-}
-
-// A partial or unreadable inventory can never prove an app is gone: only a fully walked,
-// non-empty tree prunes, and only entries whose generation token is unchanged since the snapshot.
-// A persistence failure propagates; the listing that fetched the inventory catches it.
-void _rmReconcilePredClearPending(def inventory, Map observed) {
-    if (!observed || !(inventory instanceof Map) || !(inventory.apps instanceof List)) return
-    if (inventory.error || inventory.success == false || inventory.status == "error" ||
-            inventory.partial == true || inventory.hasMore == true) {
-        mcpLog("debug", "rm-native", "Skipping recovery reconciliation: app inventory was partial or error-flagged; ${observed.size()} pending record(s) retained")
-        return
-    }
-    Set ids = [] as Set
-    boolean complete = true
-    def visit
-    visit = { node ->
-        if (!(node instanceof Map) || !(node.data instanceof Map) || !node.data.id?.toString()?.isInteger() ||
-                (node.children != null && !(node.children instanceof List))) {
-            complete = false
-            return
-        }
-        ids.add(node.data.id.toString())
-        (node.children ?: []).each { visit(it) }
-    }
-    inventory.apps.each { visit(it) }
-    if (!complete) {
-        mcpLog("warn", "rm-native", "App inventory tree was structurally unreadable (missing data.id or non-list children); retaining all ${observed.size()} pending recovery record(s). If this repeats, hub firmware may have changed the /hub2/appsList shape")
-        return
-    }
-    // This app is itself installed, so an empty inventory is an unusable read, not proof of deletion.
-    if (ids.isEmpty()) {
-        mcpLog("warn", "rm-native", "Skipping recovery reconciliation: /hub2/appsList returned no apps; ${observed.size()} pending record(s) retained")
-        return
-    }
-    synchronized (PRED_CLEAR_STORES) {
-        Map current = _rmPendingPredClearSnapshot()
-        def removed = current.keySet().findAll { !ids.contains(it.toString()) && observed[it] == current[it] }
-        if (!removed) return
-        removed.each { current.remove(it) }
-        _rmCommitPredClearPending(current)
     }
 }
 
@@ -9572,87 +9453,29 @@ private Integer normalizeRuleId(def ruleId) {
 // list-of-devices code paths. _rmBuildSettingsBody emits the full group
 // from the input schema automatically, so callers never have to remember.
 
-/**
- * Registry of native automation app types. Each entry tells the create
- * path which namespace + appName + parent type to use for createchild.
- *
- * Adding a new entry here is the only change needed to support a new
- * native app type — the edit + delete + backup paths are app-type-
- * agnostic because they operate on appIds against the generic
- * /installedapp/* endpoint family.
- *
- * Verified live on firmware 2.4.4.135 / 2.5.0.123:
- *   - rule_machine: namespace=hubitat appName=Rule-5.1 parentType="Rule Machine"
- *
- * Also registered (each namespace+appName confirmed via hub_list_apps (scope='instances')
- * before it was added; #120 scope expansion):
- *   - button_controller (parent),  Button Controller-5.1, parentType="Button Controllers"
- *   - button_rule (under controller), Button Rule-5.1, parentType=<a specific Button Controller>
- *   - basic_rule, parentType="Basic Rules"
- *   - room_lighting (Room Lights), parentType="Room Lighting" -- verified fw 2.5.1.181
- *   - groups_scenes (Group-2.1 / Scene-2.1), parentType="Groups and Scenes"
- *   - notifier (Notifier), parentType="Notifications"
- *   - visual_rule (Visual Rule Builder), parentType="Visual Rules Builder"
- *
- * Rule-5.1, Button Rule-5.1 and the Rule Machine parent are edited through
- * hub_set_rule(operation='form'); every other type through hub_set_native_app. Delete with
- * hub_delete_native_app using the appId of an existing classic-app instance
- * (read appId via hub_list_apps (scope='instances') + hub_get_app_config).
- */
+// Built-in app types hub_set_native_app can create, by the child appName the parent's create control
+// carries and the parent type name. Edit, delete and backup work on any app id. visual_rule stays so a
+// snapshot can name the type and its parent can be found; VRB children are Vue-JSON apps with no
+// classic page, served by the hub_*_visual_rule tools.
 private Map _appTypeRegistry() {
-    // Optional `commitButton` field: the page-transition button clicked after a
-    // create/edit to commit + re-initialize. Defaults to "updateRule" (RM's
-    // framework-default) when absent. Set explicitly to null for submitOnChange
-    // apps that have NO commit button -- their inputs auto-commit on change, and
-    // clicking a non-existent "updateRule" button poisons the page render with
-    // "For input string: updateRule" (verified live on Basic Rule).
     return [
-        rule_machine: [namespace: "hubitat", appName: "Rule-5.1", parentTypeName: "Rule Machine"],
-        // Button Controller-5.1's mainPage is submitOnChange (selecting buttonDev
-        // re-renders to reveal the button-action table) with NO updateRule button,
-        // so commitButton is null -- same class as basic_rule. (The buttonDev-wipe
-        // failure mode on these app types is a separate mechanism, documented and
-        // fixed at _rmLiveSettingsFromStatus.)
-        button_controller: [namespace: "hubitat", appName: "Button Controller-5.1", parentTypeName: "Button Controllers", commitButton: null],
-        // Group-2.1 takes its label from its own required `name` input (no origLabel input);
-        // writing `name` relabels the app immediately (verified live, fw 2.5.1.181).
-        groups_scenes: [namespace: "hubitat", appName: "Group-2.1", parentTypeName: "Groups and Scenes", labelInput: "name"],
-        notifier: [namespace: "hubitat", appName: "Notifier", parentTypeName: "Notifications"],
-        // visual_rule stays registered so appType detection (_rmBackupRuleSnapshot's
-        // reverse-map) and parentTypeName lookups keep working, but neither classic creation
-        // path uses it: the wizard create rejects it in _createNativeAppShell, and
-        // _rmRestoreFromBackup routes visual_rule snapshots to _vrbRestoreFromSnapshot --
-        // VRB children are Vue-JSON apps (live-probed: /installedapp/configure renders no
-        // classic configPage), served by the hub_*_visual_rule tools instead.
-        visual_rule: [namespace: "hubitat", appName: "Visual Rule Builder", parentTypeName: "Visual Rules Builder"],
-        // Basic Rule is a classic dynamicPage app (configure/json renders a real
-        // configPage and generic createchild works), NOT a Vue SPA like Visual
-        // Rule. But its inputs are submitOnChange with no updateRule button, so
-        // commitButton is null. Verified live: appName="Basic Rule-1.0",
-        // parentType="Basic Rules", generic createchild -> 302 configure/<id>.
-        basic_rule: [namespace: "hubitat", appName: "Basic Rule-1.0", parentTypeName: "Basic Rules", commitButton: null],
-        // Button Rule-5.1's page graph shifts one level (root page named
-        // selectActions, not mainPage) and it is submitOnChange with no
-        // updateRule button, so commitButton is null -- _resolveCommitButton
-        // then returns null (real verdict) instead of defaulting to "updateRule".
-        button_rule: [namespace: "hubitat", appName: "Button Rule-5.1", parentTypeName: "Button Controllers", commitButton: null],
-        // Room Lights instances live under the "Room Lighting" parent. Its page has no updateRule:
-        // the clicked "updateRule" is a silent no-op, so written settings never reached the running
-        // instance. The page's own "Update" button (btn name=update) re-initializes subscriptions,
-        // exactly as the UI does (verified live, fw 2.5.1.181).
-        room_lighting: [namespace: "hubitat", appName: "Room Lights", parentTypeName: "Room Lighting", commitButton: "update"],
-        scene: [namespace: "hubitat", appName: "Scene-1.2", parentTypeName: "Groups and Scenes", labelInput: "name", commitButton: "update"],
-        thermostat_scheduler: [namespace: "hubitat", appName: "Thermostat Scheduler 2.0", parentTypeName: "Thermostat Schedulers", commitButton: "update"],
-        thermostat_controller: [namespace: "hubitat", appName: "Thermostat Controller 2.0", parentTypeName: "Thermostat Controllers", commitButton: "update"]
-        // button_controller, groups_scenes, notifier and room_lighting child appName values were
-        // verified on the live hub.
+        rule_machine: [appName: "Rule-5.1", parentTypeName: "Rule Machine"],
+        button_controller: [appName: "Button Controller-5.1", parentTypeName: "Button Controllers"],
+        groups_scenes: [appName: "Group-2.1", parentTypeName: "Groups and Scenes"],
+        notifier: [appName: "Notifier", parentTypeName: "Notifications"],
+        visual_rule: [appName: "Visual Rule Builder", parentTypeName: "Visual Rules Builder"],
+        basic_rule: [appName: "Basic Rule-1.0", parentTypeName: "Basic Rules"],
+        button_rule: [appName: "Button Rule-5.1", parentTypeName: "Button Controllers"],
+        room_lighting: [appName: "Room Lights", parentTypeName: "Room Lighting"],
+        scene: [appName: "Scene-1.2", parentTypeName: "Groups and Scenes"],
+        thermostat_scheduler: [appName: "Thermostat Scheduler 2.0", parentTypeName: "Thermostat Schedulers"],
+        thermostat_controller: [appName: "Thermostat Controller 2.0", parentTypeName: "Thermostat Controllers"]
     ]
 }
 
 /**
  * Discover and cache the parent app id for the given native-app type.
- * Required by _createNativeAppShell (the create path of both hub_set_rule and
- * hub_set_native_app): createchild is addressed
+ * Native app creation and a recreating restore need it: createchild is addressed
  * `/installedapp/createchild/<ns>/<appName>/parent/<parentId>`, and the
  * parent id is per-hub.
  *
@@ -10516,14 +10339,11 @@ private String _classicAppFormat(Map cfg) {
  * detection arrays are always present) plus the cross-engine fields broken /
  * source / ruleFormat / validationErrors; predicate is added only when read.
  *
- * Callers (_applyNativeAppEdit, _createNativeAppShell, toolCheckRuleHealth,
- * _rmBuildUpdateErrorResponse, toolSetVisualRule) attach this report to
- * mutation success AND error responses so an LLM sees broken state immediately.
+ * hub_set_visual_rule attaches this report to its mutation responses so an LLM
+ * sees broken state immediately.
  */
 // Empty health-verdict shell: the stable keys of _rmCheckRuleHealth's report with
-// nothing detected, for the degenerate verdicts (null appId here; the skipped
-// probe in _rmWalkStepHealth) -- ONE literal to keep in lockstep with the main
-// report shape instead of a hand-copied literal per degenerate case.
+// nothing detected, kept beside the main report shape so the two stay in lockstep.
 private Map _rmEmptyHealthVerdict(Map overrides) {
     def v = [ok: false, unreadable: false, broken: null, source: "none", ruleFormat: null,
              label: null, disabled: null, paused: null, configPageError: null,
@@ -10534,9 +10354,8 @@ private Map _rmEmptyHealthVerdict(Map overrides) {
     return v
 }
 
-Map _rmCheckRuleHealth(Integer appId, String source = "auto", String activePage = null) {
-    // Defensive guard: error paths (_rmBuildUpdateErrorResponse and friends) can call in with a
-    // null appId if the failure happened before the id resolved. Reading rule state for a null id
+Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
+    // Defensive guard against a null appId. Reading rule state for a null id
     // would fire redundant HTTP calls (/app/ruleBuilderJson/null, /installedapp/configure/json/null)
     // that just throw -- short-circuit instead. (Gemini review, PR #276.) The verdict is unhealthy
     // AND unreadable: nothing was checked, so ok||unreadable gates treat it as couldn't-check.
@@ -10563,6 +10382,22 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto", String activePage 
     def compiledReadError = null   // a thrown/bad-200 compiled-state read, surfaced if the HTML path also fails
     boolean useRuleBuilder = (source != "configPage")
     boolean useConfigPage = (source != "ruleBuilderJson")
+    // Only built-in apps are read. A user or community app's state can carry Rule Machine's keys
+    // without being a rule, and its default page runs its own code, which can drop a wizard's pending
+    // input (Hubitat Package Manager clears a pending install there).
+    def installed = null
+    try { installed = getAppByAppId(appId as Long) }
+    catch (Exception lookup) {
+        useRuleBuilder = false; useConfigPage = false
+        checkErrors << "app ${appId} was not read: it could not be identified (${lookup.message ?: lookup.toString()}), and a user or community app is not read as a rule".toString()
+    }
+    def namespace = installed?.appType?.namespace?.toString()
+    if (namespace && namespace != "hubitat") {
+        useRuleBuilder = false; useConfigPage = false
+        label = installed.label?.toString()
+        ruleFormat = "classic-app"
+        checkErrors << "app ${appId} was not read: it is a user or community app, whose state is not a rule's and whose page code can change its own state when rendered; read it with hub_get_app_config".toString()
+    }
 
     // PREFERRED structured source — the compiled-state verdict for ANY rule engine
     // (classic RM `broken` boolean, graph Visual Rule validationErrors, classic Visual Rule).
@@ -10622,10 +10457,9 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto", String activePage 
     }
     if (runHtml) {
         try {
-            // A non-RM app's default page can reset its own wizard (HPM clears its pending
-            // install settings there), so a caller mid-wizard passes the page it is on; the
-            // settings in the response are app-wide either way.
-            def cfg = (activePage && ruleFormat != "rm") ? _rmFetchConfigJson(appId, activePage) : _rmFetchConfigJson(appId)
+            // This reads the app's default page, which can reset a non-RM app's own wizard (HPM
+            // clears its pending install settings there); the settings in the response are app-wide.
+            def cfg = _rmFetchConfigJson(appId)
             sourcesUsed << "configPage"
             label = cfg?.app?.label?.toString()
             // Same fetch already in hand: reporting the red-X state costs nothing and spares
@@ -10755,7 +10589,7 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto", String activePage 
     // predicate is included only when the compiled state carried one. The dual-path cost is one
     // extra localhost GET, not response size — the empty arrays are a few bytes.
     def result = [
-        ok: issues.isEmpty() && broken != true && validationErrors.isEmpty(),
+        ok: !sourcesUsed.isEmpty() && issues.isEmpty() && broken != true && validationErrors.isEmpty(),
         // unreadable: NEITHER source could be read -- a "couldn't check" verdict, not
         // a "checked and broken" one (ok stays false; there is no positive evidence
         // either way). Callers gating committed work on ok should treat unreadable
@@ -11281,7 +11115,8 @@ def _guideSectionForTool(toolName) {
     if (t == 'hub_set_rule') return 'set_rule_reference'
     if (t == 'hub_set_visual_rule' || t == 'hub_delete_visual_rule') return 'visual_rule_reference'
     if (t.endsWith('_custom_rule')) return 'rules'
-    if (t in ['hub_set_native_app', 'hub_delete_native_app', 'hub_clone_native_app',
+    if (t == 'hub_set_native_app') return 'set_native_app_reference'
+    if (t in ['hub_delete_native_app', 'hub_clone_native_app',
               'hub_export_native_app', 'hub_import_native_app']) return 'builtin_app_tools_crud'
     if (t in ['hub_set_app_disabled', 'hub_call_rule', 'hub_set_rule_paused',
               'hub_set_rule_private_boolean']) return 'builtin_app_tools_rules'
@@ -11331,6 +11166,7 @@ def _applyReactiveBpsWarning(toolName, args, result) {
 def getToolGuideSections() {
     return [
         set_rule_reference: _ndGuide(),
+        set_native_app_reference: _naGuide(),
         device_authorization: '''## Device Authorization (CRITICAL)
 
 **Exact match rule:**
@@ -11374,7 +11210,6 @@ If you are calling one of these tools, you must read its section for that sectio
 - hub_delete_native_app -> builtin_app_tools_crud
 - hub_export_native_app -> builtin_app_tools_crud
 - hub_import_native_app -> builtin_app_tools_crud
-- hub_set_native_app -> builtin_app_tools_crud
 - hub_call_rule -> builtin_app_tools_rules
 - hub_set_app_disabled -> builtin_app_tools_rules
 - hub_set_rule_paused -> builtin_app_tools_rules
@@ -11407,6 +11242,7 @@ If you are calling one of these tools, you must read its section for that sectio
 - hub_export_custom_rule -> rules
 - hub_import_custom_rule -> rules
 - hub_update_custom_rule -> rules
+- hub_set_native_app -> set_native_app_reference
 - hub_set_rule -> set_rule_reference
 - hub_update_device -> update_device
 - hub_manage_virtual_device -> virtual_devices
@@ -12041,20 +11877,20 @@ Duplicates an existing MCP custom-engine rule into a new, independent rule with 
 - Rapid source-code edits preserve the original for one hour. Rule edits take a fresh pre-edit snapshot as described below.
 
 ### Backup retention
-- There is no count limit: backups are removed only when all MCP backups together exceed the storage budget. Another item's backup never replaces this one, but once the shared budget is exceeded any new backup can evict older backups of any item: **rolling** steps first, then **pinned** baselines, oldest first. The backup just taken and an active restore target are never removed.
+- There is no count limit: backups are removed only when all MCP backups together exceed the storage budget, oldest first across every item and kind of backup. An item's newest backup is never removed, and neither are the backup just taken and an active restore target; the budget can therefore stay exceeded once every item is down to one backup.
 - The budget is the Advanced setting "Backup storage budget (MB)" (`backupBudgetMb`): default 10, at least 1, at most 1000000 (1 TB). The Advanced page takes any number and the server clamps it to that range. With Developer Mode on, hub_update_mcp_settings also sets it and refuses a value that is not a whole number in that range.
-- Apps, drivers and libraries keep one **pinned** baseline, replaced by that item's next backup after the one-hour window.
-- A rule's first snapshot in an editing session is **pinned**, and so is every pre-delete, pre-forcedelete and replaceRequiredExpression snapshot. With `backupEveryRuleWrite` on, the rule's other snapshots in that session are **rolling** steps, so "before I started" outlasts the per-write steps when space runs short. An editing session ends once an hour passes with no snapshot of that rule; with `backupEveryRuleWrite` on, a continuous chain of writes keeps it open.
 - Where each response says it:
-  - Rule Machine writes and deletes: the `backup` object carries `retention` (`pinned` or `rolling`) and `retentionNote`, and the restoreHint ends with that note.
-  - hub_delete_item / library deletes: `backupRetention` and `backupRetentionNote`; the restoreHint ends with the note.
-  - hub_restore_backup (app/driver source): `backupRetention` and `backupRetentionNote` describe the `preRestoreBackup` undo entry; the `undoHint` ends with the note.
+  - Rule Machine writes and deletes: the `backup` object carries `retentionNote`, and the restoreHint ends with that note.
+  - hub_delete_item / library deletes: `backupRetentionNote`; the restoreHint ends with the note.
+  - hub_restore_backup (app/driver source): `backupRetentionNote` accompanies the `preRestoreBackup` undo entry; the `undoHint` ends with the note.
   - hub_write_file / hub_delete_file: `backupRetention: "copies"` and `backupRetentionNote` for the `<name>_backup_<ts>` copy.
-  - hub_list_backups: `storageBudget` (`usedBytes` / `limitBytes`, pending deletions excluded), `retentionPolicy`, and each entry's `retention` and `sizeBytes`.
+  - hub_list_backups: `storageBudget` (`usedBytes` / `limitBytes`, pending deletions excluded), `retentionPolicy`, and each entry's `sizeBytes`.
 - If the index file is missing, it is rebuilt from the File Manager listing, which also brings backup files left by older versions under retention. An index file that is listed but cannot be read is never rebuilt over: backup reads and backup-taking writes return `success: false` until it reads again. An index file that is not valid JSON is copied to `mcp-backup-index.corrupt-<time>.json` before the rebuild.
 
 ### Rule Backups (Automatic)
 - With `backupBeforeRuleEdits` enabled (default), hub_set_rule takes one fresh snapshot before an update batch and one before a native rule form workflow. Subsequent submissions in that workflow reuse its snapshot. Snapshot failure prevents the edit. Creating a new rule or navigating its parent does not have a previous child rule to restore.
+- hub_set_native_app updates and form workflows on other classic apps take one baseline snapshot first while `backupBeforeRuleEdits` is on, reused for the same app for one hour unless `backupEveryRuleWrite` is on, which takes a fresh snapshot before every edit. Its creates take none; a button_rule create takes one of its Button Controller.
+- Password-typed settings are not stored in pre-write snapshots: the snapshot lists them in `redactedSettings`. A restore leaves a live password unchanged (`passwordsKept`); an app recreated by restore needs them re-entered in the native UI (`passwordsToReenter`); when the restored app's settings cannot be read to confirm them, they are listed in `passwordsUnverified`.
 - hub_delete_custom_rule auto-backs up to File Manager as mcp_rule_backup_<name>_<timestamp>.json
 - Restore via: hub_read_file → hub_import_custom_rule
 - Skip backup: set testRule=true when creating/updating
@@ -12306,48 +12142,27 @@ A single tool can also be switched off under **Advanced: Per-tool Overrides**. A
 
 ### hub_read_apps_code — installed-app reads
 
-- **hub_list_apps (scope='instances')** — enumerate ALL running app instances on the hub (built-in + user) with parent/child tree
-  - filter="all" (default) | "builtin" | "user" | "disabled" | "parents" | "children"
-  - Each entry: id, name, type, appTypeId, disabled, user, hidden, deprecated, parentId, hasChildren, childCount
-  - appTypeId is the app type's code-class id -- the same id as the type's row in scope='types', hub_get_source(type='app', id=appTypeId) for community code, and the hub's /app/editor/<id> page -- so an instance resolves to its code without matching on the type name (ambiguous for duplicate or versioned names). null when the hub omits it. Community child app types are listed in scope='types' like any other type, so their rows resolve directly by appTypeId. Some built-in child types (e.g. Rule-5.1) are absent from scope='types'; for those, the parent instance's appTypeId identifies the parent app, not the child's source.
-  - Built-in apps have user=false (Rule Machine, Room Lighting, Groups and Scenes, Mode Manager, HSM, Dashboards, Maker API, etc.)
-  - User apps have user=true (Awair, Ecobee, HPM, etc.)
-  - Parent/child tree is flattened with parentId pointers. Hidden parents are excluded from output but their children are promoted to the nearest visible ancestor.
-
-- **hub_list_apps (scope='types')** — enumerate the installed app-type catalog: community (user-installed Apps Code, listed first) AND built-in types, in one call
-  - Community entries preserve the code registry's native fields (id = code-class id, name, namespace, oauth, lastModified, usedBy, ...); built-in entries carry the hub's app-type fields. Both gain three added fields:
-  - **system** / **isBuiltIn** (booleans, same value) — true for a built-in Hubitat app type, false for a community/user-installed one. Answers "which of my installed app types are community vs built-in" without a per-app hub_get_app_config call.
-  - **menu** — the admin UI tab the app type declares in its definition() block: "Apps", "Automations", or "Integrations" (recent firmware splits the Apps page into these three tabs). null when the type declares no menu, or when a community type is not in the appsList catalog (e.g. a child-app template). Group types by menu to mirror the tab layout.
-  - Community types come from the Apps Code registry (/hub2/userAppTypes, preserving class ids + child-app templates); menu and the built-in types are layered on from one supplementary /hub2/appsList read. If that read fails, community types still list (menu null, no built-ins) with a note.
-
-- **hub_list_device_dependents** — find apps that reference a specific device
-  - Use BEFORE deleting a device, disabling a device, or troubleshooting unexpected behavior
-  - Returns appsUsing array with each app's id, name (type like "Room Lights" or "Rule-5.1"), label (user-visible), trueLabel (HTML-stripped), disabled
-  - Answers "if I delete this device, which automations break?"
-
-- **hub_get_app_config** — read an installed app's configuration page (Read master required)
-  - Returns app identity (label, type, disabled), config page sections/inputs/values, and child apps
-  - appType summary carries system (built-in vs community) and menu (the app type's declared Apps/Automations/Integrations tab, null if undeclared) — for the same fields across ALL app types in one call, use hub_list_apps(scope='types')
-  - **modeInputs** (present only when the page renders framework-standard mode inputs, type="mode") — a list of {name, modes, section}, plus **modeInputsNote**. `modes` is each input's configured list. IMPORTANT — the SEMANTICS are app-specific: a `type="mode"` input can be a "only run during these modes" RESTRICTION, or per-mode OVERRIDES (e.g. Day Lights uses ten `type="mode"` inputs for per-mode brightness/color overrides, gated by its own `useModeOverrides` bool — not a restriction). Read the input titles/settings to tell which. It detects ONLY the standard input on the page you read; the input often lives on a SUB-PAGE (walk hub_list_app_pages), and it does NOT detect apps that gate on mode through their own settings model (e.g. Room Lighting's useModes/onConds) or handler logic (`if (location.mode in ...)`). So the ABSENCE of modeInputs is NOT proof the app ignores mode — for an arbitrary non-RM app that is app-specific and may require reading its source. Rule Machine rules have first-class, always-inspectable mode restriction; classic apps have no universal equivalent.
-  - **Mode gating in the common built-in apps** (per-app-type reference). There is NO hub-native "modes in use by" (unlike hub variables), so mode gating must be read per app, and each built-in stores it differently. Resolve mode IDs to names via hub_list_modes.
-    - **Notifier** — `modes` (type='mode', mode NAMES) on the `moreOptions` sub-page. RESTRICT ("only when mode is"). Caught by modeInputs when that sub-page is read.
-    - **Motion Lighting** — `onModes` / `offModes` (type='mode', NAMES) on `onOptions` / `offOptions`, gated by the `useModes` bool. RESTRICT (modes in which to DISABLE turning on/off). Caught by modeInputs on those sub-pages.
-    - **Room Lights** — `modes` as mode **IDs** (e.g. ["1","2","3","5"]) with `schedTypeL:"Hub Modes"`; NOT a type='mode' input — it is per-mode SETTINGS (behavior varies per mode) in the lighting-period model. NOT caught by modeInputs.
-    - **Thermostat Scheduler** — BOTH mechanisms: `modesR` (type='mode', NAMES, `moreOptions` sub-page) = RESTRICT; and `schedTypeL:"Hub Modes"` (main page) = per-mode SETTINGS (per-mode period keys). modeInputs catches `modesR` only.
-    - **Simple Automation Rules** — `modes` (classic restrict input, NAMES).
-    - **Button Controller** — no app-level mode key; each child Button Rule gates via Rule Machine conditions (capability "Mode"). Inspect the child rule, not the parent.
-    - **Basic Rules** — a classic dynamicPage app; read it with hub_get_app_config. Mode is a TRIGGER here: `trigCapab:"System Mode"` plus `mode` (type='mode', NAMES, titled "Becomes") fires the rule when the mode becomes one of them -- not a restriction, even though modeInputs catches it. "Set mode" is one of its actions.
-    - **Rule Machine** — first-class, always-inspectable mode restriction + "Mode" conditions (use the RM tools).
-    Community (non-built-in) apps are case-by-case: type='mode' inputs surface via modeInputs when used; otherwise reading the app source is the only signal.
-  - summary=true is a fast identity-only mode: the hub's thin app record (id, name, type, disabled, user) with no config-page render -- use it for existence/identity checks on expensive apps
-  - Multi-page apps expose sub-pages via pageName. Native editor navigation and supported controls use hub_set_rule(operation='form'); rendering can mutate app state.
-  - includeSettings=true adds the raw internal settings map (large apps: 500-1000 keys with app-specific encoding)
-  - Workflow: hub_list_apps (scope='instances'; or hub_list_rules for RM rules specifically -- note that hub_get_custom_rule handles only MCP-native rules, not Hubitat's built-in Rule Machine) to find appId, then hub_get_app_config to inspect. For multi-page apps, consider hub_list_app_pages first.
-
-- **hub_list_app_pages** — discover what pageNames a given app accepts (Read master required)
-  - Input: appId
-  - Returns the live primary page plus every sub-page it links to (read from the page itself, any app type), with a curated directory added for HPM
-  - Cuts the page-name guessing cycle for multi-page apps. Especially useful for HPM which exposes multiple sub-pages (prefPkgUninstall / prefPkgModify / prefPkgInstall / prefPkgMatchUp) for different operations.
+- **hub_list_apps(scope='instances')** lists every installed app, disabled ones included, as a flat tree with `parentId` pointers. Built-in apps have `user=false`, user-installed apps `user=true`. A hidden parent is left out and its children move up to the nearest visible ancestor. `filter`: `builtin`, `user`, `disabled`, `parents` (apps with children, such as Rule Machine), `children` (individual rules and scenes). `appTypeId` is the type's code-class id, the same id as its scope='types' row, `hub_get_source(type='app', id)` and the hub's /app/editor/<id> page, or null when the hub omits it. Some built-in child types (Rule-5.1) are missing from scope='types'; for those, the parent's appTypeId names the parent app. A retired app type carries `deprecated: true`.
+- **hub_list_apps(scope='types')** lists community types (Apps Code, first) and built-in types. Each row adds `system`/`isBuiltIn` (true for built-in) and `menu`, the Apps/Automations/Integrations tab the type declares, null when it declares none or for a community type outside the hub's apps catalog (a child-app template). If the catalog read fails, community types still list, with `menu` null, no built-ins and a note.
+- **hub_list_device_dependents** — check it before deleting, disabling or replacing a device. `appsUsing` rows carry id, name (the app type), label, trueLabel and disabled.
+- **hub_get_app_config** renders one page as opening it in the UI does, which runs the app's page code.
+  - The pages a page links to are in `page.hrefs` as `{page, title}`; a sub-page's own links are in its `page.hrefs` (Room Lighting's optionsOnPage is linked from onMeansPage). A linked page's inputs are not in `sections`: read them with `pageName`.
+  - `controls` are the page's buttons and links as hub_set_rule(operation='form') (Rule Machine) or hub_set_native_app(operation='form') returns them; activate one there by its control_id after opening the same page.
+  - On a Rule Machine rule a paragraph holding a disabled action or trigger reads `{text, disabled: [...]}`, listing the text of each disabled row it holds. On selectActions (Button Rule: selectActionsX) a disabled action's `disable<N>` control reads 'Enable Action', and the control named `<N>.0.<bool>` carries that action's text; N is the action index, not the row position. The button toggles: never replay a click whose response was lost. hub_set_app_disabled disables the whole app.
+  - `pageNote` appears when the hub rendered another page than `pageName`: the app reaches that page only through its link, so open it in a form workflow.
+  - `appType.system` and `appType.menu` are the fields hub_list_apps(scope='types') gives for every type at once.
+  - `includeSettings=true` adds the raw settings map: 500-1000 app-encoded keys on large apps (Room Lighting stores per-device scene levels as `dm~<deviceId>~<scene>`). Secrets read `***redacted (password)***`: every setting the hub types as a password, on any page, and free-text settings with credential-shaped names (password, pass, secret, token, API key, credential, ...). OAuth accessToken settings follow the Hide access tokens setting. Page inputs are redacted the same way. When the setting types cannot be read the map is withheld and `settingsNote` says why.
+  - A type='mode' input's `value` is its stored setting. Day Lights uses ten of them for per-mode levels, gated by `useModeOverrides`; most apps use one as an "only during these modes" restriction.
+  - **Mode gating in the built-in apps.** The hub has no "modes in use by" list, so read each app; resolve mode IDs with hub_list_modes.
+    - **Notifier** — `modes` (mode ids) on `moreOptions`; restricts.
+    - **Motion Lighting** — `onModes` / `offModes` (names) on `onOptions` / `offOptions`, gated by `useModes`: the modes in which turning on or off is disabled.
+    - **Room Lights** — `modes` holds mode IDs (e.g. ["1","2","3","5"]) with `schedTypeL:"Hub Modes"`: per-mode settings, not a type='mode' input.
+    - **Thermostat Scheduler** — `modesR` (names, `moreOptions`) restricts; `schedTypeL:"Hub Modes"` on the main page selects per-mode settings. Only `modesR` is a type='mode' input.
+    - **Simple Automation Rules** — `modes` (names); restricts.
+    - **Button Controller** — no app-level mode key; each child Button Rule uses Rule Machine Mode conditions.
+    - **Basic Rules** — `trigCapab:"System Mode"` with `mode` (names, titled "Becomes") is a trigger, not a restriction, although it is a type='mode' input. "Set mode" is one of its actions.
+    - **Rule Machine** — mode restrictions and Mode conditions, read with the rule tools.
+    For a community app, read its type='mode' inputs or its source.
 
 ### hub_list_hpm_packages — HPM package state introspection (in hub_read_apps_code; Read master required)
 
@@ -12380,19 +12195,19 @@ RMUtils-based control surface (hub_list_rules = Read master; trigger/pause/priva
   - action="rule" (default): full evaluation (triggers + conditions + actions)
   - action="actions": run actions only, skip conditions
   - action="stop": stop running actions
-  - action="start": restart a stopped rule (re-initializes; resets private boolean)
+  - action="start": restart a stopped rule (clears stopped and re-initializes it; the private boolean is unchanged)
 - **hub_set_rule_paused** — pause (paused=true) or resume (paused=false) one or more rules in ONE call (ruleId takes an id or an array; multi-id batches existence-check every id first); reversible
 - **hub_set_rule_private_boolean** — set the private boolean of one or more rules (ruleId takes an id or an array; Boolean or lowercase "true"/"false" only)
 
-Native CRUD (hub admin-layer, additionally requires the Write master):
-- **hub_set_native_app** — create or edit other classic apps using the existing generic CRUD interface. Native RM rules are created and changed with hub_set_rule(operation:'create'|'update'), and their native editor forms are driven with hub_set_rule(operation:'form').
-- **hub_set_app_disabled** — enable or disable any installed app (red-X) via POST /installedapp/disable; reversible. Args: appId, disabled (bool). Read-back verified.
-- **hub_delete_native_app** — soft delete (default; refuses if children exist) or force=true. Args: appId, force, confirm. Auto-backs-up before deleting.
-- **hub_clone_native_app** — clone any classic SmartApp via Hubitat's first-party appCloner (deep: child apps and pause state copy, so a clone of an ACTIVE app lands ACTIVE). Args: sourceAppId, newName (opt), stageDisabled (opt: disable the clone + every descendant immediately; a staging failure returns success:false with per-app stageFailures -- do NOT re-clone, the app exists), confirm. Returns newAppId. Drives the appCloner's 4-step wizard (cloneRuleButton -> confirmation -> importRule sub-page -> importNow); typical clones complete in tens of seconds.
-- **hub_export_native_app** — export any classic SmartApp to its canonical JSON shape via Hubitat's first-party appCloner. Args: sourceAppId, saveAs (opt File Manager filename). Returns jsonContent. Self-contained document with appReplacements + deviceReplacements + full rule state; round-trips through hub_import_native_app.
-- **hub_import_native_app** — re-create a rule/app from a previously-exported JSON via Hubitat's first-party appCloner (the import lands ACTIVE). Args: jsonContent | fromFile, parentHintAppId, newName (opt), stageDisabled (opt: disable the import + every descendant immediately; failure contract as on clone), confirm. Returns newAppId. The cloner needs an existing rule under the target parent to seed itself (parentHintAppId).
+Native CRUD (also requires the Write master):
+- **hub_set_native_app** — create, update or drive the forms of every classic app other than Rule Machine rules (see set_native_app_reference). Rule Machine rules use hub_set_rule.
+- **hub_set_app_disabled** — the red-X enable or disable of any app; reversible, and read back after the write.
+- **hub_delete_native_app** — soft delete by default (refused while children exist), or force=true. It saves a snapshot first; hub_restore_backup re-creates the app from backup.backupKey.
+- **hub_clone_native_app** — Hubitat's appCloner copies the app with its child apps and pause state, so a clone of an active app is active; `stageDisabled` disables the clone and its descendants at once. A staging failure returns success:false with `stageFailures`: the clone exists, so do not clone again. Typical clones take tens of seconds.
+- **hub_export_native_app** — the appCloner's export JSON (appReplacements, deviceReplacements and the full app state), which hub_import_native_app re-creates.
+- **hub_import_native_app** — creates the app from that JSON under the parent of `parentHintAppId`; the import is active unless `stageDisabled`, with the same failure contract as clone.
 
-- Clone/import require a readable parent child-app snapshot before creation; a refusal says nothing was created and can be retried after restoring access. Discovery never guesses among ambiguous new children. If modern staging reaches its continuation limit, the terminal error retains newAppId, stagedDisabled, stageFailures and stageRemaining from the last slice. Disable the remaining/failed apps directly; do not repeat creation.
+- Clone and import read the parent's child apps first: if that read fails nothing is created and the call can be retried, and an ambiguous new child is never guessed at. When staging reaches its continuation limit, the error keeps newAppId, stagedDisabled, stageFailures and stageRemaining: disable those apps directly instead of creating again.
 - **hub_get_rule_health** — read-only health check on any installed app (Rule Machine AND Visual Rules Builder). Args: appId, source (auto|ruleBuilderJson|configPage, default auto). Prefers the compiled-state verdict: the classic RM `broken` boolean (/app/ruleBuilderJson) or a graph Visual Rule's validationErrors (/app/ruleBuilder20Json); for classic RM the HTML render scan is retained as cross-check + fallback. Returns ok / broken / source / ruleFormat / label / paused / stopped / configPageError / brokenMarkers / multipleFlagPoison / structuralIssues / orphanedActionRows (leftover actType/actSubType rows that are not among the rule's actions -- diagnostic only, never affects ok) / validationErrors / issues (+ predicate when read). Pause state comes from the rule's compiled Boolean or status state; tagged runtime decoration is a fallback. `paused:null` means unknown. Explicit stopped state outranks config-page markup. Literal `(Paused)` and `(Stopped)` name suffixes are preserved; Visual Rule labels come from their own document unless configPage is forced. Embedded write-response health carries compiled paused only; the standalone read adds status/markup fallbacks, stopped, and live subscription/job counts.
 
 For reading a native RM rule without editor renders, use hub_set_rule(operation='read'). hub_get_app_config remains available for native configuration diagnostics.
@@ -12400,36 +12215,15 @@ For reading a native RM rule without editor renders, use hub_set_rule(operation=
 For BACKUP enumeration and restore, use the unified **hub_list_backups** (in hub_read_apps_code) + **hub_restore_backup** (in hub_manage_backup) — RM rule snapshots have type="rm-rule" in those tools' output and hub_restore_backup auto-dispatches the rule-restore path.
 
 ### Safety model for native CRUD
-1. With backupBeforeRuleEdits enabled (default), each hub_set_rule update batch saves one fresh native snapshot in File Manager before editing. A native form workflow saves one snapshot before opening and reuses it for subsequent submissions. The response's backup.backupKey restores the configuration from before that batch or workflow. Snapshot failure prevents the edit.
-2. Native form writes validate native field types and cardinality before submission; omitted values remain unchanged.
-3. Inspect partial outcomes and native health after writes; a persisted setting alone does not prove runtime behavior.
-4. delete is soft by default. Pass force=true only when you know the rule has children you also want gone.
+1. With backupBeforeRuleEdits on (default), each hub_set_rule update batch, and a native form workflow before its first step, saves a native snapshot to File Manager; backup.backupKey restores the configuration from before it. A failed snapshot stops the edit.
+2. Native form writes check field types and cardinality before submitting. An omitted input keeps its stored value; an unset input with a page default is saved with that default, as the browser does.
+3. A stored setting does not prove runtime behavior: check partial outcomes and hub_get_rule_health after a write.
+4. Deletes are soft by default; force=true also removes children.
 
 ### CRUD workflow example
-  hub_set_rule(operation="create", args={parent_id:<Rule Machine parent>, name:"BAT-RM-demo", changes:[<native changes>]}, confirm=true)
-  hub_get_app_config(appId=974, includeSettings=true) → input schema + current settings
-
-
-  hub_get_rule_health(appId=974) → verify ok=true, no configPageError or brokenMarkers
-  hub_delete_native_app(appId=974, force=true, confirm=true) → {backup: {backupKey: "rm-rule_974_..."}}
-
-### hub_get_app_config (deferred internals: embeddedActions wire-format, disabled RM actions, includeSettings key encoding)
-
-- **embeddedActions in RM 5.1**: configuration diagnostics may expose native clickable controls; hub_set_rule(operation='form') supplies supported control IDs for editor operations.
-- **Disabled RM actions**: native configuration diagnostics expose disabled row markers. Use only returned native form controls to toggle a specific row; toggles must not be replayed after an uncertain response. hub_set_app_disabled disables the whole app.
-- **includeSettings raw-key encoding example**: large apps' raw app-internal settings keys use app-specific encoding — e.g. Room Lighting encodes per-device-per-scene keys as `dm~<deviceId>~<scene>`. (Set `includeSettings=true` only for power-user inspection; large apps can have 500-1000 such keys.)
-
-### hub_list_apps (scope='instances' filter — category meanings)
-
-The `filter` enum values select which category of instances to return (scope='instances' only):
-- **all** (default) — every instance
-- **builtin** — Hubitat native apps
-- **user** — custom Groovy apps
-- **disabled** — paused apps
-- **parents** — apps with children, e.g. Rule Machine, Room Lighting
-- **children** — individual rules, scenes
-
-Each instance carries `deprecated: true` when the hub has retired its app type (for example the legacy Sonos integration in firmware 2.5.2), so it can be flagged for replacement.
+  hub_set_rule(operation="create", args={parent_id:<Rule Machine parent>, name:"BAT-RM-demo", changes:[<native changes>]}, confirm=true) → app_id
+  hub_get_rule_health(appId=<app_id>) → ok=true, no configPageError or brokenMarkers
+  hub_delete_native_app(appId=<app_id>, force=true, confirm=true) → {backup: {backupKey: "rm-rule_<app_id>_..."}}
 
 ### hub_list_drivers (list device driver TYPES on the hub)
 
@@ -12439,11 +12233,6 @@ Each instance carries `deprecated: true` when the hub has retired its app type (
 - For an `include='all'` entry, its **id** is the driver-type id to pass to `hub_create_device`, while `hub_manage_virtual_device(customDriver={namespace, name})` takes that same entry's **namespace + name** (not the id).
 
 
-### hub_list_app_pages (curated page-name directory)
-
-Sub-pages are read from the live primary page: every page it links to is listed with its title, for any app type (Rule Machine rules link selectTriggers/selectActions; Room Lighting links onDevicesPage/onMeansPage/offMeansPage). Pages linked only from a sub-page (e.g. Room Lighting's optionsOnPage under onMeansPage) show up in hub_get_app_config(pageName=<sub-page>).hrefs. HPM additionally gets a curated directory: prefOptions (main menu), prefPkgUninstall (full installed-package list), prefPkgModify (modifiable subset), prefPkgInstall (install flow), prefPkgMatchUp (match-up flow).
-
-
 ### hub_call_rule
 
 `action` selects which Rule Machine verb to invoke (default `rule`):
@@ -12451,21 +12240,9 @@ Sub-pages are read from the live primary page: every page it links to is listed 
 - **`rule`** → `runRule`: re-evaluate the rule's conditions, then run the matching true/false action set.
 - **`actions`**: click the rule's Run Actions button (`runAction`) to run the action list directly, skipping condition evaluation.
 - **`stop`**: halt the rule's in-progress actions.
-- **`start`**: re-enable a stopped rule (also resets its private boolean).
+- **`start`**: restart a stopped rule (clears stopped and re-initializes it; the private boolean is unchanged).
 
 `actions`, `stop` and `start` drive RM's own page buttons (`runAction`, `stopRule`), not RMUtils: that is the route the hub UI takes, so the platform's per-app load limiter, which refuses RMUtils dispatches on a busy hub, does not apply to them. Only `rule` still goes through RMUtils (RMUtils has no startRule verb and there is no page button for a full re-evaluation).
-
-### hub_set_native_app
-
-Create or edit classic native apps through their native pages. Omit appId to create a shell with appType and name; provide appId to edit discovered settings, click a native button, or walk its pages. Read configuration fields with hub_get_app_config and discover linked pages with hub_list_app_pages. Native Rule Machine structures use hub_set_rule; this generic tool does not accept RM action, trigger, expression, local-variable or batch shortcuts.
-
-A settings object maps native input names to values. Device inputs accept ID lists or the {id:label} maps returned by configuration reads. pageName selects a sub-page; settings not exposed by that page are reported as skipped. Fields may appear only after another choice has been saved. The native type's own commit button and closing Done are used; Basic Rule and Button Controller do not have an updateRule button.
-
-walkStep preserves native navigation: introspect reads the current fields and controls; write submits its write object; click activates its click.name and optional stateAttribute; navigate follows navigate.targetPage; done submits the page's Done after validating required inputs. Set page and optional hrefContext={fromPage, hrefName, hrefIndex, hrefParams} from the native links. For ordered workflows use walkStep={operation:'drive',steps:[...]} and finish each sub-page with done. A drive can return stepsRemaining when its time budget is reached; completed steps have already run. Inspect per-step errors, valueEcho and health before retrying.
-
-buttonRule={controllerId,buttonNumber,event} creates a Button Rule through an existing Button Controller's add-button flow. The controller must have its button device assigned. The resulting buttonRuleId can be edited with hub_set_rule(operation='update') or through native fields; a Button Rule must not be created as a standalone shell.
-
-Write calls require confirm=true and a recent hub backup. Existing generic edits retain their File Manager baseline behavior: by default a same-app baseline is reused for one hour, or backupEveryRuleWrite requests a fresh snapshot for each edit. Returned backup metadata describes the rollback scope. A failed creation reports its child ID and cleanup attempt; inspect that result before retrying. Guide-only calls with appId and guide=true return this section without app mutation.
 
 ### hub_get_rule_health
 
@@ -12489,9 +12266,9 @@ List a Rule Machine rule's LOCAL variables (per-rule, distinct from hub globals)
 - Hub globals are covered by hub_list_variables; native locals are read/written through hub_set_rule(operation='read') / hub_set_rule(operation='update') variable changes.
 - Reads the rule's `statusJson` appState: names and types from `allLocalVars`, current values from each variable's live `lv_<name>` entry (`allLocalVars` keeps the old value after an action sets the variable until someone opens the rule's page).
 - Pure read -- no wizard, no mutation.
-- Returns `{appId, localVariables:[{name, type, value}], total}`. `type` is the hub's internal token, not the `addLocalVariable` enum. Map it back before reuse: integer→Number, bigdecimal→Decimal, string→String, boolean→Boolean, datetime→DateTime.
+- Returns `{appId, localVariables:[{name, type, value}], total}`. `type` is Rule Machine's own token (integer, bigdecimal, string, boolean, datetime), the same value a hub_set_rule variable change takes; the rule page shows it as Number, Decimal, String, Boolean, DateTime.
 
-- Use to confirm a local exists (and its type) before targeting it with the `setLocalVariable` action or `removeLocalVariable` shortcut.
+- Use to confirm a local exists (and its type) before targeting it with a Set Variable action or a hub_set_rule variable change.
 
 ### hub_delete_native_app
 
@@ -12552,7 +12329,6 @@ Exports to the same JSON format Hubitat's UI Export button produces. Three use c
 - Pair with hub_export_native_app for backup/restore workflows.
 - `parentHintAppId` seeds the cloner instance from an existing rule under the target parent (e.g. another RM rule for an RM import). It has no semantic effect on the imported rule beyond placing it under the same parent.
 ''',
-
 
 
         visual_rule_reference: _vrbGuideSection(),
@@ -12801,13 +12577,12 @@ def getToolGuideSubSections() {
         ],
         builtin_app_tools: [
             builtin_app_tools_overview: [],
-            builtin_app_tools_apps: ["hub_read_apps_code", "hub_get_app_config", "hub_list_apps",
-                                     "hub_list_drivers", "hub_list_app_pages", "hub_list_hpm_packages",
+            builtin_app_tools_apps: ["hub_read_apps_code", "hub_list_drivers", "hub_list_hpm_packages",
                                      "hub_list_device_dependents"],
             builtin_app_tools_rules: ["hub_manage_native_rules_and_apps", "hub_call_rule",
                                       "hub_get_rule_health", "hub_list_rule_local_variables"],
             builtin_app_tools_crud: ["Safety model for native CRUD", "CRUD workflow example",
-                                     "hub_set_native_app", "hub_delete_native_app",
+                                     "hub_delete_native_app",
                                      "hub_clone_native_app", "hub_export_native_app",
                                      "hub_import_native_app"]
         ],

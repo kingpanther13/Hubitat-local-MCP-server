@@ -1,6 +1,6 @@
 ---
 name: hubitat-mcp-server
-description: Guide for developing and maintaining the Hubitat MCP Rule Server — a Groovy-based MCP server running natively on Hubitat Elevation hubs, exposing 116 tools (36 on tools/list via category gateway proxy) for device control, virtual device management, room management, rule automation, hub admin, file management, app/driver/library management, installed-app visibility, Rule Machine interoperability, native rule CRUD, Easy and legacy Hubitat® Dashboard CRUD, HPM package state introspection, and Developer Mode self-administration.
+description: Guide for developing and maintaining the Hubitat MCP Rule Server — a Groovy-based MCP server running natively on Hubitat Elevation hubs, exposing 115 tools (36 on tools/list via category gateway proxy) for device control, virtual device management, room management, rule automation, hub admin, file management, app/driver/library management, installed-app visibility, Rule Machine interoperability, native rule CRUD, Easy and legacy Hubitat® Dashboard CRUD, HPM package state introspection, and Developer Mode self-administration.
 license: MIT
 ---
 
@@ -15,7 +15,7 @@ This project is a **Model Context Protocol (MCP) server** implemented as a nativ
 
 The server exposes an OAuth-secured HTTP endpoint that speaks JSON-RPC 2.0 per the MCP protocol specification. AI assistants connect to this endpoint and invoke tools to control devices, manage automation rules, query hub state, and administer the hub.
 
-The Hubitat-runtime code has no external dependencies -- everything runs inside the Hubitat Groovy sandbox. Development tooling (under `tests/`) does include test frameworks: Spock unit tests via Gradle, a sandbox-pattern lint, an end-to-end live-hub test, and the wizard-state regression probe (`tests/wizard_probe.py`). See README.md "Testing" for details.
+The Hubitat-runtime code has no external dependencies -- everything runs inside the Hubitat Groovy sandbox. Development tooling (under `tests/`) does include test frameworks: Spock unit tests via Gradle, a sandbox-pattern lint, an end-to-end live-hub test. See README.md "Testing" for details.
 
 **Documentation files:**
 - `README.md` — User-facing documentation
@@ -32,7 +32,7 @@ The Hubitat-runtime code has no external dependencies -- everything runs inside 
 │  │  MCP Rule Server (parent app)             │  │
 │  │  - OAuth endpoint: /apps/api/<id>/mcp     │  │
 │  │  - JSON-RPC 2.0 handler                   │  │
-│  │  - 116 tools (36 on tools/list + gateways)│  │
+│  │  - 115 tools (36 on tools/list + gateways)│  │
 │  │  - Device access gate (selectedDevices)   │  │
 │  │  - Hub Admin tools (internal API calls)   │  │
 │  │  - Hub Security cookie auth               │  │
@@ -93,12 +93,12 @@ New code should be placed in the appropriate section. New sections should follow
 
 ### Category Gateway Proxy (v0.8.0+)
 
-The server uses a **category gateway proxy** pattern to reduce the MCP `tools/list` from 116 items to 36. This keeps frequently-used tools immediately accessible while organizing lesser-used tools behind domain-named gateways. Gateways come in two flavors: `hub_read_<noun>` gateways whose every sub-tool is read-only, and `hub_manage_<noun>` gateways that contain at least one write (mixed read+write or write-only). A tool MAY appear in more than one gateway (multi-membership) — reads are listed in BOTH their mixed `manage_` gateway AND a pure-read `read_` gateway.
+The server uses a **category gateway proxy** pattern to reduce the MCP `tools/list` from 115 items to 36. This keeps frequently-used tools immediately accessible while organizing lesser-used tools behind domain-named gateways. Gateways come in two flavors: `hub_read_<noun>` gateways whose every sub-tool is read-only, and `hub_manage_<noun>` gateways that contain at least one write (mixed read+write or write-only). A tool MAY appear in more than one gateway (multi-membership) — reads are listed in BOTH their mixed `manage_` gateway AND a pure-read `read_` gateway.
 
 **Architecture:**
 - `getGatewayConfig()` — defines 23 gateways, each with a description, tools list, and summaries map
 - `getToolDefinitions()` — returns 13 core tools + 23 gateway tool definitions (client-visible)
-- `getAllToolDefinitions()` — returns all 116 tool definitions (used internally by gateway catalog and `executeTool()` dispatch)
+- `getAllToolDefinitions()` — returns all 115 tool definitions (used internally by gateway catalog and `executeTool()` dispatch)
 - `handleGateway(gatewayName, toolName, toolArgs)` — catalog mode (no args → full schemas) or execute mode (tool + args → dispatch)
 
 **Gateway calling convention:**
@@ -110,7 +110,7 @@ The server uses a **category gateway proxy** pattern to reduce the MCP `tools/li
 Read gateways (`hub_read_*`, every sub-tool read-only):
 | Gateway | Tools | Domain |
 |---------|-------|--------|
-| `hub_read_apps_code` | 11 | List apps/drivers/libraries/bundles, get source, backups (list/get), device-in-use-by lookup, app config inspection, page-name directory, HPM package state (read-only) |
+| `hub_read_apps_code` | 10 | List apps/drivers/libraries/bundles, get source, backups (list/get), device-in-use-by lookup, app config inspection with linked pages, HPM package state (read-only) |
 | `hub_read_devices` | 6 | List/get devices, device attributes, device events, compatible-device catalog search, Hub Mesh read incl. available device/variable links (read-only) |
 | `hub_read_diagnostics` | 6 | Logs page tabs (log history, stats, cloud calls, events, jobs, hub actions) and the MCP log, metrics, memory history, device health, radio details (zwave/zigbee), captured states (read-only) |
 | `hub_read_files` | 2 | File Manager list + read (read-only) |
@@ -133,7 +133,7 @@ Manage gateways (`hub_manage_*`, contain at least one write):
 | `hub_manage_diagnostics` | 7 | Diagnostics, state capture/delete, radio details (zwave/zigbee), memory history, metrics, GC |
 | `hub_manage_files` | 4 | File Manager CRUD |
 | `hub_manage_radio` | 6 | Z-Wave/Zigbee/Matter radio admin — radio details, configure (`hub_set_zwave`/`hub_set_zigbee`), and radio ops incl. Z-Wave network repair (`hub_call_zwave`/`hub_call_zigbee`/`hub_call_matter`); destructive radio ops are in `hub_manage_destructive_ops` |
-| `hub_manage_native_rules_and_apps` | 12 | Rule Machine read/create/update/forms through `hub_set_rule`; generic native fields, buttons and page walking through `hub_set_native_app` (RM structural shortcuts use `hub_set_rule`); runtime control, disable/delete/clone/export/import and rule health. |
+| `hub_manage_native_rules_and_apps` | 12 | Rule Machine read/create/update/forms through `hub_set_rule`; create, field updates and native forms for every other classic app through `hub_set_native_app`; runtime control, disable/delete/clone/export/import and rule health. |
 | `hub_manage_rule_machine` | 11 | Native Rule Machine read/create/update/forms through `hub_set_rule` + RMUtils list/run/set-paused/boolean + rule health + native-app deletion + Visual Rules Builder get/set/delete. |
 | `hub_manage_mcp` | 1 | Developer Mode self-administration — update MCP rule app's own settings, including the device-access scope `selectedDevices` (allowlist-gated; requires `enableDeveloperMode`) |
 | `hub_manage_dashboards` | 6 | Dashboard CRUD for both Easy and legacy Hubitat® Dashboards — list/get + create/update/delete/clone touch-friendly device dashboards; Easy update replaces the config wholesale, legacy update edits the nested layout wholesale or via granular tile ops (write) |

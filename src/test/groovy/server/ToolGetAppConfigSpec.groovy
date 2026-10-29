@@ -22,9 +22,10 @@ import support.ToolSpecBase
  *  - Not-found 404/410 throw (deleted / mid-delete / install shell whose config page
  *    can't render): clean 'app not found (404)' degrade at warn, full + summary modes
  *  - HTML stripping: span tags removed from labels
- *  - RM disabled actions: red italic span -> [DISABLED] paragraph mark, disabledActions
- *    [{text, disableButton}] list, embeddedActions disabled:true; legend span and *BROKEN*
- *    marker excluded; non-RM apps untouched
+ *  - controls: the form engine's controls for the page (button titles, control_ids, navigation)
+ *  - RM disabled actions: a paragraph with RM's red italic spans reads {text, disabled: [row text, ...]};
+ *    the legend, *BROKEN* spans and non-RM apps stay out
+ *  - mode inputs read their stored setting as value; pageNote on a page-name mismatch
  *
  * Each direct-call feature has a parallel "via dispatch" feature that fires
  * the same tool through {@code mcpDriver.callTool} so the production
@@ -106,6 +107,16 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         // Merge overrides at top level
         overrides.each { k, v -> base[k] = v }
         return JsonOutput.toJson(base)
+    }
+
+    // /installedapp/statusJson/<id>: appSettings types every setting of the app, whichever page
+    // declares it. hub_get_app_config reads it for includeSettings=true redaction.
+    private void registerStatusJson(Map<String, String> types, int appId = 35) {
+        hubGet.register("/installedapp/statusJson/${appId}".toString()) { params ->
+            JsonOutput.toJson([installedApp: [id: appId],
+                               appSettings: types.collect { n, t -> [name: n, type: t, value: null, multiple: false] },
+                               appState: []])
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -404,17 +415,18 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         result.app.appType.menu == null
     }
 
-    def "surfaces modeInputs when the page renders a framework mode input, omits it otherwise (#431 item 8)"() {
+    def "a mode input reads its stored setting as its value, as the form engine does"() {
         given:
         settingsMap.enableRead = true
 
-        and: 'a page with a type="mode" input (the configured value lives in settings[name], comma-joined)'
+        and: 'a type="mode" input renders no value; the page JSON stores it in settings[name]'
         hubGet.register('/installedapp/configure/json/35') { params ->
             makeAppConfigJson([
-                settings: [mode1Override: 'Away,Night'],
+                settings: [mode1Override: ['1', '3']],
                 configPage: [name: 'ModeOptions', title: 'Mode Options', install: false, refreshInterval: null, sections: [
                     [title: 'Override 1', input: [
-                        [name: 'mode1Override', type: 'mode', title: 'Mode', description: null, multiple: false, required: false, options: ['Away', 'Day', 'Night']]
+                        [name: 'mode1Override', type: 'mode', title: 'Mode', description: null, multiple: true, required: false],
+                        [name: 'mode2Override', type: 'mode', title: 'Mode', description: null, multiple: true, required: false]
                     ], body: []]
                 ]]
             ])
@@ -422,23 +434,14 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
 
         when:
         def result = script.toolGetAppConfig([appId: 35])
+        def inputs = result.page.sections[0].inputs
 
-        then: 'the mode input is surfaced with its configured modes (read from settings[name]) + the caveat'
+        then: 'the stored list is the value; an unset mode input has none; no side list or note'
         result.success == true
-        result.modeInputs.size() == 1
-        result.modeInputs[0].name == 'mode1Override'
-        result.modeInputs[0].modes == ['Away', 'Night']
-        result.modeInputs[0].section == 'Override 1'
-        result.modeInputsNote?.toLowerCase()?.contains('app-specific')
-
-        when: 'a page with no type="mode" input'
-        hubGet.register('/installedapp/configure/json/36') { params -> makeAppConfigJson() }
-        def plain = script.toolGetAppConfig([appId: 36])
-
-        then: 'modeInputs is omitted entirely (absence is not asserted as a boolean)'
-        plain.success == true
-        !plain.containsKey('modeInputs')
-        !plain.containsKey('modeInputsNote')
+        inputs.find { it.name == 'mode1Override' }.value == ['1', '3']
+        !inputs.find { it.name == 'mode2Override' }.containsKey('value')
+        !result.containsKey('modeInputs')
+        !result.containsKey('modeInputsNote')
     }
 
     @spock.lang.Unroll
@@ -494,6 +497,43 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         result.success == true
         correctPathCalled == true
         result.endpoint == '/installedapp/configure/json/35/prefPkgModify'
+    }
+
+    // HPM's prefSettings renders only through its href; a direct read returns prefOptions (live, C-7).
+    def "pageNote names the page the hub rendered instead of pageName and the form tool that reaches it"() {
+        given:
+        settingsMap.enableRead = true
+        def page = { String name -> [name: name, title: 'Package Manager', install: true, refreshInterval: null, sections: []] }
+        hubGet.register('/installedapp/configure/json/35/prefSettings') { params ->
+            makeAppConfigJson([app: [id: 35, label: 'HPM', name: 'Hubitat Package Manager', disabled: false, installed: true,
+                                     appType: [name: 'Hubitat Package Manager', namespace: 'dcm.hpm']], configPage: page('prefOptions')])
+        }
+        hubGet.register('/installedapp/configure/json/35/selectActions') { params -> makeAppConfigJson([configPage: page('mainPage')]) }
+        hubGet.register('/installedapp/configure/json/35/prefOptions') { params -> makeAppConfigJson([configPage: page('prefOptions')]) }
+
+        when:
+        def hpm = script.toolGetAppConfig([appId: 35, pageName: 'prefSettings'])
+        def rule = script.toolGetAppConfig([appId: 35, pageName: 'selectActions'])
+        def same = script.toolGetAppConfig([appId: 35, pageName: 'prefOptions'])
+
+        then:
+        hpm.pageNote == "The hub rendered 'prefOptions' instead of 'prefSettings'; this app reaches that page only through its own link: open it with hub_set_native_app(operation:'form') and activate the href."
+        rule.pageNote.startsWith("The hub rendered 'mainPage' instead of 'selectActions';")
+        rule.pageNote.contains("hub_set_rule(operation:'form')")
+        !same.containsKey('pageNote')
+    }
+
+    def "configPageError passes through the page's own error"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/35') { params ->
+            makeAppConfigJson([configPage: [name: 'mainPage', title: 'Rule', install: true, error: 'For input string: "updateRule"', sections: []]])
+        }
+        hubGet.register('/installedapp/configure/json/36') { params -> makeAppConfigJson() }
+
+        expect:
+        script.toolGetAppConfig([appId: 35]).configPageError == 'For input string: "updateRule"'
+        !script.toolGetAppConfig([appId: 36]).containsKey('configPageError')
     }
 
     @spock.lang.Unroll
@@ -608,6 +648,9 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         !result.containsKey('settings')
         result.settingsNote != null
         result.settingsNote.contains('includeSettings=true')
+
+        and: 'no settings are returned, so the setting-type read is skipped'
+        !hubGet.calls.any { it.path.startsWith('/installedapp/statusJson/') }
     }
 
     @spock.lang.Unroll
@@ -641,6 +684,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         hubGet.register('/installedapp/configure/json/35') { params ->
             makeAppConfigJson()
         }
+        registerStatusJson([triggerDevice: 'capability.*', ruleEnable: 'bool'])
 
         when:
         def result = script.toolGetAppConfig([appId: 35, includeSettings: true])
@@ -659,6 +703,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         settingsMap.useGateways = useGateways
         settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson() }
+        registerStatusJson([triggerDevice: 'capability.*', ruleEnable: 'bool'])
 
         when:
         def response = mcpDriver.callTool('hub_get_app_config', [appId: 35, includeSettings: true])
@@ -830,6 +875,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         given:
         settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params -> makePasswordConfigJson() }
+        registerStatusJson([apiKey: 'password', username: 'text'])
 
         when:
         def result = script.toolGetAppConfig([appId: 35, includeSettings: true])
@@ -851,6 +897,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         settingsMap.useGateways = useGateways
         settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params -> makePasswordConfigJson() }
+        registerStatusJson([apiKey: 'password', username: 'text'])
 
         when:
         def response = mcpDriver.callTool('hub_get_app_config', [appId: 35, includeSettings: true])
@@ -879,6 +926,8 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
             ],
             settings: [apiKey: 'hunter2-SECRET']
         ]) }
+        // statusJson knows nothing about the key: the page's own password input still redacts it.
+        registerStatusJson([:])
 
         when:
         def result = script.toolGetAppConfig([appId: 35, includeSettings: true])
@@ -891,6 +940,383 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
 
         and: 'no secret anywhere in the result'
         !JsonOutput.toJson(result).contains('hunter2-SECRET')
+    }
+
+    // -------------------------------------------------------------------------
+    // Cross-page password redaction: a multi-page app declares its passwords on pages the
+    // fetched configPage never renders, so the settings map is redacted from statusJson's
+    // per-setting types (every page) plus a credential-name fallback.
+    // -------------------------------------------------------------------------
+
+    // Hubitat Package Manager's shape: the default page prefOptions is navigation only (no
+    // inputs), while hpmPassword -- often the hub admin password -- lives on prefSettings.
+    private static String makeHpmConfigJson() {
+        makeAppConfigJson([
+            app: [id: 35, trueLabel: 'Hubitat Package Manager', label: 'Hubitat Package Manager',
+                  name: 'Hubitat Package Manager', disabled: false, installed: true, parentAppId: null,
+                  appType: [name: 'Hubitat Package Manager', namespace: 'dcm.hpm', author: 'Dominick Meglio']],
+            configPage: [
+                name: 'prefOptions', title: 'Package Manager', install: true, refreshInterval: null,
+                sections: [[
+                    title: '',
+                    input: [],
+                    body: [[description: 'What would you like to do?']]
+                ]]
+            ],
+            settings: [hpmPassword: 'HubAdmin-S3cret!', hpmUsername: 'admin', hpmSecurity: true,
+                       updateMismatchBehavior: 'ignore', linkPhrase: 'xpage-typed-secret'],
+            childApps: []
+        ])
+    }
+
+    private static final Map<String, String> HPM_TYPES = [hpmPassword: 'password', hpmUsername: 'text',
+                                                          hpmSecurity: 'bool', updateMismatchBehavior: 'enum',
+                                                          linkPhrase: 'password']
+
+    def "a password declared on another page (HPM hpmPassword) is redacted in the settings map"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/35') { params -> makeHpmConfigJson() }
+        registerStatusJson(HPM_TYPES)
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeSettings: true])
+
+        then: 'the fetched page has no inputs at all, yet both password-typed settings are redacted'
+        result.success == true
+        result.page.sections[0].inputs.isEmpty()
+        result.settings.hpmPassword == '***redacted (password)***'
+
+        and: 'a password-typed setting whose name looks harmless is redacted by its hub type alone'
+        result.settings.linkPhrase == '***redacted (password)***'
+
+        and: 'non-secret settings are untouched'
+        result.settings.hpmUsername == 'admin'
+        result.settings.hpmSecurity == true
+        result.settings.updateMismatchBehavior == 'ignore'
+
+        and: 'neither secret appears anywhere, and the note describes all-page redaction'
+        def json = JsonOutput.toJson(result)
+        !json.contains('HubAdmin-S3cret!')
+        !json.contains('xpage-typed-secret')
+        result.settingsRedactionNote.contains('any page')
+        !result.settingsRedactionNote.contains('#')
+
+        and: 'the setting types came from the one statusJson read'
+        hubGet.calls.count { it.path == '/installedapp/statusJson/35' } == 1
+    }
+
+    @spock.lang.Unroll
+    def "hub_get_app_config via dispatch redacts a password declared on another page (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/35') { params -> makeHpmConfigJson() }
+        registerStatusJson(HPM_TYPES)
+
+        when:
+        def response = mcpDriver.callTool('hub_get_app_config', [appId: 35, includeSettings: true])
+
+        then:
+        response.error == null
+        !response.result.isError
+        !response.result.content[0].text.contains('HubAdmin-S3cret!')
+        !response.result.content[0].text.contains('xpage-typed-secret')
+        def inner = mcpDriver.parseInner(response)
+        inner.success == true
+        inner.settings.hpmPassword == '***redacted (password)***'
+        inner.settings.linkPhrase == '***redacted (password)***'
+        inner.settings.hpmUsername == 'admin'
+
+        where:
+        useGateways << [true, false]
+    }
+
+    def "a credential-named setting is redacted even when statusJson does not type it"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson([
+            settings: [mqttPassword: 'mqtt-pw-value', cloudApiKey: 'ak-123', authToken: 'tok-456',
+                       tokenCount: 7, usePassword: true, passThrough: 'yes', bypassMode: 'strict',
+                       emptyPassword: '', ruleEnable: true, disarmPin: '4321', lockCode: 1234, pinCode: '9', userCode: '77',
+                       zipCode: '02134', pinnedBaseline: 'b', spinnerSpeed: 'fast', lockCodeLength: 4]
+        ]) }
+        // mqttPassword, cloudApiKey, authToken: missing from statusJson, so only the name decides.
+        registerStatusJson([tokenCount: 'number', usePassword: 'bool', passThrough: 'text', bypassMode: 'enum',
+                            emptyPassword: 'text', ruleEnable: 'bool', disarmPin: 'text', lockCode: 'number', pinCode: 'text',
+                            userCode: 'text', zipCode: 'text', pinnedBaseline: 'text', spinnerSpeed: 'text', lockCodeLength: 'number'])
+
+        when:
+        def s = script.toolGetAppConfig([appId: 35, includeSettings: true]).settings
+
+        then:
+        s.mqttPassword == '***redacted (password)***'
+        s.cloudApiKey == '***redacted (password)***'
+        s.authToken == '***redacted (password)***'
+
+        and: 'PINs and lock or user codes are secrets too'
+        s.disarmPin == '***redacted (password)***'
+        s.lockCode == '***redacted (password)***'
+        s.pinCode == '***redacted (password)***'
+        s.userCode == '***redacted (password)***'
+        s.zipCode == '02134'
+        s.pinnedBaseline == 'b'
+        s.spinnerSpeed == 'fast'
+        s.lockCodeLength == 4
+
+        and: 'metadata, toggles, look-alike names, and empty values are left as they are'
+        s.tokenCount == 7
+        s.usePassword == true
+        s.passThrough == 'yes'
+        s.bypassMode == 'strict'
+        s.emptyPassword == ''
+        s.ruleEnable == true
+    }
+
+    def "a credential-named free-text input on the page is redacted without includeSettings"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson([
+            configPage: [
+                name: 'mainPage', title: 'Broker', install: true, refreshInterval: null,
+                sections: [[
+                    title: 'MQTT',
+                    input: [
+                        [name: 'brokerPassword', type: 'text', title: 'Password', defaultValue: 'plain-text-pw'],
+                        [name: 'brokerUser', type: 'text', title: 'User', defaultValue: 'mqttuser'],
+                        [name: 'tokenDevice', type: 'capability.switch', title: 'Device', defaultValue: 'Porch Light'],
+                        [name: 'requirePassword', type: 'bool', title: 'Require password', defaultValue: true]
+                    ],
+                    body: []
+                ]]
+            ],
+            settings: [brokerPassword: 'plain-text-pw', brokerUser: 'mqttuser']
+        ]) }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35])
+        def inputs = result.page.sections[0].inputs.collectEntries { [(it.name): it] }
+
+        then:
+        inputs.brokerPassword.value == '***redacted (password)***'
+        inputs.brokerUser.value == 'mqttuser'
+        inputs.tokenDevice.value == 'Porch Light'
+        inputs.requirePassword.value == true
+        !JsonOutput.toJson(result).contains('plain-text-pw')
+    }
+
+    @spock.lang.Unroll
+    def "raw settings are withheld, not returned partly redacted, when the setting types cannot be read (#why)"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/35') { params -> makeHpmConfigJson() }
+        hubGet.register('/installedapp/statusJson/35') { params -> statusBody }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeSettings: true])
+
+        then: 'the config page still comes back'
+        result.success == true
+        result.page.name == 'prefOptions'
+        result.settingsKeyCount == 5
+
+        and: 'the settings map is absent and the note says why'
+        !result.containsKey('settings')
+        !result.containsKey('settingsRedactionNote')
+        result.settingsNote.contains('withheld')
+        !JsonOutput.toJson(result).contains('HubAdmin-S3cret!')
+
+        where:
+        why                | statusBody
+        'empty body'       | ''
+        'no appSettings'   | JsonOutput.toJson([installedApp: [id: 35], appState: []])
+        'unparseable body' | 'not json'
+    }
+
+    def "raw settings are withheld when the setting types leave a non-empty neutral-named value uncovered"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson([
+            settings: [customField: 'HubAdmin-S3cret!', ruleEnable: true, authToken: 'tok-456', spare: '', flag: false]
+        ]) }
+        // customField is missing from statusJson and nothing about its name says secret: the map is withheld.
+        registerStatusJson([ruleEnable: 'bool'])
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeSettings: true])
+
+        then:
+        result.success == true
+        !result.containsKey('settings')
+        result.settingsNote.contains('withheld')
+        result.settingsNote.contains('customField')
+        !result.settingsNote.contains('authToken')
+        !JsonOutput.toJson(result).contains('HubAdmin-S3cret!')
+        !JsonOutput.toJson(result).contains('tok-456')
+    }
+
+    def "a statusJson row with a name but no type does not count as typed, so the map is withheld"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson([
+            settings: [customField: 'HubAdmin-S3cret!', ruleEnable: true]
+        ]) }
+        registerStatusJson([ruleEnable: 'bool', customField: null])
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeSettings: true])
+
+        then:
+        result.success == true
+        !result.containsKey('settings')
+        result.settingsNote.contains('carries no type for customField')
+        !JsonOutput.toJson(result).contains('HubAdmin-S3cret!')
+    }
+
+    def "untyped settings that are empty, boolean or credential-named do not withhold the map"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson([
+            settings: [authToken: 'tok-456', spare: '', flag: false, ruleEnable: true]
+        ]) }
+        registerStatusJson([ruleEnable: 'bool'])
+
+        when:
+        def s = script.toolGetAppConfig([appId: 35, includeSettings: true]).settings
+
+        then:
+        s.authToken == '***redacted (password)***'
+        s.spare == ''
+        s.flag == false
+        s.ruleEnable == true
+    }
+
+    def "raw settings are withheld when the statusJson read throws"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/35') { params -> makeHpmConfigJson() }
+        hubGet.register('/installedapp/statusJson/35') { params -> throw new RuntimeException('read timed out') }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeSettings: true])
+
+        then:
+        result.success == true
+        !result.containsKey('settings')
+        result.settingsNote.contains('withheld')
+        !JsonOutput.toJson(result).contains('HubAdmin-S3cret!')
+    }
+
+    def "an app with no settings skips the setting-type read"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson([settings: [:]]) }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeSettings: true])
+
+        then:
+        result.settings == [:]
+        !result.containsKey('settingsRedactionNote')
+        !hubGet.calls.any { it.path.startsWith('/installedapp/statusJson/') }
+    }
+
+    @spock.lang.Unroll
+    def "_appConfigSecretName('#name') == #expected"() {
+        expect:
+        script._appConfigSecretName(name) == expected
+
+        where:
+        name                    | expected
+        // credential-shaped names
+        'hpmPassword'           | true
+        'HPMPassword'           | true
+        'password'              | true
+        'hubpassword'           | true
+        'password2'             | true
+        'smtp_passwd'           | true
+        'routerPwd'             | true
+        'mqttPass'              | true
+        'MQTT_PASS'             | true
+        'passWord'              | true
+        'wifiPassphrase'        | true
+        'lockPasscode'          | true
+        'clientSecret'          | true
+        'oauthClientSecret'     | true
+        'refresh_token'         | true
+        'authtoken'             | true
+        'apiTokens'             | true
+        'apiKey'                | true
+        'API_KEY'               | true
+        'apikey'                | true
+        'openWeatherApiKey'     | true
+        'privateKey'            | true
+        'awsAccessKey'          | true
+        'credentials'           | true
+        'cloudCredential'       | true
+        'psk'                   | true
+        'accessTokenRefresh'    | true
+        // look-alikes and metadata about a secret
+        'bypass'                | false
+        'bypassDeviceAllowlist' | false
+        'byPass'                | false
+        'passThrough'           | false
+        'passMode'              | false
+        'compass'               | false
+        'passive'               | false
+        'tokenizer'             | false
+        'secretary'             | false
+        'tokenCount'            | false
+        'tokenExpiry'           | false
+        'passwordSet'           | false
+        'passwordLength'        | false
+        'apiKeyCount'           | false
+        'tokenUrl'              | false
+        // OAuth access tokens are left to the redactAccessTokens setting
+        'accessToken'           | false
+        'access_token'          | false
+        'ACCESS_TOKEN'          | false
+        'keypadDevice'          | false
+        'monkey'                | false
+        'triggerDevice'         | false
+        'dm~123~Day'            | false
+        ''                      | false
+        null                    | false
+    }
+
+    @spock.lang.Unroll
+    def "_appConfigIsSecretSetting(#name, #type, #value) == #expected"() {
+        expect:
+        script._appConfigIsSecretSetting(name, type, value) == expected
+
+        where:
+        name           | type                | value      | expected
+        'linkPhrase'   | 'password'          | 'abc'      | true
+        'linkPhrase'   | 'password'          | ''         | false
+        'linkPhrase'   | 'password'          | null       | false
+        'linkPhrase'   | 'text'              | 'abc'      | false
+        'hubPassword'  | null                | 'abc'      | true
+        'hubPassword'  | 'text'              | 'abc'      | true
+        'hubPassword'  | 'textarea'          | 'abc'      | true
+        'lockPin'      | 'number'            | 1234       | true
+        'lockCodes'    | 'text'              | '1111'     | true
+        'userCodes'    | 'text'              | '2222'     | true
+        'userPins'     | 'text'              | '3333'     | true
+        'pin'          | 'text'              | '4444'     | true
+        'ledPin'       | 'number'            | 2          | false
+        'relayPin'     | 'number'            | 4          | false
+        'gpioPin'      | 'number'            | 13         | false
+        'pinCodeLength' | 'number'           | 4          | false
+        'pinMode'      | 'text'              | 'output'   | false
+        'sirenPin'     | 'text'              | '5555'     | true
+        'lockPasscode' | 'number'            | 1234       | true
+        'apiTokens'    | null                | ['a', 'b'] | true
+        'apiTokens'    | null                | []         | false
+        'usePassword'  | 'bool'              | true       | false
+        'usePassword'  | null                | false      | false
+        'passwordMode' | 'enum'              | 'strict'   | false
+        'tokenDevice'  | 'capability.switch' | 'Porch'    | false
+        'tokenDevice'  | 'device.Switch'     | 'Porch'    | false
     }
 
     // -------------------------------------------------------------------------
@@ -1010,7 +1436,8 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         result.appId == 9999
         result.error.toLowerCase().contains('not found')
         // Steers the agent to the cheap identity probe instead of dead-end retries
-        result.error.contains('summary')
+        result.note.contains('summary')
+        result.note.contains("hub_get_tool_guide(section='builtin_app_tools_apps')")
     }
 
     @spock.lang.Unroll
@@ -1033,10 +1460,27 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         inner.fingerprint == 'app not found (404)'
         inner.status == 404
         inner.error.toLowerCase().contains('not found')
-        inner.error.contains('summary')
+        inner.note.contains('summary')
 
         where:
         useGateways << [true, false]
+    }
+
+    def "a configure page fetch that throws a 410 is the same clean not-found"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/9999') { params ->
+            throw new FakeHttpException(410)
+        }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 9999])
+
+        then:
+        result.success == false
+        result.fingerprint == 'app not found (404)'
+        result.status == 410
+        result.error.contains('not found (HTTP 410')
     }
 
     def "summary=true returns a clean not-found when the identity fetch throws a 404"() {
@@ -1057,7 +1501,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         result.status == 404
         result.appId == 9999
         result.error.toLowerCase().contains('not found')
-        result.error.contains('summary')
+        result.note.contains('summary')
     }
 
     def "returns success=false with fingerprint when response is not a JSON object"() {
@@ -1073,6 +1517,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         result.error != null
         // Production code's fingerprint for "top-level not a Map"
         result.fingerprint == 'top-level not a Map'
+        result.note.contains("hub_get_tool_guide(section='builtin_app_tools_apps')")
     }
 
     @spock.lang.Unroll
@@ -1180,7 +1625,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "returns success=false with fingerprint and hub_list_app_pages hint when configPage.sections is not a list"() {
+    def "returns success=false with fingerprint and a page.hrefs note when configPage.sections is not a list"() {
         given:
         settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params ->
@@ -1198,8 +1643,8 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         then:
         result.success == false
         result.fingerprint == 'sections not a list'
-        // Note must guide the agent toward hub_list_app_pages and away from dead-end retries
-        result.error.contains('hub_list_app_pages')
+        // The note must point the agent at the default page's page.hrefs instead of dead-end retries
+        result.note.contains('page.hrefs')
     }
 
     @spock.lang.Unroll
@@ -1225,7 +1670,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.fingerprint == 'sections not a list'
-        inner.error.contains('hub_list_app_pages')
+        inner.note.contains('page.hrefs')
 
         where:
         useGateways << [true, false]
@@ -1813,15 +2258,13 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     }
 
     // -------------------------------------------------------------------------
-    // Rule Machine disabled-action marker
+    // Page controls and Rule Machine disabled actions
     // -------------------------------------------------------------------------
 
-    // On mainPage RM's only carrier of a disabled action is the red italic span around
-    // the row text (disable<N> settings stay blank; selectActions also flips the
-    // disable<N> button title and icon); the tag-stripping read used to render a
-    // disabled action exactly like a live one. Shape mirrors a live RM 5.1 mainPage
-    // actions paragraph (fw 2.5.2), including a condition's green (T) span and a
-    // *BROKEN* marker, which is red but NOT italic.
+    // RM 5.1's thisActionLabel wraps a disabled action in a red italic span (fw 2.5.2; the
+    // selectActions header legend uses the same markup). Shape mirrors a live mainPage actions
+    // paragraph, including a condition's green (T) span and a *BROKEN* marker, which is red but
+    // NOT italic.
     private static final String RM_ACTIONS_PARAGRAPH =
         "IF (Switch on<span style='color:green'>(T)</span>) THEN\n" +
         "\t<span style='color:red'><i>Notify Pushover: 'Fixed mismatch'\n</i></span>" +
@@ -1834,176 +2277,6 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
             sections: [[title: 'Actions', input: [], body: [[element: 'paragraph', description: paragraphHtml]]]]]])
     }
 
-    def "RM disabled actions are marked in paragraphs and listed in disabledActions"() {
-        given:
-        settingsMap.enableRead = true
-        hubGet.register('/installedapp/configure/json/35') { params -> rmActionsPageJson(RM_ACTIONS_PARAGRAPH) }
-
-        when:
-        def result = script.toolGetAppConfig([appId: 35])
-        def para = result.page.sections[0].paragraphs[0]
-
-        then: 'the disabled row carries the mark, the live row and the broken marker do not'
-        para.contains("[DISABLED] Notify Pushover: 'Fixed mismatch'")
-        para.contains("\tNotify Pushover: 'still cooling'")
-        !para.contains("[DISABLED] Notify Pushover: 'still cooling'")
-        para.contains("\tOn: Lamp *BROKEN*")
-        !para.contains('[DISABLED] On: Lamp *BROKEN*')
-        !para.contains('[DISABLED] *BROKEN*')
-        !para.contains('<span')
-
-        and: 'the structured list names only the disabled action'
-        result.disabledActions == [[text: "Notify Pushover: 'Fixed mismatch'"]]
-        result.disabledActionsNote.contains('[DISABLED]')
-        result.disabledActionsNote.contains('selectActionsX')
-    }
-
-    @spock.lang.Unroll
-    def "RM selectActions legend span '#legend' is not reported as a disabled action"() {
-        given:
-        settingsMap.enableRead = true
-        // The table header wraps its colour legend in the same red italic markup; RM
-        // pluralizes it by count (live: "Disabled Action" with one row, "Disabled Actions" with two).
-        def html = "<th>Actions for <b>My Rule</b><span style='color:red'>           <i>${legend}</i></span></th>" +
-            "<td><span style='color:red'><i>Delay 0:02:00\n</i></span></td>"
-        hubGet.register('/installedapp/configure/json/35/selectActions') { params -> rmActionsPageJson(html, 'selectActions') }
-
-        when:
-        def result = script.toolGetAppConfig([appId: 35, pageName: 'selectActions'])
-
-        then:
-        result.disabledActions == [[text: 'Delay 0:02:00']]
-        result.page.sections[0].paragraphs[0].contains(legend)
-        !result.page.sections[0].paragraphs[0].contains("[DISABLED] ${legend}")
-
-        where:
-        legend << ['Disabled Action', 'Disabled Actions']
-    }
-
-    def "a page with no disabled RM actions omits disabledActions"() {
-        given:
-        settingsMap.enableRead = true
-        hubGet.register('/installedapp/configure/json/35') { params ->
-            rmActionsPageJson("Notify Pushover: 'live'\n<span style='color:red'>*BROKEN*</span>")
-        }
-
-        when:
-        def result = script.toolGetAppConfig([appId: 35])
-
-        then:
-        !result.containsKey('disabledActions')
-        !result.containsKey('disabledActionsNote')
-    }
-
-    def "embedded controls retain name pairing across exact and multiple CSS classes"() {
-        given:
-        settingsMap.enableRead = true
-        def html = "<div class='notsubmitOnChange'>Not a control</div>" +
-            "<input type='hidden' name='before.type' value='button'>" +
-            "<div class='submitOnChange' title='Before' data-stateAttribute='first'>First</div>" +
-            "<div class='form-group'><input type='hidden' name='928.type' value='button'></div>" +
-            "<div><div class='submitOnChange app-button-link' title='' onclick='buttonClick(this); return false;' " +
-            "data-stateAttribute='setManHeat' style='color:red;cursor:pointer;font-size:1em' " +
-            "title='Set Heating Setpoint'>68°</div></div><input type='hidden' name='settings[928]' value=''>" +
-            '<input type="hidden" name="after.type" value="button">' +
-            '<div class="app-button-link submitOnChange extra" title="After" data-stateAttribute="last">Last</div>' +
-            "<div class='submitOnChange-extra'>Also not a control</div>"
-        hubGet.register('/installedapp/configure/json/35/selectActions') { params -> rmActionsPageJson(html, 'selectActions') }
-
-        when:
-        def result = script.toolGetAppConfig([appId: 35, pageName: 'selectActions'])
-
-        then:
-        result.page.sections[0].embeddedActions == [
-            [name: 'before', title: 'Before', stateAttribute: 'first', description: 'First'],
-            [name: '928', title: 'Set Heating Setpoint', stateAttribute: 'setManHeat', description: '68°'],
-            [name: 'after', title: 'After', stateAttribute: 'last', description: 'Last']]
-    }
-
-    def "selectActions embeddedActions flag the disabled action row with disabled:true"() {
-        given:
-        settingsMap.enableRead = true
-        // Two RM action rows as the selectActions table emits them: the hidden button-name
-        // input precedes each row's submitOnChange div; row 2 is disabled.
-        def html = "<input type='hidden' name='1.0.false.type' value='button'>" +
-            "<div class='submitOnChange' onclick='buttonClick(this)' data-stateAttribute='doAct' style='color:purple'>Thermostats: Tstat --> Cool: 85.0</div>" +
-            "<input type='hidden' name='2.0.false.type' value='button'>" +
-            "<div class='submitOnChange' onclick='buttonClick(this)' data-stateAttribute='doAct' style='color:purple'>" +
-            "<span style='color:red'><i>Notify Pushover: 'Fixed mismatch'\n</i></span></div>"
-        hubGet.register('/installedapp/configure/json/35/selectActions') { params -> rmActionsPageJson(html, 'selectActions') }
-
-        when:
-        def result = script.toolGetAppConfig([appId: 35, pageName: 'selectActions'])
-        def rows = result.page.sections[0].embeddedActions
-
-        then:
-        rows.size() == 2
-        rows[0].name == '1.0.false'
-        !rows[0].containsKey('disabled')
-        rows[1].name == '2.0.false'
-        rows[1].disabled == true
-        rows[1].description == "Notify Pushover: 'Fixed mismatch'"
-
-        and: 'no disable2 button on the page, so no disableButton is guessed'
-        result.disabledActions == [[text: "Notify Pushover: 'Fixed mismatch'"]]
-    }
-
-    @spock.lang.Unroll
-    def "RM's raw less-than comparator survives tag stripping (#cmp) in paragraphs and embedded action rows"() {
-        given:
-        settingsMap.enableRead = true
-        // RM renders the comparator as a raw `<` inside span markup (captured from a hub log line);
-        // a bare `<[^>]+>` tag pattern swallowed "< 100<span ...>" as one tag (issue #508).
-        def cond = "IF (Variable local<span style='color:black'>(0)</span> is ${cmp} 100<span style='color:green'>(T)</span><span style='color:green'> [TRUE]</span>) THEN"
-        def html = "${cond}\n" +
-            "<input type='hidden' name='1.0.true.type' value='button'>" +
-            "<div class='submitOnChange' onclick='buttonClick(this)' data-stateAttribute='doAct' style='color:purple'>${cond}</div>"
-        hubGet.register('/installedapp/configure/json/35/selectActions') { params -> rmActionsPageJson(html, 'selectActions') }
-
-        when:
-        def result = script.toolGetAppConfig([appId: 35, pageName: 'selectActions'])
-
-        then:
-        result.page.sections[0].paragraphs[0].contains("IF (Variable local(0) is ${cmp} 100(T) [TRUE]) THEN")
-        result.page.sections[0].embeddedActions[0].description == "IF (Variable local(0) is ${cmp} 100(T) [TRUE]) THEN"
-
-        and: 'the direct helper agrees'
-        script.stripAppConfigHtml(cond) == "IF (Variable local(0) is ${cmp} 100(T) [TRUE]) THEN"
-
-        where:
-        cmp << ['<', '<=']
-    }
-
-    def "several disabled spans across paragraphs and sections are all marked, in order"() {
-        given:
-        settingsMap.enableRead = true
-        def red = { String t -> "<span style='color:red'><i>${t}\n</i></span>" }
-        def p1 = "IF (Switch on) THEN\n\t" + red('Log: a1') + "\tLog: live1\n\t" + red('Log: a2') +
-            "\tLog: live2\n\tLog: live3\n\t" + red('Log: a3') + "END-IF"
-        def p2 = "\tLog: live4\n\t" + red('Log: b1')
-        hubGet.register('/installedapp/configure/json/35') { params ->
-            makeAppConfigJson([configPage: [name: 'mainPage', title: 'Rule', install: true, refreshInterval: null,
-                sections: [
-                    [title: 'Actions', input: [], body: [[element: 'paragraph', description: p1]]],
-                    [title: 'More', input: [], body: [[element: 'paragraph', description: p2]]]
-                ]]])
-        }
-
-        when:
-        def result = script.toolGetAppConfig([appId: 35])
-        def para1 = result.page.sections[0].paragraphs[0]
-        def para2 = result.page.sections[1].paragraphs[0]
-
-        then:
-        ['a1', 'a2', 'a3'].every { para1.contains("[DISABLED] Log: ${it}") }
-        para2.contains('[DISABLED] Log: b1')
-        ['live1', 'live2', 'live3'].every { para1.contains("\tLog: ${it}") && !para1.contains("[DISABLED] Log: ${it}") }
-        !para2.contains('[DISABLED] Log: live4')
-        !para1.contains('<span') && !para2.contains('<span')
-        para1.count('[DISABLED]') == 3
-        result.disabledActions == [[text: 'Log: a1'], [text: 'Log: a2'], [text: 'Log: a3'], [text: 'Log: b1']]
-    }
-
     // Verbatim selectActions row (fw 2.5.2 / RM 5.1; a disabled row's disable<N> button reads
     // 'Enable Action' with a checked icon). N is RM's action index, so after
     // removeAction(index:2) on a 3-action rule the rows are 1 and 3 and there is no disable2.
@@ -2013,40 +2286,100 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         "<td><div class='form-group'><input type='hidden' name='disable${n}.type' value='button'></div><div><div class='submitOnChange' onclick='buttonClick(this)' style='color:purple;cursor:pointer;font-size:15px' title='${title}'><i class='${title == 'Enable Action' ? 'he-checkbox-checked' : 'he-checkbox-unchecked'}'></i></div></div><input type='hidden' name='settings[disable${n}]' value=''></td></tr>"
     }
 
-    def "selectActions pairs a disabled row with its disable<N> button by action index"() {
+    private static final String RM_SELECT_ACTIONS =
+        "<table><tr><th>Actions for <b>R</b><span style='color:red'>           <i>Disabled Action</i></span></th></tr>" +
+        rmSelectActionsRow(1, "Log: 'one'", 'Disable Action') +
+        rmSelectActionsRow(3, "<span style='color:red'><i>Log: 'three'\n</i></span>", 'Enable Action') +
+        "</table>"
+
+    def "a Rule Machine paragraph holding a disabled action lists exactly that row's text; others stay plain text"() {
         given:
         settingsMap.enableRead = true
-        def html = "<table><tr><th>Actions for <b>R</b><span style='color:red'>           <i>Disabled Action</i></span></th></tr>" +
-            rmSelectActionsRow(1, "Log: 'one'", 'Disable Action') +
-            rmSelectActionsRow(3, "<span style='color:red'><i>Log: 'three'\n</i></span>", 'Enable Action') +
-            "</table>"
+        def p2 = "\tLog: live4\n\tOn: Lamp <span style='color:red'>*BROKEN*</span>"
+        hubGet.register('/installedapp/configure/json/35') { params ->
+            makeAppConfigJson([configPage: [name: 'mainPage', title: 'Rule', install: true, refreshInterval: null,
+                sections: [
+                    [title: 'Actions', input: [], body: [[element: 'paragraph', description: RM_ACTIONS_PARAGRAPH]]],
+                    [title: 'More', input: [], body: [[element: 'paragraph', description: p2]]]
+                ]]])
+        }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35])
+        def para = result.page.sections[0].paragraphs[0]
+
+        then: 'of three actions, only the one in the hub marker is listed; the text is the stripped paragraph, no mark of ours'
+        para.disabled == ["Notify Pushover: 'Fixed mismatch'"]
+        para.text.contains("\tNotify Pushover: 'Fixed mismatch'\n")
+        para.text.contains("\tNotify Pushover: 'still cooling'")
+        para.text.contains("On: Lamp *BROKEN*")
+        !para.text.contains('[DISABLED]')
+        !para.text.contains('<span')
+
+        and: 'a red *BROKEN* span is not the disabled marker'
+        result.page.sections[1].paragraphs == ["Log: live4\n\tOn: Lamp *BROKEN*"]
+
+        and: 'the scraped lists are gone'
+        !result.containsKey('disabledActions')
+        !result.containsKey('disabledActionsNote')
+        !result.page.sections[0].containsKey('embeddedActions')
+    }
+
+    def "selectActions controls name each row's buttons; a disabled action's disable<N> reads 'Enable Action'"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/35/selectActions') { params -> rmActionsPageJson(RM_SELECT_ACTIONS, 'selectActions') }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, pageName: 'selectActions'])
+        def buttons = result.controls.findAll { it.kind == 'button' }
+        def named = { String n -> buttons.find { it.name == n } }
+
+        then: 'the form engine read the row buttons, keyed by action index (no disable2)'
+        buttons*.name == ['chkBox1', '1.0.false', 'disable1', 'chkBox3', '3.0.false', 'disable3']
+        buttons.every { it.control_id && it.disabled == false && it.submit_on_change == true }
+        named('1.0.false').control_id == '1.0.false||doAct'
+
+        and: 'which action is disabled, and the control that re-enables it'
+        named('disable3').title == 'Enable Action'
+        named('disable1').title == 'Disable Action'
+        named('3.0.false').title.trim() == "Log: 'three'"
+        named('1.0.false').title.trim() == "Log: 'one'"
+
+        and: 'the paragraph lists the disabled row, not the legend shown while an action is disabled'
+        result.page.sections[0].paragraphs[0].disabled == ["Log: 'three'"]
+        !result.page.sections[0].paragraphs[0].text.contains('[DISABLED]')
+
+        and: 'controls use the form tools public shape'
+        buttons.every { !it.containsKey('stateAttribute') && !it.containsKey('params') }
+    }
+
+    def "a page with no disabled Rule Machine action has plain paragraphs and every disable<N> reads 'Disable Action'"() {
+        given:
+        settingsMap.enableRead = true
+        def html = "<table>" + rmSelectActionsRow(1, "Log: 'one'", 'Disable Action') + "</table>"
         hubGet.register('/installedapp/configure/json/35/selectActions') { params -> rmActionsPageJson(html, 'selectActions') }
 
         when:
         def result = script.toolGetAppConfig([appId: 35, pageName: 'selectActions'])
-        def rows = result.page.sections[0].embeddedActions
 
         then:
-        rows*.name == ['chkBox1', '1.0.false', 'disable1', 'chkBox3', '3.0.false', 'disable3']
-        rows.findAll { it.disabled }*.name == ['3.0.false']
-        rows.find { it.name == '3.0.false' }.description == "Log: 'three'"
-        rows.find { it.name == '1.0.false' }.description == "Log: 'one'"
-        rows.find { it.name == 'disable3' }.title == 'Enable Action'
-        rows.find { it.name == 'disable1' }.title == 'Disable Action'
-        result.disabledActions == [[text: "Log: 'three'", disableButton: 'disable3']]
-        !result.page.sections[0].paragraphs[0].contains('[DISABLED] Disabled Action')
+        result.page.sections[0].paragraphs[0] instanceof String
+        result.controls.find { it.name == 'disable1' }.title == 'Disable Action'
     }
 
-    def "a non-RM app with red italic spans gets no disabled-action marks"() {
+    def "controls carry an HTML button's title, stateAttribute-keyed control_id and the page's navigation"() {
         given:
         settingsMap.enableRead = true
-        def html = "<input type='hidden' name='1.0.false.type' value='button'>" +
-            "<div class='submitOnChange' data-stateAttribute='doAct'><span style='color:red'><i>Warning: battery low\n</i></span></div>"
+        def html = "<div class='form-group'><input type='hidden' name='928.type' value='button'></div>" +
+            "<div><div class='submitOnChange app-button-link' title='' onclick='buttonClick(this); return false;' " +
+            "data-stateAttribute='setManHeat' style='color:red;cursor:pointer;font-size:1em' " +
+            "title='Set Heating Setpoint'>68°</div></div><input type='hidden' name='settings[928]' value=''>"
         hubGet.register('/installedapp/configure/json/35') { params ->
             makeAppConfigJson([
-                app: [id: 35, trueLabel: 'Hall', label: 'Hall', name: 'Room Lights', disabled: false, installed: true,
-                      appType: [name: 'Room Lights', namespace: 'hubitat']],
-                configPage: [name: 'mainPage', title: 'Hall', install: true, refreshInterval: null,
+                app: [id: 35, trueLabel: 'Tstat', label: 'Tstat', name: 'Thermostat Controller', disabled: false, installed: true,
+                      appType: [name: 'Thermostat Controller', namespace: 'hubitat']],
+                configPage: [name: 'mainPage', title: 'Tstat', install: true, refreshInterval: null,
                     sections: [[title: 'Main', input: [], body: [[element: 'paragraph', description: html]]]]]])
         }
 
@@ -2054,12 +2387,74 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         def result = script.toolGetAppConfig([appId: 35])
 
         then:
+        result.controls.find { it.name == '928' } == [name: '928', kind: 'button', title: 'Set Heating Setpoint', disabled: false,
+                                                      submit_on_change: true, control_id: '928||setManHeat']
+        result.controls.find { it.kind == 'navigation' }.control_id == '_action_update|Done|'
+    }
+
+    @spock.lang.Unroll
+    def "RM's raw less-than comparator survives tag stripping (#cmp) in paragraphs and control titles"() {
+        given:
+        settingsMap.enableRead = true
+        // RM renders the comparator as a raw `<` inside span markup (captured from a hub log line);
+        // a bare `<[^>]+>` tag pattern swallowed "< 100<span ...>" as one tag (issue #508).
+        def cond = "IF (Variable local<span style='color:black'>(0)</span> is ${cmp} 100<span style='color:green'>(T)</span><span style='color:green'> [TRUE]</span>) THEN"
+        def html = "${cond}\n" +
+            "<input type='hidden' name='1.0.true.type' value='button'>" +
+            "<div class='submitOnChange' onclick='buttonClick(this)' data-stateAttribute='doAct' style='color:purple'>${cond}</div>" +
+            "<input type='hidden' name='settings[1.0.true]' value=''>"
+        hubGet.register('/installedapp/configure/json/35/selectActions') { params -> rmActionsPageJson(html, 'selectActions') }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, pageName: 'selectActions'])
+
+        then:
+        result.page.sections[0].paragraphs[0].contains("IF (Variable local(0) is ${cmp} 100(T) [TRUE]) THEN")
+        result.controls.find { it.name == '1.0.true' }.title == "IF (Variable local(0) is ${cmp} 100(T) [TRUE]) THEN"
+
+        and: 'the direct helper agrees'
+        script.stripAppConfigHtml(cond) == "IF (Variable local(0) is ${cmp} 100(T) [TRUE]) THEN"
+
+        where:
+        cmp << ['<', '<=']
+    }
+
+    def "a non-RM app's red italic span is ordinary emphasis, not a disabled flag"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/35') { params ->
+            makeAppConfigJson([
+                app: [id: 35, trueLabel: 'Hall', label: 'Hall', name: 'Room Lights', disabled: false, installed: true,
+                      appType: [name: 'Room Lights', namespace: 'hubitat']],
+                configPage: [name: 'mainPage', title: 'Hall', install: true, refreshInterval: null,
+                    sections: [[title: 'Main', input: [], body: [[element: 'paragraph', description: "<span style='color:red'><i>Warning: battery low\n</i></span>"]]]]]])
+        }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35])
+
+        then:
         result.success == true
-        result.page.sections[0].paragraphs[0] == 'Warning: battery low'
-        !result.containsKey('disabledActions')
-        !result.containsKey('disabledActionsNote')
-        result.page.sections[0].embeddedActions.size() == 1
-        !result.page.sections[0].embeddedActions[0].containsKey('disabled')
+        result.page.sections[0].paragraphs == ['Warning: battery low']
+    }
+
+    def "a page the form engine cannot model still reads, with controlsError instead of controls"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/35') { params ->
+            makeAppConfigJson([configPage: [name: 'mainPage', title: 'Rule', install: true, refreshInterval: null, sections: [[title: 'S', input: [
+                [element: 'input', name: 'dup', type: 'text', title: 'First'],
+                [element: 'input', name: 'dup', type: 'text', title: 'Second']], body: []]]]])
+        }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35])
+
+        then:
+        result.success == true
+        result.page.sections[0].inputs*.title == ['First', 'Second']
+        !result.containsKey('controls')
+        result.controlsError == 'Native form contains ambiguous fields'
     }
 
     @spock.lang.Unroll
@@ -2081,22 +2476,22 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_get_app_config via dispatch marks RM disabled actions (useGateways=#useGateways)"() {
+    def "hub_get_app_config via dispatch returns controls and the disabled rows (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableRead = true
-        hubGet.register('/installedapp/configure/json/35') { params -> rmActionsPageJson(RM_ACTIONS_PARAGRAPH) }
+        hubGet.register('/installedapp/configure/json/35/selectActions') { params -> rmActionsPageJson(RM_SELECT_ACTIONS, 'selectActions') }
 
         when:
-        def response = mcpDriver.callTool('hub_get_app_config', [appId: 35])
+        def response = mcpDriver.callTool('hub_get_app_config', [appId: 35, pageName: 'selectActions'])
 
         then:
         response.error == null
         !response.result.isError
         def inner = mcpDriver.parseInner(response)
         inner.success == true
-        inner.disabledActions == [[text: "Notify Pushover: 'Fixed mismatch'"]]
-        inner.page.sections[0].paragraphs[0].contains("[DISABLED] Notify Pushover: 'Fixed mismatch'")
+        inner.page.sections[0].paragraphs[0].disabled == ["Log: 'three'"]
+        inner.controls.find { it.name == 'disable3' }.title == 'Enable Action'
 
         where:
         useGateways << [true, false]

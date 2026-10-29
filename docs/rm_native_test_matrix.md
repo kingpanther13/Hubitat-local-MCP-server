@@ -30,7 +30,6 @@ Every matrix section is covered by a T### range in `tests/BAT-rm-native-crud.md`
 
 **Aspirational / environment-dependent tests** (may be skipped depending on hub state):
 
-- **T445** — flag-poisoning recovery/self-heal (requires ability to intentionally poison, which may not be safely exposable)
 - **T446** — stuck `state.editCond` recovery (requires reaching a stuck state)
 - **T449** — Rule Machine not installed (requires a hub without RM; usually can't be safely uninstalled on production hubs)
 - **T452** — MCP feature-flag gating (requires the legacy-gating setting to actually exist, which is a #120 Phase 3 concern)

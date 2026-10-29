@@ -69,6 +69,10 @@ class SetRuleSurfaceSpec extends ToolSpecBase {
         !script._isRuleReadCall('hub_set_rule_paused', [:])
         !script._isRuleReadCall('hub_set_rule', 'invalid arguments')
         !script._isRuleReadCall('hub_set_rule', null)
+
+        and: 'hub_set_native_app is a write tool in every call shape; its help lives in the read-only guide'
+        !script._isRuleReadCall('hub_set_native_app', [:])
+        !script._isRuleReadCall('hub_set_native_app', [operation: 'update', app_id: 5])
     }
 
     def 'form rejects unrelated native apps before executing helper'() {

@@ -7,12 +7,13 @@ import support.ToolSpecBase
  * enableMandatoryBPS gate reads is normally undeclared in tool inputSchema: declaring
  * a property on every write tool would inflate the flat tools/list toward the 120KB cap. The LLM
  * learns the param from the block-message contract + the best_practice_reference guide instead.
- * hub_set_rule is the exception: its strict top-level schema must declare the accepted key.
+ * hub_set_rule and hub_set_native_app are the exceptions: their strict top-level schemas must
+ * declare the accepted key.
  * This guards against spreading that property across the remaining catalog.
  */
 class BpsSchemaSizeGuardSpec extends ToolSpecBase {
 
-    def "only the strict consolidated rule schema declares bestPracticeKey"() {
+    def "only the strict operation schemas declare bestPracticeKey"() {
         when:
         def offenders = script.getAllToolDefinitions().findAll { tool ->
             tool?.inputSchema?.properties instanceof Map &&
@@ -20,7 +21,7 @@ class BpsSchemaSizeGuardSpec extends ToolSpecBase {
         }*.name
 
         then:
-        offenders == ['hub_set_rule']
+        offenders as Set == ['hub_set_rule', 'hub_set_native_app'] as Set
     }
 
     // Issue #518: a client that drops undeclared top-level arguments loses the key on a direct

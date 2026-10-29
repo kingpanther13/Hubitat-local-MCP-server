@@ -119,17 +119,13 @@ Phase 2 -- sealing:
 10. After `hasRule`, the `doneST` button is a no-op. The proper exit is via the
     back-nav `_action_previous=Done`.
 
-### predCapabs leak and the ghost ifThen workaround
+### predCapabs leak
 
 After `hasRule` seals the expression, `atomicState.predCapabs` retains the RE's
-condition context. A subsequent `addAction` for a plain (non-expression) action
-would be wrapped in `IF(**Broken Condition**)`. `_rmClearPredCapabsViaGhostIfThen`
-resets `predCapabs` by opening a `condActs/getIfThen` slot and immediately
-canceling it -- the `getIfThen` initializer zeroes predCapabs; `actionCancel`
-discards the slot before it bakes.
-
-See `_rmClearPredCapabsViaGhostIfThen` source comment for the full probe-matrix
-evidence.
+condition context, so a plain action added through the old wizard rendered under
+`IF(**Broken Condition**)`. The wizard and its ghost-IF workaround are removed;
+native document updates (`hub_set_rule(operation:'update')`) write actions without
+going through that editor state.
 
 ---
 
@@ -243,9 +239,7 @@ of `uVar<P>`, so they are mutually exclusive at the schema level.
 **moreParams_no_reveal (consumer-actionable):**
 
 If the `moreParams` button click does not reveal a new `cpType<P>.<N>` field in the
-re-introspected schema, the parameter cannot be wired. The implementation records the
-skipped parameter in `settingsSkipped` with `reason='moreParams_no_reveal'` and sets
-`partial=true` on the action result rather than silently dropping the parameter. Callers
-should inspect `settingsSkipped` for entries with this reason and consult `repairHints`
-for next steps. Common causes: firmware version does not support parameters for this
-command, or the command name is invalid and RM did not allocate a slot.
+re-rendered page, the parameter cannot be wired: a field the page does not render is refused
+before anything is written, and the refusal names the field. Common causes: firmware version
+does not support parameters for this command, or the command name is invalid and RM did not
+allocate a slot.

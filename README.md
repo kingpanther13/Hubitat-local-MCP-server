@@ -1,6 +1,6 @@
 # Hubitat MCP Server
 
-A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub. Instead of running a separate Node.js server on another machine, this runs natively on the hub itself — with a built-in rule engine and 116 MCP tools (36 on `tools/list` via category gateways).
+A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub. Instead of running a separate Node.js server on another machine, this runs natively on the hub itself — with a built-in rule engine and 115 MCP tools (36 on `tools/list` via category gateways).
 
 > **BETA SOFTWARE**: This project is ~99% AI-generated ("vibe coded") using Claude. It's a work in progress — contributions and [bug reports](https://github.com/kingpanther13/Hubitat-local-MCP-server/issues) are welcome!
 
@@ -24,7 +24,7 @@ This app lets AI assistants like Claude control your Hubitat smart home through 
 
 > "What's the hub's health status?"
 
-Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub. The server exposes 116 tools total — 13 core tools are always visible, while the rest are organized behind 23 domain-named gateways to keep the tool list manageable. If your client handles long tool lists well, you can disable the gateways via the **Consolidate tools behind category gateways** setting and every tool is exposed individually instead. (Counts here describe the shipped catalog; the runtime count on `tools/list` varies based on enabled settings.)
+Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub. The server exposes 115 tools total — 13 core tools are always visible, while the rest are organized behind 23 domain-named gateways to keep the tool list manageable. If your client handles long tool lists well, you can disable the gateways via the **Consolidate tools behind category gateways** setting and every tool is exposed individually instead. (Counts here describe the shipped catalog; the runtime count on `tools/list` varies based on enabled settings.)
 
 ## Requirements
 
@@ -255,9 +255,9 @@ For free remote access without a Hubitat Cloud subscription:
 
 ## Features
 
-### MCP Tools (116 total — 36 on tools/list)
+### MCP Tools (115 total — 36 on tools/list)
 
-The server has 116 tools total. To keep the MCP `tools/list` manageable, **13 core tools** are always visible and the remaining tools are organized behind **23 domain-named gateways** (8 read-only `hub_read_*` gateways + 15 write-bearing `hub_manage_*` gateways). The AI sees 36 items on `tools/list` (13 + 23 gateways). A tool may appear under more than one gateway — read tools inside a mixed `hub_manage_*` gateway are also surfaced in a pure-read `hub_read_*` gateway. Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
+The server has 115 tools total. To keep the MCP `tools/list` manageable, **13 core tools** are always visible and the remaining tools are organized behind **23 domain-named gateways** (8 read-only `hub_read_*` gateways + 15 write-bearing `hub_manage_*` gateways). The AI sees 36 items on `tools/list` (13 + 23 gateways). A tool may appear under more than one gateway — read tools inside a mixed `hub_manage_*` gateway are also surfaced in a pure-read `hub_read_*` gateway. Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
 
 #### Core Tools (13) — Always visible on tools/list
 
@@ -313,7 +313,7 @@ Call a gateway with no arguments to see full parameter schemas. Call with `tool=
 ##### Read-only gateways (8)
 
 <details>
-<summary><b>hub_read_apps_code</b> (11) — App/driver/library listing, source, backups, and HPM (read-only)</summary>
+<summary><b>hub_read_apps_code</b> (10) — App/driver/library listing, source, backups, and HPM (read-only)</summary>
 
 | Tool | Description |
 |------|-------------|
@@ -325,11 +325,10 @@ Call a gateway with no arguments to see full parameter schemas. Call with `tool=
 | `hub_list_backups` | List auto-created source code backups |
 | `hub_get_backup` | Get source from a backup |
 | `hub_list_device_dependents` | Find all apps that reference a specific device (Room Lighting, Rule Machine, Groups, Mode Manager, dashboards, Maker API, etc.) |
-| `hub_get_app_config` | Read an installed app's configuration page (Rule Machine, Room Lighting, Basic Rules, HPM, etc.) — sections, inputs, values. Multi-page apps via `pageName`. Read-only. Read master. |
-| `hub_list_app_pages` | List an app's page names: the live primary page plus every sub-page it links to (Rule Machine, Room Lighting, any classic app), with a curated directory added for HPM. Use before `hub_get_app_config` on multi-page apps to avoid guessing page names. Read master. |
+| `hub_get_app_config` | Read an installed app's configuration page (Rule Machine, Room Lighting, Basic Rules, HPM, etc.) — sections, inputs, values, and the pages it links to (`page.hrefs`); read a linked page with `pageName`. Read-only. Read master. |
 | `hub_list_hpm_packages` | List all packages tracked by HPM — name, version, beta flag, author, and full component inventory (apps, drivers, files with heIDs). Top-level `count` and echoed `hpmAppId`. Auto-discovers HPM's app ID. Pass `includeDrift=true` to also cross-reference HPM-tracked packages against installed apps and drivers (surfacing missing-required components, orphan apps, and orphan drivers under a `drift` key; optional `packageFilter` substring; surfaces `orphanDetection` / `orphanDriverDetection` when registry fetches fail; data-quality warning types: `heid-whitespace-normalized`, `heid-non-scalar-dropped`, `empty-heid`, `skipped-malformed-component` — see `hub_get_tool_guide` for full details). Read master. |
 
-`hub_list_device_dependents`, `hub_get_app_config`, `hub_list_app_pages`, and `hub_list_hpm_packages` are gated by the Read master (ON by default). HPM itself must be installed on the hub.
+`hub_list_device_dependents`, `hub_get_app_config`, and `hub_list_hpm_packages` are gated by the Read master (ON by default). HPM itself must be installed on the hub.
 
 </details>
 
@@ -392,7 +391,7 @@ Monitoring tools are gated by the Read master (ON by default). The network confi
 | `hub_test_custom_rule` | Dry-run a custom-engine rule without executing actions |
 | `hub_list_rules` | List all Rule Machine rules (RM 4.x + 5.x) via official `hubitat.helper.RMUtils` API |
 | `hub_get_rule_health` | Read-only health check on any installed app — surfaces broken markers (with per-marker counts in `brokenMarkerCounts`), multiple-flag poison, configPage errors. |
-| `hub_list_rule_local_variables` | List a Rule Machine rule's local variables with their current values. Distinct from `hub_list_variables` (hub globals). `type` is RM's internal token (see TOOL_GUIDE for the `addLocalVariable` translation). |
+| `hub_list_rule_local_variables` | List a Rule Machine rule's local variables with their current values. Distinct from `hub_list_variables` (hub globals). `type` is RM's internal token (`integer`, `bigdecimal`, `boolean`, `string` or `datetime`; see TOOL_GUIDE's Set Rule Reference). |
 | `hub_get_visual_rule` | List Visual Rules Builder rules (omit `appId`) or read one rule's full JSON definition + format (`classic` whenNodes/thenNodes/elseNodes or `graph` nodes/edges). |
 
 </details>
@@ -621,7 +620,7 @@ Reads (`hub_list_rules`, `hub_get_rule_health`, `hub_get_visual_rule`) are gated
 | `hub_set_rule_paused` | Pause or resume one or more RM rules (`paused=true` pauses, `paused=false` resumes; `ruleId` takes an id or an array; reversible) |
 | `hub_set_rule_private_boolean` | Set the private boolean of one or more RM rules (`ruleId` takes an id or an array) |
 | `hub_set_rule` | Read, create, update or use native RM editor forms. Omit operation for help; unconfirmed writes return argument schemas. |
-| `hub_set_native_app` | Generic native-app create/edit escape hatch: appType + name to create; appId with settings, buttons or walkStep to edit. |
+| `hub_set_native_app` | Create, update or drive the native forms of every other classic app, user and community apps included (`operation`: create/update/form). Omit operation for help; unconfirmed writes return argument schemas. |
 | `hub_set_app_disabled` | Enable or disable an installed app without deleting it. |
 | `hub_delete_native_app` | Delete a classic native app (auto-snapshot to File Manager before deleting). |
 | `hub_clone_native_app` | Clone an existing classic SmartApp via Hubitat's `appCloner` endpoint (deep: child apps + pause state copy; `stageDisabled` lands it disabled). Returns the new `appId`. |
@@ -629,7 +628,7 @@ Reads (`hub_list_rules`, `hub_get_rule_health`, `hub_get_visual_rule`) are gated
 | `hub_import_native_app` | Import previously-exported app JSON into a new instance (lands ACTIVE; `stageDisabled` lands it disabled). Returns the new `appId`. |
 | `hub_get_rule_health` | Read-only health check on any installed app — surfaces broken markers, multiple-flag poison, configPage errors. (also in `hub_read_rules`) |
 
-Reads are gated by the Read master; create/update/delete by the Write master (with `confirm=true` + a recent backup). Both masters are ON by default. Native editor operations use returned controls; unsupported app variants remain explicit capability gaps. The generic `hub_set_native_app` escape hatch remains available for classic-app settings, buttons and wizard navigation. RM actions, triggers, expressions and local variables use `hub_set_rule` rather than generic shortcut fields.
+Reads are gated by the Read master; create/update/delete by the Write master (with `confirm=true` + a recent backup). Both masters are ON by default. Native editor operations use returned controls; unsupported app variants remain explicit capability gaps. `hub_set_native_app` covers every other classic app: create a built-in app type, update a page's fields, or run the same native form steps on any app. RM actions, triggers, expressions and local variables use `hub_set_rule` rather than generic shortcut fields.
 
 </details>
 
@@ -873,8 +872,8 @@ When you use `hub_update_app`, `hub_update_driver`, `hub_update_library`, or `hu
 - Persist even if the MCP app is uninstalled
 - Downloadable at `http://<your-hub-ip>/local/<filename>`
 - 1-hour protection window: multiple edits preserve the pre-edit original
-- No count limit: backups are removed only when all MCP backups together exceed the **Backup storage budget (MB)** advanced setting (default 10, range 1 to 1000000). Another item's backup never replaces yours, but past the budget any new backup can evict the oldest backups of any item: rolling steps first, then pinned baselines
-- Each app, driver and library keeps one pinned baseline. A rule keeps a pinned baseline per editing session plus its pre-delete and Required Expression replacement snapshots, and with **Back up before every native app edit** on, its other per-write snapshots as rolling steps. An editing session ends once an hour passes with no snapshot of that rule. `hub_list_backups` shows the budget and whether each backup is pinned or rolling
+- No count limit: backups are removed only when all MCP backups together exceed the **Backup storage budget (MB)** advanced setting (default 10, range 1 to 1000000), oldest first. An item's newest backup is never removed, so the budget can stay exceeded once every item is down to one. `hub_list_backups` shows the budget
+- **Take a fresh snapshot before every edit** (advanced setting, off by default): a native app edit takes its own snapshot instead of reusing that app's snapshot from the last hour
 - `hub_write_file` and `hub_delete_file` keep the newest 5 `<name>_backup_<timestamp>` copies of each file
 
 **Restore via MCP:**
@@ -1996,10 +1995,9 @@ For easier bug reporting:
 
 The `tests/` directory contains:
 
-- **`tests/BAT-v2.md`** — Behavior Acceptance Tests (BAT): scripted scenarios for hand-run validation against a live hub. Includes the `wizard_probe` usage docs and the wizard-state regression appendix.
+- **`tests/BAT-v2.md`** — Behavior Acceptance Tests (BAT): scripted scenarios for hand-run validation against a live hub.
 - **`tests/sandbox_lint.py`** — fast structural lint of the Groovy sandbox patterns (forbidden calls, version-string consistency). Run via `uv run --python 3.12 tests/sandbox_lint.py`.
 - **`tests/e2e_test.py`** — the end-to-end suite. **CI-only**: it runs inside the `Hub E2E (test hub)` workflow against the sacrificial test hub and refuses to start anywhere else (it checks for the Actions runner, the cloud-relay base URL, and the hub's `_TEST_HUB_LEASED_BY` lease variable; there is no override). Never point it at a personal hub: its cleanup sweep deletes every `mcp-rm-backup-*.json` rollback baseline in File Manager and forces MCP settings. To exercise a PR on a personal hub use the MCP tools directly (the scenarios in `tests/BAT-v2.md`). `tests/e2e_config.json` (gitignored) is shared with `tests/sdk_conformance_test.py`, which may be run locally.
-- **`tests/wizard_probe.py`** — systematic Rule Machine wizard-state regression probe. Runs a 25-probe matrix that exercises suspected wizard-state-leak paths, and exposes a `quick_probe()` helper for one-off diagnostic investigation. See the wizard_probe appendix in `tests/BAT-v2.md` for full usage.
 - **Spock unit tests** under `src/test/groovy/` — run via the Gradle wrapper:
 
 ```bash

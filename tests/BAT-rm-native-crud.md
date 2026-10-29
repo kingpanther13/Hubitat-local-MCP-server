@@ -74,8 +74,8 @@ Teardown prompts SHOULD explicitly call `hub_delete_native_app(appId=<id>, force
 | T320–T349 (30 tests) | §2 Triggers + conditions | Device-state / time-date / hub-system / HTTP trigger capabilities; trigger options (conditional, and-stays, multiple-triggers, multi-device marshal flag) |
 | T350–T387 (38 tests; T388–T399 reserved) | §3 Actions across all categories | Every action category (switches, dimmers, shades/fans, HSM, thermostats, messages/HTTP, audio, variables, cross-rule, state-mgmt, repeat, delay/wait/exit) |
 | T400–T429 (30 tests) | §4 Expressions, variables, private boolean, control flow | Expression operators + nesting, IF-THEN-ELSE chains, REPEAT variants, local+hub variables, variable math, built-in `%var%` substitution, Private Boolean |
-| T430–T452 (23 tests) | §5 HTTP endpoints + edge cases | Local/Cloud Endpoint triggers + verbs, setHubVariable endpoints, orphan cleanup, flag-poisoning recovery, stale `editCond` recovery, negative paths (update/delete on bogus IDs), MCP feature-flag gating |
-| T460–T464 (5 tests) | §6 RM recreation bundle | HSM as an action, switch "only switches that are on/off", waitEvents per-event "and stays for" duration, string `*contains*` comparator, cosmetic device-list `partial` re-tag |
+| T430–T459 (29 tests; T445 retired) | §5 HTTP endpoints + edge cases | Local/Cloud Endpoint triggers + verbs, setHubVariable endpoints, orphan cleanup, multi-device flag preservation, stale `editCond` recovery, negative paths (update/delete on bogus IDs), MCP feature-flag gating |
+| T460–T464 (5 tests) | §6 RM recreation bundle | HSM as an action, switch "only switches that are on/off", waitEvents per-event "and stays for" duration, string `*contains*` comparator, shade open action |
 
 Each section below lives in its own `## Section N` heading. Sections are appended in order; don't rely on global ordering within a section being monotonic after renumbers.
 
@@ -92,7 +92,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: AI calls `hub_manage_rule_machine.hub_set_rule(name='BAT-RM-Empty Create')`, captures the returned ruleId, then calls `hub_get_app_config(appId=ruleId)` (or `hub_read_apps_code.hub_get_app_config(appId=ruleId)` fallback) to verify. Post-test invariant: [INV-1] `configPage.error == null`. With no triggers, `statusJson.eventSubscriptions` may be empty — that's expected for a triggerless rule. Teardown succeeds with `{success: true}`.
+**Expected**: AI calls `hub_manage_rule_machine.hub_set_rule(operation="create", args={parent_id:<Rule Machine app id>, name:'BAT-RM-Empty Create'}, confirm=true)`, captures the returned `rule_id`, then reads it back with `hub_set_rule(operation="read")` or `hub_read_apps_code.hub_get_app_config(appId=ruleId)`. Post-test invariant: [INV-1] `configPage.error == null`. With no triggers, `statusJson.eventSubscriptions` may be empty — that's expected for a triggerless rule. Teardown succeeds with `{success: true}`.
 
 ### T301 — Rename an existing rule
 
@@ -104,7 +104,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: AI calls `hub_set_rule(appId=ruleId, settings={origLabel: 'BAT-RM-Rename After'})`, then `hub_get_app_config(appId=ruleId)` returns the new label. Post-test invariants: [INV-1] `configPage.error == null` after the update (render guard), and the app's `label` field matches the new name.
+**Expected**: AI opens the rule's main page and submits its label input (`origLabel`) with `hub_set_rule(operation="form", rule_id, args={steps:[{kind:"open"}, {kind:"submit", expect_page:<main page>, fields:{...}}]}, confirm=true)`, then `hub_get_app_config(appId=ruleId)` returns the new label. Post-test invariants: [INV-1] `configPage.error == null` after the update (render guard), and the app's `label` field matches the new name.
 
 ### T302 — Set rule notes (comments textarea)
 
@@ -116,7 +116,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: AI calls `hub_set_rule(appId=ruleId, settings={comments: '...'})`, then `hub_get_app_config(appId=ruleId)` shows the comments field unchanged. Post-test invariant: [INV-1] `configPage.error == null`; textarea whitespace is preserved exactly.
+**Expected**: AI submits the main page's `comments` textarea with `hub_set_rule(operation="form", rule_id, args={steps:[{kind:"open"}, {kind:"submit", expect_page:<main page>, fields:{...}}]}, confirm=true)`, then `hub_get_app_config(appId=ruleId)` shows the comments field unchanged. Post-test invariant: [INV-1] `configPage.error == null`; textarea whitespace is preserved exactly.
 
 ### T303 — Enable Required Expression flag
 
@@ -128,7 +128,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: AI calls `hub_set_rule(appId=ruleId, settings={useST: true})`. `hub_get_app_config(appId=ruleId)` shows `useST=true` and exposes the required-expression editor inputs. Post-test invariant: [INV-1] `configPage.error == null` — toggling useST often hits the `.size()` render-path bug, so this is a deliberate regression check.
+**Expected**: AI submits `useST=true` on the main page with `hub_set_rule(operation="form", rule_id, args={steps:[{kind:"open"}, {kind:"submit", expect_page:<main page>, fields:{...}}]}, confirm=true)`. `hub_get_app_config(appId=ruleId)` shows `useST=true` and exposes the required-expression editor inputs. Post-test invariant: [INV-1] `configPage.error == null` — toggling useST often hits the `.size()` render-path bug, so this is a deliberate regression check.
 
 ### T304 — Convert rule to function mode
 
@@ -140,7 +140,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: AI calls `hub_set_rule(appId=ruleId, settings={isFunction: true})`, then `hub_get_app_config(appId=ruleId)` returns `isFunction=true`. Post-test invariant: [INV-1] `configPage.error == null`.
+**Expected**: AI submits `isFunction=true` on the main page with `hub_set_rule(operation="form", rule_id, args={steps:[{kind:"open"}, {kind:"submit", expect_page:<main page>, fields:{...}}]}, confirm=true)`, then `hub_get_app_config(appId=ruleId)` returns `isFunction=true`. Post-test invariant: [INV-1] `configPage.error == null`.
 
 ### T305 — Set all three logging options + dValues toggle
 
@@ -152,19 +152,19 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: AI calls `hub_set_rule(appId=ruleId, settings={logging: ['Events','Triggers','Actions'], dValues: true})`. `hub_get_app_config(appId=ruleId)` shows `logging` as a 3-element enum array and `dValues=true`. Post-test invariants: [INV-1] `configPage.error == null`; the enum array is not collapsed to a scalar (regression guard for list-vs-string marshaling).
+**Expected**: AI submits `logging=['Events','Triggers','Actions']` (a list for the multi-select) and `dValues=true` on the main page with `hub_set_rule(operation="form", rule_id, args={steps:[{kind:"open"}, {kind:"submit", expect_page:<main page>, fields:{...}}]}, confirm=true)`. `hub_get_app_config(appId=ruleId)` shows `logging` as a 3-element enum array and `dValues=true`. Post-test invariants: [INV-1] `configPage.error == null`; the enum array is not collapsed to a scalar (regression guard for list-vs-string marshaling).
 
 ### T306 — Full round-trip: many fields populated and surviving an updateRule re-init
 
 ```json
 {
-  "setup_prompt": "Create a scratch native RM rule via hub_set_rule(name='BAT-RM-Full Create', confirm=true) (omit appId to create). Capture the returned appId.",
+  "setup_prompt": "Create a scratch native RM rule via hub_set_rule(operation='create', args={parent_id:<Rule Machine app id>, name:'BAT-RM-Full Create'}, confirm=true). Capture the returned rule_id.",
   "test_prompt": "STEP 1 (populate in one edit): In a single edit, populate the rule with every rule-level field at once — comments 'Created with every rule-level field populated', enable the Required Expression feature, mark it NOT a function, logging ['Triggers','Actions'], and enable Display Current Values. Verify the edit reports no config-page error and that all five fields were applied.\n\nSTEP 2 (read-back #1): Read the rule back including its settings. Assert every one of these round-trips: app.label === 'BAT-RM-Full Create'; settings.comments === the exact string; settings.useST === 'true'; settings.isFunction === 'false'; settings.logging is a JSON array === ['Triggers','Actions'] (length 2, NOT collapsed to CSV); settings.dValues === 'true'. The page paragraphs MUST include 'Define Required Expression' — this proves useST=true actually exposed the required-expression editor section.\n\nSTEP 3 (force a re-init): Press the rule's 'Update Rule' button to force it to re-initialize. Verify there is no config-page error.\n\nSTEP 4 (read-back #2, post re-init): Read the rule back again including its settings. Assert ALL fields from STEP 2 are still present with the same values and logging is STILL a 2-element array. This is the wire-format regression guard — enum-multi persisted from the in-memory write must survive the updateRule re-marshal.\n\nReport any field whose read value does not match what was sent, either after STEP 2 or after STEP 4.",
   "teardown_prompt": "Force-delete the rule via hub_delete_native_app(appId=<id>, force=true, confirm=true)."
 }
 ```
 
-**Expected**: AI calls `hub_set_rule(name=...)` (create, no appId) → `hub_set_rule(appId=<id>, settings={...})` (single multi-field update) → `hub_get_app_config` → `hub_set_rule(appId=<id>, button='updateRule')` → `hub_get_app_config` → `hub_delete_native_app(force=true)`.
+**Expected**: AI calls `hub_set_rule(operation="form")` on the rule's main page to submit `comments`, `useST`, `isFunction`, `logging` and `dValues` together (another submit only if a choice reveals a further input) → `hub_get_app_config` → a form step that activates the 'Update Rule' control → `hub_get_app_config` → `hub_delete_native_app(force=true)`.
 
 **Pass criteria** (ALL must hold):
 - After STEP 2: `settings.comments`, `settings.useST`, `settings.isFunction`, `settings.logging`, `settings.dValues` all round-trip. `settings.logging` is a JSON array of exactly 2 strings `["Triggers","Actions"]` (NOT collapsed to the CSV string `"Triggers,Actions"`).
@@ -173,7 +173,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 - After STEP 4: every field from STEP 2 is still present with unchanged values; `logging` is still a 2-element array.
 - [INV-1] `configPage.error == null` in both read-backs.
 
-**Why two-step, not single-call**: the create-side `hub_set_rule` (no appId) is deliberately minimal (name only). All rule-level fields (useST, logging, dValues, isFunction, comments) are written through the edit-side `hub_set_rule(appId=<id>, settings={...})`. The test still verifies the important round-trip property — five non-trivial fields applied in one `settings` map, persisting through an updateRule re-init — which is the regression surface that matters.
+**Why create, then form**: `hub_set_rule(operation="create")` takes the rule's name and its document changes (triggers, actions, conditions, expressions, local variables). Rule-level fields (useST, logging, dValues, isFunction, comments) are main-page inputs, so they are written through `operation="form"`. The test still verifies the round-trip property that matters — five non-trivial fields applied together and persisting through an Update Rule re-init.
 
 ### T307 — Soft delete succeeds on childless rule
 
@@ -245,7 +245,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: AI calls `hub_set_rule(appId=ruleId, settings={dValues: true})` which should internally POST the `updateRule` button or equivalent, re-running `initialize()`. Post-test invariants: [INV-1] `configPage.error == null`; `statusJson.eventSubscriptions.length > 0` (invariant #2); `appSettings['dValues']` shows the new value.
+**Expected**: AI submits `dValues=true` and activates the 'Update Rule' control in one `hub_set_rule(operation="form")` workflow, re-running `initialize()`. Post-test invariants: [INV-1] `configPage.error == null`; `statusJson.eventSubscriptions.length > 0` (invariant #2); `appSettings['dValues']` shows the new value.
 
 ### T313 — Done button (re-init + return)
 
@@ -379,7 +379,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: `hub_set_rule` creates both triggers enabled. `hub_set_rule` (with appId) patch sets `disableT<N>=true` on the second one. `hub_get_app_config` shows trigger 2 has `disabled=true` but remains in the trigger list. `eventSubscriptions` should reflect only the enabled trigger (or both with one inactive — verify actual hub behavior). Note: `disableT<N>` is a rule-scoped flag (disables the trigger entry INSIDE the rule), not a device-scoped disable — force-deleting the rule in teardown eliminates the flag entirely, so no device re-enable is needed.
+**Expected**: `hub_set_rule` creates both triggers enabled. A second edit sets the disable option (`disableT<N>=true`) on the second trigger only, through `operation="update"` naming that trigger's native ID or through `operation="form"`. `hub_get_app_config` shows trigger 2 has `disabled=true` but remains in the trigger list. `eventSubscriptions` should reflect only the enabled trigger (or both with one inactive — verify actual hub behavior). Note: `disableT<N>` is a rule-scoped flag (disables the trigger entry INSIDE the rule), not a device-scoped disable — force-deleting the rule in teardown eliminates the flag entirely, so no device re-enable is needed.
 
 ### T327 — Button capability triggers (pushed/held/doubleTapped/released)
 
@@ -643,7 +643,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: `hub_set_rule` create (1 trigger) → `hub_set_rule` addTrigger (2 triggers) → `hub_set_rule` addTrigger modify (2 triggers, first one now motion=inactive) → `hub_set_rule` remove (1 trigger). Each step: [INV-1] `configPage.error == null`, [INV-2] `eventSubscriptions` reflects current trigger set. No stale subscriptions linger after removal.
+**Expected**: `hub_set_rule(operation="create")` with one trigger → `operation="update"` appending a trigger (2 triggers) → `operation="update"` editing trigger 1 by its native ID (2 triggers, first one now motion=inactive) → `operation="update"` with a `delete` change for trigger 2 (1 trigger). Each step: [INV-1] `configPage.error == null`, [INV-2] `eventSubscriptions` reflects current trigger set. No stale subscriptions linger after removal.
 
 ### T348 — Delete rule with triggers (force vs soft delete)
 
@@ -1005,7 +1005,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: `hub_set_rule` (edit path, `replaceActions`) returns success. `hub_get_app_config.actions.length === 3` with new commands; old single-action list is gone. [INV-1] `configPage.error == null`. [INV-2] `statusJson.eventSubscriptions.length > 0` still true.
+**Expected**: One `hub_set_rule(operation="update")` whose changes delete the existing action by its native ID and append the three new actions returns success. `hub_set_rule(operation="read", args={sections:["actions"]})` (following `nextCursor` if present) lists exactly the three new actions with their commands; the old action is gone. [INV-1] `configPage.error == null`. [INV-2] does not apply to this time-only trigger: `statusJson.scheduledJobs` still lists the Certain Time job.
 
 ### T378 — Delete rule (soft) then delete with force
 
@@ -1048,12 +1048,12 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Create virtual switches BAT-RM-OrdA, BAT-RM-OrdB, BAT-RM-OrdC. Create rule 'BAT-RM-Order' with Certain Time trigger and actions in order [A on, B on, C on].",
-  "test_prompt": "Reorder the rule's actions to [C on, A on, B on] by replacing the whole action list in one operation (not by moving actions one at a time). Read back and verify the new order matches exactly. Then reorder the same way to [B on, C on, A on]. Read back and verify.",
+  "test_prompt": "Reorder the rule's actions to [C on, A on, B on] in a single edit that keeps the same three actions (no deleting and re-adding). Read back and verify the new order matches exactly. Then reorder the same way to [B on, C on, A on]. Read back and verify.",
   "teardown_prompt": "Delete the rule and all three virtual switches."
 }
 ```
 
-**Expected**: Each reorder is a `hub_set_rule` (edit, `replaceActions`) call; `hub_get_app_config.actions[0/1/2].deviceId` matches the requested order after each update. No phantom action duplication or reshuffling. [INV-1] `configPage.error == null`.
+**Expected**: Each reorder is one `hub_set_rule(operation="update")` with an `order` change listing every existing native action ID in the new order; the action IDs themselves do not change. `hub_get_app_config.actions[0/1/2].deviceId` matches the requested order after each update. No phantom action duplication or reshuffling. [INV-1] `configPage.error == null`.
 
 ### T382 — Device IDs round-trip as strings (not coerced to int)
 
@@ -1106,12 +1106,12 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Create virtual switch BAT-RM-Clear. Create rule 'BAT-RM-ClearActions' with Certain Time trigger and 3 actions (any valid switch/toggle/flash).",
-  "test_prompt": "Clear all of the rule's actions — replace its action list with an empty list. Read back and confirm actions is empty AND the rule still exists AND configPage.error is null.",
+  "test_prompt": "Remove all of the rule's actions, keeping the rule and its trigger. Read back and confirm actions is empty AND the rule still exists AND configPage.error is null.",
   "teardown_prompt": "Delete the rule and virtual switch."
 }
 ```
 
-**Expected**: AI calls `hub_set_rule` (edit, `replaceActions=[]`). `hub_get_app_config.actions.length === 0`. Rule still present in `hub_list_rules`. No configPage errors.
+**Expected**: AI reads the action IDs, then calls one `hub_set_rule(operation="update")` with a `delete` change for each action. `hub_get_app_config.actions.length === 0`. Rule still present in `hub_list_rules`. No configPage errors.
 
 ### T387 — hub_set_rule with empty actions list succeeds
 
@@ -1139,7 +1139,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 
 **Expected**: Calls `hub_manage_rule_machine.hub_set_rule` with one required-expression condition, then `hub_get_app_config` round-trips it. [INV-1] `configPage.error == null`. AI reports 1 condition, 1 trigger, and confirms the expression text matches.
 
-**LLM-discoverable path**: Use `hub_set_rule(appId=<id>, addRequiredExpression={conditions: [{capability: 'Switch', deviceIds: [<id>], state: 'on'}]})`. The shortcut handles the full STPage walk (useST=true → navigate → cond=a → rCapab/rDev/state writes → hasAll → hasRule → done). Single-condition expressions don't need an `operator`. After commit, mainPage's paragraph renders the expression text and `cond=["<idx>"]` shows in settings (the cond counter is shared at the RM parent app, so idx may not start at 1 — that's expected, not a bug). Verified live 2026-04-26 — see `_rmAddRequiredExpression` in hubitat-mcp-server.groovy.
+**LLM-discoverable path**: create the rule with its trigger and log action, add the Switch condition (a `condition` change with `capability:'Switch'` and its native typed fields), take that condition's native ID from the returned document, then set the Required Expression with a `required` change whose tokens are `[<condition id>]`. Single-condition expressions don't need an operator. Native condition IDs come from a counter, so the first one may not be 1 — that's expected, not a bug. After the write, mainPage's paragraph renders the expression text.
 
 ### T401 — Create rule with AND of two conditions in Required Expression
 
@@ -1273,17 +1273,17 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 
 **Expected**: Five distinct delay shapes (fixed, variable, per-mode, cancelable, cancel) all round-trip. Per-mode delay has entry per hub mode. Cancelable flag preserved on the 4th delay. [INV-1] `configPage.error == null`. **Diagnostic note**: this test intentionally bundles five delay variants. If it fails, re-run with only actions (1)+(6) (fixed + cancel) to isolate the canceling interaction, then (1)+(2) (fixed + variable) to isolate variable sourcing, then (3) alone (per-mode) to isolate per-mode encoding. A per-variant failure likely means one of those three sub-features broke; a joint failure likely means the action-list encoding / ordering is wrong.
 
-### T412 — Wait for Events: single + multi-event-any (one waitEvents action; RM 5.1 platform limit)
+### T412 — Wait for Events: a two-event wait, and a second wait must not disturb the first
 
 ```json
 {
   "setup_prompt": "Create virtual contacts BAT-RM-WC1, BAT-RM-WC2 and a virtual motion BAT-RM-WMo.",
-  "test_prompt": "Create rule 'BAT-RM-WaitEvents' triggered by BAT-RM-WMo becoming active. Action 1: Wait for Events with two events — BAT-RM-WC1 opens, BAT-RM-WC2 opens (any-of semantics). Then attempt to add a SECOND Wait for Events action: BAT-RM-WC1 closes. Verify: action 1 commits with both events bound; the second waitEvents addition fails-loud with an IllegalArgumentException whose message names the RM 5.1 platform limit and lists the workaround options (combine into one events array, split into chained sub-rules, wait at trigger layer).",
+  "test_prompt": "Create rule 'BAT-RM-WaitEvents' triggered by BAT-RM-WMo becoming active. Action 1: Wait for Events with two events — BAT-RM-WC1 opens, BAT-RM-WC2 opens (any-of semantics). Then try to add a SECOND Wait for Events action: BAT-RM-WC1 closes. Read the rule back after each step, report whether the second wait was added, and confirm action 1 still waits for both of its original events.",
   "teardown_prompt": "Force-delete 'BAT-RM-WaitEvents'. Remove all three virtuals."
 }
 ```
 
-**Expected**: Action 1 (single waitEvents with `events: [{capability: 'Contact', deviceIds: [<WC1>], state: 'open'}, {capability: 'Contact', deviceIds: [<WC2>], state: 'open'}]`) commits cleanly. [INV-1] `configPage.error == null`. [INV-3] **CRITICAL**: contact-sensor inputs preserve `multiple == true` flags (Wait-for-Events multi-device slots are a flag-poisoning vector on the action side, same bug class as tDev triggers). The second `addAction(waitEvents=...)` call returns `success: false` with `error` containing `"RM 5.1 platform limitation: only one Wait for Events action is supported per rule"` — verifying the fail-loud guard. **Why one action, not multiple**: RM 5.1 has no per-action storage for Wait for Events configuration; every waitEvents action shares global per-rule scratch settings (`tCapab-N`/`tDev-N`/`tstate-N`). Adding a second waitEvents action causes its wizard to inherit action 1's events as defaults, and any field change silently overwrites action 1's events. The Hubitat web UI exhibits the same bug — verified live 2026-05-04 via Chrome XHR capture. Until Hubitat fixes this at the platform level, the MCP tool refuses the second addition rather than corrupt the rule. **Variants NOT covered here** (timeout, And-Stays duration, Elapsed Time only, "All of these" semantics): each requires its own rule (one waitEvents action per rule, by RM 5.1 design), so cover them as separate scenarios T412a/T412b/etc. when needed.
+**Expected**: Action 1 is one Wait for Events action (`getWaitEvents`) with two event rows, WC1 open and WC2 open, and commits cleanly. [INV-1] `configPage.error == null`. [INV-3] **CRITICAL**: contact-sensor inputs preserve `multiple == true` flags (Wait-for-Events multi-device slots are a flag-poisoning vector on the action side, same bug class as tDev triggers). The second wait ends either as its own Wait for Events action rendering its one event, or as a refusal with nothing written. In both cases action 1 still renders both original events afterward. RM 5.1 was observed (2026-05-04, Hubitat web UI included) sharing one set of wait settings across Wait for Events actions, so a second wait could overwrite the first one's events; that overwrite is the failure this scenario guards. **Variants NOT covered here** (timeout, And-Stays duration, Elapsed Time only, "All of these" semantics): cover them as separate scenarios T412a/T412b/etc. when needed.
 
 ### T412b — Wait for Events: mixed device + Mode event array (mode picker, never tstate)
 
@@ -1295,7 +1295,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: Action 1 commits cleanly with `events: [{capability: 'Switch', deviceIds: [<WSw>], state: 'off'}, {capability: 'Mode', state: 'Night'}]`. [INV-1] `configPage.error == null`. The Mode event writes the discovered mode-picker field (`modesX-<N>` family, keyed by mode ID) carrying the resolved mode ID — NOT `tstate-<N>` (writing the mode name to `tstate` is silently ignored by RM and drops the event with a dangling OR). No `tstate` field holds the mode name. Both events render without a dangling OR / Broken marker. `modeIds:[...]` is accepted as an alternative to `state` (IDs from `hub_list_modes`). An unknown mode name, or a mode ID the live picker does not offer, fails loud before the row commits.
+**Expected**: Action 1 commits cleanly as one Wait for Events action with two event rows: BAT-RM-WSw turns off, and Mode becomes Night. [INV-1] `configPage.error == null`. The Mode event stores the mode's ID in the mode-picker input (`modesX-<N>` family) — NOT the mode name in `tstate-<N>` (RM silently ignores a mode name there and drops the event with a dangling OR). No `tstate` field holds the mode name. Both events render without a dangling OR / Broken marker. A mode name the hub does not have, or a mode ID the picker does not offer, is refused before the row commits.
 
 ### T413 — Wait for Expression: basic, timeout, Use Duration
 
@@ -1331,7 +1331,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: `hub_set_rule` creates 5 local vars. `hub_set_rule(appId=<id>)` edits + deletes one. `hub_get_app_config` round-trip confirms 4 vars with correct types.
+**Expected**: `hub_set_rule(operation="create")` creates the five locals with `variable` changes (`operation="create"`). One `operation="update"` then sets BAT-RM-LocalNum to 99 and deletes BAT-RM-LocalStr. A read of the variables section (or `hub_get_app_config`) confirms 4 vars with correct types.
 
 ### T416 — Hub variable reference (%varName%) + built-in tokens in Send/Speak
 
@@ -1511,7 +1511,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: `hub_set_rule` (or the equivalent addRequiredExpression tool) bakes the expression formula via the Phase 2 expression-builder wizard. `hub_get_app_config` mainPage paragraphs contain the baked condition text (e.g. "... is on AND ... is off") and do NOT contain "(unused)" or the "Define Required Expression" placeholder. Settings map contains `rCapab_2`, `useST='true'`. [INV-1] `configPage.error == null`.
+**Expected**: `hub_set_rule` writes both Switch conditions and a Required Expression whose tokens join them with AND. `hub_get_app_config` mainPage paragraphs contain the condition text (e.g. "... is on AND ... is off") and do NOT contain "(unused)" or the "Define Required Expression" placeholder. Settings show `useST='true'`. [INV-1] `configPage.error == null`.
 
 ### T431b — Bug D: Action after Required Expression not wrapped in IF(**Broken Condition**)
 
@@ -1523,21 +1523,21 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: After `addRequiredExpression` + `addAction`, the mainPage paragraphs show the switch-on action cleanly (e.g. "On: Test Plug" or similar) WITHOUT any "IF (**Broken Condition**)" wrapper. This confirms `_rmClearPredCapabsViaGhostIfThen` fired after the expression-builder hasRule click and cleared the predCapabs leak. [INV-1] `configPage.error == null`.
+**Expected**: After the `hub_set_rule(operation='create', args={changes: [...]})` call that adds the trigger, the Required Expression and the action, the mainPage paragraphs show the switch-on action cleanly (e.g. "On: Test Plug" or similar) WITHOUT any "IF (**Broken Condition**)" wrapper. No hidden clean-up step runs: the create writes each row through the native editor as the UI does, and the returned document's `nativeHealth` reports the rule not broken. [INV-1] `configPage.error == null`.
 
 ### T432b — Bug E: Sequential runCommand actions all render with parameters
 
 ```json
 {
   "setup_prompt": "No setup.",
-  "test_prompt": "Create a Rule Machine rule named 'BAT-RM-T432b-BugE' with: (1) a Certain Time trigger at 4:00 AM, (2) four sequential runCommand actions -- action 1: device 1072 setDisplay('on'), action 2: device 1121 setChildLock('on'), action 3: device 1072 setDisplay('off'), action 4: device 1121 setChildLock('off'). After creation, read the rule back including its settings and report ALL paragraph text from mainPage and the settingsApplied/settingsSkipped counts for each action. Confirm that all four actions render with their parameter (e.g., 'on' or 'off') and none show empty/missing parameter text.",
+  "test_prompt": "Create a Rule Machine rule named 'BAT-RM-T432b-BugE' with: (1) a Certain Time trigger at 4:00 AM, (2) four sequential runCommand actions -- action 1: device 1072 setDisplay('on'), action 2: device 1121 setChildLock('on'), action 3: device 1072 setDisplay('off'), action 4: device 1121 setChildLock('off'). After creation, read the rule back including its settings and report ALL paragraph text from mainPage. Confirm that all four actions render with their parameter (e.g., 'on' or 'off') and none show empty/missing parameter text.",
   "teardown_prompt": "Force-delete BAT-RM-T432b-BugE."
 }
 ```
 
-**Expected**: All four `addAction` calls complete with `settingsApplied` containing `cpType1.<N>` and `cpVal1.<N>` (or equivalent cpType slot). `hub_get_app_config` paragraphs show each action rendering with its parameter value (e.g. "setDisplay(on)", "setChildLock(on)", etc.). No action shows a missing/empty parameter. This confirms the schema-aware cpType slot detection (Bug E fix): for actions 2+, the code correctly detects that `cpType1.N` is not in schema after `cCmd.N` write and falls through to the moreParams-click + discovery path. [INV-1] `configPage.error == null`.
+**Expected**: All four Run Custom Action actions are written, each with its command and one string parameter. `hub_get_app_config` paragraphs show each action rendering with its parameter value (e.g. "setDisplay(on)", "setChildLock(on)", etc.). No action shows a missing/empty parameter. RM allocates each action's parameter slot (`cpType<P>.<N>` / `cpVal<P>.<N>`) on its own action page, so actions 2-4 must not reuse action 1's slot. [INV-1] `configPage.error == null`.
 
-## Section 5: HTTP endpoints + edge cases (T430–T449)
+## Section 5: HTTP endpoints + edge cases (T430–T459)
 
 ### T430 — Local End Point trigger with /runRuleAct verb
 
@@ -1679,7 +1679,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: `hub_set_rule` (create) then `hub_set_rule(appId=ruleId)` (edit) flips the endpoint target. `hub_get_app_config` after update shows TargetB, not TargetA, in the supported endpoint target field. This HTTP-only rule may correctly have zero `eventSubscriptions`, so subscriptions are not used to grade rebinding. URL retrieval is not graded. [INV-1] `configPage.error == null` throughout. Clean teardown.
+**Expected**: `hub_set_rule(operation="create")`, then an `operation="update"` editing the endpoint trigger by its native ID (or `operation="form"`), flips the endpoint target. `hub_get_app_config` after update shows TargetB, not TargetA, in the supported endpoint target field. This HTTP-only rule may correctly have zero `eventSubscriptions`, so subscriptions are not used to grade rebinding. URL retrieval is not graded. [INV-1] `configPage.error == null` throughout. Clean teardown.
 
 ### T442 — Orphan cleanup after failed create — must EXERCISE the cleanup path, not pre-validate
 
@@ -1715,19 +1715,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: `hub_set_rule(appId=ruleId)` MUST re-emit the three-field group (`settings[<name>]` + `<name>.type=capability.*` + `<name>.multiple=true`) on every multi-device capability write — never just `settings[<name>]` alone. Post-update `appSettings[tDev<N>].multiple == true` (invariant INV-3). [INV-1] `configPage.error == null`. [INV-2] `statusJson.eventSubscriptions.length >= 2` (one per remaining device). Self-contained — does not depend on T443 or any other test's artifacts.
-
-### T445 — Flag-poisoning recovery (aspirational / self-heal)
-
-```json
-{
-  "setup_prompt": "This test simulates recovery IF poisoning ever happens. Create 'BAT-RM-T445-Recoverable' with a 2-device Switch trigger. Verify multiple=true as a baseline.",
-  "test_prompt": "Deliberately simulate the poisoned state by having the tool (or a raw HTTP call path exposed for testing) write settings[tDev<N>]=<csv> WITHOUT the .type and .multiple companion fields. Re-read and confirm appSettings[tDev<N>].multiple is now false (poisoned). Now invoke hub_set_rule(appId=ruleId) (or an explicit 'repair' operation) with the full three-field group and a subsequent updateRule button click. Re-read and confirm multiple is back to true AND configPage.error is null AND hub_get_app_config no longer throws 'Command size is not supported'.",
-  "teardown_prompt": "Force-delete BAT-RM-T445-Recoverable. If the deliberate poisoning step isn't safely exposable in production tools, mark this test as aspirational and skip with a note."
-}
-```
-
-**Expected**: Recovery path re-writes ALL three fields as a group, then POSTs `/installedapp/btn` with `name=updateRule` to force RM to re-marshal settings. Post-repair `appSettings[tDev<N>].multiple == true`. If the deliberate-poison step is infeasible without exposing a dangerous primitive, the test is flagged aspirational — document in expected output.
+**Expected**: The edit is one `hub_set_rule(operation="update")` trigger change naming the trigger's native ID with the two remaining device IDs as a list. Afterwards the read's settings show `tDev<N>` holding both IDs with `type` `capability.switch` and `multiple: true` (invariant INV-3). [INV-1] `configPage.error == null`. [INV-2] `statusJson.eventSubscriptions.length >= 2` (one per remaining device). Self-contained — does not depend on T443 or any other test's artifacts.
 
 ### T446 — Stuck editCond recovery
 
@@ -1746,12 +1734,12 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Create 'BAT-RM-T447-Race' with a single Switch trigger on one virtual switch and a simple log action.",
-  "test_prompt": "Fire two edits in rapid succession on the same rule: edit A sets the rule's comment to 'update-A', edit B sets it to 'update-B'. Issue both without waiting for the first to return if the client supports it. After both complete, read the rule back and confirm: (a) both calls returned success (no 500/race error), (b) the final comment is either 'update-A' or 'update-B' (deterministic last-writer-wins, not a corrupted mix), (c) configPage.error is null, (d) eventSubscriptions is still populated.",
+  "test_prompt": "Fire two edits in rapid succession on the same rule: edit A sets the rule's comment to 'update-A', edit B sets it to 'update-B'. Issue both without waiting for the first to return if the client supports it. After both complete, read the rule back and confirm: (a) neither call returned a raw 500/race error (a clean refusal because the rule was busy is acceptable), (b) the final comment is either 'update-A' or 'update-B' (deterministic last-writer-wins, not a corrupted mix), (c) configPage.error is null, (d) eventSubscriptions is still populated.",
   "teardown_prompt": "Force-delete BAT-RM-T447-Race."
 }
 ```
 
-**Expected**: Both `hub_set_rule(appId=ruleId)` calls return `{success: true}`. Final state is consistent (one of the two values, not garbled). `eventSubscriptions.length > 0`. No orphan state. If RM itself serializes writes, the tool should transparently handle that without surfacing 500s to the AI. **Skip condition**: if the test client does not support parallel/async request dispatch, mark SKIPPED (the concurrent race cannot be reproduced with sequential calls — and if the client serializes transparently, the bug class being tested cannot manifest from this test).
+**Expected**: Each edit is a `hub_set_rule(operation="form")` submit of the comments input. The tool runs one native operation per rule at a time, so an overlapping call is refused as busy and writes nothing; the outcome is both edits succeeding in turn, or one success and one busy refusal. Final state is consistent (one of the two values, not garbled). `eventSubscriptions.length > 0`. No orphan state, and no raw 500 reaches the AI. **Skip condition**: if the test client does not support parallel/async request dispatch, mark SKIPPED (the concurrent race cannot be reproduced with sequential calls — and if the client serializes transparently, the bug class being tested cannot manifest from this test).
 
 ### T448 — Parent-ID discovery on first run (rmParentId unset)
 
@@ -1785,7 +1773,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: `hub_set_rule(appId=99999999, settings={comments:'x'})` returns `{success:false, error:<not-found message>}` OR throws `IllegalArgumentException` with a clear not-found message. AI does NOT fabricate a rule. Companion to T385 (which covers `hub_get_app_config` negative path); closes the silent-failure gap in the update path.
+**Expected**: The comments edit (`hub_set_rule(operation="form")`, or any `hub_set_rule` write) on rule 99999999 returns a clean error saying no such rule exists, as `{success:false, error:...}` or a tool error, and writes nothing. AI does NOT fabricate a rule. Companion to T385 (which covers `hub_get_app_config` negative path); closes the silent-failure gap in the update path.
 
 ### T451 — hub_delete_native_app on non-existent ruleId (negative path)
 
@@ -1809,40 +1797,40 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 
 **Expected**: With the `hub_manage_rule_machine` + `hub_manage_native_rules_and_apps` gateways denied via Per-tool Overrides, `tools/list` does NOT include `hub_set_rule`, `hub_delete_native_app`, or `hub_get_rule_health`. With the overrides removed, all three appear with their full schemas. This guards against the anti-pattern of returning tools that immediately error -- the tool surface must match the user's enablement state.
 
-### T453 — Create a Basic Rule (basic_rule appType, issue #185 item 1)
+### T453 — Create a Basic Rule (basic_rule app_type, issue #185 item 1)
 
 ```json
 {
-  "test_prompt": "Create a Basic Rule named 'BAT-BasicRule'. Capture the returned appId, then read it back and report the app's type name.",
+  "test_prompt": "Create a Basic Rule. Capture the returned app_id, then read it back and report the app's type name.",
   "teardown_prompt": "Delete the rule via hub_delete_native_app(appId=ruleId, force=true)."
 }
 ```
 
-**Expected**: AI calls `hub_set_native_app(appType='basic_rule', name='BAT-BasicRule')` — created under the Basic Rules parent via the generic `createchild` (no special endpoint). `hub_get_app_config(appId)` returns `app.name == 'Basic Rule-1.0'` and renders a real classic configPage. Post-test invariant: [INV-1] `configPage.error == null`. Teardown succeeds.
+**Expected**: AI calls `hub_set_native_app(operation='create', args={app_type: 'basic_rule'})` (no `name`: a Basic Rule's first page renders no label input, so a `name` is refused) — created through the Basic Rules page's own create control; the result reports `installed: false`, since that first page renders no Done yet. `hub_get_app_config(appId)` returns `app.name == 'Basic Rule-1.0'` and renders a real classic configPage. Post-test invariant: [INV-1] `configPage.error == null`. Teardown succeeds.
 
-### T454 — Edit a Basic Rule's Notes without poisoning the render (commitButton fix, issue #185 item 3)
+### T454 — Edit a Basic Rule's Notes without poisoning the render (issue #185 item 3)
 
 ```json
 {
-  "setup_prompt": "Create a Basic Rule named 'BAT-BR-Edit' via hub_set_native_app(appType='basic_rule') and remember its id.",
+  "setup_prompt": "Create a Basic Rule via hub_set_native_app(operation='create', args={app_type: 'basic_rule'}) and remember its app_id.",
   "test_prompt": "Write the Notes field on that Basic Rule, setting its comments/notes to 'BAT note'. Then read it back and confirm the page has no rendering error.",
   "teardown_prompt": "Delete the rule via hub_delete_native_app(appId=ruleId, force=true)."
 }
 ```
 
-**Expected**: The `hub_set_native_app` settings write (comments) succeeds and `configPageError` is null/absent — specifically it must NOT contain "For input string: \"updateRule\"". Basic Rule is a submitOnChange app (registry `commitButton: null`), so no spurious `updateRule` button click fires after the write. Post-test invariant: [INV-1] `configPage.error == null` after the edit.
+**Expected**: The `hub_set_native_app(operation='update', app_id, args={fields: {comments: ...}})` write succeeds and `configPageError` is null/absent — specifically it must NOT contain "For input string: \"updateRule\"". Its page renders no Done until the rule is complete, so the fields are saved as the page posts them and no `updateRule` button click fires. Post-test invariant: [INV-1] `configPage.error == null` after the edit.
 
-### T455 — Create a Button Rule through its controller via buttonRule (issue #185 item 2)
+### T455 — Create a Button Rule through its controller via app_type=button_rule (issue #185 item 2)
 
 ```json
 {
-  "setup_prompt": "Create a Virtual Button device labeled 'BAT-BtnDev' via hub_manage_virtual_device. Create a Button Controller via hub_set_native_app(appType='button_controller', name='BAT-BtnCtrl'), then assign the virtual button to it with hub_set_native_app(appId=controllerId, settings={buttonDev: [deviceId]}). Remember the controllerId and deviceId.",
-  "test_prompt": "Create a Button Rule for button 1 pushed under that controller. Capture the returned buttonRuleId, then add a log action to it with the message 'BAT button rule'. Read the rule back and confirm it renders cleanly.",
+  "setup_prompt": "Create a Virtual Button device labeled 'BAT-BtnDev' via hub_manage_virtual_device. Create a Button Controller bound to it via hub_set_native_app(operation='create', args={app_type: 'button_controller', fields: {buttonDev: [deviceId]}}) (its first page has no label input and its Done needs the device). Remember the controllerId (the returned app_id) and deviceId.",
+  "test_prompt": "Create a Button Rule for button 1 pushed under that controller. Capture the returned app_id, then add a log action to it with the message 'BAT button rule'. Read the rule back and confirm it renders cleanly.",
   "teardown_prompt": "Delete the controller via hub_delete_native_app(appId=controllerId, force=true) (this cascades to its button rules), then delete the virtual button device."
 }
 ```
 
-**Expected**: `buttonRule` returns `success: true` with a `buttonRuleId` and the trigger auto-seeded (Button, button 1, pushed). The rule renders (NOT the broken "Cannot set property '1' on null object" orphan a bare createchild produces). `hub_set_rule(appId=buttonRuleId, addAction=...)` authors the action (RM-wire-format). Post-test invariant: [INV-1] the button rule's `configPage.error == null`. Teardown deletes the controller (cascading to the grandchild rule) and the device.
+**Expected**: `hub_set_native_app(operation='create', args={app_type: 'button_rule', controller_id, button_number: 1, event: 'pushed'})` (no `name`) returns `success: true` with the rule's `app_id` and `controller_id`, and the trigger auto-seeded (Button, button 1, pushed). The rule renders (NOT the broken "Cannot set property '1' on null object" orphan a bare createchild produces). `hub_set_rule(operation='update', rule_id=<app_id>, args={changes: [<log action>]})` authors the action (RM-wire-format). Post-test invariant: [INV-1] the button rule's `configPage.error == null`. Teardown deletes the controller (cascading to the grandchild rule) and the device.
 
 ### T456 — hub_get_rule_health prefers the ruleBuilderJson compiled-state boolean (issue #254)
 
@@ -1884,7 +1872,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 
 ```json
 {
-  "setup_prompt": "Create a Basic Rule named 'BAT-RH-Basic' and a Button Controller named 'BAT-RH-Btn' via hub_set_native_app. Remember both appIds.",
+  "setup_prompt": "Create a Basic Rule via hub_set_native_app(operation='create', args={app_type: 'basic_rule'}) and a Button Controller bound to a virtual button via hub_set_native_app(operation='create', args={app_type: 'button_controller', fields: {buttonDev: [deviceId]}}) (neither first page renders a label input, so no name). Remember both app_ids.",
   "test_prompt": "Check the health of each. Report ruleFormat, broken, source, configPageError, and multipleFlagPoison for both.",
   "teardown_prompt": "Delete both via hub_delete_native_app(appId=..., force=true)."
 }
@@ -1904,7 +1892,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: `hub_set_rule(appId, addAction={capability:'hsm', command:'armAway'})` commits (actType `lockActs`, actSubType `getSetHSM`, `alarm.<N>=armAway`); the response carries `actSubType: "getSetHSM"` and `success:true`. The bogus-command call returns `success:false` with an `error` naming the eight valid tokens (armAway/armHome/armNight/disarm/rearm/disarmAll/armRules/cancelAlerts) and stating there is no `armAll`. `hub_get_app_config` shows the arm-away action row. Requires HSM installed on the hub (getSetHSM only appears then). SAFETY: per the HSM-arming safety rule -- the rule is paused with a year-2099 trigger so the live HSM state is NEVER actually armed (the action is stored, not executed).
+**Expected**: The agent adds the HSM action (native type `lockActs`, subtype `getSetHSM`, `alarm.<N>=armAway`) with `hub_set_rule(operation="update")`; the write reports `success:true` and `hub_get_app_config` shows the arm-away action row. The 'armEverything' attempt is refused because the HSM input offers no such option: the error names the rejected value, nothing is written, and the rule still holds only the arm-away action. RM's HSM options are armAway, armHome, armNight, disarm, rearm, disarmAll, armRules and cancelAlerts; there is no `armAll`. Requires HSM installed on the hub (getSetHSM only appears then). SAFETY: per the HSM-arming safety rule -- the rule is paused with a year-2099 trigger so the live HSM state is NEVER actually armed (the action is stored, not executed).
 
 ### T461 — Switch off "only switches that are on"
 
@@ -1916,7 +1904,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: `hub_set_rule(appId, addAction={capability:'switch', action:'off', deviceIds:[<id>], onlyOn:true})` commits; the wire writes `optSwitch.<N>=true` AFTER `onOffSwitch.<N>` (its reveal gate). `partial:false`. `hub_get_app_config` shows the off action with the "only switches that are on" qualifier. SAFETY: only BAT-prefixed devices/rules touched.
+**Expected**: The agent adds a switch-off action with RM's 'only switches that are on' option (`optSwitch.<N>=true`, an input RM reveals only after the switch picker `onOffSwitch.<N>` is set); the write reports `success:true`. `hub_get_app_config` shows the off action with the "only switches that are on" qualifier. SAFETY: only BAT-prefixed devices/rules touched.
 
 ### T462 — waitEvents per-event "and stays that way for" duration
 
@@ -1928,7 +1916,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: `hub_set_rule(appId, addAction={capability:'waitEvents', events:[{capability:'Contact', deviceIds:[<id>], state:'open', andStays:{minutes:5}}]})` commits; the wire writes `stays-1=true` then the DASH-indexed `SHours-1=0`, `SMins-1=5`, `SSecs-1=0` (all three written). `hub_get_app_config` mainPage paragraph renders "...and stays that way for: 0:05:00". `andStays:true` (bool) also works and writes the zero-duration triple. SAFETY: only BAT-prefixed devices/rules touched.
+**Expected**: The agent adds one Wait for Events action (`getWaitEvents`, one Contact event row) with the event's "and stays that way" option and a five-minute duration; the write reports success. The read's settings show `stays-<N>=true` and the dash-indexed duration inputs `SHours-<N>=0`, `SMins-<N>=5`, `SSecs-<N>=0`. `hub_get_app_config` mainPage paragraph renders "...and stays that way for: 0:05:00". SAFETY: only BAT-prefixed devices/rules touched.
 
 ### T463 — String `*contains*` comparator on a Custom Attribute / String variable
 
@@ -1940,19 +1928,19 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: `hub_set_rule(appId, addRequiredExpression={conditions:[{capability:'Variable', variable:'BAT-RM-T463-Msg', comparator:'*contains*', value:'error'}]})` commits with the comparator written VERBATIM as `*contains*` (asterisks kept, not stripped/mapped). `hub_get_app_config` shows the contains comparator with value 'error'. There is no "does not contain" -- negation would be `not:true` + `*contains*`. SAFETY: only BAT-prefixed variable/rule touched.
+**Expected**: The agent adds a Variable condition on BAT-RM-T463-Msg with the comparator `*contains*` written VERBATIM (asterisks kept, not stripped or mapped) and value 'error', and sets the Required Expression to it; the write reports success. `hub_get_app_config` shows the contains comparator with value 'error'. There is no "does not contain" -- negation would be a NOT token before the condition in the expression. SAFETY: only BAT-prefixed variable/rule touched.
 
-### T464 — Shade action does NOT report a cosmetic `partial`
+### T464 — Shade open action bakes and reports success
 
 ```json
 {
   "setup_prompt": "Create a Rule Machine rule named 'BAT-RM-T464-Shade' with a Certain Time trigger at 11:50 PM and a BAT virtual shade device. Remember its appId and the shade deviceId.",
-  "test_prompt": "Add an action that OPENS the BAT shade. Report the full response including success, partial, settingsApplied, and settingsSkipped. Then read the rule back and confirm the open-shade action baked.",
+  "test_prompt": "Add an action that OPENS the BAT shade. Report what the tool said, then read the rule back and confirm the open-shade action baked.",
   "teardown_prompt": "Delete the rule via hub_delete_native_app(appId=..., force=true)."
 }
 ```
 
-**Expected**: `hub_set_rule(appId, addAction={capability:'shade', action:'open', deviceIds:[<id>]})` returns `success:true` and **`partial:false`** — the `shadeOpenClose.<N>` device write commits even though the wizard reveals no further schema, so it must NOT be reported as a cosmetic partial. If a device-list write genuinely fails (IDs not committed), `partial:true` still fires. `hub_get_app_config` shows the open-shade action baked. Same class covers the sibling `onOffSwitch`/`lockLockUnlock`/`fanRL` device pickers. SAFETY: only BAT-prefixed devices/rules touched.
+**Expected**: The write reports `success:true` and `broken:false`. The shade picker (`shadeOpenClose.<N>`) holds the shade's ID even though RM reveals no further input after it. `hub_get_app_config` shows the open-shade action baked. The same holds for the sibling `onOffSwitch` / `lockLockUnlock` / `fanRL` device pickers. SAFETY: only BAT-prefixed devices/rules touched.
 
 ### T465 - Retained backup recovery for a temporary native rule
 

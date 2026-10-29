@@ -571,7 +571,7 @@ and safety contracts, not proof of restart recovery or eventual completion.
 ### Cooperative worker checkpoints
 
 Detached workers use their own 120-second target, independent of the cloud/LAN request budget.
-Bulk rule calls, generic native-app walk steps, and driver installs or updates check it between
+Bulk rule calls and driver installs or updates check it between
 completed items. Each checkpoint stores the untouched suffix, advances the
 owner generation, and renews the three-minute idle window. The next request with the same
 original arguments and state schedules the next slice with a fresh clock. Running claims keep
@@ -585,8 +585,7 @@ the write. A guessed age cutoff cannot safely
 distinguish a slow write from a killed worker, so this change does not add one.
 
 At the eight-owner-slice cap, `continuation_limit` is terminal. Its aggregate records completed
-work and its remaining-work fields identify the exact unprocessed suffix. Generic native-app
-walk results retain any finalization guidance returned by the native editor.
+work and its remaining-work fields identify the exact unprocessed suffix.
 Inspect that outcome before submitting a **new** smaller call containing only the remainder;
 replaying the old state only replays the terminal error.
 

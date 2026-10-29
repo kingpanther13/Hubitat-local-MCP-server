@@ -17,6 +17,10 @@ import groovy.json.JsonOutput
  */
 class ToolRuleHealthSpec extends ToolSpecBase {
 
+    def setup() {
+        script.metaClass.getAppByAppId = { Long id -> [id: id, appType: [namespace: 'hubitat']] }
+    }
+
     // ---------- fixtures ----------
 
     /** Classic RM compiled-state shape (the ~45-key /app/ruleBuilderJson body, trimmed). */
@@ -562,6 +566,67 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         "Basic Rule-1.0"        | "basic-rule"
         "Button Controller-5.1" | "button-controller"
         "Notifier-1.0"          | "classic-app"
+    }
+
+    def "a user or community app's default page is never rendered by a health read"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/app/ruleBuilderJson/100') { '{}' }
+        hubGet.register('/app/ruleBuilder20Json/100') { '{"success":false}' }
+        hubGet.register('/installedapp/statusJson/100') { statusJson(100) }
+        script.metaClass.getAppByAppId = { Long id -> [id: id, label: 'Package Manager', appType: [name: 'Hubitat Package Manager', namespace: 'dcm.hpm']] }
+        List rendered = []
+        hubGet.register('/installedapp/configure/json/100') { rendered << 'default'; '{}' }
+
+        when:
+        def h = script._rmCheckRuleHealth(100)
+
+        then:
+        rendered.isEmpty()
+        h.ruleFormat == "classic-app"
+        h.label == "Package Manager"
+        h.checkErrors.any { it.contains("was not read: it is a user or community app") }
+        h.unreadable == true
+        h.ok == false
+    }
+
+    def "a user or community app whose state carries Rule Machine's broken flag is not read as a healthy rule"() {
+        given:
+        settingsMap.enableRead = true
+        script.metaClass.getAppByAppId = { Long id -> [id: id, label: 'Widget', appType: [name: 'Widget', namespace: 'someDeveloper']] }
+        List read = []
+        hubGet.register('/app/ruleBuilderJson/100') { read << 'compiled'; '{"broken":false}' }
+        hubGet.register('/installedapp/configure/json/100') { read << 'page'; '{}' }
+        hubGet.register('/installedapp/statusJson/100') { statusJson(100) }
+
+        when:
+        def h = script._rmCheckRuleHealth(100)
+
+        then:
+        read.isEmpty()
+        h.ruleFormat == "classic-app"
+        h.broken == null
+        h.ok == false
+        h.unreadable == true
+    }
+
+    def "an app the health read cannot identify is not rendered either"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/app/ruleBuilderJson/100') { '{}' }
+        hubGet.register('/app/ruleBuilder20Json/100') { '{"success":false}' }
+        hubGet.register('/installedapp/statusJson/100') { statusJson(100) }
+        script.metaClass.getAppByAppId = { Long id -> throw new IllegalStateException('lookup failed') }
+        List rendered = []
+        hubGet.register('/installedapp/configure/json/100') { rendered << 'default'; '{}' }
+
+        when:
+        def h = script._rmCheckRuleHealth(100)
+
+        then:
+        rendered.isEmpty()
+        h.checkErrors.any { it.contains("could not be identified (lookup failed)") }
+        h.ok == false
     }
 
     def "auto: a LONE configPage fetch failure is a non-gating checkErrors diagnostic when ruleBuilderJson read clean"() {

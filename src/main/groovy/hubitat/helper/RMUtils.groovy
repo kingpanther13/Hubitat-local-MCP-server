@@ -27,7 +27,7 @@ class RMUtils {
     // Preferred 4-arg form used by PR #79's sendRmAction wrapper:
     // sendAction([ruleIds], action, appLabel, "5.0") targets the RM 5.x dispatcher.
     static void sendAction(List ruleIds, String action, String appLabel, String version) { }
-    // 3-arg fallback form used when the 4-arg signature is absent on older firmware.
+    // 3-arg form the platform also exposes (RM 4.x only); production sends only the 4-arg form.
     static void sendAction(List ruleIds, String action, String appLabel) { }
     static void pauseRule(Long ruleId) { }
     static void resumeRule(Long ruleId) { }

@@ -99,6 +99,8 @@ class FakeRmExpressionEditor {
                 def m = (k.toString() =~ /^settings\[(.+)\]$/)
                 if (m.matches()) write((m[0] as List)[1].toString(), v)
             }
+            // The hub answers an accepted Done with a location (live, fw 2.5.2).
+            if (body._action_update == "Done") return [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
         return [status: 200, location: null, data: '']
     }

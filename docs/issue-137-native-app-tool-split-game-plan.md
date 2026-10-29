@@ -29,6 +29,8 @@ The old `hub_create_native_app` + `hub_update_native_app` are removed.
 
 ## Architecture — physically split the schema, share the backend
 
+_Superseded for `hub_set_native_app` by issue #561: its create and update run through the native form engine (`libraries/mcp-native-forms-lib.groovy`), and `_createNativeAppShell` / `_applyNativeAppEdit` are removed. The plan below is kept as the record of the earlier split._
+
 The bloat is the *input schema the model sees*, not the backend. So:
 
 - **`toolSetRule(args)`** and **`toolSetNativeApp(args)`** are thin create-or-edit dispatchers:

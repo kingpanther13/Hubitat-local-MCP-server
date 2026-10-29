@@ -30,6 +30,11 @@ import support.ToolSpecBase
  */
 class ToolVisualRulesSpec extends ToolSpecBase {
 
+    def setup() {
+        // The hub resolves every installed app; Visual Rules are built-in apps.
+        script.metaClass.getAppByAppId = { Long id -> [id: id, appType: [namespace: 'hubitat']] }
+    }
+
     def "a paused classic rule keeps its literal pause suffix in the dedicated read"() {
         given:
         settingsMap.enableRead = true

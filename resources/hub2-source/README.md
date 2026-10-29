@@ -127,6 +127,51 @@ Supporting files:
   completeness of the classic `/ui2/js` set.
 - **`success-compiled.js`** (842 B) — tiny precompiled Handlebars template bundle.
 
+### Classic form behaviours the native form engine mirrors (observed on a hub)
+
+- **A form submit posts every rendered input.** The browser sends a value for each
+  input on the page, so an input with no stored value is saved with its page
+  `defaultValue` when the page is submitted or left (a Room Lights `offMeansPage`
+  Done stores `luxOff=100` without the user touching it). The form engine posts
+  those defaults too; password inputs are never defaulted.
+- **A sub-page fetched directly has no breadcrumb trail.**
+  `GET /installedapp/configure/json/<id>/<page>` answers `pageBreadcrumbs:"[]"`
+  (URL-encoded `%5B%5D`), so the page offers no previous-page Done. Reached through
+  its parent's link the trail is `["<parent>"]`; supplying that trail on the
+  submit (`pageBreadcrumbs=%5B%22<parent>%22%5D` with `_action_previous=Done`) makes
+  the Done return to the parent as the browser's would.
+- **`_action_done` (platform 2.5.2.135).** A page with both `nextPage` and
+  `donePage` (a `dynamicPage(..., nextPage:, donePage:)` without `install`) renders
+  `<button name="_action_done" value="Done">` with no `type="button"`, so appUI.js's
+  click handler never sees it and the browser natively GETs
+  `/installedapp/configure/<id>/<crumbs>/<page>?<every input>&_action_done=Done`.
+  That GET saves no input: the hub stores the whole query as the setting
+  `hubitatQueryString` (a JSON list of `{name,value}`) and renders the same page.
+  Posted to `/installedapp/update/json` instead, the fields save and the same page
+  renders again; neither path returns a `location` or the done page, installed or not.
+- **Default fields.** Only an app whose `preferences` holds sections and no pages
+  makes the hub send `defaultFields: true` (and `modeMap`); dynamic pages, static
+  `page()` blocks and pages with their own `label`/`mode` elements do not, and no
+  built-in app's first page does. The partial renders `<input name="label">`
+  (value `app.label`) and `<select name="mode[mode]" multiple>` with the hidden
+  `mode[mode].multiple=true`; the browser posts `label=<text>` and
+  `mode[mode]=<JSON array of mode ids>` (`[]` when none), never as `settings[...]`.
+  A page's own `label` element posts the same `label` plus `label.type`, its `mode`
+  element the same `mode[mode]`. A `label` posted in the same request as
+  `mode[mode]` is not stored; the next request that posts `mode[mode]` applies it.
+  Posted alone it is stored at once, with or without a Done. The partial posts
+  `label` with every `mode[mode]`; a `mode[mode]` posted without it can leave the
+  app showing the label it had before the last rename, so the form engine posts
+  the current label with a mode write. Even then the save of a `mode[mode]` can
+  store an older label: on one hub, a rename followed by a mode write left the
+  previous label in 4 of 8 tries, while the label posted alone landed 8 of 8. So
+  after a mode write on these fields the form engine reads the label the hub
+  renders and, when it is not the one posted, posts `label` alone with the Done
+  (at most twice) and reports `label_restored`.
+- **No `image` element.** Apps have no `image()` method (a page calling it errors
+  with "No signature of method ... image()"); main.js draws images only as an
+  `href`'s `image:` option.
+
 ### On the "Rule Machine is a black box" note
 
 The Vue bundle treats RM (and every classic app) as a black box — it iframes
@@ -182,9 +227,9 @@ per-action; `<N>` is the action index unless noted.
   (pluralized by count); `*BROKEN*` is red but not italic. Clicking `disable<N>`
   via `/installedapp/btn` (no `stateAttribute`) TOGGLES it (live-verified; a second
   click re-enables, and a click on a nonexistent `disable<N>` still reports
-  success). `hub_set_rule` walkStep is what clicks it; `hub_get_app_config` only
-  reads the span (`[DISABLED]` mark + `disabledActions`, with `disableButton` on a
-  `selectActions` read).
+  success). A `hub_set_rule(operation:'form')` control is what clicks it; `hub_get_app_config` only
+  reads the span: on a Rule Machine rule, a paragraph that holds disabled rows is returned as
+  `{text, disabled: [<row text>...]}` (the `Disabled Action(s)` legend is excluded).
 - **String `*contains*` comparator** — for a STRING-typed variable or a
   free-valued Custom Attribute, the comparator field (`RelrDev_<N>` on the
   condition wizard, `ReltDev<N>` on the trigger row) offers `=`, `≠` (the

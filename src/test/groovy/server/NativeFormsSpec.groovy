@@ -345,8 +345,9 @@ class NativeFormsSpec extends ToolSpecBase {
         calls.clear()
         model.configPage.sections[0].input << [element: 'paragraph', description:
             "<script>{window.open('/installedapp/configure/${target}/selectActions?resetScroll=true', '_self')}</script>"]
+        // A user app's own child is as valid a target as a built-in one.
         script.metaClass.getAppByAppId = { Long id ->
-            [id: id, parentAppId: id == 43L ? 42 : null, appType: [namespace: 'hubitat'], disabled: false]
+            [id: id, parentAppId: id == 43L ? 42 : null, appType: [namespace: id == 43L ? 'user' : 'hubitat'], disabled: false]
         }
         when:
         def result = submit([:], 'apply||clicked')
@@ -387,7 +388,6 @@ class NativeFormsSpec extends ToolSpecBase {
         reason      | target
         'unrelated' | [id: 43, parentAppId: 99, appType: [namespace: 'hubitat']]
         'disabled'  | [id: 43, parentAppId: 42, appType: [namespace: 'hubitat'], disabled: true]
-        'custom'    | [id: 43, parentAppId: 42, appType: [namespace: 'custom']]
         'missing'   | null
         'protected' | [id: 43, parentAppId: 42, appType: [namespace: 'hubitat']]
     }
@@ -452,6 +452,29 @@ class NativeFormsSpec extends ToolSpecBase {
         calls*.path == ['/installedapp/createchild/hubitat/Example Child/parent/42']
     }
 
+    def 'a created child that is not the requested type fails the form and still reports its id'() {
+        given:
+        model.configPage.sections[0].input << [element: 'app', name: 'children', namespace: 'hubitat',
+                                               appName: 'Example Child', appId: 42, title: 'Create child']
+        def control = open().controls.find { it.kind == 'create_child' }
+        calls.clear()
+        script.metaClass.hubInternalGetRaw = { String path ->
+            calls << [path: path]
+            [status: 302, location: '/installedapp/configure/43']
+        }
+        script.metaClass.getAppByAppId = { Long id ->
+            [id: id, parentAppId: id == 43L ? 42 : null, disabled: false, appType: [namespace: 'hubitat', name: 'Other Child']]
+        }
+        when:
+        def result = submit([:], control.control_id)
+        then:
+        !result.success
+        result.partial
+        result.created_app_id == 43L
+        result.error == 'Created app 43 did not match the native parent and child type'
+        calls*.path == ['/installedapp/createchild/hubitat/Example Child/parent/42']
+    }
+
     def 'child creation refuses accompanying fields before the native request'() {
         given:
         model.configPage.sections[0].input << [element: 'app', name: 'children', namespace: 'hubitat',
@@ -482,19 +505,330 @@ class NativeFormsSpec extends ToolSpecBase {
         calls*.path == ['/device/listJson', '/installedapp/update/json']
     }
 
-    def 'required displayed default must be explicitly submitted before navigation'() {
+    def 'a submit posts the page default of every unset input, as the browser does, and that default satisfies a required check'() {
         given:
         model.configPage.sections[0].input << [element: 'input', name: 'defaultChoice', type: 'enum', required: true, options: ['a', 'b'], defaultValue: 'a']
+        model.configPage.sections[0].input << [element: 'input', name: 'luxOff', type: 'number', defaultValue: 100]
+        model.configPage.sections[0].input << [element: 'input', name: 'secret', type: 'password', defaultValue: 'never-posted']
+        model.configPage.sections[0].input << [element: 'input', name: 'storedNumber', type: 'number', defaultValue: 5]
+        model.settings.storedNumber = 9
+        model.configPage.sections[0].input << [element: 'input', name: 'lockedNumber', type: 'number', defaultValue: 4, disabled: true]
+        model.configPage.sections[0].input << [element: 'input', name: 'tint', type: 'color', defaultValue: '#ff0000']
+        model.configPage.sections[0].input << [element: 'input', name: 'staleChoice', type: 'enum', options: ['a', 'b'], defaultValue: 'z']
         def opened = open()
         calls.clear()
         when:
         def result = submit([:], '_action_update|Done|')
+        def body = calls.find { it.path == '/installedapp/update/json' }.body
         then:
-        opened.fields.find { it.name == 'defaultChoice' }.value == 'a'
         opened.fields.find { it.name == 'defaultChoice' }.value_source == 'default'
-        !result.success
-        !result.partial
+        result.success
+        body['settings[defaultChoice]'] == 'a'
+        body['defaultChoice.type'] == 'enum'
+        body['settings[luxOff]'] == '100'
+        !body.containsKey('settings[secret]')
+        !body.containsKey('settings[storedNumber]')
+        !body.containsKey('settings[lockedNumber]')
+        !body.containsKey('settings[tint]')
+        !body.containsKey('settings[staleChoice]')
+        result.defaults_posted as Set == ['defaultChoice', 'luxOff'] as Set
+        result.defaults_not_posted*.name == ['staleChoice']
+        result.defaults_not_posted[0].reason.contains('staleChoice')
+        when: 'a supplied value wins over the default'
+        calls.clear()
+        assert open().success
+        calls.clear()
+        submit([luxOff: 20])
+        then:
+        calls.find { it.path == '/installedapp/update/json' }.body['settings[luxOff]'] == '20'
+        when: 'a later step of the same batch still posts the default'
+        assert open().success
+        calls.clear()
+        def batch = script.toolCallAppForm([app_id: 42, confirm: true, steps: [
+            [kind: 'submit', expect_page: 'edit', fields: [text: 'typed']],
+            [kind: 'submit', expect_page: 'edit', activate: '_action_update|Done|']]])
+        def posts = calls.findAll { it.path == '/installedapp/update/json' }*.body
+        then:
+        batch.success
+        posts.size() == 2
+        posts[1]._action_update == 'Done'
+        posts[1]['settings[luxOff]'] == '100'
+        posts[1]['settings[defaultChoice]'] == 'a'
+        !batch.fields.any { it.containsKey('default_value') }
+    }
+
+    def 'a sub-page opened directly with from offers its Done back to that parent'() {
+        given: 'a direct render carries an empty breadcrumb trail and no Done of its own'
+        model.pageBreadcrumbs = '%5B%5D'
+        model.doneButton = false
+        model.cancelButton = false
+        when:
+        def plain = script.toolCallAppForm([app_id: 42, steps: [[kind: 'open', page: 'onMeansPage']], confirm: true])
+        def opened = script.toolCallAppForm([app_id: 42, steps: [[kind: 'open', page: 'onMeansPage', from: 'mainPage']], confirm: true])
+        calls.clear()
+        def done = submit([:], '_action_previous|Done|')
+        then:
+        !plain.controls*.control_id.contains('_action_previous|Done|')
+        opened.controls*.control_id.contains('_action_previous|Done|')
+        done.success
+        def body = calls.find { it.path == '/installedapp/update/json' }.body
+        body._action_previous == 'Done'
+        body.pageBreadcrumbs == '%5B%22mainPage%22%5D'
+        when:
+        script.toolCallAppForm([app_id: 42, steps: [[kind: 'open', from: 'mainPage']], confirm: true])
+        then:
+        def refused = thrown(IllegalArgumentException)
+        refused.message.contains('requires page')
+    }
+
+    def 'a page with a next and a done page offers _action_done, posted like the other navigation after the required check'() {
+        given: 'the firmware renders _action_done instead of Next when the page names both'
+        model.doneButton = false
+        model.cancelButton = false
+        model.configPage = [name: 'pageTwo', title: 'Step two', nextPage: 'pageThree', donePage: 'pageThree',
+                            sections: [[input: [[element: 'input', name: 'second', type: 'text', required: true]]]]]
+        model.settings = [:]
+        def opened = script.toolCallAppForm([app_id: 42, steps: [[kind: 'open']], confirm: true])
+        calls.clear()
+        when:
+        def missing = script.toolCallAppForm([app_id: 42, confirm: true, steps: [[kind: 'submit', expect_page: 'pageTwo', activate: '_action_done|Done|']]])
+        then:
+        opened.controls*.control_id == ['_action_done|Done|']
+        opened.controls[0].kind == 'navigation'
+        opened.unsupported.isEmpty()
+        !missing.success
+        missing.error.contains('second')
         calls.empty
+        when:
+        assert open().success
+        calls.clear()
+        def done = script.toolCallAppForm([app_id: 42, confirm: true, steps: [[kind: 'submit', expect_page: 'pageTwo', fields: [second: 'two'], activate: '_action_done|Done|']]])
+        then:
+        done.success
+        calls*.path == ['/installedapp/update/json']
+        calls[0].body._action_done == 'Done'
+        calls[0].body['settings[second]'] == 'two'
+        calls[0].body.nextPage == 'pageThree'
+        calls[0].body.donePage == 'pageThree'
+        !calls[0].body.containsKey('_action_next')
+    }
+
+    def 'the hub default fields are the app label and mode restriction, posted as label and mode[mode]'() {
+        given:
+        model.defaultFields = true
+        model.modeMap = ['1': 'Day', '2': 'Night']
+        model.app.label = 'Porch'
+        model.app.restrictedModes = [2]
+        when:
+        def opened = open()
+        def label = opened.fields.find { it.name == 'label' }
+        def modes = opened.fields.find { it.name == 'mode[mode]' }
+        then:
+        label.type == 'text'
+        label.title == 'Assign a name'
+        label.value == 'Porch'
+        !label.containsKey('app_field') && !label.containsKey('sidecars')
+        modes.type == 'mode'
+        modes.multiple
+        modes.value == ['2']
+        modes.options == [[value: '1', label: 'Day'], [value: '2', label: 'Night']]
+        opened.unsupported.every { !it.contains('label') }
+        when: 'the hub answers with the posted label, so nothing is posted again'
+        calls.clear()
+        model.app.label = 'Back porch'
+        def saved = submit([label: 'Back <b>porch</b>', 'mode[mode]': ['1', '2']])
+        def body = calls.find { it.path == '/installedapp/update/json' }.body
+        then:
+        saved.success
+        calls.count { it.path == '/installedapp/update/json' } == 1
+        !saved.containsKey('label_restored')
+        body.label == 'Back porch'
+        body['mode[mode]'] == '["1","2"]'
+        body['mode[mode].multiple'] == 'true'
+        !body.keySet().any { it in ['settings[label]', 'settings[mode[mode]]', 'label.type', 'mode[mode].type'] }
+        when: 'an unset default field is not posted, and a mode outside the options is refused before any request'
+        assert open().success
+        calls.clear()
+        submit([count: 1])
+        def plain = calls.find { it.path == '/installedapp/update/json' }.body
+        assert open().success
+        calls.clear()
+        def refused = submit(['mode[mode]': ['9']])
+        then:
+        !plain.containsKey('label') && !plain.containsKey('mode[mode]')
+        !refused.success
+        !refused.partial
+        calls.empty
+    }
+
+    def 'a mode[mode] write posts the current label with it, as the browser does, and a label write posts no mode[mode]'() {
+        given:
+        model.defaultFields = true
+        model.modeMap = ['1': 'Day', '2': 'Night']
+        model.app.label = "<span style='color:green'>Porch</span>"
+        model.app.trueLabel = 'Porch'
+        when:
+        assert open().success
+        calls.clear()
+        def modes = submit(['mode[mode]': ['1']])
+        def modeBody = calls.find { it.path == '/installedapp/update/json' }.body
+        assert open().success
+        calls.clear()
+        def label = submit([label: 'Back porch'])
+        def labelBody = calls.find { it.path == '/installedapp/update/json' }.body
+        then:
+        modes.success
+        modeBody['mode[mode]'] == '["1"]'
+        modeBody.label == 'Porch'
+        label.success
+        labelBody.label == 'Back porch'
+        !labelBody.keySet().any { it.startsWith('mode[mode]') }
+    }
+
+    private Map renderedWithLabel(String label, int version, int count = 0) {
+        Map copy = new groovy.json.JsonSlurper().parseText(JsonOutput.toJson(model)) as Map
+        copy.app.label = label
+        copy.app.version = version
+        copy.settings.count = count
+        [status: 200, data: JsonOutput.toJson(copy)]
+    }
+
+    def 'a mode write whose answer renders an older label posts the label once more on its own and reports label_restored'() {
+        given:
+        model.defaultFields = true
+        model.modeMap = ['1': 'Day', '2': 'Night']
+        model.app.label = 'Porch'
+        assert open().success
+        calls.clear()
+        replies << renderedWithLabel('Old porch', 5)
+        replies << renderedWithLabel('Porch', 6, 7)
+        when:
+        def result = submit(['mode[mode]': ['1']])
+        def posts = calls.findAll { it.path == '/installedapp/update/json' }
+        then:
+        result.success
+        result.label_restored == true
+        result.note == "The hub's mode write put back an older label, so the label was posted again on its own."
+        posts.size() == 2
+        posts[0].body['mode[mode]'] == '["1"]'
+        posts[0].body.label == 'Porch'
+        posts[1].body.label == 'Porch'
+        !posts[1].body.containsKey('_action_update')
+        posts[1].body.version == '5'
+        !posts[1].body.keySet().any { it.startsWith('mode[mode]') }
+        result.fields.find { it.name == 'label' }.value == 'Porch'
+        result.fields.find { it.name == 'count' }.value == 7
+    }
+
+    def 'a mode write whose answer renders the posted label posts nothing more'() {
+        given:
+        model.defaultFields = true
+        model.modeMap = ['1': 'Day']
+        model.app.label = 'Porch'
+        assert open().success
+        calls.clear()
+        when:
+        def result = submit(['mode[mode]': ['1']])
+        then:
+        result.success
+        !result.containsKey('label_restored')
+        calls*.path == ['/installedapp/update/json']
+    }
+
+    def 'a label the hub keeps putting back after both re-posts is reported not landed with both labels'() {
+        given:
+        model.defaultFields = true
+        model.modeMap = ['1': 'Day']
+        model.app.label = 'Porch'
+        assert open().success
+        calls.clear()
+        2.times { replies << renderedWithLabel('Old porch', 5) }
+        replies << renderedWithLabel('Old porch', 6, 9)
+        when:
+        def result = submit(['mode[mode]': ['1']])
+        then:
+        !result.success
+        result.fields_not_landed == ['label']
+        !result.containsKey('label_restored')
+        result.error == "The hub's mode write put back the label 'Old porch', and posting 'Porch' again on its own did not change it."
+        calls.count { it.path == '/installedapp/update/json' } == 3
+        result.fields.find { it.name == 'count' }.value == 9
+    }
+
+    def 'the label field reads trueLabel, the label without the HTML an app decorates it with'() {
+        given:
+        model.defaultFields = true
+        model.app.label = "<span style='color:green'>Porch</span>"
+        model.app.trueLabel = 'Porch'
+        when:
+        def opened = open()
+        then:
+        opened.fields.find { it.name == 'label' }.value == 'Porch'
+    }
+
+    def 'a credential-named text input reads the password marker in form fields'() {
+        given:
+        model.settings.apiKey = 'ak-live-123'
+        model.settings.disarmPin = '4321'
+        model.settings.zipCode = '02134'
+        model.configPage.sections[0].input << [element: 'input', name: 'apiKey', type: 'text']
+        model.configPage.sections[0].input << [element: 'input', name: 'disarmPin', type: 'text']
+        model.configPage.sections[0].input << [element: 'input', name: 'zipCode', type: 'text']
+        when:
+        def fields = open().fields
+        then:
+        fields.find { it.name == 'apiKey' }.value == '***redacted (password)***'
+        fields.find { it.name == 'apiKey' }.redacted == true
+        fields.find { it.name == 'disarmPin' }.value == '***redacted (password)***'
+        fields.find { it.name == 'zipCode' }.value == '02134'
+        !fields.find { it.name == 'zipCode' }.containsKey('redacted')
+    }
+
+    @Unroll
+    def 'an accessToken input reads #shown when the toggle is #toggle and the caller is #caller'() {
+        given:
+        settingsMap.redactAccessTokens = toggle
+        if (caller == 'a client') script.callerClient = [id: 'c1']
+        model.settings.accessToken = '0f8e2c1a-token'
+        model.configPage.sections[0].input << [element: 'input', name: 'accessToken', type: 'text']
+        when:
+        def field = open().fields.find { it.name == 'accessToken' }
+        then:
+        field.value == (shown == 'redacted' ? '***redacted (access token)***' : '0f8e2c1a-token')
+        field.value_source == 'stored'
+        where:
+        toggle | caller       | shown
+        false  | 'the main'   | 'its value'
+        true   | 'the main'   | 'redacted'
+        false  | 'a client'   | 'redacted'
+    }
+
+    def 'a page own label and mode elements are the same fields, the label posted with its type and checked when required'() {
+        given:
+        model.modeMap = ['1': 'Day']
+        model.app.label = ''
+        model.configPage.sections[0].input += [[element: 'label', name: 'label', type: 'text', title: 'Name this app', required: true],
+                                               [element: 'mode', title: 'Only in modes']]
+        when:
+        def opened = open()
+        calls.clear()
+        def missing = submit([:], '_action_update|Done|')
+        then:
+        opened.fields.find { it.name == 'label' }.title == 'Name this app'
+        opened.fields.find { it.name == 'label' }.required
+        opened.fields.find { it.name == 'mode[mode]' }.title == 'Set for specific mode(s)'
+        opened.unsupported.every { !it.contains('mode') }
+        !missing.success
+        missing.error.contains('label')
+        calls.empty
+        when:
+        def done = submit([label: 'Kitchen'], '_action_update|Done|')
+        def body = calls.find { it.path == '/installedapp/update/json' }.body
+        then:
+        done.success
+        body.label == 'Kitchen'
+        body['label.type'] == 'text'
+        body._action_update == 'Done'
     }
 
     def 'button reload after native href uses the current page and breadcrumbs'() {
@@ -526,6 +860,40 @@ class NativeFormsSpec extends ToolSpecBase {
         calls*.path == ['/installedapp/update/json']
     }
 
+    def 'engine failures carry the hub own error text, HTTP status and parse failure'() {
+        given:
+        assert open().success
+        replies << [status: 200, data: JsonOutput.toJson([status: 'success', app: [id: 42], configPage: [name: 'edit', error: 'Value out of range']])]
+        when:
+        def reported = submit([count: 1])
+        then:
+        !reported.success
+        reported.error == 'Native form reported an error: Value out of range; inspect the native editor and logs'
+        when:
+        assert open().success
+        replies << [status: 500, data: '']
+        def failed = submit([count: 1])
+        then:
+        failed.error == 'Native form request returned HTTP 500; inspect the app before retrying'
+        when:
+        assert open().success
+        replies << [status: 200, data: '<html>not json</html>']
+        def unreadable = submit([count: 1])
+        then:
+        unreadable.error.startsWith('Native form returned unreadable JSON (')
+        unreadable.error.endsWith('); inspect the app before retrying')
+    }
+
+    def 'an error the hub reports at the top level is carried too'() {
+        given:
+        assert open().success
+        replies << [status: 200, data: JsonOutput.toJson([status: 'success', errorMessage: 'Rule is busy'])]
+        when:
+        def result = submit([count: 1])
+        then:
+        result.error == 'Native form reported an error: Rule is busy; inspect the native editor and logs'
+    }
+
     def 'transient context retains execution descriptors without field values messages or option labels'() {
         given:
         model.configPage.sections[0].input << [element: 'paragraph', title: 'Native help text']
@@ -545,7 +913,7 @@ class NativeFormsSpec extends ToolSpecBase {
     }
 
     @Unroll
-    def 'non-native or disabled app #appDescriptor is refused before rendering'() {
+    def 'a missing or disabled app #appDescriptor is refused before rendering'() {
         given:
         script.metaClass.getAppByAppId = { Long id -> appDescriptor }
         when:
@@ -554,7 +922,23 @@ class NativeFormsSpec extends ToolSpecBase {
         thrown(IllegalArgumentException)
         calls.empty
         where:
-        appDescriptor << [null, [appType: [namespace: 'custom']], [appType: [namespace: 'hubitat'], disabled: true]]
+        appDescriptor << [null, [id: 99, appType: [namespace: 'hubitat']], [id: 42, appType: [namespace: 'hubitat'], disabled: true]]
+    }
+
+    def 'a user or community app is opened like a built-in one, and hub_set_native_app names itself in the failure log'() {
+        given:
+        script.metaClass.getAppByAppId = { Long id -> [id: id, appType: [namespace: 'someDeveloper', name: 'Community App'], disabled: false] }
+        List logged = []
+        script.metaClass.mcpLogError = { String component, String message, Exception error -> logged << message }
+        when:
+        def opened = open()
+        def failed = script.toolSetNativeApp([operation: 'form', app_id: 42, args: [steps: [[kind: 'submit', expect_page: 'nowhere']]], confirm: true])
+        then:
+        opened.success
+        opened.page.name == 'edit'
+        opened.backup.skipped
+        !failed.success
+        logged.any { it.contains('hub_set_native_app form failed for app 42') && it.contains('expect_page does not match') }
     }
 
     def 'native Remove is reported unsupported and is never a form control'() {
@@ -653,9 +1037,8 @@ class NativeFormsSpec extends ToolSpecBase {
         List errors = []
         script.metaClass.hubInternalGet = { String path, Map query = null, int timeout = 30, boolean retry = false ->
             calls << [path: path]
-            try {
-                script.toolCallAppForm([app_id: 43, steps: [[kind: 'open']], confirm: true])
-            } catch (IllegalStateException failure) { errors << failure.message }
+            def nestedResult = script.toolCallAppForm([app_id: 43, steps: [[kind: 'open']], confirm: true])
+            if (nestedResult.success == false) errors << nestedResult.error
             JsonOutput.toJson(model)
         }
         when:
@@ -678,9 +1061,9 @@ class NativeFormsSpec extends ToolSpecBase {
                 nested = true
                 script.callerClient = [id: 'other']
                 try {
-                    script.toolCallAppForm([app_id: 42, steps: [[kind: 'open']], confirm: true])
-                } catch (IllegalStateException failure) { errors << failure.message }
-                finally { script.callerClient = null }
+                    def nestedResult = script.toolCallAppForm([app_id: 42, steps: [[kind: 'open']], confirm: true])
+                    if (nestedResult.success == false) errors << nestedResult.error
+                } finally { script.callerClient = null }
             }
             JsonOutput.toJson(model)
         }
@@ -721,6 +1104,7 @@ class NativeFormsSpec extends ToolSpecBase {
         then:
         definitions*.name == ['hub_set_rule']
         script._ndOperationSchema('form').properties.steps.maxItems == 16
+        script._naOperationSchema('form') == script._ndOperationSchema('form')
         !definitions[0].inputSchema.required?.contains('confirm')
         script._ndGuide().contains('Even open renders execute app code')
     }

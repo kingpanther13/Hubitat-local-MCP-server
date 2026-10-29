@@ -205,8 +205,9 @@ class ToolVisualRuleRestoreSpec extends ToolSpecBase {
         when:
         script._rmBackupRuleSnapshot(712, 'pre-delete')
 
-        then: 'a plural parent name and a non-version suffix both stay rule_machine'
-        parsedUpload().appType == 'rule_machine'
+        then: 'a plural parent name and a non-version suffix are neither visual_rule nor a rule: they keep their own type'
+        parsedUpload().appType == 'app'
+        parsedUpload().appTypeName == typeName
 
         where:
         typeName << ['Visual Rules Builder', 'Visual Rule Builder Deluxe']

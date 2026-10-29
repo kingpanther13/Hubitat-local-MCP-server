@@ -8,7 +8,7 @@
 
 **Dedicated test-hub prompt:** "Create a disposable test device, inspect its preferences and configuration, and verify boolean, numeric, text and enum changes using an independent native read. Restore each original value and verify restoration, then remove only the device and driver you created. Leave every existing device and automation unchanged."
 
-Updated for the installed-apps + Rule Machine interop + native CRUD + library management + HPM package state architecture, then the issue #105 PR1A hub_ rename + consolidation, then the PR1B read/write split, then the issue #259 item #9 Easy Dashboard CRUD (13 flat core + 23 gateways = 36 on tools/list, 116 total distinct tools).
+Updated for the installed-apps + Rule Machine interop + native CRUD + library management + HPM package state architecture, then the issue #105 PR1A hub_ rename + consolidation, then the PR1B read/write split, then the issue #259 item #9 Easy Dashboard CRUD (13 flat core + 23 gateways = 36 on tools/list, 115 total distinct tools).
 
 Comprehensive test scenarios for the Hubitat MCP Rule Server. Modeled after ha-mcp's BAT framework.
 
@@ -1648,34 +1648,29 @@ Run on hub with zero rooms. **Expected**: Returns empty list, not an error.
 
 Run with no devices selected for MCP access. **Expected**: Returns empty list or message about no devices.
 
-### T109 — addAction partial=true is not a failure (Finding #4)
+### T109 — Add a switch action and confirm it landed exactly once
 
-Tests that agents correctly interpret the `partial=true` flag from `hub_set_rule(addAction)`.
-Per Finding #4 (shipped in commit `95654ad`), `success` and `partial` are orthogonal:
-- `success: true, partial: false` -- all fields landed cleanly
-- `success: true, partial: true` -- action committed but some sidecar fields were silently rejected by RM's wizard schema (e.g. `onOff.1` after `onOffSwitch.1` writes). **This is cosmetic when `health.ok=true`.**
-- `success: false` -- primary commit failed; rule may be inconsistent
+Tests that an agent verifies a rule write from the rule itself and never repeats a write that already committed.
 
 ```json
 {
   "setup_prompt": "Create a virtual switch called 'BAT Partial Test Switch'. Note its device ID.",
-  "test_prompt": "Create a new RM rule called 'BAT Finding4 Rule' and add a 'Switch: on' action targeting 'BAT Partial Test Switch' to it. The response may flag a partial result -- interpret it correctly and report whether the action was successfully added to the rule.",
+  "test_prompt": "Create a new RM rule called 'BAT Finding4 Rule' and add a 'Switch: on' action targeting 'BAT Partial Test Switch' to it. Confirm from the rule itself that the action is there exactly once, and report whether it was added.",
   "teardown_prompt": "Delete the rule 'BAT Finding4 Rule'. Delete the virtual switch 'BAT Partial Test Switch'."
 }
 ```
 
 **Expected**:
-- Agent calls `hub_manage_rule_machine(tool=hub_set_rule)` to create the rule (name only, no appId), then `hub_manage_rule_machine(tool=hub_set_rule, args={appId: ..., addAction: ...})`.
-- The response returns `{success: true, partial: true, ...}` (empirically observed for Switch actions).
-- Agent does NOT panic, does NOT call `removeAction`, does NOT retry the `addAction` (which would create a duplicate).
-- Agent calls `hub_read_apps_code(tool=hub_get_app_config, args={appId: ..., includeSettings: true})` OR `hub_manage_rule_machine(tool=hub_set_rule, args={appId: ..., walkStep: {page: "mainPage", operation: "introspect"}})` to verify the action rendered correctly in the rule.
-- Agent reports the action was added successfully, noting the partial flag was cosmetic.
+- Agent creates the rule with `hub_manage_rule_machine(tool=hub_set_rule, args={operation: "create", args: {parent_id: <Rule Machine app id>, name: "BAT Finding4 Rule", changes: [<switch-on action>]}, confirm: true})`, or creates it and adds the action with one `operation: "update"` call.
+- The write reports `success: true`, and its returned document lists one switch action.
+- Agent verifies with `hub_set_rule(operation: "read", rule_id, args: {sections: ["actions"]})` or `hub_read_apps_code(tool=hub_get_app_config, args={appId: ..., includeSettings: true})`, which shows one "On: BAT Partial Test Switch" action.
+- Agent reports the action was added.
 
 **What an agent must NOT do**:
-- Interpret `partial: true` as a failure requiring cleanup or retry.
-- Call `removeAction` to "undo" the partial action (it committed fully -- removing it deletes a working action).
-- Retry `addAction` for the same action (produces a duplicate row).
-- Report to the user that the operation failed when `health.ok=true` and the action paragraph renders correctly.
+- Repeat a write that reported success (produces a duplicate action row).
+- Delete a committed action to "undo" a result it misread.
+- Report failure when the write succeeded and the rule shows the action.
+- Resubmit after a reported failure without first reading the rule to see what landed.
 
 **Acceptance criterion**: Agent reports success, the rule's mainPage render shows the action (e.g. "On: BAT Partial Test Switch"), and no duplicate action rows exist.
 
@@ -2668,7 +2663,7 @@ Multi-tool scenarios phrased as user stories, not numbered checklists. The LLM m
 }
 ```
 
-**Expected**: `hub_set_rule` with `modifyAction={index, mods:{ruleIds:[<new-target-id>]}}` (one op), then `hub_get_app_config` readback showing the Run Actions reference on the new target. removeAction+addAction via `patches` is a soft pass; FAIL if the caller is rebuilt from scratch or the old target is modified/deleted.
+**Expected**: One `hub_set_rule(operation="update")` change edits the caller's existing Run Rule Actions action in place (its native action ID, with the new target in its fields), then `hub_set_rule(operation="read")` or `hub_get_app_config` shows the Run Actions reference on the new target. Deleting the action and adding a new one in the same edit is a soft pass; FAIL if the caller is rebuilt from scratch or the old target is modified/deleted.
 
 #### T304 — Duplicate an automation without letting the copy go live
 
@@ -2767,11 +2762,11 @@ These operations are too destructive for automated testing. Test manually with e
 | Flat core tools on `tools/list` | 13 |
 | Gateways on `tools/list` | 23 |
 | Total visible on `tools/list` | 36 |
-| Total distinct tools in codebase | 116 |
+| Total distinct tools in codebase | 115 |
 
 With Developer Mode on, `hub_update_package` joins the flat core tools, so a Developer Mode hub lists one more.
 
-**8 read gateways**: `hub_read_apps_code` (11), `hub_read_devices` (6), `hub_read_diagnostics` (6), `hub_read_files` (2), `hub_read_rooms` (2), `hub_read_rules` (6), `hub_read_variables` (3), `hub_read_dashboards` (2)
+**8 read gateways**: `hub_read_apps_code` (10), `hub_read_devices` (6), `hub_read_diagnostics` (6), `hub_read_files` (2), `hub_read_rooms` (2), `hub_read_rules` (6), `hub_read_variables` (3), `hub_read_dashboards` (2)
 
 **15 manage gateways**: `hub_manage_backup` (4), `hub_manage_code` (10), `hub_manage_custom_rules` (8), `hub_manage_dashboards` (6), `hub_manage_destructive_ops` (4), `hub_manage_devices` (11), `hub_manage_diagnostics` (7), `hub_manage_files` (4), `hub_manage_logs` (3), `hub_manage_mcp` (1), `hub_manage_native_rules_and_apps` (12), `hub_manage_radio` (6), `hub_manage_rooms` (5), `hub_manage_rule_machine` (11), `hub_manage_variables` (8)
 
@@ -2779,17 +2774,17 @@ With Developer Mode on, `hub_update_package` joins the flat core tools, so a Dev
 
 ### Tool Coverage (non-destructive tools only)
 
-All 116 distinct tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
+All 115 distinct tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
 
 Sections 1-9 each target a specific tool — named in the test's title and **Expected** criteria while the `test_prompt` stays goal-first (see Prompt style above). Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist. Section 11 covers the built-in app integration tools.
 
-**Total: 271 test scenarios** (123 explicit + 65 natural language + 21 built-in-app integration + 9 library management + 2 reveal-walker coverage + 3 deviceId normalization + 1 subExpression rejection + 1 reveal-fallback sentinel + 1 compareToDevice fallback + 1 Between-two-times sunrise/sunset + 10 periodic-frequency completeness + 5 Visual Rules Builder + 1 device swap + 2 installed-app read modes + 2 enum-attribute state-change comparator + 4 device-state state-change / fail-loud authoring parity + 4 replaceRequiredExpression in-place RE replace + 3 rule-local variable lifecycle/namespace + 5 read-side convergence + 1 multi-device convergence + 3 MCP device-access scope + 1 official-SDK MRTR proof + 1 multi-rule call_rule aggregation + 1 rule-backup policy proof + 1 protected-app policy proof) plus 13 excluded destructive operations documented for manual testing
+**Total: 266 test scenarios** (123 explicit + 65 natural language + 21 built-in-app integration + 9 library management + 2 reveal-walker coverage + 3 single-device condition authoring + 1 compareToDevice fallback + 1 Between-two-times sunrise/sunset + 9 periodic-frequency completeness + 5 Visual Rules Builder + 1 device swap + 2 installed-app read modes + 2 enum-attribute state-change comparator + 3 device-state state-change / fail-loud authoring parity + 3 Required Expression in-place replacement + 3 rule-local variable lifecycle/namespace + 5 read-side convergence + 1 multi-device convergence + 3 MCP device-access scope + 1 official-SDK MRTR proof + 1 multi-rule call_rule aggregation + 1 rule-backup policy proof + 1 protected-app policy proof) plus 13 excluded destructive operations documented for manual testing
 
 ---
 
 ## Section 11: Built-in App Integration Tests
 
-Tools in this section have mixed gate requirements. `hub_list_apps` (scope=instances) and `hub_list_device_dependents` require the Read master. `hub_get_app_config` and `hub_list_app_pages` require the Read master. `hub_manage_native_rules_and_apps` tools require the Read master; CRUD tools additionally require the Write master. Tests assume at least one Rule Machine rule and at least one Room Lighting or other multi-app configuration exists on the hub.
+Tools in this section have mixed gate requirements. `hub_list_apps` (scope=instances) and `hub_list_device_dependents` require the Read master. `hub_get_app_config` requires the Read master. `hub_manage_native_rules_and_apps` tools require the Read master; CRUD tools additionally require the Write master. Tests assume at least one Rule Machine rule and at least one Room Lighting or other multi-app configuration exists on the hub.
 
 ### Safety Rules for Section 11
 
@@ -2856,7 +2851,7 @@ Tools in this section have mixed gate requirements. `hub_list_apps` (scope=insta
 }
 ```
 
-**Expected**: AI calls `hub_read_apps_code` with no args, sees catalog of 11 tools (`hub_list_apps`, `hub_list_drivers`, `hub_get_source`, `hub_list_libraries`, `hub_list_bundles`, `hub_list_backups`, `hub_get_backup`, `hub_list_device_dependents`, `hub_get_app_config`, `hub_list_app_pages`, `hub_list_hpm_packages`) with full parameter schemas. The installed-apps listing is reached via `hub_list_apps` with `scope='instances'`.
+**Expected**: AI calls `hub_read_apps_code` with no args, sees catalog of 10 tools (`hub_list_apps`, `hub_list_drivers`, `hub_get_source`, `hub_list_libraries`, `hub_list_bundles`, `hub_list_backups`, `hub_get_backup`, `hub_list_device_dependents`, `hub_get_app_config`, `hub_list_hpm_packages`) with full parameter schemas. The installed-apps listing is reached via `hub_list_apps` with `scope='instances'`.
 
 ### T206 — Gateway catalog discovery (hub_manage_native_rules_and_apps)
 
@@ -2876,7 +2871,7 @@ Tools in this section have mixed gate requirements. `hub_list_apps` (scope=insta
 }
 ```
 
-**Expected**: AI calls `hub_manage_rule_machine.hub_set_rule` (name only, no appId) to create the rule, then `hub_set_rule(appId=N, ...)` to add the motion trigger and switch action. Returns the new appId. Does NOT fall back to `hub_create_custom_rule` (that creates an MCP-engine rule, not a native RM rule).
+**Expected**: AI calls `hub_manage_rule_machine.hub_set_rule` with `operation="create"` (the Rule Machine `parent_id`, the `name`, and `changes` holding the motion trigger and the switch-on action), or creates the rule and adds both with one `operation="update"` call. Returns the new `rule_id`. Does NOT fall back to `hub_create_custom_rule` (that creates an MCP-engine rule, not a native RM rule).
 
 ### T208 — AI creates a Room Lighting instance
 
@@ -2887,7 +2882,7 @@ Tools in this section have mixed gate requirements. `hub_list_apps` (scope=insta
 }
 ```
 
-**Expected**: AI calls `hub_manage_native_rules_and_apps.hub_set_native_app` (appType=room_lighting, name='BAT Study Lights'). Room Lighting creation is supported: the tool installs the Room Lighting parent app first when the hub does not have it, then creates the child and returns its appId. AI reports the new instance and does not fabricate a result.
+**Expected**: AI calls `hub_manage_native_rules_and_apps.hub_set_native_app` (operation='create', args={app_type: 'room_lighting', name: 'BAT Study Lights'}). Room Lighting creation is supported: the tool installs the Room Lighting parent app first when the hub does not have it, then creates the child through that page's create control, presses its first page's Done and returns its app_id and label. AI reports the new instance and does not fabricate a result.
 
 ### T209 — Pause and resume an RM rule (reversible)
 
@@ -2899,7 +2894,7 @@ Tools in this section have mixed gate requirements. `hub_list_apps` (scope=insta
 }
 ```
 
-**Expected**: Calls `hub_set_rule_paused` with `value=true` (pauses) → confirms with user → calls `hub_set_rule_paused` with `value=false` (resumes). Both return `{success: true}`.
+**Expected**: Calls `hub_set_rule_paused` with `paused=true` (pauses) → confirms with user → calls `hub_set_rule_paused` with `paused=false` (resumes). Both return `{success: true}`.
 
 **WARNING**: Only runs if user has a BAT-prefixed RM rule OR explicitly identifies a safe rule. Never use a production rule.
 
@@ -2925,7 +2920,7 @@ Tools in this section have mixed gate requirements. `hub_list_apps` (scope=insta
 }
 ```
 
-**Expected**: Calls `hub_call_rule` with `action='actions'`. Returns `{success: true, rmAction: 'runRuleAct'}`. AI reports success and any downstream device state changes.
+**Expected**: Calls `hub_call_rule` with `action='actions'`. Returns `{success: true, rmAction: 'runAction button'}`. AI reports success and any downstream device state changes.
 
 **WARNING**: Only use a BAT-prefixed rule whose actions are idempotent/reversible. Running arbitrary production rule actions could toggle locks or change HVAC.
 
@@ -3017,7 +3012,7 @@ Tools in this section have mixed gate requirements. `hub_list_apps` (scope=insta
 
 **Expected**: `hub_get_app_config` throws `IllegalArgumentException: the Read master access is disabled...`. AI reports the gate requirement and directs user to enable it in MCP app settings.
 
-### T217 — hub_list_app_pages for HPM (discover sub-page names)
+### T217 — HPM page discovery (sub-page names from page.hrefs)
 
 ```json
 {
@@ -3026,9 +3021,9 @@ Tools in this section have mixed gate requirements. `hub_list_apps` (scope=insta
 }
 ```
 
-**Expected**: AI uses the HPM app ID discovered in setup, then calls `hub_read_apps_code(tool='hub_list_app_pages', args={appId: <discovered_id>})`. Returns a `pages` list including at least `prefOptions`, `prefPkgUninstall`, `prefPkgModify`, `prefPkgInstall`, `prefPkgMatchUp`. AI lists the available page names and explains their roles (e.g. prefPkgUninstall = full installed-package list). Tool is accessed via the `hub_read_apps_code` gateway.
+**Expected**: AI reads HPM's default page with `hub_read_apps_code(tool='hub_get_app_config', args={appId: <discovered_id>})` and lists the pages under `page.hrefs` with their titles: on a configured HPM the default page is `prefOptions` and links `prefPkgInstall`, `prefPkgUpdate`, `prefPkgModify`, `prefPkgRepair`, `prefPkgUninstall`, `prefPkgMatchUp`, `prefPkgView` and `prefSettings`. AI does not guess page names that the page does not link.
 
-### T218 — hub_list_app_pages for Rule Machine rule (linked sub-pages)
+### T218 — Rule Machine rule page discovery (linked sub-pages)
 
 ```json
 {
@@ -3037,7 +3032,7 @@ Tools in this section have mixed gate requirements. `hub_list_apps` (scope=insta
 }
 ```
 
-**Expected**: AI uses the Rule Machine app ID discovered in setup, then calls `hub_read_apps_code(tool='hub_list_app_pages', args={appId: <discovered_id>})`. Returns a `pages` list with `{name: 'mainPage', role: 'primary'}` plus the sub-pages the rule's page links (`selectTriggers` and `selectActions`, `role: 'sub-page'`), and a `note` pointing at `hub_set_rule`'s shortcuts for RM rules. AI lists the pages and says rules are authored through `hub_set_rule` rather than by driving those pages.
+**Expected**: AI reads the rule's default page with `hub_read_apps_code(tool='hub_get_app_config', args={appId: <discovered_id>})` and lists `mainPage` plus the sub-pages in `page.hrefs` (`selectTriggers` and `selectActions`). AI says rules are authored through `hub_set_rule` rather than by driving those pages.
 
 ### T219 — hub_get_custom_rule on a Rule Machine rule ID (redirect hint)
 
@@ -3697,9 +3692,9 @@ Tools in this section require **the Read master** and HPM itself must be install
 
 **Failure modes**: Response carries a `nextCursor` (pagination was re-introduced or never removed — silent client truncation regression). Tool count substantially less than the expected flat-mode catalog (size-guard hit `-32603` because the catalog grew past the 124,000-byte cap — needs more `[[FLAT_TRIM]]` wraps). Stale `-32602` errors on cursor values (cursor handling not fully removed). Duplicate tool names in the response (catalog assembly regression).
 
-**Reading note for T607-T619 Expected sections**: where these scenarios say "no broken markers" the concrete check is `result.brokenMarkers` is empty (the field surfaced by `_rmCheckRuleHealth` / `hub_get_rule_health`) AND `result.health.ok=true`. Together they confirm the rule did not pick up any `*BROKEN*` rendering markers post-commit.
+**Reading note for T607-T619 Expected sections**: where these scenarios say "no broken markers", the check is `hub_get_rule_health` returning `ok=true` with an empty `brokenMarkers` list. Together they confirm the rule picked up no `*BROKEN*` rendering markers after the write.
 
-### T607 — addAction setVariable: set a hub variable to a constant value inside an RM rule
+### T607 — Set a hub variable to a constant value inside an RM rule
 
 ```json
 {
@@ -3709,11 +3704,11 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: `hub_set_rule(appId=N, addAction={capability:'setVariable', variable:'bat_setvar_test', value:99}, confirm=true)` completes with `success=true`. `hub_get_rule_health` reports no broken-condition markers. The rule's action renders in the RM UI as "Set bat_setvar_test to 99".
+**Expected**: The agent adds one Set Variable action with `hub_set_rule(operation="update", rule_id=N, args={changes:[{part:"action", value:{...}}]}, confirm=true)`, using `operation="form"` to discover the action's native inputs when it needs them. The write reports `success=true`. `hub_get_rule_health` reports no broken markers. The action renders on the rule's main page as "Set bat_setvar_test to 99".
 
-**Failure modes**: Tool returns "Unsupported capability 'setVariable'" (capability not wired). Rule health check reports broken marker (wrong actType/actSubType or field name). Value written as string instead of correct type. Passing an unknown `variable` returns `success=false` with an error listing available hub variables.
+**Failure modes**: The action renders as "Set bat_setvar_test to null" or carries a broken marker. The value is stored as text for a numeric variable. A variable name the hub does not have is accepted and leaves a broken action, instead of a refusal that writes nothing.
 
-### T608 — addAction mode with modeName resolves to ID (not literal string)
+### T608 — Set Mode action chosen by mode name
 
 ```json
 {
@@ -3723,11 +3718,11 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: `hub_set_rule(addAction={capability:'mode', modeName:'<name>'})` resolves the name to a numeric mode ID before writing. `hub_get_rule_health` reports no broken markers. Passing an unknown modeName returns `success=false` with an `error` field listing available mode names -- the agent should inspect `result.success` and `result.error`, not expect a protocol-level exception.
+**Expected**: The agent maps the name to the mode the hub offers and adds one Set Mode action. The write reports `success=true`. The action renders with that mode's name, and `hub_get_rule_health` reports no broken markers. RM's mode input stores the mode ID, so the read's settings show the ID that belongs to the named mode.
 
-**Failure modes**: Rule renders as "Mode: null" (name written literally instead of resolved ID). Unknown modeName is silently accepted and produces a broken action.
+**Failure modes**: The action renders as "Mode: null" (the name was stored where RM expects the mode ID). A mode name the hub does not have is accepted and produces a broken action, instead of being refused with nothing written.
 
-### T609 — addAction runCommand with variable parameter uses moreParams + P-discovery (live-verified wire format)
+### T609 — Run a custom command whose parameter comes from a hub variable
 
 ```json
 {
@@ -3737,11 +3732,11 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: `addAction` completes with `success=true`. `hub_get_rule_health` returns no broken markers. RM wire: for each parameter a `moreParams` button click allocates a P-numbered slot (P starts at 2, RM-assigned); literal params write `cpType<P>.N` + `cpVal<P>.N`; variable params write `cpType<P>.N` + `uVar<P>.N=true` + `xVar<P>.N=bat_cpvar_test`. Passing an unknown variable name returns an error listing available variables.
+**Expected**: One Run Custom Action is added and the write reports `success=true`. `hub_get_rule_health` returns no broken markers. The action renders as setLevel on 'BAT RunCmd Switch' with its parameter taken from bat_cpvar_test. RM allocates a numbered slot per parameter (`cpType<P>.<N>`); a variable-sourced parameter shows `uVar<P>.<N>=true` and `xVar<P>.<N>=bat_cpvar_test` in the read's settings, not the variable name as a literal `cpVal<P>.<N>`. A variable name the hub does not have is refused with nothing written.
 
-**Failure modes**: Parameter silently dropped. Rule health shows broken action. `cpVal` written with the variable NAME as a literal string (wrong path -- should use uVar+xVar). Hub variable not found in xVar enum (variable does not exist on hub).
+**Failure modes**: Parameter silently dropped. Rule health shows a broken action. The variable NAME stored as a literal parameter value.
 
-### T610 — addAction setVariable sourceVariable form (copy-from-variable wire)
+### T610 — Set a hub variable by copying another hub variable
 
 ```json
 {
@@ -3751,11 +3746,11 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: `hub_set_rule(addAction={capability:'setVariable', variable:'bat_sv_dst', sourceVariable:'bat_sv_src'})` completes with `success=true`. RM wire: `xVarV.N='bat_sv_dst'`, `numOp.N='variable'`, `xVar3.N='bat_sv_src'` (xVar3 is schema-gated -- revealed only after `numOp=variable` is written; the digit is RM-assigned/discovered, not hardcoded). `hub_get_rule_health` reports no broken markers. Passing an unknown variable name (for either `variable` or `sourceVariable`) returns `success=false` with an error listing available hub variables.
+**Expected**: The write reports `success=true` and the action renders as setting bat_sv_dst to the value of bat_sv_src (a variable source, not a number). `hub_get_rule_health` reports no broken markers. RM shows the source-variable picker only after the value type is set to variable (`numOp.<N>='variable'`), so the agent needs a render between those two inputs. A variable name the hub does not have, for either side, is refused with nothing written.
 
-**Failure modes**: Action renders as "Set bat_sv_dst to null" (numOp=number written instead of variable). xVar3 not written (sourceVariable dropped). Unknown variable name accepted silently and produces a broken action.
+**Failure modes**: Action renders as "Set bat_sv_dst to null" (a number source was chosen instead of variable). The source variable is dropped. An unknown variable name is accepted and produces a broken action.
 
-### T647 — addAction setVariable fromDevice form (read a device attribute)
+### T647 — Set a hub variable from a device attribute
 
 ```json
 {
@@ -3765,11 +3760,11 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: `hub_set_rule(addAction={capability:'setVariable', variable:'bat_sv_fd', fromDevice:{deviceId:<id>, attribute:'temperature'}})` completes with `success=true` and `partial=false`. The numeric target var requires a numeric source attribute: RM filters `tCustomAttr` to attributes compatible with the target var's type, so a Number var offers numeric attributes like `temperature` (an enum-only attribute such as a switch's `switch` is filtered out for a numeric var -- see the negative case below). RM wire: `numOp.N='device attribute'`, `customDev.N=<id>` (capability.* single-device picker, schema-gated -- revealed after numOp), `tCustomAttr.N='temperature'` (attribute enum FILTERED to the device, revealed after the device is written). `settingsApplied` includes `customDev.<N>` and `tCustomAttr.<N>`. `hub_get_rule_health` reports no broken markers. An attribute outside the device's type-filtered enum (e.g. requesting a switch's enum `switch` attribute into this numeric var) returns `success=false` with the available-attribute list. The `fromDevice` source requires a Number or Decimal target variable -- RM does not render the device-attribute source for a String/Boolean/DateTime target, so `fromDevice` into such a var returns `success=false` (with a message naming the Number/Decimal requirement) before any write.
+**Expected**: The write reports `success=true` and the action renders as setting bat_sv_fd from the temperature of the chosen device. `hub_get_rule_health` reports no broken markers. RM reveals the device picker after the device-attribute source is chosen, then lists only the attributes of that device that fit the target's type: a numeric variable is offered `temperature` but not a switch's `switch` attribute. RM offers the device-attribute source only for a Number or Decimal target. A device ID outside the MCP-selected set is still valid if the hub has it.
 
-**Failure modes**: customDev not revealed (numOp dropped or wrong value). tCustomAttr not filtered to the device or to the target var's type (wrong enum). An invalid attribute accepted silently and produces a broken action. deviceId validated against the MCP-selected set instead of all hub devices (false rejection of a valid hub device). `fromDevice` into a non-numeric target var accepted (or failing with a misleading not-in-schema message) instead of a clear Number/Decimal-target rejection.
+**Failure modes**: The attribute is stored without the device, or from outside the offered list. An attribute the hub does not offer is accepted and produces a broken action instead of a refusal that writes nothing. The agent claims a device-attribute source on a String, Boolean or DateTime target.
 
-### T648 — addAction setVariable math form (structured variable math, binary + unary arity)
+### T648 — Variable math: one binary and one unary operation
 
 ```json
 {
@@ -3779,11 +3774,11 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: both `addAction` calls complete with `success=true` and `partial=false`. Binary wire: `numOp.N='variable math'`, `xVar3.N='bat_sv_math'`, `valMathOp.N='+'`, `xVar4.N='(constant)'`, `valConst2.N=10` (the numeric right operand becomes a constant; all schema-gated and revealed in sequence). Unary wire: `valMathOp.N='absolute'` with NO `xVar4`/`valConst2` written. A binary operator missing `right`, or a unary operator given `right`, returns `success=false` with an arity error. An unrecognized operator or an unknown variable operand returns `success=false`. The `math` source requires a Number or Decimal target variable -- `math` into a String/Boolean/DateTime target returns `success=false` (with a message naming the Number/Decimal requirement) before any write.
+**Expected**: Both writes report `success=true`, and the two actions render as bat_sv_math + 10 and the absolute value of bat_sv_math. `hub_get_rule_health` reports no broken markers. In the read's settings the binary action has `valMathOp.<N>='+'` with the constant 10 as its right operand (`xVar4.<N>='(constant)'`, `valConst2.<N>=10`); the unary action has `valMathOp.<N>='absolute'` and no right operand. RM offers variable math only for a Number or Decimal target.
 
-**Failure modes**: Second operand written for a unary op (arity not enforced). Numeric operand written as a variable name instead of `(constant)`+valConst. Operand reveal skipped (xVar3/valMathOp/xVar4 not discovered from the live schema). Unknown variable operand accepted silently. `math` into a non-numeric target var accepted (or failing with a misleading not-in-schema message) instead of a clear Number/Decimal-target rejection.
+**Failure modes**: A right operand stored for the unary operation. The constant stored as a variable name. An unknown variable operand accepted. Math accepted into a non-numeric target variable.
 
-### T611 — addRequiredExpression + addAction ifThen: Mode and Variable conditions in a single rule (walker parity)
+### T611 — Required Expression and IF action built from Mode and Variable conditions
 
 ```json
 {
@@ -3793,11 +3788,11 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: Both `addRequiredExpression` and `addAction ifThen` complete with `success=true`, `partial!=true`. `hub_get_rule_health` reports no broken markers. The Required Expression paragraph on mainPage renders both conditions (Mode + Variable), not the bare "Define Required Expression" placeholder. The ifThen action appears in the actions list with the Mode condition baked correctly (not as "BROKEN"). Demonstrates that `_rmWalkConditionReveal` fires correctly from both STPage and doActPage entry points.
+**Expected**: Each write reports `success=true` and `hub_get_rule_health` reports no broken markers. The Required Expression paragraph on mainPage renders both conditions (Mode and Variable) joined by AND, not the bare "Define Required Expression" placeholder. The IF action renders the Mode condition (not "BROKEN"); it can reuse the Mode condition's native ID. The tool refuses an IF left open, so the agent closes it with END-IF in the same edit.
 
-**Failure modes**: Required Expression placeholder remains ("Define Required Expression" on mainPage), indicating the expression did not bake. Mode condition in ifThen renders as Broken Condition (modes picker not written). Variable comparator/value silently dropped (RelrDev or state_N not revealed after picker write).
+**Failure modes**: Required Expression placeholder remains on mainPage. The Mode condition in the IF renders as Broken Condition. The Variable comparator or value is dropped.
 
-### T612 — addRequiredExpression Between two times: clock start/end lands on STPage (reveal walker coverage)
+### T612 — Required Expression between two clock times
 
 ```json
 {
@@ -3807,117 +3802,80 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: `addRequiredExpression` completes with `success=true`, `partial!=true`. `hub_get_rule_health` reports no broken markers. The Required Expression paragraph on mainPage renders a time-range condition (e.g. references 8:00 or 22:00), not the bare "Define Required Expression" placeholder. Demonstrates that `_rmWalkConditionReveal` correctly writes the Between two times clock fields (starting<N> type enum + startingA<N> ISO datetime + ending<N> + endingA<N>) via the STPage reveal sequence.
+**Expected**: The write reports `success=true` and `hub_get_rule_health` reports no broken markers. The Required Expression paragraph on mainPage renders a time range from 8:00 AM to 10:00 PM, not the bare "Define Required Expression" placeholder. The read's settings show the condition's start and end set to clock times (`starting<N>` / `startingA<N>` and `ending<N>` / `endingA<N>`).
 
-**Failure modes**: Required Expression placeholder remains ("Define Required Expression" on mainPage), indicating the expression did not bake. Broken Condition marker on the Required Expression row (starting/ending type not written, or startingA/endingA ISO datetime rejected). `partial=true` with `settingsSkipped` entries showing the clock fields as silent rejections.
+**Failure modes**: Required Expression placeholder remains. Broken Condition marker on the Required Expression row. One of the two times is missing from the render.
 
 ---
 
-### T613 — addRequiredExpression singular deviceId normalization: passes deviceId:N (not deviceIds:[N]) and verifies condition bakes
+### T613 — Required Expression on one motion sensor
 
 ```json
 {
   "setup_prompt": "the Write master is enabled. Create RM rule 'BAT DeviceId Norm Test'. Identify one motion sensor deviceId on the hub.",
-  "test_prompt": "Add a Required Expression to 'BAT DeviceId Norm Test' using addRequiredExpression: conditions=[{capability:'Motion', deviceId:<motionSensorId>, state:'active'}] -- pass the integer deviceId directly (not deviceIds:[N]). Then call hub_get_rule_health and confirm no broken markers.",
+  "test_prompt": "Add a Required Expression to 'BAT DeviceId Norm Test' that requires motion sensor <motionSensorId> to be active. Then check the rule's health and confirm no broken markers.",
   "teardown_prompt": "Delete 'BAT DeviceId Norm Test'."
 }
 ```
 
-**Expected**: `addRequiredExpression` completes with `success=true`. `hub_get_rule_health` reports no broken markers. The Required Expression paragraph on mainPage renders a motion-sensor condition (e.g. "MotionSensor is active"), not the bare "Define Required Expression" placeholder. Demonstrates that the dispatcher normalizes singular `deviceId: N` to `deviceIds: [N]` before the STPage walker fires so agents don't need to know the array form.
+**Expected**: The write reports `success=true` and `hub_get_rule_health` reports no broken markers. The Required Expression paragraph on mainPage renders a motion condition naming the sensor (e.g. "MotionSensor is active"), not the bare "Define Required Expression" placeholder.
 
-**Failure modes**: Required Expression placeholder remains, indicating normalization did not happen. Broken Condition marker (rDev_<N> not written because singular deviceId was ignored). `partial=true` with `settingsSkipped` showing rDev_1 as silent_rejection.
+**Failure modes**: Required Expression placeholder remains. Broken Condition marker (the condition's device did not land).
 
 ---
 
-### T614 — addTrigger.condition singular deviceId: conditional trigger normalizes deviceId:N inline
+### T614 — Conditional trigger gated by one motion sensor
 
 ```json
 {
   "setup_prompt": "the Write master is enabled. Create RM rule 'BAT AddTrigger Cond DeviceId'. Identify one Switch deviceId and one Motion sensor deviceId on the hub.",
-  "test_prompt": "Add a conditional trigger to 'BAT AddTrigger Cond DeviceId' using addTrigger: {capability:'Switch', deviceIds:[<switchId>], state:'on', condition:{capability:'Motion', deviceId:<motionId>, state:'active'}} -- the condition Map uses singular integer deviceId. Then hub_get_rule_health and confirm no broken markers.",
+  "test_prompt": "Add a trigger to 'BAT AddTrigger Cond DeviceId' that fires when switch <switchId> turns on, but only if motion sensor <motionId> is active at that moment (a conditional trigger). Then check the rule's health and confirm no broken markers.",
   "teardown_prompt": "Delete 'BAT AddTrigger Cond DeviceId'."
 }
 ```
 
-**Expected**: `addTrigger` completes with `success=true`. `hub_get_rule_health` reports no broken markers. The trigger paragraph renders the gating condition (e.g. "Switch on -- ONLY IF Motion is active"). Demonstrates the dispatcher normalizes singular `condition.deviceId` BEFORE pre-validation runs, so the existence check fires.
+**Expected**: The write reports `success=true` and `hub_get_rule_health` reports no broken markers. The trigger paragraph renders the gating condition (e.g. "Switch on -- ONLY IF Motion is active"). The agent builds the Motion condition and points the trigger's conditional option at it, through native typed fields or `operation="form"`.
 
-**Failure modes**: "Broken Trigger" marker (rDev_<N> for the condition slot stored {N: null}). The pre-validation existence check skipped (deviceIds was null in the un-normalized form). condTrig.<N> set but the condition row renders as a placeholder.
+**Failure modes**: "Broken Trigger" marker. The trigger's condition renders as a placeholder. The trigger is saved without its condition and fires unconditionally.
 
 ---
 
-### T615 — addAction ifThen singular deviceId in expression.conditions[]: addAction normalizes inline
+### T615 — IF action on one humidity sensor's attribute
 
 ```json
 {
   "setup_prompt": "the Write master is enabled. Create RM rule 'BAT AddAction Cond DeviceId'. Identify one Custom Attribute capable device on the hub (humidity sensor preferred).",
-  "test_prompt": "Add an ifThen action to 'BAT AddAction Cond DeviceId' using addAction: {capability:'ifThen', expression:{conditions:[{capability:'Custom Attribute', deviceId:<humidityDeviceId>, attribute:'humidity', comparator:'<', value:40}]}} -- the expression condition uses singular integer deviceId. Verify the IF action bakes without broken markers.",
+  "test_prompt": "Add an IF-THEN action to 'BAT AddAction Cond DeviceId' whose condition is: the 'humidity' attribute of device <humidityDeviceId> is below 40 (use RM's 'Custom Attribute' condition). Verify the IF action renders without broken markers.",
   "teardown_prompt": "Delete 'BAT AddAction Cond DeviceId'."
 }
 ```
 
-**Expected**: `addAction` completes with `success=true`. `hub_get_rule_health` reports no broken markers. The IF paragraph on mainPage renders the comparator-on-attribute condition (e.g. "IF Humidity < 40 THEN"). Mirrors T613 for the doActPage walker side.
+**Expected**: The write reports `success=true` and `hub_get_rule_health` reports no broken markers. The IF paragraph on mainPage renders the attribute comparison (e.g. "IF Humidity < 40 THEN"). The tool refuses an IF left open, so the agent adds END-IF in the same edit. Mirrors T613 on the action page.
 
-**Failure modes**: IF paragraph renders the bare "Define IF" placeholder. Broken Condition marker (rDev_<N> not written). settingsSkipped shows rDev_1 as silent_rejection in the doActPage walk.
-
----
-
-### T616 — addAction ifThen rejects nested subExpression with actionable recovery message
-
-```json
-{
-  "setup_prompt": "the Write master is enabled. Create RM rule 'BAT NestedCond Reject'. Identify one Motion sensor deviceId on the hub.",
-  "test_prompt": "Add an ifThen action to 'BAT NestedCond Reject' using addAction: {capability:'ifThen', expression:{conditions:[{capability:'Motion', deviceIds:[<motionId>], state:'active'}, {subExpression:{conditions:[{capability:'Motion', deviceIds:[<motionId>], state:'inactive'}]}}], operator:'OR'}} -- the second condition is a nested subExpression. Verify the call rejects WITHOUT writing anything to the rule.",
-  "teardown_prompt": "Delete 'BAT NestedCond Reject'."
-}
-```
-
-**Expected**: `addAction` returns `success=false`. The `error` message contains the phrase `nested subExpression is not yet supported` (the production reject text -- broad phrasing matches both the pre-pass at `_rmAddAction` and the in-walker reject at `_rmWalkConditionReveal`; the pre-pass is the path that actually fires for this input). `hub_get_rule_health` reports no actions on the rule and no broken markers (the pre-pass rejection fires BEFORE any wizard write). The rejection guides the agent toward `addRequiredExpression` (which DOES support nested subExpression) or flattening the conditions list.
-
-**Failure modes**: Call returns `success=true` (recursive walker support quietly landed without doc updates -- in which case the docs that ship today need to advertise it). Call returns `success=false` but the error message lacks the targeted recovery hint (regression to the generic "capability is required" pre-fix behaviour, leaving the agent without an actionable next step). A broken action row gets written to the rule (the in-walker reject at `_rmWalkConditionReveal` fired AFTER a partial write; outer pre-pass should have rejected first).
+**Failure modes**: IF paragraph renders the bare "Define IF" placeholder. Broken Condition marker (the condition's device did not land).
 
 ---
 
-### T617 — addRequiredExpression Mode condition on static-schema fixture: reveal_fallback informational sentinel
-
-```json
-{
-  "setup_prompt": "the Write master is enabled. Create RM rule 'BAT Reveal Fallback'. Identify one mode name (e.g. 'Night') on the hub.",
-  "test_prompt": "Add a Required Expression to 'BAT Reveal Fallback' requiring the hub mode to be 'Night'. After it commits, inspect result.settingsSkipped -- if the firmware exposes modes<N> always-visible (static schema rather than progressive disclosure), the entry should include {key: '<pattern>', reason: 'reveal_fallback_to_existing_field', condIdx: 0}. If the firmware exposes modes<N> only after the rCapab='Mode' write (progressive disclosure -- typical on current firmware), no sentinel fires and the entry is absent. Confirm result.success=true and result.partial!=true in BOTH cases -- the sentinel is informational and does NOT degrade.",
-  "teardown_prompt": "Delete 'BAT Reveal Fallback'."
-}
-```
-
-**Expected**: `addRequiredExpression` completes with `success=true` and `partial!=true`. The Required Expression paragraph renders correctly (e.g. "Mode is Night"). On firmware where modes<N> is always-visible, `settingsSkipped` contains a `reveal_fallback_to_existing_field` entry stamped with `condIdx=0` -- informational diagnostic that the walker fell back to matching an already-visible field rather than a newly-revealed one. On firmware where modes<N> reveals progressively, the entry is absent (revealedNew matched). The presence of the sentinel does NOT flip partial -- this is the load-bearing contract.
-
-**Firmware dependence -- which assertion is load-bearing here depends on which firmware the hub is running**:
-- On **progressive-disclosure firmware** (the default for modern Hubitat hubs), the sentinel's ABSENCE is load-bearing. A regression that emits the sentinel on every reveal (rather than only when `fallbackToExisting=true`) would produce a false-positive `reveal_fallback_to_existing_field` entry here even though the schema advanced normally.
-- On **static-schema firmware**, the sentinel's PRESENCE is load-bearing. A regression that reverts the wrapper's push (or breaks the `fallbackToExisting` detection) would leave settingsSkipped without the entry on the static-schema path.
-- The Spock spec pair (`addRequiredExpression: walker pushes reveal_fallback_to_existing_field sentinel when only revealedAny matches` + `addRequiredExpression: progressive-disclosure reveal does NOT push reveal_fallback sentinel`) covers BOTH firmware classes deterministically via stubbed fixtures. T617 is the live-hub smoke-check for whichever path the hub-under-test actually exposes.
-
-**Failure modes**: `partial=true` set when the only finding is the `reveal_fallback_to_existing_field` sentinel (regression in the wrapper's "informational does not flip partial" contract). Sentinel pushed on every reveal even when the schema legitimately advanced (the wrapper stopped distinguishing `fallbackToExisting=true` from `false`; every progressive-disclosure write would emit false-positive sentinels). Sentinel never pushed even on a static-schema fixture (the wrapper's push was reverted).
-
----
-
-### T618 — addRequiredExpression compareToDevice: device-relative comparison with offset
+### T618 — Required Expression comparing one device's temperature with another's
 
 ```json
 {
   "setup_prompt": "the Write master is enabled. Create RM rule 'BAT CompareToDevice'. Identify two Temperature-capable devices on the hub (deviceA + deviceB)."
 ,
-  "test_prompt": "Add a Required Expression to 'BAT CompareToDevice': deviceA's temperature is greater than deviceB's temperature minus 2 (a device-relative comparison with a -2 offset, not a literal threshold). Inspect the rule paragraph on mainPage and result.partial / result.settingsApplied / result.settingsSkipped.",
+  "test_prompt": "Add a Required Expression to 'BAT CompareToDevice': deviceA's temperature is greater than deviceB's temperature minus 2 (a device-relative comparison with a -2 offset, not a literal threshold). Then read the rule back and report how the Required Expression renders.",
   "teardown_prompt": "Delete 'BAT CompareToDevice'."
 }
 ```
 
-**Expected**: `addRequiredExpression` returns `success=true` and `partial=false`. The Required Expression paragraph on mainPage renders the device-relative comparison with the offset -- e.g. "Temperature of deviceA is > deviceB - 2.0" -- NOT a literal threshold and NOT "deviceA > 0". `settingsApplied` includes `isDev_<N>`, the discovered `relDevice_<N>` reference-device picker field, and `state_<N>` (the offset). `result.brokenMarkers` is empty AND `result.health.ok=true`. Omitting `offset` is also valid (offset 0); the only difference is no `state_<N>` write and the paragraph renders without the "- N.0" tail.
+**Expected**: The write reports `success=true`. The Required Expression paragraph on mainPage renders the device-relative comparison with the offset -- e.g. "Temperature of deviceA is > deviceB - 2.0" -- NOT a literal threshold and NOT "deviceA > 0". `hub_get_rule_health` reports `ok=true` with no broken markers. The read's settings show the device-relative toggle `isDev_<N>=true`, the reference device in `relDevice_<N>`, and the offset in `state_<N>`. An offset of 0 is also valid; the paragraph then has no "- N.0" tail.
 
-**Wire-format note**: the walker writes the comparator `RelrDev_<N>`, toggles `isDev_<N>=true` to reveal the SINGLE `relDevice_<N>` picker, writes the bare device id, then writes the offset to `state_<N>`. `relDevice_<N>` is a `capability.*` DEVICE picker; on normal firmware RM populates its dropdown client-side, so the schema exposes NO options for it and an empty option list is the normal case (does NOT flag `partial`). deviceB is existence-validated hub-wide BEFORE any write -- a nonexistent id is rejected up front. On a rare firmware variant that DOES surface device-picker options, the walker additionally defensively rejects a reference id absent from that list; otherwise a capability-mismatched reference device surfaces in the rendered/broken state. There is no separate reference-attribute picker -- the compared attribute is implied by the shared capability, so `compareToDevice.attribute` is OPTIONAL and informational (neither validated nor written). compareToDevice is mutually exclusive with a literal `state`/`value` RHS and with a `compareToVariable` RHS.
+**Native-form note**: RM reveals the single `relDevice_<N>` picker only after `isDev_<N>=true`, so the agent needs a render between them. The picker is a `capability.*` device input whose options RM fills in the browser, so an empty option list in the page descriptor is normal. The compared attribute is implied by the shared capability; there is no separate reference-attribute picker.
 
-**Failure modes**: paragraph renders deviceA against a literal value / "deviceA > 0" (the device-relative write fell through -- the `isDev_<N>` toggle or `relDevice_<N>` reveal did not fire). `success=false` with "reference-device picker relDevice_<N> not revealed after isDev_<N>=true" (the toggle did not reveal the picker -- fail-loud, caught by `hub_set_rule`'s backup-and-catch wrapper as a structured `success=false` map). `success=false` with "does not exist on the hub" naming `compareToDevice.deviceId` (the reference id failed the up-front hub-wide existence check). `success=false` with "is not in the relDevice_<N> picker" (the rare firmware variant exposed a device-picker option list that excluded deviceB -- the defensive capability-lock rejected it before writing). `success=false` with "only supported with numeric device capabilities" naming the capability (compareToDevice was passed on a non-numeric capability -- Mode / Between two times / Variable / Custom Attribute -- and the up-front capability-scope guard rejected it rather than silently dropping it). `partial=true` with a `compareToDevice-validation` skip is WRONG for the normal empty-options case (a device picker exposes no options, so the normal case must be `partial=false` with NO such skip). `settingsSkipped` carries `offset_field_not_revealed` and `partial=true` (the offset field was absent -- the comparison still committed without the offset). `brokenMarkers` non-empty (a partial write rendered the condition as `*BROKEN*`).
+**Failure modes**: The paragraph renders deviceA against a literal value or "deviceA > 0" (the device-relative toggle or picker did not land). The offset is missing. A broken marker on the condition. The agent reports success while the render shows a different comparison.
 
 ---
 
-### T619 — addRequiredExpression Between two times with sunrise/sunset offset
+### T619 — Required Expression between a clock time and an offset from sunset
 
 ```json
 {
@@ -3928,82 +3886,62 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: `addRequiredExpression` returns `success=true` and `partial!=true`. The Required Expression paragraph on mainPage renders with both the clock start (e.g. "between 8:00 AM") AND the sunset end with the -30 minute offset (e.g. "and 30 minutes before sunset"). `result.brokenMarkers` is empty AND `result.health.ok=true`. Exercises the `endingA<N>` / `endSunriseOffset<N>` distinct wire path that T612 (clock-only) does not cover.
+**Expected**: The write reports `success=true`. The Required Expression paragraph on mainPage renders both the clock start (e.g. "between 8:00 AM") AND the sunset end with the -30 minute offset (e.g. "and 30 minutes before sunset"). `hub_get_rule_health` reports `ok=true` with no broken markers. The sunset end and its offset (`endingA<N>` / `endSunriseOffset<N>`) are a different input path from T612's clock-only times.
 
-**Failure modes**: `partial=true` with a `silent_rejection` sentinel on `endSunriseOffset_<N>` (the sunrise-offset write was silently dropped -- the walker's start/end type-detection logic regressed). Paragraph renders "and (unset)" or similar placeholder for the end-time half (the sunset offset never landed). `brokenMarkers` non-empty (the partial write rendered the time-band as `*BROKEN*`). Pre-validation throws on `location.timeZone == null` (the precondition documented in the walker -- agent must set hub timezone first in Settings > Location and Modes).
+**Failure modes**: The end half renders "(unset)" or a similar placeholder (the sunset offset never landed). A broken marker on the time-band condition. The agent ignores a missing hub timezone, which RM needs for sunrise and sunset.
 
 ---
 
-### T620 — addAction / addRequiredExpression Variable compareToVariable (variable-vs-variable RHS) on the walker pages
+### T620 — Required Expression comparing two hub variables
 
 ```json
 {
   "setup_prompt": "the Write master is enabled. Create two hub variables (number type) named 'BatVarA' and 'BatVarB'. Create RM rule 'BAT VarVsVar'.",
-  "test_prompt": "Add a Required Expression to 'BAT VarVsVar' comparing two hub variables: BatVarA is greater than the value of BatVarB (variable versus variable, not a literal number). Then inspect the rule paragraph on mainPage and result.settingsApplied.",
+  "test_prompt": "Add a Required Expression to 'BAT VarVsVar' comparing two hub variables: BatVarA is greater than the value of BatVarB (variable versus variable, not a literal number). Then inspect the rule paragraph on mainPage.",
   "teardown_prompt": "Delete 'BAT VarVsVar' and remove BatVarA / BatVarB."
 }
 ```
 
-**Expected**: `addRequiredExpression` returns `success=true` and `partial!=true`. The Required Expression paragraph renders the variable-vs-variable comparison (e.g. "BatVarA > BatVarB"), NOT "BatVarA > 0" or "BatVarA > null". `settingsApplied` includes `isVar_<N>` and the discovered right-hand variable picker field (firmware-assigned; commonly `xVarR_<N>`). The same shape on `addAction.expression` (ifThen) renders the same way inside the IF clause.
+**Expected**: The write reports `success=true`. The Required Expression paragraph renders the variable-vs-variable comparison (e.g. "BatVarA > BatVarB"), NOT "BatVarA > 0" or "BatVarA > null". RM reveals the right-hand variable picker only after `isVar_<N>=true`, so the agent needs a render between them and takes the picker's name from that render. The same comparison inside an IF action renders the same way.
 
-**Wire-format note**: the right-hand variable picker field name is discovered from the live schema after `isVar_<N>=true`. On `selectTriggers` it is `xVarR_<N>`; the walker pages (STPage/doActPage) may expose a differently-suffixed field -- the walker discovers it rather than hardcoding. This is the field whose live name should be confirmed against the test hub.
-
-**Failure modes**: paragraph renders "BatVarA > 0" / "BatVarA > null" (the right-hand picker was never revealed and the comparison fell through to the numeric default -- the regression this fixes). "right-hand variable picker not revealed" (the firmware did not expose the picker after `isVar_<N>` -- legitimate fail-loud; the walker's `IllegalStateException` is caught by `hub_set_rule`'s backup-and-catch wrapper and surfaces as a structured `success=false` map with `error`/`backup`/`restoreHint`, not a JSON-RPC error, so the bad render never commits). Supplying both `compareToVariable` and `value`/`state` returns the same `success=false` map with "mutually exclusive" in `error`. If the revealed RHS picker has an empty option list, the variable name still writes (best-effort) but `settingsSkipped` carries a `compareToVariable-validation` / `api_unavailable` sentinel and `partial=true`.
+**Failure modes**: The paragraph renders "BatVarA > 0" or "BatVarA > null" (the right-hand picker never received the variable). The agent reports success while the right-hand variable is missing.
 
 ---
 
-### T621 — addAction / addRequiredExpression compareToDevice missing comparator is rejected
-
-```json
-{
-  "setup_prompt": "the Write master is enabled. Identify two Temperature-capable devices (deviceA + deviceB). Create RM rule 'BAT CtdNoComp'.",
-  "test_prompt": "Add a Required Expression to 'BAT CtdNoComp' using addRequiredExpression: {conditions:[{capability:'Temperature', deviceIds:[<deviceA>], compareToDevice:{deviceId:<deviceB>, attribute:'temperature'}}]} -- deliberately OMITTING comparator. Observe the error.",
-  "teardown_prompt": "Delete 'BAT CtdNoComp'."
-}
-```
-
-**Expected**: the walker's `IllegalArgumentException` is caught by `hub_set_rule`'s backup-and-catch wrapper and surfaces as a structured `success=false` map whose `error` names the missing `comparator` (the map also carries `backup`/`restoreHint`); it is NOT a JSON-RPC `-32602`. No condition fields are written -- the rule has no half-built Temperature condition afterward (inspect mainPage to confirm nothing was added).
-
-**Failure modes**: `success=true` / `partial=true` with a half-written condition (regression to the pre-fix path where rCapab/rDev landed but no comparator/RHS, rendering an incomplete or `*BROKEN*` condition). Any condition fields present in `settingsApplied` (the reject must fire before any hub write).
-
----
-
-### T641 — addAction ifThen compareToDevice: device-relative happy path on doActPage
+### T641 — IF action comparing one device's temperature with another's
 
 ```json
 {
   "setup_prompt": "the Write master is enabled. Create RM rule 'BAT CtdAction'. Identify two Temperature-capable devices on the hub (deviceA + deviceB)."
 ,
-  "test_prompt": "Add an IF-THEN action to 'BAT CtdAction' whose condition is: deviceA's temperature is greater than deviceB's temperature minus 2 (a device-relative comparison with a -2 offset, not a literal threshold). Inspect the rule paragraph on mainPage and result.partial / result.settingsApplied / result.settingsSkipped.",
+  "test_prompt": "Add an IF-THEN action to 'BAT CtdAction' whose condition is: deviceA's temperature is greater than deviceB's temperature minus 2 (a device-relative comparison with a -2 offset, not a literal threshold). Then read the rule back and report how the IF action renders.",
   "teardown_prompt": "Delete 'BAT CtdAction'."
 }
 ```
 
-**Expected**: `addAction` returns `success=true` and `partial=false`. The IF clause on mainPage renders the device-relative comparison with the offset -- e.g. "IF Temperature of deviceA is > deviceB - 2.0 THEN" -- NOT a literal threshold and NOT "deviceA > 0". `settingsApplied` includes `isDev_<N>`, the discovered `relDevice_<N>` reference-device picker field, and `state_<N>` (the offset). This is the doActPage mirror of T618 (STPage / addRequiredExpression): both surfaces share the `_rmWalkConditionReveal` walker, so the device-relative wire-up must land identically on the action page. (Numbering note: T619 and T620 are already taken by the Between-two-times and compareToVariable scenarios, so this doActPage compareToDevice scenario uses the next free number, T641.)
+**Expected**: The write reports `success=true`. The IF clause on mainPage renders the device-relative comparison with the offset -- e.g. "IF Temperature of deviceA is > deviceB - 2.0 THEN" -- NOT a literal threshold and NOT "deviceA > 0". The read's settings show `isDev_<N>=true`, the reference device in `relDevice_<N>`, and the offset in `state_<N>`, as in T618. The tool refuses an IF left open, so the agent adds END-IF in the same edit; `hub_get_rule_health` then reports no broken markers. (Numbering note: T619 and T620 are already taken by the Between-two-times and compareToVariable scenarios, so this action-page scenario uses the next free number, T641.)
 
-**Wire-format note**: identical to T618 -- the walker writes the comparator `RelrDev_<N>`, toggles `isDev_<N>=true` to reveal the SINGLE `relDevice_<N>` picker, writes the bare device id, then writes the offset to `state_<N>`. The reference picker is a `capability.*` DEVICE picker with no client-side options (empty option list is normal, does NOT flag `partial`). `compareToDevice.attribute` is OPTIONAL and informational. compareToDevice is mutually exclusive with a literal `state`/`value` RHS and with a `compareToVariable` RHS, and is rejected up front on a non-numeric capability.
-
-**Failure modes**: IF clause renders deviceA against a literal value / "deviceA > 0" (the device-relative write fell through on doActPage). `success=false` with "reference-device picker relDevice_<N> not revealed after isDev_<N>=true". `settingsSkipped` carries `offset_field_not_revealed` and `partial=true` (the offset field was absent -- the comparison still committed without the offset, via `_rmAddAction`'s own envelope). `brokenMarkers` non-empty (a partial write rendered the condition as `*BROKEN*`). An unclosed IF (no THEN body / endIf) is a valid intermediate state but `hub_get_rule_health` flags it -- close the block before asserting whole-rule health.
+**Failure modes**: The IF clause renders deviceA against a literal value or "deviceA > 0". The offset is missing. A broken marker on the condition.
 
 ---
 
-### T622 — addTrigger Custom Attribute '*changed*' bakes cleanly with partial=false (no skip)
+### T622 — Custom Attribute trigger on any change of an attribute
 
 ```json
 {
   "setup_prompt": "the Write master is enabled. Identify a device exposing a custom attribute (e.g. a sensor with a 'water' attribute). Create RM rule 'BAT CustomChanged'.",
-  "test_prompt": "Add a trigger to 'BAT CustomChanged' using RM's 'Custom Attribute' capability on device <deviceId>'s 'water' attribute, firing on ANY change of the attribute. Inspect result.partial and result.settingsSkipped.",
+  "test_prompt": "Add a trigger to 'BAT CustomChanged' using RM's 'Custom Attribute' capability on device <deviceId>'s 'water' attribute, firing on ANY change of the attribute. Then read the rule back and report how the trigger renders.",
   "teardown_prompt": "Delete 'BAT CustomChanged'."
 }
 ```
 
-**Expected**: `addTrigger` returns `success=true` and `partial=false`. The trigger row bakes (mainPage shows the rendered Custom Attribute trigger, not the "Define Triggers" placeholder). The `*changed*` comparator is written as a value into the comparator field (`ReltDev_<N>`), and `tCustomAttr_<N>` carries the attribute -- both land in `settingsApplied`. `settingsSkipped` is empty (or, on firmware where the post-commit "Conditional Trigger?" prompt already closed, contains only a cosmetic `isCondTrig.<N>` / `not_in_schema` entry that does NOT flip `partial`). `partial=false` because no real field skipped.
+**Expected**: The write reports `success=true`. mainPage shows the rendered Custom Attribute trigger on the water attribute firing on change, not the "Define Triggers" placeholder. `hub_get_rule_health` reports `ok=true`. The read's settings show the attribute in `tCustomAttr_<N>` and the change comparator in `ReltDev_<N>` (an attribute the hub treats as an enum uses the value picker instead; see T642).
 
-**Failure modes**: a `not_in_schema` skip on a real trigger field (`ReltDev_<N>`, `tCustomAttr_<N>`, `tDev_<N>`, `tstate_<N>`) appearing in `settingsSkipped` -- the value genuinely failed to write, which is real degradation and must flip `partial=true`, not be filtered as cosmetic. A genuine `silent_rejection` skip returning `partial=false` (over-broad filtering -- real degradation must still flip partial). The only `not_in_schema` skip that may coexist with `partial=false` is the cosmetic `isCondTrig.<N>` finalize toggle.
+**Failure modes**: The trigger is missing or renders "null". The agent reports success while the comparator did not land.
 
 ---
 
-### T623 — addTrigger Periodic Seconds: single count-enum field (no toggle)
+### T623 — Periodic trigger every few seconds
 
 ```json
 {
@@ -4013,13 +3951,13 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: `addTrigger` returns `success=true` and `partial!=true`. The trigger paragraph bakes to "Every 5 seconds" (not "?"/"null"). `result.brokenMarkers` is empty AND `result.health.ok=true`. Exercises the Seconds single-enum path (`everyNSecs1`) which has NO toggle -- the count enum IS the mode.
+**Expected**: The write reports `success=true`. The trigger paragraph renders "Every 5 seconds" (not "?" or "null"). `hub_get_rule_health` reports `ok=true` with no broken markers. RM's Seconds mode is a single count input (`everyNSecs1`) with no toggle.
 
-**Failure modes**: paragraph renders "?" or "null" (the `everyNSecs1` write was silently rejected). `partial=true` with a `silent_rejection` sentinel on `everyNSecs1`. A two-step toggle->count was attempted (Seconds has no toggle, so writing one would land nothing).
+**Failure modes**: The paragraph renders "?" or "null" (the count did not land).
 
 ---
 
-### T624 — addTrigger Periodic Minutes: toggle-before-count two-step
+### T624 — Periodic trigger every few minutes
 
 ```json
 {
@@ -4029,13 +3967,13 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: `addTrigger` returns `success=true` and `partial!=true`. The trigger paragraph bakes to "Every 15 minutes". `result.brokenMarkers` is empty AND `result.health.ok=true`. Exercises the toggle-before-count two-step: `everyNMinutesC1=true` must land FIRST, then the count goes into `everyNC1` (a separate field), NOT into the bool toggle.
+**Expected**: The write reports `success=true`. The trigger paragraph renders "Every 15 minutes". `hub_get_rule_health` reports `ok=true` with no broken markers. RM shows the minutes count (`everyNC1`) only after the minutes toggle (`everyNMinutesC1=true`), so the count goes into its own input after a render, not into the toggle.
 
-**Failure modes**: paragraph renders "?"/"null" because the count was written into the bool `everyNMinutesC1` (the original bug) and the real count field `everyNC1` never got the value. `partial=true` with a sentinel on `everyNC1`.
+**Failure modes**: The paragraph renders "?" or "null" because the count was stored in the toggle and `everyNC1` stayed empty.
 
 ---
 
-### T625 — addTrigger Periodic Weekly: day-of-week multi-picker + starting time
+### T625 — Weekly periodic trigger on chosen days
 
 ```json
 {
@@ -4045,13 +3983,13 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: `addTrigger` returns `success=true` and `partial!=true`. The trigger paragraph names Monday and Friday and the 8:00 AM start. `result.brokenMarkers` is empty AND `result.health.ok=true`. Exercises `selectDoWC1` (day-of-week multi-enum) + `startingWC1` (time).
+**Expected**: The write reports `success=true`. The trigger paragraph names Monday and Friday and the 8:00 AM start. `hub_get_rule_health` reports `ok=true` with no broken markers. The read's settings show the day list (`selectDoWC1`, a multi-select stored as a list) and the start time (`startingWC1`).
 
-**Failure modes**: paragraph renders "?"/"null" or omits the day list (the `selectDoWC1` multi-enum was sent in the wrong serialization). `partial=true` with a sentinel on `selectDoWC1` or `startingWC1`.
+**Failure modes**: The paragraph renders "?" or "null" or omits the day list (the days were sent as a single value).
 
 ---
 
-### T626 — addTrigger Periodic Monthly by-day: day number + every-N-months + starting time
+### T626 — Monthly periodic trigger on a day number
 
 ```json
 {
@@ -4061,13 +3999,13 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: `addTrigger` returns `success=true` and `partial!=true`. The trigger paragraph reflects day 15 of every 2 months, starting 9:30 AM. `result.brokenMarkers` is empty AND `result.health.ok=true`. by-day mode (no `weekOfMonth`) exercises `dayMC1` + `everyNMC1` + `startingMC1`. (nth-weekday mode is the mutually-exclusive alternative, covered by T630/T631. The "on day N of selected months" specific-months sub-mode is order-sensitive on the live hub and NOT yet supported.)
+**Expected**: The write reports `success=true`. The trigger paragraph reflects day 15 of every 2 months, starting 9:30 AM. `hub_get_rule_health` reports `ok=true` with no broken markers. The by-day mode uses `dayMC1`, `everyNMC1` and `startingMC1`; the nth-weekday mode is covered by T630.
 
-**Failure modes**: paragraph renders "?"/"null" (one of the numeric fields silently rejected). `partial=true` with a sentinel on `dayMC1`, `everyNMC1`, or `startingMC1`.
+**Failure modes**: The paragraph renders "?" or "null" (one of the numeric inputs did not land).
 
 ---
 
-### T627 — addTrigger Periodic Yearly: nth-weekday (always) -- weekOfMonth + dayOfWeek + month
+### T627 — Yearly periodic trigger on the Nth weekday of a month
 
 ```json
 {
@@ -4077,13 +4015,13 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: `addTrigger` returns `success=true` and `partial!=true`. The trigger paragraph renders "On the First Monday of December at 8:00 AM". `result.brokenMarkers` is empty AND `result.health.ok=true`. Yearly is ALWAYS nth-weekday: exercises `yearlyMonthCX1` (the X-suffixed reveal month field -- `yearlyMonthC1` alone never completes) + `weeklyYC1` (week-of-month) + `dailyYC1` (single day-of-week, from `dayOfWeek`) + `startingYC1`. Note `months` is a single String here (Yearly), `dayOfWeek` is singular (vs Weekly's multi `daysOfWeek`).
+**Expected**: The write reports `success=true`. The trigger paragraph renders "On the First Monday of December at 8:00 AM". `hub_get_rule_health` reports `ok=true` with no broken markers. RM's Yearly mode is always nth-weekday: the read's settings show the month in `yearlyMonthCX1` (the visible X-suffixed input; `yearlyMonthC1` alone never completes), the week in `weeklyYC1`, one weekday in `dailyYC1`, and the time in `startingYC1`.
 
-**Failure modes**: paragraph renders "?"/"null" or omits the month/day (a regression to the dead `yearlyMonthC1`, or the `dailyYC1` day write was dropped). `partial=true` with a sentinel on `yearlyMonthCX1`, `weeklyYC1`, or `dailyYC1`.
+**Failure modes**: The paragraph renders "?" or "null" or omits the month or day.
 
 ---
 
-### T628 — addTrigger Periodic Cron String: field-name fix (cronStr1)
+### T628 — Periodic trigger from a cron expression
 
 ```json
 {
@@ -4093,29 +4031,29 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: `addTrigger` returns `success=true` and `partial!=true`. The trigger paragraph renders the cron expression (not "?"/"null"). `result.brokenMarkers` is empty AND `result.health.ok=true`. Pins the Cron field-name fix: the value lands in `cronStr1` (the live field) -- the prior code wrote `cronString1`, a field that does not exist, so the value was silently dropped and the trigger rendered "null".
+**Expected**: The write reports `success=true`. The trigger paragraph renders the cron expression (not "?" or "null"). `hub_get_rule_health` reports `ok=true` with no broken markers. The read's settings show the expression in `cronStr1`, the input RM renders for cron.
 
-**Failure modes**: paragraph renders "?"/"null" (the cron value was written to the non-existent `cronString1` and silently dropped -- the typo regression). `partial=true` with a sentinel on the cron field.
+**Failure modes**: The paragraph renders "?" or "null" (the expression was stored under a name RM does not render, such as `cronString1`).
 
 ---
 
-### T629 — addTrigger Periodic Minutes everyN outside restricted enum: validation rejection
+### T629 — Periodic trigger at an interval RM does not offer
 
 ```json
 {
   "setup_prompt": "the Write master is enabled. Create RM rule 'BAT Periodic Enum'.",
-  "test_prompt": "Add a periodic-schedule trigger to 'BAT Periodic Enum' that fires every 7 minutes. Observe the response.",
+  "test_prompt": "Add a periodic-schedule trigger to 'BAT Periodic Enum' that fires every 7 minutes. Report what happened.",
   "teardown_prompt": "Delete 'BAT Periodic Enum'."
 }
 ```
 
-**Expected**: the call returns a structured `success=false` map before any sub-page write. The `error` field names the allowed set `[1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30]` and the rejected value (7), and a `backup`/`restoreHint` accompanies it. No trigger row is committed. The up-front `IllegalArgumentException` is caught by the whole-tool backup-and-catch envelope and surfaced as `success=false` (NOT a thrown -32602) -- consistent with the sibling compareToDevice missing-comparator guard on this same addTrigger path. This is fail-loud: RM restricts the Seconds/Minutes count to a fixed enum, and 7 is not in it, so the tool surfaces a recoverable structured error instead of silently rendering "null".
+**Expected**: RM offers only the minute counts 1, 2, 3, 4, 5, 6, 10, 12, 15, 20 and 30, so a 7-minute trigger cannot be built. The agent learns this from the native options or from the tool refusing the value, and reports it. No trigger is committed: a read shows the rule without triggers. The agent may offer an interval RM does offer, or a cron expression, without applying one unasked.
 
-**Failure modes**: the call returns `success=true` and the trigger renders "null"/"?" (validation was skipped and the out-of-enum count was silently rejected by the hub). The `error` omits the valid-options list (less actionable for the LLM).
+**Failure modes**: A trigger that renders "null" or "?". The agent claims a 7-minute trigger was created. The agent silently substitutes another interval.
 
 ---
 
-### T630 — addTrigger Periodic Monthly nth-weekday mode: weekOfMonth + dayOfWeek + everyNMonths
+### T630 — Monthly periodic trigger on the Nth weekday
 
 ```json
 {
@@ -4125,25 +4063,9 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: `addTrigger` returns `success=true` and `partial!=true`. The trigger paragraph renders "On the Second Monday of every month at 8:00 AM". `result.brokenMarkers` is empty AND `result.health.ok=true`. nth-weekday mode (selected by `weekOfMonth` presence) hides the by-day fields and exercises `weeklyMC1` + `dailyMC1` (single day-of-week from `dayOfWeek`) + `everyNMCX1` (the X-suffixed cadence, NOT the by-day `everyNMC1`) + `startingMC1`. `dayOfWeek` is singular here (vs Weekly's multi `daysOfWeek`).
+**Expected**: The write reports `success=true`. The trigger paragraph renders "On the Second Monday of every month at 8:00 AM". `hub_get_rule_health` reports `ok=true` with no broken markers. The nth-weekday mode hides the by-day inputs; the read's settings show `weeklyMC1`, one weekday in `dailyMC1`, the cadence in `everyNMCX1` (not the by-day `everyNMC1`) and `startingMC1`.
 
-**Failure modes**: paragraph renders "?"/"null" (a regression that wrote the by-day `everyNMC1` instead of `everyNMCX1`, or dropped `dailyMC1`). `partial=true` with a sentinel on `dailyMC1` or `everyNMCX1`. The by-day fields (`dayMC1`/`everyNMC1`) being written would corrupt the mutually-exclusive mode.
-
----
-
-### T631 — addTrigger Periodic Monthly dayOfMonth + weekOfMonth: mutually-exclusive rejection
-
-```json
-{
-  "setup_prompt": "the Write master is enabled. Create RM rule 'BAT Periodic Monthly Excl'.",
-  "test_prompt": "Add a trigger to 'BAT Periodic Monthly Excl' using addTrigger: {capability:'Periodic Schedule', periodic:{frequency:'Monthly', dayOfMonth:15, weekOfMonth:'Second'}}. Observe the tool's response.",
-  "teardown_prompt": "Delete 'BAT Periodic Monthly Excl'."
-}
-```
-
-**Expected**: the call returns a structured `success=false` map before any sub-page write. The `error` field states the two modes are mutually exclusive and names both `dayOfMonth` and `weekOfMonth`, and a `backup`/`restoreHint` accompanies it. No trigger row is committed. The up-front `IllegalArgumentException` is caught by the whole-tool backup-and-catch envelope and surfaced as `success=false` (NOT a thrown -32602), consistent with the Seconds/Minutes everyN guard and the sibling compareToDevice guard. Monthly by-day (calendar day) and nth-weekday (Nth weekday) are distinct RM modes whose field sets hide each other; mixing them is unrenderable.
-
-**Failure modes**: the call returns `success=true` and the trigger renders "null"/"?" (the guard was skipped and both field sets were written, leaving an ambiguous/incomplete sub-page). The `error` names only one of the two conflicting fields (less actionable).
+**Failure modes**: The paragraph renders "?" or "null". By-day inputs (`dayMC1` / `everyNMC1`) are set alongside the nth-weekday ones, mixing the two modes.
 
 ---
 
@@ -4157,265 +4079,236 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: both addTrigger calls return `success=true` and `partial!=true`. mainPage renders BOTH periodic rows intact -- e.g. "Every 5 minutes" OR "Every day at 7:00 AM" -- with neither rendering "null". `result.brokenMarkers` is empty AND `result.health.ok=true`. The 2nd trigger navigates to its OWN periodic sub-page (RM exposes a `periodic2` href with params n:2 and suffix-2 fields `whichPeriod2`/`everyNDoMC2`/`everyNDC2`/`startingDC2`); the tool discovers the per-trigger index from the live schema and writes the n-suffixed field names, so trigger 1's suffix-1 fields are untouched. This is the regression scenario for the multi-periodic-trigger fix.
+**Expected**: Both writes report `success=true`. mainPage renders BOTH periodic rows intact -- e.g. "Every 5 minutes" and "Every day at 7:00 AM" -- with neither rendering "null". `hub_get_rule_health` reports `ok=true` with no broken markers. RM gives the second trigger its own periodic sub-page (`periodic2`) with suffix-2 inputs (`whichPeriod2`, `everyNDoMC2`, `everyNDC2`, `startingDC2`), so trigger 1's suffix-1 inputs stay untouched.
 
-**Failure modes**: trigger 1 renders "null" while trigger 2's frequency wins (the classic collision -- the 2nd trigger wrote suffix-1 fields, clobbering `whichPeriod1`/`everyN*C1`). The 2nd addTrigger's `settingsSkipped` shows silent_rejection with `available:["whichPeriod2"]` (the tool navigated correctly but wrote suffix-1 names the sub-page does not expose). Both rows render the same frequency (one trigger's config overwrote the other's slot).
+**Failure modes**: Trigger 1 renders "null" while trigger 2's frequency wins (the second trigger was written into suffix-1 inputs). Both rows render the same frequency.
 
 ---
 
-### T633 — hub_set_rule single-call create-with-bundle: new rule + trigger + action in one upsert (no appId)
+### T633 — Create a rule with its first trigger and action in one call
 
 ```json
 {
   "setup_prompt": "The Write master is enabled. Create a virtual switch named 'BAT Bundle Switch' via hub_manage_virtual_device and note its device ID.",
-  "test_prompt": "In ONE single call, create a new Rule Machine rule named 'BAT Bundle Create' complete with its first trigger ('BAT Bundle Switch' turns on) AND its first action (turn 'BAT Bundle Switch' off) bundled into that same call. Do NOT create the rule first and edit it with a second call. Report the returned appId and confirm the bundled trigger and action both baked.",
+  "test_prompt": "In ONE single call, create a new Rule Machine rule named 'BAT Bundle Create' complete with its first trigger ('BAT Bundle Switch' turns on) AND its first action (turn 'BAT Bundle Switch' off) bundled into that same call. Do NOT create the rule first and edit it with a second call. Report the new rule's ID and confirm the trigger and action are both on it.",
   "teardown_prompt": "Delete the 'BAT Bundle Create' rule. Delete the virtual switch 'BAT Bundle Switch'."
 }
 ```
 
-**Expected**: AI calls `hub_manage_rule_machine(tool=hub_set_rule)` ONCE with NO `appId`, `name='BAT Bundle Create'`, plus `addTriggers`/`addActions` bundled into the same upsert (the create-with-bundle path). The response returns a NEW `appId` with the trigger and action already baked in -- inspect `partial`/`partialTriggers`/`partialActions` to confirm both committed (`success=true`, and `partial!=true` OR a cosmetic-only `partial=true` per T109 semantics). No second `hub_set_rule(appId=...)` edit call is needed. `result.brokenMarkers` is empty AND `result.health.ok=true`. mainPage renders both the Switch=on trigger row and the "Off: BAT Bundle Switch" action row.
+**Expected**: AI calls `hub_manage_rule_machine(tool=hub_set_rule)` ONCE with `operation="create"`, `args={parent_id:<Rule Machine app id>, name:'BAT Bundle Create', changes:[<Switch on trigger>, <switch off action>]}` and `confirm=true`. The response reports `success=true`, `broken=false` and the new `rule_id`, and its document lists one trigger and one action. mainPage renders the Switch on trigger and the "Off: BAT Bundle Switch" action. `hub_get_rule_health` reports `ok=true`.
 
-**Failure modes**: AI splits into two calls -- a create `hub_set_rule(name=...)` then a separate `hub_set_rule(appId=N, addTrigger=...)` -- instead of the single bundled upsert (acceptable result, but a Partial: the bundle was the point). The bundled `addTriggers`/`addActions` are silently dropped and only the empty named rule is created (`partialTriggers`/`partialActions` non-empty with the trigger/action listed as skipped). The response omits the new `appId` (create did not return the id needed for teardown). mainPage renders only the trigger OR only the action (one half of the bundle was lost).
+**Failure modes**: AI splits into a create call and a separate update call (acceptable result, but a Partial: the single call was the point). Only an empty named rule is created. The response omits the new `rule_id` (needed for teardown). mainPage renders only the trigger OR only the action.
 
 ---
 
-### T634 — addTrigger Custom Attribute trigger row on an enum-recognized attribute: no false-positive partial
+### T634 — Custom Attribute trigger on an attribute the hub treats as an enum
 
 ```json
 {
   "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Identify a device whose attribute name the hub treats as an ENUM (e.g. a switch's 'switch' attribute -- use hub_list_virtual_devices to find a virtual switch). Create RM rule 'BAT CustomEnumAttr'.",
-  "test_prompt": "Add a trigger to 'BAT CustomEnumAttr' using RM's 'Custom Attribute' capability (not the native Switch capability) on device <deviceId>'s 'switch' attribute, firing when it equals 'on'. Inspect result.partial, result.settingsApplied, and result.settingsSkipped.",
+  "test_prompt": "Add a trigger to 'BAT CustomEnumAttr' using RM's 'Custom Attribute' capability (not the native Switch capability) on device <deviceId>'s 'switch' attribute, firing when it equals 'on'. Then read the rule back and report how the trigger renders.",
   "teardown_prompt": "Delete 'BAT CustomEnumAttr'."
 }
 ```
 
-**Expected**: the trigger-row add returns `success=true` and `partial=false`. Because the hub recognizes `switch` as an enum attribute, picking it reveals the enum value picker `tstate<N>` and hides the free comparator `ReltDev<N>`. The value `on` lands in `tstate<N>` (present in `settingsApplied`); `ReltDev<N>` is NOT in `settingsApplied` (the tool does not write a comparator field the schema doesn't expose) and produces NO `not_in_schema` skip. `settingsSkipped` has no `ReltDev<N>` entry. The trigger row renders correctly on mainPage ("switch is on") with `result.health.ok=true`.
+**Expected**: The write reports `success=true`. The trigger row renders correctly on mainPage ("switch is on") and `hub_get_rule_health` reports `ok=true`. Because the hub recognizes `switch` as an enum attribute, choosing it reveals the value picker `tstate<N>` and hides the free comparator `ReltDev<N>`; the value `on` lands in `tstate<N>`.
 
-**Failure modes**: a `not_in_schema` skip on `ReltDev<N>` appearing in `settingsSkipped` and flipping `partial=true` even though the value landed in `tstate<N>` -- the pre-fix unconditional comparator write against an enum attribute (the bug this scenario guards). Contrast control: a genuinely free-valued Custom Attribute (e.g. a custom driver's `fixtureMode`) DOES expose the comparator field and writes it with `partial=false` -- the fix must not regress that path.
+**Failure modes**: The agent writes a comparator input the page does not render and reports success. The trigger renders "null". Contrast control: a free-valued Custom Attribute (e.g. a custom driver's `fixtureMode`) does render the comparator input (T637).
 
-### T635 — addTrigger conditional-trigger Custom Attribute condition on an enum attribute: no false-positive partial
+### T635 — Conditional trigger gated by a Custom Attribute enum condition
 
 ```json
 {
   "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Identify a device whose attribute name the hub treats as an ENUM (e.g. a switch's 'switch' attribute -- use hub_list_virtual_devices to find a virtual switch). Create RM rule 'BAT CustomEnumCond'.",
-  "test_prompt": "Add a conditional trigger to 'BAT CustomEnumCond': trigger on device <deviceId>'s switch turning on, gated by a 'Custom Attribute' condition on that same device's 'switch' attribute equalling 'on'. Inspect result.partial, result.settingsApplied, and result.settingsSkipped.",
+  "test_prompt": "Add a conditional trigger to 'BAT CustomEnumCond': trigger on device <deviceId>'s switch turning on, gated by a 'Custom Attribute' condition on that same device's 'switch' attribute equalling 'on'. Then read the rule back and report how the trigger and its condition render.",
   "teardown_prompt": "Delete 'BAT CustomEnumCond'."
 }
 ```
 
-**Expected**: the conditional-trigger add returns `success=true` and `partial=false`. The condition wizard (`_rmBuildCondition`, underscore field names) has the same enum routing as the trigger row: the enum attribute reveals the value picker `state_<N>` and hides the comparator `RelrDev_<N>`. The value `on` lands in `state_<N>` (present in `settingsApplied`); `RelrDev_<N>` is neither applied nor skipped, and `partial=false`. The trigger renders correctly on mainPage with `result.health.ok=true`.
+**Expected**: The write reports `success=true`. The trigger renders with its gating condition on mainPage and `hub_get_rule_health` reports `ok=true`. The condition page routes the enum attribute the same way as the trigger row: it reveals the value picker `state_<N>` and hides the comparator `RelrDev_<N>`, and the value `on` lands in `state_<N>`.
 
-**Failure modes**: a `not_in_schema` skip on `RelrDev_<N>` flipping `partial=true` even though the value landed in `state_<N>`. Contrast control: a free-valued Custom Attribute condition DOES expose `RelrDev_<N>` and writes it with `partial=false`.
+**Failure modes**: The agent writes the hidden comparator and reports success. Contrast control: a free-valued Custom Attribute condition does render `RelrDev_<N>`.
 
-### T642 — addTrigger Custom Attribute '*changed*' on an enum attribute ROUTES via the picker's change option
+### T642 — Custom Attribute trigger on any change of an enum attribute
 
 ```json
 {
   "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Identify a device whose attribute name the hub treats as an ENUM (e.g. a virtual switch's 'switch' attribute). Create RM rule 'BAT CustomEnumChanged'.",
-  "test_prompt": "Add a trigger to 'BAT CustomEnumChanged' using RM's 'Custom Attribute' capability on the switch's 'switch' attribute, firing on ANY change of the attribute. Inspect result.success, result.partial, result.settingsApplied, and the rendered trigger on mainPage.",
+  "test_prompt": "Add a trigger to 'BAT CustomEnumChanged' using RM's 'Custom Attribute' capability on the switch's 'switch' attribute, firing on ANY change of the attribute. Then read the rule back and report how the trigger renders on mainPage.",
   "teardown_prompt": "Delete 'BAT CustomEnumChanged'."
 }
 ```
 
-**Expected**: the trigger ROUTES cleanly. On the live trigger row the enum value picker (`tstate<N>`) offers a change-equivalent option, so the no-RHS `*changed*` comparator is routed to that option instead of skipped: `success=true`, `partial=false`, no `comparator_not_representable_for_enum_attribute` skip, and the trigger renders as a state-change trigger on mainPage (e.g. "switch changed"). `tstate<N>` carries the exact requested change token; `ReltDev<N>` (the hidden comparator field) is not falsely claimed in `settingsApplied`. (The skip path is exercised on the Required Expression surface instead -- see T643 -- whose value picker does not offer the change option.)
+**Expected**: The write reports `success=true` and the trigger renders as a state-change trigger on mainPage (e.g. "switch changed"). On the trigger row the enum value picker (`tstate<N>`) offers a change option, so the agent stores that option's exact token there; the hidden comparator `ReltDev<N>` is not written. (The Required Expression surface offers no change option; see T643.)
 
-**Failure modes**: `partial=true` with a `comparator_not_representable_for_enum_attribute` skip on a surface that actually offers the change option (the skip mis-firing on a routable picker). The picker value POSTed as a stringified Map (`[value:*changed*, text:changed]`) instead of the clean token (the Map-shaped option corruption). Routing the WRONG token when a picker offers several change options (e.g. routing `*became false*` to a `became true` slot). Contrast control: the same `*changed*` on a FREE-valued attribute (e.g. a custom driver's `fixtureMode`, which exposes `ReltDev<N>`) writes the comparator into `ReltDev<N>` directly.
+**Failure modes**: The agent reports the change trigger as impossible although the picker offers it. The picker value stored as a stringified map (`[value:*changed*, text:changed]`) instead of the clean token. The wrong token stored when a picker offers several change options (e.g. `*became false*` for a `became true` request). Contrast control: `*changed*` on a FREE-valued attribute (e.g. a custom driver's `fixtureMode`) goes into `ReltDev<N>` directly.
 
-### T643 — addRequiredExpression Custom Attribute '*changed*' on an enum attribute is reported as a skip, not silently dropped
+### T643 — Required Expression "any change" condition on an enum attribute is refused, not dropped
 
 ```json
 {
   "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Identify a device whose attribute name the hub treats as an ENUM whose Required-Expression value picker offers ONLY discrete states (e.g. on/off) and NO change option. Create RM rule 'BAT WalkEnumChanged'.",
-  "test_prompt": "Add a Required Expression to 'BAT WalkEnumChanged' using RM's 'Custom Attribute' capability on the switch's 'switch' attribute with the any-change comparator (no specific value). Inspect result.partial, result.settingsApplied, result.settingsSkipped, and result.repairHints.",
+  "test_prompt": "Add a Required Expression to 'BAT WalkEnumChanged' using RM's 'Custom Attribute' capability on the switch's 'switch' attribute with the any-change comparator (no specific value). Report what happened, then read the rule back.",
   "teardown_prompt": "Delete 'BAT WalkEnumChanged'."
 }
 ```
 
-**Expected**: the add does NOT report a silent clean success. On the STPage reveal walker the enum re-render exposes only the value picker (`state_<N>`) with no change-equivalent option and no comparator slot, so the no-RHS `*changed*` comparator cannot be represented. The tool returns `partial=true` with a `settingsSkipped` entry `{key:'RelrDev_<N>', reason:'comparator_not_representable_for_enum_attribute'}` and `result.repairHints` includes a line stating the comparator "cannot be represented" and pointing to the device's native capability (e.g. `capability:'Switch'`) or a non-built-in attribute name. `RelrDev_<N>` is NOT in `settingsApplied` (the comparator is not falsely claimed applied).
+**Expected**: The agent does NOT report a clean success. A condition tests a state at one moment, and the condition page offers this enum attribute only its discrete values (`state_<N>`) with no change option and no comparator input. The write is refused, and a read shows no Required Expression and no leftover condition row. The agent explains why and suggests a trigger on the attribute changing, or a condition on a specific value.
 
-**Failure modes**: `success=true`/`partial=false` with `settingsSkipped` empty -- the pre-fix silent-drop bug (an unrepresentable comparator reported as clean success). `RelrDev_<N>` appearing in `settingsApplied`. Note: the not-representable skip fires only when the reveal SUCCEEDS but the picker offers no matching change option. A transient throw on the reveal re-fetch is a DIFFERENT path -- it is caught by the outer force-write fallback and produces a `comparator_force_written_unverified` skip with `partial:true` (NOT `comparator_not_representable_for_enum_attribute`); success stays true and the wizard does not abort. Contrast control: the same `*changed*` on a FREE-valued attribute reveals `RelrDev_<N>` and writes the comparator normally.
+**Failure modes**: A success that leaves a condition without its comparator. A leftover incomplete or broken condition row. The agent claims the expression was added. Contrast control: the same `*changed*` on a FREE-valued attribute renders `RelrDev_<N>` and the comparator is written normally.
 
-### T636 — addRequiredExpression Custom Attribute enum condition on the reveal walker (STPage): no hard error
+### T636 — Required Expression with a Custom Attribute enum condition
 
 ```json
 {
   "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Identify a device whose attribute name the hub treats as an ENUM (e.g. a switch's 'switch' attribute -- use hub_list_virtual_devices to find a virtual switch). Create RM rule 'BAT WalkEnumAttr'.",
-  "test_prompt": "Add a Required Expression to 'BAT WalkEnumAttr' using RM's 'Custom Attribute' capability on device <deviceId>'s 'switch' attribute equalling 'on'. Inspect result.success, result.partial, result.settingsApplied, and result.settingsSkipped.",
+  "test_prompt": "Add a Required Expression to 'BAT WalkEnumAttr' using RM's 'Custom Attribute' capability on device <deviceId>'s 'switch' attribute equalling 'on'. Then read the rule back and report how the Required Expression renders.",
   "teardown_prompt": "Delete 'BAT WalkEnumAttr'."
 }
 ```
 
-**Expected**: the Required Expression add returns `success=true` and `partial=false`. The STPage reveal walker (`_rmWalkConditionReveal`) writes `rCustomAttr_<N>`, and the enum re-render reveals `state_<N>` directly and never exposes `RelrDev_<N>`. The walker branches to the enum path: it writes the value to `state_<N>`, skips the comparator, and does NOT throw. The expression renders on mainPage with `result.health.ok=true`.
+**Expected**: The write reports `success=true`. The expression renders on mainPage and `hub_get_rule_health` reports `ok=true`. After the attribute (`rCustomAttr_<N>`) is chosen, the condition page shows the value picker `state_<N>` and never the comparator `RelrDev_<N>`; the value lands in `state_<N>`.
 
-**Failure modes**: pre-fix the walker threw `IllegalStateException` ("RelrDev_<N> (comparator) not revealed after rCustomAttr_<N> write"), surfacing as `success=false` / an error envelope -- a hard failure on an attribute the hub legitimately treats as an enum. A `not_in_schema`/throw on the enum attribute, or `partial=true` despite a clean build, fails this scenario. Contrast control: a free-valued Custom Attribute condition reveals `RelrDev_<N>` and writes the comparator normally.
+**Failure modes**: A hard error on an attribute the hub legitimately treats as an enum. The agent writes the hidden comparator. A broken marker after a clean build. Contrast control: a free-valued Custom Attribute condition renders `RelrDev_<N>` and the comparator is written normally.
 
-### T637 — addTrigger Custom Attribute free-valued comparator: value lands normally
+### T637 — Custom Attribute trigger on a free-valued attribute
 
 ```json
 {
   "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create RM rule 'BAT CustomFetchFallback'.",
-  "test_prompt": "Add a trigger to 'BAT CustomFetchFallback' on a FREE-valued Custom Attribute (e.g. a custom driver's 'fixtureMode' on device <deviceId>), firing when it equals 'bright'. Inspect result.success and result.settingsApplied.",
+  "test_prompt": "Add a trigger to 'BAT CustomFetchFallback' on a FREE-valued Custom Attribute (e.g. a custom driver's 'fixtureMode' on device <deviceId>), firing when it equals 'bright'. Then read the rule back and report how the trigger renders.",
   "teardown_prompt": "Delete 'BAT CustomFetchFallback'."
 }
 ```
 
-**Expected**: the add returns `success=true` and the comparator `ReltDev<N>` is in `settingsApplied`. This exercises the HEALTHY free-attribute path: the enum-vs-free guard re-fetches `selectTriggers` after writing the attribute, the re-fetch succeeds on a healthy hub, the comparator field is revealed, and the value is written normally. The force-write fallback (which fires only when that re-fetch fails transiently with an empty/unparseable response, force-writing the comparator + flagging `partial`) is not reachable from an agent prompt on a healthy hub by design -- it is covered deterministically by the `_rmForceWriteEnumField ...` Spock specs via stub injection.
+**Expected**: The write reports `success=true`. For a free-valued attribute RM renders the comparator `ReltDev<N>` and a value input, and the read's settings show both set. The trigger renders as fixtureMode equal to bright and `hub_get_rule_health` reports `ok=true`.
 
-**Failure modes**: the comparator is silently dropped (absent from `settingsApplied` with no skip entry), or `partial=true` despite a clean build on the healthy path. The transient re-fetch-failure fallback branch is driven by the Spock specs, not this live form.
+**Failure modes**: The comparator or the value is dropped. The trigger renders "null".
 
-### T638 — addAction ifThen Custom Attribute enum condition on the reveal walker (doActPage): no hard error
+### T638 — IF action with a Custom Attribute enum condition
 
 ```json
 {
   "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Identify a device whose attribute name the hub treats as an ENUM (e.g. a switch's 'switch' attribute -- use hub_list_virtual_devices to find a virtual switch). Create RM rule 'BAT WalkEnumAction'.",
-  "test_prompt": "Add an IF/THEN action to 'BAT WalkEnumAction' whose condition uses RM's 'Custom Attribute' capability on device <deviceId>'s 'switch' attribute equalling 'on'. Inspect result.success, result.partial, result.settingsApplied, and result.settingsSkipped.",
+  "test_prompt": "Add an IF/THEN action to 'BAT WalkEnumAction' whose condition uses RM's 'Custom Attribute' capability on device <deviceId>'s 'switch' attribute equalling 'on'. Then read the rule back and report how the IF action renders.",
   "teardown_prompt": "Delete 'BAT WalkEnumAction'."
 }
 ```
 
-**Expected**: the IF/THEN action add returns `success=true` and `partial=false`. The doActPage reveal walker (`_rmWalkConditionReveal`, the same shared walker as STPage) writes `rCustomAttr_<N>`, and the enum re-render reveals `state_<N>` directly and never exposes `RelrDev_<N>`. The walker branches to the enum path: it writes the value to `state_<N>`, skips the comparator, and does NOT throw. The action renders on mainPage with `result.health.ok=true`.
+**Expected**: The write reports `success=true`. The IF action renders its condition on mainPage. The condition page routes the enum attribute as in T636: the value lands in `state_<N>` and the comparator `RelrDev_<N>` is never shown. The tool refuses an IF left open, so the agent adds END-IF in the same edit; `hub_get_rule_health` then reports `ok=true`.
 
-**Failure modes**: pre-fix the walker threw `IllegalStateException` on the doActPage surface (the same false-hard-fail the STPage T636 guards, but reached via `addAction`), surfacing as `success=false` / an error envelope on an attribute the hub legitimately treats as an enum. A `not_in_schema`/throw on the enum attribute, or `partial=true` despite a clean build, fails this scenario. Contrast control: a free-valued Custom Attribute condition reveals `RelrDev_<N>` and writes the comparator normally on doActPage too.
+**Failure modes**: A hard error on an attribute the hub legitimately treats as an enum. The agent writes the hidden comparator. Contrast control: a free-valued Custom Attribute condition renders `RelrDev_<N>` on the action page too.
 
 ---
 
-### T639 — hub_set_rule CREATE (no appId) bundling addRequiredExpression: the RE is honored, not silently dropped
+### T639 — Create a rule that has a Required Expression from the start
 
 ```json
 {
   "setup_prompt": "the Write master is enabled. Identify a virtual switch on the hub (use hub_list_virtual_devices)."
 ,
-  "test_prompt": "In ONE single call, create a new RM rule named 'BAT CreateRE' complete with a Required Expression requiring switch <switchId> to be on — do not create the rule first and add the expression after. Inspect result.appId and result.requiredExpression.",
+  "test_prompt": "Create a new RM rule named 'BAT CreateRE' that has a Required Expression requiring switch <switchId> to be on. Then read the rule back and report its ID and how the Required Expression renders.",
   "teardown_prompt": "Delete 'BAT CreateRE'."
 }
 ```
 
-**Expected**: the create returns a new `appId` AND a `result.requiredExpression` object whose `success` is not false and whose `conditionIndices` is non-empty -- the bundled Required Expression actually landed on the brand-new rule. `hub_get_rule_health` reports `ok=true`. The RE walk runs after the rule shell is created (before any bundled actions).
+**Expected**: The agent creates the rule with `hub_set_rule(operation="create")` and adds the Switch condition and the Required Expression, either in the create's changes or in a following update that names the condition's native ID. The rule's mainPage renders the Required Expression (the switch is on), not the "Define Required Expression" placeholder, and `hub_get_rule_health` reports `ok=true`. Exactly one rule has that name.
 
-**Failure modes**: pre-fix the create arm read only `addTriggers`/`addActions`, so `addRequiredExpression` on create was silently dropped: the call returned `success=true` on an EMPTY rule with no `requiredExpression` field. Absence of `result.requiredExpression` (RE dropped), `requiredExpression.success=false` (RE failed to bake), or an empty `conditionIndices` (the expression did not land) all fail this scenario.
+**Failure modes**: The rule exists without the Required Expression while the agent reports it added. The placeholder remains. A retry after a failed write created a second rule with the same name.
 
 ---
 
-### T640 — hub_set_rule edit-only shortcut on CREATE is rejected loudly, not dropped to an empty shell
+### T649 — Change an existing Required Expression in place
 
 ```json
 {
-  "setup_prompt": "the Write master is enabled."
-,
-  "test_prompt": "Call hub_set_rule with NO appId and an edit-only shortcut: {name:'BAT RejectEditOnly', replaceActions:[{capability:'log', message:'x'}], confirm:true}. Inspect the error.",
-  "teardown_prompt": "If a rule named 'BAT RejectEditOnly' was created, delete it (it should NOT have been -- the call must reject before any create)."
-}
-```
-
-**Expected**: the call is rejected with an `IllegalArgumentException` (JSON-RPC -32602) whose message names `replaceActions`, says it is an `edit-only` operation requiring an existing rule, and points the caller to create-then-edit. NO rule is created. This is the create-arm completeness contract: every shortcut the create arm is handed is HONORED or LOUDLY REJECTED, never silently dropped to a `success=true` empty shell. The same rejection holds for `addLocalVariable`, `patches`, `removeAction`, `clearActions`, `moveAction`, `removeTrigger`, `modifyTrigger`, `modifyAction`, and `walkStep`.
-
-**Failure modes**: a `success=true` envelope with an empty rule (the edit-only op was silently dropped -- the exact pre-fix bug, regressed). A raw internal error with no actionable guidance, or a rule created despite the rejection, also fails this scenario.
-
-### T649 — replaceRequiredExpression: change an existing Required Expression in place (token-editor edit)
-
-```json
-{
-  "setup_prompt": "the Write master is enabled. Note the hub's modes via hub_list_modes -- pick TWO distinct valid mode names (call them ModeA and ModeB). Create RM rule 'BAT Replace RE Test'. Add a Required Expression to it using addRequiredExpression: conditions=[{capability:'Mode', state:'<ModeA>'}]. Confirm the mainPage paragraph renders 'Mode is <ModeA>' (not the 'Define Required Expression' placeholder).",
+  "setup_prompt": "the Write master is enabled. Note the hub's modes via hub_list_modes -- pick TWO distinct valid mode names (call them ModeA and ModeB). Create RM rule 'BAT Replace RE Test'. Add a Required Expression to it whose only condition is: the hub mode is <ModeA>. Confirm the mainPage paragraph renders 'Mode is <ModeA>' (not the 'Define Required Expression' placeholder).",
   "test_prompt": "Replace the Required Expression on 'BAT Replace RE Test' in place, so its only condition becomes: the hub mode is <ModeB>. Then read the rule's rendered config back and check its health.",
   "teardown_prompt": "Delete 'BAT Replace RE Test'."
 }
 ```
 
-**Expected**: `replaceRequiredExpression` returns `success=true`, `partial!=true`, and `requiredExpressionReplaced=true`. The Required Expression paragraph on mainPage now renders the NEW condition ('Mode is <ModeB>'), NOT the old one ('Mode is <ModeA>') and NOT the bare 'Define Required Expression' placeholder. `hub_get_rule_health` reports no broken markers. Same `appId` throughout -- no clone, no new rule. Manage Conditions may still list 'Mode is <ModeA>' as unused (the replaced condition stays in the pool, as with an edit in the RM UI); it is not part of the expression.
+**Expected**: The agent edits the existing Mode condition by its native ID, or adds a Mode condition for ModeB and points the Required Expression at it. The write reports `success=true`. The Required Expression paragraph on mainPage now renders 'Mode is <ModeB>', NOT 'Mode is <ModeA>' and NOT the bare 'Define Required Expression' placeholder. `hub_get_rule_health` reports no broken markers. The rule ID is unchanged: no clone, no new rule. Manage Conditions may still list 'Mode is <ModeA>' as unused, as after an edit in the RM UI; it is not part of the expression.
 
-**Failure modes**: the paragraph still shows the OLD condition ('Mode is <ModeA>') -- the edit did not take. The paragraph shows BOTH conditions or a "Broken Condition" marker -- the old tokens were not removed after the new expression was built. `success=false` with `originalPreserved=true` -- the new expression could not be built and the original was left in place (the safe outcome, but a failure for this scenario).
+**Failure modes**: The paragraph still shows the OLD condition. The paragraph shows BOTH conditions or a "Broken Condition" marker. The agent reports success while the read shows otherwise.
 
-### T650 — replaceRequiredExpression on a rule with no Required Expression is refused, not silently added
-
-```json
-{
-  "setup_prompt": "the Write master is enabled. Note one valid mode name via hub_list_modes. Create RM rule 'BAT Replace No RE Test' with NO Required Expression.",
-  "test_prompt": "REPLACE the Required Expression on 'BAT Replace No RE Test' (which has none) with: the hub mode is <valid mode name>. Ask for a replace, not an add. Inspect the result.",
-  "teardown_prompt": "Delete 'BAT Replace No RE Test'."
-}
-```
-
-**Expected**: the call returns `success=false` with `requiredExpressionMissing=true` and an error steering the caller to use `addRequiredExpression` instead. The rule's mainPage still shows the bare 'Define Required Expression' placeholder -- NO Required Expression was added. This is the replace-vs-add intent guard: a replace never silently becomes an add when there is nothing to replace.
-
-**Failure modes**: a `success=true` envelope with a newly-added Required Expression (the refusal was skipped and the replace silently added one -- the exact behavior the guard prevents). A raw internal schema dump instead of the clear `requiredExpressionMissing` error also fails.
-
-### T651 — replaceRequiredExpression with a condition that cannot be built leaves the original Required Expression in place (no data loss)
+### T651 — A Required Expression change that cannot be built leaves the original in place (no data loss)
 
 ```json
 {
-  "setup_prompt": "the Write master is enabled and a hub backup exists within 24h. Note two valid mode names via hub_list_modes (ModeA, ModeB). Note a valid switch device ID. Create RM rule 'BAT Replace Restore Test' and add a Required Expression: conditions=[{capability:'Mode', state:'<ModeA>'}]. Confirm the mainPage paragraph renders 'Mode is <ModeA>'.",
-  "test_prompt": "Replace the Required Expression on 'BAT Replace Restore Test' with a new condition that will FAIL TO BAKE: switch <the valid switch id> in the state 'definitely_not_a_valid_state' (a state value the Switch capability does not offer). Inspect the result envelope, then read the rule's rendered config to see the mainPage paragraph.",
+  "setup_prompt": "the Write master is enabled and a hub backup exists within 24h. Note two valid mode names via hub_list_modes (ModeA, ModeB). Note a valid switch device ID. Create RM rule 'BAT Replace Restore Test' and add a Required Expression whose only condition is: the hub mode is <ModeA>. Confirm the mainPage paragraph renders 'Mode is <ModeA>'.",
+  "test_prompt": "Replace the Required Expression on 'BAT Replace Restore Test' with a new condition that will FAIL TO BAKE: switch <the valid switch id> in the state 'definitely_not_a_valid_state' (a state value the Switch capability does not offer). Report what the tool said, then read the rule's rendered config to see the mainPage paragraph.",
   "teardown_prompt": "Delete 'BAT Replace Restore Test'."
 }
 ```
 
-**Expected**: `replaceRequiredExpression` returns `success=false`, `requiredExpressionReplaced=false` and `originalPreserved=true`, with an `error` naming the rejected state value and saying the original Required Expression was left in place. The new expression is built after the existing one in RM's expression editor, so the failed condition never displaced the original: `hub_get_app_config` shows the mainPage paragraph STILL rendering 'Mode is <ModeA>', `hub_get_rule_health` reports a committed expression with no broken markers, and Manage Conditions shows no leftover broken condition (the attempt's condition was removed).
+**Expected**: The write reports `success=false` with an error naming the rejected value: a Switch condition offers only on and off, so the condition is refused before the expression changes. `hub_get_app_config` shows the mainPage paragraph STILL rendering 'Mode is <ModeA>', `hub_get_rule_health` reports no broken markers, and Manage Conditions holds no leftover broken condition. The agent reports the refusal and that the original expression is intact.
 
-**Failure modes**: the mainPage shows the bare 'Define Required Expression' placeholder, or health reports the expression enabled but not committed (the rule was left ungated). `requiredExpressionReplaced=true` on a failed build. A `success=true` envelope despite the failure. A `**Broken Condition**` token in the expression, or a broken condition left under Manage Conditions (the back-out did not clean up). `originalPreserved=false` (backing out could not be confirmed).
+**Failure modes**: The mainPage shows the bare 'Define Required Expression' placeholder, or health reports the expression enabled but not committed (the rule was left ungated). A success reported despite the failure. A `**Broken Condition**` token in the expression, or a broken condition left under Manage Conditions.
 
 ---
 
-### T652 — a failed replaceRequiredExpression op inside a patches batch does not revert preceding ops
+### T652 — A failed Required Expression change keeps the earlier changes of the same edit
 
 ```json
 {
-  "setup_prompt": "the Write master is enabled and a hub backup exists within 24h. Note a valid switch device ID and two valid mode names (ModeA, ModeB) via hub_list_modes. Create RM rule 'BAT Patch Replace Scope' and add a Required Expression: conditions=[{capability:'Mode', state:'<ModeA>'}]. Confirm the mainPage paragraph renders 'Mode is <ModeA>'.",
-  "test_prompt": "In ONE batched call against 'BAT Patch Replace Scope', apply two changes in order: (1) add an action turning switch <switch id> on, then (2) replace the Required Expression with a condition that will FAIL TO BAKE — switch <switch id> in the bogus state 'definitely_not_a_valid_state'. Inspect the per-change results, then read the rule's rendered config back.",
+  "setup_prompt": "the Write master is enabled and a hub backup exists within 24h. Note a valid switch device ID and two valid mode names (ModeA, ModeB) via hub_list_modes. Create RM rule 'BAT Patch Replace Scope' and add a Required Expression whose only condition is: the hub mode is <ModeA>. Confirm the mainPage paragraph renders 'Mode is <ModeA>'.",
+  "test_prompt": "In ONE edit of 'BAT Patch Replace Scope', apply two changes in order: (1) add an action turning switch <switch id> on, then (2) change the Required Expression to a condition that will FAIL TO BAKE — switch <switch id> in the bogus state 'definitely_not_a_valid_state'. Report what the tool said about each change, then read the rule's rendered config back.",
   "teardown_prompt": "Delete 'BAT Patch Replace Scope'."
 }
 ```
 
-**Expected**: the FIRST patch op (addAction switch on) committed and survives -- `hub_get_app_config` shows the switch-on action in the rule's actions. The SECOND patch op (replaceRequiredExpression) reports `success=false` with `originalPreserved=true`: the failed build backed out of the expression editor without touching anything else, so the preceding action is preserved and the mainPage Required Expression paragraph still renders the ORIGINAL 'Mode is <ModeA>'.
+**Expected**: One `hub_set_rule(operation="update")` call carries both changes. It reports `success=false` at the failing change, marks the edit as partial, and lists the changes that did not run; its results show the switch-on action written. `hub_get_app_config` shows the switch-on action, and the Required Expression paragraph still renders 'Mode is <ModeA>'. The agent reports that the first change landed and the second did not, and does not resubmit the action.
 
-**Failure modes**: the addAction is GONE after the batch (the failed replace op rolled back more than its own edit). The Required Expression paragraph shows the bare placeholder, or health reports the expression enabled but not committed (the original was lost).
+**Failure modes**: The action is GONE after the edit (the failure rolled back more than its own change). The Required Expression paragraph shows the bare placeholder, or health reports the expression enabled but not committed. The agent resubmits the whole edit and duplicates the action.
 
 ---
 
-### T653 — rule-local variable lifecycle: addLocalVariable, list, setLocalVariable, removeLocalVariable
+### T653 — Rule-local variable lifecycle: create, list, use, remove
 
 ```json
 {
   "setup_prompt": "the Write master is enabled. Create an RM rule called 'BAT LocalVar Test'.",
-  "test_prompt": "On 'BAT LocalVar Test': (1) Add a rule-local variable named 'batLocal' (Number type, initial value 0). (2) List the rule's local variables and confirm 'batLocal' appears. (3) Add an action that sets the LOCAL variable 'batLocal' to 7 and note the action index it returns. (4) Remove the action you just added (by that returned index), then remove the local variable 'batLocal'. (5) List the rule's local variables again and confirm 'batLocal' is gone. Then check the rule's health and confirm no broken markers.",
+  "test_prompt": "On 'BAT LocalVar Test': (1) Add a rule-local variable named 'batLocal' (Number type, initial value 0). (2) List the rule's local variables and confirm 'batLocal' appears. (3) Add an action that sets the LOCAL variable 'batLocal' to 7. (4) Remove the action you just added, then remove the local variable 'batLocal'. (5) List the rule's local variables again and confirm 'batLocal' is gone. Then check the rule's health and confirm no broken markers.",
   "teardown_prompt": "Delete the 'BAT LocalVar Test' rule."
 }
 ```
 
-**Expected**: `addLocalVariable` commits `batLocal` (verify via `hub_list_rule_local_variables`, which reads `state.allLocalVars` and returns `{appId, localVariables:[{name,type,value}], total}` -- `batLocal` present with `type='integer'`). `addAction setLocalVariable` completes `success=true` and routes to the same `modeActs/getSetVariable` wire as `setVariable` (`xVarV.N='batLocal'`, `numOp.N='number'`, `valNumber.N=7`), validating the target against the rule's locals (NOT hub globals). `removeLocalVariable` returns `success=true` with `variable.deleted=true` (the `deleteGV`/`delConfirm` commit wire is `stateAttribute=deleteGV` then `stateAttribute=deleteConfirm`); the follow-up list no longer contains `batLocal`. `hub_get_rule_health` reports no broken markers.
+**Expected**: The local is created with a `variable` change (`operation="create"`, type integer, value 0). `hub_set_rule(operation="read", args={sections:["variables"]})` or `hub_list_rule_local_variables` lists `batLocal` with type integer. The Set Variable action targeting `batLocal` renders as setting it to 7; the agent takes its native action ID from the write's returned document. Deleting that action, then the local (`variable` with `operation="delete"`), both succeed. The final list no longer contains `batLocal`, and `hub_get_rule_health` reports no broken markers.
 
-**Failure modes**: `setLocalVariable` returns "Unsupported capability" (capability not wired). `hub_list_rule_local_variables` returns empty or errors despite the local existing (wrong appState key read). The reference action is removed BEFORE the local so the rule stays healthy -- not because RM blocks a referenced-local delete (it does not; see T655). The list still shows `batLocal` after removal (verify miss not surfaced).
+**Failure modes**: The local is missing from the read. The action targets a hub variable instead of the local. The list still shows `batLocal` after removal. The action is removed BEFORE the local so the rule stays healthy -- not because RM blocks deleting a referenced local (it does not; see T655).
 
 ---
 
-### T655 — removeLocalVariable on a still-referenced local: deletes the local AND breaks the rule (self-consistent failure)
+### T655 — Removing a still-referenced local variable breaks the rule, and the result says so
 
 ```json
 {
-  "setup_prompt": "the Write master is enabled. Create an RM rule called 'BAT LocalVar Broken Test'; add a NUMERIC local variable 'refLocal' (type Number, value 0) to it, then add an action setLocalVariable={variable:'refLocal', value:9} that references it. Leave the referencing action in place.",
-  "test_prompt": "On 'BAT LocalVar Broken Test': remove the rule-local variable 'refLocal' WITHOUT first removing the action that references it. Report success, variable.deleted, error, health.ok, and any repairHints. Then list the rule's local variables and confirm 'refLocal' is gone.",
+  "setup_prompt": "the Write master is enabled. Create an RM rule called 'BAT LocalVar Broken Test'; add a NUMERIC local variable 'refLocal' (type Number, value 0) to it, then add a Set Variable action that sets 'refLocal' to 9. Leave the referencing action in place.",
+  "test_prompt": "On 'BAT LocalVar Broken Test': remove the rule-local variable 'refLocal' WITHOUT first removing the action that references it. Report what the tool said and whether the rule is still healthy. Then list the rule's local variables and confirm 'refLocal' is gone.",
   "teardown_prompt": "Delete the 'BAT LocalVar Broken Test' rule."
 }
 ```
 
-**Expected**: RM does NOT refuse the delete. The local IS deleted (`variable.deleted=true`) AND the referencing action is left Broken, so the envelope is a self-consistent FAILURE: `success=false`, a specific non-null `error` naming the broken-after-delete outcome (the local "was deleted, but that broke the action(s)/expression(s) that referenced it -- the rule is now broken"), `health.ok=false` with a `**Broken Action**` marker, and a `repairHint` pointing at the pre-delete backup restore (`hub_restore_backup` with the response `backupKey`) or removing the references first. The follow-up `hub_list_rule_local_variables` confirms `refLocal` is gone (the `deleted=true` is honest).
+**Expected**: RM does NOT refuse the delete. The local is removed and the referencing action is left broken, so the update reports `success=false` with an error, says the change may have been written, and returns `backup.backupKey` for `hub_restore_backup`. A read no longer lists `refLocal`, and `hub_get_rule_health` reports `ok=false` with a broken marker. The agent tells the user the local is gone and the rule is broken, and offers restoring the pre-edit backup or removing the reference.
 
-**Failure modes**: the tool reports a clean `success=true` "removed" despite the rule being broken (the self-contradictory `deleted=true`+`error=null`+clean-note shape). `error` is null when the rule is broken. No `repairHint` points at the backup restore. `variable.deleted` is false even though the local actually left `state.allLocalVars`. `health` not surfaced so the caller cannot see the broken state.
+**Failure modes**: A clean success reported while the rule is broken. The agent claims the local was kept. No recovery path is offered.
 
 ---
 
-### T654 — setLocalVariable validates against locals, not hub globals (namespace distinction + cross-namespace operand)
+### T654 — Rule-local variables are separate from hub variables
 
 ```json
 {
   "setup_prompt": "the Write master is enabled. Create a hub connector variable 'batShared' = 0 and a numeric hub connector variable 'batOperand' = 5 via hub_manage_variables. Create an RM rule called 'BAT LocalVar Namespace Test'; add a NUMERIC local variable 'batNum' (type Number, value 0) to it, but do NOT add a local named 'batShared'.",
-  "test_prompt": "On 'BAT LocalVar Namespace Test': (1) Add an action that sets the rule-LOCAL variable 'batShared' to 1 and observe it is rejected (only a hub global by that name exists). (2) Then add an action that sets the local variable 'batNum' via variable math to the NEGATED value of 'batOperand' -- that math operand is a HUB global -- and observe it is accepted.",
+  "test_prompt": "On 'BAT LocalVar Namespace Test': (1) Change the value of the rule's own local variable 'batShared' to 1 directly, without adding an action (the rule has no local by that name; only a hub variable called 'batShared' exists). (2) Then add an action that sets the local variable 'batNum' via variable math to the NEGATED value of the hub variable 'batOperand'.",
   "teardown_prompt": "Delete the 'BAT LocalVar Namespace Test' rule. Delete the hub variables 'batShared' and 'batOperand'."
 }
 ```
 
-**Expected**: (1) The first call is REJECTED as a `{success:false}` result Map (the addAction dispatcher wraps `_rmAddAction` in try/catch and returns a structured error Map, NOT a -32602 throw). The error message names `batShared` as not found and lists **local** variables ("Available local variables: ..."); a hub global of the same name does NOT satisfy a `setLocalVariable` target. This proves the option-B namespace split: `setLocalVariable` cannot silently target a same-named hub global. (Targeting `batShared` via `setVariable` -- the hub-global capability -- would succeed instead.) (2) The second call is ACCEPTED (`success=true`): the math operand picker (`xVar3`) spans BOTH namespaces, so a hub-global operand (`batOperand`) into a NUMERIC LOCAL target (`batNum`) is valid -- there is no locals-only operand restriction. `xVar3.N='batOperand'`.
+**Expected**: (1) The local-variable change is refused because the rule has no local named `batShared`. Nothing is written, no local is created, and the hub variable `batShared` stays 0. The agent reports that instead of editing the hub variable. (2) The action is accepted: RM's math operand picker lists hub variables as well as locals, so a hub-variable operand into a numeric local target is valid. The action renders as setting `batNum` to the negated `batOperand`, and `hub_get_rule_health` reports no broken markers.
 
-**Failure modes**: the hub global `batShared` is accepted as a `setLocalVariable` target (namespaces conflated). The target-rejection throws -32602 instead of returning the structured `{success:false}` Map the dispatcher contract specifies. The error lists hub variables instead of local variables. The hub-global math operand `batOperand` is falsely rejected by a locals-only operand pre-check. The picker section-header sentinel ` --LOCAL VARIABLES--`/` --HUB VARIABLES--` is accepted as a target.
+**Failure modes**: The hub variable `batShared` is changed. A local `batShared` is created unasked. The math action is refused because its operand is a hub variable. The picker's section-header entries (` --LOCAL VARIABLES--` / ` --HUB VARIABLES--`) are stored as the target.
 
 ---
 
@@ -4439,7 +4332,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 
 ```json
 {
-  "setup_prompt": "The Write master is enabled and a hub backup exists (<24h). Create two virtual switches through the HUB UI (Devices > Add Device > Virtual, driver 'Virtual Switch'): 'BAT Swap Source' and 'BAT Swap Target' — or pick two existing compatible FREE-STANDING test devices. Do NOT create them via hub_manage_virtual_device: MCP-created virtual devices are child devices of the MCP app, and the hub's Swap Device tool excludes app-owned child/component devices from BOTH its pickers, so the scenario would fail with the eligibility error. Note both device IDs and network ids. Then create RM rule 'BAT Swap Rule' with hub_set_rule using addTrigger {capability:'Switch', deviceIds:[<BAT Swap Source id>], state:'on'}.",
+  "setup_prompt": "The Write master is enabled and a hub backup exists (<24h). Create two virtual switches through the HUB UI (Devices > Add Device > Virtual, driver 'Virtual Switch'): 'BAT Swap Source' and 'BAT Swap Target' — or pick two existing compatible FREE-STANDING test devices. Do NOT create them via hub_manage_virtual_device: MCP-created virtual devices are child devices of the MCP app, and the hub's Swap Device tool excludes app-owned child/component devices from BOTH its pickers, so the scenario would fail with the eligibility error. Note both device IDs and network ids. Then create RM rule 'BAT Swap Rule' with hub_set_rule(operation:'create') whose only trigger is 'BAT Swap Source' turning on.",
   "test_prompt": "I'm replacing 'BAT Swap Source' with 'BAT Swap Target' everywhere it is used. First preview which apps currently reference 'BAT Swap Source' — 'BAT Swap Rule' must be listed. Then swap it in one operation, confirming the change. Report what the result says happened, then check both devices and the rule to confirm the rule now runs on the replacement.",
   "teardown_prompt": "Delete the rule 'BAT Swap Rule' with hub_delete_native_app. Delete both UI-created virtual switches with hub_delete_device (confirm=true) — hub_manage_virtual_device only deletes MCP child devices and cannot remove them."
 }
@@ -4515,61 +4408,47 @@ Tools in this section require **the Read master** and HPM itself must be install
 
 **Failure modes**: `since` ignored and recent-N or full-hoursBack events returned; `hoursBack` still echoed as if it bounded the window; future `since` throwing instead of returning empty; a returned `date` failing to parse when fed back as `since` (format drift); `sinceMode` missing.
 
-### T657 — addTrigger device-state '*changed*' comparator routes into the value picker (not the turns-null orphan)
+### T657 — Switch trigger on any change goes into the value picker (not the turns-null orphan)
 
 ```json
 {
   "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create a BAT virtual switch (hub_manage_virtual_device, deviceType 'Virtual Switch'). Create RM rule 'BAT SwitchChanged'.",
-  "test_prompt": "Add a trigger to 'BAT SwitchChanged' using RM's 'Switch' capability on the BAT switch, firing on ANY change of the switch (comparator '*changed*', no specific state). Inspect result.success, result.partial, result.settingsApplied, result.settingsSkipped, then read the rule back and check how the trigger renders on mainPage.",
+  "test_prompt": "Add a trigger to 'BAT SwitchChanged' using RM's 'Switch' capability on the BAT switch, firing on ANY change of the switch (no specific state). Then read the rule back and report how the trigger renders on mainPage.",
   "teardown_prompt": "Delete 'BAT SwitchChanged' and the BAT virtual switch."
 }
 ```
 
-**Expected**: the change token ROUTES cleanly into the value picker. A device-state capability (Switch/Motion/Contact/Lock/...) has no comparator field, so the live wizard exposes the `tstate<N>` value picker (with a change-equivalent option) and no `ReltDev<N>`. The routing is decided by which field the live schema renders (value picker vs comparator field), so it covers every device-state capability, not just the seven the discover schema enumerates. Result: `success=true`, `partial=false`, `settingsApplied` carries `tstate<N>` with the change token, NO `ReltDev<N>` skip, and mainPage renders "switch changed" -- NOT the broken "turns null" orphan (which is what writing the absent `ReltDev<N>` would produce).
+**Expected**: The write reports `success=true` and mainPage renders "switch changed" -- NOT the broken "turns null" orphan. A device-state capability (Switch, Motion, Contact, Lock, ...) has no comparator input: the trigger page shows the value picker `tstate<N>` with a change option, and the change token goes there. A numeric capability (e.g. Temperature) does render the comparator `ReltDev<N>`, which takes `*changed*` instead.
 
-**Failure modes**: `ReltDev<N>` written and the trigger renders "turns null" / fires on every event (the pre-fix misroute); `partial=true` with a `change_comparator_not_representable_for_device_state` skip on a picker that actually offers the change option; a numeric capability (e.g. Temperature `*changed*`) wrongly routed to the value picker instead of `ReltDev<N>`.
+**Failure modes**: The trigger renders "turns null" or fires on every event (the change token went into an input the page does not show). The agent reports a change trigger as impossible although the picker offers it. A numeric capability's change routed into a value picker.
 
-### T658 — addAction switch with state: (not action:) is refused pre-write, steering to action:
-
-```json
-{
-  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create RM rule 'BAT ActionShape'.",
-  "test_prompt": "Add a switch action to 'BAT ActionShape' but (deliberately, to test the guard) express the operation as state:'on' instead of action:'on'. Inspect result.success, result.error, and result.restoreHint. Try the same with a title-case capability 'Switch'.",
-  "teardown_prompt": "Delete 'BAT ActionShape'."
-}
-```
-
-**Expected**: both the lowercase `switch` and the title-case `Switch` spec are rejected pre-write (the guard is case-insensitive). `success=false`, `error` names that the operation goes in `action:` not `state:` (e.g. "uses action: (not state:)"), and `restoreHint` states RM was not touched (no "backup saved before write"). The rule stays empty -- nothing committed, no broken action row.
-
-**Failure modes**: the title-case `Switch` slipping past a case-sensitive guard and committing a broken action; the opaque "Unknown switch action 'null'" surfacing instead of the actionable steer; a partial commit that leaves a broken action row on the rule.
-
-### T659 — condition-surface fail-loud rejects (date/day-window + state-change comparator)
+### T659 — A state-change comparator is refused as a condition
 
 ```json
 {
   "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create a BAT virtual switch (hub_manage_virtual_device, deviceType 'Virtual Switch'). Create RM rule 'BAT CondReject'.",
-  "test_prompt": "Attempt two deliberately-wrong Required Expression conditions on 'BAT CondReject', one at a time: (1) a 'Days of week' condition, and (2) a 'Switch' condition on the BAT switch with comparator '*changed*' and no state. For each, inspect result.success and result.error.",
+  "test_prompt": "Add a Required Expression condition to 'BAT CondReject' that the BAT switch 'changed' (any change, no specific state). Report what happened, then read the rule back and confirm whether any condition was committed.",
   "teardown_prompt": "Delete 'BAT CondReject' and the BAT virtual switch."
 }
 ```
 
-**Expected**: both are rejected pre-write with a clear steer -- nothing is committed. (1) `Days of week` (a date/day-window capability) is unmodelled on every structured condition surface: `success=false`, `error` names it is not supported "via the structured condition shortcut on any surface" and points at `rawSettings`/`walkStep`. (2) A `*changed*`/`*became*` state-change comparator on a device-state condition is invalid because conditions are point-in-time: `success=false`, `error` says it is "not valid as a condition" and steers to a TRIGGER row (where device-state change events ARE supported). The same rejects fire identically on `addTrigger.condition` and `addAction` `ifThen` expressions.
+**Expected**: A condition tests a state at one moment, and RM's condition page offers a switch only on and off. The write is refused, nothing is committed, and a read shows no condition row and no Required Expression. The agent explains that a change belongs in a trigger, where device-state changes are supported, and offers to add one. (Days of Week conditions are covered by T336b in `BAT-rm-native-crud.md`.)
 
-**Failure modes**: either condition silently committing a broken/`null` condition row; the change-comparator condition being accepted and rendering meaninglessly; the date/day reject surfacing an opaque `IllegalStateException` mid-walk instead of the uniform steer.
+**Failure modes**: A broken or `null` condition row is committed. The change comparator is accepted and renders meaninglessly. The agent claims success.
 
-### T664 — condition-surface fail-loud rejects (non-condition + unconfigurable-here capability)
+### T664 — Conditions that cannot be built from the request are refused, not committed incomplete
 
 ```json
 {
   "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create RM rule 'BAT CondReject2'.",
-  "test_prompt": "Attempt two deliberately-wrong Required Expression conditions on 'BAT CondReject2', one at a time: (1) a 'Last Event Device' condition, and (2) a 'Lock codes' condition. For each, inspect result.success and result.error, then read the rule back and confirm no condition was committed.",
+  "test_prompt": "Attempt two deliberately-wrong Required Expression conditions on 'BAT CondReject2', one at a time: (1) a 'Last Event Device' condition, and (2) a 'Lock codes' condition. For each, report what happened, then read the rule back and confirm no condition was committed.",
   "teardown_prompt": "Delete 'BAT CondReject2'."
 }
 ```
 
-**Expected**: both are rejected pre-write with a clear steer -- nothing is committed (`predCapabs` stays empty, `wizardStuck=false`). (1) `Last Event Device` is not usable as a condition at all: it is an action-side reference to the device that fired the rule's trigger (used in ACTIONS, e.g. running a command on the triggering device), not a testable state, and not a trigger capability either. `success=false`, `error` says it is "not usable as a condition" and steers to actions. (2) `Lock codes` IS a real condition type but is not authorable via the structured path -- it needs a lock device plus a specific code name the condition path has no field for, and would otherwise commit a silently-incomplete "on null: null" condition the health guard does not catch. `success=false`, `error` names the lock-device + code-name requirement and steers to the Rule Machine UI. The same rejects fire identically on `addTrigger.condition` and `addAction` `ifThen` expressions.
+**Expected**: Nothing is committed in either case: a read shows no condition rows and no Required Expression. (1) `Last Event Device` is not in RM's condition list. It refers to the device that fired the rule's trigger and is used in ACTIONS, not as a testable state. The write is refused and the agent says so. (2) `Lock codes` IS a real condition type, but it needs a lock device plus a specific code name that the request does not give. The agent asks for them or reports the refusal; it never commits an incomplete "on null: null" condition, which the health check would not catch.
 
-**Failure modes**: `Last Event Device` committing a *BROKEN* condition (the pre-fix behavior); `Lock codes` committing a health-ok-but-incomplete "on null: null" condition the health guard does not catch (the pre-fix behavior); either reject surfacing an opaque exception mid-walk instead of the uniform steer; a leftover in-flight condition slot (`wizardStuck=true`) after the reject.
+**Failure modes**: A `*BROKEN*` Last Event Device condition. A health-ok but incomplete "on null: null" Lock codes condition. A leftover in-progress condition slot after the refusal.
 
 ### T665 — Official Python SDK v2 automatically completes a long MRTR Rule Machine write
 
@@ -4636,7 +4515,7 @@ The Visual Rules Builder tools live in the `hub_manage_rule_machine` gateway (th
 
 **Expected**: AI calls `hub_manage_rule_machine(tool=hub_set_visual_rule)` with NO `appId`, `name='BAT VRB Create'`, the classic `definition`, and `confirm=true`. The response returns a new `appId`, `created=true`, `format='classic'`, `version='1.0'` (the classic shape is what selected the 1.0 builder), and `verified=true` (the tool's read-back confirmed the persisted name); the echoed `definition` contains the whenNode/thenNode pair. A follow-up `hub_get_visual_rule(appId=N)` returns `success=true`, `format='classic'`, `name='BAT VRB Create'`, `rulePaused=false`, and the same `whenNodes`/`thenNodes`. The rule also appears in list mode (`hub_get_visual_rule` with no `appId` — `rules[]` contains `{appId, name:'BAT VRB Create', disabled:false}`).
 
-**Failure modes**: the call is issued without `confirm=true` (rejected -32602 — the AI must include it after user approval, not retry blindly). `verified=false` (the save POST was sent but the read-back did not confirm — inspect with `hub_get_visual_rule`). A format-mismatch response (`success=false` + `hubNativeFormat='classic'`) — that only happens when an editor/graph definition meets a hub whose builder can create nothing but 1.0 children, so it should NOT appear for this classic definition; if it does, the AI should re-issue with a classic definition and the empty child app created during the attempt must have been cleaned up, not stranded. The AI routes to `hub_set_native_app(appType='visual_rule')` instead — that path now throws with a redirect to `hub_set_visual_rule`.
+**Failure modes**: the call is issued without `confirm=true` (rejected -32602 — the AI must include it after user approval, not retry blindly). `verified=false` (the save POST was sent but the read-back did not confirm — inspect with `hub_get_visual_rule`). A format-mismatch response (`success=false` + `hubNativeFormat='classic'`) — that only happens when an editor/graph definition meets a hub whose builder can create nothing but 1.0 children, so it should NOT appear for this classic definition; if it does, the AI should re-issue with a classic definition and the empty child app created during the attempt must have been cleaned up, not stranded. The AI routes to `hub_set_native_app(operation='create', args={app_type: 'visual_rule'})` instead — that path now throws with a redirect to `hub_set_visual_rule`.
 
 ### T701 — hub_set_visual_rule pause + rename without touching the definition
 
@@ -4826,222 +4705,8 @@ Key differences from the original BAT.md (which targets the pre-v0.8.0 architect
 7. **T62 rewritten**: Was testing `manage_virtual_devices` catalog (removed gateway) → now tests `hub_manage_diagnostics` catalog
 8. **T104 updated**: Anti-recursion test uses `hub_manage_diagnostics` gateway
 9. **Excluded tests expanded**: 10 → 13 (separate rows for each app/driver operation, added gateway column)
-10. **Corrected test count**: 159 → 172 (was undercounted in v1); addAction capability completeness adds T607/T608/T609/T610 (176 total); walker parity adds T611 (177 total); Between two times coverage adds T612 (178 total); singular deviceId normalization adds T613 (179 total); paired-tool singular-deviceId coverage adds T614 (addTrigger.condition) + T615 (addAction expression) (181 total); subExpression rejection on addAction adds T616 (182 total -- T616 previously covered recursive subExpression normalization, which production now rejects at the doActPage pre-pass; T616 was rewritten to pin the rejection path); reveal-fallback sentinel adds T617 (183 total); compareToDevice device-relative adds T618 (184 total); Between two times sunrise/sunset adds T619 (185 total); Variable compareToVariable on the walker pages adds T620, compareToDevice missing-comparator reject adds T621, and Custom-Attribute '*changed*' cosmetic-partial filter adds T622 (188 total); periodic-frequency completeness adds T623/T624/T625/T626/T627 (the five newly-supported frequencies: Seconds/Minutes/Weekly/Monthly/Yearly -- Monthly by-day and Yearly nth-weekday) + T628 (Cron field-name fix) + T629 (count-enum validation rejection) + T630 (Monthly nth-weekday mode) + T631 (Monthly dayOfMonth/weekOfMonth mutual-exclusivity rejection) + T632 (two periodic triggers in one rule -- no sub-page collision) (198 total); the native-app tool rename adds T633 (hub_set_rule single-call create-with-bundle: new rule + trigger + action in one upsert) (199 total); Custom-Attribute enum-attribute false-positive-partial guard adds T634 (trigger row), T635 (conditional-trigger condition path), T636 (Required Expression reveal walker / STPage enum condition), and T637 (free-valued Custom Attribute comparator: value lands normally) (203 total); the doActPage walker enum-condition parity (the 4th surface, reached via addAction ifThen) adds T638 (204 total); create-with-bundled-Required-Expression adds T639 and the create-arm edit-only-rejection completeness contract adds T640 (206 total); the doActPage compareToDevice device-relative happy-path (the addAction/ifThen mirror of T618) adds T641 (207 total -- numbered out of sequence because T619/T620 were already taken by the Between-two-times and compareToVariable scenarios); the enum-attribute no-RHS state-change comparator splits across both live outcomes -- T642 (trigger surface ROUTES via the picker's change option) + T643 (Required Expression surface SKIPS, no change option) (209 total); the two new setVariable source modes add T647 (fromDevice / numOp="device attribute") and T648 (math / numOp="variable math", binary + unary arity) (211 total -- numbered T647/T648 because T642/T643 were taken by the enum-attribute comparator scenarios above and T644/T645/T646 by the app-config-summary / device-swap / event-history scenarios); the in-place Required Expression replace (cancelST delete + rebuild) adds T649 (happy-path replace), the no-existing-RE refusal adds T650, the failed-rebuild auto-restore (no data loss) adds T651, and the patches-batch per-op restore-scope guard (a failed replace op does not revert preceding ops) adds T652 (215 total); the rule-local variable lifecycle adds T653 + the namespace distinction adds T654 (217 total); the removeLocalVariable broken-after-delete contract (RM deletes a still-referenced local and leaves the rule broken; the envelope reports a self-consistent failure) adds T655 (218 total); the hub_list_device_events since-bookmark round-trip adds T656 (219 total -- numbered T656 out of sequence to avoid colliding with the setVariable T647 above). Note: the scenario total in the header above counts ALL scenarios including the NL (T501-T565 range), built-in-app integration (T801-T821 range), library management (T901-T909 range), and the unnumbered walker/normalization sub-scenarios. The cumulative T-numbered tally in this item (ending at 215) reflects only sequentially-numbered tests in the explicit-coverage section.
-11. **Spec-only coverage by necessity**: the trailing-updateRule failure paths on `addTrigger`, `addRequiredExpression`, `addLocalVariable`, `addTriggers`/`addActions` (bulk), `patches`, and the action-mutation/trigger-mutation dispatchers (`removeAction`, `clearActions`, `replaceActions`, `moveAction`, `removeTrigger`, `modifyTrigger`) -- response slots `updateRuleFailed`, `subscriptionsNotLive` / `expressionNotLive` / `variableNotLive` / `patchesNotLive`, `updateRuleError`, and the recovery `repairHints` line -- are covered exclusively by Spock specs in `src/test/groovy/server/ToolRmNativeCrudSpec.groovy` (the single-path failure/SUCCESS pairs for `addTrigger` / `addRequiredExpression` / `addLocalVariable`, the three-row `@Unroll` failure/SUCCESS pairs for the bulk path covering `addTriggers`-only / `addActions`-only / both, and the corresponding patches and action-mutation envelope specs). The defensive `asyncCommitLikely` path on `clearActions` / `replaceActions` -- response slots `asyncCommitLikely`, `stage`, `actionsRequestedForRemoval`, `actionsStillPresent`, `pendingActionsToAdd`, `clearActionsResult`, `safeRecovery` -- is also spec-only: with the synchronous full-form trashActs submit the delete commits in-band, so this rare residual path (stuck `state.editAct` or a firmware commit lag still showing the actions present after the verify-retry) is not reproducible from an agent prompt against a live hub. Live-hub BAT coverage was considered but skipped: deterministically forcing the trailing `_rmClickAppButton(updateRule)` to throw against a real hub requires hub-side disruption (firmware downgrade / network partition mid-call / hub-config corruption) that is not realistically scriptable from an agent prompt. The Spock specs exercise the production response-shape contract directly via stub injection and constitute the regression gate. The delete-helper **re-click recovery** is likewise spec-only: RM's silent no-op of the FIRST `trashActs`/`trashTrigs` delete click (the dropped-first-click signature `removeAction`/`removeTrigger` recover from with one verified re-click, surfaced as `reclicked: true`) cannot be forced from an agent prompt against a live hub, so `ToolRmNativeCrudSpec`'s re-click + exhaustion specs are the regression gate for that path.
-12. **PR1B read/write gateway split**: the 13-gateway flat-core layout was restructured into **19 gateways (7 `hub_read_*` pure-read + 12 `hub_manage_*` write-bearing) + 11 flat core tools** (30 on tools/list). Gateway renames: `hub_manage_rules` → `hub_manage_custom_rules`, `hub_manage_code_write` → `hub_manage_code`, `hub_manage_native_rules` → `hub_manage_native_rules_and_apps`. Removed gateways (read tools folded into `hub_read_apps_code`): `hub_manage_code_read`, `hub_manage_installed_apps`, `hub_manage_hpm`. `hub_list_installed_apps` merged into `hub_list_apps` (scope=types|instances). New pure-read gateways added: `hub_read_apps_code`, `hub_read_devices`, `hub_read_diagnostics`, `hub_read_files`, `hub_read_rooms`, `hub_read_rules`, `hub_read_variables`. Reads listed in a mixed `hub_manage_*` gateway are also surfaced in their `hub_read_*` gateway (multi-membership). Tool-behavior flips: `hub_export_custom_rule` and `hub_export_native_app` are now WRITES (they persist via saveAs); `hub_get_metrics` is now a READ (recordSnapshot default false). The previously-flat custom-rule and device tools (`hub_get_custom_rule`, `hub_create_custom_rule`, `hub_update_custom_rule`, `hub_list_devices`, `hub_get_device`, etc.) are now folded into gateways. `hub_report_issue` remains a flat core tool.
-
----
-
-
-## Appendix: RM Wizard-State Leak Probe (wizard_probe.py)
-
-See [`tests/wizard_probe.py`](./wizard_probe.py) and [`tests/wizard_probe_matrix.yaml`](./wizard_probe_matrix.yaml).
-
-These are not BAT scenarios (they run autonomously, not via AI session prompts), but they test the same system surface and are documented here for discoverability.
-
-### What the probe does
-
-The wizard probe systematically tests RM 5.1 wizard sub-flow sequences that have historically produced "**Broken Condition**" markers, silent setting rejections, or mis-labeled action rows when wizard accumulator state leaks across operations.
-
-For each probe:
-1. Creates a fresh RM rule via `hub_manage_rule_machine hub_set_rule` (name only, no appId)
-2. Executes a sequence of `hub_set_rule` calls (appId + addTrigger, addRequiredExpression, addAction, etc.)
-3. Snapshots the rule's `mainPage` render via `hub_read_apps_code hub_get_app_config` after each step
-4. Evaluates expectations against the final render (e.g. `Broken Condition` must NOT be present)
-5. Deletes the test rule in a `try/finally` block regardless of outcome
-
-### How to run
-
-```bash
-# Full matrix (all 25 probes)
-uv run --python 3.12 --with requests --with pyyaml tests/wizard_probe.py \
-  --matrix tests/wizard_probe_matrix.yaml
-
-# Single probe
-uv run --python 3.12 --with requests --with pyyaml tests/wizard_probe.py \
-  --matrix tests/wizard_probe_matrix.yaml --probe A1_addRE_then_addAction
-
-# Group only
-uv run --python 3.12 --with requests --with pyyaml tests/wizard_probe.py \
-  --matrix tests/wizard_probe_matrix.yaml --group A
-
-# With baseline comparison (regression check after firmware upgrade)
-uv run --python 3.12 --with requests --with pyyaml tests/wizard_probe.py \
-  --matrix tests/wizard_probe_matrix.yaml \
-  --baseline tests/wizard_probe_results/20260501_231240.json
-
-# Clean up stale _PROBE_* rules from failed prior runs
-uv run --python 3.12 --with requests --with pyyaml tests/wizard_probe.py \
-  --matrix tests/wizard_probe_matrix.yaml --cleanup
-
-# Auto-create a hub backup if none exists (skips interactive prompt)
-uv run --python 3.12 --with requests --with pyyaml tests/wizard_probe.py \
-  --matrix tests/wizard_probe_matrix.yaml --auto-backup
-```
-
-### Config
-
-Hub connection from `tests/e2e_config.json` (same format as `e2e_test.py`), with env var overrides:
-- `HUB_URL` (or `HUBITAT_HUB_URL`) -- required (no default; set via env var or e2e_config.json)
-- `MCP_APP_ID` (or `HUBITAT_APP_ID`) -- required (no default; set via env var or e2e_config.json)
-- `MCP_ACCESS_TOKEN` (or `HUBITAT_ACCESS_TOKEN`)
-
-### Output
-
-Results written to `tests/wizard_probe_results/<timestamp>.json` and `.md`.
-Non-zero exit code if any probe fails (useful as CI gate).
-
-### How to add new probes
-
-1. Add an entry to `tests/wizard_probe_matrix.yaml` under `probes:`.
-2. Choose a `group` (A/B/C/D or a new letter), a unique `name`, and a `description`.
-3. List `steps:` as a sequence of single-key operation dicts (see existing probes for shapes).
-4. Declare `expect:` assertions -- at minimum `final_render_NOT_contains: "Broken Condition"`.
-5. Use `$switch`, `$contact`, etc. to reference devices from `device_pool` (resolved to integer IDs at runtime).
-6. If the step shape is not yet known, set `expect: { skip: true, todo: "<note>" }` to mark it as TODO without failing.
-
-**Available step ops:**
-
-| Step key | Description |
-|---|---|
-| `addTrigger` | High-level addTrigger spec (capability + fields) |
-| `addAction` | High-level addAction spec (capability + fields) |
-| `addRequiredExpression` | High-level RE spec (conditions list) |
-| `addTriggers` | Bulk list of trigger specs |
-| `addActions` | Bulk list of action specs |
-| `replaceActions` | Replace entire action list atomically |
-| `clearActions: true` | Delete all actions |
-| `removeAction` | Delete action at `{index: N}` |
-| `moveAction` | Move action at `{index: N, direction: up/down}` |
-| `addLocalVar` | Add local variable `{name, type, value}` |
-| `settings` | Raw settings map write |
-| `button` | Page-transition button click by name |
-| `setLabel` | Set rule title (shorthand for `settings: {ruleTitle: ...}`) |
-| `pauseRule: true` | Click the pausRule toggle button (pauses a running rule) |
-| `resumeRule: true` | Click the same pausRule toggle button (resumes a paused rule -- pause/resume share one toggle, like stopRule) |
-| `updateRule: true` | Click updateRule button |
-| `getAppConfig: true` | Read-only snapshot (no mutation) |
-
-**Available expect keys:**
-
-| Key | Assertion |
-|---|---|
-| `final_render_NOT_contains` | String must NOT appear in concatenated paragraph text |
-| `final_render_contains` | String must appear in paragraph text |
-| `final_settings_contains_key` | Key must be present in settings map |
-| `final_settings_value` | Dict of `{key: expected_value}` equality assertions |
-| `no_step_errors` | No step returned an error |
-| `health_ok` | Rule health check embedded in snapshot must be ok |
-| `skip: true` | Mark probe as TODO (always passes, noted as skipped) |
-| `todo` | Narrative reason for the skip |
-
-### Baseline mode (regression checks)
-
-After a baseline run, save the JSON output path. On the next run (e.g., after a firmware upgrade), pass `--baseline <path>` to emit a diff showing which probes newly fail, newly pass, or have changed render output. This catches silent RM behavior regressions.
-
-### Current probe status (as of 2026-05-02)
-
-**All 25 probes: PASS** -- Bug #77 fix (ghost ifThen predCapabs clear) deployed and verified. Full 25-probe matrix run recorded in `tests/wizard_probe_results/20260502_014427.md`.
-
-### Known false positives / probe quirks
-
-- **A6** (STPage sub-expression): uses a simplified 3-condition RE rather than a true sub-expression because the sub-expression `{subExpression: ...}` shape has not been validated live. The simplified form is still a useful regression gate for multi-condition RE behavior.
-- **A10** (walkStep introspect): uses `getAppConfig: true` as a read-only substitute for the walkStep introspect path, because the exact mid-edit walkStep shape is not yet validated live. The probe still covers the primary concern (read-only snapshot does not corrupt actNdx).
-- The "Local Variables" HTML table paragraph in the render text is long and present in all rules; it does not indicate a bug.
-
-### Diag mode -- `quick_probe()` importable API
-
-The matrix runner is for regression -- enumerate known patterns and assert outcomes.
-When investigating a *new* suspected bug or verifying a fix hypothesis, the same
-plumbing is available as a one-liner Python call via `quick_probe()`.
-
-**When to use diag mode vs the matrix:**
-
-| Scenario | Use |
-|---|---|
-| Firmware upgrade regression check | `--matrix` runner |
-| After a code deploy (issue #77 class) | `--matrix` runner |
-| Investigating a new suspected state leak | `quick_probe()` diag mode |
-| Verifying a single step's side-effect (e.g. cancel vs done) | `quick_probe()` diag mode |
-| Reproducing a specific wizard-state hypothesis live | `quick_probe()` diag mode |
-
-**Import and basic usage:**
-
-```python
-from tests.wizard_probe import HubitatMcpClient, load_config, quick_probe
-
-config = load_config()
-client = HubitatMcpClient(
-    config["hub_url"], config["app_id"], config["access_token"], verbose=True
-)
-client.initialize()
-
-result = quick_probe(client, "my_hypothesis", steps=[
-    {"addRequiredExpression": {"conditions": [
-        {"capability": "Switch", "deviceIds": [1063], "state": "on"}
-    ]}},
-    {"addAction": {"capability": "Switch", "deviceIds": [1063], "command": "on"}},
-])
-
-print(result["final"]["render"])    # joined paragraph text from mainPage
-print(result["final"]["broken"])    # True if "Broken Condition" present
-print(result["errors"])             # list of step errors; [] = all steps succeeded
-```
-
-**Return shape:**
-
-| Field | Type | Description |
-|---|---|---|
-| `app_id` | `int \| None` | Created rule's appId (None on create failure) |
-| `snapshots` | `list[dict]` | Per-step snapshots (`{step_index, op, paragraphs, settings, error}`) |
-| `final` | `dict` | Convenience: `{render, broken, paragraphs, settings, error}` |
-| `errors` | `list[str]` | Step-level errors (empty = all OK) |
-| `status` | `str` | `"pass"` (no step errors), `"fail"` (step errors), or `"error"` (exception) |
-| `duration_s` | `float` | Wall-clock seconds |
-
-Always cleans up the test rule via `try/finally` -- a crashed diag script will not leave stale `_PROBE_*` rules. Use `--cleanup` flag as a backstop if a process-kill interrupts before the finally block.
-
-**Escape-hatch step types (diag mode only):**
-
-The matrix YAML step ops cover the high-level `hub_set_rule` arguments. For low-level investigation you sometimes need to fire a raw button click or raw settings write on a specific page mid-sequence. Two escape hatches exist:
-
-`raw_button` -- direct button click on a named page:
-
-```python
-{"raw_button": {"page": "doActPage", "name": "actionCancel"}}
-# Optional: state_attribute for stateAttribute body field
-{"raw_button": {"page": "selectActions", "name": "N", "state_attribute": "doActN"}}
-```
-
-`raw_setting` -- direct settings write on a named page:
-
-```python
-{"raw_setting": {"page": "doActPage",
-                 "settings": {"actType.1": "condActs", "actSubType.1": "getIfThen"}}}
-```
-
-These map to `walkStep` calls (the MCP tool's single-step wizard walker):
-- `raw_button` uses `operation: "click"` with the named button
-- `raw_setting` uses `operation: "write"` once per key (walkStep.write allows exactly one key per call)
-
-Use sparingly -- direct page manipulation can leave the hub app in states that the
-high-level tools don't expect.
-
-**Demo script:**
-
-`tests/wizard_probe_examples/diag_demo.py` is a worked example that reproduces the
-Variant Y finding from the Issue #77 investigation (actionCancel vs actionDone after
-condActs+getIfThen write). Run it against the live hub to verify the ghost ifThen
-sequence behaves as documented:
-
-```bash
-cd Hubitat-local-MCP-server
-uv run --python 3.12 --with pyyaml tests/wizard_probe_examples/diag_demo.py
-# Expected: broken: False, errors: [], status: pass
-```
-
-Set `DEVICE_ID=<id>` to override the default switch device ID (1063).
-- The warning paragraph about "Do not use back button" is also normal and does not indicate a bug.
+10. **Corrected test count**: 159 → 172 (was undercounted in v1); action-type completeness (hub variable set, mode by name, custom command with a variable parameter, copy from a variable) adds T607/T608/T609/T610 (176 total); walker parity adds T611 (177 total); Between two times coverage adds T612 (178 total); singular deviceId normalization adds T613 (179 total); single-device conditions on a conditional trigger (T614) and an IF action (T615) add two more (181 total); a nested-condition refusal on IF actions added T616 (182 total); reveal-fallback sentinel adds T617 (183 total); compareToDevice device-relative adds T618 (184 total); Between two times sunrise/sunset adds T619 (185 total); Variable compareToVariable on the walker pages adds T620, compareToDevice missing-comparator reject adds T621, and Custom-Attribute '*changed*' cosmetic-partial filter adds T622 (188 total); periodic-frequency completeness adds T623/T624/T625/T626/T627 (the five newly-supported frequencies: Seconds/Minutes/Weekly/Monthly/Yearly -- Monthly by-day and Yearly nth-weekday) + T628 (Cron field-name fix) + T629 (count-enum validation rejection) + T630 (Monthly nth-weekday mode) + T631 (Monthly dayOfMonth/weekOfMonth mutual-exclusivity rejection) + T632 (two periodic triggers in one rule -- no sub-page collision) (198 total); the native-app tool rename adds T633 (hub_set_rule single-call create-with-bundle: new rule + trigger + action in one upsert) (199 total); Custom-Attribute enum-attribute false-positive-partial guard adds T634 (trigger row), T635 (conditional-trigger condition path), T636 (Required Expression reveal walker / STPage enum condition), and T637 (free-valued Custom Attribute comparator: value lands normally) (203 total); the action-page enum-condition parity (the 4th surface, reached via an IF action) adds T638 (204 total); create-with-Required-Expression adds T639 and a create-time refusal of edit-only arguments added T640 (206 total); the doActPage compareToDevice device-relative happy-path (the IF-action mirror of T618) adds T641 (207 total -- numbered out of sequence because T619/T620 were already taken by the Between-two-times and compareToVariable scenarios); the enum-attribute no-RHS state-change comparator splits across both live outcomes -- T642 (trigger surface ROUTES via the picker's change option) + T643 (Required Expression surface SKIPS, no change option) (209 total); the two new setVariable source modes add T647 (fromDevice / numOp="device attribute") and T648 (math / numOp="variable math", binary + unary arity) (211 total -- numbered T647/T648 because T642/T643 were taken by the enum-attribute comparator scenarios above and T644/T645/T646 by the app-config-summary / device-swap / event-history scenarios); the in-place Required Expression replacement adds T649 (happy path), a no-existing-expression refusal added T650, the failed-rebuild guard (no data loss) adds T651, and the edit-scope guard (a failed Required Expression change does not revert the earlier changes of the same edit) adds T652 (215 total); the rule-local variable lifecycle adds T653 + the namespace distinction adds T654 (217 total); the broken-after-delete contract for a still-referenced local variable (RM deletes it and leaves the rule broken; the result reports the failure) adds T655 (218 total); the hub_list_device_events since-bookmark round-trip adds T656 (219 total -- numbered T656 out of sequence to avoid colliding with the setVariable T647 above). T616, T617, T621, T631, T640, T650 and T658 were later removed with the retired authoring arguments they tested (header total 264). Note: the scenario total in the header above counts ALL scenarios including the NL (T501-T565 range), built-in-app integration (T801-T821 range), library management (T901-T909 range), and the unnumbered walker/normalization sub-scenarios. The cumulative T-numbered tally in this item (ending at 215) reflects only sequentially-numbered tests in the explicit-coverage section.
+11. **PR1B read/write gateway split**: the 13-gateway flat-core layout was restructured into **19 gateways (7 `hub_read_*` pure-read + 12 `hub_manage_*` write-bearing) + 11 flat core tools** (30 on tools/list). Gateway renames: `hub_manage_rules` → `hub_manage_custom_rules`, `hub_manage_code_write` → `hub_manage_code`, `hub_manage_native_rules` → `hub_manage_native_rules_and_apps`. Removed gateways (read tools folded into `hub_read_apps_code`): `hub_manage_code_read`, `hub_manage_installed_apps`, `hub_manage_hpm`. `hub_list_installed_apps` merged into `hub_list_apps` (scope=types|instances). New pure-read gateways added: `hub_read_apps_code`, `hub_read_devices`, `hub_read_diagnostics`, `hub_read_files`, `hub_read_rooms`, `hub_read_rules`, `hub_read_variables`. Reads listed in a mixed `hub_manage_*` gateway are also surfaced in their `hub_read_*` gateway (multi-membership). Tool-behavior flips: `hub_export_custom_rule` and `hub_export_native_app` are now WRITES (they persist via saveAs); `hub_get_metrics` is now a READ (recordSnapshot default false). The previously-flat custom-rule and device tools (`hub_get_custom_rule`, `hub_create_custom_rule`, `hub_update_custom_rule`, `hub_list_devices`, `hub_get_device`, etc.) are now folded into gateways. `hub_report_issue` remains a flat core tool.
 
 ### T708 - Pause reporting preserves a literal name across rule engines
 

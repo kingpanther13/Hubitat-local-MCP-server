@@ -325,10 +325,12 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         when:
         def result = script.toolRunRmRule([ruleId: 105, action: 'start'])
 
-        then: "stopRule button POST toggles stopped flag off + re-inits + resets private boolean"
+        then: "stopRule button POST toggles the stopped flag off and re-initializes; the private boolean is not claimed reset"
         result.success == true
         result.ruleId == 105
         posts.any { it.path == '/installedapp/btn' && it.body.name == 'stopRule' }
+        result.rmAction == 'stopRule button -> state.stopped=false (initialize)'
+        !result.rmAction.contains('private boolean')
     }
 
     @spock.lang.Unroll

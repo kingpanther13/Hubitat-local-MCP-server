@@ -102,7 +102,7 @@ Grounded in a per-handler audit of `hubitat-mcp-server.groovy`. "Mechanism" = ho
 | delete_room | hub_delete_room | | update_mcp_settings | hub_update_mcp_settings |
 | rename_room | hub_update_room | | get_tool_guide | hub_get_tool_guide |
 | list_installed_apps | hub_list_installed_apps | | search_tools | hub_search_tools |
-| get_app_config | hub_get_app_config | | list_app_pages | hub_list_app_pages |
+| get_app_config | hub_get_app_config | | list_app_pages | hub_list_app_pages (since removed: hub_get_app_config page.hrefs) |
 
 ### Gateway renames (all 13)
 

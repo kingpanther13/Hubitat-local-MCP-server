@@ -292,7 +292,6 @@ abstract class HarnessSpec extends Specification {
         (scriptStaticField('ITEM_BACKUP_BUDGET_WARNED') as Set).clear()
         backupIndexStore.clear()
         backupIndexStore.json = EMPTY_BACKUP_INDEX_JSON
-        (scriptStaticField('PRED_CLEAR_STORES') as Map).clear()
         // The hub's last returned pageBreadcrumbs trail per app; a leftover entry would steer a later
         // feature's submit off the caller's fallback trail.
         (scriptStaticField('HUB_PAGE_BREADCRUMBS') as Map).clear()

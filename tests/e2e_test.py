@@ -1784,7 +1784,7 @@ class TestRunner:
     }
 
     # Built-in apps that RM's app-backed actions drive (label, app type name, hub_set_native_app
-    # appType). RM lists those actions only while an instance of the app type exists. Found by label,
+    # app_type). RM lists those actions only while an instance of the app type exists. Found by label,
     # else created and configured on first use, never deleted.
     BUILTIN_APP_FIXTURES: ClassVar[dict[str, tuple[str, str, str]]] = {
         "room_lights": (f"{SCAFFOLD_PREFIX}RoomLights", "Room Lights", "room_lighting"),
@@ -1799,14 +1799,14 @@ class TestRunner:
     BACKUP_PROVING_TESTS: ClassVar[frozenset[str]] = frozenset({
         "test_set_rule_self_gateway_envelope_edit",
         "test_set_native_app_basic_rule_lifecycle",
-        "test_set_native_app_walk_keeps_the_pending_page",
+        "test_set_native_app_form_keeps_the_pending_page",
+        "test_set_native_app_snapshot_redacts_password_settings",
         "test_rm_rule_restore_in_place_with_device_picker",
         "test_rm_rule_restore_skips_a_deleted_device",
         "test_rm_rule_restore_brings_back_a_removed_trigger",
         "test_rm_rule_restore_of_a_deleted_rule_uses_the_exact_copy",
         "test_rm_rule_restore_puts_actions_back_in_order",
         "test_rm_rule_restore_expression_by_device_name",
-        "test_legacy_export_backup_restores_in_place",
         "test_complex_edit_recovers_deleted_rows_and_existing_payloads",
         "test_rule_edit_backups_capture_once_per_edit",
     })
@@ -3670,17 +3670,19 @@ class TestRunner:
 
     @test("native_apps")
     def test_set_native_app_guide_meta_call_via_gateway(self) -> None:
-        """Static generic help clears gateway validation without confirmation or hub reads.
+        """Help and schema calls clear gateway validation without confirmation or hub reads.
 
-        appId shapes an edit request but is never dereferenced for guide-only calls.
+        app_id shapes an update request but is never dereferenced for a schema-only call.
         """
-        result = self.client.call_tool("hub_manage_native_rules_and_apps", {
-            "tool": "hub_set_native_app", "args": {"appId": 999999999, "guide": True}})
-        blob = str(result)
-        assert result.get("success") is True and result.get("section") == "builtin_app_tools_crud", \
-            f"guide meta-call did not return the generic native guide: {blob[:200]}"
-        assert all(name in blob for name in ("settings", "walkStep", "buttonRule")), \
-            f"generic native guide is missing retained operations: {blob[:200]}"
+        def call(args: dict) -> dict:
+            return self.client.call_tool("hub_manage_native_rules_and_apps", {"tool": "hub_set_native_app", "args": args})
+
+        help_result = call({})
+        assert help_result.get("operations") == ["create", "update", "form"] and help_result.get("usage"), \
+            f"hub_set_native_app help is missing its operations: {help_result}"
+        schema = call({"operation": "update", "app_id": 999999999})
+        assert schema.get("confirm_required") is True and (schema.get("inputSchema") or {}).get("properties", {}).get("args"), \
+            f"update without confirm should return its schema, not touch app 999999999: {schema}"
 
     @test("native_apps")
     def test_set_app_disabled_roundtrip(self) -> None:
@@ -5716,8 +5718,8 @@ class TestRunner:
 
     # -----------------------------------------------------------------------
     # GROUP 4b: native_apps -- the hub_set_rule / hub_set_native_app split
-    # plus basic_rule appType, button-rule create via buttonRule, and walkStep
-    # on the generic tool, end-to-end against the live hub.
+    # plus basic_rule create, button_rule create through its controller, and the
+    # create/update/form operations of the generic tool, end-to-end against the live hub.
     # These are distinct from rule_crud above, which drives the LEGACY custom
     # rule engine (custom_* tools); these drive the NATIVE Rule Machine + classic
     # SmartApp surface that appears in Hubitat's own UI.
@@ -5727,6 +5729,32 @@ class TestRunner:
     def _untrack_native_app(self, app_id) -> None:
         if str(app_id) in self.created_native_app_ids:
             self.created_native_app_ids.remove(str(app_id))
+
+    def _native_app(self, operation: str, args: dict, app_id: Any = None) -> dict:
+        """One confirmed hub_set_native_app call through its gateway."""
+        payload = {"operation": operation, "args": args, "confirm": True}
+        if app_id is not None:
+            payload["app_id"] = int(app_id)
+        return self.client.call_tool("hub_manage_native_rules_and_apps", {"tool": "hub_set_native_app", "args": payload})
+
+    def _native_app_form(self, app_id: Any, *steps: dict) -> dict:
+        result = self._native_app("form", {"steps": list(steps)}, app_id)
+        assert result.get("success") is True, f"native app form steps failed: {result}"
+        return result
+
+    @staticmethod
+    def _native_app_done(form: dict) -> dict:
+        """A sub-page's Done: back to the previous page, else the app's own Done."""
+        rows = [c for c in form.get("controls") or [] if c.get("kind") == "navigation" and c.get("value") == "Done"]
+        rows.sort(key=lambda c: c.get("name") != "_action_previous")
+        assert rows, f"the page offers no Done control: {form.get('controls')}"
+        return rows[0]
+
+    @staticmethod
+    def _native_app_field(form: dict, name: str) -> dict:
+        field = next((f for f in form.get("fields") or [] if f.get("name") == name), None)
+        assert field is not None, f"the {form.get('page')} page has no {name!r} field: {[f.get('name') for f in form.get('fields') or []]}"
+        return field
 
     def _find_app_id_by_label(self, label: str) -> str | None:
         """Look up an installed app by its unique label across both listing surfaces.
@@ -5951,25 +5979,42 @@ class TestRunner:
 
     @test("native_apps")
     def test_set_native_app_basic_rule_lifecycle(self) -> None:
-        # basic_rule is a registered appType (a classic dynamicPage app, not a
-        # Vue SPA). Create via generic createchild, edit a setting -- which must
-        # NOT poison the page with the "For input string: updateRule" error
-        # (the commitButton=null fix) -- then delete.
-        create_label = f"{PREFIX}BasicRule"
+        # basic_rule is a registered app_type (a classic dynamicPage app, not a
+        # Vue SPA). Create through the Basic Rules page, edit a setting -- which must
+        # NOT poison the page with the "For input string: updateRule" error -- then
+        # delete. Its first page renders no label input, so the create takes no name
+        # and a dropped response is matched by the Basic Rule it added.
+        def basic_rules() -> set[str]:
+            return {str(r.get("id")) for r in self._installed_app_rows() if r.get("type") == "Basic Rule-1.0"}
+
+        before = basic_rules()
+        # A create its first page refuses (a field the page does not render) removes the child it
+        # made and returns success:false, so the hub gains no Basic Rule.
+        refused = self._native_app("create", {"app_type": "basic_rule", "fields": {"nope": 1}})
+        assert refused.get("success") is False and "removed" in str(refused.get("error")), refused
+        left = basic_rules() - before
+        assert not left, f"a refused Basic Rule create left app(s) {sorted(left)} behind: {refused}"
+        # A label passed as name and in fields is an argument error, refused before the parent creates anything.
+        twice_label = f"{PREFIX}LabelTwice"
+        try:
+            self._native_app("create", {"app_type": "notifier", "name": twice_label, "fields": {"origLabel": twice_label}})
+            raise AssertionError("a label passed twice was accepted")
+        except McpToolError as exc:
+            assert "Pass the label once" in str(exc), str(exc)
+        assert not self._find_app_id_by_label(twice_label), "a label passed twice still created an app"
         cw = self._soft_write(
-            lambda: self.client.call_tool("hub_manage_native_rules_and_apps", {
-                "tool": "hub_set_native_app",
-                "args": {"appType": "basic_rule", "name": create_label, "confirm": True}}),
-            lambda: self._find_app_id_by_label(create_label),
+            lambda: self._native_app("create", {"app_type": "basic_rule"}),
+            lambda: next((str(r.get("id")) for r in self._installed_app_rows()
+                          if r.get("type") == "Basic Rule-1.0" and str(r.get("id")) not in before), None),
             "basic_rule create",
         )
         if cw["relayDropped"]:
-            assert cw["committed"], f"basic_rule create lost to relay 504 and never committed ({create_label})"
+            assert cw["committed"], "basic_rule create lost to relay 504 and never committed"
             app_id = cw["evidence"]
         else:
             created = cw["response"]
-            app_id = created.get("appId")
-            assert app_id, f"basic_rule create did not return an appId: {created}"
+            app_id = created.get("app_id")
+            assert app_id, f"basic_rule create did not return an app_id: {created}"
         self.created_native_app_ids.append(str(app_id))
 
         app_live = True
@@ -5989,14 +6034,11 @@ class TestRunner:
                 f"hub_get_rule_health should classify a Basic Rule as basic-rule: {bh}"
             assert bh.get("broken") is None, f"a classic app has no compiled broken boolean: {bh}"
 
-            # EDIT: write the Notes field. NO updateRule click fires (Basic Rule
-            # is submitOnChange), so the render stays clean. On a 504 the response
-            # (configPageError/success) is gone; verify the note landed via read-back
-            # so the no-poison + success assertions only bind on the normal path.
+            # EDIT: write the Notes field, then read the app back: the note must have landed and the
+            # read must carry no configPageError (the old wizard poisoned the page with "For input
+            # string: updateRule"). On a 504 the response is gone, so only the read-back binds.
             ew = self._soft_write(
-                lambda: self.client.call_tool("hub_manage_native_rules_and_apps", {
-                    "tool": "hub_set_native_app",
-                    "args": {"appId": app_id, "settings": {"comments": f"{PREFIX}note"}, "confirm": True}}),
+                lambda: self._native_app("update", {"fields": {"comments": f"{PREFIX}note"}}, app_id),
                 lambda: True,  # verified by the comments read-back below
                 "basic_rule edit (notes)",
             )
@@ -6006,16 +6048,23 @@ class TestRunner:
                 note = str(((rb.get("settings") or {}).get("comments")) or "")
                 assert f"{PREFIX}note" in note, \
                     f"basic_rule notes edit lost to relay 504 and did not commit (settings.comments={note!r})"
-                # The hub did not page-error on a committed write (the configPageError
-                # check the response would have carried); the clean read-back is the proxy.
-                assert not (rb.get("app") or {}).get("configPageError"), \
+                # The page the read renders carries no configPageError after the dropped write.
+                assert not rb.get("configPageError"), \
                     f"basic_rule render poisoned after the dropped edit: {rb}"
                 print("    basic_rule edit: response-field assertions skipped (relay 504); note verified via read-back")
             else:
                 edited = ew["response"]
-                assert "updateRule" not in str(edited.get("configPageError") or ""), \
-                    f"Basic Rule edit poisoned the render with the updateRule error: {edited}"
-                assert edited.get("success") is not False, f"Basic Rule edit reported failure: {edited}"
+                assert edited.get("success") is True and "comments" in (edited.get("fields_applied") or []), \
+                    f"Basic Rule edit did not report the note applied: {edited}"
+                # A Basic Rule page renders no Done, so the edit saves the page and says the app's update did not run.
+                assert edited.get("committed") is False and "renders no Done" in str(edited.get("note")), \
+                    f"the no-Done Basic Rule edit should report committed:false: {edited}"
+                rb = self.client.call_tool("hub_read_apps_code", {
+                    "tool": "hub_get_app_config", "args": {"appId": app_id, "includeSettings": True}})
+                assert f"{PREFIX}note" in str(((rb.get("settings") or {}).get("comments")) or ""), \
+                    f"basic_rule notes edit did not land: {rb}"
+                assert not rb.get("configPageError"), \
+                    f"basic_rule render poisoned after the edit: {rb}"
 
             # Restoring that edit's baseline in place puts the Basic Rule back as it was: settings it
             # gained afterwards are emptied, and it is finished with Done, never the updateRule click
@@ -6032,8 +6081,7 @@ class TestRunner:
             assert backup_key, f"no baseline backup was recorded for Basic Rule {app_id}"
             switch_id = self._ensure_perm_fixture("switch_a")
             for step in ({"trigCapab": "Switch"}, {"switchDev": [int(switch_id)]}, {"trigger": "Turns on"}):
-                self.client.call_tool("hub_manage_native_rules_and_apps", {
-                    "tool": "hub_set_native_app", "args": {"appId": app_id, "settings": step, "confirm": True}})
+                self._native_app("update", {"fields": step}, app_id)
             restored = self.client.call_tool("hub_manage_backup", {
                 "tool": "hub_restore_backup",
                 "args": {"scope": "source", "backupKey": backup_key, "confirm": True, "preserveRuleId": True}})
@@ -6082,7 +6130,7 @@ class TestRunner:
 
     @test("native_apps")
     def test_set_native_app_room_lighting_lifecycle(self) -> None:
-        # Issues #460/#461. Room Lighting: create by appType, the sub-pages its page links, a device
+        # Issues #460/#461. Room Lighting: create by app_type, the sub-pages its page links, a device
         # picker written as the {id: label} map hub_get_app_config returns, the motion inputs that
         # live on onMeansPage, and a sub-page Done that Hubitat's own page refuses while a required
         # input (marked * in the UI) is empty. A hub without the Room Lighting parent gets it from the
@@ -6093,9 +6141,7 @@ class TestRunner:
         omni = self._ensure_perm_fixture("omni")
         create_label = f"{PREFIX}RoomLights"
         cw = self._soft_write(
-            lambda: self.client.call_tool("hub_manage_native_rules_and_apps", {
-                "tool": "hub_set_native_app",
-                "args": {"appType": "room_lighting", "name": create_label, "confirm": True}}),
+            lambda: self._native_app("create", {"app_type": "room_lighting", "name": create_label}),
             lambda: self._find_app_id_by_label(create_label),
             "room_lighting create",
         )
@@ -6103,13 +6149,9 @@ class TestRunner:
             assert cw["committed"], f"room_lighting create lost to relay 504 and never committed ({create_label})"
             app_id = cw["evidence"]
         else:
-            app_id = cw["response"].get("appId")
-            assert app_id, f"room_lighting create did not return an appId: {cw['response']}"
+            app_id = cw["response"].get("app_id")
+            assert app_id, f"room_lighting create did not return an app_id: {cw['response']}"
         self.created_native_app_ids.append(str(app_id))
-
-        def call_native(args: dict) -> dict:
-            return self.client.call_tool("hub_manage_native_rules_and_apps", {
-                "tool": "hub_set_native_app", "args": {"appId": app_id, "confirm": True, **args}})
 
         def settings() -> dict:
             cfg = self.client.call_tool("hub_read_apps_code", {
@@ -6120,60 +6162,57 @@ class TestRunner:
             cfg = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config", "args": {"appId": app_id}})
             assert (cfg.get("app") or {}).get("name") == "Room Lights", f"unexpected Room Lights config: {cfg}"
 
-            # The page links its sub-pages; the listing reads them instead of claiming a single page.
-            pages = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_app_pages", "args": {"appId": app_id}})
-            names = [p.get("name") for p in (pages.get("pages") or [])]
-            assert {"onMeansPage", "offMeansPage"} <= set(names), f"Room Lights sub-pages not listed: {pages}"
-            assert "onMeansPage" in [h.get("page") for h in ((cfg.get("page") or {}).get("hrefs") or [])], \
-                f"hub_get_app_config should expose the page's sub-page links: {cfg.get('page')}"
+            # The default page's hrefs name its sub-pages, and each one renders by that name.
+            names = [h.get("page") for h in ((cfg.get("page") or {}).get("hrefs") or [])]
+            assert {"onMeansPage", "offMeansPage"} <= set(names), f"Room Lights sub-pages not in page.hrefs: {cfg.get('page')}"
+            sub = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config", "args": {"appId": app_id, "pageName": "onMeansPage"}})
+            assert (sub.get("page") or {}).get("name") == "onMeansPage", f"onMeansPage did not render: {sub.get('page')}"
 
             # #460: the {id: label} map shape the read returns is accepted on write...
-            wr = call_native({"settings": {"roomDevsL": {switch_a: "a", switch_b: "b"}}})
+            wr = self._native_app("update", {"fields": {"roomDevsL": {switch_a: "a", switch_b: "b"}}}, app_id)
             assert wr.get("success") is True, f"device-map write failed: {wr}"
             assert set((settings().get("roomDevsL") or {}).keys()) == {switch_a, switch_b}, \
                 f"roomDevsL should hold both switches: {settings().get('roomDevsL')}"
-            # ...and takes effect: the Update commit re-subscribes the instance to the new devices.
+            # ...and takes effect: the page's Done re-subscribes the instance to the new devices.
             health = self.client.call_tool("hub_read_rules", {"tool": "hub_get_rule_health", "args": {"appId": app_id}})
             assert (health.get("eventSubscriptionCount") or 0) >= 2, \
                 f"the write must reach the running instance (subscriptions), not just storage: {health}"
 
             # #461: the motion trigger lives on onMeansPage, revealed by choosing the means first.
-            on = call_native({"walkStep": {"operation": "drive", "steps": [
-                {"page": "mainPage", "operation": "navigate", "navigate": {"targetPage": "onMeansPage"}},
-                {"page": "onMeansPage", "operation": "write", "write": {"onMeans": ["motion becomes active"]},
-                 "hrefContext": {"fromPage": "mainPage"}},
-                {"page": "onMeansPage", "operation": "write", "write": {"motions": [motion]},
-                 "hrefContext": {"fromPage": "mainPage"}},
-                {"page": "onMeansPage", "operation": "done", "hrefContext": {"fromPage": "mainPage"}}]}})
-            assert on.get("success") is True, f"onMeansPage drive failed: {on}"
-            assert (on["steps"][1].get("valueEcho") or {}).get("match") is True, \
-                f"a multi-select enum write should echo as matching: {on['steps'][1]}"
+            form = self._native_app_form(app_id, {"kind": "open"})
+            form = self._native_app_form(app_id, self._rm_step(form, control=self._rm_control(form, kind="href", page="onMeansPage")))
+            assert form["page"]["name"] == "onMeansPage", f"the href did not open onMeansPage: {form['page']}"
+            form = self._native_app_form(app_id, self._rm_step(form, fields={"onMeans": ["motion becomes active"]}))
+            assert self._native_app_field(form, "onMeans").get("value") == ["motion becomes active"], \
+                f"a multi-select enum write should read back as sent: {self._native_app_field(form, 'onMeans')}"
+            motions = self._native_app_field(form, "motions")
+            form = self._native_app_form(app_id, self._rm_step(form, fields={"motions": [motion] if motions["multiple"] else motion}))
+            form = self._native_app_form(app_id, self._rm_step(form, control=self._native_app_done(form)))
+            assert form["page"]["name"] == "mainPage", f"onMeansPage Done did not return to mainPage: {form['page']}"
             assert motion in (settings().get("motions") or {}), f"motions not set: {settings().get('motions')}"
 
-            # The UI refuses this Done while the required illuminance picker is empty; so does the tool.
-            off = call_native({"walkStep": {"operation": "drive", "steps": [
-                {"page": "mainPage", "operation": "navigate", "navigate": {"targetPage": "offMeansPage"}},
-                {"page": "offMeansPage", "operation": "write", "write": {"offMeans": ["illuminance rises"]},
-                 "hrefContext": {"fromPage": "mainPage"}},
-                {"page": "offMeansPage", "operation": "done", "hrefContext": {"fromPage": "mainPage"}}]}})
-            assert off.get("success") is False and "required but empty" in str((off.get("steps") or [{}])[-1].get("error")), \
-                f"Done with an empty required input must be refused: {off}"
-            # A drive whose last Done was refused is not finalized: no mainPage Done, no update lifecycle.
-            assert off.get("mainPageDoneSkipped") is True and "mainPageDoneFailed" not in off, \
-                f"a refused drive must not run the mainPage Done finalize: {off}"
-            # The same refusal as a single step submits nothing, so it must not steer toward a backup restore.
-            single = call_native({"walkStep": {"page": "offMeansPage", "operation": "done",
-                                               "hrefContext": {"fromPage": "mainPage"}}})
-            assert single.get("success") is False and "no Done was sent" in str(single.get("restoreHint")), \
-                f"a refused Done must report that nothing was submitted: {single}"
-            # The {id: label} map form is accepted by walkStep too, and echoes as the committed id.
-            fixed = call_native({"walkStep": {"operation": "drive", "steps": [
-                {"page": "offMeansPage", "operation": "write", "write": {"illumsOff": {omni: "omni"}},
-                 "hrefContext": {"fromPage": "mainPage"}},
-                {"page": "offMeansPage", "operation": "done", "hrefContext": {"fromPage": "mainPage"}}]}})
-            assert fixed.get("success") is True, f"Done should pass once the required input is set: {fixed}"
-            assert (fixed["steps"][0].get("valueEcho") or {}).get("match") is True, \
-                f"a map-form device write should echo as matching: {fixed['steps'][0]}"
+            # `from` names a sub-page's parent, so an open with `from` and no `page` is refused.
+            try:
+                bad = self._native_app("form", {"steps": [{"kind": "open", "from": "mainPage"}]}, app_id)
+            except McpToolError as exc:
+                bad = {"success": False, "error": exc.content_text}
+            assert bad.get("success") is False and "requires page" in str(bad.get("error")), \
+                f"an open with from but no page must be refused: {bad}"
+            # The UI refuses this Done while the required illuminance picker is empty; so does the tool,
+            # before submitting anything, and the page stays open for the fix.
+            form = self._native_app_form(app_id, {"kind": "open", "page": "offMeansPage", "from": "mainPage"},
+                                         {"kind": "submit", "expect_page": "offMeansPage", "fields": {"offMeans": ["illuminance rises"]}})
+            done = self._native_app_done(form)
+            refused = self._native_app("form", {"steps": [self._rm_step(form, control=done)]}, app_id)
+            assert refused.get("success") is False and "illumsOff" in str(refused.get("error")), \
+                f"Done with an empty required input must be refused: {refused}"
+            assert refused.get("partial") is False and not refused.get("reopen_required"), \
+                f"a refused Done must report that nothing was submitted: {refused}"
+            illums = self._native_app_field(form, "illumsOff")
+            fixed = self._native_app_form(app_id, self._rm_step(form, fields={"illumsOff": [omni] if illums["multiple"] else omni}),
+                                          {"kind": "submit", "expect_page": form["page"]["name"], "activate": done["control_id"]})
+            assert fixed["page"]["name"] == "mainPage", f"Done should pass once the required input is set: {fixed}"
             off_settings = settings()
             assert omni in (off_settings.get("illumsOff") or {}), f"illumsOff not set: {off_settings.get('illumsOff')}"
             # An input left unset is saved with the page's default, as the UI submits it.
@@ -6189,20 +6228,302 @@ class TestRunner:
             if not dw["relayDropped"] or dw["committed"]:
                 self._untrack_native_app(app_id)
 
+    PASSWORD_SNAPSHOT_APP: ClassVar[str] = """definition(name: "Deadman Test Target Password Snapshot", namespace: "mcptest",
+    author: "ci", description: "Throwaway app code for the pre-write snapshot password check", category: "Utility",
+    iconUrl: "", iconX2Url: "")
+
+preferences {
+    page(name: "pagePw")
+    page(name: "pageMore")
+}
+
+def pagePw() {
+    dynamicPage(name: "pagePw", title: "Password snapshot", install: true, uninstall: true) {
+        section {
+            input "p", "password", title: "Password", required: false
+            input "apiKey", "text", title: "API key", required: false
+            input "disarmPin", "text", title: "Disarm PIN", required: false
+            input "note", "text", title: "Note", required: false
+            paragraph "p-state: ${settings.p == 'SECRET_VALUE' ? 'kept' : 'changed'}"
+            href "pageMore", title: "More", description: "open"
+        }
+    }
+}
+
+def pageMore() {
+    dynamicPage(name: "pageMore", title: "More") {
+        section { input "note2", "text", title: "Second note", required: false }
+    }
+}
+
+def installed() {}
+def updated() {}
+"""
+
+    @test("native_apps")
+    def test_set_native_app_snapshot_redacts_password_settings(self) -> None:
+        # #552: a pre-write snapshot never stores a password-typed setting, and an in-place restore of
+        # that snapshot leaves the live password alone. The throwaway app's page reports whether its
+        # password still holds the value set here, so the check never has to read the password back.
+        # Its root page is not named mainPage, so the sub-page update and the restore's closing Done
+        # prove the root page's name comes from the hub. Once the app is deleted, the snapshot of this
+        # user app is not recreated: the restore asks for the app code to be reinstalled and its
+        # settings set again.
+        secret = "BAT-E2E-redact-me-552"
+        label = "Deadman Test Target Password Snapshot"
+        code_id = instance_id = None
+        leftover_ids: list = []
+        try:
+            created = self.client.call_tool("hub_manage_code", {"tool": "hub_create_app", "args": {
+                "source": self.PASSWORD_SNAPSHOT_APP.replace("SECRET_VALUE", secret), "confirm": True}})
+            code_id = created.get("appId")
+            assert code_id, f"creating the password app code failed: {created}"
+            inst = self.client.call_tool("hub_manage_code", {"tool": "hub_create_app", "args": {"codeAppId": code_id, "confirm": True}})
+            instance_id = inst.get("instanceAppId")
+            assert inst.get("committed") is True and instance_id, f"creating the password app instance failed: {inst}"
+            api_key, pin = "ak-e2e-5d1f", "pin-9731"
+            first = self._native_app("update", {"fields": {"p": secret, "apiKey": api_key, "disarmPin": pin}}, instance_id)
+            assert first.get("success") is True, f"setting the password failed: {first}"
+            # Credential-named text inputs: the form result masks them like hub_get_app_config does.
+            form = self._native_app_form(instance_id, {"kind": "open"})
+            shown = {f["name"]: f.get("value") for f in form.get("fields", []) if f["name"] in ("apiKey", "disarmPin")}
+            assert shown == {"apiKey": "***redacted (password)***", "disarmPin": "***redacted (password)***"}, \
+                f"the form returned credential-named values in clear: {shown}"
+            named = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config", "args": {
+                "appId": instance_id, "includeSettings": True}}).get("settings") or {}
+            assert named.get("apiKey") == "***redacted (password)***" and named.get("disarmPin") == "***redacted (password)***", \
+                f"includeSettings returned credential-named values in clear: {named}"
+            more = self._native_app("update", {"fields": {"note2": "sub edit"}, "page": "pageMore"}, instance_id)
+            assert more.get("success") is True and more.get("page") == "pageMore", \
+                f"the sub-page update under a root page not named mainPage failed: {more}"
+            # A same-app baseline is otherwise reused for an hour; the second edit needs its own snapshot.
+            self._mcp_settings({"backupEveryRuleWrite": True})
+            try:
+                second = self._native_app("update", {"fields": {"note": "second edit"}}, instance_id)
+            finally:
+                self._mcp_settings({"backupEveryRuleWrite": False})
+            key = (second.get("backup") or {}).get("backupKey")
+            assert second.get("success") is True and key, f"the second edit took no snapshot: {second}"
+            meta = self.client.call_tool("hub_get_backup", {"backupKey": key})
+            content = self._rm_read_file(meta["fileName"])
+            assert secret not in content, "the pre-write snapshot stores the password in plain text"
+            assert api_key not in content and pin not in content, "the pre-write snapshot stores a credential-named text value"
+            assert {"p", "apiKey", "disarmPin"} <= set(json.loads(content).get("redactedSettings") or []), \
+                f"the snapshot does not list the redacted settings: {sorted(json.loads(content))}"
+
+            restored = self._rm_restore(key, preserveRuleId=True)
+            assert restored.get("success") is True and "p" in (restored.get("passwordsKept") or []), \
+                f"the in-place restore should keep the live password and say so: {restored}"
+            cfg = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config", "args": {
+                "appId": instance_id, "includeSettings": True}})
+            assert (cfg.get("settings") or {}).get("p") == "***redacted (password)***", \
+                f"the password should still be set, shown redacted: {cfg.get('settings')}"
+            assert "p-state: kept" in json.dumps(cfg) and secret not in json.dumps(cfg), \
+                f"the restore changed the live password: {cfg}"
+            # With the live password cleared, the same in-place restore asks for it to be entered again.
+            cleared = self._native_app("update", {"fields": {"p": ""}}, instance_id)
+            assert cleared.get("success") is True, f"clearing the password failed: {cleared}"
+            again = self._rm_restore(key, preserveRuleId=True)
+            assert again.get("success") is True and again.get("passwordsToReenter") == ["p"] \
+                and sorted(again.get("passwordsKept") or []) == ["apiKey", "disarmPin"], \
+                f"an in-place restore over an empty password should ask for it again and keep the live text secrets: {again}"
+            assert "enter" in str(again.get("note")).lower(), f"the restore note should say to enter the password again: {again}"
+
+            gone = self.client.call_tool("hub_manage_native_rules_and_apps", {"tool": "hub_delete_native_app", "args": {
+                "appId": instance_id, "force": True, "confirm": True}})
+            assert gone.get("success") is True, f"deleting the password app instance failed: {gone}"
+            instance_id = None
+            # The delete's own snapshot is the app's newest backup, which retention never evicts; on a
+            # hub at its storage budget the earlier snapshot may already be gone.
+            recreate_key = (gone.get("backup") or {}).get("backupKey") or key
+            try:
+                recreate = self._rm_restore(recreate_key)
+            except McpToolError as exc:
+                try:
+                    payload = json.loads(exc.content_text)
+                except (TypeError, ValueError):
+                    payload = None
+                recreate = dict(payload, success=False) if isinstance(payload, dict) else \
+                    {"success": False, "error": exc.content_text, "note": exc.content_text}
+            if recreate.get("ruleId"):
+                leftover_ids.append(recreate["ruleId"])
+            assert recreate.get("success") is False and not recreate.get("ruleId"), \
+                f"a deleted user app must not be recreated from its snapshot: {recreate}"
+            assert "cannot recreate it" in str(recreate.get("error")) and "reinstall" in str(recreate.get("note")).lower(), \
+                f"the refusal should say the app cannot be recreated and to reinstall its code: {recreate}"
+            stray = self._find_app_id_by_label(label)
+            if stray:
+                leftover_ids.append(stray)
+            assert stray is None, f"the refused restore left an app instance behind: {stray}"
+        finally:
+            for app_id in [i for i in (instance_id, *leftover_ids) if i]:
+                try:
+                    self.client.call_tool("hub_manage_native_rules_and_apps", {"tool": "hub_delete_native_app", "args": {
+                        "appId": app_id, "force": True, "confirm": True}})
+                except (McpError, McpToolError, requests.HTTPError) as exc:
+                    print(f"  [WARN] password snapshot cleanup: delete instance {app_id} failed: {exc}")
+            if code_id:
+                try:
+                    self.client.call_tool("hub_manage_code", {"tool": "hub_delete_item", "args": {
+                        "type": "app", "item_id": code_id, "confirm": True}})
+                except (McpError, McpToolError, requests.HTTPError) as exc:
+                    print(f"  [WARN] password snapshot cleanup: delete code {code_id} failed: {exc}")
+
+    FORM_WIZARD_APP: ClassVar[str] = """definition(name: "Deadman Test Target Form Wizard", namespace: "mcptest",
+    author: "ci", description: "Throwaway app code for a wizard whose second page names a next and a done page",
+    category: "Utility", iconUrl: "", iconX2Url: "")
+
+preferences {
+    page(name: "pageOne")
+    page(name: "pageTwo")
+    page(name: "pageThree")
+    page(name: "pageFour")
+}
+
+def pageOne() {
+    dynamicPage(name: "pageOne", title: "Step one", nextPage: "pageTwo", uninstall: true) {
+        section { input "first", "text", title: "First", required: false }
+    }
+}
+
+def pageTwo() {
+    dynamicPage(name: "pageTwo", title: "Step two", nextPage: "pageThree", donePage: "pageThree") {
+        section {
+            input "second", "text", title: "Second", required: true
+            input "retries", "number", title: "Retries", defaultValue: 3
+            input "flavor", "enum", title: "Flavor", options: ["plain", "spicy"], defaultValue: "mild"
+        }
+    }
+}
+
+def pageThree() {
+    dynamicPage(name: "pageThree", title: "Step three", install: true, uninstall: true) {
+        section { input "third", "text", title: "Third", required: false }
+    }
+}
+
+def pageFour() { pageThree() }
+
+def installed() {}
+def updated() {}
+"""
+
+    FORM_DEFAULTS_APP: ClassVar[str] = """definition(name: "Deadman Test Target Form Defaults", namespace: "mcptest",
+    author: "ci", description: "Throwaway app code whose preferences hold sections and no pages", category: "Utility",
+    iconUrl: "", iconX2Url: "")
+
+preferences {
+    section("Settings") { input "note", "text", title: "Note", required: false }
+}
+
+def installed() {}
+def updated() {}
+"""
+
+    @test("native_apps")
+    def test_set_native_app_form_done_page_and_default_fields(self) -> None:
+        # A wizard page that names both a next and a done page offers its Done as _action_done, which
+        # the hub answers by saving the page and rendering it again. An app whose preferences hold no
+        # pages shows the hub's own name and mode fields; update renames the app and restricts its
+        # modes through them. The hub's save of a mode write can keep an older label, so the update posts the label
+        # again on its own when the hub put one back.
+        codes: list = []
+        instances: list = []
+        try:
+            for source in (self.FORM_WIZARD_APP, self.FORM_DEFAULTS_APP):
+                created = self.client.call_tool("hub_manage_code", {"tool": "hub_create_app", "args": {"source": source, "confirm": True}})
+                assert created.get("appId"), f"creating the throwaway app code failed: {created}"
+                codes.append(created["appId"])
+                inst = self.client.call_tool("hub_manage_code", {"tool": "hub_create_app", "args": {"codeAppId": created["appId"], "confirm": True}})
+                assert inst.get("instanceAppId"), f"creating the throwaway app instance failed: {inst}"
+                instances.append(inst["instanceAppId"])
+            wizard, defaults = instances
+
+            form = self._native_app_form(wizard, {"kind": "open"})
+            assert form["page"]["name"] == "pageOne", f"the wizard opened on {form['page']}"
+            form = self._native_app_form(wizard, self._rm_step(form, {"first": "one"}, self._rm_control(form, name="_action_next")))
+            assert form["page"]["name"] == "pageTwo", f"Next did not reach pageTwo: {form['page']}"
+            done = self._rm_control(form, name="_action_done")
+            assert done["kind"] == "navigation" and not form.get("unsupported"), f"pageTwo should offer _action_done and nothing unsupported: {form}"
+            form = self._native_app_form(wizard, self._rm_step(form, {"second": "two"}, done))
+            assert form["page"]["name"] == "pageTwo", f"the hub should answer _action_done by rendering pageTwo again: {form['page']}"
+            # The install's Done stored only pageOne. pageTwo's unset inputs post their page defaults as the
+            # browser does, except a default outside the enum's own options.
+            assert form.get("defaults_posted") == ["retries"], f"the usable page default should be posted: {form}"
+            refused = form.get("defaults_not_posted") or []
+            assert [r.get("name") for r in refused] == ["flavor"] and "flavor" in str(refused[0].get("reason")), \
+                f"a default outside the enum's options should be reported as not posted: {form}"
+            stored = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config", "args": {"appId": wizard, "includeSettings": True}})
+            settings = stored.get("settings") or {}
+            assert settings.get("first") == "one" and settings.get("second") == "two", f"the wizard's pages were not saved: {settings}"
+            # update presses that page's _action_done too; the hub saves and renders the page again, so committed is false.
+            pressed = self._native_app("update", {"page": "pageTwo", "fields": {"second": "two-again"}}, wizard)
+            assert pressed.get("success") is True and pressed.get("committed") is False and pressed.get("fields_applied") == ["second"] \
+                and "names both a next and a done page" in str(pressed.get("note")), f"update on the done-page page: {pressed}"
+            # The hub stores the posted number input as the string it received.
+            assert settings.get("retries") == "3" and "flavor" not in settings, f"only the usable default should be stored: {settings}"
+            # A page method that returns another page renders that page, and pageNote names both.
+            alias = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config", "args": {"appId": wizard, "pageName": "pageFour"}})
+            assert (alias.get("page") or {}).get("name") == "pageThree" and alias.get("pageNote") == (
+                "The hub rendered 'pageThree' instead of 'pageFour'; this app reaches that page only through its own link: "
+                "open it with hub_set_native_app(operation:'form') and activate the href."), f"pageNote should name both pages: {alias}"
+
+            form = self._native_app_form(defaults, {"kind": "open"})
+            label = self._native_app_field(form, "label")
+            modes = self._native_app_field(form, "mode[mode]")
+            assert label.get("value") == "Deadman Test Target Form Defaults" and modes.get("multiple") is True and modes.get("options"), \
+                f"the default fields should carry the app's name and the hub's modes: {label} {modes}"
+            assert not form.get("unsupported") or all("label" not in str(u) for u in form["unsupported"]), form["unsupported"]
+            renamed = "Deadman Test Target Form Defaults Renamed"
+            relabel = self._native_app("update", {"fields": {"label": renamed}}, defaults)
+            assert relabel.get("success") is True and relabel.get("fields_applied") == ["label"], f"renaming through the label field failed: {relabel}"
+            mode_id = modes["options"][0]["value"]
+            restrict = self._native_app("update", {"fields": {"mode[mode]": [mode_id]}}, defaults)
+            assert restrict.get("success") is True, f"restricting the modes failed: {restrict}"
+            assert restrict.get("label_restored") in (None, True), f"label_restored is either absent or true: {restrict}"
+            form = self._native_app_form(defaults, {"kind": "open"})
+            assert self._native_app_field(form, "label").get("value") == renamed, f"the rename did not hold: {form['fields']}"
+            assert self._native_app_field(form, "mode[mode]").get("value") == [mode_id], f"the mode restriction did not hold: {form['fields']}"
+            # The hub does not store a label posted together with mode[mode]; the update posts the label again
+            # on its own, so both land.
+            together = "Deadman Test Target Form Defaults Together"
+            both = self._native_app("update", {"fields": {"label": together, "mode[mode]": [mode_id]}}, defaults)
+            assert both.get("success") is True and sorted(both.get("fields_applied") or []) == ["label", "mode[mode]"] \
+                and both.get("label_restored") in (None, True), f"a label posted with mode[mode] should land: {both}"
+            form = self._native_app_form(defaults, {"kind": "open"})
+            assert self._native_app_field(form, "label").get("value") == together, f"the second rename did not hold: {form['fields']}"
+        finally:
+            for app_id in instances:
+                try:
+                    gone = self.client.call_tool("hub_manage_native_rules_and_apps", {"tool": "hub_delete_native_app", "args": {
+                        "appId": app_id, "force": True, "confirm": True}})
+                    if gone.get("success") is not True:
+                        print(f"  [WARN] form fixture cleanup: delete instance {app_id} reported failure: {gone}")
+                except (McpError, McpToolError, requests.HTTPError) as exc:
+                    print(f"  [WARN] form fixture cleanup: delete instance {app_id} failed: {exc}")
+            for code_id in codes:
+                try:
+                    gone = self.client.call_tool("hub_manage_code", {"tool": "hub_delete_item", "args": {
+                        "type": "app", "item_id": code_id, "confirm": True}})
+                    if gone.get("success") is not True:
+                        print(f"  [WARN] form fixture cleanup: delete code {code_id} reported failure: {gone}")
+                except (McpError, McpToolError, requests.HTTPError) as exc:
+                    print(f"  [WARN] form fixture cleanup: delete code {code_id} failed: {exc}")
+
     @test("native_apps")
     def test_button_rule_create_via_controller(self) -> None:
         # A Button Rule is a grandchild of a Button Controller and
         # only renders when created through the controller's add-button flow. Create
-        # a controller bound to the permanent button, then create a button rule via the
-        # buttonRule param, author an action via hub_set_rule, and clean up.
+        # a controller bound to the permanent button, then create a button rule with
+        # app_type=button_rule, author an action via hub_set_rule, and clean up.
         # The "Button Controllers" built-in parent app is auto-installed by
         # _discoverParentAppId (via the Add Built-In App / sysApp endpoint) when absent,
         # so this runs on a clean hub (e.g. the CI test hub) that doesn't have it yet.
         controller_id = None
-        ctrl_label = f"{PREFIX}BtnCtrl"
+        known_controllers: set = set()
         try:
             # This test is a tightly-coupled CHAIN: each step's RESPONSE feeds the next
-            # (device id -> controller -> buttonDev write -> buttonRule create -> action).
+            # (device id -> controller -> buttonDev write -> button_rule create -> action).
             # Every eligible long write in the chain uses requestState continuation, so the
             # chain receives the real terminal envelope the next step needs. The except below
             # remains the backstop for an unexpected transport drop: it
@@ -6212,22 +6533,23 @@ class TestRunner:
             # button rule, not device creation).
             device_id = self._ensure_perm_fixture("button")
 
-            # Button Controller-5.1 instance + assign its button device.
+            # Button Controller-5.1 instance + assign its button device. Its first page renders no
+            # label input and its Done needs the device, so the create binds it and takes no name; a
+            # dropped response is matched by the controller it added.
+            known_controllers = {str(r.get("id")) for r in self._installed_app_rows() if r.get("type") == "Button Controller-5.1"}
             ctrl = self._write_once("hub_manage_native_rules_and_apps", "hub_set_native_app",
-                {"appType": "button_controller", "name": ctrl_label, "confirm": True},
+                {"operation": "create", "args": {"app_type": "button_controller", "fields": {"buttonDev": [device_id]}}, "confirm": True},
                 "button controller create")
-            controller_id = ctrl.get("appId")
-            assert controller_id, f"button controller create did not return an appId: {ctrl}"
+            controller_id = ctrl.get("app_id")
+            assert controller_id, f"button controller create did not return an app_id: {ctrl}"
             self.created_native_app_ids.append(str(controller_id))
             assigned = self._write_once("hub_manage_native_rules_and_apps", "hub_set_native_app",
-                {"appId": controller_id, "settings": {"buttonDev": [device_id]}, "confirm": True},
+                {"operation": "update", "app_id": int(controller_id), "args": {"fields": {"buttonDev": [device_id]}},
+                 "confirm": True},
                 "buttonDev assignment")
             assert assigned.get("success") is not False, f"buttonDev settings write reported failure: {assigned}"
-            assert "buttonDev" in (assigned.get("settingsApplied") or []), (
-                f"buttonDev fell out of the page schema "
-                f"(settingsSkipped={assigned.get('settingsSkipped')}): {assigned}"
-            )
-            # Read the assignment back BEFORE the buttonRule step. The write used
+            assert "buttonDev" in (assigned.get("fields_applied") or []), f"buttonDev was not applied: {assigned}"
+            # Read the assignment back BEFORE the button_rule create. The write used
             # to report success while the trailing mainPage Done re-submitted
             # settings[buttonDev]="" and wiped it (statusJson reports value=null
             # for capability settings), so the failure surfaced one call later
@@ -6254,15 +6576,26 @@ class TestRunner:
 
             # Create the button rule (button 1 pushed) through the controller.
             br = self._write_once("hub_manage_native_rules_and_apps", "hub_set_native_app",
-                {"buttonRule": {"controllerId": controller_id, "buttonNumber": 1, "event": "pushed"}, "confirm": True},
-                "buttonRule create")
-            rule_id = br.get("buttonRuleId")
-            assert br.get("success") and rule_id, f"buttonRule create failed: {br}"
+                {"operation": "create", "args": {"app_type": "button_rule", "controller_id": int(controller_id),
+                 "button_number": 1, "event": "pushed"}, "confirm": True},
+                "button_rule create")
+            rule_id = br.get("app_id")
+            assert br.get("success") and rule_id and br.get("controller_id") == int(controller_id), f"button_rule create failed: {br}"
 
-            # The rule is RM-wire-format: author an action via hub_set_rule, and the
-            # health should be clean (it renders -- not the broken orphan a bare
-            # createchild produces).
-            assert (br.get("health") or {}).get("ok") is not False, f"new button rule is unhealthy: {br}"
+            # A button number the controller's Add Button picker does not offer (the permanent button has
+            # fewer than 99) is refused after the page's Cancel, with the recovery point it took first.
+            refused = self._native_app("create", {"app_type": "button_rule", "controller_id": int(controller_id),
+                                                  "button_number": 99, "event": "pushed"})
+            assert refused.get("success") is False and not refused.get("partial") and "backup" in refused, \
+                f"a button number the picker does not offer should be refused with its backup: {refused}"
+            assert "not 99" in str(refused.get("error")) and "left unchanged" in str(refused.get("error")), refused
+            ctrl_form = self._native_app_form(controller_id, {"kind": "open"})
+            assert any(c.get("title") == "Add Button" for c in ctrl_form.get("controls") or []) and \
+                not any(f.get("name") == "newBut" for f in ctrl_form.get("fields") or []), \
+                f"the controller should render its Add Button and no picker after the refusal: {ctrl_form}"
+
+            # The rule is RM-wire-format: author an action via hub_set_rule; its document's
+            # native health below shows it renders (not the broken orphan a bare createchild produces).
             acted = self._write_once("hub_manage_rule_machine", "hub_set_rule",
                 {"operation": "update", "rule_id": int(rule_id),
                  "args": {"changes": [native_log("E2E button rule")]}, "confirm": True},
@@ -6279,10 +6612,11 @@ class TestRunner:
             if "504" not in str(exc):
                 raise
             # A dropped response mid-chain leaves no trustworthy id/shape to continue
-            # from. If the controller create was the casualty, adopt it by label so the
+            # from. If the controller create was the casualty, adopt the controller it added so the
             # finally + cleanup sweep reap it, then skip (never soft-pass).
             if controller_id is None:
-                adopted = self._find_app_id_by_label(ctrl_label)
+                adopted = next((str(r.get("id")) for r in self._installed_app_rows()
+                                if r.get("type") == "Button Controller-5.1" and str(r.get("id")) not in known_controllers), None)
                 if adopted:
                     controller_id = adopted
                     self.created_native_app_ids.append(str(adopted))
@@ -6319,10 +6653,10 @@ class TestRunner:
         # A hub without the Rule Machine parent gets it the way the UI does: by creating a first rule.
         label = f"{PREFIX}RM_ParentBootstrap_{_run_artifact_suffix()}"
         created = self.client.call_tool("hub_set_native_app", {
-            "appType": "rule_machine", "name": label, "confirm": True})
-        assert created.get("success") is True and created.get("appId"), created
-        self.created_native_app_ids.append(str(created["appId"]))
-        self._delete_native(created["appId"])
+            "operation": "create", "args": {"app_type": "rule_machine", "name": label}, "confirm": True})
+        assert created.get("success") is True and created.get("app_id"), created
+        self.created_native_app_ids.append(str(created["app_id"]))
+        self._delete_native(created["app_id"])
 
     def _native_rule_document(self, app_id: Any) -> dict:
         doc = self.client.call_tool("hub_set_rule", {"operation": "read", "rule_id": int(app_id)})
@@ -6683,6 +7017,8 @@ class TestRunner:
             assert self._rm_snapshot(app_id) == before and self._rm_health(app_id).get("stopped") is True
             result = self.client.call_tool("hub_call_rule", {"ruleId": app_id, "action": "start"})
             assert result.get("success") is not False, result
+            assert result.get("rmAction") == "stopRule button -> state.stopped=false (initialize)", \
+                f"start must describe exactly what Rule Machine does: {result}"
             self._rm_wait(lambda: self._rm_health(app_id).get("stopped") is False, what="started")
             assert self._rm_health(app_id)["scheduledJobCount"] >= 1, "the started time trigger has no schedule"
             # A disabled rule refuses document and form edits until it is enabled again.
@@ -7000,9 +7336,22 @@ class TestRunner:
             before = self._rm_snapshot(app_id)
             error = self._rm_refuse(app_id, [native_log("appended"), native_delete("action", branch), native_log("x", id=branch)])
             assert "does not exist" in error, error
+            # One appended action leaves room for one unknown id: a second delete of the same row is refused.
+            twice = self._rm_refuse(app_id, [native_log("appended"), native_delete("action", ids[0]), native_delete("action", ids[0])])
+            assert "changes[2]" in twice and "does not exist" in twice, twice
             assert self._rm_snapshot(app_id) == before, "a refused edit changed the rule"
-            cleared = self._rm_update(app_id, [*[native_delete("action", i) for i in ids], native_delete("condition", condition)])
-            assert cleared["document"]["actions"] == [] and condition not in cleared["document"]["conditions"], cleared["document"]
+            assert ids[0] in {str(row["id"]) for row in self._native_rule_document(app_id)["actions"]}
+            # Retargeting the IF to a second condition frees the first, which deletes in the same batch.
+            added = self._rm_update(app_id, [self._rm_switch_condition(self._ensure_perm_fixture("switch_a"), "off")])
+            second = next(c for c in added["document"]["conditions"] if c != condition)
+            if_id = next(str(row["id"]) for row in added["document"]["actions"] if row["value"]["method"] == "getIfThen")
+            retargeted = self._rm_update(app_id, [native_change("action", type="condActs", subtype="getIfThen", fields=[],
+                                                                expression=[second], id=if_id),
+                                                  native_delete("condition", condition)])
+            assert retargeted.get("success") is True and condition not in retargeted["document"]["conditions"] \
+                and second in retargeted["document"]["conditions"], retargeted
+            cleared = self._rm_update(app_id, [*[native_delete("action", i) for i in ids], native_delete("condition", second)])
+            assert cleared["document"]["actions"] == [] and second not in cleared["document"]["conditions"], cleared["document"]
         finally:
             self._delete_native(app_id)
 
@@ -7506,8 +7855,9 @@ class TestRunner:
                 ([("valType", "enum", "String"), ("valString", "textarea", "done")], {"valType": "String", "valString": "done"}, "Return 'done'"),
                 ([("valType", "enum", "Decimal"), ("valDec", "decimal", 2.5)], {"valType": "Decimal", "valDec": 2.5}, None),
                 ([("valType", "enum", "Boolean"), ("valBool", "enum", "false")], {"valType": "Boolean", "valBool": "false"}, "Return 'false'"),
+                # Rule Machine renders a variable return as the name followed by its current value in parentheses.
                 ([("valType", "enum", "Integer"), ("useVar", "bool", True), ("valVar", "enum", number)],
-                 {"useVar": True, "valVar": number}, f"Return '{number}'"),
+                 {"useVar": True, "valVar": number}, f"Return '{number}("),
             ]
             result = self._rm_update(app_id, [action("modeActs", "getReturnValue", fields) for fields, _, _ in expected])
             values = self._rm_values(app_id)
@@ -8001,31 +8351,30 @@ class TestRunner:
         return int(inst["instanceAppId"])
 
     @test("native_apps")
-    def test_set_native_app_walk_keeps_the_pending_page(self) -> None:
-        # A multi-page wizard walk reads and writes on the page it is on; rendering the app's default
-        # page between steps resets it. The fixture app is Hubitat Package Manager's install-from-URL
-        # flow in miniature (its main page clears a pending install URL): a permanent BAT_E2E_KEEP_
-        # scaffold, installed from the repo once per hub and never removed. The walk also exposes the
-        # page's Next target.
+    def test_set_native_app_form_keeps_the_pending_page(self) -> None:
+        # A multi-page wizard driven one form call at a time reads and writes on the page it is on;
+        # rendering the app's default page between calls resets it. The fixture app is Hubitat Package
+        # Manager's install-from-URL flow in miniature (its main page clears a pending install URL): a
+        # permanent BAT_E2E_KEEP_ user app (mcptest namespace), installed from the repo once per hub and
+        # never removed. The form also exposes the page's Next target.
         app_id = self._ensure_wizard_walk_fixture()
-
-        def walk(step: dict) -> dict:
-            return self.client.call_tool("hub_manage_native_rules_and_apps", {
-                "tool": "hub_set_native_app", "args": {"appId": app_id, "walkStep": step, "confirm": True}})
-
         passed = False
         try:
-            to_install = walk({"page": "prefOptions", "operation": "navigate", "navigate": {"targetPage": "prefPkgInstall"}})
-            assert to_install.get("success") is True, f"navigate to prefPkgInstall failed: {to_install}"
-            # This test runs with pre-edit backups on: the backup's own config read is the one that
-            # must stay on the walk's page (#543), so a key must come back and the page must survive.
-            assert (to_install.get("backup") or {}).get("backupKey"), f"the walk took no pre-edit backup: {to_install}"
-            to_url = walk({"page": "prefPkgInstall", "operation": "navigate", "navigate": {"targetPage": "prefPkgInstallUrl"}})
-            assert to_url.get("success") is True and (to_url.get("after") or {}).get("nextPage"), \
-                f"the walk did not expose the page's Next target: {to_url}"
+            # update on the sub-page reads back that page, not the default page that would reset it.
+            written = self._native_app("update", {"page": "prefPkgInstallUrl", "fields": {"pkgInstall": "https://example.invalid/update-manifest.json"}}, app_id)
+            assert written.get("success") is True and written.get("fields_applied") == ["pkgInstall"] and written.get("committed") is False, \
+                f"update on the wizard sub-page: {written}"
+            form = self._native_app_form(app_id, {"kind": "open"})
+            # This test runs with pre-edit backups on: the backup's own config read must not reset the
+            # form's page (#543), so a key must come back and the page must survive.
+            assert (form.get("backup") or {}).get("backupKey"), f"the form took no pre-edit backup: {form}"
+            form = self._native_app_form(app_id, self._rm_step(form, control=self._rm_control(form, kind="href", page="prefPkgInstall")))
+            form = self._native_app_form(app_id, self._rm_step(form, control=self._rm_control(form, kind="href", page="prefPkgInstallUrl")))
+            assert form["page"]["name"] == "prefPkgInstallUrl", f"the href did not open prefPkgInstallUrl: {form['page']}"
+            self._rm_control(form, name="_action_next")
             url = "https://example.invalid/e2e-manifest.json"
-            wrote = walk({"page": "prefPkgInstallUrl", "operation": "write", "write": {"pkgInstall": url}})
-            assert wrote.get("success") is True, f"writing pkgInstall failed: {wrote}"
+            form = self._native_app_form(app_id, self._rm_step(form, fields={"pkgInstall": url}))
+            assert form["page"]["name"] == "prefPkgInstallUrl", f"writing pkgInstall left the page: {form['page']}"
             stored = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config", "args": {
                 "appId": app_id, "pageName": "prefPkgInstallUrl", "includeSettings": True}})
             assert str((stored.get("settings") or {}).get("pkgInstall")) == url, \
@@ -8033,7 +8382,7 @@ class TestRunner:
             passed = True
         finally:
             # The fixture's default page clears its pending install state, so the next run starts clean.
-            reset = walk({"page": "prefPkgInstallUrl", "operation": "navigate", "navigate": {"targetPage": "prefOptions"}})
+            reset = self._native_app("form", {"steps": [{"kind": "open"}]}, app_id)
             if passed:
                 assert reset.get("success") is True, f"the fixture was not reset to its default page: {reset}"
             elif reset.get("success") is not True:
@@ -8096,22 +8445,33 @@ class TestRunner:
         assert not missing, f"this hub has no {missing} mode: {modes}"
         return [modes[n] for n in names]
 
-    def _ensure_builtin_app_fixture(self, rows: list[dict], key: str, configure: list[dict]) -> str:
-        """A BUILTIN_APP_FIXTURES app's id: found by label, else created by appType and configured with
-        `configure` (hub_set_native_app edits, in order). A half-built instance is deleted, not kept,
+    def _native_app_configure(self, app_id: Any, step: dict) -> dict:
+        """One fixture configure step: {"fields": {...}} is an update, {"press": name, "state": attr} a button."""
+        if "press" not in step:
+            return self._native_app("update", step, app_id)
+        form = self._native_app_form(app_id, {"kind": "open"})
+        match = {"control_id": f"{step['press']}||{step['state']}"} if step.get("state") else {}
+        return self._native_app_form(app_id, self._rm_step(form, control=self._rm_control(
+            form, name=step["press"], kind="button", **match)))
+
+    def _ensure_builtin_app_fixture(self, rows: list[dict], key: str, configure: list[dict],
+                                    create_fields: dict | None = None) -> str:
+        """A BUILTIN_APP_FIXTURES app's id: found by label, else created by app_type and configured with
+        `configure` (_native_app_configure steps, in order). A half-built instance is deleted, not kept,
         so the next run does not find a fixture missing part of its setup."""
         label, _, app_type = self.BUILTIN_APP_FIXTURES[key]
         found = self._app_row_by_label(rows, label)
         if found is not None:
             return str(found["id"])
-        created = self.client.call_tool("hub_set_native_app", {"appType": app_type, "name": label, "confirm": True})
-        app_id = created.get("appId")
-        # The thermostat apps take their name only once a thermostat is set, so their create reports
-        # the label unverified; configure ends by writing it.
-        assert app_id and created.get("appType") == app_type and created.get("parentAppId") is not None, created
+        # The thermostat apps' first page renders no label input and needs its thermostat for the
+        # Done, so they are created with create_fields and labelled by their last configure step.
+        create_args = {"app_type": app_type, "fields": create_fields} if create_fields else {"app_type": app_type, "name": label}
+        created = self.client.call_tool("hub_set_native_app", {"operation": "create", "args": create_args, "confirm": True})
+        app_id = created.get("app_id")
+        assert app_id and created.get("app_type") == app_type, created
         try:
             for step in configure:
-                done = self.client.call_tool("hub_set_native_app", {"appId": int(app_id), "confirm": True, **step})
+                done = self._native_app_configure(app_id, step)
                 assert done.get("success") is True, f"configuring the {label} fixture: {step} failed: {done}"
         except BaseException:
             try:
@@ -8169,13 +8529,13 @@ class TestRunner:
         try:
             if not any(r.get("type") == app_type for r in rows):
                 self._rm_refuse(app_id, [self._rm_action("sceneActs", "getActivateScene", [("sceneAct", "enum", ["999999999"])])])
-            capture = [{"settings": {"switches": [int(member)]}}, {"button": "captureBtn"}]
+            capture = [{"fields": {"switches": [int(member)]}}, {"press": "captureBtn"}]
             scene_app = self._ensure_builtin_app_fixture(rows, "scene", capture)
             # A scene fixture from an earlier run may still capture a shared, often-toggled switch.
             members = self.client.call_tool("hub_get_app_config", {"appId": scene_app, "includeSettings": True}).get("settings", {}).get("switches")
             if not self._setting_holds_exact(members, member) or len(members or []) != 1:
                 for step in capture:
-                    done = self.client.call_tool("hub_set_native_app", {"appId": int(scene_app), "confirm": True, **step})
+                    done = self._native_app_configure(scene_app, step)
                     assert done.get("success") is True, f"re-capturing the scene fixture on its own member failed: {done}"
             listed = self.client.call_tool("hub_list_devices", {"scope": "all", "labelFilter": label})
             activators = [str(d["id"]) for d in (listed.get("devices") or []) if d.get("label") == label]
@@ -8212,17 +8572,17 @@ class TestRunner:
                 self._rm_refuse(app_id, [self._rm_action("lockActs", "getSetThermostatScheduler", [
                     ("thisTherm", "capability.thermostat", [str(t1)])])])
             def label(key: str) -> dict:
-                return {"settings": {"origLabel": self.BUILTIN_APP_FIXTURES[key][0]}}
+                return {"fields": {"origLabel": self.BUILTIN_APP_FIXTURES[key][0]}}
             # The sensors are a separate write: written together with therm they are skipped.
             controller = self._ensure_builtin_app_fixture(rows, "therm_ctl", [
-                {"settings": {"therm": [int(t1)]}}, {"settings": {"tempSensors": [int(temp_a)]}}, label("therm_ctl")])
+                {"fields": {"tempSensors": [int(temp_a)]}}, label("therm_ctl")], {"therm": [int(t1)]})
             scheduler = self._ensure_builtin_app_fixture(rows, "sched_time", [
-                {"settings": {"therm": [int(t1)]}}, {"settings": {"schedTypeL": "Time Periods"}}, label("sched_time")])
+                {"fields": {"schedTypeL": "Time Periods"}}, label("sched_time")], {"therm": [int(t1)]})
             # A Day row through the scheduler's own table editor, as the UI fills it.
             self._ensure_builtin_app_fixture(rows, "sched_modes", [
-                {"settings": {"therm": [int(t2)]}}, {"settings": {"schedTypeL": "Hub Modes"}},
-                {"button": "addMode", "stateAttribute": "addMode"}, {"settings": {"perX": [day]}},
-                {"button": day, "stateAttribute": "tsH"}, {"settings": {"tempX": 68}}, {"button": "update"}, label("sched_modes")])
+                {"fields": {"schedTypeL": "Hub Modes"}},
+                {"press": "addMode", "state": "addMode"}, {"fields": {"perX": [day]}},
+                {"press": day, "state": "tsH"}, {"fields": {"tempX": 68}}, {"press": "update"}, label("sched_modes")], {"therm": [int(t2)]})
             on_t1 = ["Thermostat Scheduler for", t1_name]
             ctl_name = self.BUILTIN_APP_FIXTURES["therm_ctl"][0]
             sched = self._rm_action
@@ -8389,22 +8749,31 @@ class TestRunner:
                                                           native_log("trigger recovery")])
         copy_id = None
         try:
+            # An append gives a batch exactly the ids the hub will assign; any other unknown id is refused
+            # before any write.
+            self._rm_refuse(app_id, [self._rm_switch_condition(switch), native_change("required", tokens=["999999"])])
+            assert self._native_rule_document(app_id)["triggers"] == created["triggers"] \
+                and not self._native_rule_document(app_id).get("conditions"), "a refused batch wrote a row"
             removed = self._rm_update(app_id, [native_delete("trigger", max(created["triggers"], key=int))])
+            # Rule Machine's row counter does not step back when its highest row is deleted, so a new
+            # condition takes the next id after the deleted trigger, never the deleted trigger's own.
+            self._rm_refuse(app_id, [self._rm_switch_condition(switch), native_change("required", tokens=[max(created["triggers"], key=int)])])
             key = removed["backup"]["backupKey"]
             restored = self._rm_restore(key, preserveRuleId=True)
             assert restored.get("success") is True, restored
             assert self._native_rule_document(app_id)["triggers"] == created["triggers"]
+            # A copy restore imports the backup as a new rule and deletes the original, so from here
+            # only the copy exists to delete.
             copied = self._rm_restore(key, preserveRuleId=False)
             assert copied.get("success") is True and str(copied.get("ruleId")) != str(app_id), copied
             copy_id = str(copied["ruleId"])
+            self._untrack_native_app(app_id)
             self.created_native_app_ids.append(copy_id)
             assert len(self._native_rule_document(copy_id)["triggers"]) == 2
             again = self._rm_restore(key)
             assert again.get("alreadyRestored") is True and str(again.get("ruleId")) == copy_id, again
         finally:
-            for rule in (app_id, copy_id):
-                if rule:
-                    self._delete_native(rule)
+            self._delete_native(copy_id or app_id)
 
     @test("native_apps")
     def test_rm_rule_restore_of_a_deleted_rule_uses_the_exact_copy(self) -> None:
@@ -8457,10 +8826,15 @@ class TestRunner:
             self._rule_edit_backups(True)
             self._mcp_settings({"backupEveryRuleWrite": True})
             try:
-                keys = {name: self._rm_update(app_id, [self._rm_switch_condition(switches[name][0], id=condition)])["backup"]["backupKey"]
-                        for name in ("Kitchen", "Den")}
+                backups = {name: self._rm_update(app_id, [self._rm_switch_condition(switches[name][0], id=condition)])["backup"]
+                           for name in ("Kitchen", "Den")}
             finally:
                 self._mcp_settings({"backupEveryRuleWrite": False})
+            keys = {name: backup["backupKey"] for name, backup in backups.items()}
+            for backup in backups.values():
+                note = str(backup.get("retentionNote"))
+                assert "retention" not in backup and "oldest first" in note and "newest backup is never removed" in note, \
+                    f"a rule write's snapshot must state the plain eviction rule and no retention kind: {backup}"
             assert self._rm_restore(keys["Den"]).get("success") is True
             assert labels["Kitchen"] in json.dumps(self._native_rule_document(app_id)["conditions"])
             _, original = self._rm_recovery_file(keys["Kitchen"])
@@ -8568,70 +8942,6 @@ class TestRunner:
             assert self._rm_values(app_id).get("comments") in (None, "")
         finally:
             self._delete_native(app_id)
-
-    def _rm_legacy_in_place_recovery(self, required: bool) -> None:
-        # A recovery point taken by the generic native-app write path (the older snapshot format,
-        # without captureFormat) still restores a rule edited through hub_set_rule. With a Required
-        # Expression that format carries no native export, so the settings replay alone recovers it.
-        # Its own switches: rules other tests leave behind command the shared ones, and this rule
-        # firing mid-edit would race the edit's state checks.
-        switch, _, _ = self._rm_disposable_switch("LegacyTrigger")
-        gate, _, _ = self._rm_disposable_switch("LegacyGate")
-        self._rule_edit_backups(False)
-        app_id, created = self._rm_rule("LegacyRestore", [
-            self._rm_switch_condition(gate), self._rm_switch_condition(gate, "off"), self._rm_switch_trigger(switch),
-            self._rm_switch_action(switch, False)])
-        try:
-            conditions = sorted(created["conditions"], key=int)
-            # The log action sits inside an IF so the snapshot carries a nested (tab) indent.
-            doc = self._rm_update(app_id, [
-                native_change("action", type="condActs", subtype="getIfThen", fields=[], expression=[conditions[0]]),
-                native_log("legacy baseline"), native_change("terminator", subtype="endIf")])["document"]
-            methods = {str(r["id"]): r["value"]["method"] for r in doc["actions"]}
-            actions = [next(i for i, m in methods.items() if m == "getOnOffSwitch"), next(i for i, m in methods.items() if m == "getLogMsg")]
-            if required:
-                self._rm_update(app_id, [native_change("required", tokens=[conditions[0]])])
-            before = self._rm_snapshot(app_id)
-            assert any("\t" in str(r["value"].get("indent") or "") for r in before["document"]["actions"]), before["document"]["actions"]
-            self._rule_edit_backups(True)
-            self._mcp_settings({"backupEveryRuleWrite": True})
-            # The rule stays running for the capture: Hubitat's App Cloner exports nothing for a stopped rule.
-            try:
-                captured = self.client.call_tool("hub_set_native_app", {"appId": app_id, "confirm": True,
-                                                                        "settings": {"comments": "legacy capture compatibility"}})
-            finally:
-                self._mcp_settings({"backupEveryRuleWrite": False})
-            assert captured.get("success") is True and (captured.get("backup") or {}).get("backupKey"), captured
-            key = captured["backup"]["backupKey"]
-            meta = self.client.call_tool("hub_get_backup", {"backupKey": key})
-            snapshot = json.loads(self._rm_read_file(meta["fileName"]))
-            assert "captureFormat" not in snapshot and isinstance(snapshot.get("configJson"), dict), sorted(snapshot)
-            if required:
-                assert not snapshot.get("nativeExport") and "Required Expression" in snapshot.get("nativeExportSkipped", ""), sorted(snapshot)
-            else:
-                assert snapshot.get("nativeExport"), sorted(snapshot)
-            edits = [self._rm_switch_condition(gate, "off", id=conditions[0]),
-                     self._rm_switch_trigger(switch, "off", id=next(iter(created["triggers"]))),
-                     self._rm_switch_action(switch, True, id=actions[0]), native_log("legacy changed", id=actions[1])]
-            edits += [native_change("required", tokens=[conditions[1]])] if required else \
-                [native_change("required", tokens=[conditions[0]]), native_log("legacy extra row must disappear")]
-            self._rule_edit_backups(False)
-            self._rm_update(app_id, edits)
-            restored = self._rm_restore(key, preserveRuleId=True)
-            assert restored.get("success") is True and str(restored["ruleId"]) == str(app_id) \
-                and restored.get("restoredVia") == "nativeStateReplay", restored
-            after = self._rm_snapshot(app_id)
-            after["settings"].pop("comments", None)
-            before["settings"].pop("comments", None)
-            assert after == before, "the legacy restore did not recover the pre-edit rule"
-        finally:
-            self._delete_native(app_id)
-
-    @test("native_apps")
-    def test_legacy_export_backup_restores_in_place(self) -> None:
-        # The Required Expression variant of the older format is covered by LegacyNativeRecoverySpec.
-        self._rm_legacy_in_place_recovery(required=False)
-
 
     def _native_form_control(self, app_id: Any, page: str, name: str) -> dict:
         opened = self.client.call_tool("hub_set_rule", {"operation": "form", "rule_id": int(app_id),
@@ -8921,52 +9231,42 @@ class TestRunner:
 
 
     @test("native_apps")
-    def test_set_native_app_walkstep_button_controller(self) -> None:
-        # The single-step walkStep walker (introspect + write) is a GENERIC
-        # classic-dynamicPage walker, not RM-specific. The other walkStep tests only drive
-        # an RM rule's appId; this one proves it works on a real NON-RM classic app -- a
-        # Button Controller -- routed through hub_set_native_app. Assign a virtual button
-        # device via a single-step write, and prove both the live round-trip (valueEcho)
-        # and the submitOnChange reveal (origLabel appears once a device is bound).
+    def test_set_native_app_form_button_controller(self) -> None:
+        # The form operation drives any classic dynamicPage app, not only Rule Machine: a Button
+        # Controller here. Open its page, bind a button device with one submit, and prove both the
+        # live round-trip (the returned field holds the device) and the submitOnChange reveal
+        # (origLabel appears once a device is bound).
         controller_id = None
         try:
-            # Button device for the controller to bind to: a PERMANENT non-child fixture, so this
-            # test no longer creates one per run. Nothing here depends on the device being fresh --
-            # it is only ever a bind TARGET -- the assertions are about the controller's wire format
-            # (valueEcho and the submitOnChange origLabel reveal), never about the device's state.
+            # Button device for the controller to bind to: a PERMANENT non-child fixture, only ever a
+            # bind TARGET -- the assertions are about the controller's form, never the device's state.
             device_id = self._ensure_perm_fixture("button")
 
-            # Button Controller instance (tracked for cleanup).
-            ctrl = self.client.call_tool("hub_manage_native_rules_and_apps", {
-                "tool": "hub_set_native_app",
-                "args": {"appType": "button_controller", "name": f"{PREFIX}WalkBtnCtrl", "confirm": True},
-            })
-            controller_id = ctrl.get("appId")
-            assert controller_id, f"button controller create did not return an appId: {ctrl}"
+            # An unbound controller comes from the Button Controllers page's own create control: a
+            # create through hub_set_native_app presses the first page's Done, which needs the device.
+            parent = next((r for r in self._installed_app_rows() if r.get("type") == "Button Controllers"), None)
+            if parent is None:
+                # The parent installs with its first controller, which is removed again.
+                first = self._native_app("create", {"app_type": "button_controller", "fields": {"buttonDev": [device_id]}})
+                assert first.get("app_id"), f"bootstrapping the Button Controllers parent failed: {first}"
+                self.created_native_app_ids.append(str(first["app_id"]))
+                self._delete_native(first["app_id"], gateway="hub_manage_native_rules_and_apps")
+                parent = next(r for r in self._installed_app_rows() if r.get("type") == "Button Controllers")
+            page = self._native_app_form(parent["id"], {"kind": "open"})
+            made = self._native_app_form(parent["id"], self._rm_step(page, control=self._rm_control(
+                page, kind="create_child", value="Button Controller-5.1")))
+            controller_id = made.get("created_app_id")
+            assert controller_id, f"the Button Controllers page did not create a controller: {made}"
             self.created_native_app_ids.append(str(controller_id))
 
-            # Single-step walkStep INTROSPECT on the non-RM app.
-            intro = self.client.call_tool("hub_manage_native_rules_and_apps", {
-                "tool": "hub_set_native_app",
-                "args": {"appId": controller_id, "walkStep": {"page": "mainPage", "operation": "introspect"}, "confirm": True},
-            })
-            assert intro.get("page") == "mainPage", \
-                f"walkStep introspect should land on mainPage of the button controller: {intro}"
-            intro_names = [i.get("name") for i in ((intro.get("before") or {}).get("inputs") or [])]
-            assert "buttonDev" in intro_names, \
-                f"mainPage should expose the buttonDev (capability.pushableButton) picker: {intro_names}"
-
-            # Single-step walkStep WRITE on the non-RM app -- assign the device.
-            wr = self.client.call_tool("hub_manage_native_rules_and_apps", {
-                "tool": "hub_set_native_app",
-                "args": {"appId": controller_id, "walkStep": {"page": "mainPage", "operation": "write",
-                                                              "write": {"buttonDev": [device_id]}}, "confirm": True},
-            })
-            assert (wr.get("valueEcho") or {}).get("match") is True, \
-                f"single-step buttonDev write should round-trip live (valueEcho.match): {wr}"
-            after_names = [i.get("name") for i in ((wr.get("after") or {}).get("inputs") or [])]
-            assert "origLabel" in after_names, \
-                f"submitOnChange reveal: origLabel should appear once a button device is assigned: {after_names}"
+            form = self._native_app_form(controller_id, {"kind": "open"})
+            picker = self._native_app_field(form, "buttonDev")
+            form = self._native_app_form(controller_id, self._rm_step(
+                form, fields={"buttonDev": [str(device_id)] if picker["multiple"] else str(device_id)}))
+            bound = self._native_app_field(form, "buttonDev").get("value")
+            assert str(device_id) in ([str(v) for v in bound] if isinstance(bound, list) else [str(bound)]), \
+                f"the buttonDev submit should round-trip live: {bound}"
+            self._native_app_field(form, "origLabel")
         finally:
             # The controller delete is the only teardown here. The button is a PERMANENT fixture and
             # must NOT be added to created_device_dnis -- the sweep would delete it.
@@ -9610,24 +9910,25 @@ class TestRunner:
             r.get("name") == no_confirm_name for r in (listed.get("rules") or [])
         ), "hub_set_visual_rule without confirm must NOT create the rule"
 
-        # (c) hub_set_native_app refuses appType=visual_rule (VRB children are
+        # (c) hub_set_native_app refuses app_type=visual_rule (VRB children are
         # Vue-JSON apps the classic wizard cannot configure) and redirects to the
         # dedicated tool. IAE -> -32602; mirrors the kelvin fail-fast pattern.
         try:
             res = self.client.call_tool("hub_manage_native_rules_and_apps", {
                 "tool": "hub_set_native_app",
-                "args": {"appType": "visual_rule", "name": f"{PREFIX}VisualViaNative", "confirm": True},
+                "args": {"operation": "create", "args": {"app_type": "visual_rule", "name": f"{PREFIX}VisualViaNative"},
+                         "confirm": True},
             })
             blob = res if isinstance(res, str) else json.dumps(res)
             assert "hub_set_visual_rule" in blob, \
-                f"appType=visual_rule should redirect to hub_set_visual_rule, got: {res}"
+                f"app_type=visual_rule should redirect to hub_set_visual_rule, got: {res}"
         except requests.HTTPError as exc:
             if "504" not in str(exc):
                 raise
-            raise SkipTest("appType=visual_rule redirect contract lost to relay 504") from exc
+            raise SkipTest("app_type=visual_rule redirect contract lost to relay 504") from exc
         except McpError as exc:
             assert "hub_set_visual_rule" in str(exc), \
-                f"appType=visual_rule error should point at hub_set_visual_rule: {exc}"
+                f"app_type=visual_rule error should point at hub_set_visual_rule: {exc}"
 
     @test("visual_rules")
     def test_visual_rule_type_gate(self) -> None:
@@ -10297,6 +10598,10 @@ class TestRunner:
         fails -- precisely the signal wanted, since the shape handling would then need extending
         rather than being assumed correct.
 
+        The same fresh instance carries the live cross-page password redaction check: installed()
+        stores a password-typed setting that no page declares, which hub_get_app_config
+        (includeSettings) must redact from the hub's setting types rather than the rendered page.
+
         Needs a running INSTANCE (not just a code class), so it creates and cleans up both.
         Named "Deadman Test Target ..." in namespace mcptest so the Layer 5 sweep reclaims a
         stranded copy -- instance included -- if a crash skips the finally."""
@@ -10351,17 +10656,33 @@ class TestRunner:
             assert ((fresh_cfg.get("app") or {}) if isinstance(fresh_cfg, dict) else {}).get("installed") is True, \
                 f"installAsUserApp committed but the instance is an inert shell (app.installed is not true): {fresh_cfg}"
 
+            # Cross-page password redaction, live: installed() stored linkPhrase as a password-typed
+            # setting that no page declares, under a name no credential pattern matches. Only the
+            # hub's own setting type (statusJson appSettings) can mark it secret, so a plain value
+            # here means includeSettings redaction is still limited to the rendered page. Messages
+            # never echo the value.
+            secret_cfg = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config",
+                "args": {"appId": instance_app_id, "includeSettings": True},
+            })
+            secret_settings = secret_cfg.get("settings") if isinstance(secret_cfg, dict) else None
+            assert isinstance(secret_settings, dict), \
+                f"includeSettings returned no settings map (note={secret_cfg.get('settingsNote')!r})"
+            assert "linkPhrase" in secret_settings, \
+                ("the fixture's installed() did not store its password-typed linkPhrase setting, so the "
+                 f"cross-page redaction check has nothing to read; keys={sorted(secret_settings)}")
+            assert secret_settings["linkPhrase"] == "***redacted (password)***", \
+                "the password-typed linkPhrase setting (declared on no page) came back unredacted"
+            assert "XPAGE-SECRET-FIXTURE-V1" not in json.dumps(secret_cfg), \
+                "the off-page password value appears somewhere in the hub_get_app_config response"
+
             # CONFIGURE the instance: flip refreshProbe off its false default. This is the
             # precondition for the settings-preservation assertion at the end -- verified here
             # so a later read of "false" can only mean the Done re-submit blanked it, never
             # that the write never landed.
             scaffold_switch = self.get_test_switch_id()
-            self.client.call_tool("hub_manage_native_rules_and_apps", {
-                "tool": "hub_set_native_app",
-                "args": {"appId": instance_app_id,
-                         "settings": {"refreshProbe": True, "probeSwitches": [scaffold_switch]},
-                         "confirm": True},
-            })
+            self._native_app("update", {"fields": {"refreshProbe": True, "probeSwitches": [scaffold_switch]}},
+                             instance_app_id)
             before_cfg = self.client.call_tool("hub_read_apps_code", {
                 "tool": "hub_get_app_config",
                 "args": {"appId": instance_app_id, "includeSettings": True},
@@ -10535,12 +10856,13 @@ class TestRunner:
                     print(f"  [WARN] driver-code update cleanup: delete driver code class {driver_id} failed: {exc}")
 
     # -----------------------------------------------------------------------
-    # GROUP 4f: installed_app_reads (4 tests) -- the thin app-summary mode of
-    # hub_get_app_config (/installedapp/json/<id>) plus its RM disabled-action
-    # marking, its modeInputs projection, the appTypeId join from hub_list_apps(instances)
+    # GROUP 4f: installed_app_reads (6 tests) -- the thin app-summary mode of
+    # hub_get_app_config (/installedapp/json/<id>) plus its page controls and RM
+    # disabled-action flag, its mode input values, the appTypeId join from hub_list_apps(instances)
     # rows to the type catalog, the app-type catalog fields (menu tab + built-in vs
-    # community) on hub_list_apps(types), and the per-app events mode of
-    # hub_list_device_events (/installedapp/eventsJson/<id>).
+    # community) on hub_list_apps(types), the per-app events mode of
+    # hub_list_device_events (/installedapp/eventsJson/<id>), the redactAccessTokens
+    # toggle, and secret redaction in the includeSettings map across every page.
     # -----------------------------------------------------------------------
 
     @test("installed_app_reads")
@@ -10548,8 +10870,8 @@ class TestRunner:
         # summary:true returns the thin identity payload WITHOUT the rendered config
         # page -- the cheap existence/identity probe for installed apps. Pin it on a
         # throwaway RM rule so the identity fields are deterministic. The same rule then
-        # carries the disabled-action marking checks (three actions, index 2 removed, so
-        # the rows are indices 1 and 3 and disable<N> is pinned to the index, not the row).
+        # carries the disabled-action checks (three actions, index 2 removed, so the rows
+        # are indices 1 and 3 and disable<N> is pinned to the index, not the row).
         app_id = self._create_native_rule("CfgSummary", [native_log("disabled-mark one"), native_log("disabled-mark two"), native_log("disabled-mark three")])
         try:
             result = self.client.call_tool("hub_read_apps_code", {
@@ -10616,96 +10938,87 @@ class TestRunner:
                 return [p for sect in ((res.get("page") or {}).get("sections") or [])
                         for p in (sect.get("paragraphs") or [])]
 
-            def embedded_of(res: dict) -> dict:
-                return {a.get("name"): a for sect in ((res.get("page") or {}).get("sections") or [])
-                        for a in (sect.get("embeddedActions") or [])}
+            def disabled_rows(res: dict) -> list:
+                return [row for p in paragraphs_of(res) if isinstance(p, dict) for row in (p.get("disabled") or [])]
 
-            # (a) Nothing disabled yet: no list, no mark; the disable buttons follow the action
-            # index (1 and 3), not the row position.
+            def buttons_of(res: dict) -> dict:
+                return {c.get("name"): c for c in (res.get("controls") or []) if c.get("kind") == "button"}
+
+            # (a) Nothing disabled yet: no flagged paragraph; the disable buttons follow the action
+            # index (1 and 3), not the row position, and each carries a control_id.
             main = read()
-            assert "disabledActions" not in main, f"live rule reported disabledActions: {main.get('disabledActions')}"
-            assert not any("[DISABLED]" in p for p in paragraphs_of(main)), \
-                f"live rule paragraph carries [DISABLED]: {paragraphs_of(main)}"
+            assert not disabled_rows(main), f"live rule paragraph lists disabled rows: {paragraphs_of(main)}"
             rows = read("selectActions")
-            assert "disabledActions" not in rows, f"live rule reported disabledActions: {rows.get('disabledActions')}"
-            assert not any("[DISABLED]" in p for p in paragraphs_of(rows)), \
-                f"live selectActions paragraph carries [DISABLED]: {paragraphs_of(rows)}"
-            buttons = embedded_of(rows)
+            assert not disabled_rows(rows), f"live selectActions paragraph lists disabled rows: {paragraphs_of(rows)}"
+            buttons = buttons_of(rows)
             assert buttons.get("disable1", {}).get("title") == "Disable Action", f"disable1 missing/wrong: {buttons}"
             assert buttons.get("disable3", {}).get("title") == "Disable Action", f"disable3 missing/wrong: {buttons}"
+            assert buttons["disable3"].get("control_id"), f"disable3 carries no control_id: {buttons['disable3']}"
             assert "disable2" not in buttons, f"disable2 present after removing action index 2: {sorted(buttons)}"
 
             # (b) RM's own per-row Disable button for action index 3. It is a toggle, so click once.
             self._native_form_control(app_id, "selectActions", "disable3")
 
-            # (c) mainPage: the span is the only carrier there.
+            # (c) mainPage: the paragraph holding the whole action block lists only the disabled
+            # action, by its row text; the live first action is not listed.
             main = read()
-            disabled = main.get("disabledActions") or []
-            assert len(disabled) == 1 and "disabled-mark three" in str(disabled[0].get("text")), \
-                f"expected exactly the third action in disabledActions: {disabled}"
-            assert "[DISABLED]" in str(main.get("disabledActionsNote") or ""), \
-                f"disabledActionsNote missing or does not explain the mark: {main}"
-            lines = [ln for p in paragraphs_of(main) for ln in p.splitlines()]
-            three = [ln for ln in lines if "disabled-mark three" in ln]
-            one = [ln for ln in lines if "disabled-mark one" in ln]
-            assert len(three) == 1 and "[DISABLED]" in three[0], f"third action not marked: {lines}"
-            assert len(one) == 1 and "[DISABLED]" not in one[0], f"live first action marked: {lines}"
-            assert not any("<span" in p for p in paragraphs_of(main)), f"HTML leaked into paragraphs: {paragraphs_of(main)}"
+            marked = disabled_rows(main)
+            assert marked == ["Log: 'disabled-mark three'"], \
+                f"expected exactly the third action listed as disabled: {paragraphs_of(main)}"
+            assert not any("[DISABLED]" in str(p) or "<span" in str(p) for p in paragraphs_of(main)), \
+                f"a text mark or HTML leaked into paragraphs: {paragraphs_of(main)}"
 
-            # (d) selectActions: the row flag, the flipped button title, and the paired button name.
+            # (d) selectActions: which action is disabled and the control that re-enables it.
             rows = read("selectActions")
-            embedded = [a for sect in ((rows.get("page") or {}).get("sections") or [])
-                        for a in (sect.get("embeddedActions") or [])]
-            flagged = [a for a in embedded if a.get("disabled") is True]
-            assert len(flagged) == 1, f"expected exactly one disabled:true row: {embedded}"
-            assert flagged[0].get("name") == "3.0.false", f"disabled row is not action index 3: {flagged}"
-            assert "disabled-mark three" in str(flagged[0].get("description")), f"disabled row text wrong: {flagged}"
-            buttons = embedded_of(rows)
+            buttons = buttons_of(rows)
             assert buttons.get("disable3", {}).get("title") == "Enable Action", f"disable3 did not flip: {buttons}"
             assert buttons.get("disable1", {}).get("title") == "Disable Action", f"disable1 changed: {buttons}"
-            listed = rows.get("disabledActions") or []
-            assert len(listed) == 1 and listed[0].get("disableButton") == "disable3", \
-                f"selectActions disabledActions must name disable3 exactly once: {listed}"
-            # The header legend ("Disabled Action" / "Disabled Actions") uses the same markup.
-            assert not any(re.fullmatch(r"Disabled Actions?", str(d.get("text")).strip()) for d in listed), \
-                f"selectActions legend reported as a disabled action: {listed}"
+            assert "disabled-mark three" in str(buttons.get("3.0.false", {}).get("title")), \
+                f"action index 3's edit control does not carry its text: {buttons.get('3.0.false')}"
+            assert disabled_rows(rows) == [str(buttons["3.0.false"].get("title")).strip()], \
+                f"selectActions should list exactly the disabled action, as its edit control names it: {paragraphs_of(rows)}"
+            for legacy in ("disabledActions", "disabledActionsNote"):
+                assert legacy not in main and legacy not in rows, f"{legacy} still returned"
         finally:
             self._delete_native(app_id)
 
     @test("installed_app_reads")
     def test_get_app_config_mode_inputs(self) -> None:
-        # modeInputs surfaces each type='mode' input on a config page with its CONFIGURED list
-        # (issue #431 item 3; the review-2 fix reads `modes` from the page JSON settings[name], not
-        # the always-null defaultValue). A Notifier carries a `modes` type='mode' RESTRICT input on
-        # its moreOptions sub-page; set it, then read it back and assert the list is the one written.
+        # A type='mode' input reads its CONFIGURED list as its value (issue #431 item 3: the page
+        # JSON stores it in settings[name]; defaultValue is always null). A Notifier carries a
+        # `modes` type='mode' RESTRICT input on its moreOptions sub-page; set it, then read it back
+        # and assert the value is the list written.
         modes = self.client.call_tool("hub_list_modes").get("modes") or []
         assert len(modes) >= 1, "hub_list_modes returned no modes -- cannot set a mode restriction"
-        want = [m["name"] for m in modes[:2]]
+        # A mode input's options are the hub's mode ids, which is what its page posts.
+        want = [str(m["id"]) for m in modes[:2]]
 
         label = f"{PREFIX}NotifierModes"
-        created = self.client.call_tool("hub_manage_native_rules_and_apps", {
-            "tool": "hub_set_native_app",
-            "args": {"appType": "notifier", "name": label, "confirm": True}})
-        app_id = (created or {}).get("appId") or self._find_app_id_by_label(label)
-        assert app_id, f"notifier create did not return an appId: {created}"
+        created = self._native_app("create", {"app_type": "notifier", "name": label})
+        app_id = (created or {}).get("app_id") or self._find_app_id_by_label(label)
+        assert app_id, f"notifier create did not return an app_id: {created}"
         self.created_native_app_ids.append(str(app_id))
         try:
-            # Navigate to the moreOptions sub-page and write the type='mode' `modes` restriction.
-            self.client.call_tool("hub_manage_native_rules_and_apps", {
-                "tool": "hub_set_native_app",
-                "args": {"appId": app_id,
-                         "walkStep": {"page": "moreOptions", "operation": "write", "write": {"modes": want}},
-                         "confirm": True}})
-            # Read the sub-page back; modeInputs[].modes must equal the configured list (not null).
+            # Write the type='mode' `modes` restriction on the moreOptions sub-page.
+            updated = self._native_app("update", {"page": "moreOptions", "fields": {"modes": want}}, app_id)
+            assert updated.get("success") is True and updated.get("fields_applied") == ["modes"], updated
+            # Read the sub-page back; the input's value must equal the configured list (not null).
             cfg = self.client.call_tool("hub_read_apps_code", {
                 "tool": "hub_get_app_config", "args": {"appId": app_id, "pageName": "moreOptions"}})
-            mode_inputs = cfg.get("modeInputs") or []
-            entry = next((mi for mi in mode_inputs if mi.get("name") == "modes"), None)
-            assert entry is not None, \
-                f"moreOptions did not surface a `modes` type='mode' input in modeInputs: {cfg.get('modeInputs')}"
-            assert sorted(entry.get("modes") or []) == sorted(want), \
-                f"modeInputs modes must equal the configured list {want}, got: {entry.get('modes')}"
-            assert cfg.get("modeInputsNote"), f"modeInputs present without a modeInputsNote: {cfg}"
+            entry = next((i for sect in ((cfg.get("page") or {}).get("sections") or [])
+                          for i in (sect.get("inputs") or []) if i.get("name") == "modes"), None)
+            assert entry is not None and entry.get("type") == "mode", \
+                f"moreOptions did not render the `modes` type='mode' input: {cfg.get('page')}"
+            value = entry.get("value")
+            assert isinstance(value, list) and sorted(str(v) for v in value) == sorted(want), \
+                f"the mode input's value must be the configured list {want}, got: {value!r}"
+            assert "modeInputs" not in cfg, f"modeInputs still returned: {cfg.get('modeInputs')}"
+            # A page name the app does not have renders no sections; the note sends the caller to page.hrefs.
+            other = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config", "args": {"appId": app_id, "pageName": "noSuchPage"}})
+            assert other.get("success") is False and other.get("fingerprint") == "sections not a list" \
+                and "page.hrefs" in str(other.get("note")) and "section='builtin_app_tools_apps'" in str(other.get("note")), \
+                f"an unknown page should fail with a note pointing at page.hrefs and the guide: {other}"
         finally:
             self._delete_native(app_id, gateway="hub_manage_native_rules_and_apps")
 
@@ -10851,6 +11164,53 @@ class TestRunner:
                 if not unwinding:
                     raise
                 print(f"  [WARN] could not restore redactAccessTokens=false: {exc}")
+
+    @test("installed_app_reads")
+    def test_get_app_config_settings_redact_secrets_from_every_page(self) -> None:
+        # includeSettings returns the app's settings from EVERY page, so secret redaction cannot
+        # rely on the one page it rendered. The MCP server's own hubSecurityPassword sits on a
+        # sub-page, and Hubitat Package Manager keeps hpmPassword on prefSettings while its default
+        # page prefOptions has no inputs. Neither has to be configured on this hub: the check is
+        # that no credential-named key comes back holding a plain non-empty value. The deterministic
+        # cross-page proof (a password-typed setting with a harmless name) is in
+        # test_update_app_code_trigger_updated, whose fixture stores one. OAuth accessToken settings
+        # follow the Hide access tokens setting instead, so they are not checked here. Assertion
+        # messages name keys only, never values.
+        marker = "***redacted (password)***"
+        secret_suffixes = ("password", "passwd", "secret", "token", "key", "apikey")
+
+        def check(app_id: Any, what: str) -> int:
+            cfg = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config", "args": {"appId": str(app_id), "includeSettings": True}})
+            assert cfg.get("success") is True, f"{what}: hub_get_app_config failed"
+            settings = cfg.get("settings")
+            assert isinstance(settings, dict), \
+                f"{what}: settings missing (withheld? note={cfg.get('settingsNote')!r})"
+            if settings:
+                note = str(cfg.get("settingsRedactionNote") or "")
+                assert "any page" in note, f"{what}: settingsRedactionNote does not describe all-page redaction"
+                assert "#" not in note, f"{what}: settingsRedactionNote carries an issue reference"
+            leaked = [k for k, v in settings.items()
+                      if isinstance(v, str) and v and v != marker and k.lower().endswith(secret_suffixes)
+                      and not re.fullmatch(r"(?i)access_?token", k)]
+            assert not leaked, f"{what}: credential-named settings returned unredacted: {sorted(leaked)}"
+            return len(settings)
+
+        count = check(self.client.app_id, "MCP server app")
+        print(f"    MCP server app: {count} settings read, no credential-named value exposed")
+
+        hpm = None
+        cursor: str | None = ""
+        while cursor is not None and hpm is None:
+            page = self.client.call_tool("hub_list_apps", {"scope": "instances", "filter": "user", "cursor": cursor})
+            hpm = next((a for a in (page.get("apps") or [])
+                        if "package manager" in f"{a.get('name') or ''} {a.get('label') or ''}".lower()), None)
+            cursor = page.get("nextCursor")
+        if hpm is None:
+            print("    Hubitat Package Manager not installed on this hub -- only the MCP server app checked")
+            return
+        count = check(hpm.get("id"), "Hubitat Package Manager")
+        print(f"    Hubitat Package Manager: {count} settings read, no credential-named value exposed")
 
     # -----------------------------------------------------------------------
     # GROUP 4g: device_swap (1 test) -- hub_call_device_swap child-device
@@ -11733,10 +12093,10 @@ class TestRunner:
             and set(budget) == {"usedBytes", "limitBytes"}, \
             f"source-backup listing must report the storage budget: {src}"
         policy = str(src.get("retentionPolicy"))
-        assert "maxBackups" not in src and "rolling" in policy and "10 MB storage budget" in policy, \
-            f"source-backup listing must describe the budget-only retention policy: {src}"
+        assert "maxBackups" not in src and "10 MB storage budget" in policy and "oldest first" in policy \
+            and "newest backup" in policy, f"source-backup listing must describe the budget-only retention policy: {src}"
         for entry in src["backups"]:
-            assert entry.get("retention") in ("pinned", "rolling"), f"backup entry without a retention kind: {entry}"
+            assert "retention" not in entry, f"a backup entry must carry no retention kind: {entry}"
 
     @test("system_tools")
     def test_get_backup_schedule_read(self) -> None:
@@ -13809,7 +14169,8 @@ class TestRunner:
             try:
                 result = self.client.call_tool(gateway, {
                     "tool": leaf,
-                    "args": ({"appId": app_id, "settings": {"mcpLogLevel": original_level}, "confirm": True}
+                    "args": ({"operation": "update", "app_id": int(app_id), "args": {"fields": {"mcpLogLevel": original_level}},
+                              "confirm": True}
                              if leaf == "hub_set_native_app" else {"operation": "form", "rule_id": int(app_id),
                                  "args": {"steps": [{"kind": "open"}]}, "confirm": True})})
             except (McpError, McpToolError) as exc:
@@ -13882,6 +14243,20 @@ class TestRunner:
             names = {tool["name"] for tool in client.list_tools()["tools"]}
             assert names == {"hub_get_tool_guide", "hub_search_tools", "hub_list_modes"}, sorted(names)
             assert "modes" in client.call_tool("hub_list_modes", {})
+            # A write-off client loses hub_set_native_app like every write tool; its help stays in the read-only guide.
+            readonly = manage({"action": "create", "label": label + "_ro", "access": {"write": False, "tools": ["hub_set_native_app", "hub_set_rule"]}})
+            assert readonly.get("success") is True, readonly
+            _ephemeral_literals.add(readonly["token"])
+            try:
+                ro = HubitatMcpClient(self.client.hub_url, self.client.app_id, readonly["token"])
+                ro.session.trust_env = False
+                catalog = ro.call_tool("hub_manage_native_rules_and_apps", {})
+                listed = {t.get("name") for t in (catalog.get("tools") or [])}
+                assert "hub_set_native_app" not in listed and "hub_set_rule" in listed, f"a write-off client's native catalog: {sorted(listed)}"
+                reference = json.dumps(ro.call_tool("hub_get_tool_guide", {"section": "set_native_app_reference"}))
+                assert "operation" in reference and "create" in reference, f"the read-only guide lacks hub_set_native_app's reference: {reference[:300]}"
+            finally:
+                manage({"action": "revoke", "clientId": readonly["clientId"]})
             try:
                 client.call_tool("hub_get_info", {})
                 raise AssertionError("a client token without hub_get_info was allowed to call it")
@@ -15318,7 +15693,8 @@ class TestRunner:
         res = self.client.call_tool("hub_get_tool_guide", {"section": "best_practice_reference"})
         content = res.get("content", "") if isinstance(res, dict) else str(res)
         assert "Acknowledgment key" in content, f"missing the key line: {content[:200]!r}"
-        assert "- hub_set_rule -> set_rule_reference" in content, \
+        assert "- hub_set_rule -> set_rule_reference" in content \
+            and "- hub_set_native_app -> set_native_app_reference" in content, \
             f"missing the tool -> section key map: {content[:600]!r}"
         assert "native Rule Machine" in content, f"missing the native-RM best practice: {content[:400]!r}"
         assert "hub_list_devices" in content, f"missing the device-resolution best practice: {content[:400]!r}"
@@ -15329,7 +15705,7 @@ class TestRunner:
         """Every guide section the reactive hint can point at is reachable and returns real content
         (a heading + substance), proving the best-practice content is actually served, not just named."""
         sections = ["device_authorization", "update_device", "virtual_devices", "builtin_app_tools",
-                    "set_rule_reference", "visual_rule_reference", "rules", "hub_admin_write",
+                    "set_rule_reference", "set_native_app_reference", "visual_rule_reference", "rules", "hub_admin_write",
                     "backup", "file_manager", "best_practice_reference"]
         for sec in sections:
             res = self.client.call_tool("hub_get_tool_guide", {"section": sec})
@@ -15381,23 +15757,23 @@ class TestRunner:
             self._bps_fixture_cleanup(app_id)
 
     @test("best_practice_gating")
-    def test_bps_gate_set_native_app_unlocked_only_by_builtin_app_tools_crud_key(self) -> None:
+    def test_bps_gate_set_native_app_unlocked_only_by_set_native_app_reference_key(self) -> None:
         """hub_set_native_app is refused keyless and with the generic key, the refusal pointing at
-        builtin_app_tools_crud; that section's key then creates a real app."""
+        set_native_app_reference; that section's key then creates a real app."""
         label = f"{PREFIX}BPS_NativeApp_{_run_artifact_suffix()}_{time.time_ns()}"
-        args = {"appType": "rule_machine", "name": label, "confirm": True}
+        args = {"operation": "create", "args": {"app_type": "rule_machine", "name": label}, "confirm": True}
         app_id = None
         self._set_bps(enableMandatoryBPS=True)
         try:
             key = self._section_key_after_refusals(
-                "hub_manage_native_rules_and_apps", "hub_set_native_app", "builtin_app_tools_crud", args)
+                "hub_manage_native_rules_and_apps", "hub_set_native_app", "set_native_app_reference", args)
             cw = self._soft_write(
                 lambda: self.client.call_tool("hub_manage_native_rules_and_apps", {
                     "tool": "hub_set_native_app", "args": {**args, "bestPracticeKey": key}}),
                 lambda: self._find_app_id_by_label(label),
                 "keyed hub_set_native_app create",
             )
-            app_id = cw["evidence"] if cw["relayDropped"] else cw["response"].get("appId")
+            app_id = cw["evidence"] if cw["relayDropped"] else cw["response"].get("app_id")
             assert app_id, f"keyed hub_set_native_app create did not commit: {cw}"
             self.created_native_app_ids.append(str(app_id))
         finally:

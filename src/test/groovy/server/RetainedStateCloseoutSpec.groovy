@@ -7,15 +7,6 @@ import support.TestChildApp
 import support.ToolSpecBase
 
 class RetainedStateCloseoutSpec extends ToolSpecBase {
-    // atomicState whose predClearPending writes fail while fail is set.
-    private static class FailingPredClearState extends LinkedHashMap {
-        boolean fail
-        Object put(Object key, Object value) {
-            if (key == 'predClearPending' && fail) throw new IllegalStateException('manifest unavailable')
-            super.put(key, value)
-        }
-    }
-
     // Backup index file writes that fail on demand: failAt is the 1-based write that
     // fails, fail fails every write.
     private static class FailingIndex {
@@ -46,6 +37,16 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
         entry(id, timestamp) + [sizeBytes: MIB]
     }
 
+    // A 1 MB snapshot of rule 7: the fillers share one item, so all but the newest are evictable.
+    private Map bigRuleSnapshot(int n, long timestamp) {
+        [type: 'rm-rule', id: 7, ruleId: 7, fileName: "mcp-rm-backup-7-s${n}.json".toString(),
+         timestamp: timestamp, sourceLength: MIB, sizeBytes: MIB]
+    }
+
+    private Map ruleFillers(IntRange range, Closure<Long> stamp) {
+        range.collectEntries { [("rm-rule_7_s${it}".toString()): bigRuleSnapshot(it, stamp(it))] }
+    }
+
     // Another execution whose index file writes fail on demand. The file content stays in
     // the shared harness store, so every execution reads the same index file.
     private Object peerWithIndex(FailingIndex index, Map seed = [app_99: entry('99')], Map atomicBacking = atomicStateMap) {
@@ -60,8 +61,8 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
     }
 
     def 'source backup enforces the byte budget oldest first and unlinks before deleting old files'() {
-        given: 'twelve other items fill 12 MB of the 10 MB budget'
-        backupIndex = (1..12).collectEntries { [("app_${it}".toString()): bigEntry("${it}", it)] }
+        given: 'twelve snapshots of another item fill 12 MB of the 10 MB budget'
+        backupIndex = ruleFillers(1..12) { n -> (long) n }
         hubGet.register('/app/ajax/code') { params -> '{"source":"new source","version":2}' }
         List deleted = []
         script.metaClass.uploadHubFile = { String name, byte[] bytes -> }
@@ -74,11 +75,11 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
         def result = script.backupItemSource('app', '99')
 
         then:
-        result.retention == 'pinned'
+        !result.containsKey('retention')
         result.sizeBytes == 'new source'.length()
         backupIndex.size() == 10
         backupIndex.containsKey('app_99')
-        deleted == (1..3).collect { "mcp-backup-app-${it}.groovy" }
+        deleted == (1..3).collect { "mcp-rm-backup-7-s${it}.json" }
         backupIndex.values().sum { it.sizeBytes } <= 10 * MIB
     }
 
@@ -118,7 +119,7 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
     def 'retention repair failure on baseline reuse keeps the reused backup'() {
         given: 'an index over the byte budget, whose repair write fails'
         def peer = peerWithIndex(new FailingIndex(fail: true),
-            (1..12).collectEntries { [("app_${it}".toString()): bigEntry("${it}", 1234567890000L)] })
+            [app_5: bigEntry('5', 1234567890000L)] + ruleFillers(1..11) { n -> 1234567890000L - (long) n })
         List uploads = []
         peer.metaClass.uploadHubFile = { String name, byte[] bytes -> uploads << name }
 
@@ -160,21 +161,6 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
 
         then:
         backupIndex.keySet() == ['app_1', 'app_2'] as Set
-    }
-
-    def 'complete app inventory reconciles deleted recovery flags but preserves hidden apps and new flags'() {
-        given:
-        atomicStateMap.predClearPending = ['10': true, '11': true, '12': true]
-        hubGet.register('/hub2/appsList') { params ->
-            script._rmCommitPredClearPending(script._rmPendingPredClearSnapshot() + ['12': 'created-after-inventory-snapshot'])
-            '{"apps":[{"data":{"id":10,"hidden":true},"children":[]}]}'
-        }
-
-        when:
-        script.toolListInstalledApps([:])
-
-        then:
-        atomicStateMap.predClearPending.keySet() == ['10', '12'] as Set
     }
 
     def 'overlapping backups of one item serialize upload and reuse the same baseline'() {
@@ -476,11 +462,10 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
         backupIndex.app_99 == entry('99')
     }
 
-    def 'failed writes keep newer committed backup and predicate views over stale snapshots'() {
+    def 'failed writes keep newer committed backups over stale snapshots'() {
         given:
         def index = new FailingIndex()
-        def backing = new FailingPredClearState()
-        def peer = peerWithIndex(index, null, backing)
+        def peer = peerWithIndex(index, null)
         peer._publishItemBackup('app_1', entry('1'))
         backupIndex = [:]
         index.fail = true
@@ -495,26 +480,9 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
         when:
         index.fail = false
         peer._publishItemBackup('app_3', entry('3'))
-        peer._rmCommitPredClearPending(['10': 'generation-10'])
-        peer._rmCommitPredClearPending(['10': 'generation-10', '11': 'generation-11'])
-        backing.put('predClearPending', [:])
-        backing.@fail = true
-        peer.metaClass.hubInternalGet = { String path, Map params = null ->
-            '{"apps":[{"data":{"id":1},"children":[{"data":{"id":10},"children":[]}]}]}'
-        }
-        def listing = peer.toolListInstalledApps([:])
-
-        then: 'a failed reconciliation commit keeps every record and the listing still succeeds'
-        listing.success != false && listing.error == null
-        backupIndex.keySet() == ['app_1', 'app_3'] as Set
-        peer._rmPendingPredClearSnapshot().keySet() == ['10', '11'] as Set
-
-        when:
-        backing.@fail = false
-        peer._rmCommitPredClearPending(peer._rmPendingPredClearSnapshot() + ['11': 'newer-generation-11'])
 
         then:
-        backing.predClearPending.keySet() == ['10', '11'] as Set
+        backupIndex.keySet() == ['app_1', 'app_3'] as Set
     }
 
     def 'double deletion failure retains durable pending metadata and both errors'() {
@@ -652,10 +620,7 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
     def 'pre-restore publication protects the requested oldest backup and new undo point'() {
         given: 'the restore target is the oldest of twelve 1 MB backups, over the 10 MB budget'
         enableWrite()
-        backupIndex = (1..12).collectEntries {
-            String id = it == 1 ? '99' : it.toString()
-            [("app_${id}".toString()): bigEntry(id, it)]
-        }
+        backupIndex = [app_99: bigEntry('99', 1L)] + ruleFillers(2..12) { n -> (long) n }
         List deleted = []
         Map files = [:]
         script.metaClass.downloadHubFile = { String name -> name == 'mcp-backup-app-99.groovy' ? 'original'.getBytes('UTF-8') : files.get(name) }
@@ -670,13 +635,13 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
         then:
         result.success == true
         result.undoAvailable == true
-        result.backupRetention == 'pinned'
-        result.backupRetentionNote.contains("next pre-restore undo replaces it")
+        !result.containsKey('backupRetention')
+        result.backupRetentionNote == script._itemBackupRetentionNote()
         result.undoHint.endsWith(result.backupRetentionNote)
         backupIndex.size() == 10
         backupIndex.keySet().containsAll(['app_99', 'prerestore_app_99'])
-        backupIndex.prerestore_app_99.retention == 'pinned'
-        deleted == ['mcp-backup-app-2.groovy', 'mcp-backup-app-3.groovy', 'mcp-backup-app-4.groovy']
+        !backupIndex.prerestore_app_99.containsKey('retention')
+        deleted == ['mcp-rm-backup-7-s2.json', 'mcp-rm-backup-7-s3.json', 'mcp-rm-backup-7-s4.json']
     }
 
     def 'pending recent source backups cannot authorize baseline reuse'() {
@@ -699,35 +664,5 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
 
         where:
         type << ['app', 'library']
-    }
-
-    def 'reconciliation walks nested children before treating an id as absent'() {
-        given:
-        atomicStateMap.predClearPending = ['11': true, '12': true]
-        hubGet.register('/hub2/appsList') { params ->
-            '{"apps":[{"data":{"id":1},"children":[{"data":{"id":11},"children":[{"data":{"id":111},"children":[]}]}]}]}'
-        }
-
-        when:
-        script.toolListInstalledApps([:])
-
-        then:
-        atomicStateMap.predClearPending.keySet() == ['11'] as Set
-    }
-
-    def 'unreadable or incomplete app inventory never discards recovery intent'() {
-        given:
-        atomicStateMap.predClearPending = ['10': true]
-        hubGet.register('/hub2/appsList') { params -> response }
-
-        when:
-        script.toolListInstalledApps([:])
-
-        then:
-        atomicStateMap.predClearPending == ['10': true]
-
-        where:
-        response << ['{}', '{"apps":[]}', '{"apps":[],"error":"partial"}', '{"apps":[],"success":false}',
-                     '{"apps":[{"data":{}}]}', '{"apps":[{"data":{"id":11},"children":"unreadable"}]}']
     }
 }
