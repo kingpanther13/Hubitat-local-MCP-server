@@ -13066,6 +13066,13 @@ private Map _applyDeviceEdit(deviceId, Map fj, Map fields, Map send, Map prefere
         if (!(after?.device instanceof Map)) { errors << [property: name, error: "Saved, but the device could not be read back to confirm it."]; continue }
         def actual = _deviceEditCurrentValue(name, after)
         def wanted = field.value
+        if (name == 'dataValues') {
+            for (item in wanted) {
+                if (actual instanceof Map && actual.get(item.key)?.toString() == item.value) changes << [property: "dataValue.${item.key}", newValue: item.value]
+                else errors << [property: "dataValue.${item.key}", error: "Saved, but the data value reads back as ${groovy.json.JsonOutput.toJson(actual instanceof Map ? actual.get(item.key) : null)}; inspect device data before retrying."]
+            }
+            continue
+        }
         if (name == 'room') wanted = send.roomName
         boolean matches = _deviceEditValuesMatch(name, wanted, actual)
         if (name == 'deviceNetworkId' && wanted == '0' && _deviceFlag(d.linkedDevice)) matches = actual == d.deviceNetworkId
@@ -13112,7 +13119,6 @@ private _deviceEditCurrentValue(String name, Map fj) {
 private boolean _deviceEditValuesMatch(String name, wanted, actual) {
     if (name == 'tags') return _normalizedDeviceTags(actual) == _normalizedDeviceTags(wanted)
     if (name == 'dashboardIds') return actual instanceof List && actual.collect { it.toString() }.sort() == wanted.collect { it.toString() }.sort()
-    if (name == 'dataValues') return actual instanceof Map && wanted.every { k, v -> actual.get(k)?.toString() == v }
     if (wanted instanceof Boolean) return (actual instanceof Boolean || actual?.toString() in ['true', 'false']) && _deviceFlag(actual) == wanted
     return (actual == null ? '' : actual.toString()) == (wanted == null ? '' : wanted.toString())
 }
@@ -17407,9 +17413,11 @@ private boolean _appConfigSecretName(name) {
                     "timestamp", "date", "length", "len", "type", "enabled", "enable", "set", "required", "url",
                     "uri", "endpoint", "timeout", "interval", "mode", "policy", "hint", "label", "name"] as Set
     Set keyQualifiers = ["api", "access", "private", "auth", "client", "secret", "encryption", "signing", "shared"] as Set
-    Set pinQualifiers = ["lock", "user", "access", "pass", "disarm", "arm", "alarm", "security", "unlock", "auth", "entry", "keypad", "door", "master", "admin", "guest"] as Set
+    Set pinQualifiers = ["lock", "user", "access", "pass", "disarm", "arm", "alarm", "security", "unlock", "auth", "entry", "keypad", "door",
+                         "master", "admin", "guest", "installer", "duress", "gate", "garage", "hsm", "panel", "safe", "vault"] as Set
     Set hardwarePins = ["led", "gpio", "relay", "io", "digital", "analog", "data", "output", "input", "sensor", "pwm", "signal", "button",
                         "power", "reset", "enable", "interrupt", "irq", "clock", "clk", "sda", "scl", "tx", "rx", "servo", "motor", "trigger", "echo"] as Set
+    boolean qualified = words.any { it in pinQualifiers }
     for (int idx = 0; idx < words.size(); idx++) {
         String w = words[idx]
         String prev = idx > 0 ? words[idx - 1] : null
@@ -17420,13 +17428,20 @@ private boolean _appConfigSecretName(name) {
             w.endsWith("token") || w.endsWith("tokens") || w.startsWith("credential") || w == "psk" ||
             (w == "pass" && prev != "by" && (next == null || next in ["word", "phrase", "code", "key"])) ||
             (keyQualifiers.contains(w) && (next == "key" || next == "keys")) ||
-            (w in ["pin", "pins", "pincode", "pincodes"] && !(prev in hardwarePins)) ||
-            (w in ["code", "codes"] && (prev in pinQualifiers || prev in ["pin", "pins"]))
+            (w in ["pin", "pins", "pincode", "pincodes"] && (qualified || !(prev in hardwarePins))) ||
+            (w in ["code", "codes"] && (prev in pinQualifiers || prev in ["pin", "pins"])) ||
+            _appConfigQualifiedSuffix(w, pinQualifiers)
         if (!hit) continue
         boolean twoWords = ((next == "key" || next == "keys") && keyQualifiers.contains(w)) || (w in ["pin", "pins"] && next in ["code", "codes"])
         String after = twoWords ? (idx + 2 < words.size() ? words[idx + 2] : null) : next
         if (after != null && metadata.contains(after)) continue
         return true
+    }
+    return false
+}
+private boolean _appConfigQualifiedSuffix(String word, Set qualifiers) {
+    for (suffix in ["pincodes", "pincode", "pins", "pin", "codes", "code"]) {
+        if (word.length() > suffix.length() && word.endsWith(suffix) && word.substring(0, word.length() - suffix.length()) in qualifiers) return true
     }
     return false
 }
@@ -23771,9 +23786,12 @@ Map _rmSubmitMainPageDone(Integer appId) {
         mcpLog("warn", "rm-native", "_rmSubmitMainPageDone: Done POST for app ${appId} returned status ${resp.status}")
         return [done: false, reason: "Done POST returned status ${resp.status}".toString()]
     }
-    String replyText = resp?.data instanceof Map ? groovy.json.JsonOutput.toJson(resp.data) : (resp?.data?.toString() ?: '')
-    if (replyText.contains('"location"')) return [done: true]
-    return [done: false, reason: (replyText.contains('"configPage"') ? "the hub rendered page '${commitPage}' again instead of accepting its Done" :
+    def reply = resp?.data
+    if (!(reply instanceof Map)) {
+        try { reply = reply ? new groovy.json.JsonSlurper().parseText(reply.toString()) : null } catch (Exception ignored) { reply = null }
+    }
+    if (reply instanceof Map && reply.location != null) return [done: true]
+    return [done: false, reason: (reply instanceof Map && reply.containsKey('configPage') ? "the hub rendered page '${commitPage}' again instead of accepting its Done" :
         "the hub's reply to the Done named no location").toString()]
 }
 private Map _rmWriteSubPageField(Integer appId, String page, String parentPage, String hrefName, Integer hrefIndex, Map hrefParams, String key, Object value, Map cache = null) {
@@ -25107,8 +25125,9 @@ private Map _naCreate(Map args) {
         try { back = _naReadBack(childId, child, written) }
         catch (Exception failure) {
             mcpLogError('rm-native', "hub_set_native_app create: reading back new app ${childId} failed", failure)
-            return [success: false, app_type: type, app_id: childId, fields_unverified: written.keySet().collect { it.toString() },
-                    error: "App ${childId} was saved, but reading it back failed: ${failure.message}".toString(),
+            return [success: false, app_type: type, app_id: childId, fields_unverified: written.keySet().collect { it.toString() }] +
+                   (saved.done && !saved.committed ? [committed: false] : [:]) +
+                   [error: "App ${childId} was saved, but reading it back failed: ${failure.message}".toString(),
                     note: "Check it with hub_get_app_config(appId=${childId}, includeSettings=true) before changing it; do not create it again.${guide}".toString()] + report
         }
         Map result = [success: back.not_landed.isEmpty(), app_id: childId, app_type: type, label: back.model.app?.label?.toString(),
@@ -25126,7 +25145,8 @@ private Map _naCreate(Map args) {
         boolean doneSaves = saved.done == '_action_done|Done|' && !saved.committed
         if (doneSaves) {
             result.committed = false
-            notes << "Its first page names both a next and a done page, so the hub answered its Done by saving and rendering the page again; the app did not install. Finish it with operation:'form'."
+            notes << "Its first page names both a next and a done page, so the hub answered its Done by saving and rendering the page again" +
+                (back.model.app?.installed == true ? '.' : "; the app did not install. Finish it with operation:'form'.")
         }
         if (back.model.app?.installed != true) {
             result.installed = false
@@ -26457,11 +26477,17 @@ private String _ndPredictAppend(Map rows, Map counters, String part) {
     int next = counters.get(family) as int
     counters.put(family, next + 1)
     String predicted = next.toString()
+    List taken = family == 'action' ? [rows.action] : [rows.condition, rows.trigger]
+    if (taken.any { predicted in it.ids }) throw new IllegalArgumentException("Rule Machine's next ${family} id ${predicted} is already in use; read the rule again before appending")
     rows.get(part).predicted << predicted
     rows.get(part).added++
     predicted
 }
-private int _ndCounter(Object value) { value != null && value.toString().isInteger() && value.toString().toInteger() > 0 ? value.toString().toInteger() : 1 }
+private int _ndCounter(Object value, boolean hasRows) {
+    if (value != null && value.toString().isInteger() && value.toString().toInteger() > 0) return value.toString().toInteger()
+    if (hasRows) throw new IllegalArgumentException("The rule's row counter is unreadable; read the rule again before appending")
+    return 1
+}
 private void _ndDropRow(Map rows, String rowId, String missing) {
     if (_ndKnownRow(rows, rowId, missing)) rows.ids.remove(rowId)
     else { rows.predicted.remove(rowId); rows.added-- }
@@ -26479,7 +26505,8 @@ private void _ndPreflight(Long id, List changes) {
     Map rows = [action: [ids: (actionOrder + projectedActions.keySet()) as Set, added: 0, deleted: [] as Set, predicted: [] as Set],
                 condition: [ids: conditions.keySet().collect { it.toString() } as Set, added: 0, deleted: [] as Set, predicted: [] as Set],
                 trigger: [ids: triggers.keySet().collect { it.toString() } as Set, added: 0, deleted: [] as Set, predicted: [] as Set]]
-    Map counters = [condition: _ndCounter(before.ndx), action: _ndCounter(before.actNdx)]
+    Map counters = [condition: _ndCounter(before.ndx, !(rows.condition.ids.isEmpty() && rows.trigger.ids.isEmpty())),
+                    action: _ndCounter(before.actNdx, !rows.action.ids.isEmpty())]
     boolean hasRequired = expressions.get('0') instanceof List && !expressions.get('0').isEmpty()
     boolean appendedActions = false
     Map locals = id == null ? [:] : null
@@ -34575,13 +34602,16 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
     boolean useRuleBuilder = (source != "configPage")
     boolean useConfigPage = (source != "ruleBuilderJson")
     def installed = null
+    boolean identified = true
     try { installed = getAppByAppId(appId as Long) }
     catch (Exception lookup) {
-        useRuleBuilder = false; useConfigPage = false
-        checkErrors << "app ${appId} was not read: it could not be identified (${lookup.message ?: lookup.toString()}), and a user or community app is not read as a rule".toString()
+        identified = false
+        useConfigPage = false
+        checkErrors << "app ${appId}'s page was not read: the app could not be identified (${lookup.message ?: lookup.toString()}), and a user or community app's page runs its own code".toString()
     }
+    if (identified && installed == null) throw new IllegalArgumentException("App ${appId} not found; list installed apps with hub_list_apps")
     def namespace = installed?.appType?.namespace?.toString()
-    if (namespace && namespace != "hubitat") {
+    if (identified && namespace != "hubitat") {
         useRuleBuilder = false; useConfigPage = false
         label = installed.label?.toString()
         ruleFormat = "classic-app"
