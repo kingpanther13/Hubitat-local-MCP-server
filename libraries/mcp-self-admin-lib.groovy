@@ -231,13 +231,11 @@ def toolUpdateMcpSettings(args) {
 // be granted to a client -- so returning tokens here gives nothing the caller lacks.
 private Map _mcpClientTokenOperation(op) {
     Map result = _mcpClientTokenResult(op)
-    // redactAccessTokens masks the URLs on the way out; mask the bare tokens the same way. Hide
-    // passwords and credentials also masks the stored tokens a list shows, while create and rotate
-    // still return the new token once.
-    String marker = "***redacted (access token)***"
-    if (settings.redactAccessTokens == true && result.token) result.token = marker
-    if ((settings.redactAccessTokens == true || _redactsCredentials()) && result.clients instanceof List) {
-        result.clients = result.clients.collect { it + [token: marker] }
+    // redactAccessTokens masks the URLs on the way out; mask the bare tokens the same way.
+    if (settings.redactAccessTokens == true) {
+        String marker = "***redacted (access token)***"
+        if (result.token) result.token = marker
+        if (result.clients instanceof List) result.clients = result.clients.collect { it + [token: marker] }
     }
     return result
 }
