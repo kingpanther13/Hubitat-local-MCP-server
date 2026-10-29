@@ -5029,6 +5029,10 @@ private String _accessTokenRedactedMarker() { return "***redacted (access token)
 // A client token never sees another token, whatever the redaction setting says.
 private boolean _redactsAccessTokens() { settings.redactAccessTokens == true || callerClient != null }
 
+// Hide passwords and credentials (default ON) governs what reads return; a client token always has
+// them hidden, and File Manager snapshots drop secret settings whatever it says.
+private boolean _redactsCredentials() { settings.redactCredentials != false || callerClient != null }
+
 // redactAccessTokens (Advanced page). Covers the three shapes a token reaches a tool result in:
 // an access_token= URL parameter (app page paragraphs), an accessToken/access_token map key
 // (app settings and state) or the clientTokens map of per-client tokens, and that same key

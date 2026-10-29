@@ -3163,18 +3163,27 @@ class TestRunner:
         assert miss.get("roomFilterMatchedKnownRoom") is False, \
             f"unknown room must report roomFilterMatchedKnownRoom=false: {miss.get('roomFilterMatchedKnownRoom')!r}"
 
-        everything = self.client.call_tool("hub_list_devices")
-        roomed = [d for d in everything.get("devices", []) if d.get("room")]
-        if not roomed:
-            print("    [INFO] no device on this hub has a room assignment; skipping the positive match")
-            return
-        room = roomed[0]["room"]
-        expected = sorted(d["id"] for d in everything["devices"]
-                          if (d.get("room") or "").lower() == room.lower())
-        scoped = self.client.call_tool("hub_list_devices", {"roomFilter": room.lower()})
-        got = sorted(d["id"] for d in scoped.get("devices", []))
-        assert got == expected, \
-            f"roomFilter={room.lower()!r} returned {got}, expected {expected} (case-insensitive exact match)"
+        # The positive match owns its input: the scaffold switch goes into the standing KEEP_ room,
+        # so the test never depends on room assignments other tests left behind.
+        dev_id = self.get_test_switch_id()
+        room = f"{SCAFFOLD_PREFIX}Room"
+        before = self.client.call_tool("hub_get_device", {"deviceId": dev_id})
+        original_room = before.get("room") if isinstance(before, dict) else None
+        placed = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"room": room}})
+        assert placed.get("success") is True, f"could not place the scaffold switch in {room}: {placed}"
+        try:
+            everything = self.client.call_tool("hub_list_devices")
+            expected = sorted(d["id"] for d in everything.get("devices", [])
+                              if (d.get("room") or "").lower() == room.lower())
+            assert str(dev_id) in [str(i) for i in expected], f"{dev_id} is not listed in {room}: {expected}"
+            scoped = self.client.call_tool("hub_list_devices", {"roomFilter": room.lower()})
+            got = sorted(d["id"] for d in scoped.get("devices", []))
+            assert got == expected, \
+                f"roomFilter={room.lower()!r} returned {got}, expected {expected} (case-insensitive exact match)"
+        finally:
+            restored = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"room": original_room or ""}})
+            if not isinstance(restored, dict) or restored.get("success") is not True:
+                self._fixture_reset_failures.append(f"room filter: restoring {dev_id} to {original_room!r} failed: {restored}")
 
     @test("devices")
     def test_list_device_events_since_bookmark(self) -> None:
@@ -4440,9 +4449,17 @@ class TestRunner:
             assert any(str(d.get("id")) == str(dev_id) for d in (got.get("devices") or [])), \
                 f"room '{room_name}' does not list device {dev_id} after the assign: {got}"
 
+            # By id from outside the room, so the save has to move the device.
+            cleared = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"room": ""}})
+            assert cleared.get("success") is True, f"hub_update_device room unassign failed: {cleared}"
             by_id = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"room": room_id}})
             assert by_id.get("success") is True and any(
-                c.get("property") == "room" and c.get("newValue") == room_name for c in (by_id.get("changes") or [])),                 f"room assign by id did not read back as '{room_name}': {by_id}"
+                c.get("property") == "room" and c.get("newValue") == room_name for c in (by_id.get("changes") or [])), \
+                f"room assign by id did not read back as '{room_name}': {by_id}"
+            got = self.client.call_tool("hub_manage_rooms", {
+                "tool": "hub_get_room", "args": {"room": room_id}})
+            assert any(str(d.get("id")) == str(dev_id) for d in (got.get("devices") or [])), \
+                f"room '{room_name}' does not list device {dev_id} after the assign by id: {got}"
 
             unassigned = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"room": ""}})
             assert unassigned.get("success") is True, f"hub_update_device room unassign failed: {unassigned}"
@@ -15249,17 +15266,20 @@ def updated() {}
             observed = self.client.call_tool("hub_get_device_attribute", {"deviceId": unauth, "attribute": "nativeConfiguration"})
             assert json.loads(observed["value"]).get("nonce") == nonce, f"Bypass native command did not execute: {observed}"
 
-            # (c) room re-assign to the SAME room on an unlisted device (a no-op move through the
-            # Device Info save that must not relocate it).
-            if not orig_room:
-                print(f"    [BYPASS LEG SKIPPED] leg (c): device {unauth} is in no room, so the "
-                      f"UNLISTED-device room path was not exercised this run "
-                      f"(the endpoint itself is covered unconditionally elsewhere)")
-            if orig_room:
-                rr = self.client.call_tool("hub_update_device", {"deviceId": unauth, "fields": {"room": orig_room}})
-                assert rr.get("success") is True, f"bypass same-room re-assign did not succeed: {rr}"
-                assert any(c.get("property") == "room" for c in (rr.get("changes") or [])), \
+            # (c) room assignment on an unlisted device through the Device Info save. The leg owns its
+            # input: it moves the device into the standing KEEP_ room (or re-assigns its own room) and
+            # puts the original assignment back.
+            target_room = orig_room or f"{SCAFFOLD_PREFIX}Room"
+            rr = self.client.call_tool("hub_update_device", {"deviceId": unauth, "fields": {"room": target_room}})
+            try:
+                assert rr.get("success") is True, f"bypass room assign did not succeed: {rr}"
+                assert any(c.get("property") == "room" and c.get("newValue") == target_room for c in (rr.get("changes") or [])), \
                     f"bypass room change not recorded: {rr}"
+            finally:
+                if not orig_room:
+                    back = self.client.call_tool("hub_update_device", {"deviceId": unauth, "fields": {"room": ""}})
+                    if not isinstance(back, dict) or back.get("success") is not True:
+                        self._fixture_reset_failures.append(f"bypass leg (c): clearing the room on {unauth} failed: {back}")
 
             # (d) reject a guaranteed undeclared preference before mutation. Positive native
             # saves/readback run in the configuration matrix; this boundary test preserves preferences.
@@ -17948,6 +17968,13 @@ def main() -> None:
     assert _cap_res.get("success") is True, \
         f"could not disable the global write cap for the run: {_cap_res}"
     print("Write cap: maxConcurrentWrites=0 for the suite (the cap test sets and restores its own)\n")
+
+    # Credential masking ON (its default) for the run, so a run that stopped inside the one test that
+    # turns it off cannot fail the next run's masking assertions.
+    _mask_res = client.call_tool("hub_manage_mcp", {
+        "tool": "hub_update_mcp_settings",
+        "args": {"settings": {"redactCredentials": True}, "confirm": True}})
+    assert _mask_res.get("success") is True, f"could not pin redactCredentials ON for the run: {_mask_res}"
 
     _grps = [s.strip() for s in args.groups.split(",") if s.strip()] if args.groups else None
     _tsts = [s.strip() for s in args.tests.split(",") if s.strip()] if args.tests else None

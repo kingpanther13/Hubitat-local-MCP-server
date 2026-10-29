@@ -251,7 +251,7 @@ private boolean _ndKnownRow(Map rows, String rowId, String missing) {
 private String _ndPredictAppend(Map rows, Map counters, String part) {
     String family = part == 'action' ? 'action' : 'condition'
     List taken = family == 'action' ? [rows.action] : [rows.condition, rows.trigger]
-    int next = _ndCounter(counters.get(family), taken.any { !it.ids.isEmpty() })
+    int next = _ndCounter(counters.get(family), counters.hadRows.get(family))
     counters.put(family, next + 1)
     String predicted = next.toString()
     if (taken.any { predicted in it.ids }) throw new IllegalArgumentException("Rule Machine's next ${family} id ${predicted} is already in use; read the rule again before appending")
@@ -285,8 +285,10 @@ private void _ndPreflight(Long id, List changes) {
     Map rows = [action: [ids: (actionOrder + projectedActions.keySet()) as Set, added: 0, deleted: [] as Set, predicted: [] as Set],
                 condition: [ids: conditions.keySet().collect { it.toString() } as Set, added: 0, deleted: [] as Set, predicted: [] as Set],
                 trigger: [ids: triggers.keySet().collect { it.toString() } as Set, added: 0, deleted: [] as Set, predicted: [] as Set]]
-    // Read when the batch first appends to a family, so a counter it never uses cannot refuse it.
-    Map counters = [condition: before.ndx, action: before.actNdx]
+    // Read when the batch first appends to a family, so a counter it never uses cannot refuse it;
+    // whether a family had rows is fixed before the batch, so a deletion cannot excuse a missing counter.
+    Map counters = [condition: before.ndx, action: before.actNdx,
+                    hadRows: [condition: !(rows.condition.ids.isEmpty() && rows.trigger.ids.isEmpty()), action: !rows.action.ids.isEmpty()]]
     // A rule's first Required Expression advances ndx by one (live); later ones leave it.
     boolean hasRequired = expressions.get('0') instanceof List && !expressions.get('0').isEmpty()
     boolean appendedActions = false
@@ -350,7 +352,7 @@ private void _ndPreflight(Long id, List changes) {
                 projectedActions.remove(target)
                 actionOrder = actionOrder.findAll { it != target }
             }
-            if (change.part == 'required' && !hasRequired) { counters.put('condition', _ndCounter(counters.get('condition'), !(rows.condition.ids.isEmpty() && rows.trigger.ids.isEmpty())) + 1); hasRequired = true }
+            if (change.part == 'required' && !hasRequired) { counters.put('condition', _ndCounter(counters.get('condition'), counters.hadRows.condition) + 1); hasRequired = true }
             if (change.part in ['expression', 'required']) {
                 String evalId = change.part == 'required' ? '0' : value.id.toString()
                 expressions.put(evalId, value.tokens)

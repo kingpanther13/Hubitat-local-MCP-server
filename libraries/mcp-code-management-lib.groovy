@@ -712,10 +712,6 @@ private Map _appConfigSettingTypes(Integer appId) {
     return types
 }
 
-// The Hide passwords and credentials setting (default ON) governs what reads return; File Manager
-// snapshots drop secret values whatever it says.
-private boolean _redactsCredentials() { settings.redactCredentials != false || callerClient != null }
-
 private boolean _appConfigMasksSetting(name, type, value) { _redactsCredentials() && _appConfigIsSecretSetting(name, type, value) }
 
 // Whether a setting/input value must be redacted. A null or empty value hides nothing. The hub's
@@ -763,7 +759,7 @@ private boolean _appConfigSecretName(name) {
                          "master", "admin", "guest", "installer", "duress", "gate", "garage", "hsm", "panel", "safe", "vault"] as Set
     Set hardwarePins = ["led", "gpio", "relay", "io", "digital", "analog", "data", "output", "input", "sensor", "pwm", "signal", "button",
                         "power", "reset", "enable", "interrupt", "irq", "clock", "clk", "sda", "scl", "tx", "rx", "servo", "motor", "trigger", "echo"] as Set
-    // A credential word anywhere in the name ("keypadInputPin", "alarmResetPin") outranks a hardware word.
+    // A credential word anywhere in the name ("keypadInputPin", "alarmResetPin", "alarmResetCode") outranks a hardware word.
     boolean qualified = words.any { it in pinQualifiers }
     for (int idx = 0; idx < words.size(); idx++) {
         String w = words[idx]
@@ -780,7 +776,7 @@ private boolean _appConfigSecretName(name) {
             // A PIN is a secret unless a hardware word names it a pin of a board ("ledPin", "gpioPin"); a
             // code only after a lock, user, access, alarm or entry word ("userCodes"; "zipCode" is not).
             (w in ["pin", "pins", "pincode", "pincodes"] && (qualified || !(prev in hardwarePins))) ||
-            (w in ["code", "codes"] && (prev in pinQualifiers || prev in ["pin", "pins"])) ||
+            (w in ["code", "codes"] && (qualified || prev in ["pin", "pins"])) ||
             // One-word forms: "userpin", "alarmcode", "HSMPIN".
             _appConfigQualifiedSuffix(w, pinQualifiers)
         if (!hit) continue

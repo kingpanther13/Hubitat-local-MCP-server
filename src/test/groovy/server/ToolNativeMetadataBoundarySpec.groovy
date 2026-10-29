@@ -22,6 +22,10 @@ class ToolNativeMetadataBoundarySpec extends ToolSpecBase {
             writes << [path: path, body: body]
             [success: true]
         }
+        script.metaClass.hubInternalPostFormRaw = { String path, String body, int timeout = 420, boolean retry = false ->
+            writes << [path: path, body: body]
+            [status: 200, data: '']
+        }
     }
 
     private def read(String operation) {

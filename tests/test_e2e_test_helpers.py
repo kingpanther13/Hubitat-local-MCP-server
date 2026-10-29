@@ -280,6 +280,7 @@ def test_bypass_boundary_preserves_existing_preferences_and_requires_unknown_nam
     preferences_before = dict(declared)
     preference_attempts = []
     label_attempts = []
+    room_attempts = []
     bypass_changes = []
     bypass = False
     current_label = "Native original"
@@ -332,6 +333,9 @@ def test_bypass_boundary_preserves_existing_preferences_and_requires_unknown_nam
                     current_label = arguments["fields"]["label"]
                     label_attempts.append(current_label)
                     return {"success": True, "changes": [{"property": "label"}]}
+                if "room" in arguments.get("fields", {}):
+                    room_attempts.append(arguments["fields"]["room"])
+                    return {"success": True, "changes": [{"property": "room", "newValue": arguments["fields"]["room"] or "none"}]}
                 patch = arguments["preferences"]
                 preference_attempts.append(patch)
                 assert not set(patch) & set(declared), "Boundary probe attempted an existing preference"
@@ -366,6 +370,7 @@ def test_bypass_boundary_preserves_existing_preferences_and_requires_unknown_nam
     assert preference_attempts == [{prefix + "__": True}]
     assert declared == preferences_before
     assert label_attempts == ["Native original _BWTEST", "Native original"]
+    assert room_attempts == [f"{et.SCAFFOLD_PREFIX}Room", ""]
     assert current_label == "Native original"
     assert len(native_observations) == 1
     assert log_bypasses == [False, True]

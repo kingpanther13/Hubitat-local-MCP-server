@@ -1344,6 +1344,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         'sirenPin'     | 'text'              | '5555'     | true
         'keypadInputPin' | 'text'            | '1111'     | true
         'alarmResetPin' | 'number'           | 2222       | true
+        'alarmResetCode' | 'text'            | '2323'     | true
         'userpin'      | 'text'              | '3333'     | true
         'alarmcode'    | 'text'              | '4444'     | true
         'HSMPIN'       | 'text'              | '5555'     | true
