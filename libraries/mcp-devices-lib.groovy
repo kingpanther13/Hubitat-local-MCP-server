@@ -1632,7 +1632,7 @@ private Map _lookupDevicePreference(Map model, name) {
 }
 
 private boolean _devicePreferenceIsSecret(Map entry) {
-    return entry?.type?.toString() == 'password' || _deviceConfigurationSecretKey(entry?.name)
+    return _redactsCredentials() && (entry?.type?.toString() == 'password' || _deviceConfigurationSecretKey(entry?.name))
 }
 
 private boolean _deviceConfigurationSecretKey(key) {
@@ -1643,6 +1643,7 @@ private boolean _deviceConfigurationSecretKey(key) {
 }
 
 private _deviceConfigurationPublicValue(value, key = '') {
+    if (!_redactsCredentials()) return value
     if (_deviceConfigurationSecretKey(key)) return '***redacted (password)***'
     if (value instanceof Map) {
         def copy = [:]
@@ -4213,7 +4214,7 @@ private Map _applyDeviceEdit(deviceId, Map fj, Map fields, Map send, Map prefere
         if (name == 'dataValues') {
             for (item in wanted) {
                 if (actual instanceof Map && actual.get(item.key)?.toString() == item.value) changes << [property: "dataValue.${item.key}", newValue: item.value]
-                else errors << [property: "dataValue.${item.key}", error: "Saved, but the data value reads back as ${groovy.json.JsonOutput.toJson(actual instanceof Map ? actual.get(item.key) : null)}; inspect device data before retrying."]
+                else errors << [property: "dataValue.${item.key}", error: "Saved, but the data value reads back as ${groovy.json.JsonOutput.toJson(_deviceConfigurationPublicValue(actual.get(item.key), item.key))}; inspect device data before retrying."]
             }
             continue
         }
@@ -5536,13 +5537,11 @@ Default: most-recent events for a device (deviceId + optional limit). Device eve
             description: """Change a device's settings the way its device page saves them: Device Info fields, driver preferences, assistant sharing and enabled state. Read hub_get_device(mode='configuration') first; its editableFields and preferences give each name's type, options, current value and whether this device offers it. Only change devices the user asked about. Fields marked requiresConfirmation (driver, network or Zigbee ID, dashboards, Hub Mesh, assistants) need confirm=true and a backup under 24 hours old. Saving preferences, showOnHome, defaultCurrentState or retryEnabled runs the driver's updated(). The result lists each change and error from one read-back; inspect it before retrying.""",
             inputSchema: [
                 type: "object",
-                additionalProperties: false,
                 properties: [
                     deviceId: [type: "string", description: "Device ID from hub_list_devices."],
                     fields: [type: "object", description: "Fields to change, by editableFields name: label, name, deviceNetworkId, room (name or id; \"\" clears), enabled, tags (replaces the set), notes, defaultIcon, maxEvents, maxStates, spammyThreshold, deviceTypeId, zigbeeId, dashboardIds, meshEnabled, meshFullSync, retryEnabled, showOnHome, defaultCurrentState, dataValues, homeKitEnabled, amazonAlexaEnabled, googleHomeEnabled. Omitted fields keep their values."],
                     preferences: [type: "object", description: "Driver preferences by declared name: a value of the declared type, {value, multiple} for an enum whose configuration reports multiple:null, or {clear:true} to remove an optional saved value."],
-                    confirm: [type: "boolean", description: "Approval for requiresConfirmation fields; also needs a hub backup under 24 hours old."],
-                    bestPracticeKey: [type: "string"]
+                    confirm: [type: "boolean", description: "Approval for requiresConfirmation fields; also needs a hub backup under 24 hours old."]
                 ],
                 required: ["deviceId"]
             ]

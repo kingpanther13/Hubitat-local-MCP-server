@@ -27,7 +27,7 @@ private List _ndSettings(Long id) {
     if (!(response instanceof Map) || !(response.settings instanceof List)) throw new IllegalStateException('Native settings are unavailable')
     response.settings.collect { row ->
         if (!(row instanceof Map) || !(row.name instanceof String)) throw new IllegalStateException('Unexpected native setting row')
-        boolean secret = row.type == 'password' || _appConfigIsSecretSetting(row.name, row.type, row.value)
+        boolean secret = _redactsCredentials() && (row.type == 'password' || _appConfigIsSecretSetting(row.name, row.type, row.value))
         def setting = [name: row.name, type: row.type, multiple: row.multiple, value: secret ? null : row.value, device_ids: row.deviceList instanceof Map ? row.deviceList.keySet().collect { it.toString() }.sort() : null]
         if (secret) setting.redacted = true
         setting
@@ -131,7 +131,11 @@ Map toolGetRuleDocument(Map args) {
     if ('conditions' in sections) document.conditions = nativeState.capabsfalse instanceof Map ? nativeState.capabsfalse : [:]
     if ('triggers' in sections) document.triggers = nativeState.capabstrue instanceof Map ? nativeState.capabstrue : [:]
     if ('expressions' in sections) document.expressions = nativeState.eval instanceof Map ? nativeState.eval : [:]
-    if ('variables' in sections) document.variables = _nrHandle(id).getAllLocalVars()
+    if ('variables' in sections) document.variables = _nrHandle(id).getAllLocalVars().collectEntries { name, row ->
+        Map shown = _rmPublicLocalVariable(name.toString(), row instanceof Map ? row : [value: row])
+        shown.remove('name')
+        [(name): row instanceof Map ? row + shown : shown]
+    }
     if ('settings' in sections) document.settings = _ndSettings(id)
     if (paged) {
         String section = sections[0]
@@ -246,10 +250,10 @@ private boolean _ndKnownRow(Map rows, String rowId, String missing) {
 // actNdx, then advances that counter; a new rule starts both at 1. The batch may name the row by it.
 private String _ndPredictAppend(Map rows, Map counters, String part) {
     String family = part == 'action' ? 'action' : 'condition'
-    int next = counters.get(family) as int
+    List taken = family == 'action' ? [rows.action] : [rows.condition, rows.trigger]
+    int next = _ndCounter(counters.get(family), taken.any { !it.ids.isEmpty() })
     counters.put(family, next + 1)
     String predicted = next.toString()
-    List taken = family == 'action' ? [rows.action] : [rows.condition, rows.trigger]
     if (taken.any { predicted in it.ids }) throw new IllegalArgumentException("Rule Machine's next ${family} id ${predicted} is already in use; read the rule again before appending")
     rows.get(part).predicted << predicted
     rows.get(part).added++
@@ -281,8 +285,8 @@ private void _ndPreflight(Long id, List changes) {
     Map rows = [action: [ids: (actionOrder + projectedActions.keySet()) as Set, added: 0, deleted: [] as Set, predicted: [] as Set],
                 condition: [ids: conditions.keySet().collect { it.toString() } as Set, added: 0, deleted: [] as Set, predicted: [] as Set],
                 trigger: [ids: triggers.keySet().collect { it.toString() } as Set, added: 0, deleted: [] as Set, predicted: [] as Set]]
-    Map counters = [condition: _ndCounter(before.ndx, !(rows.condition.ids.isEmpty() && rows.trigger.ids.isEmpty())),
-                    action: _ndCounter(before.actNdx, !rows.action.ids.isEmpty())]
+    // Read when the batch first appends to a family, so a counter it never uses cannot refuse it.
+    Map counters = [condition: before.ndx, action: before.actNdx]
     // A rule's first Required Expression advances ndx by one (live); later ones leave it.
     boolean hasRequired = expressions.get('0') instanceof List && !expressions.get('0').isEmpty()
     boolean appendedActions = false
@@ -346,7 +350,7 @@ private void _ndPreflight(Long id, List changes) {
                 projectedActions.remove(target)
                 actionOrder = actionOrder.findAll { it != target }
             }
-            if (change.part == 'required' && !hasRequired) { counters.put('condition', (counters.get('condition') as int) + 1); hasRequired = true }
+            if (change.part == 'required' && !hasRequired) { counters.put('condition', _ndCounter(counters.get('condition'), !(rows.condition.ids.isEmpty() && rows.trigger.ids.isEmpty())) + 1); hasRequired = true }
             if (change.part in ['expression', 'required']) {
                 String evalId = change.part == 'required' ? '0' : value.id.toString()
                 expressions.put(evalId, value.tokens)

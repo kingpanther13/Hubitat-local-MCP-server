@@ -600,9 +600,7 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
         result.success == true
         posts == [[path: '/device/runmethod', body: [id: 10, method: 'updateDataValue',
                    args: [[type: 'STRING', value: 'probe'], [type: 'STRING', value: '0007']]]]]
-        result.changes*.property == ['dataValues']
-        result.changes[0].newValue == [probe: '0007']
-        result.changes[0].oldValue.existing == 'unchanged'
+        result.changes == [[property: 'dataValue.probe', newValue: '0007']]
         !JsonOutput.toJson(result).contains('fixture-token')
         fullJsonReads() == 2
 
@@ -624,7 +622,7 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
         then:
         result.success == false
         result.changes.empty
-        result.errors*.property == ['dataValues']
+        result.errors*.property == ['dataValue.probe']
         result.errors[0].error.contains('reads back as')
         !JsonOutput.toJson(result).contains('fixture-token')
     }
@@ -1101,6 +1099,22 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
         !JsonOutput.toJson(result).contains('old-fixture-secret')
     }
 
+    def 'with Hide passwords and credentials off, the configuration read shows a password preference as stored'() {
+        given:
+        def model = fixture()
+        model.settings << [name: 'apiToken', type: 'password', value: 'fixture-secret']
+        registerFixture(model, true)
+        settingsMap.redactCredentials = false
+
+        when:
+        def result = script.toolGetDevice('10', 'configuration')
+
+        then:
+        def entry = result.preferences.find { it.name == 'apiToken' }
+        entry.value == 'fixture-secret'
+        !entry.containsKey('redacted')
+    }
+
     def 'a failed secret preference update logs a safe ERROR summary'() {
         given:
         def model = fixture()
@@ -1130,8 +1144,8 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
         def editable = script._deviceConfigurationEditableFields(fixture())
 
         then:
-        schema.properties.keySet() == ['deviceId', 'fields', 'preferences', 'confirm', 'bestPracticeKey'] as Set
-        schema.additionalProperties == false
+        schema.properties.keySet() == ['deviceId', 'fields', 'preferences', 'confirm'] as Set
+        !schema.containsKey('additionalProperties')
         schema.required == ['deviceId']
         editable*.name as Set == script._deviceEditFields().keySet()
         editable.every { schema.properties.fields.description.contains(it.name) }

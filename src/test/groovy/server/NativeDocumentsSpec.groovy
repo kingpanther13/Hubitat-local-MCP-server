@@ -223,6 +223,22 @@ class NativeDocumentsSpec extends ToolSpecBase {
         events.isEmpty()
     }
 
+    def 'credential-named settings and local variables read as stored with Hide passwords and credentials off, hidden by default'() {
+        given:
+        hubGet.register('/installedapp/settings/42') { q -> JsonOutput.toJson([settings: [[name: 'apiKey', type: 'text', value: 'key-1']]]) }
+        nativeState.allLocalVars.doorCode = [type: 'string', value: '4321']
+        when:
+        def hidden = script.toolGetRuleDocument([rule_id: 42, sections: ['settings', 'variables']])
+        settingsMap.redactCredentials = false
+        def shown = script.toolGetRuleDocument([rule_id: 42, sections: ['settings', 'variables']])
+        then:
+        hidden.settings[0].value == null && hidden.settings[0].redacted == true
+        hidden.variables.doorCode.value == null && hidden.variables.doorCode.redacted == true
+        hidden.variables.counter.value == 0 && !hidden.variables.counter.containsKey('redacted')
+        shown.settings[0].value == 'key-1' && !shown.settings[0].containsKey('redacted')
+        shown.variables.doorCode.value == '4321'
+    }
+
     def 'disabled native required expression ignores stale predicate flags without rendering'() {
         given:
         typedSettings.useST = false

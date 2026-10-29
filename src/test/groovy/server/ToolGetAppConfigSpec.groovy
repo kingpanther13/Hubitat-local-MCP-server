@@ -871,6 +871,39 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         !JsonOutput.toJson(result).contains('hunter2-SECRET')
     }
 
+    def "with Hide passwords and credentials off, inputs and settings read back as stored"() {
+        given:
+        settingsMap.enableRead = true
+        settingsMap.redactCredentials = false
+        hubGet.register('/installedapp/configure/json/35') { params -> makePasswordConfigJson() }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeSettings: true])
+
+        then:
+        result.page.sections[0].inputs.find { it.name == 'apiKey' }.value == 'hunter2-SECRET'
+        result.settings.apiKey == 'hunter2-SECRET'
+        !result.containsKey('settingsRedactionNote')
+    }
+
+    def "a per-client token sees credentials hidden even with Hide passwords and credentials off"() {
+        given:
+        settingsMap.enableRead = true
+        settingsMap.redactCredentials = false
+        script.callerClient = [id: 'c1']
+        hubGet.register('/installedapp/configure/json/35') { params -> makePasswordConfigJson() }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35])
+
+        then:
+        result.page.sections[0].inputs.find { it.name == 'apiKey' }.value == '***redacted (password)***'
+        !JsonOutput.toJson(result).contains('hunter2-SECRET')
+
+        cleanup:
+        script.callerClient = null
+    }
+
     def "redacts password-type keys in the raw settings map when includeSettings=true"() {
         given:
         settingsMap.enableRead = true

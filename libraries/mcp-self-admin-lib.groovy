@@ -59,7 +59,8 @@ def toolUpdateMcpSettings(args) {
         "backupBudgetMb":         "number",
         "enableLocalAccess":      "bool",
         "enableCloudAccess":      "bool",
-        "redactAccessTokens":     "bool"
+        "redactAccessTokens":     "bool",
+        "redactCredentials":      "bool"
     ]
     // Allowed keys for the not-allowed error message = scalar allowlist + the special selectedDevices key.
     def allowedKeyNames = ((allowedSettings.keySet() + ["selectedDevices"]) as List).sort()

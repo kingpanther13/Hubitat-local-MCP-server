@@ -171,13 +171,13 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         then:
         result.success == false
         result.changes.empty
-        result.errors.find { it.property == 'tags' }?.error?.contains('tags reads back as')
+        result.errors.find { it.property == 'tags' }?.error?.contains(message)
 
         where:
-        nativeTags    | wanted
-        'original'    | ['kitchen']
-        [1, 2]        | []
-        'kitchen,den' | ['kitchen']
+        nativeTags    | wanted      | message
+        'original'    | ['kitchen'] | 'tags reads back as'
+        [1, 2]        | []          | 'could not be read back'
+        'kitchen,den' | ['kitchen'] | 'tags reads back as'
     }
 
     @spock.lang.Unroll

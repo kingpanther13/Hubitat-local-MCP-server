@@ -8090,6 +8090,15 @@ def updated() {}
             assert (typed["decimalProof"]["type"], float(typed["decimalProof"]["value"])) == ("bigdecimal", 3.75), typed
             assert (typed["seenAt"]["type"], typed["seenAt"]["value"]) == ("datetime", timestamp), typed
             assert "seenAt" in self._rm_page(app_id)
+            # A credential-named local variable reads hidden by default and as stored with the toggle off.
+            hidden = self._rm_update(app_id, [native_change("variable", operation="create", name="doorCode",
+                                                            type="string", value="4321")])["document"]["variables"]
+            assert hidden["doorCode"].get("redacted") is True and hidden["doorCode"].get("value") is None, hidden
+            try:
+                self._mcp_settings({"redactCredentials": False})
+                assert self._native_rule_document(app_id)["variables"]["doorCode"]["value"] == "4321"
+            finally:
+                self._mcp_settings({"redactCredentials": True})
             removed = self._rm_update(app_id, [native_delete("action", action),
                                                native_change("variable", operation="delete", name="fields")])
             assert "fields" not in removed["document"]["variables"], removed["document"]["variables"]

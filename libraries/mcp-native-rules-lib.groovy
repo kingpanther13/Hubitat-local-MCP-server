@@ -2826,14 +2826,20 @@ def toolListRuleLocalVariables(args) {
     def localVariables = []
     lvRead.vars.each { lvName, lvMeta ->
         def live = lvRead.live?.get(lvName?.toString())
-        localVariables << [
-            name: lvName?.toString(),
+        localVariables << _rmPublicLocalVariable(lvName?.toString(), [
             type: (lvMeta instanceof Map ? lvMeta?.type?.toString() : null),
             value: (live instanceof Map && live.containsKey("value")) ? live.value : (lvMeta instanceof Map ? lvMeta?.value : null)
-        ]
+        ])
     }
     localVariables = localVariables.sort { it.name }
     return [appId: appId, localVariables: localVariables, total: localVariables.size()]
+}
+
+// A local variable named like a credential (doorCode, alarmPin) reads with its value hidden, as settings do.
+Map _rmPublicLocalVariable(String name, Map row) {
+    Map result = [name: name, type: row?.type, value: row?.value]
+    if (_appConfigMasksSetting(name, row?.type == 'boolean' ? 'bool' : 'text', row?.value)) { result.value = null; result.redacted = true }
+    result
 }
 
 // ==================== PER-TOOL METADATA (issue #209) ====================

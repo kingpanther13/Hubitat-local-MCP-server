@@ -12,7 +12,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     // Apps are RM rules unless a test says otherwise.
     def setup() {
-        script.metaClass.getAppByAppId = { id -> [appType: [name: 'Rule-5.1']] }
+        script.metaClass.getAppByAppId = { id -> [appType: [name: 'Rule-5.1', namespace: 'hubitat']] }
     }
 
     private RMUtilsMock rmUtils

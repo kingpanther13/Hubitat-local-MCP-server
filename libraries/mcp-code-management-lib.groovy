@@ -583,7 +583,7 @@ def toolGetAppConfig(args) {
             // A mode input renders no value; it is stored in settings, as the form engine reads it.
             if (i.type == "mode" && parsed.settings instanceof Map && parsed.settings.containsKey(i.name)) input.value = parsed.settings[i.name]
             if (i.type == "password" && i.name) passwordInputNames << i.name.toString()
-            if (input.containsKey("value") && _appConfigIsSecretSetting(i.name, i.type, input.value)) input.value = redactedPw
+            if (input.containsKey("value") && _appConfigMasksSetting(i.name, i.type, input.value)) input.value = redactedPw
             // An accessToken input stores its token under "value", which the whole-result pass (keyed on
             // the setting NAME) cannot see, so its rule applies here: the toggle, or a client caller.
             else if (input.containsKey("value") && _redactsAccessTokens() && input.value instanceof CharSequence &&
@@ -651,7 +651,7 @@ def toolGetAppConfig(args) {
     result.settingsKeyCount = settingsCount
     if (includeSettings) {
         def rawSettings = (parsed.settings instanceof Map) ? parsed.settings : [:]
-        if (!rawSettings) {
+        if (!rawSettings || !_redactsCredentials()) {
             result.settings = rawSettings
         } else {
             // configure/json carries no types for settings declared on other pages. statusJson lists
@@ -678,7 +678,7 @@ def toolGetAppConfig(args) {
                     redacted.put(k, _appConfigIsSecretSetting(key, type, v) ? redactedPw : v)
                 }
                 result.settings = redacted
-                result.settingsRedactionNote = "Secret values read ${redactedPw}: every setting the hub types as a password, on any page of the app, plus free-text settings whose names look like credentials (password, passwd, pwd, pass, passphrase, passcode, secret, token, API/access/private key, credential, psk, PIN, or a lock, user, access or alarm code). OAuth accessToken settings follow the Hide access tokens setting instead. Empty values are shown as-is. The secret itself is never returned; read or change it in the Hubitat UI.".toString()
+                result.settingsRedactionNote = "Secret values read ${redactedPw}: every setting the hub types as a password, on any page of the app, plus free-text settings whose names look like credentials (password, passwd, pwd, pass, passphrase, passcode, secret, token, API/access/private key, credential, psk, a PIN, or a code named for a lock, user, alarm, keypad, installer or similar). OAuth accessToken settings follow the Hide access tokens setting instead. Empty values are shown as-is. Turn off Hide passwords and credentials in the MCP app's settings to read them.".toString()
             }
         }
     } else if (settingsCount > 0) {
@@ -711,6 +711,12 @@ private Map _appConfigSettingTypes(Integer appId) {
     }
     return types
 }
+
+// The Hide passwords and credentials setting (default ON) governs what reads return; File Manager
+// snapshots drop secret values whatever it says.
+private boolean _redactsCredentials() { settings.redactCredentials != false || callerClient != null }
+
+private boolean _appConfigMasksSetting(name, type, value) { _redactsCredentials() && _appConfigIsSecretSetting(name, type, value) }
 
 // Whether a setting/input value must be redacted. A null or empty value hides nothing. The hub's
 // own password type always redacts. Otherwise a credential-shaped name redacts, unless the value
