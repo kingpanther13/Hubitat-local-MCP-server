@@ -20196,10 +20196,10 @@ def toolUpdateMcpSettings(args) {
 }
 private Map _mcpClientTokenOperation(op) {
     Map result = _mcpClientTokenResult(op)
-    if (settings.redactAccessTokens == true) {
-        String marker = "***redacted (access token)***"
-        if (result.token) result.token = marker
-        if (result.clients instanceof List) result.clients = result.clients.collect { it + [token: marker] }
+    String marker = "***redacted (access token)***"
+    if (settings.redactAccessTokens == true && result.token) result.token = marker
+    if ((settings.redactAccessTokens == true || _redactsCredentials()) && result.clients instanceof List) {
+        result.clients = result.clients.collect { it + [token: marker] }
     }
     return result
 }
@@ -28081,7 +28081,7 @@ def advancedOverridesPage() {
         }
         section("Passwords and credentials in responses") {
             input "redactCredentials", "bool", title: "Hide passwords and credentials in MCP responses",
-                  description: "ON (default): password settings, and app, device and rule values whose names look like credentials (apiKey, brokerPassword, lockCode, alarmPin), read back hidden; the setting is still listed and can still be written. OFF: they are returned as stored. Per-client tokens always see them hidden. File Manager backups leave out password and credential-named settings either way.",
+                  description: "ON (default): password settings, and app, device and rule values whose names look like credentials (apiKey, brokerPassword, lockCode, alarmPin), read back hidden, as do the stored per-client tokens a client-token list shows; the setting is still listed and can still be written. OFF: they are returned as stored. Per-client tokens always see them hidden. File Manager backups leave out password and credential-named settings either way.",
                   defaultValue: true
         }
         section("Native app edit backups") {
