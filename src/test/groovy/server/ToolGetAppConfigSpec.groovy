@@ -1308,6 +1308,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         'gpioPin'      | 'number'            | 13         | false
         'pinCodeLength' | 'number'           | 4          | false
         'pinMode'      | 'text'              | 'output'   | false
+        'sirenPin'     | 'text'              | '5555'     | true
         'lockPasscode' | 'number'            | 1234       | true
         'apiTokens'    | null                | ['a', 'b'] | true
         'apiTokens'    | null                | []         | false

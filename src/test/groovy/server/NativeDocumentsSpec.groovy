@@ -810,6 +810,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
     def 'appended rows take the ids Rule Machine counters give them: ndx for triggers and conditions, actNdx for actions'() {
         given: 'the condition counter is ahead of the highest condition, as after its highest row was deleted'
         nativeState.ndx = 9
+        nativeState.actNdx = 7
         def condition = [part: 'condition', value: [capability: 'Switch', fields: [
             [name: 'rDev_#', type: 'capability.switch', value: ['789']], [name: 'state_#', type: 'enum', value: 'on']]]]
         when:
@@ -822,10 +823,31 @@ class NativeDocumentsSpec extends ToolSpecBase {
         def stale = thrown(IllegalArgumentException)
         stale.message == 'changes[1]: Expression references an unknown condition'
         when: 'an appended action takes actNdx, which is not a condition'
-        script._ndPreflight(42L, script._ndChanges([logChange(), [part: 'required', value: [tokens: ['4']]]]))
+        script._ndPreflight(42L, script._ndChanges([logChange(), [part: 'required', value: [tokens: ['7']]]]))
         then:
         def wrongKind = thrown(IllegalArgumentException)
         wrongKind.message == 'changes[1]: Expression references an unknown condition'
+    }
+
+    def "a rule's first Required Expression advances the condition counter, so a later append takes the next id"() {
+        given:
+        nativeState.eval = [:]
+        def condition = [part: 'condition', value: [capability: 'Switch', fields: [
+            [name: 'rDev_#', type: 'capability.switch', value: ['789']], [name: 'state_#', type: 'enum', value: 'on']]]]
+        when:
+        script._ndPreflight(42L, script._ndChanges([[part: 'required', value: [tokens: ['4']]], condition, [part: 'required', value: [tokens: ['7']]]]))
+        then:
+        noExceptionThrown()
+        when:
+        script._ndPreflight(42L, script._ndChanges([[part: 'required', value: [tokens: ['4']]], condition, [part: 'required', value: [tokens: ['6']]]]))
+        then:
+        def stale = thrown(IllegalArgumentException)
+        stale.message == 'changes[2]: Expression references an unknown condition'
+        when: 'a rule that already has one keeps its counter'
+        nativeState.eval = ['0': ['4']]
+        script._ndPreflight(42L, script._ndChanges([[part: 'required', value: [tokens: ['4']]], condition, [part: 'required', value: [tokens: ['6']]]]))
+        then:
+        noExceptionThrown()
     }
 
     def 'an appended END-IF named by its id and deleted in the same batch leaves its IF open, refused before any write'() {

@@ -17,6 +17,10 @@ import groovy.json.JsonOutput
  */
 class ToolRuleHealthSpec extends ToolSpecBase {
 
+    def setup() {
+        script.metaClass.getAppByAppId = { Long id -> [id: id, appType: [namespace: 'hubitat']] }
+    }
+
     // ---------- fixtures ----------
 
     /** Classic RM compiled-state shape (the ~45-key /app/ruleBuilderJson body, trimmed). */

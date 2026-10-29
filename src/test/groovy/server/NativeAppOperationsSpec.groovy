@@ -891,7 +891,7 @@ class NativeAppOperationsSpec extends ToolSpecBase {
     def 'a create whose first page names both a next and a done page reports committed false, as update does'() {
         given:
         parentAt(40L, 'notifierChild', 'Notifier')
-        Map first = page(91L, notifierInputs())
+        Map first = page(91L, notifierInputs(), [install: false])
         first.configPage.nextPage = 'pageTwo'
         first.configPage.donePage = 'pageDone'
         childAt(91L, 40L, 'Notifier', [first, page(91L, notifierInputs(), [label: 'Front door', settings: [origLabel: 'Front door']])])

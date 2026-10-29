@@ -275,6 +275,8 @@ private void _ndPreflight(Long id, List changes) {
                 condition: [ids: conditions.keySet().collect { it.toString() } as Set, added: 0, deleted: [] as Set, predicted: [] as Set],
                 trigger: [ids: triggers.keySet().collect { it.toString() } as Set, added: 0, deleted: [] as Set, predicted: [] as Set]]
     Map counters = [condition: _ndCounter(before.ndx), action: _ndCounter(before.actNdx)]
+    // A rule's first Required Expression advances ndx by one (live); later ones leave it.
+    boolean hasRequired = expressions.get('0') instanceof List && !expressions.get('0').isEmpty()
     boolean appendedActions = false
     Map locals = id == null ? [:] : null
     Map inventory = null
@@ -336,6 +338,7 @@ private void _ndPreflight(Long id, List changes) {
                 projectedActions.remove(target)
                 actionOrder = actionOrder.findAll { it != target }
             }
+            if (change.part == 'required' && !hasRequired) { counters.put('condition', (counters.get('condition') as int) + 1); hasRequired = true }
             if (change.part in ['expression', 'required']) {
                 String evalId = change.part == 'required' ? '0' : value.id.toString()
                 expressions.put(evalId, value.tokens)

@@ -20,6 +20,7 @@ class RestoreRequiredExpressionSpec extends ToolSpecBase {
         settingsMap.enableRead = true
         stateMap.lastBackupTimestamp = 1234567890000L
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.getAppByAppId = { Long id -> [id: id, appType: [namespace: 'hubitat']] }
         fake = new FakeRmExpressionEditor()
         fake.install(script, hubGet)
     }
