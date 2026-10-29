@@ -13067,6 +13067,7 @@ private Map _applyDeviceEdit(deviceId, Map fj, Map fields, Map send, Map prefere
     }
     def after = _fetchDeviceFullJson(deviceId)
     def changes = []
+    def unchanged = []
     def errors = []
     for (field in fields) {
         String name = field.key
@@ -13077,7 +13078,10 @@ private Map _applyDeviceEdit(deviceId, Map fj, Map fields, Map send, Map prefere
         def wanted = field.value
         if (name == 'dataValues') {
             for (item in wanted) {
-                if (actual instanceof Map && actual.get(item.key)?.toString() == item.value) changes << [property: "dataValue.${item.key}", newValue: item.value]
+                if (actual instanceof Map && actual.get(item.key)?.toString() == item.value) {
+                    if (d.data instanceof Map && d.data.get(item.key)?.toString() == item.value) unchanged << "dataValue.${item.key}".toString()
+                    else changes << [property: "dataValue.${item.key}", newValue: item.value]
+                }
                 else errors << [property: "dataValue.${item.key}", error: "Saved, but the data value reads back as ${groovy.json.JsonOutput.toJson(_deviceConfigurationPublicValue(actual.get(item.key), item.key))}; inspect device data before retrying."]
             }
             continue
@@ -13085,7 +13089,9 @@ private Map _applyDeviceEdit(deviceId, Map fj, Map fields, Map send, Map prefere
         if (name == 'room') wanted = send.roomName
         boolean matches = _deviceEditValuesMatch(name, wanted, actual)
         if (name == 'deviceNetworkId' && wanted == '0' && _deviceFlag(d.linkedDevice)) matches = actual == d.deviceNetworkId
-        if (matches) {
+        if (matches && _deviceEditReadable(name, fj) && _deviceEditValuesMatch(name, wanted, _deviceEditCurrentValue(name, fj))) {
+            unchanged << name
+        } else if (matches) {
             changes << [property: name, oldValue: _deviceConfigurationPublicValue(_deviceEditCurrentValue(name, fj), name),
                         newValue: _deviceConfigurationPublicValue(name == 'room' ? (wanted ?: 'none') : wanted, name)]
         } else {
@@ -13097,19 +13103,23 @@ private Map _applyDeviceEdit(deviceId, Map fj, Map fields, Map send, Map prefere
     }
     if (preferences) {
         def model = after?.device instanceof Map ? _readDevicePreferenceModel(after) : null
+        def beforeModel = _readDevicePreferenceModel(fj)
         for (pref in preferences) {
             String key = "preference.${pref.key}".toString()
             if (failed.containsKey(key)) errors << [property: key, error: failed.get(key)]
+            else if (_devicePreferenceUnchanged(beforeModel, pref.key.toString(), pref.value) &&
+                     _devicePreferenceMatches(model, pref.key.toString(), pref.value)) unchanged << key
             else _verifyDevicePreferenceWrite(pref.key.toString(), pref.value, changes, errors, model)
         }
     }
     if (changes.any { it.property == 'label' }) deviceLabel = after.device.label ?: after.device.name ?: deviceLabel
-    mcpLog(errors ? "error" : "info", "device", "Updated device '${deviceLabel}' (ID: ${deviceId}): ${changes.size()} changes, ${errors.size()} errors")
+    mcpLog(errors ? "error" : "info", "device", "Updated device '${deviceLabel}' (ID: ${deviceId}): ${changes.size()} changes, ${unchanged.size()} unchanged, ${errors.size()} errors")
     def result = [success: errors.isEmpty(), device: deviceLabel, deviceId: deviceId, changes: changes]
+    if (unchanged) result.unchanged = unchanged
     if (errors) {
         result.errors = errors
         result.isError = true
-        result.message = "Updated ${changes.size()} of ${changes.size() + errors.size()}; inspect errors and the device before retrying."
+        result.message = "Updated ${changes.size()} of ${changes.size() + unchanged.size() + errors.size()}; inspect errors and the device before retrying."
     }
     return result
 }
@@ -13197,15 +13207,24 @@ private String _saveDevicePreferencesPane(deviceId, Map fj, Map pane, Map prefer
     }
     return null
 }
+private boolean _devicePreferenceMatches(Map model, String name, Map setting) {
+    def entry = model == null ? null : _lookupDevicePreference(model, name)
+    if (model?.writeSafe != true || entry == null || entry.valueStatus in ["unknown", "invalid"]) return false
+    return setting.clear == true ? (!entry.valuePresent && entry.valueStatus == 'unset') :
+        (entry.valuePresent && entry.valueStatus == 'stored' && entry.value == setting.value)
+}
+private boolean _devicePreferenceUnchanged(Map model, String name, Map setting) {
+    if (!_devicePreferenceMatches(model, name, setting)) return false
+    def entry = _lookupDevicePreference(model, name)
+    return entry.multiple != true || setting.clear == true || entry.rawValue == groovy.json.JsonOutput.toJson(setting.value)
+}
 private void _verifyDevicePreferenceWrite(String name, Map setting, List changes, List errors, Map model) {
     def entry = model == null ? null : _lookupDevicePreference(model, name)
     if (model?.writeSafe != true || entry == null || entry.valueStatus in ["unknown", "invalid"]) {
         errors << [property: "preference.${name}", stage: "verify", status: entry?.valueStatus == "invalid" ? "invalid" : "unavailable", error: "Saved, but the preference could not be read back to confirm it."]
         return
     }
-    boolean matches = setting.clear == true ? (!entry.valuePresent && entry.valueStatus == 'unset') :
-        (entry.valuePresent && entry.valueStatus == 'stored' && entry.value == setting.value)
-    if (matches) {
+    if (_devicePreferenceMatches(model, name, setting)) {
         changes << [property: "preference.${name}", newValue: _devicePreferenceIsSecret(entry) ? [type: entry.type, value: "[REDACTED]"] : setting]
     } else {
         errors << [property: "preference.${name}", stage: "verify", status: "mismatch", error: "Saved, but the preference reads back as a different value. Inspect the device configuration before retrying."]
@@ -25170,9 +25189,9 @@ private Map _naCreate(Map args) {
         if (doneSaves) {
             result.committed = false
             notes << "Its first page names both a next and a done page, so the hub answered its Done by saving and rendering the page again" +
-                (back.model.app?.installed == false ? "; the app did not install. Finish it with operation:'form'." : '.')
+                (back.model.app?.installed == true ? '.' : "; the app did not install. Finish it with operation:'form'.")
         }
-        if (back.model.app?.installed == false) {
+        if (back.model.app?.installed != true) {
             result.installed = false
             if (!doneSaves) notes << (!saved.done ? 'Its page renders no Done yet, so the app stays uninstalled until operation:\'form\' completes it.' :
                 'The hub reports the app not installed after its Done; open it with operation:\'form\'.')
@@ -26503,7 +26522,7 @@ private boolean _ndKnownRow(Map rows, String rowId, String missing) {
 private String _ndPredictAppend(Map rows, Map counters, String part) {
     String family = part == 'action' ? 'action' : 'condition'
     List taken = family == 'action' ? [rows.action] : [rows.condition, rows.trigger]
-    int next = _ndCounter(counters.get(family), counters.hadRows.get(family))
+    int next = _ndCounter(counters.get(family), taken.any { !it.ids.isEmpty() })
     counters.put(family, next + 1)
     String predicted = next.toString()
     if (taken.any { predicted in it.ids }) throw new IllegalArgumentException("Rule Machine's next ${family} id ${predicted} is already in use; read the rule again before appending")
@@ -26533,8 +26552,7 @@ private void _ndPreflight(Long id, List changes) {
     Map rows = [action: [ids: (actionOrder + projectedActions.keySet()) as Set, added: 0, deleted: [] as Set, predicted: [] as Set],
                 condition: [ids: conditions.keySet().collect { it.toString() } as Set, added: 0, deleted: [] as Set, predicted: [] as Set],
                 trigger: [ids: triggers.keySet().collect { it.toString() } as Set, added: 0, deleted: [] as Set, predicted: [] as Set]]
-    Map counters = [condition: before.ndx, action: before.actNdx,
-                    hadRows: [condition: !(rows.condition.ids.isEmpty() && rows.trigger.ids.isEmpty()), action: !rows.action.ids.isEmpty()]]
+    Map counters = [condition: before.ndx, action: before.actNdx]
     boolean hasRequired = expressions.get('0') instanceof List && !expressions.get('0').isEmpty()
     boolean appendedActions = false
     Map locals = id == null ? [:] : null
@@ -26595,7 +26613,7 @@ private void _ndPreflight(Long id, List changes) {
                 projectedActions.remove(target)
                 actionOrder = actionOrder.findAll { it != target }
             }
-            if (change.part == 'required' && !hasRequired) { counters.put('condition', _ndCounter(counters.get('condition'), counters.hadRows.condition) + 1); hasRequired = true }
+            if (change.part == 'required' && !hasRequired) { counters.put('condition', _ndCounter(counters.get('condition'), !(rows.condition.ids.isEmpty() && rows.trigger.ids.isEmpty())) + 1); hasRequired = true }
             if (change.part in ['expression', 'required']) {
                 String evalId = change.part == 'required' ? '0' : value.id.toString()
                 expressions.put(evalId, value.tokens)
@@ -35671,7 +35689,7 @@ Examples: `fields=["txtEnable"]` in configuration mode, or `sections=["state"], 
 
 If even one selected value exceeds the response budget, the tool returns `contentFormat="json-fragment"`, a `content` string (`contentText` for ChatGPT) and `nextCursor`. Repeat the same read with that cursor, concatenate the fragments in order, then parse the joined JSON. Pages retain the original redacted snapshot despite later telemetry changes. Continue within five minutes with the same device, mode, sections and fields. Expiry, eviction or a server reload requires restarting without cursor. At most eight snapshots and 2,097,152 characters of serialized JSON are retained in memory; select fewer fields if the budget is exceeded. Device authorization is checked on every page.
 
-`hub_update_device(deviceId, fields={...}, preferences={...}, confirm?)` saves the way the device page does, one save per page section, then reads the device back once and reports each field in `changes` or `errors`. Put `bestPracticeKey` beside them when mandatory best-practice acknowledgment is enabled. The whole request is checked before anything is written; a field the device does not offer (configuration reports `writable:false` with a `reason`) is refused.
+`hub_update_device(deviceId, fields={...}, preferences={...}, confirm?)` saves the way the device page does, one save per page section, then reads the device back once and reports each field in `changes`, `unchanged` (it already had the requested value) or `errors`. Put `bestPracticeKey` beside them when mandatory best-practice acknowledgment is enabled. The whole request is checked before anything is written; a field the device does not offer (configuration reports `writable:false` with a `reason`) is refused.
 
 - **Device Info save** (one request for all of these): `label`, `name`, `deviceNetworkId`, `room` (name or id; `""` clears), `tags` (replaces the set; `[]` clears), `notes`, `defaultIcon` (`""` clears), `maxEvents`/`maxStates` (1-2000), `spammyThreshold` (100-2000), `deviceTypeId`, `zigbeeId`, `dashboardIds` (replaces the set), `meshEnabled`, `meshFullSync`. The hub rebuilds the device from this save, so every current value is sent with the change.
 - **Preferences save** (one request): `preferences`, `showOnHome`, `defaultCurrentState` (`""` selects None), `retryEnabled`. It runs the driver's `updated()`, as the page's Save Preferences does; settings that are not named keep their values.
