@@ -10382,6 +10382,22 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
     def compiledReadError = null   // a thrown/bad-200 compiled-state read, surfaced if the HTML path also fails
     boolean useRuleBuilder = (source != "configPage")
     boolean useConfigPage = (source != "ruleBuilderJson")
+    // Only built-in apps are read. A user or community app's state can carry Rule Machine's keys
+    // without being a rule, and its default page runs its own code, which can drop a wizard's pending
+    // input (Hubitat Package Manager clears a pending install there).
+    def installed = null
+    try { installed = getAppByAppId(appId as Long) }
+    catch (Exception lookup) {
+        useRuleBuilder = false; useConfigPage = false
+        checkErrors << "app ${appId} was not read: it could not be identified (${lookup.message ?: lookup.toString()}), and a user or community app is not read as a rule".toString()
+    }
+    def namespace = installed?.appType?.namespace?.toString()
+    if (namespace && namespace != "hubitat") {
+        useRuleBuilder = false; useConfigPage = false
+        label = installed.label?.toString()
+        ruleFormat = "classic-app"
+        checkErrors << "app ${appId} was not read: it is a user or community app, whose state is not a rule's and whose page code can change its own state when rendered; read it with hub_get_app_config".toString()
+    }
 
     // PREFERRED structured source — the compiled-state verdict for ANY rule engine
     // (classic RM `broken` boolean, graph Visual Rule validationErrors, classic Visual Rule).
@@ -10432,21 +10448,6 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
     // guess at why. Keying it on ruleFormat=='rm' missed the case that motivates the note most: a
     // compiled read that came back empty without erroring leaves ruleFormat null, and the
     // config-page leg then identifies an RM rule and scans anyway.
-    // A user or community app's default page runs its own code, which can drop a wizard's pending
-    // input (Hubitat Package Manager clears a pending install there), so a health read never renders it.
-    def installed = null
-    String unidentified = null
-    if (runHtml) { try { installed = getAppByAppId(appId as Long) } catch (Exception lookup) { unidentified = lookup.message ?: lookup.toString() } }
-    def namespace = installed?.appType?.namespace?.toString()
-    if (runHtml && unidentified != null) {
-        runHtml = false
-        checkErrors << "the default page of app ${appId} was not rendered: the app could not be identified (${unidentified}), and a user or community app's page code can change its own state when rendered".toString()
-    } else if (runHtml && namespace && namespace != "hubitat") {
-        runHtml = false
-        label = installed.label?.toString()
-        if (ruleFormat == null) ruleFormat = "classic-app"
-        checkErrors << "the default page of app ${appId} was not rendered: it is a user or community app, whose page code can change its own state when rendered; read it with hub_get_app_config to check its page".toString()
-    }
     if (runHtml && compiledActionList == null) {
         String why = !useRuleBuilder ? "source='configPage' skips ruleBuilderJson" :
                      (compiledReadError != null ? "ruleBuilderJson could not be read" :

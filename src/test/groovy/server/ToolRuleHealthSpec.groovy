@@ -585,9 +585,29 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         rendered.isEmpty()
         h.ruleFormat == "classic-app"
         h.label == "Package Manager"
-        h.checkErrors.any { it.contains("was not rendered: it is a user or community app") }
+        h.checkErrors.any { it.contains("was not read: it is a user or community app") }
         h.unreadable == true
         h.ok == false
+    }
+
+    def "a user or community app whose state carries Rule Machine's broken flag is not read as a healthy rule"() {
+        given:
+        settingsMap.enableRead = true
+        script.metaClass.getAppByAppId = { Long id -> [id: id, label: 'Widget', appType: [name: 'Widget', namespace: 'someDeveloper']] }
+        List read = []
+        hubGet.register('/app/ruleBuilderJson/100') { read << 'compiled'; '{"broken":false}' }
+        hubGet.register('/installedapp/configure/json/100') { read << 'page'; '{}' }
+        hubGet.register('/installedapp/statusJson/100') { statusJson(100) }
+
+        when:
+        def h = script._rmCheckRuleHealth(100)
+
+        then:
+        read.isEmpty()
+        h.ruleFormat == "classic-app"
+        h.broken == null
+        h.ok == false
+        h.unreadable == true
     }
 
     def "an app the health read cannot identify is not rendered either"() {
