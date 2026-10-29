@@ -17762,6 +17762,8 @@ private boolean _appConfigSecretName(name) {
                     "uri", "endpoint", "timeout", "interval", "mode", "policy", "hint", "label", "name"] as Set
     Set keyQualifiers = ["api", "access", "private", "auth", "client", "secret", "encryption", "signing", "shared"] as Set
     Set pinQualifiers = ["lock", "user", "access", "pass", "disarm", "arm", "alarm", "security", "unlock", "auth", "entry", "keypad", "door", "master", "admin", "guest"] as Set
+    Set hardwarePins = ["led", "gpio", "relay", "io", "digital", "analog", "data", "output", "input", "sensor", "pwm", "signal", "button",
+                        "power", "reset", "enable", "interrupt", "irq", "clock", "clk", "sda", "scl", "tx", "rx", "servo", "motor", "trigger", "echo"] as Set
     for (int idx = 0; idx < words.size(); idx++) {
         String w = words[idx]
         String prev = idx > 0 ? words[idx - 1] : null
@@ -17772,7 +17774,7 @@ private boolean _appConfigSecretName(name) {
             w.endsWith("token") || w.endsWith("tokens") || w.startsWith("credential") || w == "psk" ||
             (w == "pass" && prev != "by" && (next == null || next in ["word", "phrase", "code", "key"])) ||
             (keyQualifiers.contains(w) && (next == "key" || next == "keys")) ||
-            (w in ["pin", "pins", "pincode", "pincodes"] && (prev == null || prev in pinQualifiers)) ||
+            (w in ["pin", "pins", "pincode", "pincodes"] && !(prev in hardwarePins)) ||
             (w in ["code", "codes"] && (prev in pinQualifiers || prev in ["pin", "pins"]))
         if (!hit) continue
         boolean twoWords = ((next == "key" || next == "keys") && keyQualifiers.contains(w)) || (w in ["pin", "pins"] && next in ["code", "codes"])
@@ -26832,6 +26834,7 @@ private void _ndPreflight(Long id, List changes) {
                 condition: [ids: conditions.keySet().collect { it.toString() } as Set, added: 0, deleted: [] as Set, predicted: [] as Set],
                 trigger: [ids: triggers.keySet().collect { it.toString() } as Set, added: 0, deleted: [] as Set, predicted: [] as Set]]
     Map counters = [condition: _ndCounter(before.ndx), action: _ndCounter(before.actNdx)]
+    boolean hasRequired = expressions.get('0') instanceof List && !expressions.get('0').isEmpty()
     boolean appendedActions = false
     Map locals = id == null ? [:] : null
     Map inventory = null
@@ -26891,6 +26894,7 @@ private void _ndPreflight(Long id, List changes) {
                 projectedActions.remove(target)
                 actionOrder = actionOrder.findAll { it != target }
             }
+            if (change.part == 'required' && !hasRequired) { counters.put('condition', (counters.get('condition') as int) + 1); hasRequired = true }
             if (change.part in ['expression', 'required']) {
                 String evalId = change.part == 'required' ? '0' : value.id.toString()
                 expressions.put(evalId, value.tokens)
