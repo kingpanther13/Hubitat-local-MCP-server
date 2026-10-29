@@ -5444,6 +5444,7 @@ private List _bugReportSettingsLines(String privacyMode) {
             "- **Back up before every native app edit:** ${eff(settings.backupEveryRuleWrite, false)}",
             "- **Backup storage budget (MB):** ${effNum(settings.backupBudgetMb, _itemBackupBudgetMb())}",
             "- **Hide access tokens in responses:** ${eff(settings.redactAccessTokens, false)}",
+            "- **Hide passwords and credentials in responses:** ${eff(settings.redactCredentials, true)}",
             "- **Keep recent errors for bug reports:** ${eff(settings.retainReportErrors, false)}",
             "- **Max captured states:** ${effNum(settings.maxCapturedStates, getMaxCapturedStates())}",
             "- **Loop guard max executions:** ${effNum(settings.loopGuardMax, settings.loopGuardMax ?: 30)}",
@@ -11048,7 +11049,7 @@ private Map _lookupDevicePreference(Map model, name) {
     return model?.entries?.find { it.name == name?.toString() }
 }
 private boolean _devicePreferenceIsSecret(Map entry) {
-    return entry?.type?.toString() == 'password' || _deviceConfigurationSecretKey(entry?.name)
+    return _redactsCredentials() && (entry?.type?.toString() == 'password' || _deviceConfigurationSecretKey(entry?.name))
 }
 private boolean _deviceConfigurationSecretKey(key) {
     String normalized = key?.toString()?.toLowerCase()?.replaceAll(/[^a-z0-9]/, '') ?: ''
@@ -11057,6 +11058,7 @@ private boolean _deviceConfigurationSecretKey(key) {
         normalized.contains('accesskey') || normalized in ['psk', 'psw']
 }
 private _deviceConfigurationPublicValue(value, key = '') {
+    if (!_redactsCredentials()) return value
     if (_deviceConfigurationSecretKey(key)) return '***redacted (password)***'
     if (value instanceof Map) {
         def copy = [:]
@@ -13076,7 +13078,7 @@ private Map _applyDeviceEdit(deviceId, Map fj, Map fields, Map send, Map prefere
         if (name == 'dataValues') {
             for (item in wanted) {
                 if (actual instanceof Map && actual.get(item.key)?.toString() == item.value) changes << [property: "dataValue.${item.key}", newValue: item.value]
-                else errors << [property: "dataValue.${item.key}", error: "Saved, but the data value reads back as ${groovy.json.JsonOutput.toJson(actual instanceof Map ? actual.get(item.key) : null)}; inspect device data before retrying."]
+                else errors << [property: "dataValue.${item.key}", error: "Saved, but the data value reads back as ${groovy.json.JsonOutput.toJson(_deviceConfigurationPublicValue(actual.get(item.key), item.key))}; inspect device data before retrying."]
             }
             continue
         }
@@ -14178,13 +14180,11 @@ Default: most-recent events for a device (deviceId + optional limit). Device eve
             description: """Change a device's settings the way its device page saves them: Device Info fields, driver preferences, assistant sharing and enabled state. Read hub_get_device(mode='configuration') first; its editableFields and preferences give each name's type, options, current value and whether this device offers it. Only change devices the user asked about. Fields marked requiresConfirmation (driver, network or Zigbee ID, dashboards, Hub Mesh, assistants) need confirm=true and a backup under 24 hours old. Saving preferences, showOnHome, defaultCurrentState or retryEnabled runs the driver's updated(). The result lists each change and error from one read-back; inspect it before retrying.""",
             inputSchema: [
                 type: "object",
-                additionalProperties: false,
                 properties: [
                     deviceId: [type: "string", description: "Device ID from hub_list_devices."],
                     fields: [type: "object", description: "Fields to change, by editableFields name: label, name, deviceNetworkId, room (name or id; \"\" clears), enabled, tags (replaces the set), notes, defaultIcon, maxEvents, maxStates, spammyThreshold, deviceTypeId, zigbeeId, dashboardIds, meshEnabled, meshFullSync, retryEnabled, showOnHome, defaultCurrentState, dataValues, homeKitEnabled, amazonAlexaEnabled, googleHomeEnabled. Omitted fields keep their values."],
                     preferences: [type: "object", description: "Driver preferences by declared name: a value of the declared type, {value, multiple} for an enum whose configuration reports multiple:null, or {clear:true} to remove an optional saved value."],
-                    confirm: [type: "boolean", description: "Approval for requiresConfirmation fields; also needs a hub backup under 24 hours old."],
-                    bestPracticeKey: [type: "string"]
+                    confirm: [type: "boolean", description: "Approval for requiresConfirmation fields; also needs a hub backup under 24 hours old."]
                 ],
                 required: ["deviceId"]
             ]
@@ -17297,7 +17297,7 @@ def toolGetAppConfig(args) {
             else if (i.value != null && (i.value != true || i.type == "bool")) input.value = i.value
             if (i.type == "mode" && parsed.settings instanceof Map && parsed.settings.containsKey(i.name)) input.value = parsed.settings[i.name]
             if (i.type == "password" && i.name) passwordInputNames << i.name.toString()
-            if (input.containsKey("value") && _appConfigIsSecretSetting(i.name, i.type, input.value)) input.value = redactedPw
+            if (input.containsKey("value") && _appConfigMasksSetting(i.name, i.type, input.value)) input.value = redactedPw
             else if (input.containsKey("value") && _redactsAccessTokens() && input.value instanceof CharSequence &&
                      i.name?.toString() ==~ /(?i)access_?token/) input.value = _accessTokenRedactedMarker()
             section.inputs << input
@@ -17356,7 +17356,7 @@ def toolGetAppConfig(args) {
     result.settingsKeyCount = settingsCount
     if (includeSettings) {
         def rawSettings = (parsed.settings instanceof Map) ? parsed.settings : [:]
-        if (!rawSettings) {
+        if (!rawSettings || !_redactsCredentials()) {
             result.settings = rawSettings
         } else {
             Map settingTypes = _appConfigSettingTypes(appIdStr as Integer)
@@ -17377,7 +17377,7 @@ def toolGetAppConfig(args) {
                     redacted.put(k, _appConfigIsSecretSetting(key, type, v) ? redactedPw : v)
                 }
                 result.settings = redacted
-                result.settingsRedactionNote = "Secret values read ${redactedPw}: every setting the hub types as a password, on any page of the app, plus free-text settings whose names look like credentials (password, passwd, pwd, pass, passphrase, passcode, secret, token, API/access/private key, credential, psk, PIN, or a lock, user, access or alarm code). OAuth accessToken settings follow the Hide access tokens setting instead. Empty values are shown as-is. The secret itself is never returned; read or change it in the Hubitat UI.".toString()
+                result.settingsRedactionNote = "Secret values read ${redactedPw}: every setting the hub types as a password, on any page of the app, plus free-text settings whose names look like credentials (password, passwd, pwd, pass, passphrase, passcode, secret, token, API/access/private key, credential, psk, a PIN, or a code named for a lock, user, alarm, keypad, installer or similar). OAuth accessToken settings follow the Hide access tokens setting instead. Empty values are shown as-is. Turn off Hide passwords and credentials in the MCP app's settings to read them.".toString()
             }
         }
     } else if (settingsCount > 0) {
@@ -17404,6 +17404,8 @@ private Map _appConfigSettingTypes(Integer appId) {
     }
     return types
 }
+private boolean _redactsCredentials() { settings.redactCredentials != false || callerClient != null }
+private boolean _appConfigMasksSetting(name, type, value) { _redactsCredentials() && _appConfigIsSecretSetting(name, type, value) }
 private boolean _appConfigIsSecretSetting(name, type, value) {
     if (_appConfigEmptyValue(value)) return false
     String t = type?.toString()
@@ -20100,7 +20102,8 @@ def toolUpdateMcpSettings(args) {
         "backupBudgetMb":         "number",
         "enableLocalAccess":      "bool",
         "enableCloudAccess":      "bool",
-        "redactAccessTokens":     "bool"
+        "redactAccessTokens":     "bool",
+        "redactCredentials":      "bool"
     ]
     def allowedKeyNames = ((allowedSettings.keySet() + ["selectedDevices"]) as List).sort()
     def updates = [:]
@@ -24807,14 +24810,18 @@ def toolListRuleLocalVariables(args) {
     def localVariables = []
     lvRead.vars.each { lvName, lvMeta ->
         def live = lvRead.live?.get(lvName?.toString())
-        localVariables << [
-            name: lvName?.toString(),
+        localVariables << _rmPublicLocalVariable(lvName?.toString(), [
             type: (lvMeta instanceof Map ? lvMeta?.type?.toString() : null),
             value: (live instanceof Map && live.containsKey("value")) ? live.value : (lvMeta instanceof Map ? lvMeta?.value : null)
-        ]
+        ])
     }
     localVariables = localVariables.sort { it.name }
     return [appId: appId, localVariables: localVariables, total: localVariables.size()]
+}
+Map _rmPublicLocalVariable(String name, Map row) {
+    Map result = [name: name, type: row?.type, value: row?.value]
+    if (_appConfigMasksSetting(name, row?.type == 'boolean' ? 'bool' : 'text', row?.value)) { result.value = null; result.redacted = true }
+    result
 }
 private boolean _rmReusableBackupFileMatches(Map entry, Integer ruleId) {
     def fileName = entry?.fileName?.toString()
@@ -26293,7 +26300,7 @@ private List _ndSettings(Long id) {
     if (!(response instanceof Map) || !(response.settings instanceof List)) throw new IllegalStateException('Native settings are unavailable')
     response.settings.collect { row ->
         if (!(row instanceof Map) || !(row.name instanceof String)) throw new IllegalStateException('Unexpected native setting row')
-        boolean secret = row.type == 'password' || _appConfigIsSecretSetting(row.name, row.type, row.value)
+        boolean secret = _redactsCredentials() && (row.type == 'password' || _appConfigIsSecretSetting(row.name, row.type, row.value))
         def setting = [name: row.name, type: row.type, multiple: row.multiple, value: secret ? null : row.value, device_ids: row.deviceList instanceof Map ? row.deviceList.keySet().collect { it.toString() }.sort() : null]
         if (secret) setting.redacted = true
         setting
@@ -26392,7 +26399,11 @@ Map toolGetRuleDocument(Map args) {
     if ('conditions' in sections) document.conditions = nativeState.capabsfalse instanceof Map ? nativeState.capabsfalse : [:]
     if ('triggers' in sections) document.triggers = nativeState.capabstrue instanceof Map ? nativeState.capabstrue : [:]
     if ('expressions' in sections) document.expressions = nativeState.eval instanceof Map ? nativeState.eval : [:]
-    if ('variables' in sections) document.variables = _nrHandle(id).getAllLocalVars()
+    if ('variables' in sections) document.variables = _nrHandle(id).getAllLocalVars().collectEntries { name, row ->
+        Map shown = _rmPublicLocalVariable(name.toString(), row instanceof Map ? row : [value: row])
+        shown.remove('name')
+        [(name): row instanceof Map ? row + shown : shown]
+    }
     if ('settings' in sections) document.settings = _ndSettings(id)
     if (paged) {
         String section = sections[0]
@@ -26492,10 +26503,10 @@ private boolean _ndKnownRow(Map rows, String rowId, String missing) {
 }
 private String _ndPredictAppend(Map rows, Map counters, String part) {
     String family = part == 'action' ? 'action' : 'condition'
-    int next = counters.get(family) as int
+    List taken = family == 'action' ? [rows.action] : [rows.condition, rows.trigger]
+    int next = _ndCounter(counters.get(family), taken.any { !it.ids.isEmpty() })
     counters.put(family, next + 1)
     String predicted = next.toString()
-    List taken = family == 'action' ? [rows.action] : [rows.condition, rows.trigger]
     if (taken.any { predicted in it.ids }) throw new IllegalArgumentException("Rule Machine's next ${family} id ${predicted} is already in use; read the rule again before appending")
     rows.get(part).predicted << predicted
     rows.get(part).added++
@@ -26523,8 +26534,7 @@ private void _ndPreflight(Long id, List changes) {
     Map rows = [action: [ids: (actionOrder + projectedActions.keySet()) as Set, added: 0, deleted: [] as Set, predicted: [] as Set],
                 condition: [ids: conditions.keySet().collect { it.toString() } as Set, added: 0, deleted: [] as Set, predicted: [] as Set],
                 trigger: [ids: triggers.keySet().collect { it.toString() } as Set, added: 0, deleted: [] as Set, predicted: [] as Set]]
-    Map counters = [condition: _ndCounter(before.ndx, !(rows.condition.ids.isEmpty() && rows.trigger.ids.isEmpty())),
-                    action: _ndCounter(before.actNdx, !rows.action.ids.isEmpty())]
+    Map counters = [condition: before.ndx, action: before.actNdx]
     boolean hasRequired = expressions.get('0') instanceof List && !expressions.get('0').isEmpty()
     boolean appendedActions = false
     Map locals = id == null ? [:] : null
@@ -26585,7 +26595,7 @@ private void _ndPreflight(Long id, List changes) {
                 projectedActions.remove(target)
                 actionOrder = actionOrder.findAll { it != target }
             }
-            if (change.part == 'required' && !hasRequired) { counters.put('condition', (counters.get('condition') as int) + 1); hasRequired = true }
+            if (change.part == 'required' && !hasRequired) { counters.put('condition', _ndCounter(counters.get('condition'), !(rows.condition.ids.isEmpty() && rows.trigger.ids.isEmpty())) + 1); hasRequired = true }
             if (change.part in ['expression', 'required']) {
                 String evalId = change.part == 'required' ? '0' : value.id.toString()
                 expressions.put(evalId, value.tokens)
@@ -27179,9 +27189,9 @@ private Map _nfPublic(Map context, List optionsFor) {
     List fields = context.get('fields').values().collect { field ->
         Map result = [:] + field
         ['device', 'ignore', 'capability', 'present', 'default_value', 'app_field', 'sidecars', 'hub_default'].each { result.remove(it) }
-        if (field.type == 'password') result.redacted = true
+        if (field.type == 'password' && _redactsCredentials()) result.redacted = true
         else if (field.name ==~ /(?i)access_?token/ && result.value instanceof CharSequence && result.value && _redactsAccessTokens()) result.value = _accessTokenRedactedMarker()
-        else if (_appConfigIsSecretSetting(field.name, field.type, result.value)) { result.value = _appConfigRedactedMarker(); result.redacted = true }
+        else if (_appConfigMasksSetting(field.name, field.type, result.value)) { result.value = _appConfigRedactedMarker(); result.redacted = true }
         if (field.device && field.name in optionsFor) result.options = _nfDevices(field)
         if (field.device) result.options_available = true
         result
@@ -28068,6 +28078,11 @@ def advancedOverridesPage() {
             input "redactAccessTokens", "bool", title: "Hide access tokens in MCP responses",
                   description: "Leave OFF (default): tokens are returned as the hub shows them. ON: access_token= URL values and accessToken / access_token fields in tool results are replaced with ***redacted (access token)***.",
                   defaultValue: false
+        }
+        section("Passwords and credentials in responses") {
+            input "redactCredentials", "bool", title: "Hide passwords and credentials in MCP responses",
+                  description: "ON (default): password settings, and app, device and rule values whose names look like credentials (apiKey, brokerPassword, lockCode, alarmPin), read back hidden; the setting is still listed and can still be written. OFF: they are returned as stored. Per-client tokens always see them hidden. File Manager backups leave out password and credential-named settings either way.",
+                  defaultValue: true
         }
         section("Native app edit backups") {
             paragraph "Rule edits take one fresh File Manager snapshot before each changes batch or native editor workflow. A new rule has no earlier version to back up. Delete backups remain enabled independently."
@@ -36068,7 +36083,7 @@ A single tool can also be switched off under **Advanced: Per-tool Overrides**. A
   - On a Rule Machine rule a paragraph holding a disabled action or trigger reads `{text, disabled: [...]}`, listing the text of each disabled row it holds. On selectActions (Button Rule: selectActionsX) a disabled action's `disable<N>` control reads 'Enable Action', and the control named `<N>.0.<bool>` carries that action's text; N is the action index, not the row position. The button toggles: never replay a click whose response was lost. hub_set_app_disabled disables the whole app.
   - `pageNote` appears when the hub rendered another page than `pageName`: the app reaches that page only through its link, so open it in a form workflow.
   - `appType.system` and `appType.menu` are the fields hub_list_apps(scope='types') gives for every type at once.
-  - `includeSettings=true` adds the raw settings map: 500-1000 app-encoded keys on large apps (Room Lighting stores per-device scene levels as `dm~<deviceId>~<scene>`). Secrets read `***redacted (password)***`: every setting the hub types as a password, on any page, and free-text settings with credential-shaped names (password, pass, secret, token, API key, credential, ...). OAuth accessToken settings follow the Hide access tokens setting. Page inputs are redacted the same way. When the setting types cannot be read the map is withheld and `settingsNote` says why.
+  - `includeSettings=true` adds the raw settings map: 500-1000 app-encoded keys on large apps (Room Lighting stores per-device scene levels as `dm~<deviceId>~<scene>`). Secrets read `***redacted (password)***`: every setting the hub types as a password, on any page, and free-text settings with credential-shaped names (password, pass, secret, token, API key, credential, PIN, lock or alarm code, ...). OAuth accessToken settings follow the Hide access tokens setting. Page inputs are redacted the same way. With Hide passwords and credentials turned off in the MCP app's settings they read as stored. When the setting types cannot be read the map is withheld and `settingsNote` says why.
   - A type='mode' input's `value` is its stored setting. Day Lights uses ten of them for per-mode levels, gated by `useModeOverrides`; most apps use one as an "only during these modes" restriction.
   - **Mode gating in the built-in apps.** The hub has no "modes in use by" list, so read each app; resolve mode IDs with hub_list_modes.
     - **Notifier** — `modes` (mode ids) on `moreOptions`; restricts.
