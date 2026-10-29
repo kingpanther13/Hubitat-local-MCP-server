@@ -3169,10 +3169,10 @@ class TestRunner:
         room = f"{SCAFFOLD_PREFIX}Room"
         before = self.client.call_tool("hub_get_device", {"deviceId": dev_id})
         original_room = before.get("room") if isinstance(before, dict) else None
-        placed = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"room": room}})
-        assert placed.get("success") is True, f"could not place the scaffold switch in {room}: {placed}"
         try:
-            everything = self.client.call_tool("hub_list_devices")
+            placed = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"room": room}})
+            assert placed.get("success") is True, f"could not place the scaffold switch in {room}: {placed}"
+            everything =self.client.call_tool("hub_list_devices")
             expected = sorted(d["id"] for d in everything.get("devices", [])
                               if (d.get("room") or "").lower() == room.lower())
             assert str(dev_id) in [str(i) for i in expected], f"{dev_id} is not listed in {room}: {expected}"
@@ -15284,8 +15284,8 @@ def updated() {}
             # input: it moves the device into the standing KEEP_ room and puts the original assignment
             # back; re-saving the room it already has must report it unchanged and move nothing.
             target_room = orig_room or f"{SCAFFOLD_PREFIX}Room"
-            rr = self.client.call_tool("hub_update_device", {"deviceId": unauth, "fields": {"room": target_room}})
             try:
+                rr = self.client.call_tool("hub_update_device", {"deviceId": unauth, "fields": {"room": target_room}})
                 assert rr.get("success") is True, f"bypass room assign did not succeed: {rr}"
                 if orig_room:
                     assert rr.get("changes") == [] and rr.get("unchanged") == ["room"], \

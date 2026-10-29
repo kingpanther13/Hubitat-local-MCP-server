@@ -1912,7 +1912,7 @@ def adminUpdateMcpSettings(args) {
     args.settings.each { key, value ->
         String k = key.toString()
         if (!types.containsKey(k)) throw new IllegalArgumentException("Setting '${k}' is not allowed. Allowed: ${types.keySet().sort().join(', ')}")
-        String s = value?.toString()
+        String s = types[k] == "bool" ? value?.toString()?.toLowerCase() : value?.toString()
         if (types[k] == "bool" && !(s in ["true", "false"])) throw new IllegalArgumentException("Setting '${k}' expects a boolean")
         if (types[k] == "number" && !s?.isBigDecimal()) throw new IllegalArgumentException("Setting '${k}' expects a number")
         wanted[k] = (types[k] == "bool") ? (s == "true") : s.toBigDecimal()
