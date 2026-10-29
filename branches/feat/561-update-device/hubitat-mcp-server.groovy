@@ -12930,7 +12930,7 @@ private Map _planDevicePreferences(Map fj, Map preferences, Map fields) {
     }
     return planned
 }
-private Map _planDeviceEdit(Map fj, Map fields) {
+private Map _planDeviceEdit(Map fj, Map fields, Map preferences = [:]) {
     Map d = fj.device
     def send = [:]
     for (field in fields) {
@@ -12968,6 +12968,10 @@ private Map _planDeviceEdit(Map fj, Map fields) {
         throw new IllegalArgumentException("Unable to read all current assistant assignments before updating; refresh device configuration first")
     }
     if (fields.keySet().any { _deviceEditFields()[it].save == 'form' }) _requireCompleteDeviceFormSource(fj, d.id)
+    if ((preferences || fields.keySet().any { _deviceEditFields()[it].save == 'pane' }) &&
+        (!(d.showOnHome instanceof Boolean) || !(d.retryEnabled instanceof Boolean) || !d.containsKey('defaultCurrentState'))) {
+        throw new IllegalArgumentException("Unable to read the device's current Home visibility, Status attribute and command retry; no update sent. Refresh hub_get_device(mode='configuration') and retry.")
+    }
     return send
 }
 private Map _resolveDeviceRoom(String room) {
@@ -13009,7 +13013,7 @@ def toolUpdateDevice(args) {
         return [success: false, isError: true, error: "Unable to read /device/fullJson before updating device ${deviceId}; no update sent.",
                 note: "Read hub_get_device(mode='configuration') and retry when native device details are available."]
     }
-    Map send = _planDeviceEdit(fj, fields)
+    Map send = _planDeviceEdit(fj, fields, preferences)
     Map planned = preferences ? _planDevicePreferences(fj, preferences, fields) : [:]
     return _applyDeviceEdit(deviceId, fj, fields, send, planned)
 }
@@ -13042,14 +13046,16 @@ private Map _applyDeviceEdit(deviceId, Map fj, Map fields, Map send, Map prefere
         try {
             assistantResults = hubInternalPostJson("/device/updateAssistants", groovy.json.JsonOutput.toJson(payload))?.assistants
         } catch (Exception e) {
-            assistants.keySet().each { failed.put(it, "Assistant save failed: ${e.message ?: e.toString()}") }
+            mcpLog("error", "device", "hub_update_device: assistant save for ${deviceId} failed (${e.class.simpleName})")
+            assistants.keySet().each { failed.put(it, "The assistant save failed; inspect the device before retrying.") }
         }
     }
     if (fields.containsKey('enabled')) {
         try {
             hubInternalPostJson("/device/disable", groovy.json.JsonOutput.toJson([id: _prefSaveDeviceId(deviceId), disable: !fields.enabled]))
         } catch (Exception e) {
-            failed.put('enabled', "Enable/disable request failed: ${e.message ?: e.toString()}")
+            mcpLog("error", "device", "hub_update_device: enable/disable for ${deviceId} failed (${e.class.simpleName})")
+            failed.put('enabled', "The enable/disable request failed; inspect the device before retrying.")
         }
     }
     if (fields.dataValues) {
@@ -13064,6 +13070,7 @@ private Map _applyDeviceEdit(deviceId, Map fj, Map fields, Map send, Map prefere
         String name = field.key
         if (failed.containsKey(name)) { errors << [property: name, error: failed.get(name)]; continue }
         if (!(after?.device instanceof Map)) { errors << [property: name, error: "Saved, but the device could not be read back to confirm it."]; continue }
+        if (!_deviceEditReadable(name, after)) { errors << [property: name, error: "Saved, but ${name} could not be read back to confirm it."]; continue }
         def actual = _deviceEditCurrentValue(name, after)
         def wanted = field.value
         if (name == 'dataValues') {
@@ -13103,6 +13110,18 @@ private Map _applyDeviceEdit(deviceId, Map fj, Map fields, Map send, Map prefere
         result.message = "Updated ${changes.size()} of ${changes.size() + errors.size()}; inspect errors and the device before retrying."
     }
     return result
+}
+private boolean _deviceEditReadable(String name, Map fj) {
+    Map d = fj.device
+    switch (name) {
+        case 'room': return d.containsKey('roomName') && (d.roomName == null || d.roomName instanceof String)
+        case 'enabled': return d.disabled instanceof Boolean || d.disabled?.toString() in ['true', 'false']
+        case 'tags': return d.containsKey('tags') && _normalizedDeviceTags(d.tags) != null
+        case 'dataValues': return d.data instanceof Map
+        case 'dashboardIds': return fj.dashboards instanceof List
+        case 'homeKitEnabled': case 'amazonAlexaEnabled': case 'googleHomeEnabled': return fj.get(name) instanceof Boolean
+    }
+    return d.containsKey(name)
 }
 private _deviceEditCurrentValue(String name, Map fj) {
     Map d = fj.device
@@ -13147,15 +13166,13 @@ private String _saveDeviceInfoForm(Map fj, Map overrides) {
         def resp = hubInternalPostFormRaw("/device/update", parts.join('&'))
         if (resp?.data instanceof String && resp.data.contains('"failure"')) return "The hub refused the Device Info save; none of its fields changed."
     } catch (Exception e) {
-        return "Device Info save failed: ${e.message ?: e.toString()}"
+        mcpLog("error", "device", "hub_update_device: Device Info save for ${d.id} failed (${e.class.simpleName})")
+        return "The Device Info save failed; inspect the device before retrying."
     }
     return null
 }
 private String _saveDevicePreferencesPane(deviceId, Map fj, Map pane, Map preferences) {
     Map d = fj.device
-    if (!(d.showOnHome instanceof Boolean) || !(d.retryEnabled instanceof Boolean) || !d.containsKey('defaultCurrentState')) {
-        return "Unable to read the device's current Home visibility, Status attribute and command retry; no preference save sent."
-    }
     def rows = []
     for (pref in preferences) {
         def setting = pref.value
@@ -13173,7 +13190,8 @@ private String _saveDevicePreferencesPane(deviceId, Map fj, Map pane, Map prefer
                 'The hub refused the preference save; inspect the device before retrying.'
         }
     } catch (Exception e) {
-        return "Preference save failed: ${e.message ?: e.toString()}"
+        mcpLog("error", "device", "hub_update_device: preference save for ${deviceId} failed (${e.class.simpleName})")
+        return "The preference save failed; inspect the device before retrying."
     }
     return null
 }
