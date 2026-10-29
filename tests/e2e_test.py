@@ -4022,7 +4022,7 @@ class TestRunner:
         negative_fields = []
         for key, decision in {**manifest["nativeFields"], **profile.get("nativeFields", {})}.items():
             field = editable.get(key, {})
-            availability[key] = {"expectation": decision["expectation"], "applicable": field.get("applicable"),
+            availability[key] = {"expectation": decision["expectation"],
                                  "writable": field.get("writable"), "reason": field.get("reason")}
             if decision["expectation"] == "positive":
                 assert field.get("writable") is True and key in baseline, (
@@ -4034,7 +4034,7 @@ class TestRunner:
                 )
                 edits[key] = decision["target"]
             elif decision["expectation"] == "unavailable":
-                assert field.get("applicable") is False and "target" in decision, (
+                assert field.get("writable") is False and field.get("reason") and "target" in decision, (
                     f"Expected unavailable native {key} changed; inspect provisioning: {availability[key]}"
                 )
                 negative_fields.append((key, decision["target"]))
