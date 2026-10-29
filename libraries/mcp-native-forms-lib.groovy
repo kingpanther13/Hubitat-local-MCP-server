@@ -480,10 +480,9 @@ private Map _nfRelabel(Long id, Map plan, Map answer) {
         app = reply.app instanceof Map ? reply.app : _nfPage(id).app
         shown = _nfLabelText(field, app?.trueLabel ?: app?.label)
     }
-    if (shown != wanted) return [label_lost: [posted: wanted, shown: shown]]
     // A Done the hub accepted answered with a location; the repair's page must not replace that answer.
-    if (answer.location != null) return [label_restored: true]
-    [label_restored: true] + (rendered ? [model: rendered] : (answer.configPage instanceof Map ? [model: answer + [app: app]] : [:]))
+    Map current = answer.location != null ? [:] : (rendered ? [model: rendered] : (answer.configPage instanceof Map ? [model: answer + [app: app]] : [:]))
+    (shown == wanted ? [label_restored: true] : [label_lost: [posted: wanted, shown: shown]]) + current
 }
 
 private String _nfLabelRestoredNote() { "The hub's mode write put back an older label, so the label was posted again on its own." }

@@ -678,7 +678,7 @@ def toolGetAppConfig(args) {
                     redacted.put(k, _appConfigIsSecretSetting(key, type, v) ? redactedPw : v)
                 }
                 result.settings = redacted
-                result.settingsRedactionNote = "Secret values read ${redactedPw}: every setting the hub types as a password, on any page of the app, plus free-text settings whose names look like credentials (password, passwd, pwd, pass, passphrase, passcode, secret, token, API/access/private key, credential, psk). OAuth accessToken settings follow the Hide access tokens setting instead. Empty values are shown as-is. The secret itself is never returned; read or change it in the Hubitat UI.".toString()
+                result.settingsRedactionNote = "Secret values read ${redactedPw}: every setting the hub types as a password, on any page of the app, plus free-text settings whose names look like credentials (password, passwd, pwd, pass, passphrase, passcode, secret, token, API/access/private key, credential, psk, PIN, or a lock, user, access or alarm code). OAuth accessToken settings follow the Hide access tokens setting instead. Empty values are shown as-is. The secret itself is never returned; read or change it in the Hubitat UI.".toString()
             }
         }
     } else if (settingsCount > 0) {
@@ -753,6 +753,7 @@ private boolean _appConfigSecretName(name) {
                     "timestamp", "date", "length", "len", "type", "enabled", "enable", "set", "required", "url",
                     "uri", "endpoint", "timeout", "interval", "mode", "policy", "hint", "label", "name"] as Set
     Set keyQualifiers = ["api", "access", "private", "auth", "client", "secret", "encryption", "signing", "shared"] as Set
+    Set pinQualifiers = ["lock", "user", "access", "pass", "disarm", "arm", "alarm", "security", "unlock", "auth", "entry", "keypad", "door", "master", "admin", "guest"] as Set
     for (int idx = 0; idx < words.size(); idx++) {
         String w = words[idx]
         String prev = idx > 0 ? words[idx - 1] : null
@@ -765,14 +766,15 @@ private boolean _appConfigSecretName(name) {
             // own suffix ("passWord"); "passThrough", "passMode", and "byPass" are not.
             (w == "pass" && prev != "by" && (next == null || next in ["word", "phrase", "code", "key"])) ||
             (keyQualifiers.contains(w) && (next == "key" || next == "keys")) ||
-            // "pin" as its own word ("disarmPin", "pinCode"); "pinned" and "spinner" are not. A "code" is a
-            // secret when a lock, user, access, alarm or entry word qualifies it; "zipCode" is not.
-            w == "pin" || w == "pincode" ||
-            (w == "code" && prev in ["lock", "user", "access", "pass", "disarm", "alarm", "security", "unlock", "auth", "pin", "entry", "keypad", "arm"])
+            // A PIN or code is a secret as the name's first word ("pin", "pinCode") or after a lock, user,
+            // access, alarm or entry word ("disarmPin", "userCodes"); "ledPin", "gpioPin" and "zipCode" are not.
+            (w in ["pin", "pins", "pincode", "pincodes"] && (prev == null || prev in pinQualifiers)) ||
+            (w in ["code", "codes"] && (prev in pinQualifiers || prev in ["pin", "pins"]))
         if (!hit) continue
         // A metadata word right after the hit ("passwordSet", "tokenCount"); for the two-word
         // "api key" form the metadata word follows "key".
-        String after = (next == "key" || next == "keys") && keyQualifiers.contains(w) ? (idx + 2 < words.size() ? words[idx + 2] : null) : next
+        boolean twoWords = ((next == "key" || next == "keys") && keyQualifiers.contains(w)) || (w in ["pin", "pins"] && next in ["code", "codes"])
+        String after = twoWords ? (idx + 2 < words.size() ? words[idx + 2] : null) : next
         if (after != null && metadata.contains(after)) continue
         return true
     }

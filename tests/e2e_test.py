@@ -8755,6 +8755,9 @@ def updated() {}
             assert self._native_rule_document(app_id)["triggers"] == created["triggers"] \
                 and not self._native_rule_document(app_id).get("conditions"), "a refused batch wrote a row"
             removed = self._rm_update(app_id, [native_delete("trigger", max(created["triggers"], key=int))])
+            # Rule Machine's row counter does not step back when its highest row is deleted, so a new
+            # condition takes the next id after the deleted trigger, never the deleted trigger's own.
+            self._rm_refuse(app_id, [self._rm_switch_condition(switch), native_change("required", tokens=[max(created["triggers"], key=int)])])
             key = removed["backup"]["backupKey"]
             restored = self._rm_restore(key, preserveRuleId=True)
             assert restored.get("success") is True, restored

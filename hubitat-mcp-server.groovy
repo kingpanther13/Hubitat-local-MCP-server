@@ -10435,9 +10435,13 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
     // A user or community app's default page runs its own code, which can drop a wizard's pending
     // input (Hubitat Package Manager clears a pending install there), so a health read never renders it.
     def installed = null
-    if (runHtml) { try { installed = getAppByAppId(appId as Long) } catch (Exception lookup) { installed = null } }
+    String unidentified = null
+    if (runHtml) { try { installed = getAppByAppId(appId as Long) } catch (Exception lookup) { unidentified = lookup.message ?: lookup.toString() } }
     def namespace = installed?.appType?.namespace?.toString()
-    if (runHtml && namespace && namespace != "hubitat") {
+    if (runHtml && unidentified != null) {
+        runHtml = false
+        checkErrors << "the default page of app ${appId} was not rendered: the app could not be identified (${unidentified}), and a user or community app's page code can change its own state when rendered".toString()
+    } else if (runHtml && namespace && namespace != "hubitat") {
         runHtml = false
         label = installed.label?.toString()
         if (ruleFormat == null) ruleFormat = "classic-app"
@@ -10584,7 +10588,7 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
     // predicate is included only when the compiled state carried one. The dual-path cost is one
     // extra localhost GET, not response size — the empty arrays are a few bytes.
     def result = [
-        ok: issues.isEmpty() && broken != true && validationErrors.isEmpty(),
+        ok: !sourcesUsed.isEmpty() && issues.isEmpty() && broken != true && validationErrors.isEmpty(),
         // unreadable: NEITHER source could be read -- a "couldn't check" verdict, not
         // a "checked and broken" one (ok stays false; there is no positive evidence
         // either way). Callers gating committed work on ok should treat unreadable

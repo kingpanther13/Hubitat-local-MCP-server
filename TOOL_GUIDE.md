@@ -41,7 +41,7 @@ The context expires after five minutes or an app reload and keeps no field value
 
 ## Set Native App Reference
 
-hub_set_native_app works on classic Hubitat apps (dynamicPage apps), user and community apps included; Rule Machine rules use hub_set_rule and Visual Rules hub_set_visual_rule. Call it without operation for help; a write operation without confirm returns its schema. Top-level app_id names the app for update and form. Writes need confirm=true and a recent hub backup. When mandatory guide acknowledgment is enabled, pass this section's key as top-level bestPracticeKey.
+hub_set_native_app works on classic Hubitat apps (dynamicPage apps), user and community apps included; Rule Machine rules use hub_set_rule and Visual Rules hub_set_visual_rule. With write access, call it without operation for help; a write operation without confirm returns its schema. Without write access the tool is hidden and this reference is its full description. Top-level app_id names the app for update and form. Writes need confirm=true and a recent hub backup. When mandatory guide acknowledgment is enabled, pass this section's key as top-level bestPracticeKey.
 
 ### create
 

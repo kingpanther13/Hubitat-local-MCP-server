@@ -27,8 +27,9 @@ private List _ndSettings(Long id) {
     if (!(response instanceof Map) || !(response.settings instanceof List)) throw new IllegalStateException('Native settings are unavailable')
     response.settings.collect { row ->
         if (!(row instanceof Map) || !(row.name instanceof String)) throw new IllegalStateException('Unexpected native setting row')
-        def setting = [name: row.name, type: row.type, multiple: row.multiple, value: row.type == 'password' ? null : row.value, device_ids: row.deviceList instanceof Map ? row.deviceList.keySet().collect { it.toString() }.sort() : null]
-        if (row.type == 'password') setting.redacted = true
+        boolean secret = row.type == 'password' || _appConfigIsSecretSetting(row.name, row.type, row.value)
+        def setting = [name: row.name, type: row.type, multiple: row.multiple, value: secret ? null : row.value, device_ids: row.deviceList instanceof Map ? row.deviceList.keySet().collect { it.toString() }.sort() : null]
+        if (secret) setting.redacted = true
         setting
     }
 }
@@ -241,14 +242,19 @@ private boolean _ndKnownRow(Map rows, String rowId, String missing) {
     throw new IllegalArgumentException(missing)
 }
 
-// Rule Machine numbers every row of a rule from one counter, so an appended row takes the next id
-// after the highest any collection has used or will take; the batch may name that row by this id.
-private void _ndPredictAppend(Map rows, String part) {
-    List used = rows.values().collectMany { ((it.ids as Collection) + (it.deleted as Collection) + (it.predicted as Collection)).toList() }
-        .findAll { it.toString().isInteger() }.collect { it.toString().toInteger() }
-    rows.get(part).predicted << (((used ? used.max() : 0) + 1).toString())
+// Rule Machine gives a new trigger or condition the rule's ndx and a new action or terminator its
+// actNdx, then advances that counter; a new rule starts both at 1. The batch may name the row by it.
+private String _ndPredictAppend(Map rows, Map counters, String part) {
+    String family = part == 'action' ? 'action' : 'condition'
+    int next = counters.get(family) as int
+    counters.put(family, next + 1)
+    String predicted = next.toString()
+    rows.get(part).predicted << predicted
     rows.get(part).added++
+    predicted
 }
+
+private int _ndCounter(Object value) { value != null && value.toString().isInteger() && value.toString().toInteger() > 0 ? value.toString().toInteger() : 1 }
 
 private void _ndDropRow(Map rows, String rowId, String missing) {
     if (_ndKnownRow(rows, rowId, missing)) rows.ids.remove(rowId)
@@ -268,7 +274,7 @@ private void _ndPreflight(Long id, List changes) {
     Map rows = [action: [ids: (actionOrder + projectedActions.keySet()) as Set, added: 0, deleted: [] as Set, predicted: [] as Set],
                 condition: [ids: conditions.keySet().collect { it.toString() } as Set, added: 0, deleted: [] as Set, predicted: [] as Set],
                 trigger: [ids: triggers.keySet().collect { it.toString() } as Set, added: 0, deleted: [] as Set, predicted: [] as Set]]
-    int newAction = 0
+    Map counters = [condition: _ndCounter(before.ndx), action: _ndCounter(before.actNdx)]
     boolean appendedActions = false
     Map locals = id == null ? [:] : null
     Map inventory = null
@@ -302,11 +308,11 @@ private void _ndPreflight(Long id, List changes) {
                     } else locals.remove(value.name)
                 }
             }
-            if (change.part in ['condition', 'trigger'] && !value.containsKey('id')) _ndPredictAppend(rows, change.part)
+            if (change.part in ['condition', 'trigger'] && !value.containsKey('id')) _ndPredictAppend(rows, counters, change.part)
             if (change.part in ['action', 'terminator']) {
                 boolean newRow = !value.containsKey('id')
-                if (newRow) { _ndPredictAppend(rows, 'action'); appendedActions = true }
-                String actionId = newRow ? "new:${newAction++}".toString() : value.id.toString()
+                String actionId = newRow ? _ndPredictAppend(rows, counters, 'action') : value.id.toString()
+                if (newRow) appendedActions = true
                 if (newRow) projectedOrder << actionId
                 String method = change.part == 'terminator' ? ND_TERMINATOR_METHODS.get(value.subtype) : value.subtype
                 def prior = projectedActions.get(actionId)

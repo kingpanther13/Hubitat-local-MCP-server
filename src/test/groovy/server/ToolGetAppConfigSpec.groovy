@@ -1299,6 +1299,15 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         'hubPassword'  | 'text'              | 'abc'      | true
         'hubPassword'  | 'textarea'          | 'abc'      | true
         'lockPin'      | 'number'            | 1234       | true
+        'lockCodes'    | 'text'              | '1111'     | true
+        'userCodes'    | 'text'              | '2222'     | true
+        'userPins'     | 'text'              | '3333'     | true
+        'pin'          | 'text'              | '4444'     | true
+        'ledPin'       | 'number'            | 2          | false
+        'relayPin'     | 'number'            | 4          | false
+        'gpioPin'      | 'number'            | 13         | false
+        'pinCodeLength' | 'number'           | 4          | false
+        'pinMode'      | 'text'              | 'output'   | false
         'lockPasscode' | 'number'            | 1234       | true
         'apiTokens'    | null                | ['a', 'b'] | true
         'apiTokens'    | null                | []         | false

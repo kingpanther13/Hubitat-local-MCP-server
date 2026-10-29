@@ -144,7 +144,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def posts = []
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             posts << [path: path, body: body]
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
 
         expect:
@@ -235,7 +235,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             posts << [path: path, body: body]
             if (commitThrows) throw new RuntimeException('transient commit failure')
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
         posts
     }
@@ -269,7 +269,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             '{"success":true,"appId":88}'
         }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
 
         when:
@@ -339,6 +339,25 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         outcome.reason == "the hub rendered page 'mainPage' again instead of accepting its Done"
     }
 
+    def "_rmSubmitMainPageDone fails closed on a reply that names no location: #label"() {
+        given:
+        hubGet.register('/installedapp/configure/json/602') { JsonOutput.toJson([app: [id: 602], configPage: [name: 'mainPage', sections: []]]) }
+        hubGet.register('/installedapp/statusJson/602') { JsonOutput.toJson([appSettings: []]) }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, data: reply] }
+
+        when:
+        def outcome = script._rmSubmitMainPageDone(602)
+
+        then:
+        outcome == [done: false, reason: "the hub's reply to the Done named no location"]
+
+        where:
+        label            | reply
+        'no location'    | '{"status":"success"}'
+        'not JSON'       | '<html>error</html>'
+        'an empty reply' | ''
+    }
+
     def "_rmSubmitMainPageDone re-submits capability device ids from statusJson #idsField (value is null for device settings)"() {
         given:
         // Button Controller-5.1 keeps its device picker ON mainPage (unlike RM,
@@ -369,7 +388,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def posts = []
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             posts << [path: path, body: body]
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
 
         when:
@@ -491,7 +510,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def posts = []
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             posts << [path: path, body: body]
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
 
         when:
@@ -527,7 +546,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def posts = []
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             posts << [path: path, body: body]
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
 
         when:
@@ -864,7 +883,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             assert !Thread.holdsLock(scriptStaticField('ITEM_BACKUP_MANIFESTS'))
             posts << [path: path, body: body]
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
 
         when:
@@ -902,7 +921,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer timeout = 420 ->
             mutations << path
-            [status: 200, data: '{"status":"success"}']
+            [status: 200, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
 
         when:
@@ -969,7 +988,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             [status: 302, location: "/installedapp/configure/401", data: ""]
         }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
 
         when:
@@ -1025,7 +1044,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             [status: 302, location: "/installedapp/configure/351", data: ""]
         }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
 
         when:
@@ -1071,7 +1090,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/update/json")
                 throw new RuntimeException("hub returned 500 during settings replay")
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
 
@@ -1113,7 +1132,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def posted = []
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             posted << [path: path, body: body]
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass._rmSubmitMainPageDone = { Integer id -> throw new RuntimeException("status code: 500, reason phrase: Server Error") }
@@ -1147,7 +1166,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass._rmRejectDisabledAppEdit = { Integer id, String what -> }
         script.metaClass._rmClearSettingsNotInBackup = { Integer id, Map saved, Collection keep = [] -> [] }
         script.metaClass._rmSubmitMainPageDone = { Integer id -> throw new RuntimeException("status code: 500") }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success"}'] }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}'] }
 
         when:
         def result = script._rmRestoreFromBackup([fileName: "f.json"], snapshot, true)
@@ -1192,7 +1211,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def posted = []
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             posted << [path: path, body: body]
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
 
@@ -1252,7 +1271,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def posted = []
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             posted << [path: path, body: body]
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
 
@@ -1308,7 +1327,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def posted = []
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             posted << [path: path, body: body]
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
 
@@ -2303,11 +2322,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def posts = []
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             posts << [path: path, body: body]
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
         script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 ->
             posts << [path: path, body: decodeForm(encodedBody)]
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
 
         when:
@@ -2358,11 +2377,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def posts = []
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             posts << [path: path, body: body]
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
         script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 ->
             posts << [path: path, body: decodeForm(encodedBody)]
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
         def disablePosts = []
         script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
@@ -2405,10 +2424,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             [status: 302, location: "/apps/api/4242/app/100", data: ""]
         }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
         script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 ->
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
 
         when:
@@ -2442,11 +2461,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def posts = []
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             posts << [path: path, body: body]
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
         script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 ->
             posts << [path: path, body: decodeForm(encodedBody)]
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
 
         when:
@@ -2480,7 +2499,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             ]]
         ])
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
         script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 ->
             [status: 200, location: null, data: refreshResp]
@@ -2513,7 +2532,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             ]]
         ])
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
         script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 ->
             [status: 200, location: null, data: refreshResp]
@@ -2604,11 +2623,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def posts = []
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             posts << [path: path, body: body]
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
         script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 ->
             posts << [path: path, body: decodeForm(encodedBody)]
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
 
         when:
@@ -2664,8 +2683,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
             [status: 302, location: "/apps/api/4242/app/100", data: ""]
         }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success"}'] }
-        script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success"}'] }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}'] }
+        script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}'] }
         def disablePosts = []
         script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             disablePosts << [path: path, body: body]
@@ -2706,8 +2725,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
             [status: 302, location: "/apps/api/4242/app/100", data: ""]
         }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success"}'] }
-        script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success"}'] }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}'] }
+        script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}'] }
         script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 -> '{"status":"success"}' }
 
         when:
@@ -2742,8 +2761,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
             [status: 302, location: "/apps/api/4242/app/100", data: ""]
         }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success"}'] }
-        script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success"}'] }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}'] }
+        script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}'] }
         script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 -> '{"status":"success"}' }
 
         when:
@@ -2775,8 +2794,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
             [status: 302, location: "/apps/api/4242/app/100", data: ""]
         }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success"}'] }
-        script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success"}'] }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}'] }
+        script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}'] }
         script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 -> '{"status":"success"}' }
 
         when:
@@ -2812,8 +2831,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
             [status: 302, location: "/apps/api/4242/app/100", data: ""]
         }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success"}'] }
-        script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success"}'] }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}'] }
+        script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}'] }
         script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             if (path == "/installedapp/disable") {
                 disabledIds << new groovy.json.JsonSlurper().parseText(body).id
@@ -2924,8 +2943,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
             [status: 302, location: "/apps/api/4242/app/100", data: ""]
         }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success"}'] }
-        script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success"}'] }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}'] }
+        script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}'] }
 
         when:
         def result = script.toolCloneNativeApp([sourceAppId: 100, stageDisabled: true, confirm: true])
@@ -2992,10 +3011,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             [status: 302, location: "/apps/api/4242/app/100", data: ""]
         }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
         script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 ->
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
 
         when:
@@ -3036,12 +3055,12 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             if (path == "/installedapp/update/json") {
                 throw new IllegalStateException("cloner /update/json POSTs must use hubInternalPostFormRaw — the Map encoder mangles backslashes")
             }
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
         def rawBodies = []
         script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 ->
             rawBodies << encodedBody
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
 
         when:
@@ -3077,7 +3096,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             ]]
         ])
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
         script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 ->
             [status: 200, location: null, data: refreshResp]
@@ -3110,7 +3129,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
         def refreshResp = JsonOutput.toJson([configPage: [name: "main", sections: [[input: []]]]])
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
         script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 ->
             [status: 200, location: null, data: refreshResp]
@@ -3169,10 +3188,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             [status: 302, location: "/apps/api/4242/app/100", data: ""]
         }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
         script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 ->
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
 
         when:
@@ -3684,10 +3703,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             [status: 302, location: "/apps/api/4242/app/100", data: ""]
         }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
         script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 ->
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
 
         when:
@@ -3724,7 +3743,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             ]]
         ])
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
         script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 ->
             [status: 200, location: null, data: refreshResp]
@@ -3804,11 +3823,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def posts = []
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             posts << [path: path, body: body]
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
         script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 ->
             posts << [path: path, body: decodeForm(encodedBody)]
-            [status: 200, location: null, data: '{"status":"success"}']
+            [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
 
         when:
@@ -4176,7 +4195,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/653') { params -> statusJson(653, []) }
         def posts = []
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            posts << [path: path, body: body]; [status: 200, location: null, data: '{"status":"success"}']
+            posts << [path: path, body: body]; [status: 200, location: null, data: '{"status":"success","location":"/installedapp/list?section=automations"}']
         }
 
         when:
@@ -4225,7 +4244,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "pageBreadcrumbs carry forward ignores answers without a rendered page and never throws"() {
         when:
-        script._rmNoteHubBreadcrumbs("2518", [status: 200, data: '{"status":"success"}'])
+        script._rmNoteHubBreadcrumbs("2518", [status: 200, data: '{"status":"success","location":"/installedapp/list?section=automations"}'])
         script._rmNoteHubBreadcrumbs("2518", [status: 500, data: null])
         script._rmNoteHubBreadcrumbs(null, [status: 200, data: '{"pageBreadcrumbs":"%5B%5D","configPage":{"name":"x"}}'])
 

@@ -1503,12 +1503,10 @@ Map _rmSubmitMainPageDone(Integer appId) {
         return [done: false, reason: "Done POST returned status ${resp.status}".toString()]
     }
     // The hub answers an accepted Done with a location; a page in the reply means it rendered the page again.
-    def reply = null
-    try { reply = resp?.data ? new groovy.json.JsonSlurper().parseText(resp.data.toString()) : null } catch (Exception ignored) { reply = null }
-    if (reply instanceof Map && reply.location == null && reply.configPage instanceof Map) {
-        return [done: false, reason: "the hub rendered page '${commitPage}' again instead of accepting its Done".toString()]
-    }
-    return [done: true]
+    String replyText = resp?.data instanceof Map ? groovy.json.JsonOutput.toJson(resp.data) : (resp?.data?.toString() ?: '')
+    if (replyText.contains('"location"')) return [done: true]
+    return [done: false, reason: (replyText.contains('"configPage"') ? "the hub rendered page '${commitPage}' again instead of accepting its Done" :
+        "the hub's reply to the Done named no location").toString()]
 }
 
 private Map _rmWriteSubPageField(Integer appId, String page, String parentPage, String hrefName, Integer hrefIndex, Map hrefParams, String key, Object value, Map cache = null) {
@@ -1743,12 +1741,12 @@ private Set _rmRedactSnapshotPasswords(Map config, Map status) {
 }
 
 // The App Cloner export with every password-typed setting value nulled; names collects them.
-private String _rmRedactExportPasswords(String nativeExport, Set names) {
+private String _rmRedactExportSecrets(String nativeExport, Set names) {
     def payload = new groovy.json.JsonSlurper().parseText(nativeExport)
     boolean changed = false
     ((payload instanceof Map && payload.appData instanceof Map) ? payload.appData.values() : []).each { data ->
         (data instanceof Map && data.appSettings instanceof List ? data.appSettings : []).each { row ->
-            if (row instanceof Map && row.type?.toString() == 'password' && row.name) {
+            if (row instanceof Map && row.name && (row.type?.toString() == 'password' || _appConfigIsSecretSetting(row.name.toString(), row.type?.toString(), row.value))) {
                 names << row.name.toString()
                 if (row.value != null) { row.value = null; changed = true }
             }
@@ -1759,7 +1757,7 @@ private String _rmRedactExportPasswords(String nativeExport, Set names) {
 
 private Map _rmBuildNativeEditSnapshot(Integer ruleId, String reason, String capturedExport) {
     Set redacted = [] as Set
-    String nativeExport = _rmRedactExportPasswords(capturedExport, redacted)
+    String nativeExport = _rmRedactExportSecrets(capturedExport, redacted)
     Map payload = new groovy.json.JsonSlurper().parseText(nativeExport) as Map
     Map identity = payload.appReplacements.find { key, value -> key.toString() == ruleId.toString() }.value as Map
     Map data = payload.appData.find { key, value -> key.toString() == ruleId.toString() }.value as Map
@@ -1930,7 +1928,7 @@ private Map _rmBuildRuleSnapshot(Integer ruleId, String reason, String activePag
             def nat = _rmNativeExportForBackup(ruleId)
             if (nat?.json) {
                 // An export that cannot be parsed cannot be checked for passwords, so it is not stored.
-                try { snapshot.nativeExport = _rmRedactExportPasswords(nat.json.toString(), redacted) }
+                try { snapshot.nativeExport = _rmRedactExportSecrets(nat.json.toString(), redacted) }
                 catch (Exception unreadable) { snapshot.nativeExportSkipped = "the App Cloner export could not be parsed (${unreadable.message})".toString() }
             } else if (nat?.error || nat?.skipped) snapshot.nativeExportSkipped = (nat.error ?: nat.skipped).toString()
         }
@@ -3070,7 +3068,7 @@ private Object _naComparable(Map field, Object value, boolean written) {
 }
 
 // Reads the app back once after its Done and names every written field whose stored value differs.
-// A password is never read back as a value; only whether one is stored. A field that the same page no
+// A password is compared with the written value in process and never returned. A field that the same page no
 // longer renders and the app did not store was consumed by the page's own code (a table editor's row
 // picker adds the row and drops the input), so it is reported as consumed, not as lost.
 private Map _naReadBack(Long id, Map page, Map written, String pageName = null) {
@@ -3140,6 +3138,8 @@ private Map _naCreate(Map args) {
     String type = args.app_type
     Map reg = _appTypeRegistry()[type]
     String name = args.name?.toString()?.trim() ?: null
+    String twice = name && args.get('fields') instanceof Map ? ['origLabel', 'name', 'label'].find { args.get('fields').containsKey(it) } : null
+    if (twice) throw new IllegalArgumentException("Pass the label once, as name or as fields.${twice}".toString())
     Long parentId = _discoverParentAppId(type) as Long
     _requireUnprotectedAppMutation(parentId, 'create a child app under')
     String guide = " See hub_get_tool_guide(section='set_native_app_reference')."
@@ -3169,8 +3169,6 @@ private Map _naCreate(Map args) {
                 return [success: false, app_type: type, error: "The ${reg.parentTypeName} page offers no control that creates ${reg.appName}; it offers ${offered ?: 'none'}. Nothing was created.".toString(),
                         note: "Open the ${reg.parentTypeName} app with operation:'form' to see what it offers.${guide}".toString()]
             }
-            String twice = name ? ['origLabel', 'name', 'label'].find { supplied.containsKey(it) } : null
-            if (twice) throw new IllegalArgumentException("Pass the label once, as name or as fields.${twice}".toString())
             Map made = _nfExecute(parentId, _nfPrepare(parentId, parent, [:], create.control_id, 'hub_set_native_app'))
             if (made.created_mismatch) {
                 // The id is the hub's redirect target, not necessarily an app this call made, so it is reported, never deleted.
@@ -3183,7 +3181,6 @@ private Map _naCreate(Map args) {
             if (name) {
                 String labelInput = ['origLabel', 'name', 'label'].find { child.get('fields').containsKey(it) }
                 if (!labelInput) throw new IllegalArgumentException("The first page of a new ${type} renders no label input (origLabel, name or the app's own label), so name cannot be set there; omit name and set the label later with update or form.".toString())
-                if (supplied.containsKey(labelInput)) throw new IllegalArgumentException("Pass the label once, as name or as fields.${labelInput}".toString())
                 supplied.put(labelInput, name)
             }
             _nfPrepare(childId, child, supplied, _naDone(child), 'hub_set_native_app')
@@ -3246,9 +3243,14 @@ private Map _naCreate(Map args) {
         }
         if (back.consumed) notes << _naConsumedNote(back.consumed)
         _naLabelResult(result, saved, notes)
+        boolean doneSaves = saved.done == '_action_done|Done|' && !saved.committed
+        if (doneSaves) {
+            result.committed = false
+            notes << "Its first page names both a next and a done page, so the hub answered its Done by saving and rendering the page again; the app did not install. Finish it with operation:'form'."
+        }
         if (back.model.app?.installed != true) {
             result.installed = false
-            notes << (!saved.done ? 'Its page renders no Done yet, so the app stays uninstalled until operation:\'form\' completes it.' :
+            if (!doneSaves) notes << (!saved.done ? 'Its page renders no Done yet, so the app stays uninstalled until operation:\'form\' completes it.' :
                 'The hub reports the app not installed after its Done; open it with operation:\'form\'.')
         }
         result.note = notes.join(' ') + guide
@@ -3479,7 +3481,7 @@ def _toolDisplayMeta_partNativeRM() {
 String _naGuide() {
     return '''## Set Native App Reference
 
-hub_set_native_app works on classic Hubitat apps (dynamicPage apps), user and community apps included; Rule Machine rules use hub_set_rule and Visual Rules hub_set_visual_rule. Call it without operation for help; a write operation without confirm returns its schema. Top-level app_id names the app for update and form. Writes need confirm=true and a recent hub backup. When mandatory guide acknowledgment is enabled, pass this section's key as top-level bestPracticeKey.
+hub_set_native_app works on classic Hubitat apps (dynamicPage apps), user and community apps included; Rule Machine rules use hub_set_rule and Visual Rules hub_set_visual_rule. With write access, call it without operation for help; a write operation without confirm returns its schema. Without write access the tool is hidden and this reference is its full description. Top-level app_id names the app for update and form. Writes need confirm=true and a recent hub backup. When mandatory guide acknowledgment is enabled, pass this section's key as top-level bestPracticeKey.
 
 ### create
 

@@ -89,7 +89,8 @@ class SnapshotPasswordRedactionSpec extends ToolSpecBase {
             appReplacements: ['42': [appTypeNamespace: 'hubitat', appTypeName: 'Rule-5.1', parentAppInstalledAppId: '28', appLabel: 'Hall']],
             deviceReplacements: [:],
             appData: ['42': [state: [actionList: []], subscriptions: [], appSettings: [
-                [name: 'origLabel', type: 'text', value: 'Hall'], [name: 'token', type: 'password', value: 'live-secret']]]]])
+                [name: 'origLabel', type: 'text', value: 'Hall'], [name: 'token', type: 'password', value: 'live-secret'],
+                [name: 'apiKey', type: 'text', value: 'ak-live-2']]]]])
 
         when:
         def built = script._rmBuildNativeEditSnapshot(42, 'pre-native-form', export)
@@ -97,14 +98,16 @@ class SnapshotPasswordRedactionSpec extends ToolSpecBase {
 
         then:
         !snap.nativeExport.contains('live-secret')
+        !snap.nativeExport.contains('ak-live-2')
         new JsonSlurper().parseText(snap.nativeExport).appData['42'].appSettings.find { it.name == 'token' }.value == null
-        snap.redactedSettings == ['token']
+        new JsonSlurper().parseText(snap.nativeExport).appData['42'].appSettings.find { it.name == 'apiKey' }.value == null
+        snap.redactedSettings.sort() == ['apiKey', 'token']
         !snap.configJson.settings.containsKey('token')
         snap.configJson.settings.origLabel == 'Hall'
 
-        and: "an export without passwords is stored byte for byte"
-        String plain = export.replace('"password"', '"text"')
-        script._rmRedactExportPasswords(plain, [] as Set).is(plain)
+        and: "an export without secrets is stored byte for byte"
+        String plain = export.replace('"password"', '"text"').replace('"token"', '"note"').replace('"apiKey"', '"memo"')
+        script._rmRedactExportSecrets(plain, [] as Set).is(plain)
     }
 
     def "a snapshot whose statusJson cannot be read fails closed instead of storing unclassified settings"() {

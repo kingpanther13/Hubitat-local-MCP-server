@@ -582,6 +582,27 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         h.ruleFormat == "classic-app"
         h.label == "Package Manager"
         h.checkErrors.any { it.contains("was not rendered: it is a user or community app") }
+        h.unreadable == true
+        h.ok == false
+    }
+
+    def "an app the health read cannot identify is not rendered either"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/app/ruleBuilderJson/100') { '{}' }
+        hubGet.register('/app/ruleBuilder20Json/100') { '{"success":false}' }
+        hubGet.register('/installedapp/statusJson/100') { statusJson(100) }
+        script.metaClass.getAppByAppId = { Long id -> throw new IllegalStateException('lookup failed') }
+        List rendered = []
+        hubGet.register('/installedapp/configure/json/100') { rendered << 'default'; '{}' }
+
+        when:
+        def h = script._rmCheckRuleHealth(100)
+
+        then:
+        rendered.isEmpty()
+        h.checkErrors.any { it.contains("could not be identified (lookup failed)") }
+        h.ok == false
     }
 
     def "auto: a LONE configPage fetch failure is a non-gating checkErrors diagnostic when ruleBuilderJson read clean"() {

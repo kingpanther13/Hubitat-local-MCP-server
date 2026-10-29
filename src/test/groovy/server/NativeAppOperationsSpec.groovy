@@ -250,11 +250,7 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         'required empty for Done' | [app_type: 'notifier']                                                 | 'Complete required native fields before navigating: origLabel'
     }
 
-    def 'a label passed as name and in fields is refused before the parent creates anything'() {
-        given:
-        parentAt(40L, 'notifierChild', 'Notifier')
-        childAt(90L, 40L, 'Notifier', [page(90L, notifierInputs())])
-
+    def 'a label passed as name and in fields is refused from the arguments alone, before any parent is found or rendered'() {
         when:
         create([app_type: 'notifier', name: 'N', fields: [origLabel: 'M']])
 
@@ -264,6 +260,7 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         deleted.isEmpty()
         posts.isEmpty()
         raws.isEmpty()
+        gets.isEmpty()
     }
 
     def 'name is refused, and the new app removed, when the first page renders no label input'() {
@@ -891,6 +888,28 @@ class NativeAppOperationsSpec extends ToolSpecBase {
     // ---------------------------------------------------------------- create and button_rule edge cases
 
     @Unroll
+    def 'a create whose first page names both a next and a done page reports committed false, as update does'() {
+        given:
+        parentAt(40L, 'notifierChild', 'Notifier')
+        Map first = page(91L, notifierInputs())
+        first.configPage.nextPage = 'pageTwo'
+        first.configPage.donePage = 'pageDone'
+        childAt(91L, 40L, 'Notifier', [first, page(91L, notifierInputs(), [label: 'Front door', settings: [origLabel: 'Front door']])])
+        replies['/installedapp/update/json'] = [first]
+
+        when:
+        def result = create([app_type: 'notifier', name: 'Front door'])
+
+        then:
+        result.success
+        result.committed == false
+        result.installed == false
+        posts[0].body._action_done == 'Done'
+        result.note.contains('names both a next and a done page, so the hub answered its Done by saving and rendering the page again')
+        !result.note.contains('reports the app not installed')
+        deleted.isEmpty()
+    }
+
     def 'a created child that is not the requested type under the parent is left in place and its id named: #label'() {
         given:
         parentAt(40L, 'notifierChild', 'Notifier')

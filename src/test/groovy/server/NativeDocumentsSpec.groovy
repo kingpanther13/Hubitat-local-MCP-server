@@ -24,7 +24,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
         typedSettings = [:]
         lifecycle = [stopped: false, paused: false]
         nativeState = [actionList: ['3', '1'], actions: ['3': [method: 'getLogMsg'], '1': [method: 'getLogMsg']],
-                       capabsfalse: ['4': 'Switch is on'], capabstrue: ['5': 'Switch changed'], eval: ['0': ['4']],
+                       capabsfalse: ['4': 'Switch is on'], capabstrue: ['5': 'Switch changed'], eval: ['0': ['4']], ndx: 6, actNdx: 4,
                        allLocalVars: [counter: [type: 'integer', value: 0]]]
         settingsMap.enableMandatoryBPS = false
         // Snapshot behavior has dedicated NativeRuleEditBackupSpec coverage.
@@ -756,8 +756,8 @@ class NativeDocumentsSpec extends ToolSpecBase {
         when:
         def result = script.toolUpdateRuleDocument([rule_id: 42, confirm: true, changes: [
             logChange(),
-            [part: 'delete', value: [part: 'action', id: '6']],
-            [part: 'delete', value: [part: 'action', id: '7']]
+            [part: 'delete', value: [part: 'action', id: '4']],
+            [part: 'delete', value: [part: 'action', id: '5']]
         ]])
         then:
         !result.success
@@ -805,6 +805,41 @@ class NativeDocumentsSpec extends ToolSpecBase {
         then:
         def wrongKind = thrown(IllegalArgumentException)
         wrongKind.message == 'changes[1]: Expression references an unknown condition'
+    }
+
+    def 'appended rows take the ids Rule Machine counters give them: ndx for triggers and conditions, actNdx for actions'() {
+        given: 'the condition counter is ahead of the highest condition, as after its highest row was deleted'
+        nativeState.ndx = 9
+        def condition = [part: 'condition', value: [capability: 'Switch', fields: [
+            [name: 'rDev_#', type: 'capability.switch', value: ['789']], [name: 'state_#', type: 'enum', value: 'on']]]]
+        when:
+        script._ndPreflight(42L, script._ndChanges([condition, [part: 'required', value: [tokens: ['9']]]]))
+        then:
+        noExceptionThrown()
+        when: 'the next id above the highest row is not the one Rule Machine gives'
+        script._ndPreflight(42L, script._ndChanges([condition, [part: 'required', value: [tokens: ['6']]]]))
+        then:
+        def stale = thrown(IllegalArgumentException)
+        stale.message == 'changes[1]: Expression references an unknown condition'
+        when: 'an appended action takes actNdx, which is not a condition'
+        script._ndPreflight(42L, script._ndChanges([logChange(), [part: 'required', value: [tokens: ['4']]]]))
+        then:
+        def wrongKind = thrown(IllegalArgumentException)
+        wrongKind.message == 'changes[1]: Expression references an unknown condition'
+    }
+
+    def 'an appended END-IF named by its id and deleted in the same batch leaves its IF open, refused before any write'() {
+        when:
+        def result = script.toolUpdateRuleDocument([rule_id: 42, confirm: true, changes: [
+            [part: 'action', value: [type: 'condActs', subtype: 'getIfThen', fields: [], expression: ['4']]],
+            [part: 'terminator', value: [subtype: 'endIf']],
+            [part: 'delete', value: [part: 'action', id: '5']]
+        ]])
+        then:
+        !result.success
+        !result.partial
+        result.error.contains('Native IF block has no END-IF')
+        events.empty
     }
 
     def 'a condition deleted after an append cannot be named by a later Required Expression'() {

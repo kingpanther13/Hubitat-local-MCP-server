@@ -685,10 +685,11 @@ class NativeFormsSpec extends ToolSpecBase {
         !labelBody.keySet().any { it.startsWith('mode[mode]') }
     }
 
-    private Map renderedWithLabel(String label, int version) {
+    private Map renderedWithLabel(String label, int version, int count = 0) {
         Map copy = new groovy.json.JsonSlurper().parseText(JsonOutput.toJson(model)) as Map
         copy.app.label = label
         copy.app.version = version
+        copy.settings.count = count
         [status: 200, data: JsonOutput.toJson(copy)]
     }
 
@@ -700,6 +701,7 @@ class NativeFormsSpec extends ToolSpecBase {
         assert open().success
         calls.clear()
         replies << renderedWithLabel('Old porch', 5)
+        replies << renderedWithLabel('Porch', 6, 7)
         when:
         def result = submit(['mode[mode]': ['1']])
         def posts = calls.findAll { it.path == '/installedapp/update/json' }
@@ -715,6 +717,7 @@ class NativeFormsSpec extends ToolSpecBase {
         posts[1].body.version == '5'
         !posts[1].body.keySet().any { it.startsWith('mode[mode]') }
         result.fields.find { it.name == 'label' }.value == 'Porch'
+        result.fields.find { it.name == 'count' }.value == 7
     }
 
     def 'a mode write whose answer renders the posted label posts nothing more'() {
@@ -739,7 +742,8 @@ class NativeFormsSpec extends ToolSpecBase {
         model.app.label = 'Porch'
         assert open().success
         calls.clear()
-        3.times { replies << renderedWithLabel('Old porch', 5) }
+        2.times { replies << renderedWithLabel('Old porch', 5) }
+        replies << renderedWithLabel('Old porch', 6, 9)
         when:
         def result = submit(['mode[mode]': ['1']])
         then:
@@ -748,6 +752,7 @@ class NativeFormsSpec extends ToolSpecBase {
         !result.containsKey('label_restored')
         result.error == "The hub's mode write put back the label 'Old porch', and posting 'Porch' again on its own did not change it."
         calls.count { it.path == '/installedapp/update/json' } == 3
+        result.fields.find { it.name == 'count' }.value == 9
     }
 
     def 'the label field reads trueLabel, the label without the HTML an app decorates it with'() {
