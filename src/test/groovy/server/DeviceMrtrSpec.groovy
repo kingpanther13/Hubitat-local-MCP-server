@@ -107,7 +107,7 @@ class DeviceMrtrSpec extends ToolSpecBase {
         leaf                        | leafArgs
         'hub_manage_virtual_device' | [action: 'create', deviceType: 'Virtual Switch', confirm: true]
         'hub_manage_virtual_device' | [action: 'delete', deviceNetworkId: 'test-dni', confirm: true]
-        'hub_update_device'         | [deviceId: '88', label: 'Changed']
+        'hub_update_device'         | [deviceId: '88', fields: [label: 'Changed']]
     }
 
     def "slow #leaf reads continue without Write permission and each new call is fresh"() {

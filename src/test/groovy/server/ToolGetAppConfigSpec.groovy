@@ -1309,6 +1309,16 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         'pinCodeLength' | 'number'           | 4          | false
         'pinMode'      | 'text'              | 'output'   | false
         'sirenPin'     | 'text'              | '5555'     | true
+        'keypadInputPin' | 'text'            | '1111'     | true
+        'alarmResetPin' | 'number'           | 2222       | true
+        'userpin'      | 'text'              | '3333'     | true
+        'alarmcode'    | 'text'              | '4444'     | true
+        'HSMPIN'       | 'text'              | '5555'     | true
+        'installerCode' | 'text'             | '6666'     | true
+        'duressCode'   | 'text'              | '7777'     | true
+        'gateCode'     | 'text'              | '8888'     | true
+        'zipCode'      | 'text'              | '02139'    | false
+        'opcode'       | 'text'              | 'x'        | false
         'lockPasscode' | 'number'            | 1234       | true
         'apiTokens'    | null                | ['a', 'b'] | true
         'apiTokens'    | null                | []         | false

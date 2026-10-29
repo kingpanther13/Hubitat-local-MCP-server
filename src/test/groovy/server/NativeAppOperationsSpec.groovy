@@ -910,6 +910,43 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         deleted.isEmpty()
     }
 
+    def 'a done-page create whose read-back fails still reports committed false'() {
+        given:
+        parentAt(40L, 'notifierChild', 'Notifier')
+        Map first = page(92L, notifierInputs(), [install: false])
+        first.configPage.nextPage = 'pageTwo'
+        first.configPage.donePage = 'pageDone'
+        childAt(92L, 40L, 'Notifier', [first, { -> throw new IOException('read timed out') }])
+        replies['/installedapp/update/json'] = [first]
+
+        when:
+        def result = create([app_type: 'notifier', name: 'Front door'])
+
+        then:
+        !result.success
+        result.committed == false
+        result.error.contains('reading it back failed')
+    }
+
+    def 'a done-page create the hub reports installed does not say the app did not install'() {
+        given:
+        parentAt(40L, 'notifierChild', 'Notifier')
+        Map first = page(93L, notifierInputs(), [install: false])
+        first.configPage.nextPage = 'pageTwo'
+        first.configPage.donePage = 'pageDone'
+        childAt(93L, 40L, 'Notifier', [first, page(93L, notifierInputs(), [label: 'Front door', settings: [origLabel: 'Front door'], installed: true])])
+        replies['/installedapp/update/json'] = [first]
+
+        when:
+        def result = create([app_type: 'notifier', name: 'Front door'])
+
+        then:
+        result.committed == false
+        !result.containsKey('installed')
+        result.note.contains('names both a next and a done page')
+        !result.note.contains('did not install')
+    }
+
     def 'a created child that is not the requested type under the parent is left in place and its id named: #label'() {
         given:
         parentAt(40L, 'notifierChild', 'Notifier')

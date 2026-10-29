@@ -32,7 +32,7 @@ class ToolNativeMetadataBoundarySpec extends ToolSpecBase {
             case 'events': return script.toolGetDeviceEvents('10', 10)
             case 'history': return script.toolGetDeviceHistory([deviceId: '10', hoursBack: 1])
             case 'command': return script.toolSendCommand('10', 'on', [])
-            case 'update': return script.toolUpdateDevice([deviceId: '10', label: 'Changed'])
+            case 'update': return script.toolUpdateDevice([deviceId: '10', fields: [label: 'Changed']])
             case 'virtual': return script.toolListVirtualDevices([:]).devices[0]
             case 'deleteVirtual': return script.toolDeleteVirtualDevice([deviceNetworkId: 'mcp-10', confirm: true])
         }
@@ -91,7 +91,7 @@ class ToolNativeMetadataBoundarySpec extends ToolSpecBase {
         'hub_get_device_attribute'  | [deviceId: '10', attribute: 'switch']
         'hub_list_device_events'    | [deviceId: '10']
         'hub_list_device_events'    | [deviceId: '10', hoursBack: 1]
-        'hub_update_device'         | [deviceId: '10', label: 'Changed']
+        'hub_update_device'         | [deviceId: '10', fields: [label: 'Changed']]
     }
 
     @Unroll
@@ -233,7 +233,7 @@ class ToolNativeMetadataBoundarySpec extends ToolSpecBase {
     }
 
     @Unroll
-    def 'room clear cannot be confirmed by #room readback'() {
+    def 'room clear is not confirmed while the read-back names room #room'() {
         given:
         model.device.roomName = 'Den'
         model.device.putAll([version: 0, controllerType: null, zigbeeId: null,
@@ -245,13 +245,12 @@ class ToolNativeMetadataBoundarySpec extends ToolSpecBase {
         model.dashboards = []
         script.metaClass.hubInternalPostFormRaw = { String path, String body, int timeout = 420, boolean retry = false ->
             writes << [path: path, body: body]
-            if (room == 'absent') model.device.remove('roomName')
-            else model.device.roomName = room
-            [status: 200]
+            model.device.roomName = room
+            [status: 200, data: '']
         }
 
         when:
-        def result = script.toolUpdateDevice([deviceId: '10', room: 'none'])
+        def result = script.toolUpdateDevice([deviceId: '10', fields: [room: '']])
 
         then:
         result.success == false
@@ -261,7 +260,7 @@ class ToolNativeMetadataBoundarySpec extends ToolSpecBase {
         writes.size() == 1
 
         where:
-        room << ['absent', false, 0, [:], []]
+        room << ['Den', 'Office', [name: 'Den']]
     }
     @Unroll
     def 'missing native metadata is an MCP execution error in #mode mode'() {
