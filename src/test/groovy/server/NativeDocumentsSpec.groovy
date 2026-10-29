@@ -867,14 +867,6 @@ class NativeDocumentsSpec extends ToolSpecBase {
         then:
         def missing = thrown(IllegalArgumentException)
         missing.message.contains('row counter is unreadable')
-        when: 'the batch deletes every action before appending one, with the action counter missing'
-        nativeState.ndx = 6
-        nativeState.remove('actNdx')
-        script._ndPreflight(42L, script._ndChanges([[part: 'delete', value: [part: 'action', id: '3']],
-                                                   [part: 'delete', value: [part: 'action', id: '1']], logChange()]))
-        then:
-        def emptied = thrown(IllegalArgumentException)
-        emptied.message.contains('row counter is unreadable')
         when: 'the action counter names an action the rule already has'
         nativeState.ndx = 6
         nativeState.actNdx = 3

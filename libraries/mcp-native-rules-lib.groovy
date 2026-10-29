@@ -3258,9 +3258,9 @@ private Map _naCreate(Map args) {
         if (doneSaves) {
             result.committed = false
             notes << "Its first page names both a next and a done page, so the hub answered its Done by saving and rendering the page again" +
-                (back.model.app?.installed == false ? "; the app did not install. Finish it with operation:'form'." : '.')
+                (back.model.app?.installed == true ? '.' : "; the app did not install. Finish it with operation:'form'.")
         }
-        if (back.model.app?.installed == false) {
+        if (back.model.app?.installed != true) {
             result.installed = false
             if (!doneSaves) notes << (!saved.done ? 'Its page renders no Done yet, so the app stays uninstalled until operation:\'form\' completes it.' :
                 'The hub reports the app not installed after its Done; open it with operation:\'form\'.')

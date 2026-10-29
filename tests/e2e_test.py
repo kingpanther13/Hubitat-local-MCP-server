@@ -3922,7 +3922,8 @@ class TestRunner:
             assert result.get("success") is True, f"Configuration edit failed: {result}"
             assert not result.get("errors"), f"Configuration edit reported success with rejected fields: {result}"
             assert result.get("mrtr", {}).get("continued") is True, f"Device update bypassed MRTR: {result}"
-            changed = {row.get("property") for row in result.get("changes", [])}
+            # Read back as requested: changed, or already that value before the save.
+            changed = {row.get("property") for row in result.get("changes", [])} | set(result.get("unchanged", []))
             pane_fields = {"retryEnabled", "showOnHome", "defaultCurrentState"} & patch.keys()
             assert pane_fields <= changed, f"Configuration pane write was not confirmed: {result}"
             if "dataValues" in patch and require_data_change:
@@ -4391,6 +4392,9 @@ class TestRunner:
         # persistent scaffold switch -- a Home-page flag toggle is idempotent and does not
         # disturb the rule/poll fixtures that also read this device's state.
         dev_id = self.get_test_switch_id()
+        # Start from shown, so the hide below is a real change whatever an earlier run left.
+        shown = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"showOnHome": True}})
+        assert shown.get("success") is True, f"show-on-home baseline failed: {shown}"
         hide = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"showOnHome": False}})
         assert hide.get("success") is True, f"hide-from-home failed: {hide}"
         assert any(c.get("property") == "showOnHome" for c in (hide.get("changes") or [])), \
@@ -4436,8 +4440,12 @@ class TestRunner:
         original_room = (before.get("room") or before.get("roomName")) if isinstance(before, dict) else None
 
         try:
-            # THE surface under test: assignment by room name, then by id, through the Device Info save.
-            assigned = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"room": room_name}})
+            # THE surface under test: assignment by room name, then by id, through the Device Info save,
+            # each from outside the room so the save has to move the device.
+            if original_room:
+                out = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"room": ""}})
+                assert out.get("success") is True, f"hub_update_device room unassign failed: {out}"
+            assigned =self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"room": room_name}})
             assert assigned.get("success") is True, \
                 f"hub_update_device room assign failed: {assigned}"
             assert any(c.get("property") == "room" for c in (assigned.get("changes") or [])), \
@@ -4477,10 +4485,16 @@ class TestRunner:
     def test_update_device_default_current_state(self) -> None:
         # Intent: choose which attribute appears in the Status column for a device.
         dev_id = self.get_test_switch_id()
+        cleared = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"defaultCurrentState": ""}})
+        assert cleared.get("success") is True, f"clear default current state failed: {cleared}"
         result = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"defaultCurrentState": "switch"}})
         assert result.get("success") is True, f"set default current state failed: {result}"
         assert any(c.get("property") == "defaultCurrentState" for c in (result.get("changes") or [])), \
             f"defaultCurrentState change not recorded: {result}"
+        # Saving the value it already has is reported as unchanged, not as a change.
+        again = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"defaultCurrentState": "switch"}})
+        assert again.get("success") is True and again.get("changes") == [] and \
+            again.get("unchanged") == ["defaultCurrentState"], f"a no-op save must report unchanged: {again}"
 
     @test("devices")
     def test_update_device_tags(self) -> None:
@@ -15267,14 +15281,18 @@ def updated() {}
             assert json.loads(observed["value"]).get("nonce") == nonce, f"Bypass native command did not execute: {observed}"
 
             # (c) room assignment on an unlisted device through the Device Info save. The leg owns its
-            # input: it moves the device into the standing KEEP_ room (or re-assigns its own room) and
-            # puts the original assignment back.
+            # input: it moves the device into the standing KEEP_ room and puts the original assignment
+            # back; re-saving the room it already has must report it unchanged and move nothing.
             target_room = orig_room or f"{SCAFFOLD_PREFIX}Room"
             rr = self.client.call_tool("hub_update_device", {"deviceId": unauth, "fields": {"room": target_room}})
             try:
                 assert rr.get("success") is True, f"bypass room assign did not succeed: {rr}"
-                assert any(c.get("property") == "room" and c.get("newValue") == target_room for c in (rr.get("changes") or [])), \
-                    f"bypass room change not recorded: {rr}"
+                if orig_room:
+                    assert rr.get("changes") == [] and rr.get("unchanged") == ["room"], \
+                        f"bypass same-room re-save must report the room unchanged: {rr}"
+                else:
+                    assert any(c.get("property") == "room" and c.get("newValue") == target_room
+                               for c in (rr.get("changes") or [])), f"bypass room change not recorded: {rr}"
             finally:
                 if not orig_room:
                     back = self.client.call_tool("hub_update_device", {"deviceId": unauth, "fields": {"room": ""}})

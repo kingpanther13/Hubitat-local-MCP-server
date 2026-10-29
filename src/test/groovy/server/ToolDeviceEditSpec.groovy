@@ -155,6 +155,24 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         result.changes == [[property: 'tags', oldValue: ['old'], newValue: ['kitchen', 'downstairs']]]
     }
 
+    def "a field that already had the requested value is saved but reported unchanged"() {
+        given:
+        def model = deviceModel(tags: 'old')
+        registerModel(model)
+        script.metaClass.hubInternalPostFormRaw = { String path, String body, int t = 420, boolean r = false ->
+            model.device.tags = ['new']
+            [status: 200, data: '']
+        }
+
+        when:
+        def result = script.toolUpdateDevice([deviceId: '10', fields: [label: 'Office Lamp', tags: ['new']]])
+
+        then:
+        result.success == true
+        result.changes*.property == ['tags']
+        result.unchanged == ['label']
+    }
+
     @spock.lang.Unroll
     def "a tags read-back of #nativeTags does not confirm #wanted"() {
         given:

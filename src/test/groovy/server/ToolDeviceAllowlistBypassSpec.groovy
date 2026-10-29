@@ -937,10 +937,11 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
         when: 'enable the already-enabled device (no-op flip; the listed read-back stays disabled:false == wanted)'
         def result = script.toolUpdateDevice([deviceId: '10', fields: [enabled: true]])
 
-        then: 'the native write is recorded and an independent read confirms the requested flag'
+        then: 'the native write is recorded and an independent read confirms the flag, reported unchanged'
         posted.path == '/device/disable'
         posted.body == [id: 10, disable: false]
-        result.changes.find { it.property == 'enabled' }?.newValue == true
+        result.changes.empty
+        result.unchanged == ['enabled']
         result.success == true
         hubGet.calls.count { it.path == '/device/fullJson/10' } == 2
     }

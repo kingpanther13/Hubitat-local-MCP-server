@@ -947,24 +947,6 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         !result.note.contains('did not install')
     }
 
-    def 'a done-page create whose read-back omits the installed flag leaves installation unreported'() {
-        given:
-        parentAt(40L, 'notifierChild', 'Notifier')
-        Map first = page(95L, notifierInputs(), [install: false])
-        first.configPage.nextPage = 'pageTwo'
-        first.configPage.donePage = 'pageDone'
-        childAt(95L, 40L, 'Notifier', [first, page(95L, notifierInputs(), [label: 'Front door', settings: [origLabel: 'Front door'], installed: null])])
-        replies['/installedapp/update/json'] = [first]
-
-        when:
-        def result = create([app_type: 'notifier', name: 'Front door'])
-
-        then:
-        result.committed == false
-        !result.containsKey('installed')
-        !result.note.contains('did not install')
-    }
-
     def 'a created child that is not the requested type under the parent is left in place and its id named: #label'() {
         given:
         parentAt(40L, 'notifierChild', 'Notifier')
