@@ -52,7 +52,6 @@ private String _effectiveBackupSetting(String key) {
 @groovy.transform.Field static final int FILE_BACKUP_COPIES = 5
 @groovy.transform.Field static final Set ITEM_BACKUP_LEGACY_PENDING = new java.util.HashSet()
 @groovy.transform.Field static final Map ITEM_BACKUP_LOCK_STATE = new java.util.HashMap()
-@groovy.transform.Field static final Map PRED_CLEAR_STORES = new java.util.HashMap()
 @groovy.transform.Field static final Map WRITE_STATE_CACHE = new java.util.HashMap()
 @groovy.transform.Field static final Set WRITE_STATE_DURABLE_MAPS = new java.util.HashSet()
 @groovy.transform.Field static volatile String TOOL_SEARCH_CORPUS_FP = null
@@ -3711,7 +3710,7 @@ def _getAllToolDefinitions_partFiles() {
         ],
         [
             name: "hub_read_file",
-            description: "Read the text content of a single file from the hub's File Manager by exact file name.[[FLAT_TRIM]] Use after hub_list_files to fetch a named file (config, backup, exported rule/app, CSV).[[/FLAT_TRIM]] Read-only.[[FLAT_TRIM]] Large files are returned in chunks: pass offset/length, then follow nextOffset while hasMore is true (default chunk 30000 chars, max 60000).[[/FLAT_TRIM]]",
+            description: "Read the text content of a single file from the hub's File Manager by exact file name.[[FLAT_TRIM]] Use after hub_list_files to fetch a named file (config, backup, exported rule/app, CSV). Pre-write rule and app snapshots do not store password-typed settings.[[/FLAT_TRIM]] Read-only.[[FLAT_TRIM]] Large files are returned in chunks: pass offset/length, then follow nextOffset while hasMore is true (default chunk 30000 chars, max 60000).[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -3816,7 +3815,7 @@ private _listSourceItemBackups(args) {
             total: 0,
             message: "No item backups exist yet. Backups are created automatically when you use hub_update_app, hub_update_driver, hub_update_library, or hub_delete_item, and before Rule Machine edits and deletes.",
             storageBudget: _itemBackupBudgetUsage(manifest),
-            retentionPolicy: _itemBackupRetentionPolicy(),
+            retentionPolicy: _itemBackupRetentionNote(),
             storage: "Backups are stored as .groovy files in the hub's File Manager. You can access them at http://<HUB_IP>/local/<filename> or via Hubitat > Settings > File Manager.",
             howToRestore: "Use 'hub_get_backup' to retrieve source code, then 'hub_restore_backup' to restore (apps/drivers). For deleted apps or drivers, use 'hub_create_app' or 'hub_create_driver' with the backup source. For deleted libraries, use 'hub_create_library' with the backup source."
         ]
@@ -3833,7 +3832,6 @@ private _listSourceItemBackups(args) {
             age: formatAge(entry.timestamp),
             sourceLength: entry.sourceLength ?: 0,
             sizeBytes: _itemBackupEntryBytes(entry),
-            retention: entry.retention ?: "pinned",
             directDownload: "http://<HUB_IP>/local/${entry.fileName}"
         ]
         if (entry.type == "rm-rule") {
@@ -3852,7 +3850,7 @@ private _listSourceItemBackups(args) {
         count: paged.page.size(),
         total: backupList.size(),
         storageBudget: _itemBackupBudgetUsage(manifest),
-        retentionPolicy: _itemBackupRetentionPolicy(),
+        retentionPolicy: _itemBackupRetentionNote(),
         storage: "Backup files are stored in the hub's local File Manager (Settings > File Manager). Files persist even if MCP is uninstalled.",
         howToRestore: "Use 'hub_restore_backup' with a backupKey to restore apps/drivers via MCP. For library backups, use 'hub_update_library' with sourceFile mode instead. Or download the .groovy file from File Manager and paste it into Apps Code / Drivers Code / Libraries code manually.",
         manualRestore: "Go to Hubitat > Settings > File Manager to see backup files. Download a file, then go to Apps Code (or Drivers Code, or FOR DEVELOPERS > Libraries code) > select the item > paste the source > click Save."
@@ -3866,9 +3864,6 @@ private _listSourceItemBackups(args) {
         result.note = "Showing ${paged.page.size()} of ${backupList.size()} backups, newest first. Repeat the call with cursor '${paged.nextCursor}' for the next page.".toString()
     }
     return result
-}
-private String _itemBackupRetentionPolicy() {
-    return "Backups are removed only when all MCP backups together exceed the ${_itemBackupBudgetMb()} MB storage budget (the Backup storage budget setting). Another item's backup never replaces this one, but once the budget is exceeded any new backup can evict older backups of any item: rolling steps first, then pinned baselines, oldest first. Apps, drivers and libraries keep one pinned baseline, replaced by the item's next backup after the one-hour reuse window. A rule's first snapshot in an editing session is pinned, and so is every pre-delete, pre-forcedelete and replaceRequiredExpression snapshot; with backupEveryRuleWrite on, its other snapshots in the session are rolling steps. A rule's editing session ends once an hour passes with no snapshot of that rule; with backupEveryRuleWrite on, a continuous chain of writes keeps it open."
 }
 private Map _healPendingItemBackup(String backupKey, Map entry) {
     return _withBackupLock("heal ${backupKey}") {
@@ -4110,7 +4105,7 @@ private Map _toolRestoreSourceBackup(args) {
                 _publishUploadedItemBackup(preRestoreBackupKey, [
                     type: entry.type, id: entry.id, fileName: preRestoreFileName,
                     version: parsed.version, timestamp: now(), sourceLength: parsed.source.length(),
-                    sizeBytes: parsed.source.getBytes("UTF-8").length, retention: "pinned",
+                    sizeBytes: parsed.source.getBytes("UTF-8").length,
                     undoForBackupKey: args.backupKey.toString(), undoForSourceHash: restoreSourceHash,
                     sourceHash: undoSourceHash
                 ], args.backupKey.toString())
@@ -4200,10 +4195,9 @@ private Map _toolRestoreSourceBackup(args) {
                 undoAvailable: undoAvailable
             ]
             if (undoAvailable) {
-                String undoNote = _itemBackupRetentionNote([type: entry.type, retention: "pinned", undoForBackupKey: args.backupKey.toString()])
+                String undoNote = _itemBackupRetentionNote()
                 restoreResult.preRestoreBackup = preRestoreBackupKey
                 restoreResult.preRestoreFile = preRestoreFileName
-                restoreResult.backupRetention = "pinned"
                 restoreResult.backupRetentionNote = undoNote
                 restoreResult.undoHint = "To undo this restore, use 'hub_restore_backup' with backupKey='${preRestoreBackupKey}'. ${undoNote}"
             } else {
@@ -5012,7 +5006,7 @@ A transport drop can lose the response while the hub still commits this write; v
         ],
         [
             name: "hub_list_backups",
-            description: "List backups: scope=source (default; auto-created code backups, each with a backupKey) | hub_local | hub_cloud | hub | all. Read-only. The hub scopes also return the automatic-backup `schedule` and the `networkBackup` share settings.[[FLAT_TRIM]] Whole-hub DB backups come back under hubLocalBackups/hubCloudBackups — a local backup's name and a cloud backup's path feed hub_restore_backup/hub_delete_backup; fullBackup:true marks a full local backup (database + files + radio data). The `schedule` block carries the frequencies (days) + daily hour/minute and the full-backup / last-backup status fields; no password is ever returned. A failed schedule read joins hubBackupErrors (partial:true) and a failed share read stays inside networkBackup; neither fails the listing. Source entries carry retention (pinned or rolling) and the response reports storageBudget and the retention policy. See hub_get_tool_guide(section='backup').[[/FLAT_TRIM]]",
+            description: "List backups: scope=source (default; auto-created code backups, each with a backupKey) | hub_local | hub_cloud | hub | all. Read-only. The hub scopes also return the automatic-backup `schedule` and the `networkBackup` share settings.[[FLAT_TRIM]] Whole-hub DB backups come back under hubLocalBackups/hubCloudBackups — a local backup's name and a cloud backup's path feed hub_restore_backup/hub_delete_backup; fullBackup:true marks a full local backup (database + files + radio data). The `schedule` block carries the frequencies (days) + daily hour/minute and the full-backup / last-backup status fields; no password is ever returned. A failed schedule read joins hubBackupErrors (partial:true) and a failed share read stays inside networkBackup; neither fails the listing. The response reports storageBudget and the retention policy. See hub_get_tool_guide(section='backup').[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -16757,7 +16751,7 @@ private String findRuleAppRedirect(ruleId, String verb) {
             }
             String editor = isRmRule ? "hub_manage_rule_machine -> hub_set_rule(rule_id=${idStr})" :
                 (appTypeNameLower.contains('visual rule') ? "hub_manage_rule_machine -> hub_set_visual_rule(appId=${idStr})" :
-                    "hub_manage_native_rules_and_apps -> hub_set_native_app(appId=${idStr})")
+                    "hub_manage_native_rules_and_apps -> hub_set_native_app(operation='update', app_id=${idStr})")
             return "Rule ${idStr} is a Hubitat built-in ${appTypeName} app. " +
                 "Use `hub_read_apps_code -> hub_get_app_config(appId=${idStr})` for read-only inspection. " +
                 "`hub_update_custom_rule` only handles MCP's own rule engine, not Hubitat built-in apps. " +
@@ -17504,96 +17498,18 @@ private stripOptionsHtml(options) {
     }
     return options
 }
-private String _rmDisabledActionSpanRegex() {
-    def regex = /(?is)<span\s+style=['"]\s*color:\s*red;?\s*['"]\s*>\s*<i>(.*?)<\/i>\s*<\/span>/
-    return regex
-}
-private String _rmDisabledActionMark() { return "[DISABLED] " }
 private boolean _rmIsRuleAppType(String name) {
     return name != null && name ==~ /(Button )?Rule-\d.*/
 }
-private String _rmDisabledActionText(String spanInnerHtml) {
-    def text = stripAppConfigHtml(spanInnerHtml)
-    if (!text || text ==~ /(?i)Disabled Actions?/) return null
-    return text
+private Map _appConfigNotFound(Exception e, String path, String appIdStr) {
+    Integer st = null
+    try { st = e.response?.status as Integer } catch (Exception ignored) { st = null }
+    if (st != 404 && st != 410) return null
+    mcpLog("warn", "hub-admin", "hub_get_app_config app ${appIdStr} not found (HTTP ${st} from ${path})")
+    return [success: false, error: "App ${appIdStr} not found (HTTP ${st} from ${path}).", note: _appConfigNote("Check the id with hub_get_app_config(summary=true) or hub_list_apps(scope='instances')"), appId: appIdStr as Integer, fingerprint: 'app not found (404)', status: st]
 }
-private Map _rmMarkDisabledActions(String html) {
-    if (!html || !html.contains("color:")) return [html: html, disabled: []]
-    def disabled = []
-    def out = new StringBuilder()
-    int last = 0
-    def m = (html =~ _rmDisabledActionSpanRegex())
-    while (m.find()) {
-        def inner = m.group(1)
-        def text = _rmDisabledActionText(inner)
-        if (!text) continue
-        out << html.substring(last, m.start()) << _rmDisabledActionMark() << inner
-        last = m.end()
-        disabled << text
-    }
-    if (last == 0) return [html: html, disabled: []]
-    out << html.substring(last)
-    return [html: out.toString(), disabled: disabled]
-}
-private String _rmDisabledRowText(String innerRaw) {
-    if (!innerRaw || !innerRaw.contains("color:")) return null
-    def m = (innerRaw =~ _rmDisabledActionSpanRegex())
-    while (m.find()) {
-        def text = _rmDisabledActionText(m.group(1))
-        if (text) return text
-    }
-    return null
-}
-private List _extractEmbeddedActions(String html, boolean markDisabled = false, List disabledRows = null) {
-    if (!html) return []
-    def buttonNames = []
-    def im = (html =~ /<input\s+type=['"]hidden['"]\s+name=['"]([^'"]+?)\.type['"]\s+value=['"]button['"][^>]*>/)
-    while (im.find()) {
-        buttonNames << im.group(1)
-    }
-    def divs = []
-    def dm = (html =~ /(?s)<div([^>]*)class=['"](?:[^'"]*\s)?submitOnChange(?:\s[^'"]*)?['"]([^>]*)>(.*?)<\/div>/)
-    while (dm.find()) {
-        def attrs = (dm.group(1) ?: "") + (dm.group(2) ?: "")
-        def innerRaw = dm.group(3) ?: ""
-        def title = null
-        def state = null
-        def tm = attrs =~ /title=['"]([^'"]+?)['"]/
-        if (tm.find()) title = tm.group(1)
-        def sm = attrs =~ /data-stateAttribute=['"]([^'"]+?)['"]/
-        if (sm.find()) state = sm.group(1)
-        def div = [title: title, stateAttribute: state]
-        def disabledText = markDisabled ? _rmDisabledRowText(innerRaw) : null
-        if (disabledText) {
-            div.description = stripAppConfigHtml(innerRaw) ?: null
-            div.disabledText = disabledText
-        } else {
-            def inner = innerRaw.replaceAll(/<\/?[A-Za-z!][^>]*>/, "").replaceAll(/&nbsp;|&#65291|&#x[0-9a-fA-F]+;|&#\d+;/, "").trim()
-            div.description = inner ?: null
-        }
-        divs << div
-    }
-    if (!buttonNames || !divs) return []
-    def actions = []
-    int n = Math.min(buttonNames.size(), divs.size())
-    for (int i = 0; i < n; i++) {
-        def a = [name: buttonNames[i]]
-        def d = divs[i]
-        if (d.title) a.title = d.title
-        if (d.stateAttribute) a.stateAttribute = d.stateAttribute
-        if (d.description) a.description = d.description
-        if (d.disabledText) {
-            a.disabled = true
-            if (disabledRows != null) {
-                def row = [text: d.disabledText]
-                def im2 = (a.name.toString() =~ /^(\d+)\./)
-                if (im2.find() && buttonNames.contains("disable" + im2.group(1))) row.disableButton = "disable" + im2.group(1)
-                disabledRows << row
-            }
-        }
-        actions << a
-    }
-    return actions
+private String _appConfigNote(String step) {
+    return "${step}; see hub_get_tool_guide(section='builtin_app_tools_apps').".toString()
 }
 def toolGetAppConfig(args) {
     if (args?.appId == null || args.appId.toString().trim() == "") {
@@ -17615,29 +17531,23 @@ def toolGetAppConfig(args) {
         try {
             summaryText = hubInternalGet(summaryPath, null, 30)
         } catch (Exception e) {
-            def resp = null
-            try { resp = e.response } catch (Exception ig) { resp = null }
-            Integer st = null
-            try { st = resp?.status as Integer } catch (Exception ig) { st = null }
-            if (st == 404 || st == 410) {
-                mcpLog("warn", "hub-admin", "hub_get_app_config app ${appIdStr} not found (HTTP ${st} from ${summaryPath})")
-                return [success: false, error: "App ${appIdStr} not found (HTTP ${st} from ${summaryPath}). May be deleted, mid-delete, or a not-yet-committed install shell whose config page cannot render. Verify with hub_get_app_config(summary=true) or hub_list_apps.", appId: appIdStr as Integer, fingerprint: 'app not found (404)', status: st]
-            }
+            Map gone = _appConfigNotFound(e, summaryPath, appIdStr)
+            if (gone) return gone
             mcpLogError("hub-admin", "hub_get_app_config summary fetch failed", e)
-            return [success: false, error: "Failed to fetch app summary [${e.class.simpleName}]: ${e.message}", appId: appIdStr as Integer]
+            return [success: false, error: "Failed to fetch app summary [${e.class.simpleName}]: ${e.message}", note: _appConfigNote('Retry once; if it fails again, check that the hub answers with hub_get_info'), appId: appIdStr as Integer]
         }
         if (!summaryText) {
-            return [success: false, error: "Empty response from ${summaryPath}. App may not exist or hub internal API is unavailable.", appId: appIdStr as Integer]
+            return [success: false, error: "Empty response from ${summaryPath}.", note: _appConfigNote('Retry once; if it fails again, read the app without summary=true'), appId: appIdStr as Integer]
         }
         def summaryParsed
         try {
             summaryParsed = new groovy.json.JsonSlurper().parseText(summaryText)
         } catch (Exception e) {
             mcpLogError("hub-admin", "hub_get_app_config summary JSON parse failed", e)
-            return [success: false, error: "Failed to parse app summary JSON: ${e.message}. Hubitat firmware may have changed the endpoint contract.", appId: appIdStr as Integer]
+            return [success: false, error: "Failed to parse app summary JSON: ${e.message}", note: _appConfigNote('Retry once; if it fails again, read the app without summary=true'), appId: appIdStr as Integer]
         }
         if (!(summaryParsed instanceof Map)) {
-            return [success: false, error: "Unexpected response shape: expected a JSON object. Firmware may have changed the endpoint contract.", appId: appIdStr as Integer, fingerprint: "top-level not a Map"]
+            return [success: false, error: "Unexpected response shape: the app summary is not a JSON object.", note: _appConfigNote('Retry once; if it fails again, read the app without summary=true'), appId: appIdStr as Integer, fingerprint: "top-level not a Map"]
         }
         def summaryResult = [:]
         summaryResult.putAll(summaryParsed)
@@ -17652,70 +17562,49 @@ def toolGetAppConfig(args) {
     try {
         responseText = hubInternalGet(path, null, 30)
     } catch (Exception e) {
-        def resp = null
-        try { resp = e.response } catch (Exception ig) { resp = null }
-        Integer st = null
-        try { st = resp?.status as Integer } catch (Exception ig) { st = null }
-        if (st == 404 || st == 410) {
-            mcpLog("warn", "hub-admin", "hub_get_app_config app ${appIdStr} not found (HTTP ${st} from ${path})")
-            return [success: false, error: "App ${appIdStr} not found (HTTP ${st} from ${path}). May be deleted, mid-delete, or a not-yet-committed install shell whose config page cannot render. Verify with hub_get_app_config(summary=true) or hub_list_apps.", appId: appIdStr as Integer, fingerprint: 'app not found (404)', status: st]
-        }
+        Map gone = _appConfigNotFound(e, path, appIdStr)
+        if (gone) return gone
         mcpLogError("hub-admin", "hub_get_app_config fetch failed", e)
-        return [success: false, error: "Failed to fetch app config [${e.class.simpleName}]: ${e.message}", appId: appIdStr as Integer]
+        return [success: false, error: "Failed to fetch app config [${e.class.simpleName}]: ${e.message}", note: _appConfigNote('Retry once; if it fails again, check that the hub answers with hub_get_info'), appId: appIdStr as Integer]
     }
     if (!responseText) {
-        return [success: false, error: "Empty response from ${path}. App may not exist or hub internal API is unavailable.", appId: appIdStr as Integer]
+        return [success: false, error: "Empty response from ${path}.", note: _appConfigNote('Retry once; if it fails again, check that the app still exists with hub_get_app_config(summary=true)'), appId: appIdStr as Integer]
     }
     def parsed
     try {
         parsed = new groovy.json.JsonSlurper().parseText(responseText)
     } catch (Exception e) {
         mcpLogError("hub-admin", "hub_get_app_config JSON parse failed", e)
-        return [success: false, error: "Failed to parse app config JSON: ${e.message}. Hubitat firmware may have changed the endpoint contract.", appId: appIdStr as Integer]
+        return [success: false, error: "Failed to parse app config JSON: ${e.message}", note: _appConfigNote('Retry once; if it fails again, check that the app still exists with hub_get_app_config(summary=true)'), appId: appIdStr as Integer]
     }
     if (!(parsed instanceof Map)) {
-        return [success: false, error: "Unexpected response shape: expected a JSON object. Firmware may have changed the endpoint contract.", appId: appIdStr as Integer, fingerprint: "top-level not a Map"]
+        return [success: false, error: "Unexpected response shape: the page is not a JSON object.", note: _appConfigNote('Retry once; if it fails again, check that the app still exists with hub_get_app_config(summary=true)'), appId: appIdStr as Integer, fingerprint: "top-level not a Map"]
     }
     if (!(parsed.app instanceof Map)) {
-        return [success: false, error: "Unexpected response shape: missing 'app' object. Firmware may have changed the endpoint contract.", appId: appIdStr as Integer, fingerprint: "missing app"]
+        return [success: false, error: "Unexpected response shape: the page names no app.", note: _appConfigNote("Check the id with hub_list_apps(scope='instances')"), appId: appIdStr as Integer, fingerprint: "missing app"]
     }
     if (!(parsed.configPage instanceof Map)) {
-        return [success: false, error: "Unexpected response shape: missing 'configPage' object. Firmware may have changed the endpoint contract.", appId: appIdStr as Integer, fingerprint: "missing configPage"]
+        return [success: false, error: "Unexpected response shape: the page has no configPage.", note: _appConfigNote('Retry once; if it fails again, check that the app still exists with hub_get_app_config(summary=true)'), appId: appIdStr as Integer, fingerprint: "missing configPage"]
     }
     if (!(parsed.configPage.sections instanceof List)) {
-        return [success: false, error: "Unexpected response shape: configPage.sections is not a list. This page may be a dynamic redirect or action-only page (common in HPM multi-step flows). Try a different pageName -- call hub_list_app_pages for this app, or `hub_get_tool_guide(section='builtin_app_tools_apps')` for common multi-page app names.", appId: appIdStr as Integer, fingerprint: "sections not a list"]
+        return [success: false, error: "This page has no sections to read.", note: _appConfigNote("Read the app's default page (omit pageName) and read another page from its page.hrefs"), appId: appIdStr as Integer, fingerprint: "sections not a list"] +
+            (parsed.configPage.error ? [configPageError: parsed.configPage.error] : [:])
     }
     def appTypeRaw = parsed.app.appType
-    def appTypeSummary = null
-    if (appTypeRaw instanceof Map) {
-        appTypeSummary = [
-            name: appTypeRaw.name,
-            namespace: appTypeRaw.namespace,
-            author: appTypeRaw.author,
-            category: appTypeRaw.category,
-            classLocation: appTypeRaw.classLocation,
-            deprecated: appTypeRaw.deprecated == true,
-            system: appTypeRaw.system == true,
-            menu: appTypeRaw.menu,
-            documentationLink: appTypeRaw.documentationLink
-        ]
-    }
     def appObj = [
         id: parsed.app.id,
         label: stripAppConfigHtml(parsed.app.trueLabel ?: parsed.app.label),
         name: parsed.app.name,
-        appType: appTypeSummary,
+        appType: appTypeRaw instanceof Map ? [system: appTypeRaw.system == true, menu: appTypeRaw.menu] : null,
         disabled: parsed.app.disabled == true,
         parentAppId: parsed.app.parentAppId,
         installed: parsed.app.installed == true
     ]
-    def redactedPw = "***redacted (password)***"
+    def redactedPw = _appConfigRedactedMarker()
     def passwordInputNames = [] as Set
-    def disabledActions = []
     boolean isRmRule = _rmIsRuleAppType((appTypeRaw instanceof Map ? appTypeRaw.name : null)?.toString()) ||
         _rmIsRuleAppType(parsed.app.name?.toString())
     def sections = []
-    def modeInputs = []
     for (s in parsed.configPage.sections) {
         if (!(s instanceof Map)) continue
         def section = [
@@ -17736,44 +17625,30 @@ def toolGetAppConfig(args) {
             if (i.options) input.options = stripOptionsHtml(i.options)
             if (i.defaultValue != null && (i.defaultValue != true || i.type == "bool")) input.value = i.defaultValue
             else if (i.value != null && (i.value != true || i.type == "bool")) input.value = i.value
-            if (i.type == "password") {
-                if (i.name) passwordInputNames << i.name.toString()
-                if (input.containsKey("value")) input.value = redactedPw
-            }
-            if (i.type == "mode") {
-                def rawModes = (parsed.settings instanceof Map) ? parsed.settings[i.name] : null
-                def modes = null
-                if (rawModes instanceof List) modes = rawModes.collect { it?.toString() }.findAll { it }
-                else if (rawModes != null) modes = rawModes.toString().split(",").collect { it.trim() }.findAll { it }
-                modeInputs << [name: input.name, modes: modes, section: section.title]
-            }
+            if (i.type == "mode" && parsed.settings instanceof Map && parsed.settings.containsKey(i.name)) input.value = parsed.settings[i.name]
+            if (i.type == "password" && i.name) passwordInputNames << i.name.toString()
+            if (input.containsKey("value") && _appConfigIsSecretSetting(i.name, i.type, input.value)) input.value = redactedPw
+            else if (input.containsKey("value") && _redactsAccessTokens() && input.value instanceof CharSequence &&
+                     i.name?.toString() ==~ /(?i)access_?token/) input.value = _accessTokenRedactedMarker()
             section.inputs << input
         }
         def paragraphs = []
-        def embeddedActions = []
         for (b in (s.body ?: [])) {
             if (!(b instanceof Map)) continue
             def rawHtml = (b.description ?: b.title)?.toString()
-            def marked = isRmRule ? _rmMarkDisabledActions(rawHtml) : [html: rawHtml, disabled: []]
-            def text = stripAppConfigHtml(marked.html)
-            if (text && text != "Click to set") paragraphs << text
-            def disabledRows = []
-            if (rawHtml) {
-                def acts = _extractEmbeddedActions(rawHtml, isRmRule, disabledRows)
-                if (acts) embeddedActions.addAll(acts)
-            }
-            for (t in marked.disabled) {
-                def entry = [text: t]
-                def row = disabledRows.find { it.text == t }
-                if (row) {
-                    disabledRows.remove(row)
-                    if (row.disableButton) entry.disableButton = row.disableButton
+            def text = stripAppConfigHtml(rawHtml)
+            if (!text || text == "Click to set") continue
+            List disabled = []
+            if (isRmRule) {
+                def rows = rawHtml =~ /(?is)<span\s+style=['"]\s*color:\s*red;?\s*['"]\s*>\s*<i>(.*?)<\/i>\s*<\/span>/
+                while (rows.find()) {
+                    String row = stripAppConfigHtml(rows.group(1))?.trim()
+                    if (row && !(row ==~ /(?i)Disabled Actions?/)) disabled << row
                 }
-                disabledActions << entry
             }
+            paragraphs << (disabled ? [text: text, disabled: disabled] : text)
         }
         if (paragraphs) section.paragraphs = paragraphs
-        if (embeddedActions) section.embeddedActions = embeddedActions
         sections << section
     }
     def children = []
@@ -17794,117 +17669,120 @@ def toolGetAppConfig(args) {
         childApps: children,
         endpoint: path
     ]
-    if (modeInputs) {
-        result.modeInputs = modeInputs
-        result.modeInputsNote = "Framework-standard mode input(s) (type='mode') on this page. Semantics are app-specific -- a 'only run during these modes' restriction OR per-mode overrides -- read the input titles/settings to interpret; `modes` is the configured list. Per-page only; absence does NOT mean the app ignores mode: some built-ins gate via mode-ID settings, not a type='mode' input (e.g. Room Lights). See hub_get_tool_guide(section='builtin_app_tools_apps') for the per-built-in key reference."
-    }
+    if (parsed.configPage.error) result.configPageError = parsed.configPage.error
     def pageHrefs = _rmPageHrefs(parsed.configPage as Map)
     if (pageHrefs) result.page.hrefs = pageHrefs
-    if (disabledActions) {
-        result.disabledActions = disabledActions
-        result.disabledActionsNote = "These Rule Machine actions are DISABLED and do not run: marked ${_rmDisabledActionMark().trim()} in paragraphs, and on a pageName=selectActions (Rule-5.1) or selectActionsX (Button Rule-5.1) read also disabled:true on the row in embeddedActions, whose disable<N> button reads 'Enable Action'. disableButton names that button (N is the action index, not the row position). The button is a TOGGLE: read selectActions/selectActionsX first, click only when the row's state differs from the target, re-read to confirm, and never retry a click whose response was lost.".toString()
+    if (pageName && parsed.configPage.name != null && parsed.configPage.name.toString() != pageName) {
+        String formTool = isRmRule ? "hub_set_rule" : "hub_set_native_app"
+        result.pageNote = "The hub rendered '${parsed.configPage.name}' instead of '${pageName}'; this app reaches that page only through its own link: open it with ${formTool}(operation:'form') and activate the href.".toString()
+    }
+    try {
+        result.controls = _nfPublic(_nfContext(appIdStr as Long, parsed as Map), []).controls
+    } catch (Exception unreadable) {
+        mcpLog("warn", "hub-admin", "hub_get_app_config app ${appIdStr}: page controls unreadable: ${unreadable.message}")
+        result.controlsError = unreadable.message
     }
     int settingsCount = (parsed.settings instanceof Map) ? parsed.settings.size() : 0
     result.settingsKeyCount = settingsCount
     if (includeSettings) {
         def rawSettings = (parsed.settings instanceof Map) ? parsed.settings : [:]
-        result.settings = passwordInputNames ? rawSettings.collectEntries { k, v ->
-            [(k): (passwordInputNames.contains(k?.toString()) ? redactedPw : v)]
-        } : rawSettings
-        if (rawSettings) {
-            result.settingsRedactionNote = "Password-type values are redacted using this page's inputs. For a multi-page app, password values defined on OTHER pages are not detectable from this fetch and may appear here unredacted -- redaction is page-scoped (see hub_list_app_pages)."
+        if (!rawSettings) {
+            result.settings = rawSettings
+        } else {
+            Map settingTypes = _appConfigSettingTypes(appIdStr as Integer)
+            List untyped = settingTypes == null ? [] : rawSettings.findAll { k, v ->
+                String key = k?.toString()
+                !passwordInputNames.contains(key) && !settingTypes.containsKey(key) && !_appConfigEmptyValue(v) && !(v instanceof Boolean) && !_appConfigSecretName(key)
+            }.keySet().collect { it.toString() }
+            if (settingTypes == null) {
+                result.settingsNote = "Raw settings withheld: the app's setting types could not be read from /installedapp/statusJson/${appIdStr}, so password values could not be identified for redaction. Retry; the config page above is unaffected.".toString()
+            } else if (untyped) {
+                mcpLog("warn", "hub-admin", "hub_get_app_config: statusJson for app ${appIdStr} types none of ${untyped}; raw settings withheld")
+                result.settingsNote = "Raw settings withheld: /installedapp/statusJson/${appIdStr} carries no type for ${untyped.take(5).join(', ')}${untyped.size() > 5 ? " and ${untyped.size() - 5} more" : ''}, so a password among them could not be told apart. Retry; the config page above is unaffected.".toString()
+            } else {
+                def redacted = [:]
+                rawSettings.each { k, v ->
+                    String key = k?.toString()
+                    String type = passwordInputNames.contains(key) ? "password" : settingTypes.get(key)
+                    redacted.put(k, _appConfigIsSecretSetting(key, type, v) ? redactedPw : v)
+                }
+                result.settings = redacted
+                result.settingsRedactionNote = "Secret values read ${redactedPw}: every setting the hub types as a password, on any page of the app, plus free-text settings whose names look like credentials (password, passwd, pwd, pass, passphrase, passcode, secret, token, API/access/private key, credential, psk, PIN, or a lock, user, access or alarm code). OAuth accessToken settings follow the Hide access tokens setting instead. Empty values are shown as-is. The secret itself is never returned; read or change it in the Hubitat UI.".toString()
+            }
         }
     } else if (settingsCount > 0) {
-        result.settingsNote = "Raw settings omitted -- pass includeSettings=true to include. Large apps (Room Lighting, RM 5.1) may have 500-1000 keys with app-specific encoding (e.g. \"dm~<deviceId>~<scene>\" for Room Lighting dim presets) that is non-trivial to decode without app-specific knowledge."
+        result.settingsNote = "Raw settings omitted; pass includeSettings=true to include them."
     }
     return result
 }
-def toolListAppPages(args) {
-    if (args?.appId == null || args.appId.toString().trim() == "") {
-        throw new IllegalArgumentException("appId is required")
-    }
-    def appIdStr = args.appId.toString().trim()
-    if (!appIdStr.isInteger()) {
-        throw new IllegalArgumentException("appId must be numeric: ${appIdStr}")
-    }
-    mcpLog("info", "hub-admin", "hub_list_app_pages appId=${appIdStr}")
-    def path = "/installedapp/configure/json/${appIdStr}"
-    def responseText
+private String _appConfigRedactedMarker() { return "***redacted (password)***" }
+private Map _appConfigSettingTypes(Integer appId) {
+    def status
     try {
-        responseText = hubInternalGet(path, null, 30)
+        status = _rmFetchStatusJson(appId)
     } catch (Exception e) {
-        def resp = null
-        try { resp = e.response } catch (Exception ig) { resp = null }
-        Integer st = null
-        try { st = resp?.status as Integer } catch (Exception ig) { st = null }
-        if (st == 404 || st == 410) {
-            mcpLog("warn", "hub-admin", "hub_list_app_pages app ${appIdStr} not found (HTTP ${st} from ${path})")
-            return [success: false, error: "App ${appIdStr} not found (HTTP ${st} from ${path}). May be deleted, mid-delete, or a not-yet-committed install shell whose config page cannot render. Verify with hub_get_app_config(summary=true) or hub_list_apps.", appId: appIdStr as Integer, fingerprint: 'app not found (404)', status: st]
-        }
-        mcpLogError("hub-admin", "hub_list_app_pages fetch failed", e)
-        return [success: false, error: "Failed to fetch app config [${e.class.simpleName}]: ${e.message}", appId: appIdStr as Integer]
+        mcpLog("warn", "hub-admin", "hub_get_app_config: statusJson read for app ${appId} failed (${e.message}); raw settings withheld")
+        return null
     }
-    if (!responseText) {
-        return [success: false, error: "Empty response from ${path}. App may not exist or hub internal API is unavailable.", appId: appIdStr as Integer]
+    if (!(status?.appSettings instanceof List)) {
+        mcpLog("warn", "hub-admin", "hub_get_app_config: statusJson for app ${appId} carried no appSettings list; raw settings withheld")
+        return null
     }
-    def parsed
-    try {
-        parsed = new groovy.json.JsonSlurper().parseText(responseText)
-    } catch (Exception e) {
-        mcpLogError("hub-admin", "hub_list_app_pages JSON parse failed", e)
-        return [success: false, error: "Failed to parse app config JSON: ${e.message}. Hubitat firmware may have changed the endpoint contract.", appId: appIdStr as Integer]
+    Map types = [:]
+    for (rec in (status.appSettings as List)) {
+        if (rec instanceof Map && rec.name != null && rec.type != null) types.put(rec.name.toString(), rec.type.toString())
     }
-    if (!(parsed instanceof Map)) {
-        return [success: false, error: "Unexpected response shape: expected a JSON object. Firmware may have changed the endpoint contract.", appId: appIdStr as Integer, fingerprint: "top-level not a Map"]
+    return types
+}
+private boolean _appConfigIsSecretSetting(name, type, value) {
+    if (_appConfigEmptyValue(value)) return false
+    String t = type?.toString()
+    if (t == "password") return true
+    if (value instanceof Boolean) return false
+    if (t && (t in ["bool", "boolean", "enum", "mode", "time", "date", "button", "href", "hub", "icon", "color"] ||
+              t.startsWith("capability") || t.startsWith("device"))) return false
+    return _appConfigSecretName(name)
+}
+private boolean _appConfigEmptyValue(value) {
+    if (value == null) return true
+    if (value instanceof CharSequence && value.toString().isEmpty()) return true
+    (value instanceof Collection || value instanceof Map) && value.isEmpty()
+}
+private boolean _appConfigSecretName(name) {
+    String raw = name?.toString()
+    if (!raw) return false
+    if (raw ==~ /(?i)access_?token/) return false
+    String lower = raw.toLowerCase()
+    if (!(lower.contains("pass") || lower.contains("pwd") || lower.contains("secret") || lower.contains("token") ||
+          lower.contains("key") || lower.contains("credential") || lower.contains("psk") || lower.contains("pin") || lower.contains("code"))) return false
+    String spaced = raw.replaceAll(/([a-z0-9])([A-Z])/, '$1 $2').replaceAll(/([A-Z]+)([A-Z][a-z])/, '$1 $2')
+    List words = spaced.toLowerCase().split(/[^a-z]+/).findAll { part -> part }
+    Set metadata = ["count", "counter", "cnt", "expiry", "expires", "expire", "expired", "expiration", "time",
+                    "timestamp", "date", "length", "len", "type", "enabled", "enable", "set", "required", "url",
+                    "uri", "endpoint", "timeout", "interval", "mode", "policy", "hint", "label", "name"] as Set
+    Set keyQualifiers = ["api", "access", "private", "auth", "client", "secret", "encryption", "signing", "shared"] as Set
+    Set pinQualifiers = ["lock", "user", "access", "pass", "disarm", "arm", "alarm", "security", "unlock", "auth", "entry", "keypad", "door", "master", "admin", "guest"] as Set
+    Set hardwarePins = ["led", "gpio", "relay", "io", "digital", "analog", "data", "output", "input", "sensor", "pwm", "signal", "button",
+                        "power", "reset", "enable", "interrupt", "irq", "clock", "clk", "sda", "scl", "tx", "rx", "servo", "motor", "trigger", "echo"] as Set
+    for (int idx = 0; idx < words.size(); idx++) {
+        String w = words[idx]
+        String prev = idx > 0 ? words[idx - 1] : null
+        String next = idx + 1 < words.size() ? words[idx + 1] : null
+        boolean hit = w.contains("password") || w.contains("passwd") || w.contains("passphrase") ||
+            w.contains("passcode") || w.contains("pwd") || w.contains("apikey") || w.contains("privatekey") ||
+            w.contains("accesskey") || (w.contains("secret") && !w.startsWith("secretar")) ||
+            w.endsWith("token") || w.endsWith("tokens") || w.startsWith("credential") || w == "psk" ||
+            (w == "pass" && prev != "by" && (next == null || next in ["word", "phrase", "code", "key"])) ||
+            (keyQualifiers.contains(w) && (next == "key" || next == "keys")) ||
+            (w in ["pin", "pins", "pincode", "pincodes"] && !(prev in hardwarePins)) ||
+            (w in ["code", "codes"] && (prev in pinQualifiers || prev in ["pin", "pins"]))
+        if (!hit) continue
+        boolean twoWords = ((next == "key" || next == "keys") && keyQualifiers.contains(w)) || (w in ["pin", "pins"] && next in ["code", "codes"])
+        String after = twoWords ? (idx + 2 < words.size() ? words[idx + 2] : null) : next
+        if (after != null && metadata.contains(after)) continue
+        return true
     }
-    if (!(parsed.app instanceof Map)) {
-        return [success: false, error: "Unexpected response shape: missing 'app' object. Firmware may have changed the endpoint contract.", appId: appIdStr as Integer, fingerprint: "missing app"]
-    }
-    if (!(parsed.configPage instanceof Map)) {
-        return [success: false, error: "Unexpected response shape: missing 'configPage' object. Firmware may have changed the endpoint contract.", appId: appIdStr as Integer, fingerprint: "missing configPage"]
-    }
-    def appTypeRaw = parsed.app.appType
-    def appTypeName = (appTypeRaw instanceof Map) ? (appTypeRaw.name ?: "") : ""
-    def appLabel = stripAppConfigHtml(parsed.app.trueLabel ?: parsed.app.label) ?: ""
-    def primaryPageName = parsed.configPage.name ?: "mainPage"
-    def primaryPageTitle = stripAppConfigHtml(parsed.configPage.title)
-    def primaryPage = [name: primaryPageName, title: primaryPageTitle, role: "primary"]
-    def appObj = [
-        id: parsed.app.id,
-        label: appLabel,
-        name: parsed.app.name,
-        appTypeName: appTypeName
-    ]
-    def appTypeNameLower = appTypeName.toLowerCase()
-    def pages
-    def note = null
-    boolean curatedHpm = appTypeNameLower.contains("hubitat package manager")
-    if (curatedHpm) {
-        pages = [
-            [name: "prefOptions",    title: "Main Menu",                role: "navigation"],
-            [name: "prefPkgUninstall", title: "Uninstall / Full Package List", role: "full_package_list"],
-            [name: "prefPkgModify",  title: "Modify Package (optional-components subset)", role: "modifiable_subset"],
-            [name: "prefPkgInstall", title: "Install New Package",       role: "install_flow"],
-            [name: "prefPkgMatchUp", title: "Match Up Packages",         role: "matching_flow"]
-        ]
-    } else {
-        pages = [primaryPage]
-    }
-    def knownNames = pages.collect { it.name } as Set
-    def linked = _rmPageHrefs(parsed.configPage as Map).findAll { !(it.page in knownNames) }.unique { it.page }
-    linked.each { pages << [name: it.page, title: it.title, role: "sub-page"] }
-    if (linked) {
-        note = "Sub-pages are linked from the primary page. A sub-page can link further pages of its own: read hub_get_app_config(appId, pageName=<sub-page>).page.hrefs. Use hub_set_rule for Rule Machine changes and native form controls; use hub_set_native_app walkStep (navigate, write, done) for other apps."
-    } else if (!curatedHpm) {
-        note = "The primary page links no sub-pages."
-    }
-    return [
-        success: true,
-        app: appObj,
-        primaryPage: primaryPage,
-        pages: pages,
-        note: note
-    ]
+    return false
 }
 def toolGetSource(args) {
     def type = args.type
@@ -17987,7 +17865,7 @@ private Map _createUserAppInstance(Integer codeAppId) {
     if (commit?.uiBlocked) {
         return [
             success: false,
-            error: "Instance ${newId} was created but not installed: ${commit.error} Keep it -- write the listed settings with hub_set_native_app(appId:${newId}, settings:{...}); that call's closing Done installs the app.".toString(),
+            error: "Instance ${newId} was created but not installed: ${commit.error} Keep it -- write the listed settings with hub_set_native_app(operation:'update', app_id:${newId}, args:{fields:{...}}, confirm:true), which presses the first page's Done and so installs it; a page that needs more than one step is finished with operation:'form'.".toString(),
             codeAppId: codeAppId,
             instanceAppId: newId,
             committed: false
@@ -18117,7 +17995,7 @@ private Map _commitUserAppInstall(Integer instanceId, String pageName) {
             success: false,
             uiBlocked: true,
             error: submit.uiReason,
-            note: "No Done was submitted, so the instance is not installed yet. Write the listed settings with hub_set_native_app(appId:${instanceId}, settings:{...}); that call's closing Done installs it.".toString(),
+            note: "No Done was submitted, so the instance is not installed yet. Write the listed settings with hub_set_native_app(operation:'update', app_id:${instanceId}, args:{fields:{...}}, confirm:true), which presses the first page's Done and so installs it; a page that needs more than one step is finished with operation:'form'.".toString(),
             scheduledJobCount: 0,
             eventSubscriptionCount: 0
         ]
@@ -19013,9 +18891,8 @@ private Map _deleteItemViaEndpoint(String type, String idParam, String deletePat
                 (idParam): itemId,
                 lastBackup: formatTimestamp(state.lastBackupTimestamp),
                 backupFile: backupEntry?.fileName,
-                backupRetention: backupEntry ? (backupEntry.retention ?: "pinned") : null,
-                backupRetentionNote: backupEntry ? _itemBackupRetentionNote(backupEntry as Map) : null,
-                restoreHint: backupEntry ? "To restore: use '${installTool}' with the backup source, or download ${backupEntry.fileName} from Hubitat > Settings > File Manager and re-install manually. ${_itemBackupRetentionNote(backupEntry as Map)}" : null
+                backupRetentionNote: backupEntry ? _itemBackupRetentionNote() : null,
+                restoreHint: backupEntry ? "To restore: use '${installTool}' with the backup source, or download ${backupEntry.fileName} from Hubitat > Settings > File Manager and re-install manually. ${_itemBackupRetentionNote()}" : null
             ]
             if (!backupSucceeded) result.backupWarning = "Pre-delete backup could not be created. The source code may be permanently lost."
             return result
@@ -19070,8 +18947,7 @@ private Map _backupLibrarySourceLocked(String libraryId) {
         version: libData.version,
         timestamp: now(),
         sourceLength: backupSource.length(),
-        sizeBytes: backupBytes.length,
-        retention: "pinned"
+        sizeBytes: backupBytes.length
     ]
     _publishUploadedItemBackup(key, entry)
     mcpLog("info", "hub-admin", "Backed up library ID ${libraryId} source to File Manager: ${fileName} (version ${libData.version}, ${backupSource.length()} chars)")
@@ -19452,9 +19328,8 @@ def toolDeleteLibrary(args) {
                 libraryId: libraryId,
                 lastBackup: formatTimestamp(state.lastBackupTimestamp),
                 backupFile: backupEntry?.fileName ?: backupFileName,
-                backupRetention: backupEntry ? (backupEntry.retention ?: "pinned") : null,
-                backupRetentionNote: backupEntry ? _itemBackupRetentionNote(backupEntry as Map) : null,
-                restoreHint: backupEntry ? "To restore: use 'hub_create_library' with the backup source, or download ${backupEntry.fileName} from Hubitat > Settings > File Manager and re-install manually. ${_itemBackupRetentionNote(backupEntry as Map)}" : null
+                backupRetentionNote: backupEntry ? _itemBackupRetentionNote() : null,
+                restoreHint: backupEntry ? "To restore: use 'hub_create_library' with the backup source, or download ${backupEntry.fileName} from Hubitat > Settings > File Manager and re-install manually. ${_itemBackupRetentionNote()}" : null
             ]
             if (!backupSucceeded) result.backupWarning = "Pre-delete backup could not be created. The source code may be permanently lost."
             return result
@@ -19480,9 +19355,6 @@ def toolListInstalledApps(args) {
         throw new IllegalArgumentException("Invalid filter '${filter}'. Must be one of: ${validFilters.join(', ')}")
     }
     try {
-        Map pendingBefore = null
-        try { pendingBefore = _rmPendingPredClearSnapshot() }
-        catch (Exception snapshotError) { mcpLog("warn", "rm-native", "Recovery-record snapshot unavailable; skipping reconciliation for this listing: ${snapshotError.message}") }
         def responseText = hubInternalGet("/hub2/appsList")
         if (!responseText) {
             return [success: false, error: "Empty response from /hub2/appsList", note: "Hub internal API may be transiently unavailable."]
@@ -19493,8 +19365,6 @@ def toolListInstalledApps(args) {
         } catch (Exception parseErr) {
             return [success: false, error: "Failed to parse /hub2/appsList response: ${parseErr.message}", note: "Hubitat firmware may have changed the endpoint format."]
         }
-        try { _rmReconcilePredClearPending(parsed, pendingBefore) }
-        catch (Exception reconcileError) { mcpLog("error", "rm-native", "Could not reconcile deleted-app recovery records during hub_list_apps; records are unchanged: ${reconcileError.message}") }
         def apps = parsed?.apps ?: []
         def flat = []
         def recurse
@@ -19906,31 +19776,14 @@ A transport drop can lose the response while the hub still commits this write; v
         ],
         [
             name: "hub_get_app_config",
-            description: """Read an installed app's configuration — the structured data the Hubitat Web UI shows on an app's settings page.[[FLAT_TRIM]] Works for any legacy SmartApp (Rule Machine rules, Room Lighting, Basic Rules, HPM, Mode Manager, etc.).[[/FLAT_TRIM]] Read-only.
-
-Returns the app's identity plus its current config page (sections, inputs, current values) and `embeddedActions` — clickable native editor buttons; hub_set_rule form operations return supported Rule Machine controls. Multi-page apps (e.g. RM 5.1): pass pageName; call hub_list_app_pages to discover sub-page names.[[FLAT_TRIM]] A Rule Machine action disabled in the UI is prefixed `[DISABLED]` in paragraphs, listed in `disabledActions` (`{text, disableButton}`), and flagged `disabled:true` on its selectActions (Button Rule: selectActionsX) row in embeddedActions; unmarked actions are live.[[/FLAT_TRIM]]
-
-Get appId from hub_list_apps (scope='instances') or hub_list_rules.[[FLAT_TRIM]] For RM rules use hub_list_rules, NOT hub_get_custom_rule (which only handles MCP-native rules).[[/FLAT_TRIM]][[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]""",
+            description: """Read an installed classic app's page as the Hubitat UI renders it: the app's identity, the page's sections with each input's current value, and its child apps. The pages it links to are listed in page.hrefs. controls lists the page's buttons and links with the control_id that hub_set_native_app or hub_set_rule(operation:'form') activates, and pageNote says when the hub rendered another page than pageName. Secret values are redacted.""",
             inputSchema: [
                 type: "object",
                 properties: [
                     appId: [type: "string", description: "Installed-app ID (decimal). From hub_list_apps (scope='instances'), hub_list_rules, or the numeric id in the Hubitat UI URL (/installedapp/configure/<id>)."],
-                    pageName: [type: "string", description: "Optional sub-page name for multi-page apps; main page when omitted. Call hub_list_app_pages to discover available names."],
+                    pageName: [type: "string", description: "The page to read instead of the default page: a page.hrefs[].page name from a page of this app already read."],
                     includeSettings: [type: "boolean", description: "Include the raw app-internal settings key-value map (default false). Set true only for power-user inspection.", default: false],
                     summary: [type: "boolean", description: "Fast identity-only read: returns the thin app record (id, name, type, disabled, user), no config page; pageName/includeSettings ignored.", default: false]
-                ],
-                required: ["appId"]
-            ]
-        ],
-        [
-            name: "hub_list_app_pages",
-            description: """List page names for an installed app: the live primary page plus every sub-page it links to (any classic app), with a curated directory added for HPM.[[FLAT_TRIM]] A page linked only from a sub-page appears in hub_get_app_config(appId, pageName=<sub-page>).page.hrefs.[[/FLAT_TRIM]]
-
-Use before hub_get_app_config on multi-page apps to avoid guessing page names.[[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    appId: [type: "string", description: "Installed-app ID (decimal). From hub_list_apps (scope='instances'), hub_list_rules, or the Hubitat UI URL (/installedapp/configure/<id>)."]
                 ],
                 required: ["appId"]
             ]
@@ -19953,7 +19806,7 @@ Use before hub_get_app_config on multi-page apps to avoid guessing page names.[[
 def _readOnlyToolNames_partCodeManagement() {
     return [
         "hub_list_apps", "hub_list_drivers", "hub_list_libraries", "hub_get_source",
-        "hub_list_device_dependents", "hub_get_app_config", "hub_list_app_pages"
+        "hub_list_device_dependents", "hub_get_app_config"
     ]
 }
 def _idempotentWriteToolNames_partCodeManagement() {
@@ -19980,8 +19833,7 @@ def _toolDisplayMeta_partCodeManagement() {
         hub_update_library: [title: "Update Library Code", summary: "Modify an existing library's source code."],
         hub_delete_item: [title: "Delete Code Item", summary: "Permanently delete an app, driver, or library (auto-backs up first)."],
         hub_list_device_dependents: [title: "List Device Dependents", summary: "Find all apps that reference a device."],
-        hub_get_app_config: [title: "Get App Configuration", summary: "Read an installed app's configuration page."],
-        hub_list_app_pages: [title: "List App Pages", summary: "List known page names for a multi-page app."]
+        hub_get_app_config: [title: "Get App Configuration", summary: "Read an installed app's configuration page."]
     ]
 }
 private Map _fetchAppsListTree(String caller) {
@@ -21265,7 +21117,7 @@ def _getAllToolDefinitions_partSelfAdmin() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    settings: [type: "object", description: "Map of setting key → new value[[FLAT_TRIM]] (e.g. {\"mcpLogLevel\":\"warn\",\"enableCustomRuleEngine\":true})[[/FLAT_TRIM]]. Unlisted keys are rejected. bypassDeviceAllowlist (bool, default OFF): DANGEROUS escape hatch — when ON native device reads, writes, commands, inventory, health, dependents, swaps and replacements reach ANY hub device by id, IGNORING selectedDevices. Allowlisted keys: mcpLogLevel, debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableRead, enableCustomRuleEngine, useGateways, enableMandatoryBPS, bypassDeviceAllowlist, maxConcurrentWrites, backupBeforeRuleEdits, backupEveryRuleWrite, backupBudgetMb, enableLocalAccess, enableCloudAccess, redactAccessTokens, selectedDevices.[[FLAT_TRIM]] enableLocalAccess / enableCloudAccess (bool): allow requests over the LAN / Hubitat cloud endpoint; a call cannot turn off the connection it arrived on.[[/FLAT_TRIM]] mcpLogLevel: debug|info|warn|error. maxConcurrentWrites: integer 0-100[[FLAT_TRIM]] (default 2; 0 disables the server-side all-write concurrency cap)[[/FLAT_TRIM]]. backupBeforeRuleEdits (bool, default ON): take one fresh snapshot per native rule edit batch or form workflow. backupEveryRuleWrite (bool, default OFF): prioritize the session's first snapshot over later rolling snapshots when pruning; this does not change snapshot frequency.[[FLAT_TRIM]] backupBudgetMb: whole number of MB from 1 to 1000000 (default 10): code and rule backups are evicted only when together they exceed it, rolling steps first; see hub_get_tool_guide(section='backup').[[/FLAT_TRIM]][[FLAT_TRIM]] bypassDeviceAllowlist is independent of Developer Mode.[[/FLAT_TRIM]] selectedDevices = the device-access scope[[FLAT_TRIM]]: {mode:replace|add|remove, ids:[device id strings]}; a bare array is shorthand for a destructive replace[[/FLAT_TRIM]] — see hub_get_tool_guide(section='hub_admin_write_system') for per-mode semantics."],
+                    settings: [type: "object", description: "Map of setting key → new value[[FLAT_TRIM]] (e.g. {\"mcpLogLevel\":\"warn\",\"enableCustomRuleEngine\":true})[[/FLAT_TRIM]]. Unlisted keys are rejected. bypassDeviceAllowlist (bool, default OFF): DANGEROUS escape hatch — when ON native device reads, writes, commands, inventory, health, dependents, swaps and replacements reach ANY hub device by id, IGNORING selectedDevices. Allowlisted keys: mcpLogLevel, debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableRead, enableCustomRuleEngine, useGateways, enableMandatoryBPS, bypassDeviceAllowlist, maxConcurrentWrites, backupBeforeRuleEdits, backupEveryRuleWrite, backupBudgetMb, enableLocalAccess, enableCloudAccess, redactAccessTokens, selectedDevices.[[FLAT_TRIM]] enableLocalAccess / enableCloudAccess (bool): allow requests over the LAN / Hubitat cloud endpoint; a call cannot turn off the connection it arrived on.[[/FLAT_TRIM]] mcpLogLevel: debug|info|warn|error. maxConcurrentWrites: integer 0-100[[FLAT_TRIM]] (default 2; 0 disables the server-side all-write concurrency cap)[[/FLAT_TRIM]]. backupBeforeRuleEdits (bool, default ON): take one fresh snapshot per native rule edit batch or form workflow. backupEveryRuleWrite (bool, default OFF): take a fresh snapshot before every edit instead of reusing the app's snapshot from the last hour.[[FLAT_TRIM]] backupBudgetMb: whole number of MB from 1 to 1000000 (default 10): code and rule backups are evicted only when together they exceed it, oldest first, and an item's newest backup is never evicted; see hub_get_tool_guide(section='backup').[[/FLAT_TRIM]][[FLAT_TRIM]] bypassDeviceAllowlist is independent of Developer Mode.[[/FLAT_TRIM]] selectedDevices = the device-access scope[[FLAT_TRIM]]: {mode:replace|add|remove, ids:[device id strings]}; a bare array is shorthand for a destructive replace[[/FLAT_TRIM]] — see hub_get_tool_guide(section='hub_admin_write_system') for per-mode semantics."],
                     clientToken: [type: "object", description: "Per-client tokens, instead of settings: see hub_get_tool_guide(section='hub_admin_write_system').[[FLAT_TRIM]] {action: list|create|update|rotate|revoke, ...}. Shape: clientId (update/rotate/revoke), label (create), access? {tools: [names]|\"all\", read, write, local, cloud, toolNumber: main|none|0-9}. create and rotate return the new token; a new client starts with every grantable tool on and access narrows it.[[/FLAT_TRIM]]"],
                     confirm: [type: "boolean", description: "REQUIRED: must be true to confirm the operation"]
                 ],
@@ -21684,9 +21536,8 @@ Map _appClonerExportJson(Integer sourceAppId) {
             } else {
                 reason = "no JSON content could be extracted (looked for configPage.sections[].input[].filecontent). " +
                     "Known cause: if the source rule has a Required Expression, appCloner export currently fails for it -- " +
-                    "delete the Required Expression in the Rule Machine UI, export, then re-add it (no MCP tool removes a " +
-                    "Required Expression: replaceRequiredExpression only swaps one for another); or edit the rule in place " +
-                    "via hub_set_rule instead of export/import. " +
+                    "delete the Required Expression in the Rule Machine UI, export, then re-add it (a hub_set_rule 'required' " +
+                    "change only swaps one expression for another); or edit the rule in place via hub_set_rule instead of export/import. " +
                     "If the rule has NO Required Expression, the cloner wire format may have changed"
             }
             throw new IllegalStateException("appCloner export fired but ${reason} for cloner ${clonerAppId}")
@@ -22087,6 +21938,7 @@ private Map _rmRestoreViaNativeImport(Map snapshot, Integer savedId, boolean exi
         (exists ? " Pass preserveRuleId:true to restore in place by settings replay instead." : "") +
         (reenableFailed ? " Re-enable app(s) ${reenableFailed} with hub_set_app_disabled(disabled=false)." : "") +
         (liveDisabled ? " Rule ${savedId} was disabled, so app ${newId} is left disabled too." : "")).toString()
+    _rmReportPasswords(out, snapshot, newId)
     return out
 }
 String _rmNativeCopyMismatch(Integer copyId, Map snapshot) {
@@ -22102,7 +21954,8 @@ String _rmNativeCopyMismatch(Integer copyId, Map snapshot) {
             def expected = _rmNativeModelSignature(data.state)
             def actual = _rmNativeModelSignature(copy).findAll { key, value -> expected.containsKey(key) }
             if (_rmNativeComparable(actual) != _rmNativeComparable(expected)) return 'the compiled native configuration differs from recovery'
-            if (_rmNativeComparable(_rmNativeSettingsSignature(_rmNativeCurrentSettings(copyId.toLong()))) != _rmNativeComparable(_rmNativeSettingsSignature(data.appSettings))) return 'the native settings differ from recovery'
+            List redacted = _rmRedactedSettings(snapshot)
+            if (_rmNativeComparable(_rmNativeSettingsSignature(_rmNativeCurrentSettings(copyId.toLong()).findAll { !(it.name in redacted) })) != _rmNativeComparable(_rmNativeSettingsSignature(data.appSettings))) return 'the native settings differ from recovery'
             def locals = _rmNativeLocalSignature(copy)
             if (_rmNativeComparable(locals) != _rmNativeComparable(_rmNativeLocalSignature(data.state))) return 'the native local variables differ from recovery'
             return null
@@ -22129,6 +21982,35 @@ void _rmRecordNativeRestore(String backupKey, Integer newId, boolean keepDisable
     } catch (Exception e) {
         mcpLog("warn", "rm-native", "Recording that backup ${backupKey} was restored as app ${newId} failed (${e.message}); a retry would import it again")
     }
+}
+private List _rmUnredactedSettings(Long id, List redacted) {
+    _rmNativeCurrentSettings(id).findAll { !(it.name in redacted) }
+}
+private List _rmRedactedSettings(Map snapshot) {
+    snapshot?.redactedSettings instanceof List ? snapshot.redactedSettings.collect { it.toString() } : []
+}
+private void _rmReportPasswords(Map out, Map snapshot, Integer appId, Closure readRows = null) {
+    List names = _rmRedactedSettings(snapshot)
+    if (!names) return
+    List rows = null
+    try {
+        def read = readRows != null ? readRows.call() : _rmFetchStatusJson(appId)?.appSettings
+        if (read instanceof List) rows = read
+        else mcpLog("warn", "rm-native", "Restore of app ${appId}: its settings read returned no settings list, so the kept passwords could not be confirmed")
+    } catch (Exception unreadable) {
+        mcpLog("warn", "rm-native", "Restore of app ${appId}: its settings could not be read to confirm the kept passwords (${unreadable.message})")
+    }
+    if (rows == null) {
+        out.passwordsUnverified = names
+        out.note = "${out.note ?: ''} Password settings ${names.join(', ')} are not stored in backups, and the app's settings could not be read to confirm them; check them in the app's native page.".toString().trim()
+        return
+    }
+    List kept = names.findAll { name -> rows.any { it instanceof Map && it.name?.toString() == name && it.value != null && it.value.toString() != '' } }
+    List missing = names - kept
+    if (kept) out.passwordsKept = kept
+    if (!missing) return
+    out.passwordsToReenter = missing
+    out.note = "${out.note ?: ''} Password settings ${missing.join(', ')} are not stored in backups and the app holds no value for them; enter them again in the app's native page.".toString().trim()
 }
 private Object _rmNativeComparable(Object value) {
     if (value instanceof Map) return value.collectEntries { key, item -> [(key.toString()): _rmNativeComparable(item)] }
@@ -22225,6 +22107,7 @@ private Map _rmRestoreNativeEdit(Map snapshot, String sourceBackupKey) {
     if (_ndStructuralIssues(expectedState, data.appSettings.any { it.name == 'useST' && it.value?.toString() == 'true' }) ||
         _nmValidateStructure(id, expectedState).success != true) throw new IllegalArgumentException('Recovery contains an unfinished native rule model')
     List plan = _rmNativeSettingPlan(data.appSettings)
+    List redacted = _rmRedactedSettings(snapshot)
     def deviceIds = payload.deviceReplacements.keySet().collect { it.toString() }
     plan.findAll { it.type == 'capability' || it.type.startsWith('capability.') }.each { row -> deviceIds.addAll(row.value instanceof List ? row.value : [row.value]) }
     List missingDeviceIds = []
@@ -22258,9 +22141,9 @@ private Map _rmRestoreNativeEdit(Map snapshot, String sourceBackupKey) {
         attempted = true
         if (_nrState(id).stopped != true) _nrHandle(id).appButtonHandler('stopRule')
         def wantedNames = plan.collect { it.name }
-        _rmNativeCurrentSettings(id).each { row -> if (!(row.name in wantedNames) || !plan.any { it.name == row.name && it.type == row.type && it.multiple == (row.multiple == true) }) _nrHandle(id).removeSetting(row.name) }
+        _rmUnredactedSettings(id, redacted).each { row -> if (!(row.name in wantedNames) || !plan.any { it.name == row.name && it.type == row.type && it.multiple == (row.multiple == true) }) _nrHandle(id).removeSetting(row.name) }
         plan.each { row -> _nrHandle(id).updateSetting(row.name, [type: row.type, value: row.value]) }
-        if (_rmNativeComparable(_rmNativeSettingsSignature(_rmNativeCurrentSettings(id))) != _rmNativeComparable(_rmNativeSettingsSignature(data.appSettings))) throw new IllegalStateException('Native typed settings did not restore exactly')
+        if (_rmNativeComparable(_rmNativeSettingsSignature(_rmUnredactedSettings(id, redacted))) != _rmNativeComparable(_rmNativeSettingsSignature(data.appSettings))) throw new IllegalStateException('Native typed settings did not restore exactly')
         Map restoreState = [:] + expectedState + [stopped: true]
         _nrStatePatch(id, restoreState, _nrState(id).keySet().findAll { !restoreState.containsKey(it) }.collect { it.toString() })
         if (_rmNativeComparable(_nrState(id)) != _rmNativeComparable(restoreState)) throw new IllegalStateException('Complete native state did not persist exactly')
@@ -22276,12 +22159,14 @@ private Map _rmRestoreNativeEdit(Map snapshot, String sourceBackupKey) {
         if (_rmNativeComparable(actualModel) != _rmNativeComparable(expectedModel)) throw new IllegalStateException('Rebuilt native actions, triggers, conditions or expressions differ from recovery')
         Map actualLocals = _nrHandle(id).getAllLocalVars().collectEntries { name, row -> [(name.toString()): [type: row.type, value: row.value]] }
         if (_rmNativeComparable(actualLocals) != _rmNativeComparable(_rmNativeLocalSignature(expectedState))) throw new IllegalStateException('Native local variables differ from recovery')
-        if (_rmNativeComparable(_rmNativeSettingsSignature(_rmNativeCurrentSettings(id))) != _rmNativeComparable(_rmNativeSettingsSignature(data.appSettings))) throw new IllegalStateException('Native rebuild changed restored settings')
+        if (_rmNativeComparable(_rmNativeSettingsSignature(_rmUnredactedSettings(id, redacted))) != _rmNativeComparable(_rmNativeSettingsSignature(data.appSettings))) throw new IllegalStateException('Native rebuild changed restored settings')
         if ((actual.stopped == true) != (expectedState.stopped == true) || (actual.paused == true) != (expectedState.paused == true) ||
             _rmLabelName(_nrHandle(id).label) != restoredName) throw new IllegalStateException('Native label or lifecycle state differs from recovery')
-        [success: true, type: 'rm-rule', ruleId: id, originalRuleId: id, restoredVia: 'nativeStateReplay', backup: undo,
+        Map restored = [success: true, type: 'rm-rule', ruleId: id, originalRuleId: id, restoredVia: 'nativeStateReplay', backup: undo,
          stateVerified: true, settingsVerified: true, localVariablesVerified: true, broken: rebuilt.broken, stopped: rebuilt.stopped, paused: rebuilt.paused,
          eventSubscriptions: rebuilt.eventSubscriptions, scheduledJobs: rebuilt.scheduledJobs]
+        _rmReportPasswords(restored, snapshot, id.toInteger()) { _rmNativeCurrentSettings(id) }
+        restored
     } catch (Exception failure) {
         if (!attempted) throw failure
         mcpLogError('rm-native', "native restore of rule ${id} failed after changes: ${failure.message}".toString(), failure)
@@ -22374,6 +22259,9 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
     def savedSettings = (snapshot?.configJson?.settings ?: [:]) as Map
     def savedLabel = snapshot?.appLabel
     def savedAppType = snapshot?.appType ?: "rule_machine"
+    String savedTypeName = snapshot?.appTypeName?.toString() ?: snapshot?.configJson?.app?.appType?.name?.toString()
+    if (savedAppType == "rule_machine" && savedTypeName && !(savedTypeName ==~ /Rule-[0-9.]+/) &&
+            !_appTypeRegistry().values().any { it.appName == savedTypeName }) savedAppType = "app"
     if (savedAppType == "visual_rule") {
         return _vrbRestoreFromSnapshot(snapshot, fileName?.toString())
     }
@@ -22392,9 +22280,14 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
         }
         exists = false
     }
-    def reg = _appTypeRegistry()[savedAppType]
-    if (!reg) {
+    def reg = savedAppType == "app" ? [:] : _appTypeRegistry()[savedAppType]
+    if (reg == null) {
         throw new IllegalArgumentException("Backup references unknown appType '${savedAppType}'. Supported: ${_appTypeRegistry().keySet().join(', ')}")
+    }
+    if (savedAppType == "app" && !exists) {
+        return [success: false, type: "rm-rule", originalRuleId: savedId,
+                error: "App ${savedId} no longer exists and its type '${savedTypeName}' is not a built-in app type, so this backup cannot recreate it. Nothing was created.".toString(),
+                note: "Reinstall the app from its app code, then set its settings again from this backup (hub_get_backup shows them) with hub_set_native_app(operation:'update'). See hub_get_tool_guide(section='set_native_app_reference')."]
     }
     String nativeSkipped = null
     def priorCopy = _rmPriorNativeCopy(entry, savedId, exists, fileName?.toString())
@@ -22409,7 +22302,6 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
             else return nativeOut
         }
     }
-    String commitButton = reg.containsKey("commitButton") ? reg.commitButton : _resolveCommitButton(snapshot?.configJson?.app?.appType?.name?.toString())
     def ruleId
     if (exists) {
         ruleId = savedId
@@ -22417,13 +22309,12 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
     } else {
         def parentId = _discoverParentAppId(savedAppType)
         _requireUnprotectedAppMutation(parentId, "restore a child app under")
-        ruleId = _rmCreateChildApp(parentId, reg.namespace, reg.appName)
+        ruleId = _rmCreateChildApp(parentId, "hubitat", reg.appName)
         try {
             def firstPage = _rmFetchConfigJson(ruleId)
             def firstSchema = _rmCollectInputSchema(firstPage?.configPage)
             def seedBody = _rmBuildSettingsBody(ruleId, [origLabel: savedLabel ?: "restored-app-${savedId}"], firstSchema)
             hubInternalPostForm("/installedapp/update/json", seedBody)
-            if (commitButton) _rmClickAppButton(ruleId, commitButton)
         } catch (Exception e) {
             try { _rmForceDeleteApp(ruleId) } catch (Exception ce) {
                 mcpLog("warn", "rm-native", "_rmRestoreFromBackup: orphan cleanup of newly-created app ${ruleId} failed after recreate error (${ce.message}) -- app may be left in an empty-label state; clean up manually via hub_delete_native_app(appId=${ruleId})")
@@ -22479,21 +22370,17 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
     try {
         _rmUpdateAppSettings(ruleId, replaySettings, savedSchema)
         if (exists && !isRm) {
-            try { settingsCleared = _rmClearSettingsNotInBackup(ruleId, savedSettings) } catch (Exception clearExc) {
+            try { settingsCleared = _rmClearSettingsNotInBackup(ruleId, savedSettings, _rmRedactedSettings(snapshot)) } catch (Exception clearExc) {
                 mcpLog("warn", "rm-native", "restore of app ${ruleId}: emptying settings the backup did not have failed (${clearExc.message})")
                 clearMiss = clearExc.message ?: clearExc.toString()
             }
         }
-        if (commitButton) {
-            step = "the final ${commitButton} click".toString()
-            _rmClickAppButton(ruleId, commitButton)
-        } else {
-            step = "the closing Done"
-            def done = _rmSubmitMainPageDone(ruleId)
-            if (done?.done != true) commitMiss = done?.reason ?: "the page's Done did not commit"
-        }
+        step = "the closing Done"
+        def done = _rmSubmitMainPageDone(ruleId)
+        if (done?.done != true) commitMiss = done?.reason ?: "the page's Done did not commit"
     } catch (Exception e) {
         mcpLog("error", "rm-native", "restore of rule ${ruleId} from ${fileName} failed during ${step}: ${e.message}")
+        String formCall = savedAppType in ['rule_machine', 'button_rule'] ? "hub_set_rule(operation:\"form\", rule_id:${ruleId}" : "hub_set_native_app(operation:\"form\", app_id:${ruleId}"
         return [
             success: false,
             type: "rm-rule",
@@ -22505,9 +22392,7 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
             error: "Restore applied partially; failed during ${step}: ${e.message}",
             note: (step == "settings replay"
                 ? "Rule ${ruleId} exists but may have incomplete settings. Inspect with hub_get_app_config(appId=${ruleId}) and compare against hub_get_backup(backupKey) before retrying."
-                : (commitButton == "updateRule"
-                    ? "The settings were replayed but the rule's updateRule did not fire, so its subscriptions may still reflect the pre-restore state. Open the rule and click Update Rule, or click it with hub_set_native_app(appId=${ruleId}, button='updateRule', confirm=true)."
-                    : "The settings were replayed but the app's ${commitButton ?: 'Done'} did not run, so its subscriptions may still reflect the pre-restore state. Open the app and click ${commitButton ?: 'Done'}, or click it with hub_set_native_app(appId=${ruleId}, button='${commitButton ?: 'Done'}', confirm=true).")).toString()
+                : "The settings were replayed but the app's Done did not run, so its subscriptions may still reflect the pre-restore state: press Done in the app, or run ${formCall}, args:{steps:[{kind:\"open\"},{kind:\"submit\",expect_page:\"<returned page>\",activate:\"_action_update|Done|\"}]}, confirm:true).").toString()
         ]
     }
     def out = [
@@ -22566,6 +22451,7 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
     }
     if (reOutcome) out.putAll(reOutcome)
     if (structure) out.putAll(structure)
+    _rmReportPasswords(out, snapshot, ruleId as Integer)
     if (out.leftoverConditionIds && structure?.removedConditionIds) {
         def gone = (structure.removedConditionIds as List)*.toString()
         out.leftoverConditionIds = (out.leftoverConditionIds as List).findAll { !gone.contains(it.toString()) }
@@ -22591,10 +22477,10 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
     }
     return out
 }
-List _rmClearSettingsNotInBackup(Integer appId, Map savedSettings) {
+List _rmClearSettingsNotInBackup(Integer appId, Map savedSettings, Collection keep = []) {
     def status = _rmFetchStatusJson(appId)
     if (!(status?.appSettings instanceof List)) return []
-    def saved = savedSettings.keySet().collect { it.toString() } as Set
+    def saved = (savedSettings.keySet().collect { it.toString() } + keep.collect { it.toString() }) as Set
     def extra = (status.appSettings as List).findAll { rec ->
         def n = rec?.name?.toString()
         boolean hasValue = (rec?.value != null && rec?.value != "") ||
@@ -23215,7 +23101,7 @@ def _getAllToolDefinitions_partDiscovery() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    section: [type: "string", description: "One section key from the enum. Omit to get the key list plus the first page of the full guide.", enum: ["set_rule_reference", "device_authorization", "best_practice_reference", "tool_access", "hub_admin_write", "hub_admin_write_overview", "hub_admin_write_destructive", "hub_admin_write_radios", "hub_admin_write_devices", "hub_admin_write_code", "hub_admin_write_system", "virtual_devices", "update_device", "rules", "backup", "file_manager", "performance", "performance_overview", "performance_devices", "performance_diagnostics", "builtin_app_tools", "builtin_app_tools_overview", "builtin_app_tools_apps", "builtin_app_tools_rules", "builtin_app_tools_crud", "visual_rule_reference", "variables", "dashboards", "bundles", "rooms", "slow_ops"]],
+                    section: [type: "string", description: "One section key from the enum. Omit to get the key list plus the first page of the full guide.", enum: ["set_rule_reference", "set_native_app_reference", "device_authorization", "best_practice_reference", "tool_access", "hub_admin_write", "hub_admin_write_overview", "hub_admin_write_destructive", "hub_admin_write_radios", "hub_admin_write_devices", "hub_admin_write_code", "hub_admin_write_system", "virtual_devices", "update_device", "rules", "backup", "file_manager", "performance", "performance_overview", "performance_devices", "performance_diagnostics", "builtin_app_tools", "builtin_app_tools_overview", "builtin_app_tools_apps", "builtin_app_tools_rules", "builtin_app_tools_crud", "visual_rule_reference", "variables", "dashboards", "bundles", "rooms", "slow_ops"]],
                     cursor: [type: "string", description: "Continue a paged payload: pass the prior call's nextCursor. Omit otherwise -- a cursor is rejected on a payload that fit one response."],
                     platform_api_search: [type: "string", description: "[[FLAT_TRIM]]Instead of a section: search the hub's Groovy API docs, e.g. 'eventsBetween'.[[/FLAT_TRIM]]"],
                     platform_api_page: [type: "string", description: "[[FLAT_TRIM]]Instead of a section: one API docs class page by pageId.[[/FLAT_TRIM]]"]
@@ -23299,28 +23185,8 @@ def _getAllToolDefinitions_partNativeRM() {
         ],
         [
             name: "hub_set_native_app",
-            description: """Create OR edit a classic native app (Room Lighting, Button Controller, Notifier, Group, Scene, Visual Rule, etc.): omit appId to CREATE (appType + name), provide appId to EDIT.[[FLAT_TRIM]] One generic upsert for any classic SmartApp instance via settings/button.[[/FLAT_TRIM]] For native Rule Machine structures use hub_set_rule.
-
-Requires the Write master + confirm=true + recent hub backup.[[FLAT_TRIM]]
-
-On MCP 2026-07-28, eligible slow writes continue automatically across bounded Streamable HTTP requests and eventually return one final result; no custom token or client extension is needed. Older clients retain the existing status:'in_progress' remainder envelope. See hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    appId: [type: "integer", description: "Installed-app id of an existing classic app (from hub_list_apps with scope='instances'). OMIT to CREATE a new app of `appType` (then `name` is required); PROVIDE to EDIT an existing app's settings/button."],
-                    appType: [type: "string", enum: ["rule_machine", "button_controller", "groups_scenes", "notifier", "basic_rule", "room_lighting", "scene", "thermostat_scheduler", "thermostat_controller"], description: "Native app class to CREATE (appId omitted). Default: rule_machine. Visual Rules: use hub_set_visual_rule (not this enum).[[FLAT_TRIM]] Other classic apps are edited by appId and can usually be created through their parent app's own page (e.g. the Room Lighting parent's newScene input creates Room Lights from a group or scene) -- see hub_get_tool_guide(section='builtin_app_tools_crud').[[/FLAT_TRIM]]"],
-                    name: [type: "string", description: "Label for the new app. Required on CREATE (when appId is omitted); ignored when appId is provided."],
-                    settings: [type: "object", description: "Map {inputName: value} to write to the app's current config page: scalars for bool/enum/text/number inputs; for device inputs (capability.* or driver-specific device.*) a List of device IDs or the {id: label} map hub_get_app_config returns. Discover input names via hub_get_app_config; inputs on a sub-page need pageName or walkStep."],
-                    button: [type: "string", description: "Page-transition button name to click (discover via hub_get_app_config)."],
-                    pageName: [type: "string", description: "Optional sub-page for schema introspection + settings POST."],
-                    stateAttribute: [type: "string", description: "Optional state attribute value for the button click."],
-                    buttonRule: [type: "object", description: "Create a Button Rule under an existing Button Controller.", properties: [controllerId: [type: "integer", description: "Button Controller-5.1 appId"], buttonNumber: [type: "integer", description: "button number (>=1)"], event: [type: "string", enum: ["pushed", "held", "doubleTapped", "released"]]]],
-                    walkStep: [type: "object", description: "Multi-page classic-app walker — EDIT-only (requires appId; rejected on create). Use it for inputs on a sub-page (hub_list_app_pages lists them), inputs that appear only after an earlier choice, and anything settings/button cannot represent.[[FLAT_TRIM]] For native Rule Machine authoring use hub_set_rule. Generic classic-dynamicPage walker for stateful apps: introspect/write/click/navigate/done one step per call, or operation='drive' with steps=[...] to run the whole sequence in one call.[[/FLAT_TRIM]]"],
-                    guide: [type: "boolean", description: "With an existing appId, return the generic native-app guide without mutation; do not combine with edit fields."],
-                    confirm: [type: "boolean", description: "Must be true. Safety gate for Write master operations."]
-                ],
-                required: ["confirm"]
-            ]
+            description: "Create, update or drive the native forms of classic Hubitat apps: Room Lighting, Button Controllers and Button Rules, Basic Rules, Notifier, Groups and Scenes, Thermostat Scheduler and Controller, and user or community apps. Omit operation for help; select a write operation without confirm for its schema. create and update run the app's own pages and Done as the browser does. Writes require confirm=true and a recent backup; partial changes can remain. Rule Machine rules use hub_set_rule (create app_type rule_machine makes only an empty rule); guide: set_native_app_reference.",
+            inputSchema: [type: "object", additionalProperties: false, properties: [operation: [type: "string", enum: ["create", "update", "form"]], app_id: [type: "integer", minimum: 1], args: [type: "object"], confirm: [type: "boolean"], bestPracticeKey: [type: "string"]]]
         ],
         [
             name: "hub_get_rule_health",
@@ -23501,7 +23367,7 @@ def toolListRmRules(args) {
     }
     if (ghostIds) {
         result.ghostsFiltered = ghostIds.sort()
-        result.ghostNote = "RMUtils reported ${ghostIds.size()} rule id(s) that no longer exist in /hub2/appsList — these are post-delete RMUtils-cache ghosts (rule is already gone, the cache just hasn't caught up). Filtered out of the rules list."
+        result.ghostNote = "RMUtils reported ${ghostIds.size()} rule id(s) that no longer exist in /hub2/appsList — these rules were deleted, and Rule Machine's own rule list keeps their ids until its parent app next runs. Filtered out of the rules list."
     }
     if (!treeReadable && !rules.isEmpty()) {
         result.statusNote = "/hub2/appsList was unreadable, so each rule's status is \"unknown\" (enabled/paused/stopped/disabled could not be determined). Retry; if it persists the hub's internal API may need Hub Security credentials."
@@ -23741,7 +23607,7 @@ private Map _rmToggleStopped(Integer ruleId, String action) {
     return [
         success: true,
         ruleId: ruleId,
-        rmAction: (action == "stop") ? "stopRule button -> state.stopped=true" : "stopRule button -> state.stopped=false (initialize + private boolean reset)"
+        rmAction: (action == "stop") ? "stopRule button -> state.stopped=true" : "stopRule button -> state.stopped=false (initialize)"
     ]
 }
 private Boolean _readAppStateBoolean(Map status, String name, Boolean fallback) {
@@ -23803,10 +23669,6 @@ private Map sendRmAction(List<Integer> ruleIds, String rmAction, String logConte
         def result = [success: true, ruleIds: ruleIds, rmAction: rmAction]
         if (ruleIds.size() == 1) result.ruleId = ruleIds[0]
         return result
-    } catch (MissingMethodException e) {
-        return sendRmActionFallback(ruleIds, rmAction, appLabel, logContext, e)
-    } catch (NoSuchMethodError e) {
-        return sendRmActionFallback(ruleIds, rmAction, appLabel, logContext, e)
     } catch (Throwable e) {
         def m = e.message ?: e.toString()
         mcpLog("error", "rm-interop", "${logContext} failed for rule(s) ${ruleIds.join(', ')}: ${m}")
@@ -23822,37 +23684,13 @@ private String _rmSendActionErrorNote(String rmAction, List<Integer> ruleIds, St
     if (message && message.toLowerCase().contains(_rmExcessiveLoadMarker())) {
         if (rmAction == "pauseRule" || rmAction == "resumeRule") {
             def verb = (rmAction == "resumeRule") ? "resume" : "pause"
-            def perRule = (ruleIds.size() == 1) ? "hub_set_rule(operation:'form', rule_id:${ruleIds[0]}, args:[steps:[[kind:'open']]], confirm:true), then use the returned pause control"
-                                                : "hub_set_rule(operation:'form', rule_id:<id>, args:[steps:[[kind:'open']]], confirm:true), then use the returned pause control per rule (${ruleIds.join(', ')}) -- CHECK EACH RULE'S CURRENT STATE FIRST via hub_list_rules: the batch went out in one RMUtils dispatch and part of it may already have been actioned, and pausRule is a toggle, so clicking it on a rule the batch already ${verb}d UNDOES that rule"
-            return "RMUtils hit the hub's per-app load limiter (sticky -- retrying does not clear it; an app disable/enable clears only the block on the app instance and the platform's load counters can re-trip it at once, so only a hub reboot fully resets it). To ${verb} the rule now, drive the page button directly with ${perRule}, which bypasses RMUtils and is load-immune (pausRule is a single toggle -- clicking it on a paused rule resumes it). ${base}"
+            def perRule = (ruleIds.size() == 1) ? "hub_set_rule(operation:'form', rule_id:${ruleIds[0]}, args:{steps:[{kind:'open'}]}, confirm:true), then activate the returned pausRule control"
+                                                : "hub_set_rule(operation:'form', rule_id:<id>, args:{steps:[{kind:'open'}]}, confirm:true), then activate the returned pausRule control per rule (${ruleIds.join(', ')}) -- CHECK EACH RULE'S CURRENT STATE FIRST via hub_list_rules: the batch went out in one RMUtils dispatch and part of it may already have been actioned, and clicking pausRule on a rule the batch already ${verb}d UNDOES that rule"
+            return "RMUtils hit the hub's per-app load limiter. To ${verb} the rule now, use its page button instead: ${perRule}. pausRule is a single toggle; clicking it on a paused rule resumes it. ${base}"
         }
-        return "RMUtils hit the hub's per-app load limiter. It is sticky -- it does NOT lift when load drains and an immediate retry fails the same way. An app disable/enable clears the block on the app instance but not the platform's load counters, so it can re-trip immediately; a hub reboot is what resets them. Clear it, then reissue. ${base}"
+        return "RMUtils hit the hub's per-app load limiter, so the action was not dispatched. ${base}"
     }
     return base
-}
-private Map sendRmActionFallback(List<Integer> ruleIds, String rmAction, String appLabel, String logContext, Throwable original) {
-    try {
-        hubitat.helper.RMUtils.sendAction(ruleIds, rmAction, appLabel)
-        mcpLog("info", "rm-interop", "${logContext}: sent ${rmAction} to rule(s) ${ruleIds.join(', ')} (3-arg fallback)")
-        def result = [success: true, ruleIds: ruleIds, rmAction: rmAction, fallback: "3-arg"]
-        if (ruleIds.size() == 1) result.ruleId = ruleIds[0]
-        return result
-    } catch (Throwable e2) {
-        def m1 = original.message ?: original.toString()
-        def m2 = e2.message ?: e2.toString()
-        mcpLog("error", "rm-interop", "${logContext} failed for rule(s) ${ruleIds.join(', ')}: 4-arg=${m1}, 3-arg=${m2}")
-        return [success: false, error: "RMUtils.sendAction failed: ${m2}", note: "4-arg attempt also failed: ${m1}. ${_rmSendActionErrorNote(rmAction, ruleIds, m2)}"]
-    }
-}
-private String _resolveCommitButton(String configAppName) {
-    if (!configAppName) return "updateRule"
-    if (configAppName == "Room Lighting") return null
-    def versioned = (configAppName.toString() =~ /^(.+) [0-9]+(?:\.[0-9]+)*$/)
-    def bare = versioned.matches() ? (versioned[0] as List)[1].toString() : null
-    def match = _appTypeRegistry().find { typeKey, reg -> reg.appName == configAppName } ?:
-                (bare != null ? _appTypeRegistry().find { typeKey, reg -> reg.appName == bare } : null)
-    if (match != null && match.value.containsKey("commitButton")) return match.value.commitButton
-    return "updateRule"
 }
 private Map _collectLiveApps() {
     def responseText
@@ -23971,7 +23809,7 @@ Boolean _rmIsAppDisabled(Integer appId) {
 }
 void _rmRejectDisabledAppEdit(Integer appId, String opName) {
     if (_rmIsAppDisabled(appId) != true) return
-    throw new IllegalArgumentException("${opName} blocked: rule ${appId} is DISABLED. Hubitat does not allow editing a disabled app -- its configuration page renders only \"App is disabled\", so there is no wizard to drive. This is intended platform behavior, not an error in the rule. To edit it: hub_set_app_disabled(appId=${appId}, disabled=false), make the change, then disable it again if you want it left parked. RM is not touched.")
+    throw new IllegalArgumentException("${opName} blocked: app ${appId} is DISABLED. Hubitat does not allow editing a disabled app -- its configuration page renders only \"App is disabled\", so there is no page to drive. To edit it: hub_set_app_disabled(appId=${appId}, disabled=false), make the change, then disable it again if you want it left parked. Nothing was changed.")
 }
 Map _rmDeleteAction(Integer appId, Integer actionIdx, boolean skipStructuralCheck = false) {
     def status = _rmFetchStatusJson(appId)
@@ -24141,7 +23979,7 @@ Map _rmMoveAction(Integer appId, Integer actionIdx, String direction) {
     }
     return [success: true, index: actionIdx, direction: direction, beforePosition: beforePosition, afterPosition: afterPosition, indicesAfter: afterOrderRaw.sort()]
 }
-private Map _rmNavigateToPage(Integer appId, String fromPage, String targetPage, Integer hrefIndex = 0, String hrefName = "name", Map hrefParams = null, Map cache = null, Long reqT0 = null, boolean recoverEmptyRender = false, boolean uiValidate = false) {
+private Map _rmNavigateToPage(Integer appId, String fromPage, String targetPage, Integer hrefIndex = 0, String hrefName = "name", Map hrefParams = null, Map cache = null) {
     boolean asNext = (hrefName == "__next__")
     def actionMarker = asNext ? "_action_next" : "_action_href_${hrefName}|${targetPage}|${hrefIndex}".toString()
     def body = [
@@ -24164,26 +24002,12 @@ private Map _rmNavigateToPage(Integer appId, String fromPage, String targetPage,
     } catch (Exception versionExc) {
         mcpLog("debug", "rm-native", "_rmNavigateToPage: version fetch on ${fromPage} failed for app ${appId} (${versionExc.message}) -- sending POST without version")
     }
-    if (uiValidate && fromCfg?.configPage instanceof Map) {
-        def fromValues = (fromCfg.settings instanceof Map) ? (Map) fromCfg.settings : [:]
-        def fromSchema = _rmCollectInputSchema(fromCfg.configPage as Map)
-        _requireUiNavigationValid(appId, "leaving page '${fromPage}' for '${targetPage}'".toString(), fromSchema, fromValues)
-        def defaults = fromSchema.findAll { k, meta ->
-            meta?.disabled != true && meta?.type != "button" && meta?.defaultValue != null && _uiValueIsEmpty(fromValues.get(k), meta as Map)
-        }.collectEntries { k, meta -> [(k): meta.defaultValue] }
-        if (defaults) {
-            def defaultBody = _rmBuildSettingsBody(appId, defaults, fromSchema)
-            defaultBody.remove("id")
-            body.putAll(defaultBody)
-        }
-    }
     try {
         def resp = hubInternalPostForm("/installedapp/update/json", body)
         _rmCacheInvalidate(cache, appId)
         if (resp?.data) {
             try {
-                def navResp = new groovy.json.JsonSlurper().parseText(resp.data) as Map
-                return recoverEmptyRender ? _rmRecoverEmptyNavRender(appId, targetPage, hrefParams, navResp, reqT0) : navResp
+                return new groovy.json.JsonSlurper().parseText(resp.data) as Map
             } catch (Exception parseExc) {
                 mcpLog("debug", "rm-native", "_rmNavigateToPage: ${fromPage}→${targetPage} response wasn't JSON (${parseExc.message}) -- caller will plain-fetch the schema")
             }
@@ -24192,42 +24016,6 @@ private Map _rmNavigateToPage(Integer appId, String fromPage, String targetPage,
         mcpLog("warn", "rm-native", "_rmNavigateToPage: ${fromPage}→${targetPage} POST failed for app ${appId}: ${postExc.message} -- downstream 'X not in schema' errors likely point at this")
     }
     return null
-}
-private int _rmEmptyRenderPauseMs() {
-    return 750
-}
-private Map _rmRecoverEmptyNavRender(Integer appId, String targetPage, Map hrefParams, Map navResp, Long reqT0) {
-    if (!(navResp?.configPage instanceof Map)) return navResp
-    if (hrefParams != null && !hrefParams.isEmpty()) {
-        def paramSchema = _rmCollectWalkSchema(navResp.configPage as Map, null)
-        if (paramSchema.inputs.isEmpty() && paramSchema.hrefs.isEmpty()) {
-            mcpLog("debug", "rm-native", "navigate -> ${targetPage} for app ${appId} rendered an empty page, but it was entered with href params whose state a plain GET cannot reproduce; reporting it as-is")
-        }
-        return navResp
-    }
-    if (navResp.configPage.error != null) return navResp
-    def schema = _rmCollectWalkSchema(navResp.configPage as Map, null)
-    if (!schema.inputs.isEmpty() || !schema.hrefs.isEmpty()) return navResp
-    if (_timeBudgetExceeded(reqT0)) {
-        mcpLog("warn", "rm-native", "navigate -> ${targetPage} for app ${appId} rendered an empty page; time budget spent, reporting it as-is")
-        return navResp
-    }
-    mcpLog("warn", "rm-native", "navigate -> ${targetPage} for app ${appId} rendered an empty page; re-reading it once")
-    pauseExecution(_rmEmptyRenderPauseMs())
-    try {
-        def reread = _rmFetchConfigJson(appId, targetPage)
-        if (reread?.configPage instanceof Map) {
-            def again = _rmCollectWalkSchema(reread.configPage as Map, null)
-            if (!again.inputs.isEmpty() || !again.hrefs.isEmpty()) {
-                def grafted = [configPage: reread.configPage, navRetried: true]
-                if (reread.app != null) grafted.app = reread.app
-                return navResp + grafted
-            }
-        }
-    } catch (Exception rereadExc) {
-        mcpLog("debug", "rm-native", "navigate -> ${targetPage} re-read failed for app ${appId}: ${rereadExc.message}")
-    }
-    return navResp
 }
 private void _rmSubmitSubPageDone(Integer appId, String page, String parentPage, String hrefName, Map hrefParams, Map cache = null, Map renderedCfg = null) {
     def cfg = renderedCfg
@@ -24274,29 +24062,14 @@ private void _rmSubmitSubPageDone(Integer appId, String page, String parentPage,
     _rmCacheInvalidate(cache, appId)
 }
 Map _rmSubmitMainPageDone(Integer appId) {
-    def commitPage = "mainPage"
     def cfg
-    try {
-        cfg = _rmFetchConfigJson(appId, commitPage)
-    } catch (Exception mainExc) {
-        String resolved = null
-        try {
-            def rootCfg = _rmFetchConfigJson(appId)
-            if (rootCfg?.app?.appType?.name == "Button Rule-5.1") resolved = "selectActions"
-        } catch (Exception probeExc) {
-            mcpLog("warn", "rm-native", "_rmSubmitMainPageDone: page-graph probe failed for app ${appId} after a mainPage miss (${probeExc.message})")
-        }
-        if (resolved == null) {
-            mcpLog("warn", "rm-native", "_rmSubmitMainPageDone: mainPage fetch failed for app ${appId} (${mainExc.message}) -- skipping Done click; lingering state markers (state.editAct/state.editCond) may corrupt subsequent edits")
-            return [done: false, reason: "mainPage fetch failed: ${mainExc.message}".toString()]
-        }
-        commitPage = resolved
-        try { cfg = _rmFetchConfigJson(appId, commitPage) }
-        catch (Exception reExc) {
-            mcpLog("warn", "rm-native", "_rmSubmitMainPageDone: ${commitPage} fetch failed for app ${appId} (${reExc.message}) -- skipping Done click")
-            return [done: false, reason: "${commitPage} fetch failed: ${reExc.message}".toString()]
-        }
+    try { cfg = _rmFetchConfigJson(appId) }
+    catch (Exception rootExc) {
+        mcpLog("warn", "rm-native", "_rmSubmitMainPageDone: root page fetch failed for app ${appId} (${rootExc.message}) -- skipping Done click; lingering state markers (state.editAct/state.editCond) may corrupt subsequent edits")
+        return [done: false, reason: "root page fetch failed: ${rootExc.message}".toString()]
     }
+    String commitPage = cfg?.configPage?.name?.toString()
+    if (!commitPage) return [done: false, reason: "the app's root page carries no name"]
     def schema = _rmCollectInputSchema(cfg?.configPage)
     def status
     try { status = _rmFetchStatusJson(appId) }
@@ -24352,7 +24125,10 @@ Map _rmSubmitMainPageDone(Integer appId) {
         mcpLog("warn", "rm-native", "_rmSubmitMainPageDone: Done POST for app ${appId} returned status ${resp.status}")
         return [done: false, reason: "Done POST returned status ${resp.status}".toString()]
     }
-    return [done: true]
+    String replyText = resp?.data instanceof Map ? groovy.json.JsonOutput.toJson(resp.data) : (resp?.data?.toString() ?: '')
+    if (replyText.contains('"location"')) return [done: true]
+    return [done: false, reason: (replyText.contains('"configPage"') ? "the hub rendered page '${commitPage}' again instead of accepting its Done" :
+        "the hub's reply to the Done named no location").toString()]
 }
 private Map _rmWriteSubPageField(Integer appId, String page, String parentPage, String hrefName, Integer hrefIndex, Map hrefParams, String key, Object value, Map cache = null) {
     def hasRealParams = (hrefParams != null) && hrefParams.values().any { it != null }
@@ -24438,68 +24214,6 @@ private boolean _rmIsCommittedRETell(Set names, boolean requireStopOnST = false)
     if (requireStopOnST) base = base && names.contains("stopOnST")
     return base && !hasNewCondSelector
 }
-private Map _rmCollectWalkSchema(Map configPage, Map liveSettings = null) {
-    def inputs = []
-    def hrefs = []
-    def hasActionDone = false
-    def hasHasAll = false
-    def hasCancel = false
-    for (s in (configPage?.sections ?: [])) {
-        for (i in (s?.input ?: [])) {
-            if (!(i instanceof Map) || !i.name) continue
-            def name = i.name.toString()
-            def entry = [
-                name: name,
-                type: i.type?.toString(),
-                title: (i.title?.toString() ?: "").take(80),
-                multiple: i.multiple == true,
-                required: i.required == true
-            ]
-            if (i.options != null) {
-                def opts = []
-                (i.options as List).each { o ->
-                    if (o instanceof Map && !o.isEmpty()) {
-                        def k = o.keySet().iterator().next()
-                        opts << [value: k.toString(), label: o.get(k)?.toString()]
-                    } else {
-                        opts << [value: o?.toString(), label: o?.toString()]
-                    }
-                }
-                entry.options = opts
-            }
-            if (liveSettings != null && liveSettings.containsKey(name)) {
-                entry.currentValue = liveSettings[name]
-            }
-            inputs << entry
-            if (i.type == "button") {
-                if (name == "actionDone") hasActionDone = true
-                if (name == "hasAll") hasHasAll = true
-                if (name?.toLowerCase()?.contains("cancel")) hasCancel = true
-            }
-        }
-        for (b in (s?.body ?: [])) {
-            if (b instanceof Map && b.element == "href" && b.page) {
-                hrefs << [
-                    name: b.name?.toString(),
-                    title: b.title?.toString(),
-                    targetPage: b.page?.toString(),
-                    params: b.params
-                ]
-            }
-        }
-    }
-    def out = [
-        inputs: inputs,
-        hrefs: hrefs,
-        commitButtons: [
-            actionDone: hasActionDone,
-            hasAll: hasHasAll,
-            cancel: hasCancel
-        ]
-    ]
-    if (configPage?.nextPage) out.nextPage = configPage.nextPage.toString()
-    return out
-}
 private def _rmRecentRuleBackup(Map mfst, Integer ruleId, long nowMs) {
     return mfst.findAll { key, value ->
         if (!(value instanceof Map) || value.deletePending || value.type?.toString() != "rm-rule") return false
@@ -24541,13 +24255,45 @@ Map _rmBackupRuleSnapshot(Integer ruleId, String reason, boolean requireNativeEx
     def built = requireNativeExport ? _rmBuildNativeEditSnapshot(ruleId, reason, _rmCaptureRuleExport(ruleId)) : _rmBuildRuleSnapshot(ruleId, reason, activePage)
     return _withBackupLock("rule ${ruleId} snapshot (${reason})") { _rmWriteRuleSnapshotLocked(ruleId, reason, built.snapshot as Map, built.config as Map, protectedKey) }
 }
-private Map _rmBuildNativeEditSnapshot(Integer ruleId, String reason, String nativeExport) {
+private Set _rmRedactSnapshotPasswords(Map config, Map status) {
+    Set names = [] as Set
+    if (status?.appSettings instanceof List) status.appSettings.each { row ->
+        if (row instanceof Map && row.name && (row.type?.toString() == 'password' || _appConfigIsSecretSetting(row.name, row.type, row.value))) { names << row.name.toString(); row.value = null }
+    }
+    (config?.configPage?.sections ?: []).each { section ->
+        (section instanceof Map && section.input instanceof List ? section.input : []).each { input ->
+            if (input instanceof Map && input.name && (input.type?.toString() == 'password' || input.name.toString() in names ||
+                    _appConfigIsSecretSetting(input.name, input.type, input.value != null ? input.value : input.defaultValue))) {
+                names << input.name.toString()
+                ['value', 'defaultValue'].each { key -> if (input.containsKey(key)) input.put(key, null) }
+            }
+        }
+    }
+    if (config?.settings instanceof Map) names.each { config.settings.remove(it) }
+    names
+}
+private String _rmRedactExportSecrets(String nativeExport, Set names) {
+    def payload = new groovy.json.JsonSlurper().parseText(nativeExport)
+    boolean changed = false
+    ((payload instanceof Map && payload.appData instanceof Map) ? payload.appData.values() : []).each { data ->
+        (data instanceof Map && data.appSettings instanceof List ? data.appSettings : []).each { row ->
+            if (row instanceof Map && row.name && (row.type?.toString() == 'password' || _appConfigIsSecretSetting(row.name.toString(), row.type?.toString(), row.value))) {
+                names << row.name.toString()
+                if (row.value != null) { row.value = null; changed = true }
+            }
+        }
+    }
+    changed ? groovy.json.JsonOutput.toJson(payload) : nativeExport
+}
+private Map _rmBuildNativeEditSnapshot(Integer ruleId, String reason, String capturedExport) {
+    Set redacted = [] as Set
+    String nativeExport = _rmRedactExportSecrets(capturedExport, redacted)
     Map payload = new groovy.json.JsonSlurper().parseText(nativeExport) as Map
     Map identity = payload.appReplacements.find { key, value -> key.toString() == ruleId.toString() }.value as Map
     Map data = payload.appData.find { key, value -> key.toString() == ruleId.toString() }.value as Map
     Map savedSettings = [:]
     List settingRows = data.appSettings.collect { row ->
-        savedSettings.put(row.name, row.deviceList instanceof Map && row.deviceList ? row.deviceList : row.value)
+        if (!(row.name in redacted)) savedSettings.put(row.name, row.deviceList instanceof Map && row.deviceList ? row.deviceList : row.value)
         [:] + row + [deviceIdsForDeviceList: row.deviceList instanceof Map ? row.deviceList.keySet().collect { it.toString() } : []]
     }
     Map config = [app: [id: ruleId, label: identity.appLabel, trueLabel: identity.appLabel,
@@ -24558,6 +24304,7 @@ private Map _rmBuildNativeEditSnapshot(Integer ruleId, String reason, String nat
         timestamp: capturedAt, timestampIso: formatTimestamp(capturedAt), appLabel: stripAppConfigHtml(identity.appLabel),
         nativeExport: nativeExport, configJson: config,
         statusJson: [appSettings: settingRows, appState: data.state.collect { key, value -> [name: key, value: value] }]]
+    if (redacted) snapshot.redactedSettings = redacted.toList().sort()
     [snapshot: snapshot, config: config]
 }
 private Map _rmBuildRuleSnapshot(Integer ruleId, String reason, String activePage = null) {
@@ -24582,6 +24329,10 @@ private Map _rmBuildRuleSnapshot(Integer ruleId, String reason, String activePag
         mcpLog("warn", "rm-native", "Backup for rule ${ruleId}: statusJson failed -- ${e.message}")
         status = [error: e.message ?: e.toString()]
     }
+    if (!(status?.appSettings instanceof List) && config?.settings instanceof Map && !config.settings.isEmpty()) {
+        String cause = status?.error ? status.error.toString() : 'its status read returned no settings list'
+        throw new IllegalStateException("App ${ruleId}: its settings could not be read (${cause}), so no snapshot was taken; nothing was changed. Retry; or delete it from the hub's Apps page; or turn off pre-edit backups for edits.".toString())
+    }
     def detectedAppType = config == null ? "visual_rule" : "rule_machine"
     def configAppName = config?.app?.appType?.name
     if (configAppName) {
@@ -24590,11 +24341,12 @@ private Map _rmBuildRuleSnapshot(Integer ruleId, String reason, String activePag
         def bare = versioned.matches() ? (versioned[0] as List)[1].toString() : null
         def exactKey = _appTypeRegistry().find { typeKey, reg -> reg.appName == name }?.key
         def bareKey = (exactKey == null && bare != null) ? _appTypeRegistry().find { typeKey, reg -> reg.appName == bare }?.key : null
-        detectedAppType = exactKey ?: bareKey ?: detectedAppType
+        detectedAppType = exactKey ?: bareKey ?: (name ==~ /Rule-[0-9.]+/ ? "rule_machine" : "app")
     }
     if (config?.app?.appType instanceof Map) {
         ["oauthClientId", "oauthClientSecret", "encryptedPassword", "sourcePassword"].each { config.app.appType.remove(it) }
     }
+    Set redacted = _rmRedactSnapshotPasswords(config, status instanceof Map ? status : null)
     def snapshot = [
         schemaVersion: 1,
         ruleId: ruleId,
@@ -24607,6 +24359,7 @@ private Map _rmBuildRuleSnapshot(Integer ruleId, String reason, String activePag
         configJson: config,
         statusJson: status
     ]
+    if (detectedAppType == "app") snapshot.appTypeName = configAppName.toString()
     if (detectedAppType == "visual_rule") {
         def vrb = null
         try {
@@ -24649,16 +24402,16 @@ private Map _rmBuildRuleSnapshot(Integer ruleId, String reason, String activePag
             snapshot.nativeExportSkipped = "the rule has a Required Expression, which Hubitat's App Cloner does not export"
         } else {
             def nat = _rmNativeExportForBackup(ruleId)
-            if (nat?.json) snapshot.nativeExport = nat.json
-            else if (nat?.error || nat?.skipped) snapshot.nativeExportSkipped = (nat.error ?: nat.skipped).toString()
+            if (nat?.json) {
+                try { snapshot.nativeExport = _rmRedactExportSecrets(nat.json.toString(), redacted) }
+                catch (Exception unreadable) { snapshot.nativeExportSkipped = "the App Cloner export could not be parsed (${unreadable.message})".toString() }
+            } else if (nat?.error || nat?.skipped) snapshot.nativeExportSkipped = (nat.error ?: nat.skipped).toString()
         }
     }
+    if (redacted) snapshot.redactedSettings = redacted.toList().sort()
     return [snapshot: snapshot, config: config]
 }
 private Map _rmWriteRuleSnapshotLocked(Integer ruleId, String reason, Map snapshot, Map config, String protectedKey = null) {
-    boolean editStep = _effectiveBackupSetting('backupEveryRuleWrite') == 'true' &&
-        !(reason in ["pre-delete", "pre-forcedelete", "pre-replaceRequiredExpression", "pre-native-restore"])
-    String retention = editStep && _rmRecentRuleBackup(_itemBackupManifest(), ruleId, now()) != null ? "rolling" : "pinned"
     def ts = new Date(now()).format("yyyyMMdd-HHmmss-SSS")
     String namePrefix = "mcp-rm-backup-${ruleId}-"
     String nameExt = ".json"
@@ -24698,8 +24451,7 @@ private Map _rmWriteRuleSnapshotLocked(Integer ruleId, String reason, Map snapsh
         appLabel: snapshot.appLabel,
         timestamp: snapshot.timestamp,
         sourceLength: jsonBytes.length,
-        sizeBytes: jsonBytes.length,
-        retention: retention
+        sizeBytes: jsonBytes.length
     ]
     _publishUploadedItemBackup(backupKey, entry, protectedKey)
     mcpLog("info", "rm-native", "Backed up rule ${ruleId} (${reason}) to ${fileName} (${jsonBytes.length} bytes)")
@@ -24707,7 +24459,7 @@ private Map _rmWriteRuleSnapshotLocked(Integer ruleId, String reason, Map snapsh
             brokenBefore: (config == null ? null : _rmConfigHasBrokenMarkers(config)),
             baselineReused: false,
             rollbackScope: "Restoring this baseline returns rule ${ruleId} to its state at ${formatTimestamp(snapshot.timestamp as Long)}."] +
-        entry + [retentionNote: _itemBackupRetentionNote(entry)]
+        entry + [retentionNote: _itemBackupRetentionNote()]
 }
 private Map _rmSoftDeleteApp(Integer appId) {
     def responseText = hubInternalGet("/installedapp/delete/${appId}")
@@ -24760,40 +24512,11 @@ private boolean _rmConfigHasBrokenMarkers(config) {
         ["**Broken Trigger**", "**Broken Action**", "**Broken Condition**"].any { text.contains(it) }
     }
 }
-private void _rmDropPredClearPending(Integer appId) {
-    synchronized (PRED_CLEAR_STORES) {
-        Map pending = _rmPendingPredClearSnapshot()
-        if (pending.remove(appId.toString()) != null) _rmCommitPredClearPending(pending)
-    }
-}
-private void _rmDropPredClearPending(Integer appId, Object observedGeneration) {
-    if (observedGeneration == null) return
-    synchronized (PRED_CLEAR_STORES) {
-        Map pending = _rmPendingPredClearSnapshot()
-        String key = appId.toString()
-        if (pending.get(key) != observedGeneration) return
-        pending.remove(key)
-        _rmCommitPredClearPending(pending)
-    }
-}
 Set _rmCollectPageInputNames(Integer appId, String pageName, Map cache = null) {
     def cfg = _rmFetchConfigJson(appId, pageName, cache)
     return (cfg?.configPage?.sections ?: []).collectMany { sec ->
         (sec?.input ?: []).collect { it?.name?.toString() }
     }.findAll { it } as Set
-}
-private List _rmReadExpressionTokens(Integer appId) {
-    def text
-    try { text = hubInternalGet("/app/ruleBuilderJson/${appId}") } catch (Exception e) {
-        mcpLog("warn", "rm-native", "reading the Required Expression of app ${appId} failed: ${e.message}")
-        return null
-    }
-    if (!text) return null
-    def parsed
-    try { parsed = new groovy.json.JsonSlurper().parseText(text) } catch (Exception e) { return null }
-    if (!(parsed instanceof Map)) return null
-    def toks = (parsed.eval instanceof Map) ? parsed.eval["0"] : null
-    return (toks instanceof List) ? new ArrayList(toks as List) : []
 }
 private String _rmTokenValue(Object tok) {
     return tok?.toString()?.trim()
@@ -24897,14 +24620,14 @@ private Map _rmTokSetExpression(Integer appId, List target) {
         }
         target.eachWithIndex { tok, i -> _rmTokInsert(appId, i, _rmTokenValue(tok), writeST, hrefParams, cache) }
         for (int guard = 0; guard < 60; guard++) {
-            def live = _rmReadExpressionTokens(appId)
+            def live = _rmRequiredTokens(appId)
             if (live == null) throw new IllegalStateException("the rule's expression state could not be read")
             if (live.size() <= target.size()) break
             _rmTokClick(appId, target.size().toString(), "deleteToken", cache)
         }
         _rmTokLeaveEditor(appId, cache)
         _rmClickAppButton(appId, "updateRule")
-        def live = _rmReadExpressionTokens(appId)
+        def live = _rmRequiredTokens(appId)
         def committed = _rmIsCommittedRETell(_rmCollectPageInputNames(appId, "STPage"))
         if (_rmTokensEqual(live, target) && committed) return [restored: true]
         return [restored: false, error: "the rule's expression reads ${live} after the rollback (expected ${target})"]
@@ -25057,6 +24780,12 @@ Map _rmReadRuleState(Integer appId) {
         mcpLog("warn", "rm-native", "reading the state of app ${appId} failed: ${e.message}")
         return null
     }
+}
+private List _rmRequiredTokens(Integer appId) {
+    def state = _rmReadRuleState(appId)
+    if (state == null) return null
+    def toks = state.eval instanceof Map ? state.eval["0"] : null
+    return toks instanceof List ? new ArrayList(toks as List) : []
 }
 private Integer _rmReplayConditionSlot(Integer appId, Map srcSettings, int srcIdx, Closure writeST, Map cache) {
     Integer newIdx = null
@@ -25254,7 +24983,7 @@ Map _rmRestoreRequiredExpression(Integer appId, Map snapshot) {
             if (baseTokens.isEmpty()) {
                 def names = _rmPageInputNames(_rmFetchConfigJson(appId, "STPage"))
                 if (names.contains("cancelCapab")) _rmTokClick(appId, "cancelCapab", "cancelCapab")
-                def nowTokens = _rmReadExpressionTokens(appId)
+                def nowTokens = _rmRequiredTokens(appId)
                 trimmed = nowTokens != null && nowTokens.isEmpty()
             } else {
                 trimmed = _rmTokSetExpression(appId, baseTokens).restored == true
@@ -25273,10 +25002,10 @@ Map _rmRestoreRequiredExpression(Integer appId, Map snapshot) {
             state = trimmed ? "the pre-restore expression was left in place" : "the live expression may be partly rebuilt -- inspect it with hub_get_app_config"
         } else if (!baseTokens.isEmpty()) {
             out.requiredExpressionPartial = true
-            state = trimmed ? "only the snapshot's first condition is committed -- finish the expression with replaceRequiredExpression" :
+            state = trimmed ? "only the snapshot's first condition is committed -- finish the expression with a hub_set_rule 'required' change" :
                 "part of the snapshot's expression is committed and the editor may be open -- inspect it with hub_get_app_config"
         } else {
-            state = "no expression was committed, so the rule runs without its Required Expression (ungated) -- rebuild it with addRequiredExpression"
+            state = "no expression was committed, so the rule runs without its Required Expression (ungated) -- rebuild it with a hub_set_rule 'required' change"
         }
         def leftover = (created ?: []).findAll { !(removed*.toString()).contains(it.toString()) }
         if (leftover) out.leftoverConditionIds = leftover
@@ -25301,13 +25030,14 @@ def toolDeleteNativeApp(args) {
     try { backup = _rmBackupRuleSnapshot(appId, force ? "pre-forcedelete" : "pre-delete") }
     catch (Exception backupErr) {
         Map unavailable = _itemBackupIndexUnavailableResult(backupErr)
-        if (unavailable == null) throw backupErr
-        return unavailable + [appId: appId]
+        if (unavailable != null) return unavailable + [appId: appId]
+        if (backupErr instanceof IllegalStateException) return [success: false, appId: appId, error: backupErr.message?.toString(),
+            note: "Nothing was deleted: the pre-delete snapshot could not be taken. Check that hub_get_app_config(appId=${appId}) and hub_list_backups answer, then retry.".toString()]
+        throw backupErr
     }
     try {
         if (force) {
             _rmForceDeleteApp(appId)
-            _rmDropPredClearPending(appId)
             _rmForgetDeletedParent(appId)
             return [
                 success: true,
@@ -25328,7 +25058,6 @@ def toolDeleteNativeApp(args) {
                     note: "Soft delete refused by hub. Pass force=true to override (app's children will also be removed)."
                 ]
             }
-            _rmDropPredClearPending(appId)
             _rmForgetDeletedParent(appId)
             return [
                 success: true,
@@ -25405,652 +25134,6 @@ def toolListRuleLocalVariables(args) {
     localVariables = localVariables.sort { it.name }
     return [appId: appId, localVariables: localVariables, total: localVariables.size()]
 }
-private Map _rmWholeGuideSection(String sectionKey) {
-    def result = toolGetToolGuide(sectionKey)
-    if (!(result instanceof Map) || result.nextCursor == null) return result as Map
-    def parts = [result.content as String]
-    def cursor = result.nextCursor
-    int guard = 0
-    while (cursor != null && guard++ < 50) {
-        def page = toolGetToolGuide(sectionKey, cursor)
-        parts << (page.content as String)
-        cursor = page.nextCursor
-    }
-    def whole = [:] + (result as Map)
-    whole.content = parts.join('')
-    whole.remove('nextCursor')
-    whole.remove('offset')
-    whole.remove('totalChars')
-    return whole
-}
-private String _rmMainPageDoneRepairHint(Integer appId, Map done) {
-    if (done?.uiBlocked == true) {
-        return "The closing mainPage Done was refused, as Hubitat's app page would refuse it (${done.reason}). Settings are already written; set the listed fields with hub_set_native_app(appId=${appId}, settings={...}), which re-runs the Done.".toString()
-    }
-    return "The session-end mainPage Done click did not commit (${done?.reason}). Settings are already written, but the app's update lifecycle did not run -- verify via hub_get_app_config(appId=${appId}) and re-commit via hub_set_native_app(appId=${appId}, button='updateRule') for RM-family apps.".toString()
-}
-private boolean _appTypeRegistryKnows(String configAppName) {
-    if (!configAppName) return false
-    if (configAppName == "Room Lighting") return true
-    def versioned = (configAppName =~ /^(.+) [0-9]+(?:\.[0-9]+)*$/)
-    def bare = versioned.matches() ? (versioned[0] as List)[1].toString() : null
-    return _appTypeRegistry().any { typeKey, reg -> reg.appName == configAppName || (bare != null && reg.appName == bare) }
-}
-private boolean _rmStatusEntryIsDeviceList(Object entry) {
-    if (!(entry instanceof Map)) return false
-    def e = entry as Map
-    return (e.deviceIdsForDeviceList instanceof List) || (e.deviceList instanceof Map)
-}
-private Set _rmStatusEntryDeviceIds(Object entry) {
-    if (!(entry instanceof Map)) return [] as Set
-    def e = entry as Map
-    def direct = (e.deviceIdsForDeviceList instanceof List) ? (((e.deviceIdsForDeviceList as List).collect { it?.toString() }.findAll { it }) as Set) : ([] as Set)
-    if (direct) return direct
-    if (e.deviceList instanceof Map) {
-        return ((e.deviceList as Map).keySet().collect { it?.toString() }.findAll { it }) as Set
-    }
-    return direct
-}
-private void _rmReclassifyDeviceListSkips(Integer appId, List skipped) {
-    if (!skipped) return
-    def candidates = skipped.findAll {
-        it instanceof Map && it.reason == "silent_rejection" && it.value instanceof List
-    }
-    if (candidates.isEmpty()) return
-    def status
-    try {
-        status = _rmFetchStatusJson(appId)
-    } catch (Exception statusExc) {
-        mcpLog("warn", "rm-native", "_rmReclassifyDeviceListSkips: statusJson fetch for app ${appId} failed (${statusExc.message ?: statusExc}) -- device-list silent_rejections left as-is (stay partial)")
-        return
-    }
-    try {
-        def byName = (status?.appSettings ?: []).findAll { it instanceof Map && it.name != null }
-            .collectEntries { [(it.name.toString()): it] }
-        candidates.each { sk ->
-            def entry = byName[(sk.key?.toString())]
-            if (!_rmStatusEntryIsDeviceList(entry)) return
-            def requested = ((sk.value as List).collect { it?.toString() }.findAll { it }) as Set
-            if (requested.isEmpty()) return
-            def committed = _rmStatusEntryDeviceIds(entry)
-            if (committed.containsAll(requested)) {
-                sk.reason = "device_list_committed_schema_unchanged"
-                sk.committedDeviceIds = committed.toList().sort()
-            }
-        }
-    } catch (Exception reclassExc) {
-        mcpLog("warn", "rm-native", "_rmReclassifyDeviceListSkips: post-fetch reclassification for app ${appId} failed (${reclassExc.message ?: reclassExc}) -- device-list silent_rejections left as-is (stay partial)")
-    }
-}
-private void _rmValidateDeviceIdsExist(String label, Object ids) {
-    if (!(ids instanceof List)) return
-    ids.each { id ->
-        def idStr = id?.toString()
-        if (!idStr) return
-        def exists
-        try {
-            def resp = hubInternalGet("/device/fullJson/${idStr}")
-            exists = (resp != null && resp.toString().length() > 0)
-        } catch (Exception fetchExc) {
-            def msg = fetchExc.message?.toString() ?: ""
-            if (msg.contains("404") || msg.toLowerCase().contains("not found")) {
-                exists = false
-            } else {
-                mcpLog("warn", "rm-native", "_rmValidateDeviceIdsExist: ${label} validation fetch for id=${idStr} failed transiently (${msg}) -- skipping validation; the underlying hub call may have errored independent of whether the device exists")
-                exists = true
-            }
-        }
-        if (!exists) {
-            throw new IllegalArgumentException("${label} contains device ID '${idStr}' which does not exist on the hub. Verify the device ID via hub_list_devices. RM is not touched.")
-        }
-    }
-}
-private String _rmPreflightRestoreHint(String reason = null, Map backup = null, String lead = null) {
-    def why = reason ? " Reason: ${reason}" : ""
-    def snapshot = !backup?.backupKey ? " No backup was taken." :
-        (backup.baselineReused == true
-            ? " The backupKey on this response is the baseline reused from an earlier edit; restoring it reverts every edit since it was taken, not just this one."
-            : " The backupKey on this response is an unused snapshot taken before the refusal.")
-    "${lead ?: 'Pre-flight refusal -- the app was not touched, so nothing needs to be restored.'}${snapshot}${why}"
-}
-private Map _rmBuildUpdateErrorResponse(Integer appId, String msg, Map backup, String pageName = "doActPage") {
-    def msgStr = msg?.toString() ?: ""
-    def isPreflightRefusal = msgStr.contains("RM is not touched") || backup == null
-    def wizardStuck = msgStr.contains("wizardStuck") || msgStr.contains("cancelCapab cleanup failed")
-    def health = null
-    try { health = _rmCheckRuleHealth(appId) } catch (Exception healthExc) {
-        health = [ok: false, unreadable: true, checkErrors: [healthExc.message ?: healthExc.toString()]]
-        mcpLog("warn", "rm-native", "_rmBuildUpdateErrorResponse: health probe failed for app ${appId}: ${healthExc.message}")
-    }
-    def restoreHint
-    if (isPreflightRefusal) {
-        restoreHint = _rmPreflightRestoreHint(
-            msgStr.contains("is DISABLED") ? "the rule is disabled, and Hubitat does not allow editing a disabled app -- re-enable it, make the change, then disable it again" : null,
-            backup)
-    } else if (wizardStuck) {
-        restoreHint = "Backup baseline available -- restore via hub_restore_backup with backupKey='${backup.backupKey}'. Restoring returns the app to that snapshot and may undo every later edit in the baseline's one-hour chain. Or, before your next write, close the in-flight wizard manually: hub_set_native_app(button='cancelCapab', pageName='${pageName}', confirm=true) for an open condition sub-wizard, or hub_set_native_app(button='actionCancel', pageName='doActPage', confirm=true) for a stuck action editor."
-    } else {
-        restoreHint = "Backup baseline available. Call hub_restore_backup with backupKey='${backup.backupKey}' to return to that snapshot; a reused baseline undoes every later edit in its one-hour chain."
-    }
-    def result = [
-        success: false,
-        appId: appId,
-        error: msg,
-        wizardStuck: wizardStuck,
-        backup: backup,
-        restoreHint: restoreHint
-    ]
-    if (health != null) result.health = health
-    result
-}
-Map _rmWalkStep(Integer appId, Map spec) {
-    def _impl = {
-    if (spec?.operation?.toString()?.trim() == "drive") {
-        return _rmDriveWalkSteps(appId, spec)
-    }
-    def page = spec?.page?.toString()?.trim()
-    if (!page) throw new IllegalArgumentException("walkStep.page is required (e.g. 'selectTriggers', 'selectActions', 'doActPage', 'mainPage', 'periodic')")
-    if (!page.matches(/[A-Za-z0-9_]+/)) throw new IllegalArgumentException("walkStep.page must be alphanumeric/underscore")
-    def operation = spec?.operation?.toString()?.trim() ?: "introspect"
-    def validateEnum = spec?.validateEnum == true
-    def walkCache = spec?.__pageCache instanceof Map ? (Map) spec.__pageCache : null
-    if (walkCache != null && operation != "write") walkCache.clear()
-    if (operation in ["write", "click", "navigate"]) {
-        def navTarget = (operation == "navigate" && spec?.navigate instanceof Map) ? ((Map) spec.navigate).targetPage?.toString() : null
-        if (page == "selectActions" || page == "doActPage" || navTarget == "selectActions" || navTarget == "doActPage") {
-            _rmRunPendingPredCapabsClear(appId)
-        }
-    }
-    def hrefContext = spec?.hrefContext instanceof Map ? spec.hrefContext as Map : null
-    def hrefContextMarkers = null
-    if (hrefContext) {
-        def hcName = hrefContext.hrefName?.toString() ?: "name"
-        def hcParams = hrefContext.hrefParams instanceof Map ? hrefContext.hrefParams as Map : null
-        def hcIndex = hrefContext.hrefIndex != null ? (hrefContext.hrefIndex as Integer) :
-            (hcParams?.n != null ? (hcParams.n as Integer) : 0)
-        hrefContextMarkers = [
-            ("_action_href_${hcName}|${page}|${hcIndex}".toString()): ""
-        ]
-        if (hcParams) {
-            hrefContextMarkers["params_for_action_href_${hcName}|${page}|${hcIndex}".toString()] = groovy.json.JsonOutput.toJson(hcParams)
-        }
-    }
-    def beforeCfg
-    boolean navRetriedBefore = false
-    boolean beforeFromNav = false
-    if (hrefContext) {
-        def hcName = hrefContext.hrefName?.toString() ?: "name"
-        def hcParams = hrefContext.hrefParams instanceof Map ? hrefContext.hrefParams as Map : null
-        def hcIndex = hrefContext.hrefIndex != null ? (hrefContext.hrefIndex as Integer) :
-            (hcParams?.n != null ? (hcParams.n as Integer) : 0)
-        def fromPage = hrefContext.fromPage?.toString() ?: page
-        def navResp = _rmNavigateToPage(appId, fromPage, page, hcIndex, hcName, hcParams, null, spec?.__reqT0 as Long, true)
-        if (navResp?.navRetried == true) navRetriedBefore = true
-        beforeCfg = navResp ? [configPage: navResp.configPage, app: navResp.app] : _rmFetchConfigJson(appId, page)
-        beforeFromNav = navResp != null
-    } else {
-        beforeCfg = _rmFetchConfigJson(appId, page, walkCache)
-        beforeFromNav = true
-    }
-    def beforeStatus = _rmFetchStatusJson(appId)
-    def beforeSettings = (beforeStatus?.appSettings ?: []).collectEntries { [(it?.name?.toString()): it?.value] }
-    def beforeSchema = _rmCollectWalkSchema(beforeCfg?.configPage, beforeSettings)
-    def beforeActionCount = _rmActionIndicesFromSettings(beforeStatus).size()
-    def beforeTriggerCount = _rmCollectTriggerIndices(appId).size()
-    def opResult = [:]
-    if (navRetriedBefore) opResult.navRetried = true
-    def writtenKey = null
-    def writtenValue = null
-    if (operation == "introspect") {
-    } else if (operation == "write") {
-        if (!(spec?.write instanceof Map) || ((Map) spec.write).isEmpty()) {
-            throw new IllegalArgumentException("walkStep operation='write' requires write={<key>: <value>}")
-        }
-        def writeMap = spec.write as Map
-        if (writeMap.size() != 1) throw new IllegalArgumentException("walkStep.write should contain exactly one key -- call once per field for clean schema-diff signals")
-        writtenKey = writeMap.keySet().iterator().next().toString()
-        writtenValue = writeMap.get(writtenKey)
-        def requestedWriteKey = writtenKey
-        def resolveWriteKey = { Map schema ->
-            def exact = schema.inputs.find { it.name == requestedWriteKey }
-            if (exact || page != "doActPage") return [input: exact, key: requestedWriteKey]
-            def requestedMatcher = (requestedWriteKey =~ /^(.+[._-])(\d+)$/)
-            if (!requestedMatcher.matches()) return [input: null, key: requestedWriteKey]
-            def requestedStem = requestedMatcher.group(1)
-            def liveCandidates = schema.inputs.findAll { input ->
-                def candidateName = input?.name?.toString() ?: ""
-                def candidateMatcher = (candidateName =~ /^(.+[._-])(\d+)$/)
-                candidateMatcher.matches() && candidateMatcher.group(1) == requestedStem
-            }
-            return liveCandidates.size() == 1 ? [input: liveCandidates[0], key: liveCandidates[0].name.toString(), rebound: true] : [input: null, key: requestedWriteKey]
-        }
-        def resolved = resolveWriteKey(beforeSchema)
-        if (resolved.input == null && walkCache != null && !walkCache.isEmpty()) {
-            walkCache.clear()
-            beforeCfg = _rmFetchConfigJson(appId, page, walkCache)
-            beforeSchema = _rmCollectWalkSchema(beforeCfg?.configPage, beforeSettings)
-            resolved = resolveWriteKey(beforeSchema)
-            opResult.carryRefetched = true
-        }
-        def schemaInput = resolved.input
-        writtenKey = resolved.key
-        if (resolved.rebound) opResult.rebound = [requestedKey: requestedWriteKey, resolvedKey: writtenKey]
-        if (writtenValue instanceof Map && _isDevicePickerType(schemaInput?.type)) {
-            writtenValue = (writtenValue as Map).keySet().collect { it?.toString() }
-        }
-        if (!schemaInput) {
-            opResult.warning = "Field '${writtenKey}' not in current schema for page '${page}'. Available: ${beforeSchema.inputs.collect { it.name }}. The write will be attempted but the hub may silently drop it."
-        }
-        if (validateEnum && schemaInput?.options) {
-            def validValues = schemaInput.options.collect { it.value?.toString() }
-            def writtenStr = writtenValue?.toString()
-            def values = (writtenValue instanceof List) ? writtenValue.collect { it?.toString() } : [writtenStr]
-            def invalid = values.findAll { v -> v != null && !validValues.contains(v) }
-            if (invalid) {
-                def valueWord = (invalid.size() == 1) ? "value" : "values"
-                throw new IllegalArgumentException("walkStep.write enum validation failed: ${valueWord} ${invalid} not in options ${validValues} for field '${writtenKey}'. Pass validateEnum=false to bypass, or pick a valid option.")
-            }
-        }
-        def fullSchemaMap = _rmCollectInputSchema(beforeCfg?.configPage)
-        if (hrefContextMarkers) {
-            def body = _rmBuildSettingsBody(appId, [(writtenKey): writtenValue], fullSchemaMap)
-            body.formAction = "update"
-            body.currentPage = page
-            body.pageBreadcrumbs = _rmPageBreadcrumbs(appId, page, '["mainPage"]')
-            hrefContextMarkers.each { k, v -> body.put(k, v) }
-            try {
-                def cfg = _rmFetchConfigJson(appId, hrefContext.fromPage?.toString() ?: page)
-                if (cfg?.app?.version != null) body.version = cfg.app.version.toString()
-            } catch (Exception verExc) {
-                mcpLog("warn", "rm-native", "walkStep: href-context version fetch for app ${appId} on page '${hrefContext.fromPage ?: page}' failed (${verExc.message}) -- POSTing write without version field; hub may reject on concurrent-edit conflict")
-            }
-            _rmPostSettings(appId, body, walkCache)
-        } else if (page && page != "mainPage" && schemaInput != null) {
-            def pageApplied = []
-            def pageSkipped = []
-            _rmWriteSettingOnPage(appId, page, writtenKey, writtenValue, pageApplied, null, pageSkipped, walkCache)
-            _rmVerifySubPageMultipleFlags(appId, page, [(writtenKey): writtenValue], fullSchemaMap, walkCache)
-            _rmReclassifyDeviceListSkips(appId, pageSkipped)
-            if (pageSkipped) opResult.skipped = pageSkipped
-        } else if (page && page != "mainPage") {
-            def body = _rmBuildSettingsBody(appId, [(writtenKey): writtenValue], fullSchemaMap)
-            body.formAction = "update"
-            body.currentPage = page
-            body.pageBreadcrumbs = _rmPageBreadcrumbs(appId, page, '["mainPage"]')
-            if (beforeCfg?.app?.version != null) body.version = beforeCfg.app.version.toString()
-            _rmPostSettings(appId, body, walkCache)
-        } else {
-            _rmUpdateAppSettings(appId, [(writtenKey): writtenValue], fullSchemaMap, walkCache)
-        }
-        opResult.wrote = [(writtenKey): writtenValue]
-    } else if (operation == "click") {
-        if (!(spec?.click instanceof Map) || !spec.click.name) {
-            throw new IllegalArgumentException("walkStep operation='click' requires click={name, stateAttribute?}")
-        }
-        def btnName = spec.click.name?.toString()
-        def stateAttr = spec.click.stateAttribute?.toString()
-        _rmClickAppButton(appId, btnName, stateAttr, page)
-        opResult.clicked = [name: btnName, stateAttribute: stateAttr]
-    } else if (operation == "done") {
-        def parentPage = hrefContext?.fromPage?.toString()
-        def hcParams = hrefContext?.hrefParams instanceof Map ? hrefContext.hrefParams as Map : null
-        def hcHrefName = hrefContext?.hrefName?.toString() ?: "name"
-        _rmSubmitSubPageDone(appId, page, parentPage, hcHrefName, hcParams, null, beforeFromNav ? beforeCfg : null)
-        opResult.done = [from: page, parent: parentPage]
-        page = parentPage ?: page
-    } else if (operation == "navigate") {
-        def target = spec?.navigate?.targetPage?.toString()
-        if (!target) throw new IllegalArgumentException("walkStep operation='navigate' requires navigate={targetPage}")
-        def hrefMatch = beforeSchema.hrefs.find { it.targetPage == target }
-        def hrefName = hrefMatch?.name?.toString() ?: (beforeSchema.nextPage == target ? "__next__" : "name")
-        def hrefIndex = 0
-        def hrefParams = null
-        if (hrefMatch?.params != null) {
-            hrefParams = hrefMatch.params as Map
-            if (hrefParams.n != null) hrefIndex = hrefParams.n as Integer
-        }
-        if (spec.navigate.hrefIndex != null) {
-            hrefIndex = spec.navigate.hrefIndex as Integer
-        }
-        def navResp = _rmNavigateToPage(appId, page, target, hrefIndex, hrefName, hrefParams, null, spec?.__reqT0 as Long, true, true)
-        if (navResp?.navRetried == true) opResult.navRetried = true
-        opResult.navResponseConfigPage = navResp?.configPage
-        opResult.navigated = [from: page, to: target, hrefName: hrefName, hrefIndex: hrefIndex, hrefParams: hrefParams]
-        page = target
-    } else {
-        throw new IllegalArgumentException("walkStep.operation must be 'introspect', 'write', 'click', 'navigate', or 'done'; got '${operation}'")
-    }
-    def afterCfg
-    if (operation == "navigate" && opResult.navResponseConfigPage) {
-        afterCfg = [configPage: opResult.navResponseConfigPage]
-        opResult.remove("navResponseConfigPage")
-    } else if (operation == "done") {
-        afterCfg = _rmFetchConfigJson(appId, page)
-    } else if (hrefContext) {
-        def hcName = hrefContext.hrefName?.toString() ?: "name"
-        def hcParams = hrefContext.hrefParams instanceof Map ? hrefContext.hrefParams as Map : null
-        def hcIndex = hrefContext.hrefIndex != null ? (hrefContext.hrefIndex as Integer) :
-            (hcParams?.n != null ? (hcParams.n as Integer) : 0)
-        def fromPage = hrefContext.fromPage?.toString() ?: page
-        def navResp = _rmNavigateToPage(appId, fromPage, page, hcIndex, hcName, hcParams, null, spec?.__reqT0 as Long, true)
-        if (navResp?.navRetried == true) opResult.navRetried = true
-        afterCfg = navResp ? [configPage: navResp.configPage] : _rmFetchConfigJson(appId, page)
-    } else {
-        if (walkCache != null && operation != "write") walkCache.clear()
-        afterCfg = _rmFetchConfigJson(appId, page, walkCache)
-    }
-    def afterStatus = _rmFetchStatusJson(appId)
-    def afterSettings = (afterStatus?.appSettings ?: []).collectEntries { [(it?.name?.toString()): it?.value] }
-    def afterSchema = _rmCollectWalkSchema(afterCfg?.configPage, afterSettings)
-    def afterActionCount = _rmActionIndicesFromSettings(afterStatus).size()
-    def afterTriggerCount = _rmCollectTriggerIndices(appId).size()
-    def beforeNames = beforeSchema.inputs.collect { it.name } as Set
-    def afterNames = afterSchema.inputs.collect { it.name } as Set
-    def appeared = (afterNames - beforeNames).toList().sort()
-    def disappeared = (beforeNames - afterNames).toList().sort()
-    def valueEcho = null
-    if (writtenKey != null) {
-        def storedValue = afterSettings[writtenKey]
-        def schemaInputForKey = beforeSchema.inputs.find { it.name == writtenKey }
-        if (_isDevicePickerType(schemaInputForKey?.type)) {
-            def rawEntry = (afterStatus?.appSettings ?: []).find { it?.name?.toString() == writtenKey }
-            def storedIds = _rmStatusEntryDeviceIds(rawEntry)
-            storedValue = storedIds ? storedIds.toList() : _devicePickerIds(storedValue)
-        }
-        if (writtenValue instanceof List && storedValue instanceof String && storedValue.trim().startsWith("[")) {
-            try {
-                def parsedStored = new groovy.json.JsonSlurper().parseText(storedValue as String)
-                if (parsedStored instanceof List) storedValue = parsedStored
-            } catch (Exception notJson) {
-                mcpLog("debug", "rm-native", "walkStep valueEcho: stored value for ${writtenKey} is not a JSON array (${notJson.message}); comparing as text")
-            }
-        }
-        def writtenStr = writtenValue instanceof List
-            ? writtenValue.collect { it?.toString() }.sort().join(",")
-            : (writtenValue?.toString() ?: "")
-        def storedStr = storedValue instanceof Map
-            ? storedValue.keySet().toList().sort().join(",")
-            : (storedValue instanceof List ? storedValue.collect { it?.toString() }.sort().join(",") : (storedValue?.toString() ?: ""))
-        valueEcho = [
-            key: writtenKey,
-            written: writtenValue,
-            stored: storedValue,
-            match: writtenStr == storedStr
-        ]
-        if (!valueEcho.match) {
-            valueEcho.note = "Stored value differs from written value — hub may have normalized case, coerced type, or rejected silently. Inspect 'stored' to see what RM has."
-        }
-    }
-    def commitSignal = null
-    if (afterSchema.inputs.isEmpty() && (operation == "click" || operation == "navigate")) {
-        if (afterActionCount > beforeActionCount) {
-            commitSignal = "action_committed"
-        } else if (afterTriggerCount > beforeTriggerCount) {
-            commitSignal = "trigger_committed"
-        } else if (afterActionCount == beforeActionCount && afterTriggerCount == beforeTriggerCount) {
-            commitSignal = "schema_empty_no_commit_check_health"
-        }
-    }
-    def health = (walkCache != null && operation in ["write", "click", "navigate", "done"]) ?
-        _rmEmptyHealthVerdict(ok: true, skipped: true, source: "deferred", note: "health probe deferred to the end of the drive (wizard in progress)") :
-        _rmWalkStepHealth(appId, spec?.__reqT0 as Long, spec?.__activePage != true ? null :
-            ((operation == "navigate" && spec?.navigate instanceof Map) ? (((Map) spec.navigate).targetPage?.toString() ?: page) : page))
-    def silentRejection = (operation == "write") &&
-        appeared.isEmpty() && disappeared.isEmpty() &&
-        valueEcho?.match == false
-    def pageError = afterCfg?.configPage?.error
-    def result = [
-        success: pageError == null && _rmHealthGatePass(health) && (operation != "write" || (valueEcho?.match != false)),
-        page: page,
-        operation: operation,
-        before: beforeSchema,
-        after: afterSchema,
-        diff: [
-            appeared: appeared,
-            disappeared: disappeared
-        ],
-        opResult: opResult,
-        valueEcho: valueEcho,
-        listCounts: [
-            beforeActions: beforeActionCount,
-            afterActions: afterActionCount,
-            beforeTriggers: beforeTriggerCount,
-            afterTriggers: afterTriggerCount
-        ],
-        commitSignal: commitSignal,
-        silentRejection: silentRejection,
-        health: health
-    ]
-    if (pageError != null) {
-        result.pageError = pageError.toString()
-        def emptyAfter = afterSchema.inputs.isEmpty() && afterSchema.hrefs.isEmpty()
-        String renderHint
-        if (commitSignal in ["action_committed", "trigger_committed"]) {
-            renderHint = "The operation committed (${commitSignal}), but the page '${page}' rendered with an error (${pageError}). Do not repeat the operation; repair the page before continuing."
-        } else if (commitSignal == "schema_empty_no_commit_check_health") {
-            renderHint = "The page '${page}' rendered with an error (${pageError}); its schema is empty because RM could not build it, and no new action or trigger was observed."
-        } else if (emptyAfter) {
-            renderHint = "The page '${page}' rendered with an error (${pageError}); its schema is empty because RM could not build it."
-        } else {
-            renderHint = "The page '${page}' rendered with an error (${pageError}) alongside its inputs, so what it shows may not reflect what RM stored."
-        }
-        result.repairHints = (result.repairHints ?: []) + [renderHint + " Enter the page the way the wizard does (the href or button on its parent page) rather than by name."]
-    }
-    if (health.unreadable == true) {
-        result.repairHints = (result.repairHints ?: []) + ["The post-op health probe could not be read -- no evidence of breakage either way (a transient failure, or the rule may since have been removed); the operation itself committed. Verify via hub_get_rule_health(${appId}).".toString()]
-    }
-    if (walkCache == null && operation in ["write", "click", "navigate", "done"] &&
-            health.skipped == true && result.success == true) {
-        result.success = false
-        result.partial = true
-        result.healthUnverified = true
-        result.error = "walkStep ${operation} committed but its health check was skipped because the time budget ran out, so the rule's state is unverified".toString()
-        result.repairHints = (result.repairHints ?: []) + ["The operation committed, so do not re-run it. Check hub_get_rule_health(appId=${appId}) and address any reported issue before continuing or treating the rule as complete.".toString()]
-    }
-    return result
-    }
-    return _impl()
-}
-private void _rmVerifySubPageMultipleFlags(Integer appId, String pageName, Map settingsMap, Map schema, Map cache = null) {
-    def touched = settingsMap.keySet().collect { it.toString() }
-    if (!touched.any { schema?.get(it)?.multiple == true }) return
-    try {
-        _rmVerifyMultipleFlags(appId, schema, touched)
-    } catch (IllegalStateException divergence) {
-        mcpLog("warn", "rm-native", "Marshal divergence on app ${appId} page ${pageName} -- retrying with page context: ${divergence.message}")
-        def body = _rmBuildSettingsBody(appId, settingsMap, schema)
-        body.formAction = "update"
-        body.currentPage = pageName
-        body.pageBreadcrumbs = _rmPageBreadcrumbs(appId, pageName, '["mainPage"]')
-        def cfg = _rmFetchConfigJson(appId, pageName, cache)
-        if (cfg?.app?.version != null) body.version = cfg.app.version.toString()
-        _rmPostSettings(appId, body, cache)
-        try {
-            _rmVerifyMultipleFlags(appId, schema, touched, false)
-        } catch (IllegalStateException persistent) {
-            throw new IllegalStateException("${persistent.message} Automatic recovery was already attempted: one full-group re-POST with page context on page '${pageName}' did not restore the flag. The write may already be committed, so do not resend it; check hub_get_rule_health(appId=${appId}) and restore the pre-write backup if the rule is damaged.".toString())
-        }
-    }
-}
-private Map _rmWalkStepHealth(Integer appId, Long t0, String activePage = null) {
-    if (_timeBudgetExceeded(t0)) {
-        return _rmEmptyHealthVerdict(ok: true, skipped: true, source: "skipped",
-                note: "health probe skipped: the transport time budget was reached after the committed operation -- verify via hub_get_rule_health(${appId})".toString())
-    }
-    return activePage ? _rmCheckRuleHealth(appId, "auto", activePage) : _rmCheckRuleHealth(appId)
-}
-private boolean _rmHealthGatePass(Map health) {
-    return health?.ok == true || health?.unreadable == true
-}
-List _rmStructuralBaseline(Integer appId) {
-    def cs = _ruleCompiledState(appId)
-    if (cs?.readError != null) throw new IllegalStateException("compiled rule state could not be read: ${cs.readError}")
-    if (cs == null || cs.ruleFormat != "rm") return null
-    def settingsByName = _rmFetchSettingsByName(appId)
-    return _rmStructuralIssuesFromSequence(_rmStructuralSequenceFromSettings(settingsByName, ([] as Set), _rmCoerceActionIndices(cs.actionList)))
-        .collect { it?.toString() }
-}
-private List _rmPreExistingStructuralOnly(List baseline, Map finalHealth) {
-    if (baseline == null || !(finalHealth instanceof Map) || finalHealth.ok == true || finalHealth.unreadable == true) return null
-    if (finalHealth.broken == true || (finalHealth.brokenMarkers as List) ||
-            (finalHealth.validationErrors as List) || (finalHealth.multipleFlagPoison as List) || finalHealth.configPageError != null ||
-            finalHealth.label?.toString()?.contains("*BROKEN*")) return null
-    def after = ((finalHealth.structuralIssues as List) ?: []).collect { it?.toString() }
-    if (!after) return null
-    return _rmPreExistingStructuralSubset(baseline, finalHealth).size() == after.size() ? after : null
-}
-private List _rmPreExistingStructuralSubset(List baseline, Map finalHealth) {
-    if (baseline == null || !(finalHealth instanceof Map)) return []
-    def before = baseline.collect { it?.toString() } as Set
-    return ((finalHealth.structuralIssues as List) ?: []).collect { it?.toString() }.findAll { before.contains(it) }
-}
-private Map _rmDriveWalkSteps(Integer appId, Map spec) {
-    if (!(spec?.steps instanceof List) || ((List) spec.steps).isEmpty()) {
-        throw new IllegalArgumentException("walkStep operation='drive' requires a non-empty steps=[...] list, each item a single-step spec {operation, page?, write?/click?/navigate?/done?, hrefContext?}")
-    }
-    def steps = (List) spec.steps
-    def stopOnError = spec?.stopOnError != false
-    def stepResults = []
-    def currentPage = spec?.page?.toString()?.trim()
-    def allOk = true
-    def lastStepOperation = null
-    def driveWalkCache = [:]
-    Integer pausedAtStep = null
-    List stepsRemaining = null
-    steps.eachWithIndex { rawStep, i ->
-        if (!(rawStep instanceof Map)) {
-            throw new IllegalArgumentException("walkStep.drive step ${i + 1} must be an object {operation, ...}")
-        }
-        if (((Map) rawStep).operation?.toString()?.trim() == "drive") {
-            throw new IllegalArgumentException("walkStep.drive steps cannot nest operation='drive' (step ${i + 1})")
-        }
-    }
-    List baselineStructural = null
-    String baselineUnavailable = null
-    try { baselineStructural = _rmStructuralBaseline(appId) }
-    catch (Exception baselineExc) {
-        baselineUnavailable = baselineExc.message ?: baselineExc.toString()
-        mcpLog("warn", "rm-native", "walkStep drive: structural baseline read failed for app ${appId} (${baselineUnavailable}) -- issues already present before the drive cannot be exempted")
-    }
-    int idx = 0
-    for (def rawStep : steps) {
-        idx++
-        if (idx > 1 && allOk && _resumableBudgetExceeded(spec?.__reqT0 as Long)) {
-            pausedAtStep = idx
-            stepsRemaining = steps.subList(idx - 1, steps.size()).collect { _stripInternalClock(it) }
-            break
-        }
-        def step = new LinkedHashMap((Map) rawStep)
-        if (spec?.__reqT0 != null) step.__reqT0 = spec.__reqT0
-        if (spec?.__activePage == true) step.__activePage = true
-        step.__pageCache = driveWalkCache
-        def stepOp = step.operation?.toString()?.trim() ?: "introspect"
-        if (!step.page && currentPage) step.page = currentPage
-        lastStepOperation = stepOp
-        def r
-        try {
-            r = _rmWalkStep(appId, step)
-        } catch (Exception stepExc) {
-            mcpLogError("rm-native", "walkStep drive: step ${idx} (${stepOp}) threw for app ${appId}", stepExc)
-            def stepHealth = null
-            try { stepHealth = _rmCheckRuleHealth(appId) } catch (Exception ignored) {   }
-            stepResults << [
-                step: idx,
-                operation: stepOp,
-                page: (step.page ?: currentPage),
-                success: false,
-                error: stepExc.message ?: stepExc.toString(),
-                health: stepHealth
-            ]
-            allOk = false
-            if (stopOnError) break
-            else continue
-        }
-        if (r?.page) currentPage = r.page.toString()
-        stepResults << [
-            step: idx,
-            operation: stepOp,
-            page: r?.page,
-            success: r?.success,
-            diff: r?.diff,
-            valueEcho: r?.valueEcho,
-            silentRejection: r?.silentRejection,
-            commitSignal: r?.commitSignal,
-            opResult: r?.opResult,
-            health: r?.health
-        ]
-        if (r?.error != null) stepResults[-1].error = r.error
-        if (r?.success == false) {
-            allOk = false
-            if (stopOnError) break
-        }
-    }
-    def finalHealth = _rmWalkStepHealth(appId, spec?.__reqT0 as Long, spec?.__activePage == true ? currentPage : null)
-    if (pausedAtStep != null) {
-        return [
-            success: true,
-            status: "in_progress",
-            operation: "drive",
-            page: currentPage,
-            stepsRequested: steps.size(),
-            stepsRun: stepResults.size(),
-            pausedAtStep: pausedAtStep,
-            stepsRemaining: stepsRemaining,
-            lastStepOperation: lastStepOperation,
-            steps: stepResults,
-            health: finalHealth,
-            resume: [
-                note: "Time budget reached; all completed steps are committed. Re-issue walkStep operation='drive' with steps = stepsRemaining (page inheritance: set page = this result's page) to continue."
-            ]
-        ]
-    }
-    boolean finalHealthGate = _rmHealthGatePass(finalHealth)
-    def preExistingStructural = _rmPreExistingStructuralOnly(baselineStructural, finalHealth)
-    if (!finalHealthGate && preExistingStructural) finalHealthGate = true
-    def result = [
-        success: allOk && finalHealthGate,
-        operation: "drive",
-        page: currentPage,
-        stepsRequested: steps.size(),
-        stepsRun: stepResults.size(),
-        lastStepOperation: lastStepOperation,
-        steps: stepResults,
-        health: finalHealth
-    ]
-    if (!finalHealthGate && (finalHealth?.structuralIssues as List)) result.structuralIssues = finalHealth.structuralIssues
-    def preExistingSubset = _rmPreExistingStructuralSubset(baselineStructural, finalHealth)
-    if (preExistingSubset) result.preExistingStructuralIssues = preExistingSubset
-    def firstFailed = stepResults.find { it.success == false }
-    if (firstFailed != null) {
-        def failedCount = stepResults.count { it.success == false }
-        def failurePrefix = stopOnError ?
-            "drive halted at step ${firstFailed.step} (${firstFailed.operation}): " :
-            "drive ran ${stepResults.size()} step(s) with ${failedCount} failed; first failure at step ${firstFailed.step} (${firstFailed.operation}): "
-        result.error = "${failurePrefix}${firstFailed.error ?: 'step reported success:false -- inspect its valueEcho/silentRejection/health'}".toString()
-        boolean recoveryExhausted = firstFailed.error?.toString()?.contains("Automatic recovery was already attempted") == true
-        result.repairHints = (result.repairHints ?: []) + [(recoveryExhausted ?
-            "Drive stopped at step ${firstFailed.step} after its automatic recovery was already attempted. Do not re-run that step: its write may already be committed. Inspect steps[${firstFailed.step - 1}] and hub_get_rule_health(appId=${appId}), and restore the pre-write backup if the rule is damaged." :
-            (stopOnError ?
-                "Drive stopped at step ${firstFailed.step}. Inspect steps[${firstFailed.step - 1}] for the failure detail, correct it, and re-run the drive from that step." :
-                "Step ${firstFailed.step} failed and the drive continued (stopOnError=false). Inspect each step with success:false before re-running any of them; later steps may have depended on it.")).toString()]
-    } else if (!finalHealthGate) {
-        result.error = "drive completed all ${stepResults.size()} step(s) but the rule is unhealthy: ${(finalHealth.issues ?: ['see health']).join('; ')}".toString()
-        if (baselineUnavailable != null && (finalHealth?.structuralIssues as List)) {
-            result.baselineUnavailable = baselineUnavailable
-            result.repairHints = (result.repairHints ?: []) + ["The pre-drive structural baseline could not be read (${baselineUnavailable}), so issues that were already present, such as a block left open by an earlier call, could not be told apart from new ones. Compare with hub_get_rule_health(appId=${appId}); if every issue predates this drive, the steps still committed and need no re-run.".toString()]
-        }
-    } else if (finalHealth.unreadable == true) {
-        result.repairHints = (result.repairHints ?: []) + ["The final health probe could not be read -- no evidence of breakage either way (a transient failure, or the rule may since have been removed); every step committed. Verify via hub_get_rule_health(${appId}).".toString()]
-    }
-    if (allOk && finalHealth?.skipped == true && stepResults.any { it.operation in ["write", "click", "navigate", "done"] }) {
-        result.success = false
-        result.partial = true
-        result.healthUnverified = true
-        result.error = "drive ran all ${stepResults.size()} step(s) but its final health check was skipped because the time budget ran out, so the rule's state is unverified".toString()
-        result.repairHints = (result.repairHints ?: []) + ["Every step committed, so do not re-run the drive. Check the rule with hub_get_rule_health(appId=${appId}) and repair anything it reports, such as an unclosed block, before treating the rule as complete.".toString()]
-    }
-    return result
-}
 private boolean _rmReusableBackupFileMatches(Map entry, Integer ruleId) {
     def fileName = entry?.fileName?.toString()
     if (!fileName) return false
@@ -26093,19 +25176,9 @@ Map _rmBackupBeforeEdit(Integer ruleId, String reason, String activePage = null)
     return reused ?: _rmBackupRuleSnapshot(ruleId, reason, false, null, activePage)
 }
 private Map _rmBackupBeforeEditLocked(Integer ruleId, String reason, String activePage = null) {
-    if (_effectiveBackupSetting('backupEveryRuleWrite') == 'true' || reason == "pre-replaceRequiredExpression") return null
-    long nowMs = now()
+    if (_effectiveBackupSetting('backupEveryRuleWrite') == 'true') return null
     def mfst = _itemBackupManifest()
-    def recent = mfst.findAll { key, value ->
-        if (!(value instanceof Map) || value.deletePending || value.type?.toString() != "rm-rule") return false
-        def savedRuleId = value.ruleId != null ? value.ruleId : value.id
-        if (savedRuleId?.toString() != ruleId?.toString()) return false
-        Long savedAt = null
-        try { savedAt = value.timestamp as Long } catch (Exception ignored) { }
-        if (savedAt == null) return false
-        long age = nowMs - savedAt
-        return age >= 0L && age < 60L * 60L * 1000L
-    }.max { a, b -> (a.value.timestamp as Long) <=> (b.value.timestamp as Long) }
+    def recent = _rmRecentRuleBackup(mfst, ruleId, now())
     if (recent != null && !_rmReusableBackupFileMatches(recent.value as Map, ruleId)) {
         def staleFile = recent.value?.fileName?.toString()
         mcpLog("warn", "rm-native", "Recent backup ${recent.key} for rule ${ruleId} is missing or does not match its manifest; discarding the stale handle and taking a fresh baseline")
@@ -26137,384 +25210,453 @@ private Map _rmBackupBeforeEditLocked(Integer ruleId, String reason, String acti
     }
     return null
 }
-def _isNativeAppSchemaOnlyCall(args) {
-    args instanceof Map && args.appId != null && args.buttonRule == null && args.guide == true &&
-        args.keySet().every { it in ['appId', 'guide', 'confirm', 'bestPracticeKey', '__reqT0'] }
+private List _naCreateTypes() { _appTypeRegistry().keySet().findAll { it != 'visual_rule' }.toList() }
+private Map _naOperationSchema(String operation) {
+    if (operation == 'create') return [type: 'object', additionalProperties: false, properties: [
+        app_type: [type: 'string', enum: _naCreateTypes()], name: [type: 'string', minLength: 1, maxLength: 200], fields: [type: 'object'],
+        controller_id: [type: 'integer', minimum: 1], button_number: [type: 'integer', minimum: 1],
+        event: [type: 'string', enum: ['pushed', 'held', 'doubleTapped', 'released']]], required: ['app_type']]
+    if (operation == 'update') return [type: 'object', additionalProperties: false, properties: [fields: [type: 'object'], page: [type: 'string']], required: ['fields']]
+    if (operation == 'form') return _ndOperationSchema('form')
+    throw new IllegalArgumentException('Unknown native app operation; use create, update or form')
 }
-def toolSetNativeApp(args) {
-    if (!(args instanceof Map)) throw new IllegalArgumentException('Native app arguments must be an object')
-    List allowed = ['appId', 'appType', 'name', 'settings', 'button', 'pageName', 'stateAttribute', 'buttonRule', 'walkStep', 'guide', 'confirm', 'bestPracticeKey', '__reqT0']
-    Set unsupported = args.keySet().findAll { !(it in allowed) }
-    if (unsupported) throw new IllegalArgumentException("hub_set_native_app does not support ${unsupported}. Use hub_set_rule for native Rule Machine actions, triggers, expressions and local variables.".toString())
-    if (args.guide == true && !_isNativeAppSchemaOnlyCall(args)) throw new IllegalArgumentException('guide:true must be requested alone with an existing appId; settings, button and walkStep cannot be combined with it')
-    if (args.settings != null && !(args.settings instanceof Map)) throw new IllegalArgumentException('settings must be an object')
-    if (args.walkStep != null && !(args.walkStep instanceof Map)) throw new IllegalArgumentException('walkStep must be an object')
-    if (args.buttonRule != null) return _createButtonRuleViaController(args)
-    if (args.appId == null) {
-        List editOnly = ['settings', 'button', 'walkStep', 'pageName', 'stateAttribute', 'guide'].findAll { args.containsKey(it) }
-        if (editOnly) throw new IllegalArgumentException("hub_set_native_app CREATE (no appId) does not honor ${editOnly}; create the shell first, then edit its returned appId.".toString())
-        return _createNativeAppShell(args)
+Map toolSetNativeApp(Map request) {
+    if (request.keySet().any { !(it in ['operation', 'app_id', 'args', 'confirm', 'bestPracticeKey']) }) throw new IllegalArgumentException('Unknown hub_set_native_app property; use operation, app_id, args and confirm')
+    if (request.containsKey('confirm') && !(request.confirm instanceof Boolean)) throw new IllegalArgumentException('confirm must be boolean')
+    if (request.containsKey('app_id')) _ndValidateSchema(request.app_id, [type: 'integer', minimum: 1], 'app_id', true)
+    if (request.containsKey('args') && !(request.args instanceof Map)) throw new IllegalArgumentException('args must be an object')
+    if (!request.containsKey('operation')) {
+        if (request.args) throw new IllegalArgumentException('Choose an operation before supplying args')
+        return [operations: ['create', 'update', 'form'], usage: 'Choose operation for its schema. Writes return schema until confirm=true. See set_native_app_reference.']
     }
-    return _applyNativeAppEdit(args)
+    if (!(request.operation instanceof String)) throw new IllegalArgumentException('operation must be a string')
+    String operation = request.operation
+    Map schema = _naOperationSchema(operation)
+    Map arguments = request.args ?: [:]
+    if (operation == 'create' && arguments.app_type == 'visual_rule') throw new IllegalArgumentException('Visual Rules Builder rules are not classic apps; create them with hub_set_visual_rule')
+    boolean execute = request.confirm == true
+    _ndValidateSchema(arguments, schema, 'args', execute)
+    if (operation == 'create' && request.containsKey('app_id')) throw new IllegalArgumentException('create takes no app_id; the new app id is returned')
+    if (!execute) {
+        Map properties = [operation: [type: 'string', enum: [operation]], args: schema, confirm: [type: 'boolean'], bestPracticeKey: [type: 'string']]
+        List required = ['operation', 'args', 'confirm']
+        if (operation != 'create') { properties.app_id = [type: 'integer', minimum: 1]; required << 'app_id' }
+        return [operation: operation, confirm_required: true, inputSchema: [type: 'object', additionalProperties: false, properties: properties, required: required],
+            usage: 'Supply these arguments with confirm=true and a recent backup to execute. See set_native_app_reference.']
+    }
+    if (operation != 'create' && !request.containsKey('app_id')) throw new IllegalArgumentException('app_id is required')
+    if (operation == 'form') return toolCallAppForm(arguments + [app_id: request.app_id, confirm: true], 'hub_set_native_app')
+    if (operation == 'create') {
+        _naValidateCreate(arguments)
+        requireDestructiveConfirm(true)
+        return arguments.app_type == 'button_rule' ? _naCreateButtonRule(arguments) : _naCreate(arguments)
+    }
+    _naValidateUpdate(arguments)
+    requireDestructiveConfirm(true)
+    return _naUpdate(request.app_id.toString().toLong(), arguments)
 }
-def _createButtonRuleViaController(args) {
-    requireDestructiveConfirm(args?.confirm as Boolean)
-    def br = args?.buttonRule
-    if (!(br instanceof Map)) {
-        throw new IllegalArgumentException("buttonRule must be an object: {controllerId, buttonNumber, event}")
+private void _naValidateCreate(Map args) {
+    List buttonKeys = ['controller_id', 'button_number', 'event']
+    if (args.app_type == 'button_rule') {
+        List missing = buttonKeys.findAll { !args.containsKey(it) }
+        if (missing) throw new IllegalArgumentException("button_rule requires ${missing.join(', ')}".toString())
+        List extra = ['name', 'fields'].findAll { args.containsKey(it) }
+        if (extra) throw new IllegalArgumentException("button_rule takes no ${extra.join(' or ')}: it is created through its Button Controller, then edited with hub_set_rule".toString())
+    } else {
+        List stray = buttonKeys.findAll { args.containsKey(it) }
+        if (stray) throw new IllegalArgumentException("${stray.join(', ')} apply only to app_type button_rule".toString())
+        if (args.containsKey('fields') && !args.get('fields')) throw new IllegalArgumentException('fields must name at least one input; omit it to create the app with its page defaults')
     }
-    def bundledExtras = ['appId', 'appType', 'name', 'settings', 'button', 'pageName', 'stateAttribute',
-                         'walkStep', 'guide'].findAll {
-        args instanceof Map && args.containsKey(it)
+}
+private void _naValidateUpdate(Map args) {
+    if (!args.get('fields')) throw new IllegalArgumentException('update requires at least one field')
+    if (args.page != null && !(args.page ==~ /[A-Za-z_][A-Za-z0-9_.-]*/)) throw new IllegalArgumentException('page must be a native page name (letters, digits, underscore, dot or hyphen) from page.hrefs in hub_get_app_config.')
+}
+private String _naDone(Map context) { ['_action_update|Done|', '_action_previous|Done|', '_action_done|Done|'].find { context.controls.containsKey(it) } }
+private Map _naSave(Long id, Map context, Map supplied, String from, boolean existing) {
+    List posted = []
+    List rejected = []
+    Map label = [:]
+    Map page = context
+    Map pending = supplied
+    boolean changed = false
+    List revealing = supplied.keySet().findAll { context.get('fields').get(it)?.submit_on_change }.collect { it.toString() }
+    if (_naDone(context) && revealing) {
+        Map change = _nfPrepare(id, page, pending, null, 'hub_set_native_app')
+        Map answer = _nfExecute(id, change)
+        label = answer.findAll { k, v -> k in ['label_restored', 'label_lost'] }
+        changed = true
+        posted.addAll(change.defaults)
+        rejected.addAll(change.rejected)
+        page = _nfContext(id, answer.model, from)
+        pending = [:]
     }
-    if (bundledExtras) {
-        throw new IllegalArgumentException("buttonRule is exclusive -- ${bundledExtras.join(', ')} would be silently ignored. Create the button rule first, then apply edits in a follow-up call using the returned buttonRuleId as appId.")
+    String done = _naDone(page)
+    Map plan
+    try { plan = _nfPrepare(id, page, pending, done, 'hub_set_native_app') }
+    catch (IllegalArgumentException refused) {
+        if (!changed) throw refused
+        if (!existing) throw new IllegalArgumentException("The first page accepted ${revealing.join(', ')}, but the page that save rendered needs more before its Done (${refused.message})".toString())
+        throw new IllegalArgumentException("${supplied.keySet().join(', ')} saved, but the page that save rendered refused its Done (${refused.message}); its Done was not pressed. Set what it now asks for in another call.".toString())
     }
-    def controllerId = null
-    try { controllerId = (br.controllerId as Integer) } catch (Exception ignore) {}
-    if (controllerId == null) {
-        throw new IllegalArgumentException("buttonRule.controllerId is required -- the appId of a Button Controller-5.1 instance (from hub_list_apps scope='instances'). Create one first via hub_set_native_app(appType='button_controller', name=...) and assign its button device.")
+    Map answer = (pending || done) ? _nfExecute(id, plan) : null
+    if (answer?.posted) { posted.addAll(plan.defaults); rejected.addAll(plan.rejected) }
+    if (answer?.label_restored || answer?.label_lost) label = answer.findAll { k, v -> k in ['label_restored', 'label_lost'] }
+    [answer: answer, done: done, page: page.page.name?.toString(), committed: done == '_action_update|Done|' && answer?.model?.location != null,
+     wrote: changed || answer?.posted == true, posted: posted, rejected: rejected] + label
+}
+private void _naLabelResult(Map result, Map saved, List notes) {
+    if (saved.label_restored) {
+        result.label_restored = true
+        notes << _nfLabelRestoredNote()
     }
-    _requireUnprotectedAppMutation(controllerId, "create a button rule under")
-    def buttonNumber = null
-    try { buttonNumber = (br.buttonNumber as Integer) } catch (Exception ignore) {}
-    if (buttonNumber == null || buttonNumber < 1) {
-        throw new IllegalArgumentException("buttonRule.buttonNumber is required and must be >= 1 (the physical button number on the device).")
+    if (!saved.label_lost) return
+    result.success = false
+    result.fields_not_landed = ((result.fields_not_landed ?: []) + ['label']).unique()
+    result.fields_applied = result.fields_applied - ['label']
+    result.error = ([result.error, _nfLabelLostError(saved.label_lost)] - null).join(' ')
+}
+private Object _naComparable(Map field, Object value, boolean written) {
+    if (value == null || value == '' || (value instanceof Collection && value.isEmpty())) return null
+    if (field.device) return (value instanceof Map ? value.keySet().toList() : (value instanceof List ? value : [value])).collect { it.toString() }.sort()
+    if (written && !field.multiple && !(field.type in ['bool', 'enum', 'mode', 'number', 'decimal', 'time'])) return _nfValue(field, value)
+    try { return _nrComparableSetting(field.type, value) }
+    catch (Exception unreadable) {
+        mcpLog('debug', 'rm-native', "hub_set_native_app read-back: ${field.name} compared as text (${unreadable.message})")
+        return value instanceof List ? value.collect { it.toString() }.sort() : value.toString()
     }
-    def event = br.event?.toString()?.trim()
-    def validEvents = ["pushed", "held", "doubleTapped", "released"]
-    if (!(event in validEvents)) {
-        throw new IllegalArgumentException("buttonRule.event must be one of ${validEvents} (got '${event}').")
+}
+private Map _naReadBack(Long id, Map page, Map written, String pageName = null) {
+    Map model = pageName ? _nfPage(id, pageName) : _nfPage(id)
+    Map stored = model.settings instanceof Map ? model.settings : [:]
+    List notLanded = written.keySet().findAll { name ->
+        Map field = page.get('fields').get(name)
+        def value = field.app_field ? _nfAppValue(model, field.name == 'mode[mode]') : stored.get(name)
+        _naComparable(field, value, false) != _naComparable(field, written.get(name), true)
+    }.collect { it.toString() }
+    Map rendered = null
+    if (notLanded) {
+        try { rendered = _nfContext(id, model) }
+        catch (IllegalStateException unreadable) { mcpLog('debug', 'rm-native', "hub_set_native_app read-back: page of app ${id} not parsed (${unreadable.message})") }
     }
-    def cfg = _rmFetchConfigJson(controllerId)
-    def ctrlType = cfg?.app?.appType?.name
-    if (ctrlType != "Button Controller-5.1") {
-        throw new IllegalArgumentException("appId ${controllerId} is '${ctrlType ?: 'unknown'}', not a Button Controller-5.1. buttonRule.controllerId must be a Button Controller-5.1 instance.")
-    }
-    def buttonDevSetting = cfg?.settings?.buttonDev
-    def buttonDevIds = (buttonDevSetting instanceof Map) ? buttonDevSetting.keySet().collect { it.toString() } : []
-    if (!buttonDevIds) {
-        throw new IllegalArgumentException("Button Controller ${controllerId} has no button device assigned. Set it first: hub_set_native_app(appId=${controllerId}, settings={buttonDev: [<deviceId>]}, confirm=true).")
-    }
-    def origLabel = cfg?.settings?.origLabel?.toString() ?: ""
-    def schema = _rmCollectInputSchema(cfg?.configPage)
-    def beforeIds = (cfg?.childApps ?: []).collect { it?.id?.toString() } as Set
-    def backup = _rmBackupRuleSnapshot(controllerId, "pre-buttonRule")
+    List consumed = rendered?.page?.name?.toString() == page.page.name?.toString() ? notLanded.findAll { name ->
+        Map field = page.get('fields').get(name)
+        !field.app_field && !rendered.get('fields').containsKey(name) && _naComparable(field, stored.get(name), false) == null
+    } : []
+    [model: model, not_landed: notLanded - consumed, consumed: consumed]
+}
+private String _naConsumedNote(List consumed) {
+    "The app handled the value written for ${consumed.join(', ')} in its own code instead of storing it; read the page with hub_get_app_config or operation:'form' to see the effect."
+}
+private boolean _naNotFound(Exception failure) {
+    Integer status = null
+    try { status = failure.response?.status as Integer } catch (Exception ignored) { status = null }
+    status != null ? status in [404, 410] : failure.message?.contains('404') == true
+}
+private String _naRemoveUnfinished(Long id) {
+    String failure = null
     try {
-        _rmClickAppButton(controllerId, "true", "addBut")
-        def baseSettings = [buttonDev: buttonDevIds, origLabel: origLabel]
-        hubInternalPostForm("/installedapp/update/json", _rmBuildSettingsBody(controllerId, baseSettings, schema))
-        def defineSchema = (schema ?: [:]) + [newBut: [type: "enum", multiple: true]]
-        def defineSettings = baseSettings + [newBut: [buttonNumber]]
-        hubInternalPostForm("/installedapp/update/json", _rmBuildSettingsBody(controllerId, defineSettings, defineSchema))
-        _rmClickAppButton(controllerId, "${buttonNumber} ${event}".toString(), "setBut")
-        def afterCfg = _rmFetchConfigJson(controllerId)
-        def afterIds = (afterCfg?.childApps ?: []).collect { it?.id?.toString() } as Set
-        def newIds = (afterIds - beforeIds).toList()
-        if (!newIds) {
-            return [success: false, controllerId: controllerId, buttonNumber: buttonNumber, event: event,
-                backup: backup,
-                error: "Button rule create did not produce a new child under controller ${controllerId}.",
-                note: "Verify the controller's button device is valid and button ${buttonNumber} exists on it. If a rule for this button/event already existed, the controller may have reused it instead of spawning -- inspect childApps via hub_get_app_config(appId=${controllerId})."]
-        }
-        def newRuleId = (newIds[0] as Integer)
-        def ruleHealth = _rmCheckRuleHealth(newRuleId)
-        def result = [success: true, buttonRuleId: newRuleId, controllerId: controllerId,
-            buttonNumber: buttonNumber, event: event, backup: backup, health: ruleHealth,
-            note: ("Empty button rule created (it shows '(Not Installed)' until it has an action). " +
-                "Author its actions with hub_set_rule(operation:'update', rule_id:${newRuleId}, args:{changes:[...]}, confirm:true). " +
-                "Trigger (Button ${buttonNumber} ${event}) is already seeded by the controller.").toString()]
-        if (newIds.size() > 1) {
-            result.newChildIds = newIds
-            result.note = (result.note + " NOTE: ${newIds.size()} new children appeared during the flow (${newIds.join(', ')}); buttonRuleId is the first -- verify via hub_get_app_config.").toString()
-        }
-        return result
-    } catch (Exception flowExc) {
-        mcpLogError("rm-native", "buttonRule flow failed mid-stream for controller ${controllerId}", flowExc)
-        return [success: false, controllerId: controllerId, buttonNumber: buttonNumber, event: event,
-            backup: backup, error: flowExc.message ?: flowExc.toString(),
-            note: ("The add-button flow failed mid-stream; the controller may be left in add-button mode (a fresh page open in the UI collapses it) and the rule may or may not have spawned -- check childApps via hub_get_app_config(appId=${controllerId}). " +
-                "Restore the controller via hub_restore_backup(backupKey='${backup.backupKey}') if its config looks damaged.").toString()]
-    }
+        _requireUnprotectedAppMutation(id, 'delete')
+        _rmForceDeleteApp(id.toInteger())
+        if (getAppByAppId(id) != null) failure = 'the app still exists after its force delete'
+    } catch (Exception error) { failure = (error.message ?: error.toString()).toString() }
+    if (failure) mcpLog('warn', 'rm-native', "hub_set_native_app create: removing unfinished app ${id} failed: ${failure}")
+    failure
 }
-def _createNativeAppShell(args) {
-    requireDestructiveConfirm(args?.confirm as Boolean)
-    def appType = args?.appType?.toString()?.trim() ?: "rule_machine"
-    if (appType == "visual_rule") {
-        throw new IllegalArgumentException("Visual Rules Builder rules are Vue-JSON apps, not classic dynamicPage apps -- use hub_set_visual_rule (hub_manage_rule_machine gateway) instead.")
-    }
-    def reg = _appTypeRegistry()[appType]
-    if (!reg) {
-        throw new IllegalArgumentException("Unknown appType '${appType}'. Supported: ${_appTypeRegistry().keySet().join(', ')}")
-    }
-    def name = args?.name?.toString()?.trim()
-    if (!name) throw new IllegalArgumentException("name is required")
-    def parentId = _discoverParentAppId(appType)
-    _requireUnprotectedAppMutation(parentId, "create a child app under")
-    def newId
+private Map _naRefusedCreate(String type, Long childId, String message, String guide, String advice = null, String note = null) {
+    String reason = message?.toString()?.replaceFirst(/\.?$/, '.')
+    String cleanup = _naRemoveUnfinished(childId)
+    if (cleanup == null) return [success: false, app_type: type, error: "${reason} The new app was removed, so nothing was created${advice ? '; ' + advice : ''}.".toString(),
+        note: "${note ?: 'Correct the arguments and create again.'}${guide}".toString()]
+    [success: false, app_type: type, app_id: childId, error: "${reason} Removing the unfinished app then failed: ${cleanup}".toString(),
+     note: "Delete app ${childId} with hub_delete_native_app before creating again.${guide}".toString()]
+}
+private Map _naBusy(IllegalStateException busy, Map target, String guide) {
+    [success: false] + target + [error: busy.message, note: "Wait for the running form operation to finish, then retry.${guide}".toString()]
+}
+private Map _naCreate(Map args) {
+    String type = args.app_type
+    Map reg = _appTypeRegistry()[type]
+    String name = args.name?.toString()?.trim() ?: null
+    String twice = name && args.get('fields') instanceof Map ? ['origLabel', 'name', 'label'].find { args.get('fields').containsKey(it) } : null
+    if (twice) throw new IllegalArgumentException("Pass the label once, as name or as fields.${twice}".toString())
+    Long parentId = _discoverParentAppId(type) as Long
+    _requireUnprotectedAppMutation(parentId, 'create a child app under')
+    String guide = " See hub_get_tool_guide(section='set_native_app_reference')."
+    try { _nfAcquire(parentId) }
+    catch (IllegalStateException busy) { return _naBusy(busy, [app_type: type], guide) }
+    Long childId = null
     try {
-        newId = _rmCreateChildApp(parentId, reg.namespace, reg.appName)
-    } catch (Exception createExc) {
-        mcpLogError("rm-native", "createchild failed for appType='${appType}' (ns=${reg.namespace}, appName=${reg.appName}, parent=${parentId})", createExc)
-        throw new IllegalArgumentException(
-            "Creating a native app failed at the createchild step for appType='${appType}'. " +
-            "The hub rejected namespace='${reg.namespace}' + appName='${reg.appName}' " +
-            "(parent app id ${parentId}). Most likely the _appTypeRegistry entry has the " +
-            "wrong child appName for this hub's installed parent. To verify the actual " +
-            "child appName, call hub_list_apps (scope='instances') and inspect the children of " +
-            "parentTypeName='${reg.parentTypeName}' — the children's `type` field is the " +
-            "child appName the hub expects. Underlying error: ${createExc.message}")
-    }
-    try {
-        def firstPage = _rmFetchConfigJson(newId)
-        def schema = _rmCollectInputSchema(firstPage?.configPage)
-        def labelInput = reg.labelInput ?: "origLabel"
-        def body = _rmBuildSettingsBody(newId, [(labelInput): name], schema)
-        hubInternalPostForm("/installedapp/update/json", body)
-        def createCommitButton = reg.containsKey("commitButton") ? reg.commitButton : "updateRule"
-        if (createCommitButton) _rmClickAppButton(newId, createCommitButton)
-        def createDone = _rmSubmitMainPageDone(newId)
-        def status = _rmFetchStatusJson(newId)
-        def health = _rmCheckRuleHealth(newId)
-        boolean labelApplied = false
-        try { labelApplied = _rmFetchConfigJson(newId)?.app?.label?.toString()?.startsWith(name) == true }
-        catch (Exception ignored) { }
-        def result = [success: _rmHealthGatePass(health), partial: false, appId: newId, appType: appType,
-            name: name, labelApplied: labelApplied, parentAppId: parentId, ruleId: appType == 'rule_machine' ? newId : null,
-            statusSummary: [eventSubscriptions: status?.eventSubscriptions?.size() ?: 0, scheduledJobs: status?.scheduledJobs?.size() ?: 0],
-            health: health, note: "Empty ${appType} app created (id=${newId}). Configure its native fields with hub_set_native_app or inspect it with hub_get_app_config.".toString()]
-        if (createDone?.done == false) {
-            result.mainPageDoneFailed = true
-            result.mainPageDoneError = createDone.reason
-            if (createDone.uiBlocked == true || _resolveCommitButton(reg.appName) == null) result.success = false
-            result.repairHints = [_rmMainPageDoneRepairHint(newId as Integer, createDone)]
-        }
-        if (!labelApplied) result.note += ' The requested display label could not be verified; inspect the app before retrying.'
-        return result
-    } catch (Exception failure) {
-        mcpLogError('rm-native', "Native app setup failed after createchild for ${newId}; requesting cleanup", failure)
-        String cleanup = 'attempted'
-        try { _rmForceDeleteApp(newId) }
-        catch (Exception cleanupFailure) { cleanup = 'failed'; mcpLog('warn', 'rm-native', "Orphan cleanup failed for ${newId}: ${cleanupFailure.message}") }
-        return [success: false, appId: newId, error: "${appType} create failed: ${failure.message}".toString(),
-            orphanCleanup: cleanup, note: 'Verify the created app and cleanup result before retrying.']
-    }
-}
-private void _rmClearPredCapabsViaGhostIfThen(Integer appId, String caller) {
-    Map cache = [:]
-    _rmClickAppButton(appId, "N", "doActN", "selectActions", cache)
-    def ghostCfg = _rmFetchConfigJson(appId, "doActPage", cache)
-    def ghostSchema = _rmCollectInputSchema(ghostCfg?.configPage)
-    def ghostActTypeField = ghostSchema?.keySet()?.find { it.toString() ==~ /^actType\.\d+$/ }
-    def ghostIdx = 1
-    if (ghostActTypeField) {
-        def m = (ghostActTypeField.toString() =~ /^actType\.(\d+)$/)
-        if (m.matches()) ghostIdx = m[0][1] as Integer
-    }
-    def ghostApplied = []
-    def ghostSkipped = []
-    _rmWriteSettingOnPage(appId, "doActPage", "actType.${ghostIdx}", "condActs", ghostApplied, null, ghostSkipped, cache)
-    _rmCacheInvalidate(cache, appId)
-    _rmWriteSettingOnPage(appId, "doActPage", "actSubType.${ghostIdx}", "getIfThen", ghostApplied, null, ghostSkipped, cache)
-    if (ghostSkipped.any { it?.key?.toString()?.startsWith("actSubType") && it?.reason == "not_in_schema" }) {
-        mcpLog("warn", "rm-native", "${caller}: ghost ifThen actSubType=getIfThen write was SKIPPED not_in_schema (${ghostSkipped}) for app ${appId} -- the actType->actSubType reveal echo lagged past the fresh re-read; predCapabs may NOT be cleared, so a later non-expression action could render under IF(Broken Condition).")
-    }
-    _rmClickAppButton(appId, "actionCancel", null, "doActPage", cache)
-    def navBack = _rmNavigateToPage(appId, "doActPage", "selectActions", 0, "name", null, cache, null, false, true)
-    if (navBack?.configPage != null) _rmCacheStore(cache, appId, "selectActions", navBack)
-    _rmNavigateToPage(appId, "selectActions", "mainPage", 0, "name", null, cache, null, false, true)
-    mcpLog("info", "rm-native", "${caller}: ghost ifThen clear fired for app ${appId} (clears atomicState.predCapabs without adding an action)")
-}
-private void _rmRunPendingPredCapabsClear(Integer appId) {
-    def pending = _rmPendingPredClearSnapshot()
-    def observedGeneration = pending.get(appId.toString())
-    if (!observedGeneration) return
-    try {
-        _rmClearPredCapabsViaGhostIfThen(appId, "addAction (deferred from addRequiredExpression)")
-    } catch (Exception e) {
-        mcpLog("warn", "rm-native", "addAction: deferred predCapabs clear (ghost ifThen) failed for app ${appId} (${e.message ?: e.toString()}) -- this action may render under IF(**Broken Condition**); verify rule render or restore backup if needed")
-    }
-    try { _rmDropPredClearPending(appId, observedGeneration) }
-    catch (Exception cleanupError) {
-        mcpLog("warn", "rm-native", "addAction: deferred predicate-clear bookkeeping failed for app ${appId}: ${cleanupError.message}; the recovery record is retained for a later attempt")
-    }
-}
-private _stripInternalClock(rem) {
-    return (rem instanceof Map) ? ((Map) rem).findAll { k, v -> k?.toString() != "__reqT0" } : rem
-}
-private void _rmRejectNonDeviceMapSettings(Integer appId, String pageName, Map settingsMap) {
-    def schema = _rmCollectInputSchema(_rmFetchConfigJson(appId, pageName)?.configPage)
-    def bad = settingsMap.findAll { k, v ->
-        v instanceof Map && schema.containsKey(k.toString()) && !_isDevicePickerType(schema.get(k.toString())?.type)
-    }.collect { k, v -> "${k} (${schema.get(k.toString())?.type})".toString() }
-    if (bad) {
-        throw new IllegalArgumentException("settings ${bad} were given an object, which only device inputs accept (as the {id: label} map hub_get_app_config returns). Pass a scalar for text/number/bool/enum inputs and a List of options for a multi-select enum.")
-    }
-}
-def _applyNativeAppEdit(args) {
-    if (args?.guide == true) return _rmWholeGuideSection('builtin_app_tools_crud')
-    requireDestructiveConfirm(args?.confirm as Boolean)
-    if (args?.appId == null) throw new IllegalArgumentException('appId is required')
-    def appId = normalizeRuleId(args.appId)
-    _requireUnprotectedAppMutation(appId, 'edit')
-    def settingsMap = args?.settings instanceof Map ? args.settings : null
-    def button = args?.button?.toString()?.trim() ?: null
-    def walkStepSpec = args?.walkStep instanceof Map ? args.walkStep : null
-    def pageName = args?.pageName?.toString()?.trim() ?: null
-    if (pageName && !pageName.matches(/[A-Za-z0-9_]+/)) throw new IllegalArgumentException('pageName must be alphanumeric/underscore')
-    if (walkStepSpec && (settingsMap || button)) throw new IllegalArgumentException('walkStep cannot be combined with settings or button; use ordered walkStep drive steps')
-    if (!settingsMap && !button && !walkStepSpec) throw new IllegalArgumentException('Editing a native app requires settings, button or walkStep')
-    if (settingsMap) {
-        def devKeyPattern = ~/^([tr]Dev[_-]?\d+|switch[A-Z]\w*|onOffSwitch\.\d+|lockLockUnlock\.\d+|shadeOpenClose\.\d+|fanRL\.\d+|tDev-\d+|deviceList|dimmerLevel\.\d+|ButtontDev_?\d+|pushButton\d+)$/
-        settingsMap.each { k, v ->
-            if (v instanceof List && k?.toString()?.matches(devKeyPattern)) {
-                _rmValidateDeviceIdsExist("settings.${k}", v)
-            } else if (v instanceof Map && k?.toString()?.matches(devKeyPattern)) {
-                _rmValidateDeviceIdsExist("settings.${k}", v.keySet().collect { it?.toString() })
-            }
-        }
-    }
-    try {
-        _rmRejectDisabledAppEdit(appId, button ? 'button' : (walkStepSpec ? 'walkStep' : 'settings'))
-        if (settingsMap?.values()?.any { it instanceof Map }) _rmRejectNonDeviceMapSettings(appId, pageName, settingsMap)
-    } catch (IllegalArgumentException failure) {
-        return _rmBuildUpdateErrorResponse(appId, failure.message, null)
-    }
-    String wsPage = walkStepSpec ? ((walkStepSpec.page ?: ((walkStepSpec.steps instanceof List && walkStepSpec.steps && walkStepSpec.steps[0] instanceof Map) ? walkStepSpec.steps[0].page : null))?.toString()) : null
-    if (wsPage && getAppByAppId(appId)?.appType?.name?.toString() in ['Rule-5.1', 'Button Rule-5.1']) wsPage = null
-    def backupReason = button ? "pre-button-${button}" : (walkStepSpec ? 'pre-walkStep' : 'pre-update')
-    def backup = wsPage ? _rmBackupBeforeEdit(appId, backupReason, wsPage) : _rmBackupBeforeEdit(appId, backupReason)
-    if (walkStepSpec) {
+        Map child = null
+        Map supplied = new LinkedHashMap(args.get('fields') ?: [:])
         try {
-            def wsSpec = walkStepSpec
-            if (args?.__reqT0 != null || wsPage) {
-                wsSpec = new LinkedHashMap(walkStepSpec)
-                if (args?.__reqT0 != null) wsSpec.__reqT0 = args.__reqT0
-                if (wsPage) wsSpec.__activePage = true
+            Map parent
+            try { parent = _nfContext(parentId, _nfPage(parentId)) }
+            catch (Exception unreadable) {
+                if (!_naNotFound(unreadable)) throw unreadable
+                Map ids = [:] + (atomicState.parentAppIds ?: [:])
+                ids.remove(type)
+                atomicState.parentAppIds = ids
+                mcpLog('warn', 'rm-native', "hub_set_native_app create of ${type}: parent app ${parentId} renders no page (${unreadable.message}); its cached id was dropped")
+                return [success: false, app_type: type, error: "The ${reg.parentTypeName} app recorded for this type no longer exists. Nothing was created.".toString(),
+                        note: "Retry: the next create finds or installs the ${reg.parentTypeName} app again.${guide}".toString()]
             }
-            def result = _rmWalkStep(appId, wsSpec)
-            result.appId = appId
-            result.backup = backup
-            def wsOp = walkStepSpec?.operation?.toString()
-            def requestedSteps = (walkStepSpec?.steps instanceof List) ? (walkStepSpec.steps as List) : []
-            def driveEndsInDone = wsOp == "drive" && !requestedSteps.isEmpty() &&
-                (requestedSteps[-1] instanceof Map) && ((Map) requestedSteps[-1]).operation?.toString()?.trim() == "done"
-            def driveCompleted = driveEndsInDone && result?.lastStepOperation == "done" &&
-                result?.status != "in_progress" && result?.stepsRun == result?.stepsRequested &&
-                !((result?.steps ?: []) as List).any { it?.success == false }
-            if (wsOp == "done" || driveCompleted) {
-                def walkDone = null
-                try { walkDone = _rmSubmitMainPageDone(appId) }
-                catch (Exception doneExc) { mcpLog("warn", "rm-native", "walkStep: trailing mainPage Done click failed for app ${appId}: ${doneExc.message} -- in-flight state markers may linger and corrupt subsequent edits") }
-                if (walkDone?.done == false) {
-                    result.mainPageDoneFailed = true
-                    result.mainPageDoneError = walkDone.reason
-                    result.success = false
-                    result.repairHints = (result.repairHints ?: []) + [_rmMainPageDoneRepairHint(appId, walkDone)]
-                }
-            } else if (driveEndsInDone) {
-                result.mainPageDoneSkipped = true
-                result.repairHints = (result.repairHints ?: []) + ["The mainPage Done (the app's update lifecycle) was not run because the drive did not complete. Once the failed or remaining steps are done, finish with walkStep {page:'mainPage', operation:'done'}.".toString()]
+            Map create = parent.controls.values().find { it.kind == 'create_child' && it.value == reg.appName }
+            if (!create) {
+                List offered = parent.controls.values().findAll { it.kind == 'create_child' }*.value
+                return [success: false, app_type: type, error: "The ${reg.parentTypeName} page offers no control that creates ${reg.appName}; it offers ${offered ?: 'none'}. Nothing was created.".toString(),
+                        note: "Open the ${reg.parentTypeName} app with operation:'form' to see what it offers.${guide}".toString()]
             }
-            return result
-        } catch (Exception e) {
-            mcpLogError("rm-native", "walkStep failed for app ${appId}", e)
-            def uiRefusal = (e instanceof IllegalStateException) && e.message?.startsWith("Hubitat's app page would refuse")
-            return [
-                success: false,
-                appId: appId,
-                error: e.message ?: e.toString(),
-                backup: backup,
-                restoreHint: uiRefusal ? _rmPreflightRestoreHint(null, backup, "Refused before submitting: no settings were written and no Done was sent, so nothing needs to be restored. The page was still opened to read its inputs, which runs the app's page code.") :
-                    "Backup baseline available. Call hub_restore_backup with backupKey='${backup.backupKey}' to return to that snapshot; a reused baseline undoes every later edit in its one-hour chain."
-            ]
+            Map made = _nfExecute(parentId, _nfPrepare(parentId, parent, [:], create.control_id, 'hub_set_native_app'))
+            if (made.created_mismatch) {
+                mcpLog('warn', 'rm-native', "hub_set_native_app create of ${type}: ${made.created_mismatch}; left in place")
+                return [success: false, app_type: type, app_id: made.created_id, error: "${made.created_mismatch}; it was left in place.".toString(),
+                        note: "Inspect app ${made.created_id} with hub_get_app_config(appId=${made.created_id}) before deleting it with hub_delete_native_app.${guide}".toString()]
+            }
+            childId = made.created_id
+            child = _nfContext(childId, _nfPage(childId))
+            if (name) {
+                String labelInput = ['origLabel', 'name', 'label'].find { child.get('fields').containsKey(it) }
+                if (!labelInput) throw new IllegalArgumentException("The first page of a new ${type} renders no label input (origLabel, name or the app's own label), so name cannot be set there; omit name and set the label later with update or form.".toString())
+                supplied.put(labelInput, name)
+            }
+            _nfPrepare(childId, child, supplied, _naDone(child), 'hub_set_native_app')
+        } catch (IllegalArgumentException refused) {
+            if (childId == null) throw refused
+            return _naRefusedCreate(type, childId, refused.message, guide)
+        } catch (Exception failure) {
+            mcpLogError('rm-native', "hub_set_native_app create of ${type} failed before its page was saved", failure)
+            if (childId == null) return [success: false, app_type: type, error: failure.message?.toString(),
+                    note: "Check the ${reg.parentTypeName} app with hub_list_apps before retrying: the hub may have created a child anyway.${guide}".toString()]
+            String cleanup = _naRemoveUnfinished(childId)
+            return [success: false, app_type: type, app_id: childId, error: failure.message?.toString(), orphan_cleanup: cleanup == null ? 'removed' : "failed: ${cleanup}".toString(),
+                    note: (cleanup == null ? 'The unfinished app was removed; nothing was created.' : "Delete app ${childId} with hub_delete_native_app before creating again.").toString() + guide]
         }
-    }
-    try {
-        def result = [success: true, appId: appId, backup: backup]
-        if (settingsMap) {
-            def config = _rmFetchConfigJson(appId, pageName)
-            def schema = _rmCollectInputSchema(config?.configPage)
-            def knownSettings = [:]
-            def unknownSettings = []
-            settingsMap.each { k, v ->
-                if (schema?.containsKey(k.toString())) {
-                    knownSettings.put(k, v)
-                } else {
-                    unknownSettings << k.toString()
-                }
-            }
-            def isSubPageWrite = (pageName && pageName != "mainPage")
-            def subPageApplied = []
-            def subPageSkipped = []
-            if (knownSettings && isSubPageWrite) {
-                knownSettings.each { k, v ->
-                    _rmWriteSettingOnPage(appId, pageName, k.toString(), v, subPageApplied, null, subPageSkipped)
-                    _rmVerifySubPageMultipleFlags(appId, pageName, [(k.toString()): v], schema)
-                }
-            } else if (knownSettings) {
-                _rmUpdateAppSettings(appId, knownSettings, schema)
-            }
-            def isMainPage = (!pageName || pageName == "mainPage")
-            def editCommitButton = _resolveCommitButton(config?.app?.appType?.name)
-            if (editCommitButton == "updateRule" && !_appTypeRegistryKnows(config?.app?.appType?.name?.toString()) &&
-                    _rmCollectInputSchema(config?.configPage as Map).get("updateRule")?.type != "button") {
-                editCommitButton = null
-            }
-            if (!button && isMainPage && knownSettings && editCommitButton) {
-                _rmClickAppButton(appId, editCommitButton)
-            }
-            result.settingsApplied = isSubPageWrite ? subPageApplied : knownSettings.keySet().toList()
-            if (isSubPageWrite && subPageSkipped) {
-                result.settingsNotLanded = subPageSkipped
-                result.partial = true
-            }
-            if (unknownSettings) {
-                result.settingsSkipped = unknownSettings
-                def settingWord = (unknownSettings.size() == 1) ? "Setting" : "Settings"
-                def beVerb = (unknownSettings.size() == 1) ? "is" : "are"
-                def linkedPages = _rmPageHrefs(config?.configPage as Map).collect { it.page }.unique()
-                def subPageHint = linkedPages ?
-                    " This page links to sub-page(s) ${linkedPages}: an input that lives there needs pageName='<sub-page>' or walkStep (navigate, write, done)." :
-                    ""
-                result.unknownSettingsWarning = ("${settingWord} ${unknownSettings} ${beVerb} not inputs on page '${pageName ?: 'mainPage'}' and ${beVerb == 'is' ? 'was' : 'were'} not written (the hub would have silently dropped ${unknownSettings.size() == 1 ? 'it' : 'them'})." +
-                    subPageHint +
-                    " Inputs can also appear only after an earlier input is set: write the prerequisite in its own call first (e.g. on an RM rule's selectTriggers, tstate1 appears only after tCapab1 and tDev1 are written).").toString()
-            }
-            if (!isMainPage) {
-                result.subPageNote = "Sub-page write (pageName='${pageName}') — updateRule NOT auto-fired so the editor state survives. Finish the wizard and call hub_set_native_app(button='updateRule') to commit."
-            }
+        Map saved
+        try { saved = _naSave(childId, child, supplied, null, false) }
+        catch (IllegalArgumentException refused) {
+            List revealing = supplied.keySet().findAll { child.get('fields').get(it)?.submit_on_change }.collect { it.toString() }
+            return _naRefusedCreate(type, childId, refused.message, guide,
+                "create without ${revealing.join(', ')} and finish it with update or form".toString())
+        } catch (Exception failure) {
+            mcpLogError('rm-native', "hub_set_native_app create: saving the first page of new app ${childId} failed", failure)
+            return [success: false, partial: true, app_type: type, app_id: childId, error: failure.message?.toString(),
+                    note: "App ${childId} exists and its page may already be saved. Open it with hub_set_native_app(operation:'form', app_id:${childId}, args:{steps:[{kind:'open'}]}, confirm:true) to see its state, then finish or delete it; do not create it again.${guide}".toString()]
         }
-        if (button) {
-            _rmClickAppButton(appId, button, args?.stateAttribute?.toString(), pageName)
-            result.buttonClicked = button
-        }
-        def finalConfig = _rmFetchConfigJson(appId)
-        def err = finalConfig?.configPage?.error
-        if (err) {
-            result.warning = "App has a rendering error after update: ${err}"
-            result.restoreHint = "Call hub_restore_backup with backupKey='${backup.backupKey}' to roll back."
-        }
-        result.configPageError = err
-        result.health = _rmCheckRuleHealth(appId)
-        if (!_rmHealthGatePass(result.health)) result.success = false
-        def editDone = null
-        try { editDone = _rmSubmitMainPageDone(appId) }
-        catch (Exception doneExc) { mcpLog("warn", "rm-native", "hub_set_rule: trailing mainPage Done click failed for app ${appId}: ${doneExc.message} -- in-flight state markers may linger and corrupt subsequent edits") }
-        if (editDone?.done == false) {
-            result.mainPageDoneFailed = true
-            result.mainPageDoneError = editDone.reason
-            if (editDone.uiBlocked == true || _resolveCommitButton(finalConfig?.app?.appType?.name?.toString()) == null) {
-                result.success = false
+        if (saved.done && !saved.committed && saved.done != '_action_done|Done|') {
+            List asks = []
+            try {
+                Map model = saved.answer?.model?.configPage instanceof Map ? saved.answer.model : _nfPage(childId)
+                asks = _nfContext(childId, model).get('fields').values().findAll { it.required && !it.present && !it.disabled }*.name
+            } catch (Exception unreadable) {
+                mcpLog('warn', 'rm-native', "hub_set_native_app create: reading what the refused page of app ${childId} asks for failed: ${unreadable.message}")
             }
-            result.repairHints = (result.repairHints ?: []) + [_rmMainPageDoneRepairHint(appId, editDone)]
+            return _naRefusedCreate(type, childId, "The hub rendered the first page again instead of accepting its Done, so the app was not installed" +
+                (asks ? "; the page asks for ${asks.join(', ')}" : ''), guide, null,
+                "Create it through the parent's form, which shows what its first page asks for: hub_set_native_app(operation:'form', app_id:${parentId}, args:{steps:[{kind:'open'}]}, confirm:true), then activate its create control.".toString())
         }
+        Map written = saved.wrote ? supplied : [:]
+        Map report = _nfDefaultsReport(saved.posted, saved.rejected)
+        Map back
+        try { back = _naReadBack(childId, child, written) }
+        catch (Exception failure) {
+            mcpLogError('rm-native', "hub_set_native_app create: reading back new app ${childId} failed", failure)
+            return [success: false, app_type: type, app_id: childId, fields_unverified: written.keySet().collect { it.toString() },
+                    error: "App ${childId} was saved, but reading it back failed: ${failure.message}".toString(),
+                    note: "Check it with hub_get_app_config(appId=${childId}, includeSettings=true) before changing it; do not create it again.${guide}".toString()] + report
+        }
+        Map result = [success: back.not_landed.isEmpty(), app_id: childId, app_type: type, label: back.model.app?.label?.toString(),
+                      fields_applied: written.keySet().collect { it.toString() } - back.not_landed - back.consumed] + report
+        if (back.consumed) result.fields_consumed = back.consumed
+        List notes = [type == 'rule_machine' ?
+            "Created Rule Machine rule ${childId}. Author its triggers and actions with hub_set_rule(operation:'update', rule_id:${childId}, args:{changes:[...]}, confirm:true)." :
+            "Created ${type} app ${childId}. Set more inputs with hub_set_native_app(operation:'update', app_id:${childId}, args:{fields:{...}}, confirm:true) or drive its pages with operation:'form'."]
+        if (back.not_landed) {
+            result.fields_not_landed = back.not_landed
+            notes << "The hub did not store the value written for ${back.not_landed.join(', ')}; inspect the page with operation:'form' before retrying."
+        }
+        if (back.consumed) notes << _naConsumedNote(back.consumed)
+        _naLabelResult(result, saved, notes)
+        boolean doneSaves = saved.done == '_action_done|Done|' && !saved.committed
+        if (doneSaves) {
+            result.committed = false
+            notes << "Its first page names both a next and a done page, so the hub answered its Done by saving and rendering the page again; the app did not install. Finish it with operation:'form'."
+        }
+        if (back.model.app?.installed != true) {
+            result.installed = false
+            if (!doneSaves) notes << (!saved.done ? 'Its page renders no Done yet, so the app stays uninstalled until operation:\'form\' completes it.' :
+                'The hub reports the app not installed after its Done; open it with operation:\'form\'.')
+        }
+        result.note = notes.join(' ') + guide
         return result
-    } catch (Exception e) {
-        def msg = e.message ?: e.toString()
-        mcpLogError("rm-native", "hub_set_rule failed for ${appId}: ${msg}", e)
-        return _rmBuildUpdateErrorResponse(appId, msg, backup)
+    } finally { _nfForget(parentId); _nfRelease(parentId) }
+}
+private Map _naSetBut(Map context, String name) { context.controls.values().find { it.kind == 'button' && it.stateAttribute == 'setBut' && it.name == name } }
+private Map _naCreateButtonRule(Map args) {
+    Long controllerId = args.controller_id.toString().toLong()
+    Integer number = args.button_number as Integer
+    String event = args.event
+    String wanted = "${number} ${event}".toString()
+    String guide = " See hub_get_tool_guide(section='set_native_app_reference')."
+    _requireUnprotectedAppMutation(controllerId, 'create a button rule under')
+    def controller = getAppByAppId(controllerId)
+    if (controller?.id?.toString() != controllerId.toString() || controller.appType?.namespace != 'hubitat' || controller.appType?.name != _appTypeRegistry().button_controller.appName) {
+        throw new IllegalArgumentException("controller_id ${controllerId} is not an installed Button Controller".toString())
     }
+    if (controller.disabled == true) throw new IllegalArgumentException('Enable the Button Controller before creating a rule under it')
+    try { _nfAcquire(controllerId) }
+    catch (IllegalStateException busy) { return _naBusy(busy, [app_type: 'button_rule', controller_id: controllerId], guide) }
+    Map backup = null
+    boolean attempted = false
+    Long openedId = null
+    try {
+        backup = _nfBackup(controllerId, controller, null)
+        Map context = _nfContext(controllerId, _nfPage(controllerId))
+        Map setBut = _naSetBut(context, wanted)
+        if (!setBut) {
+            List defined = context.controls.values().findAll { it.kind == 'button' && it.stateAttribute == 'setBut' && it.name.toString().startsWith("${number} ") }*.name
+            if (defined) throw new IllegalArgumentException("Button ${number} on controller ${controllerId} offers no rule to create for ${event}; it offers ${defined}. That event may already have a rule.".toString())
+            Map add = context.controls.values().find { it.kind == 'button' && it.stateAttribute == 'addBut' }
+            if (!add) throw new IllegalArgumentException("Button Controller ${controllerId} renders no Add Button control. Assign its button device first: hub_set_native_app(operation:'update', app_id:${controllerId}, args:{fields:{buttonDev:['<device id>']}}, confirm:true).".toString())
+            attempted = true
+            context = _nfContext(controllerId, _nfExecute(controllerId, _nfPrepare(controllerId, context, [:], add.control_id, 'hub_set_native_app')).model)
+            List offered = context.get('fields').newBut?.options*.value
+            if (!(number.toString() in offered)) {
+                Map cancel = context.controls.values().find { it.kind == 'button' && it.name == 'cancelBtn' }
+                if (!cancel) throw new IllegalStateException("The Add Button picker does not offer button ${number} and the page renders no Cancel".toString())
+                _nfExecute(controllerId, _nfPrepare(controllerId, context, [:], cancel.control_id, 'hub_set_native_app'))
+                Map after = _nfContext(controllerId, _nfPage(controllerId))
+                String refusal = "The controller's Add Button picker offers buttons ${offered ?: 'none'}, not ${number}; a button already defined is not offered again."
+                if (after.get('fields').containsKey('newBut')) throw new IllegalStateException("${refusal} Its Cancel was pressed, but the controller still renders the Add Button picker".toString())
+                if (!after.controls.values().any { it.kind == 'button' && it.stateAttribute == 'addBut' }) {
+                    throw new IllegalStateException("${refusal} Its Cancel was pressed, but the controller no longer renders its Add Button".toString())
+                }
+                return [success: false, app_type: 'button_rule', controller_id: controllerId, button_number: number, event: event, backup: backup,
+                        error: "${refusal} The controller was left unchanged.".toString(),
+                        note: "Cancel was pressed; the controller renders as before. Choose a button number the picker offers.${guide}".toString()]
+            }
+            _nfExecute(controllerId, _nfPrepare(controllerId, context, [newBut: [number.toString()]], null, 'hub_set_native_app'))
+            context = _nfContext(controllerId, _nfPage(controllerId))
+            setBut = _naSetBut(context, wanted)
+            if (!setBut) throw new IllegalStateException("Button ${number} was added, but the controller offers no rule to create for ${event}".toString())
+        }
+        attempted = true
+        Map answer = _nfExecute(controllerId, _nfPrepare(controllerId, context, [:], setBut.control_id, 'hub_set_native_app'))
+        Map opened = answer.navigation ?: _nfNavigation(controllerId, answer.model)
+        Long ruleId = opened?.app_id == controllerId ? null : opened?.app_id
+        openedId = ruleId
+        def rule = ruleId == null ? null : getAppByAppId(ruleId)
+        if (rule?.parentAppId?.toString() != controllerId.toString() || rule?.appType?.name != _appTypeRegistry().button_rule.appName) {
+            throw new IllegalStateException('The controller did not open a new Button Rule')
+        }
+        return [success: true, app_id: ruleId, app_type: 'button_rule', label: rule.label?.toString(), controller_id: controllerId, button_number: number, event: event, backup: backup,
+         note: "Created button rule ${ruleId}; the controller seeded its trigger (button ${number} ${event}). Author its actions with hub_set_rule(operation:'update', rule_id:${ruleId}, args:{changes:[...]}, confirm:true); it shows as not installed until it has one.${guide}".toString()]
+    } catch (Exception failure) {
+        if (failure instanceof IllegalArgumentException && !attempted) throw failure
+        mcpLogError('rm-native', "hub_set_native_app create: button rule under controller ${controllerId} failed", failure)
+        if (!attempted) return [success: false, app_type: 'button_rule', controller_id: controllerId, error: failure.message?.toString(), backup: backup, note: "Nothing was changed.${guide}".toString()]
+        Map partial = [success: false, partial: true, app_type: 'button_rule', controller_id: controllerId, button_number: number, event: event, error: failure.message?.toString(), backup: backup]
+        if (openedId != null) partial.opened_app_id = openedId
+        partial.note = ("The controller may now hold button ${number} or a new rule" + (openedId != null ? " (it opened app ${openedId})" : '') +
+            ". Open it with hub_set_native_app(operation:'form', app_id:${controllerId}, args:{steps:[{kind:'open'}]}, confirm:true) before retrying" +
+            (backup?.backupKey ? "; hub_restore_backup(backupKey:'${backup.backupKey}') returns it to its state before this call." : '.') + guide).toString()
+        return partial
+    } finally { _nfForget(controllerId); _nfRelease(controllerId) }
+}
+private Map _naUpdate(Long id, Map args) {
+    Map fields = args.get('fields')
+    String page = args.page
+    String guide = " See hub_get_tool_guide(section='set_native_app_reference')."
+    _requireUnprotectedAppMutation(id, 'edit')
+    def nativeApp = getAppByAppId(id)
+    if (nativeApp?.id?.toString() != id.toString()) throw new IllegalArgumentException('app_id must identify an installed app')
+    if (nativeApp.disabled == true) throw new IllegalArgumentException('Enable the app before updating it')
+    boolean subPage = false
+    try { _nfAcquire(id) }
+    catch (IllegalStateException busy) { return _naBusy(busy, [app_id: id], guide) }
+    Map backup = null
+    boolean attempted = false
+    List posted = []
+    List notPosted = []
+    try {
+        backup = _nfBackup(id, nativeApp, page)
+        Map context
+        String root = null
+        String rendering = 'its default page'
+        try {
+            context = _nfContext(id, _nfPage(id))
+            if (page) {
+                root = context.page.name?.toString()
+                subPage = page != root
+                rendering = page
+                if (subPage) context = _nfContext(id, _nfPage(id, page), root)
+            }
+        } catch (Exception unreadable) {
+            if (_naNotFound(unreadable)) throw new IllegalArgumentException("App ${id} renders no page '${rendering}'; hub_get_app_config lists the pages a page links to under page.hrefs. Nothing was written.".toString())
+            throw unreadable
+        }
+        if (page && context.page.name != page) throw new IllegalArgumentException("App ${id} renders no page '${page}' (the hub rendered '${context.page.name}'); hub_get_app_config lists the pages a page links to under page.hrefs. Nothing was written.".toString())
+        _nfPrepare(id, context, fields, _naDone(context), 'hub_set_native_app')
+        attempted = true
+        Map saved = _naSave(id, context, fields, subPage ? root : null, true)
+        posted.addAll(saved.posted)
+        notPosted.addAll(saved.rejected)
+        boolean committed = saved.committed
+        String uncommitted = null
+        boolean refused = false
+        if (saved.done == '_action_previous|Done|') {
+            Map parent = _nfContext(id, saved.answer.model)
+            if (parent.controls.containsKey('_action_update|Done|')) {
+                Map commit = _nfPrepare(id, parent, [:], '_action_update|Done|', 'hub_set_native_app')
+                Map reply = _nfExecute(id, commit)
+                if (reply.posted) { posted.addAll(commit.defaults); notPosted.addAll(commit.rejected) }
+                committed = reply.model?.location != null
+                refused = !committed
+                if (refused) uncommitted = "The hub rendered page '${parent.page.name}' again instead of accepting its Done, so the app's update did not run; open it with operation:'form' to see what it asks for."
+            } else uncommitted = "Page '${parent.page.name}', which the sub-page returned to, renders no Done, so the app's update did not run."
+        } else if (!saved.done) uncommitted = "Page '${saved.page}' renders no Done, so the fields were saved as the page posts them and the app's update did not run."
+        else if (saved.done == '_action_done|Done|') uncommitted = "Page '${saved.page}' names both a next and a done page, so the hub answers its Done by saving and rendering the page again; the app's update did not run."
+        else if (!committed) {
+            refused = true
+            uncommitted = "The hub rendered page '${saved.page}' again instead of accepting its Done, so the app's update did not run; open it with operation:'form' to see what it asks for."
+        }
+        Map report = (page ? [page: page] : [:]) + _nfDefaultsReport(posted, notPosted) + (committed ? [:] : [committed: false])
+        Map back
+        try { back = _naReadBack(id, context, fields, subPage ? page : null) }
+        catch (Exception failure) {
+            mcpLogError('rm-native', "hub_set_native_app update: reading back app ${id} failed", failure)
+            return [success: false, app_id: id, fields_unverified: fields.keySet().collect { it.toString() }, backup: backup,
+                    error: "App ${id} was updated, but reading it back failed: ${failure.message}".toString(),
+                    note: ((uncommitted ? uncommitted + ' ' : '') + "Check it with hub_get_app_config(appId=${id}, includeSettings=true) before changing it again.${guide}").toString()] + report
+        }
+        Map result = [success: back.not_landed.isEmpty() && !refused, app_id: id] + (refused ? [error: uncommitted] : [:]) +
+            [fields_applied: fields.keySet().collect { it.toString() } - back.not_landed - back.consumed, backup: backup] + report
+        List notes = []
+        if (back.not_landed) {
+            result.fields_not_landed = back.not_landed
+            notes << "The hub did not store the value written for ${back.not_landed.join(', ')}; inspect the page with operation:'form' before retrying."
+        }
+        if (back.consumed) {
+            result.fields_consumed = back.consumed
+            notes << _naConsumedNote(back.consumed)
+        }
+        _naLabelResult(result, saved, notes)
+        if (refused) notes << 'fields_applied lists the fields the hub stored although it refused the Done.'
+        else if (uncommitted) notes << uncommitted
+        if (notes) result.note = notes.join(' ') + guide
+        return result
+    } catch (IllegalArgumentException refused) {
+        if (!attempted) throw refused
+        return _naUpdateFailure(id, refused, backup, true, guide)
+    } catch (Exception failure) {
+        return _naUpdateFailure(id, failure, backup, attempted, guide)
+    } finally { _nfForget(id); _nfRelease(id) }
+}
+private Map _naUpdateFailure(Long id, Exception failure, Map backup, boolean attempted, String guide) {
+    mcpLogError('rm-native', "hub_set_native_app update failed for app ${id}", failure)
+    String recovery = attempted ? "Some fields may already be saved. Open the app with hub_set_native_app(operation:'form', app_id:${id}, args:{steps:[{kind:'open'}]}, confirm:true) to see what it holds before retrying" +
+        (backup?.backupKey ? "; hub_restore_backup(backupKey:'${backup.backupKey}') returns it to its state before this update." : '.') : 'Nothing was written.'
+    [success: false, app_id: id, partial: attempted, error: failure.message?.toString(), backup: backup, note: (recovery + guide).toString()]
 }
 def _readOnlyToolNames_partNativeRM() {
     return [
@@ -26534,10 +25676,31 @@ def _toolDisplayMeta_partNativeRM() {
         hub_set_rule_private_boolean: [title: "Set Rule Private Boolean", summary: "Set the private boolean of one or more Rule Machine rules."],
         hub_get_rule_health: [title: "Get Rule Health", summary: "Read-only health check on any installed app."],
         hub_list_rule_local_variables: [title: "List Rule Local Variables", summary: "Read-only list of a Rule Machine rule's local variables."],
-        hub_set_native_app: [title: "Create or Edit Native App", summary: "Create or edit a classic native app (Room Lighting, Notifier, etc.)."],
+        hub_set_native_app: [title: "Set Native App", summary: "Create, update or drive the native forms of classic apps (Room Lighting, Thermostat Scheduler and Controller, user apps)."],
         hub_delete_native_app: [title: "Delete Native App", summary: "Delete a classic native app (auto-snapshot first)."],
         hub_set_app_disabled: [title: "Enable or Disable App", summary: "Enable or disable any installed app without deleting it (reversible)."]
     ]
+}
+String _naGuide() {
+    return '''## Set Native App Reference
+
+hub_set_native_app works on classic Hubitat apps (dynamicPage apps), user and community apps included; Rule Machine rules use hub_set_rule and Visual Rules hub_set_visual_rule. With write access, call it without operation for help; a write operation without confirm returns its schema. Without write access the tool is hidden and this reference is its full description. Top-level app_id names the app for update and form. Writes need confirm=true and a recent hub backup. When mandatory guide acknowledgment is enabled, pass this section's key as top-level bestPracticeKey.
+
+### create
+
+operation:"create" with args:{app_type,name?,fields?} does what Apps does: it opens the type's parent app (installing it first when the hub lacks it), presses that page's Create control, fills the new app's first page with fields and presses its Done, which installs the app. name goes to the label input the first page renders (origLabel, name, or the hub's own label field); a type whose first page renders none of them (Button Controller, Basic Rule, Thermostat Scheduler and Controller) refuses name. fields are checked against that page before anything is saved: an input it does not render, a button, a disabled input, a bad value or device ID, or a required input left empty for the Done is refused with success:false, and the new app is removed. Inputs that a choice reveals belong to update or form. The result reports app_id, label, fields_applied, and fields_not_landed (with success:false) for any field the hub did not store as written. installed:false means the first page has no Done (Basic Rule: finish it with form). A Done the hub answers by rendering the first page again returns success:false with what that page asks for, and the new app is removed. app_type rule_machine makes only an empty rule.
+
+A button_rule takes args:{app_type:"button_rule",controller_id,button_number,event} and no name or fields. It runs the Button Controller's own Add Button, the button number, then that event's Create Button Rule control. The controller needs its button device assigned first. A button number the controller does not offer returns success:false after its page's Cancel, with the controller as before and the recovery point taken before the call rendered anything. The controller seeds the trigger; add the actions with hub_set_rule(operation:"update",rule_id:<returned app_id>).
+
+### update
+
+operation:"update" with args:{fields:{input name:value},page?} opens the page (the default page, or page), sets the fields and presses that page's Done. hub_get_app_config shows a page's inputs, their values and, under page.hrefs, the pages it links to. A sub-page's Done returns to the root page, whose Done then commits the app and re-initializes it, as the browser's Done does; learning the root page's name renders the app's default page first, so a stateful wizard whose default page resets its progress is driven with operation:'form' and open.from instead. The read-back renders the page that was written. A page that names both a next and a done page has that Done pressed, which the hub answers by saving and rendering the page again (committed:false). A submitOnChange input posts the page first, as the browser does, and the Done is pressed on the page that post renders; if that page asks for a required input it revealed, the call stops before the Done, reports partial and says what was saved. Inputs not given keep their stored values; unset inputs with a page default save that default (defaults_posted). Device inputs take device IDs (a list for a multiple input) or the {id:label} map hub_get_app_config returns; a multi-select enum takes a list; a mode input takes mode IDs as the page's options list them. A field the page does not render, a button, a disabled input, a bad value or device ID, or a required input left empty is refused before anything is written. An input that appears only after another choice needs that choice saved by an earlier update, or a form workflow. The result reports fields_applied and fields_not_landed (with success:false) from one read-back after the Done, and committed:false when the app's own Done did not run: with a note when the page renders none, and with success:false and the reason as error when the hub rendered the page again instead of accepting the Done (fields_applied still lists what it stored). A written input that the page no longer renders after the save, and that the app did not store, is listed under fields_consumed without failing the call: the app's own code used the value (a table editor adding a row, for one), so read the page to see the effect.
+
+Each update first takes a recovery point, before it renders any page: an exact export for a Rule Machine rule, otherwise a File Manager baseline of the app, reused for one hour unless every-write backups are on, and none while pre-edit backups are off. backup.backupKey restores it with hub_restore_backup.
+
+### form
+
+operation:"form" with args:{steps:[...],options_for?} runs the native form engine on any enabled classic app. Steps, control IDs, validation and limits are those of Native Rule Forms in set_rule_reference. While pre-edit backups are on (the default), a workflow takes the same recovery point as update before its first render. Protected and disabled apps are refused. A create_child control works only for built-in child app types.'''
 }
 private Long _nrCreatedAppId(Object response) {
     String location = response?.location?.toString()?.trim()?.replaceFirst(/(?i)^Location:\s*/, '')
@@ -27446,8 +26609,9 @@ private List _ndSettings(Long id) {
     if (!(response instanceof Map) || !(response.settings instanceof List)) throw new IllegalStateException('Native settings are unavailable')
     response.settings.collect { row ->
         if (!(row instanceof Map) || !(row.name instanceof String)) throw new IllegalStateException('Unexpected native setting row')
-        def setting = [name: row.name, type: row.type, multiple: row.multiple, value: row.type == 'password' ? null : row.value, device_ids: row.deviceList instanceof Map ? row.deviceList.keySet().collect { it.toString() }.sort() : null]
-        if (row.type == 'password') setting.redacted = true
+        boolean secret = row.type == 'password' || _appConfigIsSecretSetting(row.name, row.type, row.value)
+        def setting = [name: row.name, type: row.type, multiple: row.multiple, value: secret ? null : row.value, device_ids: row.deviceList instanceof Map ? row.deviceList.keySet().collect { it.toString() }.sort() : null]
+        if (secret) setting.redacted = true
         setting
     }
 }
@@ -27636,38 +26800,56 @@ private void _ndValidateChange(Object change) {
         if (value.operation == 'create') _nmLocalValue(value.type?.toString(), value.value)
     }
 }
+private boolean _ndKnownRow(Map rows, String rowId, String missing) {
+    if (rowId in rows.deleted) throw new IllegalArgumentException(missing)
+    if (rowId in rows.ids) return true
+    if (rowId in rows.predicted) return false
+    throw new IllegalArgumentException(missing)
+}
+private String _ndPredictAppend(Map rows, Map counters, String part) {
+    String family = part == 'action' ? 'action' : 'condition'
+    int next = counters.get(family) as int
+    counters.put(family, next + 1)
+    String predicted = next.toString()
+    rows.get(part).predicted << predicted
+    rows.get(part).added++
+    predicted
+}
+private int _ndCounter(Object value) { value != null && value.toString().isInteger() && value.toString().toInteger() > 0 ? value.toString().toInteger() : 1 }
+private void _ndDropRow(Map rows, String rowId, String missing) {
+    if (_ndKnownRow(rows, rowId, missing)) rows.ids.remove(rowId)
+    else { rows.predicted.remove(rowId); rows.added-- }
+    rows.deleted << rowId
+}
 private void _ndPreflight(Long id, List changes) {
     Map before = id == null ? [:] : _nrState(id)
     Map conditions = before.capabsfalse instanceof Map ? [:] + before.capabsfalse : [:]
     Map triggers = before.capabstrue instanceof Map ? [:] + before.capabstrue : [:]
-    Map expressions = before.eval instanceof Map ? [:] + before.eval : [:]
-    boolean allocatedConditions = false
-    boolean allocatedTriggers = false
-    def pendingExpressions = []
+    Map expressions = before.eval instanceof Map ? before.eval.collectEntries { key, value -> [(key.toString()): value] } : [:]
     List actionOrder = before.actionList instanceof List ? before.actionList.collect { it.toString() } : []
     Map projectedActions = before.actions instanceof Map ? before.actions.collectEntries { key, value -> [(key.toString()): value] } : [:]
     List projectedOrder = new ArrayList(actionOrder)
     List projectedPredicate = before.predCapabs instanceof List ? before.predCapabs.collect { it?.toString() } : []
-    int newAction = 0
-    boolean allocatedActions = false
-    Set deletedActions = [] as Set
+    Map rows = [action: [ids: (actionOrder + projectedActions.keySet()) as Set, added: 0, deleted: [] as Set, predicted: [] as Set],
+                condition: [ids: conditions.keySet().collect { it.toString() } as Set, added: 0, deleted: [] as Set, predicted: [] as Set],
+                trigger: [ids: triggers.keySet().collect { it.toString() } as Set, added: 0, deleted: [] as Set, predicted: [] as Set]]
+    Map counters = [condition: _ndCounter(before.ndx), action: _ndCounter(before.actNdx)]
+    boolean hasRequired = expressions.get('0') instanceof List && !expressions.get('0').isEmpty()
+    boolean appendedActions = false
     Map locals = id == null ? [:] : null
     Map inventory = null
     changes.eachWithIndex { change, index ->
         try {
             Map value = change.value
-            if (change.part == 'condition' && value.containsKey('id') && !allocatedConditions && !conditions.keySet().any { it.toString() == value.id.toString() }) throw new IllegalArgumentException('Native row does not exist')
-            if (change.part == 'trigger' && value.containsKey('id') && !allocatedTriggers && !triggers.keySet().any { it.toString() == value.id.toString() }) throw new IllegalArgumentException('Native row does not exist')
-            if (change.part == 'action' && value.containsKey('id') && value.id.toString() in deletedActions) throw new IllegalArgumentException('Native action does not exist')
-            if (change.part == 'action' && value.containsKey('id') && !allocatedActions) {
+            if (change.part in ['condition', 'trigger'] && value.containsKey('id')) _ndKnownRow(rows.get(change.part), value.id.toString(), 'Native row does not exist')
+            if (change.part == 'action' && value.containsKey('id') && _ndKnownRow(rows.action, value.id.toString(), 'Native action does not exist')) {
                 def prior = projectedActions.get(value.id.toString())
                 if (!(prior instanceof Map)) throw new IllegalArgumentException('Native action does not exist')
                 if (value.subtype == 'getWaitEvents' && (!(prior.wait instanceof List) || prior.wait.size() != value.events.size())) throw new IllegalArgumentException('Editing waits currently requires the existing event count')
             }
-            if (change.part == 'delete' && value.part in ['condition', 'trigger']) {
-                Map rows = value.part == 'condition' ? conditions : triggers
-                if (!(value.part == 'condition' ? allocatedConditions : allocatedTriggers) && !rows.keySet().any { it.toString() == value.id.toString() }) throw new IllegalArgumentException('Native row does not exist')
-            }
+            List named = change.part in ['expression', 'required'] ? value.tokens :
+                (change.part == 'action' ? (value.expression instanceof List ? value.expression : []) + (value.containsKey('condition') ? [value.condition] : []) : [])
+            named.findAll { it != null && it.toString().isInteger() }.each { token -> _ndKnownRow(rows.condition, token.toString(), 'Expression references an unknown condition') }
             if (change.part == 'variable') {
                 if (locals == null) {
                     def fresh = _nrHandle(id).getAllLocalVars()
@@ -27685,20 +26867,21 @@ private void _ndPreflight(Long id, List changes) {
                     } else locals.remove(value.name)
                 }
             }
-            if ((change.part == 'action' && !value.containsKey('id')) || change.part == 'terminator') allocatedActions = true
-            if (change.part == 'trigger' && !value.containsKey('id')) allocatedTriggers = true
+            if (change.part in ['condition', 'trigger'] && !value.containsKey('id')) _ndPredictAppend(rows, counters, change.part)
             if (change.part in ['action', 'terminator']) {
                 boolean newRow = !value.containsKey('id')
-                String actionId = newRow ? "new:${newAction++}".toString() : value.id.toString()
+                String actionId = newRow ? _ndPredictAppend(rows, counters, 'action') : value.id.toString()
+                if (newRow) appendedActions = true
                 if (newRow) projectedOrder << actionId
                 String method = change.part == 'terminator' ? ND_TERMINATOR_METHODS.get(value.subtype) : value.subtype
                 def prior = projectedActions.get(actionId)
                 Map record = (prior instanceof Map ? [:] + prior : [:]) + [method: method]
                 if (change.part == 'action' && value.containsKey('condition')) record.cond = value.condition.toString()
+                if (change.part == 'action' && value.expression instanceof List) record.tokens = value.expression
                 projectedActions.put(actionId, record)
             }
             if (change.part == 'order') {
-                if (allocatedActions) throw new IllegalArgumentException('Action order cannot follow new actions in the same batch; add the actions first and order them in a later call')
+                if (appendedActions) throw new IllegalArgumentException('Action order cannot follow new actions in the same batch; add the actions first and order them in a later call')
                 List requested = value.ids.collect { it.toString() }
                 if (requested.sort(false) != actionOrder.sort(false)) throw new IllegalArgumentException('Action order must be an exact permutation of existing action IDs')
                 actionOrder = requested
@@ -27706,36 +26889,27 @@ private void _ndPreflight(Long id, List changes) {
             }
             if (change.part == 'delete' && value.part == 'action') {
                 String target = value.id.toString()
-                deletedActions << target
+                _ndDropRow(rows.action, target, 'Native action does not exist')
                 projectedOrder = projectedOrder.findAll { it != target }
                 projectedActions.remove(target)
-                if (!allocatedActions) {
-                    if (!actionOrder.contains(target)) throw new IllegalArgumentException('Native action does not exist')
-                    actionOrder = actionOrder.findAll { it != target }
-                }
+                actionOrder = actionOrder.findAll { it != target }
             }
-            if (change.part == 'condition' && !value.containsKey('id')) allocatedConditions = true
-            if (change.part == 'action' && value.containsKey('condition')) {
-                List tokens = [value.condition.toString()]
-                if (!allocatedConditions) _nmTokens(tokens, conditions)
-                pendingExpressions << tokens
-            }
-            if (change.part in ['expression', 'required'] || (change.part == 'action' && value.expression instanceof List)) {
-                List tokens = change.part == 'action' ? value.expression : value.tokens
-                if (!allocatedConditions) _nmTokens(tokens, conditions)
-                if (change.part == 'action') pendingExpressions << tokens
-                else {
-                    String expressionId = change.part == 'required' ? '0' : value.id.toString()
-                    expressions.keySet().findAll { it.toString() == expressionId }.each { expressions.remove(it) }
-                    expressions.put(expressionId, tokens)
-                    if (change.part == 'required') projectedPredicate = tokens.findAll { it?.toString()?.isInteger() }.collect { it.toString() }
+            if (change.part == 'required' && !hasRequired) { counters.put('condition', (counters.get('condition') as int) + 1); hasRequired = true }
+            if (change.part in ['expression', 'required']) {
+                String evalId = change.part == 'required' ? '0' : value.id.toString()
+                expressions.put(evalId, value.tokens)
+                projectedActions.each { key, action ->
+                    if (action instanceof Map && action.containsKey('tokens') && action.rule?.toString() == evalId) projectedActions.put(key, action.findAll { it.key != 'tokens' })
                 }
+                if (change.part == 'required') projectedPredicate = value.tokens.findAll { it?.toString()?.isInteger() }.collect { it.toString() }
             }
             if (change.part == 'delete' && value.part == 'condition') {
                 String target = value.id.toString()
-                Set liveExpressionIds = (['0'] + projectedActions.values().findAll { it instanceof Map && it.rule != null }.collect { it.rule.toString() }) as Set
-                List liveExpressions = expressions.findAll { key, tokens -> key.toString() in liveExpressionIds }.values().toList()
-                boolean referenced = (liveExpressions + pendingExpressions).any { tokens -> tokens instanceof List && tokens.any { it?.toString() == target } }
+                _ndKnownRow(rows.condition, target, 'Native row does not exist')
+                List live = [expressions.get('0')] + projectedActions.values().findAll { it instanceof Map }.collect { action ->
+                    action.tokens instanceof List ? action.tokens : (action.rule != null ? expressions.get(action.rule.toString()) : null)
+                }
+                boolean referenced = live.any { tokens -> tokens instanceof List && tokens.any { it?.toString() == target } }
                 referenced = referenced || projectedPredicate.any { it == target }
                 referenced = referenced || projectedActions.values().any { it instanceof Map && it.cond?.toString() == target }
                 if (referenced) throw new IllegalArgumentException('Referenced native conditions must be detached before deletion')
@@ -27743,9 +26917,9 @@ private void _ndPreflight(Long id, List changes) {
                     if (inventory == null) inventory = _nmSettingsInventory(id)
                     if (inventory.any { name, setting -> name.startsWith('condTrig.') && setting.value?.toString() == target }) throw new IllegalArgumentException('Referenced trigger conditions must be detached before deletion')
                 }
-                conditions.keySet().findAll { it.toString() == target }.each { conditions.remove(it) }
+                _ndDropRow(rows.condition, target, 'Native row does not exist')
             }
-            if (change.part == 'delete' && value.part == 'trigger') triggers.keySet().findAll { it.toString() == value.id.toString() }.each { triggers.remove(it) }
+            if (change.part == 'delete' && value.part == 'trigger') _ndDropRow(rows.trigger, value.id.toString(), 'Native row does not exist')
         } catch (IllegalArgumentException failure) {
             throw new IllegalArgumentException("changes[${index}]: ${failure.message}".toString())
         }
@@ -27908,6 +27082,9 @@ Map toolCreateRuleDocument(Map args) {
 boolean _isRuleReadCall(String toolName, args) {
     toolName == 'hub_set_rule' && args instanceof Map && (!args.containsKey('operation') || args.operation == 'read' || args.confirm != true)
 }
+boolean _isNativeAppSchemaOnlyCall(args) {
+    args instanceof Map && (!args.containsKey('operation') || args.confirm != true)
+}
 private Map _ndOperationSchema(String operation) {
     def changes = [type: 'array', minItems: operation == 'create' ? 0 : 1, maxItems: 100,
         items: [type: 'object', additionalProperties: false, properties: [part: [type: 'string', enum: ['condition', 'trigger', 'action', 'expression', 'required', 'variable', 'terminator', 'delete', 'order']], value: [type: 'object']], required: ['part', 'value']]]
@@ -27925,7 +27102,7 @@ private Map _ndOperationSchema(String operation) {
         required = ['changes']
     } else if (operation == 'form') {
         properties = [steps: [type: 'array', minItems: 1, maxItems: 16, items: [type: 'object', additionalProperties: false,
-            properties: [kind: [type: 'string', enum: ['open', 'submit']], page: [type: 'string'], expect_page: [type: 'string'], fields: [type: 'object'], activate: [type: 'string']], required: ['kind']]],
+            properties: [kind: [type: 'string', enum: ['open', 'submit']], page: [type: 'string'], from: [type: 'string'], expect_page: [type: 'string'], fields: [type: 'object'], activate: [type: 'string']], required: ['kind']]],
             options_for: [type: 'array', maxItems: 32, items: [type: 'string']]]
         required = ['steps']
     } else throw new IllegalArgumentException('Unknown rule operation; use read, create, update or form')
@@ -28016,20 +27193,20 @@ Example changes: [{part:"action",value:{type:"messageActs",subtype:"getLogMsg",f
 
 ## Native Rule Forms
 
-Use hub_set_rule(operation:"form",rule_id,args:{steps:[{kind:"open"}]},confirm:true) to operate an enabled Rule-5.1 or Button Rule-5.1 rule, or its Rule Machine parent. Select operation:"form" without confirmation to inspect the schema. Discover native action variants, input names and option values through the returned forms rather than guessing a static catalogue. Even open renders execute app code and can change state or cause side effects. Start with steps:[{kind:"open"}]; an optional page names a registered native page. Follow returned controls for page parameters and breadcrumbs. A create_child control creates the native child type exposed by its parent, returns created_app_id and closes the parent context. Open that child separately to configure it; creation alone does not prove configuration is complete. App removal uses the dedicated deletion tool.
+hub_set_rule(operation:"form",rule_id,args:{steps:[{kind:"open"}]},confirm:true) operates an enabled Rule-5.1 or Button Rule-5.1 rule, or its Rule Machine parent; hub_set_native_app(operation:"form",app_id,...) runs the same steps on any other classic app. Read action variants, input names and option values from the returned forms instead of guessing them. Even open renders execute app code and can change state or cause side effects. An open's optional page names a registered native page, and from names the page that links to it, so a sub-page opened directly offers its Done back to that parent. Follow returned controls for page parameters and breadcrumbs. A create_child control creates the parent's native child type, returns created_app_id and closes the parent context; open the child separately to configure it. Apps are deleted with hub_delete_native_app.
 
-Submit with {kind:"submit",expect_page:"last returned page",fields:{"native field name":value},activate:"returned control_id"}. Omit activate to save the supplied fields and refresh the current page. Control IDs distinguish native buttons sharing a name, such as editing and deleting the same variable. Native enum keys, device IDs, booleans and single/multiple cardinality are checked before the request. Only supplied settings are posted; native page code can still change its own settings. Defaults are shown but are not automatically submitted; supply a required default explicitly before navigating. Use args.options_for:["device field name"] to expand device choices on the final returned page.
+Submit with {kind:"submit",expect_page:"last returned page",fields:{"native field name":value},activate:"returned control_id"}; without activate it saves the fields and refreshes the page. Control IDs tell apart native buttons that share a name, such as editing and deleting the same variable. Form results mask password-typed fields and fields whose names look like credentials (API keys, tokens, passwords, PINs, lock codes) with the same marker hub_get_app_config uses. A page with both a next page and a done page renders its Done as the _action_done control, which the hub answers by saving the page and rendering that same page again. An app without pages also shows the hub's default fields, label (the app's name) and mode[mode] (a list of mode IDs from its options), and a page's own label and mode elements are the same two fields; the hub does not always keep the label posted with mode[mode], so after such a submit the label is checked and posted again on its own when the hub put back an older one (label_restored). Native enum keys, device IDs, booleans and single/multiple cardinality are checked before the request. Each submit posts the supplied settings and, as the browser does, the shown default of every other input with no stored value; a password's default is never posted, and page code can still change its own settings. args.options_for:["device field name"] expands device choices on the final returned page.
 
-Batches contain 1 through 16 ordered steps. Each step uses the form returned by the preceding step, so dependent fields require another submit after they appear. A button handler runs before that step's fields are saved, as in the native browser; submit fields in a preceding step when the handler needs them. A button without submitOnChange reloads and requires a separate field submission.
+A batch holds 1 through 16 steps, each using the form the step before it returned, so dependent fields require another submit after they appear. A button handler runs before its step's fields are saved, as in the browser: submit the fields it needs in an earlier step. A button without submitOnChange reloads and needs a separate field submission.
 
-The execution context expires after five minutes and is lost on app reload. It retains no field values, messages or option labels; limits are 24 KiB of serialized descriptors per app, 96 KiB total, and eight caller workflows. Opening another app replaces only that caller's previous context; reopen the previous app before submitting it again. Other callers' contexts are retained. expect_page guards the latest tool context, not concurrent edits in another browser. Avoid concurrent editing. Errors can leave completed operations or an uncertain final operation; inspect the app and reopen instead of replaying buttons. Terminal navigation closes the context without following redirects. A verified local native link or script navigation to the same app or its direct child returns navigated_app_id and navigated_page with closed:true; open that target separately. No script is evaluated. App-authored JavaScript, custom HTML inputs, uploads, external links and unsupported browser controls are reported in unsupported; they are never silently executed. Success means the native form operation returned, not that the app's intended runtime behavior was independently verified.'''
+The context expires after five minutes or an app reload and keeps no field values, messages or option labels; limits are 24 KiB of descriptors per app, 96 KiB in all, and eight caller workflows. Opening another app replaces only that caller's context; reopen the previous app before submitting it again. expect_page guards the caller's latest context, not edits in a browser, so avoid editing concurrently. After an error, completed operations stay and the last can be uncertain: inspect the app and reopen instead of replaying buttons. Terminal navigation closes the context without following redirects; a local link or script navigation to the same app or its direct child returns navigated_app_id and navigated_page with closed:true, to open separately. No script is evaluated: app JavaScript, custom HTML inputs, uploads, external links and other unsupported browser controls are listed in unsupported. Success means the native form operation returned, not that the app's intended runtime behavior was independently verified.'''
 }
 @groovy.transform.Field static final Map NATIVE_FORM_CONTEXTS = new java.util.concurrent.ConcurrentHashMap()
 @groovy.transform.Field static final Map NATIVE_FORM_BUSY = new java.util.concurrent.ConcurrentHashMap()
 private String _nfEncode(Object value) { java.net.URLEncoder.encode(value == null ? '' : value.toString(), 'UTF-8') }
 private String _nfBody(Map values) { values.collect { key, value -> "${_nfEncode(key)}=${_nfEncode(value)}" }.join('&') }
 private boolean _nfTrue(Object value) { value == true || value == 'true' }
-private String _nfText(Object value) { _nfEntities(value?.toString()?.replaceAll(/(?s)<[^>]*>/, '') ?: '') }
+private String _nfText(Object value) { _nfEntities(value?.toString()?.replaceAll(/(?s)<\/?[A-Za-z!][^>]*>/, '') ?: '') }
 private String _nfEntities(String value) {
     value.replace('&quot;', '"').replace('&#39;', "'").replace('&apos;', "'").replace('&lt;', '<').replace('&gt;', '>').replace('&nbsp;', ' ').replace('&amp;', '&')
 }
@@ -28038,15 +27215,19 @@ private String _nfCallerKey() { "${app.id}:caller:${callerClient == null ? 'main
 private Map _nfJson(Object value) {
     def parsed
     try { parsed = value instanceof Map ? value : new groovy.json.JsonSlurper().parseText(value?.toString() ?: '') }
-    catch (Exception ignored) { throw new IllegalStateException('Native form returned unreadable JSON; inspect the app before retrying') }
+    catch (Exception unreadable) {
+        String reason = (unreadable.message ?: unreadable.toString()).toString()
+        throw new IllegalStateException("Native form returned unreadable JSON (${reason.take(200)}); inspect the app before retrying".toString())
+    }
     if (!(parsed instanceof Map)) throw new IllegalStateException('Native form returned an invalid response')
     if (parsed.status && parsed.status != 'success') throw new IllegalStateException('Native form rejected the request')
-    if (parsed.error || parsed.errorMessage || parsed.configPage?.error) throw new IllegalStateException('Native form reported an error; inspect the native editor and logs')
+    def reported = parsed.configPage instanceof Map && parsed.configPage.error ? parsed.configPage.error : (parsed.error ?: parsed.errorMessage)
+    if (reported) throw new IllegalStateException("Native form reported an error: ${reported}; inspect the native editor and logs".toString())
     parsed
 }
 private Map _nfPost(String path, Map values) {
     def response = hubInternalPostFormRaw(path, _nfBody(values))
-    if (response?.status != 200) throw new IllegalStateException('Native form request did not return HTTP 200; inspect the app before retrying')
+    if (response?.status != 200) throw new IllegalStateException("Native form request returned HTTP ${response?.status ?: 'no status'}; inspect the app before retrying".toString())
     _nfJson(response.data)
 }
 private List _nfOptions(Object options) {
@@ -28092,9 +27273,9 @@ private Map _nfNavigation(Long sourceId, Map model) {
 }
 private Map _nfVerifyNavigation(Long sourceId, Map target) {
     def nativeApp = getAppByAppId(target.app_id as Long)
-    if (nativeApp?.id?.toString() != target.app_id.toString() || nativeApp?.appType?.namespace != 'hubitat' || nativeApp.disabled == true ||
+    if (nativeApp?.id?.toString() != target.app_id.toString() || nativeApp.disabled == true ||
         (target.app_id != sourceId && nativeApp.parentAppId?.toString() != sourceId.toString())) {
-        throw new IllegalStateException('Native navigation target must be the enabled native app or its direct child')
+        throw new IllegalStateException('Native navigation target must be the enabled app or its direct child')
     }
     _requireUnprotectedAppMutation(target.app_id, 'open native form navigation')
     target
@@ -28147,6 +27328,25 @@ private void _nfControl(Map controls, Map control) {
     if (controls.containsKey(key) && controls[key] != control) throw new IllegalStateException('Native form contains ambiguous controls')
     controls.put(key, control)
 }
+private Object _nfAppValue(Map model, boolean mode) {
+    def value = mode ? model.app?.restrictedModes : (model.app?.trueLabel ?: model.app?.label)
+    if (!mode) return value
+    (value instanceof Map ? value.keySet() : (value instanceof Collection ? value : (value == null ? [] : [value]))).collect { it.toString() }
+}
+private void _nfAppField(Map fields, Map model, boolean mode, Map node) {
+    def current = _nfAppValue(model, mode)
+    Map field = [name: mode ? 'mode[mode]' : 'label', title: mode ? 'Set for specific mode(s)' : (_nfText(node.title) ?: 'Assign a name'), type: mode ? 'mode' : 'text',
+                 multiple: mode, required: !mode && _nfTrue(node.required), submit_on_change: !mode && _nfTrue(node.submitOnChange), supported: true, device: false,
+                 disabled: false, app_field: true, value: current, value_source: 'stored', present: current != null && current != '' && !(current instanceof Collection && current.isEmpty())]
+    if (mode) field.options = _nfOptions(model.modeMap)
+    field.sidecars = mode ? ['mode[mode].multiple': 'true'] : (node.name && node.type ? [("${node.name}.type".toString()): node.type.toString()] : [:])
+    if (fields.containsKey(field.name) && fields[field.name] != field) throw new IllegalStateException('Native form contains ambiguous fields')
+    fields.put(field.name, field)
+}
+private Map _nfWire(Map field, String encoded) {
+    if (field.app_field) return [(field.name): encoded] + (field.sidecars ?: [:])
+    [("settings[${field.name}]".toString()): encoded, ("${field.name}.type".toString()): field.type, ("${field.name}.multiple".toString()): field.multiple.toString()]
+}
 private void _nfWalk(Object node, Map fields, Map controls, List messages, List unsupported, Map model, int position = 0) {
     if (node instanceof List) { node.eachWithIndex { item, index -> _nfWalk(item, fields, controls, messages, unsupported, model, index) }; return }
     if (!(node instanceof Map)) return
@@ -28169,6 +27369,7 @@ private void _nfWalk(Object node, Map fields, Map controls, List messages, List 
             if (device && !field.multiple && current instanceof List) current = current ? current[0] : null
             if (type == 'password') field.has_value = current != null && current != ''
             else { field.value = current; field.value_source = exists ? 'stored' : 'default' }
+            if (!exists && type != 'password' && current != null && current != '' && !(current instanceof Collection && current.isEmpty())) field.default_value = current
             field.present = exists && current != null && current != '' && (!(current instanceof Collection) || !current.empty)
             field.options = _nfOptions(type == 'mode' ? model.modeMap : node.options)
             if (device) {
@@ -28181,13 +27382,15 @@ private void _nfWalk(Object node, Map fields, Map controls, List messages, List 
         }
     } else if (node.element == 'app' && node.namespace == 'hubitat' && node.appName instanceof String && node.appName && node.name && node.appId?.toString() == model.app?.id?.toString()) {
         _nfControl(controls, [name: node.name.toString(), value: node.appName, kind: 'create_child', title: _nfText(node.title)])
+    } else if (node.element in ['label', 'mode']) {
+        _nfAppField(fields, model, node.element == 'mode', node)
     } else if (node.element == 'href') {
         if (node.page && !node.url) {
             String name = "_action_href_${node.name ?: 'name'}|${node.page}|${position + 1}"
             _nfControl(controls, [name: name, kind: 'href', title: _nfText(node.title), page: node.page.toString(),
                                   value: '', params: node.params instanceof Map ? node.params : null])
         } else unsupported << "Navigation requires a browser: ${_nfText(node.title)}"
-    } else if (node.element && !(node.element in ['paragraph', 'section', 'label', 'image', 'input'])) {
+    } else if (node.element && !(node.element in ['paragraph', 'section', 'input'])) {
         unsupported << "Native element: ${node.element}"
     }
     ['title', 'description', 'text'].each { key ->
@@ -28197,20 +27400,25 @@ private void _nfWalk(Object node, Map fields, Map controls, List messages, List 
     }
     ['sections', 'input', 'body', 'children'].each { key -> if (node[key] instanceof Map || node[key] instanceof List) _nfWalk(node[key], fields, controls, messages, unsupported, model) }
 }
-private Map _nfContext(Long id, Map model) {
+private Map _nfContext(Long id, Map model, String from = null) {
     if (model.app?.id?.toString() != id.toString() || !(model.configPage instanceof Map)) throw new IllegalStateException('Native response does not identify the requested app and classic form')
     Map page = model.configPage
     Map fields = [:], controls = [:]
     List messages = [], unsupported = []
     _nfWalk(page, fields, controls, messages, unsupported, model)
+    if (model.defaultFields) [false, true].each { mode ->
+        String name = mode ? 'mode[mode]' : 'label'
+        if (!fields.containsKey(name)) { _nfAppField(fields, model, mode, [:]); fields[name].hub_default = true }
+    }
+    String trail = model.pageBreadcrumbs && model.pageBreadcrumbs != '%5B%5D' ? model.pageBreadcrumbs.toString() :
+        (from ? _nfEncode(groovy.json.JsonOutput.toJson([from])) : '%5B%5D')
     if (page.install || model.doneButton) _nfControl(controls, [name: '_action_update', value: 'Done', kind: 'navigation', title: model.cancelButton ? 'Save' : 'Done'])
     else if (page.nextPage && !page.donePage) _nfControl(controls, [name: '_action_next', value: page.nextPageLabel ?: 'Next', kind: 'navigation', title: page.nextPageLabel ?: 'Next'])
-    else if (page.nextPage && page.donePage) unsupported << 'Native _action_done browser navigation'
-    else if (model.pageBreadcrumbs && model.pageBreadcrumbs != '%5B%5D') _nfControl(controls, [name: '_action_previous', value: 'Done', kind: 'navigation', title: 'Done (previous page)'])
+    else if (page.nextPage && page.donePage) _nfControl(controls, [name: '_action_done', value: 'Done', kind: 'navigation', title: 'Done'])
+    else if (trail != '%5B%5D') _nfControl(controls, [name: '_action_previous', value: 'Done', kind: 'navigation', title: 'Done (previous page)'])
     if (model.cancelButton) _nfControl(controls, [name: '_action_update', value: 'Cancel', kind: 'navigation', title: 'Cancel'])
     if (model.removeButton) unsupported << 'Remove app: use the dedicated native-app deletion tool'
-    if (model.defaultFields) unsupported << 'Default app label and mode controls'
-    Map envelope = [id: id.toString(), currentPage: page.name ?: '', pageBreadcrumbs: model.pageBreadcrumbs ?: '%5B%5D']
+    Map envelope = [id: id.toString(), currentPage: page.name ?: '', pageBreadcrumbs: trail]
     ['returnPath', 'referrer', 'url', 'formAction'].each { key -> if (model.containsKey(key)) envelope[key] = model[key] }
     ['nextPage', 'donePage'].each { key -> if (page[key]) envelope[key] = page[key] }
     if (page.returnPath != null) envelope.returnPath = page.returnPath
@@ -28234,8 +27442,9 @@ private void _nfCache(String key, Map context) {
     Map cached = [app_id: context.app_id, page: [name: context.page.name], envelope: context.envelope, expires: context.expires,
                   fields: [:], controls: [:], backup: context.backup]
     context.get('fields').each { name, field ->
-        Map descriptor = field.findAll { k, v -> k in ['name', 'type', 'multiple', 'required', 'supported', 'device', 'disabled', 'present', 'capability', 'ignore', 'range', 'min', 'max', 'step'] }
+        Map descriptor = field.findAll { k, v -> k in ['name', 'type', 'multiple', 'required', 'supported', 'device', 'disabled', 'present', 'capability', 'ignore', 'range', 'min', 'max', 'step', 'default_value', 'app_field', 'sidecars', 'hub_default'] }
         descriptor.option_keys = field.options == null ? null : field.options*.value
+        if (field.app_field && name == 'label') descriptor.value = field.value
         cached.get('fields').put(name, descriptor)
     }
     context.controls.each { name, control ->
@@ -28257,7 +27466,11 @@ private List _nfDevices(Map field) {
     }
 }
 private String _nfValue(Map field, Object value) {
-    if (!field.supported || field.disabled || field.name =~ /[\[\]\r\n]/) throw new IllegalArgumentException("Unsupported or disabled native field: ${field.name}")
+    if (!field.supported || field.disabled || (!field.app_field && field.name =~ /[\[\]\r\n]/)) throw new IllegalArgumentException("Unsupported or disabled native field: ${field.name}")
+    if (field.device && value instanceof Map) {
+        List ids = value.keySet().collect { it.toString() }
+        value = field.multiple ? ids : (ids.size() == 1 ? ids[0] : ids)
+    }
     Map descriptor = [:] + field
     descriptor.option_keys = field.containsKey('option_keys') ? field.option_keys : (field.options == null ? null : field.options*.value)
     _nrValidateInput(descriptor, value, true)
@@ -28274,8 +27487,10 @@ private String _nfValue(Map field, Object value) {
 private Map _nfPublic(Map context, List optionsFor) {
     List fields = context.get('fields').values().collect { field ->
         Map result = [:] + field
-        result.remove('device'); result.remove('ignore'); result.remove('capability'); result.remove('present')
+        ['device', 'ignore', 'capability', 'present', 'default_value', 'app_field', 'sidecars', 'hub_default'].each { result.remove(it) }
         if (field.type == 'password') result.redacted = true
+        else if (field.name ==~ /(?i)access_?token/ && result.value instanceof CharSequence && result.value && _redactsAccessTokens()) result.value = _accessTokenRedactedMarker()
+        else if (_appConfigIsSecretSetting(field.name, field.type, result.value)) { result.value = _appConfigRedactedMarker(); result.redacted = true }
         if (field.device && field.name in optionsFor) result.options = _nfDevices(field)
         if (field.device) result.options_available = true
         result
@@ -28284,16 +27499,147 @@ private Map _nfPublic(Map context, List optionsFor) {
         control.findAll { key, value -> !(key in ['params', 'stateAttribute']) }
     }, messages: context.messages, unsupported: context.unsupported]
 }
-Map toolCallAppForm(Map args) {
+private Map _nfBackup(Long id, def nativeApp, String page) {
+    boolean builtIn = nativeApp?.appType?.namespace == 'hubitat'
+    if (builtIn && nativeApp.appType.name == 'Rule Machine') return [skipped: true, reason: 'Parent creation/navigation has no existing child state to restore; opening a child starts its own protected workflow']
+    if (builtIn && nativeApp.appType.name in ['Rule-5.1', 'Button Rule-5.1']) return _ndEditBackup(id, 'pre-native-form')
+    if (_effectiveBackupSetting('backupBeforeRuleEdits') == 'false') return [skipped: true, reason: 'Automatic pre-edit backups are disabled']
+    _rmBackupBeforeEdit(id.toInteger(), 'pre-native-form', page)
+}
+private Map _nfDefaultsReport(List posted, List rejected) {
+    (posted ? [defaults_posted: posted.unique()] : [:]) + (rejected ? [defaults_not_posted: rejected] : [:])
+}
+private void _nfAcquire(Long id) {
+    String key = _nfCallerKey()
+    if (NATIVE_FORM_BUSY.putIfAbsent(key, true) != null) throw new IllegalStateException('This caller already has an active form operation')
+    if (NATIVE_FORM_BUSY.putIfAbsent(_nfKey(id), true) != null) {
+        NATIVE_FORM_BUSY.remove(key)
+        throw new IllegalStateException('This app already has an active form operation')
+    }
+}
+private void _nfRelease(Long id) { NATIVE_FORM_BUSY.remove(_nfKey(id)); NATIVE_FORM_BUSY.remove(_nfCallerKey()) }
+private Map _nfPage(Long id, String page = null) {
+    _nfJson(hubInternalGet("/installedapp/configure/json/${id}" + (page ? "/${_nfEncode(page)}" : '')))
+}
+private Map _nfPrepare(Long id, Map context, Map supplied, String activate, String toolName) {
+    Map body = [:] + context.envelope
+    supplied.each { name, value ->
+        Map field = context.get('fields').get(name)
+        if (!field && context.controls.values().any { it.kind == 'button' && it.name == name }) throw new IllegalArgumentException("${name} is a button on the current native page, not a field; activate its control_id instead")
+        if (!field) throw new IllegalArgumentException("Field is not present on the current native page: ${name}")
+        body.putAll(_nfWire(field, _nfValue(field, value)))
+    }
+    Map label = context.get('fields').get('label')
+    if (body.containsKey('mode[mode]') && !body.containsKey('label') && label?.app_field && label.present) body.putAll(_nfWire(label, _nfValue(label, label.value)))
+    Map relabel = body.containsKey('mode[mode]') && body.containsKey('label') && label?.hub_default ? [field: label, value: body.label] : null
+    List defaults = []
+    List rejected = []
+    context.get('fields').each { name, field ->
+        if (supplied.containsKey(name) || field.present || !field.containsKey('default_value') || field.disabled || !field.supported) return
+        String encoded
+        try { encoded = _nfValue(field, field.default_value) }
+        catch (IllegalArgumentException refused) {
+            mcpLog('debug', 'rm-native', "${toolName} form: page default of ${name} on app ${id} not posted: ${refused.message}")
+            rejected << [name: name, reason: refused.message]
+            return
+        }
+        defaults << name
+        body.putAll(_nfWire(field, encoded))
+    }
+    Map control = null
+    String reloadPath = null
+    if (activate) {
+        control = context.controls[activate]
+        if (!control) throw new IllegalArgumentException('Choose one exact returned native control_id')
+        if (control.disabled) throw new IllegalArgumentException('The native control is disabled')
+        if (control.kind == 'local_app' && supplied) throw new IllegalArgumentException('Submit fields separately before opening another native app form')
+        if (control.kind == 'create_child' && supplied) throw new IllegalArgumentException('Submit parent fields separately before creating a child')
+        if (control.kind == 'button' && !control.submit_on_change && supplied) throw new IllegalArgumentException('Submit fields separately before a button that reloads the native page')
+        if (control.kind == 'button' && !control.submit_on_change) reloadPath = _nfReloadPath(id, context)
+        if (control.kind in ['href', 'navigation'] && control.value != 'Cancel') {
+            List missing = context.get('fields').values().findAll { field ->
+                String key = _nfWire(field, '').keySet().first()
+                field.required && !field.disabled && !(body.containsKey(key) ? !(body[key] in ['', '[]']) : field.present)
+            }*.name
+            if (missing) throw new IllegalArgumentException("Complete required native fields before navigating: ${missing.join(', ')}")
+        }
+    }
+    [body: body, control: control, reload: reloadPath, defaults: defaults, rejected: rejected, envelope: context.envelope, relabel: relabel]
+}
+private Map _nfExecute(Long id, Map plan) {
+    Map control = plan.control
+    Map body = plan.body
+    if (control?.kind == 'local_app') return [model: [location: 'local_app'], navigation: _nfVerifyNavigation(id, [app_id: control.value.toString().toLong(), page: control.stateAttribute])]
+    if (control?.kind == 'create_child') {
+        Long createdId = _nrCreatedAppId(hubInternalGetRaw("/installedapp/createchild/hubitat/${control.value}/parent/${id}"))
+        if (createdId == null) throw new IllegalStateException('Native child creation did not return an app ID; inspect the parent before retrying')
+        def child = getAppByAppId(createdId)
+        boolean matches = child?.parentAppId?.toString() == id.toString() && child?.appType?.namespace == 'hubitat' && child?.appType?.name == control.value
+        return [model: [location: 'child_created'], created_id: createdId,
+                created_mismatch: matches ? null : "Created app ${createdId} did not match the native parent and child type".toString()]
+    }
+    if (control?.kind == 'button') {
+        Map button = [id: id, name: control.name]
+        button["settings[${control.name}]".toString()] = 'clicked'
+        button["${control.name}.type".toString()] = 'button'
+        if (control.stateAttribute) button.stateAttribute = control.stateAttribute
+        _nfPost('/installedapp/btn', button)
+        if (!control.submit_on_change) return [model: _nfJson(hubInternalGet(plan.reload))]
+    } else if (control) {
+        body = [:] + body
+        body.put(control.name, control.value ?: '')
+        if (control.params != null) body["params_for${control.name}".toString()] = _nfEncode(groovy.json.JsonOutput.toJson(control.params))
+    }
+    Map model = _nfPost('/installedapp/update/json', body)
+    [model: model, posted: true] + (plan.relabel ? _nfRelabel(id, plan, model) : [:])
+}
+private String _nfLabelText(Map field, Object value) {
+    if (value == null || value.toString().trim() == '') return ''
+    try { return _nfValue(field, value.toString()).trim() }
+    catch (IllegalArgumentException unusable) { return value.toString().trim() }
+}
+private Map _nfRelabel(Long id, Map plan, Map answer) {
+    Map field = plan.relabel.field
+    String wanted = _nfLabelText(field, plan.relabel.value)
+    Map app = answer.app instanceof Map ? answer.app : _nfPage(id).app
+    String shown = _nfLabelText(field, app?.trueLabel ?: app?.label)
+    if (shown == wanted) return [:]
+    Map rendered = null
+    for (int attempt = 1; attempt <= 2 && shown != wanted; attempt++) {
+        mcpLog('warn', 'rm-native', "App ${id}: the hub's mode write left the label '${shown}' instead of '${wanted}'; posting the label again (${attempt} of 2)")
+        Map repair = [:] + plan.envelope + _nfWire(field, plan.relabel.value)
+        if (app?.containsKey('version')) repair.version = app.version
+        Map reply = _nfPost('/installedapp/update/json', repair)
+        if (reply.configPage instanceof Map) rendered = reply
+        app = reply.app instanceof Map ? reply.app : _nfPage(id).app
+        shown = _nfLabelText(field, app?.trueLabel ?: app?.label)
+    }
+    Map current = answer.location != null ? [:] : (rendered ? [model: rendered] : (answer.configPage instanceof Map ? [model: answer + [app: app]] : [:]))
+    (shown == wanted ? [label_restored: true] : [label_lost: [posted: wanted, shown: shown]]) + current
+}
+private String _nfLabelRestoredNote() { "The hub's mode write put back an older label, so the label was posted again on its own." }
+private String _nfLabelLostError(Map lost) {
+    "The hub's mode write put back the label '${lost.shown}', and posting '${lost.posted}' again on its own did not change it.".toString()
+}
+private Map _nfLabelReport(Map outcome) {
+    if (outcome?.label_lost) return [success: false, fields_not_landed: ['label'], error: _nfLabelLostError(outcome.label_lost)]
+    outcome?.label_restored ? [label_restored: true, note: _nfLabelRestoredNote()] : [:]
+}
+private void _nfForget(Long id) {
+    String key = _nfCallerKey()
+    if (NATIVE_FORM_CONTEXTS[key]?.app_id == id) NATIVE_FORM_CONTEXTS.remove(key)
+}
+Map toolCallAppForm(Map args, String toolName = 'hub_set_rule') {
     if (args.keySet().any { !(it in ['app_id', 'steps', 'options_for', 'confirm', 'bestPracticeKey']) } || !args.app_id?.toString()?.isLong() || args.app_id.toString().toLong() < 1) throw new IllegalArgumentException('A positive app_id is required')
     if (!(args.steps instanceof List) || args.steps.size() < 1 || args.steps.size() > 16) throw new IllegalArgumentException('Provide 1 through 16 open/submit steps')
     List optionsFor = args.options_for ?: []
     if (!(optionsFor instanceof List) || optionsFor.size() > 32 || optionsFor.any { !(it instanceof String) }) throw new IllegalArgumentException('options_for must contain at most 32 field names')
     args.steps.each { step ->
         if (!(step instanceof Map) || !(step.kind in ['open', 'submit'])) throw new IllegalArgumentException('Unknown form step')
-        List keys = step.kind == 'open' ? ['kind', 'page'] : ['kind', 'expect_page', 'fields', 'activate']
+        List keys = step.kind == 'open' ? ['kind', 'page', 'from'] : ['kind', 'expect_page', 'fields', 'activate']
         if (step.keySet().any { !(it in keys) }) throw new IllegalArgumentException('Unknown form step property')
         if (step.kind == 'open' && step.page != null && (!(step.page instanceof String) || !(step.page ==~ /[A-Za-z_][A-Za-z0-9_.-]*/))) throw new IllegalArgumentException('A registered native page name is required')
+        if (step.kind == 'open' && step.from != null && (step.page == null || !(step.from instanceof String) || !(step.from ==~ /[A-Za-z_][A-Za-z0-9_.-]*/))) throw new IllegalArgumentException('from names the parent page of the opened page and requires page')
         if (step.kind == 'submit' && (!(step.expect_page instanceof String) || (step.get('fields') != null && !(step.get('fields') instanceof Map)))) throw new IllegalArgumentException('Submit requires expect_page and an optional fields object')
         if (step.activate != null && !(step.activate instanceof String)) throw new IllegalArgumentException('activate requires a returned control_id string')
     }
@@ -28301,19 +27647,18 @@ Map toolCallAppForm(Map args) {
     Long id = args.app_id.toString().toLong()
     _requireUnprotectedAppMutation(id, 'edit native form')
     def nativeApp = getAppByAppId(id)
-    if (nativeApp?.appType?.namespace != 'hubitat') throw new IllegalArgumentException('app_id must identify a built-in native app')
-    if (nativeApp.disabled == true) throw new IllegalArgumentException('Enable the native app before editing its form')
+    if (nativeApp?.id?.toString() != id.toString()) throw new IllegalArgumentException('app_id must identify an installed app')
+    if (nativeApp.disabled == true) throw new IllegalArgumentException('Enable the app before editing its form')
     String key = _nfCallerKey()
-    String appKey = _nfKey(id)
-    if (NATIVE_FORM_BUSY.putIfAbsent(key, true) != null) throw new IllegalStateException('This caller already has an active form operation')
-    if (NATIVE_FORM_BUSY.putIfAbsent(appKey, true) != null) {
-        NATIVE_FORM_BUSY.remove(key)
-        throw new IllegalStateException('This app already has an active form operation')
-    }
+    try { _nfAcquire(id) }
+    catch (IllegalStateException busy) { return [success: false, app_id: id, error: busy.message, note: 'Wait for the running form operation to finish, then retry.'] }
     List completed = []
+    List defaultsPosted = []
+    List defaultsNotPosted = []
     boolean attempted = false
     Long createdId = null
     Map navigation = null
+    Map labelOutcome = [:]
     Map context = NATIVE_FORM_CONTEXTS[key]
     Map backup = null
     try {
@@ -28325,62 +27670,25 @@ Map toolCallAppForm(Map args) {
             if (step.kind == 'open') {
                 NATIVE_FORM_CONTEXTS.remove(key)
                 context = null
-                if (backup == null) backup = nativeApp?.appType?.name == 'Rule Machine' ?
-                    [skipped: true, reason: 'Parent creation/navigation has no existing child state to restore; opening a child starts its own protected workflow'] : _ndEditBackup(id, 'pre-native-form')
+                if (backup == null) backup = _nfBackup(id, nativeApp, step.page)
                 attempted = true
-                model = _nfJson(hubInternalGet("/installedapp/configure/json/${id}" + (step.page ? "/${_nfEncode(step.page)}" : '')))
+                model = _nfPage(id, step.page)
             } else {
                 if (!context) throw new IllegalArgumentException('Open the native form first; its context has expired or is unavailable')
                 if (step.expect_page != context.page.name) throw new IllegalArgumentException('expect_page does not match the last returned native page')
-                Map body = [:] + context.envelope
-                (step.get('fields') ?: [:]).each { name, value ->
-                    Map field = context.get('fields').get(name)
-                    if (!field) throw new IllegalArgumentException("Field is not present on the current native page: ${name}")
-                    body["settings[${name}]".toString()] = _nfValue(field, value)
-                    body["${name}.type".toString()] = field.type
-                    body["${name}.multiple".toString()] = field.multiple.toString()
-                }
-                Map control = null
-                String reloadPath = null
-                if (step.activate) {
-                    control = context.controls[step.activate]
-                    if (!control) throw new IllegalArgumentException('Choose one exact returned native control_id')
-                    if (control.disabled) throw new IllegalArgumentException('The native control is disabled')
-                    if (control.kind == 'local_app' && step.get('fields')) throw new IllegalArgumentException('Submit fields separately before opening another native app form')
-                    if (control.kind == 'create_child' && step.get('fields')) throw new IllegalArgumentException('Submit parent fields separately before creating a child')
-                    if (control.kind == 'button' && !control.submit_on_change && step.get('fields')) throw new IllegalArgumentException('Submit fields separately before a button that reloads the native page')
-                    if (control.kind == 'button' && !control.submit_on_change) reloadPath = _nfReloadPath(id, context)
-                    if (control.kind in ['href', 'navigation'] && control.value != 'Cancel') {
-                        List missing = context.get('fields').values().findAll { field -> field.required && !field.disabled &&
-                            !((step.get('fields') ?: [:]).containsKey(field.name) ? body["settings[${field.name}]".toString()] != '' && body["settings[${field.name}]".toString()] != '[]' : field.present) }*.name
-                        if (missing) throw new IllegalArgumentException("Complete required native fields before navigating: ${missing.join(', ')}")
-                    }
-                }
-                if (backup == null) backup = nativeApp?.appType?.name == 'Rule Machine' ?
-                    [skipped: true, reason: 'Parent creation/navigation has no existing child state to restore; opening a child starts its own protected workflow'] : _ndEditBackup(id, 'pre-native-form')
+                Map plan = _nfPrepare(id, context, step.get('fields') ?: [:], step.activate, toolName)
+                if (backup == null) backup = _nfBackup(id, nativeApp, context.page.name ?: null)
                 attempted = true
-                if (control?.kind == 'local_app') {
-                    navigation = _nfVerifyNavigation(id, [app_id: control.value.toString().toLong(), page: control.stateAttribute])
-                    model = [location: 'local_app']
-                } else if (control?.kind == 'create_child') {
-                    String childName = control.value.toString()
-                    createdId = _nrCreatedAppId(hubInternalGetRaw("/installedapp/createchild/hubitat/${childName}/parent/${id}"))
-                    if (createdId == null) throw new IllegalStateException('Native child creation did not return an app ID; inspect the parent before retrying')
-                    def child = getAppByAppId(createdId)
-                    if (child?.parentAppId?.toString() != id.toString() || child?.appType?.namespace != 'hubitat' || child?.appType?.name != control.value) throw new IllegalStateException('Created app did not match the native parent and child type')
-                    model = [location: 'child_created']
-                } else if (control?.kind == 'button') {
-                    Map button = [id: id, name: control.name]
-                    button["settings[${control.name}]".toString()] = 'clicked'
-                    button["${control.name}.type".toString()] = 'button'
-                    if (control.stateAttribute) button.stateAttribute = control.stateAttribute
-                    _nfPost('/installedapp/btn', button)
-                    if (!control.submit_on_change) model = _nfJson(hubInternalGet(reloadPath))
-                } else if (control) {
-                    body.put(control.name, control.value ?: '')
-                    if (control.params != null) body["params_for${control.name}".toString()] = _nfEncode(groovy.json.JsonOutput.toJson(control.params))
+                Map answer = _nfExecute(id, plan)
+                model = answer.model
+                if (answer.navigation) navigation = answer.navigation
+                if (answer.created_id != null) createdId = answer.created_id
+                if (answer.created_mismatch) throw new IllegalStateException(answer.created_mismatch)
+                if (answer.label_restored || answer.label_lost) labelOutcome = answer.findAll { k, v -> k in ['label_restored', 'label_lost'] }
+                if (answer.posted) {
+                    defaultsPosted.addAll(plan.defaults)
+                    defaultsNotPosted.addAll(plan.rejected)
                 }
-                if (model == null) model = _nfPost('/installedapp/update/json', body)
             }
             if (!navigation) navigation = _nfNavigation(id, model)
             if (model.location || navigation) {
@@ -28388,19 +27696,19 @@ Map toolCallAppForm(Map args) {
                 completed << [kind: step.kind, navigation_ended: true]
                 if (index + 1 < args.steps.size()) throw new IllegalStateException('Native navigation ended the form; remaining steps were not executed')
             } else {
-                context = _nfContext(id, model)
+                context = _nfContext(id, model, step.kind == 'open' ? step.from : null)
                 context.backup = backup
                 _nfCache(key, context)
                 completed << [kind: step.kind, page: context.page.name]
             }
         }
-        [success: true, app_id: id, completed: completed, backup: backup] + (navigation ? [navigated_app_id: navigation.app_id, navigated_page: navigation.page] : [:]) + (createdId == null ? [:] : [created_app_id: createdId]) + (context ? _nfPublic(context, optionsFor) : [closed: true])
+        [success: true, app_id: id, completed: completed, backup: backup] + _nfDefaultsReport(defaultsPosted, defaultsNotPosted) + (navigation ? [navigated_app_id: navigation.app_id, navigated_page: navigation.page] : [:]) + (createdId == null ? [:] : [created_app_id: createdId]) + (context ? _nfPublic(context, optionsFor) : [closed: true]) + _nfLabelReport(labelOutcome)
     } catch (Exception failure) {
-        mcpLogError('rm-native', "hub_set_rule form failed for app ${id}: ${failure.message}".toString(), failure)
+        mcpLogError('rm-native', "${toolName} form failed for app ${id}: ${failure.message}".toString(), failure)
         if (attempted) NATIVE_FORM_CONTEXTS.remove(key)
         [success: false, app_id: id, partial: attempted, completed: completed, error: failure.message?.toString(),
-         reopen_required: attempted, remaining_steps: args.steps.size() - completed.size()] + (backup == null ? [:] : [backup: backup]) + (navigation ? [navigated_app_id: navigation.app_id, navigated_page: navigation.page, closed: true] : [:]) + (createdId == null ? [:] : [created_app_id: createdId])
-    } finally { NATIVE_FORM_BUSY.remove(appKey); NATIVE_FORM_BUSY.remove(key) }
+         reopen_required: attempted, remaining_steps: args.steps.size() - completed.size()] + _nfDefaultsReport(defaultsPosted, defaultsNotPosted) + (backup == null ? [:] : [backup: backup]) + (navigation ? [navigated_app_id: navigation.app_id, navigated_page: navigation.page, closed: true] : [:]) + (createdId == null ? [:] : [created_app_id: createdId])
+    } finally { _nfRelease(id) }
 }
 preferences {
     page(name: "mainPage")
@@ -28735,7 +28043,7 @@ Set _ungrantableToolNames() {
 }
 Set _alwaysGrantedToolNames() { ["hub_get_tool_guide", "hub_search_tools"] as Set }
 private Set _installedAppTargetTools() {
-    return ["hub_get_app_config", "hub_list_app_pages", "hub_export_native_app", "hub_clone_native_app",
+    return ["hub_get_app_config", "hub_export_native_app", "hub_clone_native_app",
             "hub_set_native_app", "hub_delete_native_app", "hub_set_app_disabled",
             "hub_get_rule_health", "hub_list_rule_local_variables", "hub_get_visual_rule",
             "hub_set_visual_rule", "hub_delete_visual_rule", "hub_call_rule", "hub_set_rule_paused",
@@ -28923,7 +28231,6 @@ String _clientToolDenial(String toolName, args = null) {
         return "${ext} cannot target the MCP Rule Server app itself from ${who}."
     }
     if (_alwaysGrantedToolNames().contains(toolName)) return null
-    if (toolName == 'hub_set_native_app' && _isNativeAppSchemaOnlyCall(a)) return null
     boolean isRead = getReadOnlyToolNames().contains(toolName) || _isDeviceReplaceOptionsOnlyCall(toolName, a) || _isRuleReadCall(toolName, a)
     if (isRead && !_clientAllows(id, "clientRead")) return "Read tools are disabled for ${who}, so ${ext} cannot run."
     if (!isRead && !_clientAllows(id, "clientWrite")) return "Write tools are disabled for ${who}, so ${ext} cannot run."
@@ -29076,12 +28383,12 @@ def advancedOverridesPage() {
             input "backupBeforeRuleEdits", "bool", title: "Back up before editing a native rule",
                   description: "ON by default. If the snapshot cannot be saved, the edit is refused. One snapshot covers the whole batch or editor workflow, rather than every individual step.",
                   defaultValue: true
-            input "backupEveryRuleWrite", "bool", title: "Prioritize the first snapshot when pruning backups",
-                  description: "OFF (default): edit snapshots have equal retention priority. ON: keep the first snapshot in an editing session pinned and mark later snapshots as rolling, so they are removed first when the storage budget is exceeded. A session ends after one hour without a snapshot. This does not change how many snapshots each edit takes.",
+            input "backupEveryRuleWrite", "bool", title: "Take a fresh snapshot before every edit",
+                  description: "OFF (default): a native app form edit within an hour of that app's last snapshot reuses it. ON: every edit takes its own fresh snapshot first; with the budget full, oldest-first eviction then removes a rule's earlier snapshot while its later ones stay.",
                   defaultValue: false
         }
         section("Backup storage") {
-            paragraph "Automatic code and rule backups live in File Manager. File Manager files use hub storage and count toward a full local backup's 100 MiB file limit; database backups leave them out. Backups are removed only when they exceed this budget together: rolling steps first, then pinned baselines, oldest first. The backup just taken and a restore in progress are never removed."
+            paragraph "Automatic code and rule backups live in File Manager. File Manager files use hub storage and count toward a full local backup's 100 MiB file limit; database backups leave them out. Backups are removed only when they exceed this budget together, oldest first. An item's newest backup, the backup just taken and a restore in progress are never removed, so the budget can stay exceeded once every item is down to one."
             input "backupBudgetMb", "number", title: "Backup storage budget (MB)",
                   description: "Total size of the automatic code and rule backups (default: 10; range 1 to 1000000, values outside it use the nearest end).",
                   defaultValue: 10, required: false
@@ -29225,7 +28532,6 @@ def uninstalled() {
         ITEM_BACKUP_MANIFESTS.remove(appKey)
         ITEM_BACKUP_LEGACY_PENDING.remove(appKey)
     }
-    synchronized (PRED_CLEAR_STORES) { PRED_CLEAR_STORES.remove(appKey) }
     synchronized (WRITE_RESERVATION_LOCK) {
         MRTR_CLEANUP_SCHEDULES.remove(appKey)
         Map checks = [:] + MRTR_CLEANUP_CHECK_AT
@@ -30438,7 +29744,7 @@ def _maxConcurrentWrites() {
     return 2
 }
 def _budgetAwareTools() {
-    return ["hub_set_native_app", "hub_call_rule", "hub_clone_native_app",
+    return ["hub_call_rule", "hub_clone_native_app",
             "hub_import_native_app", "hub_call_device_command",
             "hub_get_logs", "hub_get_info",
             "hub_report_issue", "hub_get_custom_rule",
@@ -31269,13 +30575,6 @@ private Map _mrtrContinuation(String leafTool, Map executionArgs, result, Map re
         retryIds.addAll(result.remainingRuleIds)
         nextLeaf.ruleId = retryIds.unique()
         kind = "call_rule"
-    } else if (leafTool == 'hub_set_native_app' && result.status == 'in_progress' &&
-            result.stepsRemaining instanceof List && !result.stepsRemaining.isEmpty()) {
-        def spec = (nextLeaf.walkStep instanceof Map) ? _mrtrCopyMap(nextLeaf.walkStep as Map) : [:]
-        spec.steps = result.stepsRemaining
-        if (result.page != null) spec.page = result.page
-        nextLeaf.walkStep = spec
-        kind = 'walk_steps'
     } else if (leafTool == "hub_create_driver" && result.status == "in_progress" &&
             result.installsRemaining instanceof List && !result.installsRemaining.isEmpty()) {
         nextLeaf.installs = result.installsRemaining
@@ -31390,9 +30689,8 @@ private Map _mrtrCommitSlice(String stateId, Map rec, Map claim, Map executionAr
                     ", so a follow-up can resume from there rather than re-running the whole " +
                     "operation."
             }
-            if (continuation.kind in ["walk_steps", "driver_installs", "driver_updates"]) {
-                capped.putAll(result.subMap(["appId", "page", "operation", "stepsRemaining", "installsRemaining",
-                                             "updatesRemaining", "backup", "repairHints", "resume"]))
+            if (continuation.kind in ["driver_installs", "driver_updates"]) {
+                capped.putAll(result.subMap(["installsRemaining", "updatesRemaining", "resume"]))
                 capped.note = "aggregate records completed work. Inspect the remaining-work fields " +
                     "and resume guidance before submitting a new call with only that remainder. " +
                     "This requestState now replays the terminal continuation_limit result."
@@ -31448,24 +30746,6 @@ private def _mrtrAggregateTerminal(Map rec, result) {
                 if (!out.error) out.error = "One or more rule operations failed; inspect results[]."
             }
             out.remove("remainingRuleIds")
-            break
-        case "walk_steps":
-            out.steps = _mrtrWalkSteps(aggregate, out)
-            out.stepsRun = out.steps.size()
-            out.stepsRequested = Math.max(out.stepsRun as Integer,
-                Math.max((aggregate.stepsRequested ?: 0) as Integer, (out.stepsRequested ?: 0) as Integer))
-            def failedStep = out.steps.find { it?.success == false }
-            if (failedStep != null) {
-                out.error = "drive halted at step ${failedStep.step} (${failedStep.operation}): " +
-                    (failedStep.error ?: "step reported success:false -- inspect its valueEcho/silentRejection/health")
-                boolean recoveryExhausted = failedStep.error?.toString()?.contains("Automatic recovery was already attempted") == true
-                out.repairHints = ((out.repairHints ?: []) as List).findAll {
-                    !it?.toString()?.startsWith("Drive stopped at step ")
-                } + [(recoveryExhausted ?
-                    "Drive stopped at step ${failedStep.step} after its automatic recovery was already attempted. Do not re-run that step: its write may already be committed. Inspect steps[${failedStep.step - 1}] and hub_get_rule_health(appId=${out.appId}), and restore the pre-write backup if the rule is damaged." :
-                    "Drive stopped at step ${failedStep.step}. Inspect steps[${failedStep.step - 1}] for the failure detail, correct it, and re-run the drive from that step.").toString()]
-            }
-            out.partial = aggregate.anyPartial == true || out.partial == true
             break
         case "driver_installs":
         case "driver_updates":
@@ -31823,15 +31103,6 @@ private List _mrtrRuleResultRows(result) {
     row.success = result.success == true
     return [row]
 }
-private List _mrtrWalkSteps(Map aggregate, Map result) {
-    def rows = ((aggregate.steps instanceof List) ? aggregate.steps : []) +
-        ((result.steps instanceof List) ? result.steps : [])
-    def numbered = []
-    rows.eachWithIndex { row, index ->
-        numbered << (row instanceof Map ? (row + [step: index + 1]) : row)
-    }
-    return numbered
-}
 private void _mrtrMergeAggregate(Map aggregate, String kind, result) {
     if (!(result instanceof Map)) return
     aggregate.kind = kind
@@ -31840,11 +31111,6 @@ private void _mrtrMergeAggregate(Map aggregate, String kind, result) {
             def banked = _mrtrBankRuleResults(aggregate, result)
             aggregate.results = banked.results
             aggregate.ruleIds = banked.ruleIds
-            break
-        case "walk_steps":
-            aggregate.steps = _mrtrWalkSteps(aggregate, result as Map)
-            aggregate.stepsRequested = Math.max((aggregate.stepsRequested ?: 0) as Integer,
-                (result.stepsRequested ?: 0) as Integer)
             break
         case "driver_installs":
         case "driver_updates":
@@ -31955,7 +31221,7 @@ private def _renderToolResult(id, toolName, reactiveToolName, args, result, bool
             mcpLog("warn", "server", "Reactive BPS hint failed for ${reactiveToolName}: ${bpErr.message}")
         }
     }
-    if (settings.redactAccessTokens == true || callerClient != null) rendered = _redactAccessTokens(rendered)
+    if (_redactsAccessTokens()) rendered = _redactAccessTokens(rendered)
     if (rendered instanceof Map && rendered.containsKey("content") && _openAiClientRequest()) {
         rendered = rendered.collectEntries { k, v -> [(k == "content" ? "contentText" : k): v] }
     }
@@ -31998,8 +31264,10 @@ private def _renderToolResult(id, toolName, reactiveToolName, args, result, bool
     }
     return [__preserialized: candidateJson]
 }
+private String _accessTokenRedactedMarker() { return "***redacted (access token)***" }
+private boolean _redactsAccessTokens() { settings.redactAccessTokens == true || callerClient != null }
 private def _redactAccessTokens(value) {
-    String marker = "***redacted (access token)***"
+    String marker = _accessTokenRedactedMarker()
     if (value instanceof Map) {
         return value.collectEntries { k, v ->
             if (k?.toString() == "clientTokens" && v instanceof Map) {
@@ -32050,7 +31318,7 @@ def _responseTooLargeSuggestion(String toolName) {
         case "hub_list_apps":
             return "For scope='instances': set includeHidden=false (the default), narrow via filter (builtin / user / disabled / parents / children), or pass cursor to page through the apps list."
         case "hub_get_app_config":
-            return "Omit includeSettings -- Room Lighting / RM 5.1 apps can have 500-1000 settings keys. For multi-page apps, call hub_list_app_pages then hub_get_app_config with a specific pageName. If you only need identity, pass summary=true."
+            return "Omit includeSettings -- Room Lighting / RM 5.1 apps can have 500-1000 settings keys. For multi-page apps, read one page at a time with pageName, chosen from the page.hrefs a page returns. If you only need identity, pass summary=true."
         case "hub_list_files":
             return "Pagination here is OPT-IN: with no cursor the tool returns the WHOLE listing, so a large File Manager has no natural page break. Re-issue with cursor='0' to page through it, or narrow with filter='<substring of the name>'."
         case "hub_get_device_health":
@@ -32139,7 +31407,7 @@ def _cleanupRetiredToolState() {
         try {
             ['toolSearchCorpus', 'toolSearchTokens', 'toolSearchCorpusVersion',
              'toolSearchCorpusFingerprint', 'requiredParamsByTool',
-             'requiredParamsByToolFingerprint'].each { key ->
+             'requiredParamsByToolFingerprint', 'predClearPending'].each { key ->
                 if (atomicState.containsKey(key)) atomicState.remove(key)
                 if (state.containsKey(key)) state.remove(key)
             }
@@ -32239,7 +31507,7 @@ def getGatewayConfig() {
         ],
         hub_read_apps_code: [
             description: "Read-only inspection of installed apps, drivers, libraries, code bundles, code backups, and HPM packages: list apps (by code type or running instance), list drivers, view Groovy source, list installed bundles, browse code backups, inspect an installed app's config/pages, and list HPM-tracked packages. All operations are read-only; writes live in hub_manage_code.",
-            tools: ["hub_list_apps", "hub_list_drivers", "hub_get_source", "hub_list_libraries", "hub_list_bundles", "hub_list_backups", "hub_get_backup", "hub_list_device_dependents", "hub_get_app_config", "hub_list_app_pages", "hub_list_hpm_packages"],
+            tools: ["hub_list_apps", "hub_list_drivers", "hub_get_source", "hub_list_libraries", "hub_list_bundles", "hub_list_backups", "hub_get_backup", "hub_list_device_dependents", "hub_get_app_config", "hub_list_hpm_packages"],
             summaries: [
                 hub_list_apps: "List installed apps. scope='types' (all app TYPES: community + built-in, each with its menu tab) or 'instances' (running apps with parent/child tree). Args: scope, filter?, nameFilter?, includeHidden?, cursor?",
                 hub_list_drivers: "List device driver types. include='user' (default) = user-installed; include='all' = full catalog (system+virtual+user), each id usable with hub_create_device. Args: include?, nameFilter?, cursor?",
@@ -32249,8 +31517,7 @@ def getGatewayConfig() {
                 hub_list_backups: "List backups. scope=source (code) | hub_local | hub_cloud | hub | all (hub scopes also return the automatic-backup schedule and network-share settings). Args: scope?, cursor?",
                 hub_get_backup: "Get source from a backup. Args: backupKey",
                 hub_list_device_dependents: "List all apps that reference a device (Room Lighting, Rule Machine, Groups, etc.). Args: deviceId",
-                hub_get_app_config: "Read an installed app's configuration page (sections, inputs, current values). Works for Rule Machine, Room Lighting, Basic Rules, HPM, etc. Args: appId, pageName?, includeSettings?",
-                hub_list_app_pages: "List an app's page names: every sub-page its live page links to (any classic app), plus a curated directory for HPM. Args: appId",
+                hub_get_app_config: "Read an installed app's configuration page (sections, inputs, current values), its form controls and the pages it links to (page.hrefs). Works for Rule Machine, Room Lighting, Basic Rules, HPM, etc. Args: appId, pageName?, includeSettings?, summary?",
                 hub_list_hpm_packages: "List all HPM-tracked packages (name, version, beta flag, apps, drivers, files). includeDrift=true surfaces missing-required/orphan components. Args: hpmAppId?, includeDrift?, packageFilter?"
             ],
             searchHints: [
@@ -32262,8 +31529,7 @@ def getGatewayConfig() {
                 hub_list_backups: "list show backups code source whole hub database local cloud full backup restore points schedule frequency automatic daily time when backups run network share smb nas",
                 hub_get_backup: "view read saved previous version revision",
                 hub_list_device_dependents: "which apps use device reference inUseBy appsUsing dependencies affected by",
-                hub_get_app_config: "read inspect app configuration page settings inputs values rule machine room lighting hpm mode manager",
-                hub_list_app_pages: "page names sub-pages pageName multi-page hpm navigation discover",
+                hub_get_app_config: "read inspect app configuration page settings inputs values rule machine room lighting hpm mode manager page names sub-pages pageName multi-page navigation discover hrefs buttons controls disabled actions",
                 hub_list_hpm_packages: "package manager HPM tracked installed manifest version inventory community apps drivers drift orphan missing required"
             ]
         ],
@@ -32424,15 +31690,15 @@ def getGatewayConfig() {
             ]
         ],
         hub_manage_native_rules_and_apps: [
-            description: "Native app lifecycle and Rule Machine control. Use hub_set_rule for native RM read/create/update/form operations, and the dedicated tools to delete/clone/export/import apps or run/pause rules. Confirmed writes require a recent hub backup; inspect partial outcomes and native health before retrying. hub_set_native_app preserves generic native app creation and editing.",
+            description: "Native app lifecycle and Rule Machine control. Use hub_set_rule for native RM read/create/update/form operations, and the dedicated tools to delete/clone/export/import apps or run/pause rules. Confirmed writes require a recent hub backup; inspect partial outcomes and native health before retrying. hub_set_native_app creates, updates and drives the forms of every other classic app.",
             tools: ["hub_set_native_app", "hub_set_rule", "hub_list_rules", "hub_call_rule", "hub_set_rule_paused", "hub_set_rule_private_boolean", "hub_set_app_disabled", "hub_delete_native_app", "hub_clone_native_app", "hub_export_native_app", "hub_import_native_app", "hub_get_rule_health"],
             summaries: [
                 hub_set_rule: "Read, create, update or use native Rule Machine forms. Args: operation?, rule_id?, args?, confirm?. Omit operation for help; unconfirmed writes return schemas.",
                 hub_list_rules: "List all Rule Machine rules (RM 4.x + 5.x) with IDs and labels (uses RMUtils — RM only)",
-                hub_call_rule: "Trigger an RM rule lifecycle verb. Args: ruleId (id or array of ids), action (rule/actions/stop/start, default rule). rule uses RMUtils; actions clicks runAction; stop/start toggle stopRule (start resets private boolean).",
+                hub_call_rule: "Trigger an RM rule lifecycle verb. Args: ruleId (id or array of ids), action (rule/actions/stop/start, default rule). rule uses RMUtils; actions clicks runAction; stop/start toggle stopRule (start re-initializes the rule).",
                 hub_set_rule_paused: "Pause or resume one or more RM rules in one call (RMUtils). Args: ruleId (id or array of ids), paused (true=pause, false=resume)",
                 hub_set_rule_private_boolean: "Set the private boolean of one or more RM rules (RMUtils). Args: ruleId (id or array of ids), value (bool)",
-                hub_set_native_app: "Create or edit any classic native app (Room Lighting, Button Controller, Basic Rule, Notifier, Groups+Scenes, etc.) — generic upsert. Omit appId to create (appType, name); provide appId to edit via settings/button/walkStep. buttonRule={controllerId, buttonNumber, event} creates a Button Rule through its parent controller. Edits ensure a rollback baseline; same-app edits reuse it for one hour by default. For native Rule Machine structures use hub_set_rule. Args: appId (omit=create), appType, name, settings|button|walkStep|buttonRule, pageName (opt), stateAttribute (opt), confirm.",
+                hub_set_native_app: "Create, update or drive the native forms of classic apps (Room Lighting, Button Controller and Button Rule, Basic Rule, Notifier, Groups and Scenes, Thermostat Scheduler and Controller, user and community apps). Args: operation?, app_id?, args?, confirm?. Omit operation for help; unconfirmed writes return schemas. Rule Machine rules use hub_set_rule.",
                 hub_delete_native_app: "Delete any classic native app (soft by default, force=true for hard). Auto-backs-up first. Args: appId, force (opt), confirm",
                 hub_set_app_disabled: "Enable or disable any installed app without deleting it (reversible red-X). Args: appId, disabled (bool). Read-back verified. For RM rules prefer hub_set_rule_paused.",
                 hub_clone_native_app: "Clone an existing rule/app via Hubitat's first-party appCloner (deep: child apps and pause state copy too, so a clone of an ACTIVE app lands ACTIVE). Cheaper than rebuilding from scratch via the wizard. Args: appId (alias sourceAppId), newName (opt), stageDisabled (opt: disable clone + every descendant immediately), confirm. Returns newAppId.",
@@ -32446,7 +31712,7 @@ def getGatewayConfig() {
                 hub_call_rule: "trigger fire execute native rule machine rule",
                 hub_set_rule_paused: "pause resume disable enable stop unpause temporarily rule machine rule",
                 hub_set_rule_private_boolean: "private boolean flag rule machine rule condition",
-                hub_set_native_app: "create edit modify change native room lighting button controller notifier groups scenes basic rule visual rule classic smartapp settings button upsert app",
+                hub_set_native_app: "create edit update modify change configure native classic app room lighting button controller button rule notifier groups scenes basic rule thermostat user community smartapp settings fields form page button",
                 hub_delete_native_app: "remove delete destroy native rule machine room lighting button controller basic rule notifier app",
                 hub_set_app_disabled: "disable enable pause stop park red-x toggle installed app room lighting notifier groups scenes without deleting reversible",
                 hub_clone_native_app: "copy duplicate clone existing rule app appCloner template surgical edit",
@@ -32865,8 +32131,7 @@ def handleGateway(gatewayName, toolName, toolArgs, reqT0 = null, boolean bpsChec
     if (reqT0 != null && safeArgs instanceof Map && safeArgs.__reqT0 == null
             && _budgetAwareTools().contains(toolName)) safeArgs.__reqT0 = reqT0
     def required = requiredParamsByTool()[toolName]
-    def isGatedMetaCall = toolName == "hub_set_native_app" && _isNativeAppSchemaOnlyCall(safeArgs)
-    if (required && !isGatedMetaCall) {
+    if (required) {
         def missing = required.findAll { !safeArgs.containsKey(it) }
         if (missing && !getHiddenToolNames().contains(toolName)) {
             def defMap = applyDescriptionTransform(getAllToolDefinitions(), false)
@@ -33064,8 +32329,7 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
             if (settings.enableRead == false) {
                 throw new IllegalArgumentException("Read tools are disabled. Enable 'Read Tools' in MCP Rule Server app settings to use ${toolName}.")
             }
-        } else if (settings.enableWrite == false
-                && !(toolName == 'hub_set_native_app' && _isNativeAppSchemaOnlyCall(args))) {
+        } else if (settings.enableWrite == false) {
             throw new IllegalArgumentException("Write tools are disabled. Enable 'Write Tools' in MCP Rule Server app settings to use ${toolName}.")
         }
     }
@@ -33207,7 +32471,6 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
         case "hub_update_room": return toolRenameRoom(args)
         case "hub_set_rule": return toolSetRule(args)
         case "hub_get_app_config": return toolGetAppConfig(args)
-        case "hub_list_app_pages": return toolListAppPages(args)
         case "hub_get_source": return toolGetSource(args)
         case "hub_create_app": return toolInstallApp(args)
         case "hub_create_driver": return toolInstallDriver(args)
@@ -34514,8 +33777,7 @@ private Map _backupItemSourceLocked(String type, String id) {
         version: parsed.version,
         timestamp: now(),
         sourceLength: parsed.source.length(),
-        sizeBytes: sourceBytes.length,
-        retention: "pinned"
+        sizeBytes: sourceBytes.length
     ]
     _publishUploadedItemBackup(key.toString(), entry)
     mcpLog("info", "hub-admin", "Backed up ${type} ID ${id} source code to File Manager: ${fileName} (version ${parsed.version}, ${parsed.source.length()} chars)")
@@ -34648,7 +33910,7 @@ private Map _rebuildItemBackupIndex() {
             String base = (g[1] == "prerestore" ? "prerestore_" : "") + "${g[2]}_${g[3]}"
             if (f.size == null) unsized++
             found << [base: base, entry: [type: g[2], id: g[3].toString(), fileName: name, timestamp: listedAt ?: 0L,
-                                          sourceLength: f.size, sizeBytes: f.size, retention: "pinned"]]
+                                          sourceLength: f.size, sizeBytes: f.size]]
         } else if (rule.matches()) {
             List g = rule[0] as List
             if (!g[1].toString().isInteger()) {
@@ -34661,7 +33923,7 @@ private Map _rebuildItemBackupIndex() {
             catch (Exception parseErr) { mcpLog("debug", "hub-admin", "Backup index rebuild: '${name}' has no parseable time in its name (${parseErr.message}); using the listed date") }
             if (f.size == null) unsized++
             found << [base: "rm-rule_${ruleId}_${g[2]}".toString(), entry: [type: "rm-rule", id: ruleId, ruleId: ruleId, fileName: name,
-                     timestamp: namedAt ?: listedAt ?: 0L, sourceLength: f.size, sizeBytes: f.size, retention: "pinned"]]
+                     timestamp: namedAt ?: listedAt ?: 0L, sourceLength: f.size, sizeBytes: f.size]]
         }
     }
     Map rebuilt = new LinkedHashMap()
@@ -34755,9 +34017,16 @@ List _itemBackupRetentionVictims(Map manifest, Collection keepKeys) {
     List victims = []
     if (used <= budget) return victims
     Closure stamp = { k -> def t = manifest[k]?.timestamp; t instanceof Number ? (t as Long) : 0L }
-    Closure rolling = { k -> manifest[k]?.retention == "rolling" }
-    List candidates = manifest.keySet().findAll { !keepKeys.contains(it) && !manifest[it]?.deletePending }
-        .sort { a, b -> (rolling(a) ? 0 : 1) <=> (rolling(b) ? 0 : 1) ?: stamp(a) <=> stamp(b) }
+    Map newest = [:]
+    manifest.each { k, v ->
+        if (v?.deletePending) return
+        String item = "${v?.type}:${v?.ruleId != null ? v.ruleId : v?.id}".toString()
+        if (!newest.containsKey(item) || stamp(k) > stamp(newest.get(item))) newest.put(item, k)
+    }
+    Set kept = new HashSet(keepKeys)
+    kept.addAll(newest.values())
+    List candidates = manifest.keySet().findAll { !kept.contains(it) && !manifest[it]?.deletePending }
+        .sort { a, b -> stamp(a) <=> stamp(b) }
     for (k in candidates) {
         if (used <= budget) break
         victims << k
@@ -34795,20 +34064,8 @@ Map _itemBackupBudgetUsage(Map manifest) {
     manifest.values().each { if (!it?.deletePending) used += _itemBackupEntryBytes(it) }
     return [usedBytes: used, limitBytes: _itemBackupByteBudget()]
 }
-String _itemBackupRetentionNote(Map entry) {
-    String budget = "the ${_itemBackupBudgetMb()} MB budget shared by all MCP backups"
-    if (entry?.retention == "rolling") {
-        return "Rolling step: a per-write snapshot inside this rule's editing session. It is removed only when ${budget} is exceeded, and rolling steps are the first backups removed then, oldest first."
-    }
-    String replacedBy
-    if (entry?.type?.toString() == "rm-rule") {
-        replacedBy = "Backups of this or other rules never replace it"
-    } else if (entry?.undoForBackupKey) {
-        replacedBy = "This item's next pre-restore undo replaces it"
-    } else {
-        replacedBy = "This item's next backup after the one-hour reuse window replaces it; other items' backups never do"
-    }
-    return "Pinned baseline: ${replacedBy}. It is removed only when ${budget} is exceeded, after every rolling step and every older pinned baseline."
+String _itemBackupRetentionNote() {
+    return "Backups are removed only when all MCP backups together exceed the ${_itemBackupBudgetMb()} MB storage budget, oldest first; an item's newest backup is never removed, so the budget can stay exceeded once every item is down to one."
 }
 List unlinkItemBackupManifestFile(String fileName, String exactKey = null) {
     if (!fileName) return []
@@ -34858,56 +34115,6 @@ private Map _deleteHubFileAndUnlinkBackups(String fileName) {
                         : "The file is already deleted; do not repeat the deletion. It had no backup-manifest entry, so no metadata needs repair."]
         }
         return [:]
-    }
-}
-Map _rmPendingPredClearSnapshot() {
-    synchronized (PRED_CLEAR_STORES) {
-        String owner = _stateOwnerKey()
-        if (!PRED_CLEAR_STORES.containsKey(owner)) {
-            PRED_CLEAR_STORES.put(owner, new LinkedHashMap(atomicState.predClearPending ?: [:]))
-        }
-        return new LinkedHashMap(PRED_CLEAR_STORES[owner] as Map)
-    }
-}
-void _rmCommitPredClearPending(Map pending) {
-    String owner = _stateOwnerKey()
-    atomicState.predClearPending = pending
-    PRED_CLEAR_STORES.put(owner, new LinkedHashMap(pending))
-}
-void _rmReconcilePredClearPending(def inventory, Map observed) {
-    if (!observed || !(inventory instanceof Map) || !(inventory.apps instanceof List)) return
-    if (inventory.error || inventory.success == false || inventory.status == "error" ||
-            inventory.partial == true || inventory.hasMore == true) {
-        mcpLog("debug", "rm-native", "Skipping recovery reconciliation: app inventory was partial or error-flagged; ${observed.size()} pending record(s) retained")
-        return
-    }
-    Set ids = [] as Set
-    boolean complete = true
-    def visit
-    visit = { node ->
-        if (!(node instanceof Map) || !(node.data instanceof Map) || !node.data.id?.toString()?.isInteger() ||
-                (node.children != null && !(node.children instanceof List))) {
-            complete = false
-            return
-        }
-        ids.add(node.data.id.toString())
-        (node.children ?: []).each { visit(it) }
-    }
-    inventory.apps.each { visit(it) }
-    if (!complete) {
-        mcpLog("warn", "rm-native", "App inventory tree was structurally unreadable (missing data.id or non-list children); retaining all ${observed.size()} pending recovery record(s). If this repeats, hub firmware may have changed the /hub2/appsList shape")
-        return
-    }
-    if (ids.isEmpty()) {
-        mcpLog("warn", "rm-native", "Skipping recovery reconciliation: /hub2/appsList returned no apps; ${observed.size()} pending record(s) retained")
-        return
-    }
-    synchronized (PRED_CLEAR_STORES) {
-        Map current = _rmPendingPredClearSnapshot()
-        def removed = current.keySet().findAll { !ids.contains(it.toString()) && observed[it] == current[it] }
-        if (!removed) return
-        removed.each { current.remove(it) }
-        _rmCommitPredClearPending(current)
     }
 }
 def formatAge(Long timestamp) {
@@ -35230,17 +34437,17 @@ private Integer normalizeRuleId(def ruleId) {
 }
 private Map _appTypeRegistry() {
     return [
-        rule_machine: [namespace: "hubitat", appName: "Rule-5.1", parentTypeName: "Rule Machine"],
-        button_controller: [namespace: "hubitat", appName: "Button Controller-5.1", parentTypeName: "Button Controllers", commitButton: null],
-        groups_scenes: [namespace: "hubitat", appName: "Group-2.1", parentTypeName: "Groups and Scenes", labelInput: "name"],
-        notifier: [namespace: "hubitat", appName: "Notifier", parentTypeName: "Notifications"],
-        visual_rule: [namespace: "hubitat", appName: "Visual Rule Builder", parentTypeName: "Visual Rules Builder"],
-        basic_rule: [namespace: "hubitat", appName: "Basic Rule-1.0", parentTypeName: "Basic Rules", commitButton: null],
-        button_rule: [namespace: "hubitat", appName: "Button Rule-5.1", parentTypeName: "Button Controllers", commitButton: null],
-        room_lighting: [namespace: "hubitat", appName: "Room Lights", parentTypeName: "Room Lighting", commitButton: "update"],
-        scene: [namespace: "hubitat", appName: "Scene-1.2", parentTypeName: "Groups and Scenes", labelInput: "name", commitButton: "update"],
-        thermostat_scheduler: [namespace: "hubitat", appName: "Thermostat Scheduler 2.0", parentTypeName: "Thermostat Schedulers", commitButton: "update"],
-        thermostat_controller: [namespace: "hubitat", appName: "Thermostat Controller 2.0", parentTypeName: "Thermostat Controllers", commitButton: "update"]
+        rule_machine: [appName: "Rule-5.1", parentTypeName: "Rule Machine"],
+        button_controller: [appName: "Button Controller-5.1", parentTypeName: "Button Controllers"],
+        groups_scenes: [appName: "Group-2.1", parentTypeName: "Groups and Scenes"],
+        notifier: [appName: "Notifier", parentTypeName: "Notifications"],
+        visual_rule: [appName: "Visual Rule Builder", parentTypeName: "Visual Rules Builder"],
+        basic_rule: [appName: "Basic Rule-1.0", parentTypeName: "Basic Rules"],
+        button_rule: [appName: "Button Rule-5.1", parentTypeName: "Button Controllers"],
+        room_lighting: [appName: "Room Lights", parentTypeName: "Room Lighting"],
+        scene: [appName: "Scene-1.2", parentTypeName: "Groups and Scenes"],
+        thermostat_scheduler: [appName: "Thermostat Scheduler 2.0", parentTypeName: "Thermostat Schedulers"],
+        thermostat_controller: [appName: "Thermostat Controller 2.0", parentTypeName: "Thermostat Controllers"]
     ]
 }
 private Integer _discoverParentAppId(String appType) {
@@ -35697,7 +34904,7 @@ private Map _rmEmptyHealthVerdict(Map overrides) {
     v.putAll(overrides ?: [:])
     return v
 }
-Map _rmCheckRuleHealth(Integer appId, String source = "auto", String activePage = null) {
+Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
     if (appId == null) {
         return _rmEmptyHealthVerdict(unreadable: true, issues: ["health check failed: appId is null"])
     }
@@ -35721,6 +34928,19 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto", String activePage 
     def compiledReadError = null
     boolean useRuleBuilder = (source != "configPage")
     boolean useConfigPage = (source != "ruleBuilderJson")
+    def installed = null
+    try { installed = getAppByAppId(appId as Long) }
+    catch (Exception lookup) {
+        useRuleBuilder = false; useConfigPage = false
+        checkErrors << "app ${appId} was not read: it could not be identified (${lookup.message ?: lookup.toString()}), and a user or community app is not read as a rule".toString()
+    }
+    def namespace = installed?.appType?.namespace?.toString()
+    if (namespace && namespace != "hubitat") {
+        useRuleBuilder = false; useConfigPage = false
+        label = installed.label?.toString()
+        ruleFormat = "classic-app"
+        checkErrors << "app ${appId} was not read: it is a user or community app, whose state is not a rule's and whose page code can change its own state when rendered; read it with hub_get_app_config".toString()
+    }
     if (useRuleBuilder) {
         def cs = _ruleCompiledState(appId)
         if (cs != null && cs.ruleFormat == null && cs.readError) compiledReadError = cs.readError
@@ -35757,7 +34977,7 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto", String activePage 
     }
     if (runHtml) {
         try {
-            def cfg = (activePage && ruleFormat != "rm") ? _rmFetchConfigJson(appId, activePage) : _rmFetchConfigJson(appId)
+            def cfg = _rmFetchConfigJson(appId)
             sourcesUsed << "configPage"
             label = cfg?.app?.label?.toString()
             if (cfg?.app?.disabled != null) appDisabled = (cfg.app.disabled == true)
@@ -35833,7 +35053,7 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto", String activePage 
     def brokenMarkerCounts = [:]
     brokenMarkers.each { m -> brokenMarkerCounts.put(m, (brokenMarkerCounts.get(m) ?: 0) + 1) }
     def result = [
-        ok: issues.isEmpty() && broken != true && validationErrors.isEmpty(),
+        ok: !sourcesUsed.isEmpty() && issues.isEmpty() && broken != true && validationErrors.isEmpty(),
         unreadable: sourcesUsed.isEmpty(),
         broken: broken,
         source: (sourcesUsed ? sourcesUsed.join("+") : "none"),
@@ -36155,7 +35375,8 @@ def _guideSectionForTool(toolName) {
     if (t == 'hub_set_rule') return 'set_rule_reference'
     if (t == 'hub_set_visual_rule' || t == 'hub_delete_visual_rule') return 'visual_rule_reference'
     if (t.endsWith('_custom_rule')) return 'rules'
-    if (t in ['hub_set_native_app', 'hub_delete_native_app', 'hub_clone_native_app',
+    if (t == 'hub_set_native_app') return 'set_native_app_reference'
+    if (t in ['hub_delete_native_app', 'hub_clone_native_app',
               'hub_export_native_app', 'hub_import_native_app']) return 'builtin_app_tools_crud'
     if (t in ['hub_set_app_disabled', 'hub_call_rule', 'hub_set_rule_paused',
               'hub_set_rule_private_boolean']) return 'builtin_app_tools_rules'
@@ -36191,6 +35412,7 @@ def _applyReactiveBpsWarning(toolName, args, result) {
 def getToolGuideSections() {
     return [
         set_rule_reference: _ndGuide(),
+        set_native_app_reference: _naGuide(),
         device_authorization: '''## Device Authorization (CRITICAL)
 
 **Exact match rule:**
@@ -36233,7 +35455,6 @@ If you are calling one of these tools, you must read its section for that sectio
 - hub_delete_native_app -> builtin_app_tools_crud
 - hub_export_native_app -> builtin_app_tools_crud
 - hub_import_native_app -> builtin_app_tools_crud
-- hub_set_native_app -> builtin_app_tools_crud
 - hub_call_rule -> builtin_app_tools_rules
 - hub_set_app_disabled -> builtin_app_tools_rules
 - hub_set_rule_paused -> builtin_app_tools_rules
@@ -36266,6 +35487,7 @@ If you are calling one of these tools, you must read its section for that sectio
 - hub_export_custom_rule -> rules
 - hub_import_custom_rule -> rules
 - hub_update_custom_rule -> rules
+- hub_set_native_app -> set_native_app_reference
 - hub_set_rule -> set_rule_reference
 - hub_update_device -> update_device
 - hub_manage_virtual_device -> virtual_devices
@@ -36895,20 +36117,20 @@ Duplicates an existing MCP custom-engine rule into a new, independent rule with 
 - Rapid source-code edits preserve the original for one hour. Rule edits take a fresh pre-edit snapshot as described below.
 
 ### Backup retention
-- There is no count limit: backups are removed only when all MCP backups together exceed the storage budget. Another item's backup never replaces this one, but once the shared budget is exceeded any new backup can evict older backups of any item: **rolling** steps first, then **pinned** baselines, oldest first. The backup just taken and an active restore target are never removed.
+- There is no count limit: backups are removed only when all MCP backups together exceed the storage budget, oldest first across every item and kind of backup. An item's newest backup is never removed, and neither are the backup just taken and an active restore target; the budget can therefore stay exceeded once every item is down to one backup.
 - The budget is the Advanced setting "Backup storage budget (MB)" (`backupBudgetMb`): default 10, at least 1, at most 1000000 (1 TB). The Advanced page takes any number and the server clamps it to that range. With Developer Mode on, hub_update_mcp_settings also sets it and refuses a value that is not a whole number in that range.
-- Apps, drivers and libraries keep one **pinned** baseline, replaced by that item's next backup after the one-hour window.
-- A rule's first snapshot in an editing session is **pinned**, and so is every pre-delete, pre-forcedelete and replaceRequiredExpression snapshot. With `backupEveryRuleWrite` on, the rule's other snapshots in that session are **rolling** steps, so "before I started" outlasts the per-write steps when space runs short. An editing session ends once an hour passes with no snapshot of that rule; with `backupEveryRuleWrite` on, a continuous chain of writes keeps it open.
 - Where each response says it:
-  - Rule Machine writes and deletes: the `backup` object carries `retention` (`pinned` or `rolling`) and `retentionNote`, and the restoreHint ends with that note.
-  - hub_delete_item / library deletes: `backupRetention` and `backupRetentionNote`; the restoreHint ends with the note.
-  - hub_restore_backup (app/driver source): `backupRetention` and `backupRetentionNote` describe the `preRestoreBackup` undo entry; the `undoHint` ends with the note.
+  - Rule Machine writes and deletes: the `backup` object carries `retentionNote`, and the restoreHint ends with that note.
+  - hub_delete_item / library deletes: `backupRetentionNote`; the restoreHint ends with the note.
+  - hub_restore_backup (app/driver source): `backupRetentionNote` accompanies the `preRestoreBackup` undo entry; the `undoHint` ends with the note.
   - hub_write_file / hub_delete_file: `backupRetention: "copies"` and `backupRetentionNote` for the `<name>_backup_<ts>` copy.
-  - hub_list_backups: `storageBudget` (`usedBytes` / `limitBytes`, pending deletions excluded), `retentionPolicy`, and each entry's `retention` and `sizeBytes`.
+  - hub_list_backups: `storageBudget` (`usedBytes` / `limitBytes`, pending deletions excluded), `retentionPolicy`, and each entry's `sizeBytes`.
 - If the index file is missing, it is rebuilt from the File Manager listing, which also brings backup files left by older versions under retention. An index file that is listed but cannot be read is never rebuilt over: backup reads and backup-taking writes return `success: false` until it reads again. An index file that is not valid JSON is copied to `mcp-backup-index.corrupt-<time>.json` before the rebuild.
 
 ### Rule Backups (Automatic)
 - With `backupBeforeRuleEdits` enabled (default), hub_set_rule takes one fresh snapshot before an update batch and one before a native rule form workflow. Subsequent submissions in that workflow reuse its snapshot. Snapshot failure prevents the edit. Creating a new rule or navigating its parent does not have a previous child rule to restore.
+- hub_set_native_app updates and form workflows on other classic apps take one baseline snapshot first while `backupBeforeRuleEdits` is on, reused for the same app for one hour unless `backupEveryRuleWrite` is on, which takes a fresh snapshot before every edit. Its creates take none; a button_rule create takes one of its Button Controller.
+- Password-typed settings are not stored in pre-write snapshots: the snapshot lists them in `redactedSettings`. A restore leaves a live password unchanged (`passwordsKept`); an app recreated by restore needs them re-entered in the native UI (`passwordsToReenter`); when the restored app's settings cannot be read to confirm them, they are listed in `passwordsUnverified`.
 - hub_delete_custom_rule auto-backs up to File Manager as mcp_rule_backup_<name>_<timestamp>.json
 - Restore via: hub_read_file → hub_import_custom_rule
 - Skip backup: set testRule=true when creating/updating
@@ -37157,48 +36379,27 @@ A single tool can also be switched off under **Advanced: Per-tool Overrides**. A
 
 ### hub_read_apps_code — installed-app reads
 
-- **hub_list_apps (scope='instances')** — enumerate ALL running app instances on the hub (built-in + user) with parent/child tree
-  - filter="all" (default) | "builtin" | "user" | "disabled" | "parents" | "children"
-  - Each entry: id, name, type, appTypeId, disabled, user, hidden, deprecated, parentId, hasChildren, childCount
-  - appTypeId is the app type's code-class id -- the same id as the type's row in scope='types', hub_get_source(type='app', id=appTypeId) for community code, and the hub's /app/editor/<id> page -- so an instance resolves to its code without matching on the type name (ambiguous for duplicate or versioned names). null when the hub omits it. Community child app types are listed in scope='types' like any other type, so their rows resolve directly by appTypeId. Some built-in child types (e.g. Rule-5.1) are absent from scope='types'; for those, the parent instance's appTypeId identifies the parent app, not the child's source.
-  - Built-in apps have user=false (Rule Machine, Room Lighting, Groups and Scenes, Mode Manager, HSM, Dashboards, Maker API, etc.)
-  - User apps have user=true (Awair, Ecobee, HPM, etc.)
-  - Parent/child tree is flattened with parentId pointers. Hidden parents are excluded from output but their children are promoted to the nearest visible ancestor.
-
-- **hub_list_apps (scope='types')** — enumerate the installed app-type catalog: community (user-installed Apps Code, listed first) AND built-in types, in one call
-  - Community entries preserve the code registry's native fields (id = code-class id, name, namespace, oauth, lastModified, usedBy, ...); built-in entries carry the hub's app-type fields. Both gain three added fields:
-  - **system** / **isBuiltIn** (booleans, same value) — true for a built-in Hubitat app type, false for a community/user-installed one. Answers "which of my installed app types are community vs built-in" without a per-app hub_get_app_config call.
-  - **menu** — the admin UI tab the app type declares in its definition() block: "Apps", "Automations", or "Integrations" (recent firmware splits the Apps page into these three tabs). null when the type declares no menu, or when a community type is not in the appsList catalog (e.g. a child-app template). Group types by menu to mirror the tab layout.
-  - Community types come from the Apps Code registry (/hub2/userAppTypes, preserving class ids + child-app templates); menu and the built-in types are layered on from one supplementary /hub2/appsList read. If that read fails, community types still list (menu null, no built-ins) with a note.
-
-- **hub_list_device_dependents** — find apps that reference a specific device
-  - Use BEFORE deleting a device, disabling a device, or troubleshooting unexpected behavior
-  - Returns appsUsing array with each app's id, name (type like "Room Lights" or "Rule-5.1"), label (user-visible), trueLabel (HTML-stripped), disabled
-  - Answers "if I delete this device, which automations break?"
-
-- **hub_get_app_config** — read an installed app's configuration page (Read master required)
-  - Returns app identity (label, type, disabled), config page sections/inputs/values, and child apps
-  - appType summary carries system (built-in vs community) and menu (the app type's declared Apps/Automations/Integrations tab, null if undeclared) — for the same fields across ALL app types in one call, use hub_list_apps(scope='types')
-  - **modeInputs** (present only when the page renders framework-standard mode inputs, type="mode") — a list of {name, modes, section}, plus **modeInputsNote**. `modes` is each input's configured list. IMPORTANT — the SEMANTICS are app-specific: a `type="mode"` input can be a "only run during these modes" RESTRICTION, or per-mode OVERRIDES (e.g. Day Lights uses ten `type="mode"` inputs for per-mode brightness/color overrides, gated by its own `useModeOverrides` bool — not a restriction). Read the input titles/settings to tell which. It detects ONLY the standard input on the page you read; the input often lives on a SUB-PAGE (walk hub_list_app_pages), and it does NOT detect apps that gate on mode through their own settings model (e.g. Room Lighting's useModes/onConds) or handler logic (`if (location.mode in ...)`). So the ABSENCE of modeInputs is NOT proof the app ignores mode — for an arbitrary non-RM app that is app-specific and may require reading its source. Rule Machine rules have first-class, always-inspectable mode restriction; classic apps have no universal equivalent.
-  - **Mode gating in the common built-in apps** (per-app-type reference). There is NO hub-native "modes in use by" (unlike hub variables), so mode gating must be read per app, and each built-in stores it differently. Resolve mode IDs to names via hub_list_modes.
-    - **Notifier** — `modes` (type='mode', mode NAMES) on the `moreOptions` sub-page. RESTRICT ("only when mode is"). Caught by modeInputs when that sub-page is read.
-    - **Motion Lighting** — `onModes` / `offModes` (type='mode', NAMES) on `onOptions` / `offOptions`, gated by the `useModes` bool. RESTRICT (modes in which to DISABLE turning on/off). Caught by modeInputs on those sub-pages.
-    - **Room Lights** — `modes` as mode **IDs** (e.g. ["1","2","3","5"]) with `schedTypeL:"Hub Modes"`; NOT a type='mode' input — it is per-mode SETTINGS (behavior varies per mode) in the lighting-period model. NOT caught by modeInputs.
-    - **Thermostat Scheduler** — BOTH mechanisms: `modesR` (type='mode', NAMES, `moreOptions` sub-page) = RESTRICT; and `schedTypeL:"Hub Modes"` (main page) = per-mode SETTINGS (per-mode period keys). modeInputs catches `modesR` only.
-    - **Simple Automation Rules** — `modes` (classic restrict input, NAMES).
-    - **Button Controller** — no app-level mode key; each child Button Rule gates via Rule Machine conditions (capability "Mode"). Inspect the child rule, not the parent.
-    - **Basic Rules** — a classic dynamicPage app; read it with hub_get_app_config. Mode is a TRIGGER here: `trigCapab:"System Mode"` plus `mode` (type='mode', NAMES, titled "Becomes") fires the rule when the mode becomes one of them -- not a restriction, even though modeInputs catches it. "Set mode" is one of its actions.
-    - **Rule Machine** — first-class, always-inspectable mode restriction + "Mode" conditions (use the RM tools).
-    Community (non-built-in) apps are case-by-case: type='mode' inputs surface via modeInputs when used; otherwise reading the app source is the only signal.
-  - summary=true is a fast identity-only mode: the hub's thin app record (id, name, type, disabled, user) with no config-page render -- use it for existence/identity checks on expensive apps
-  - Multi-page apps expose sub-pages via pageName. Native editor navigation and supported controls use hub_set_rule(operation='form'); rendering can mutate app state.
-  - includeSettings=true adds the raw internal settings map (large apps: 500-1000 keys with app-specific encoding)
-  - Workflow: hub_list_apps (scope='instances'; or hub_list_rules for RM rules specifically -- note that hub_get_custom_rule handles only MCP-native rules, not Hubitat's built-in Rule Machine) to find appId, then hub_get_app_config to inspect. For multi-page apps, consider hub_list_app_pages first.
-
-- **hub_list_app_pages** — discover what pageNames a given app accepts (Read master required)
-  - Input: appId
-  - Returns the live primary page plus every sub-page it links to (read from the page itself, any app type), with a curated directory added for HPM
-  - Cuts the page-name guessing cycle for multi-page apps. Especially useful for HPM which exposes multiple sub-pages (prefPkgUninstall / prefPkgModify / prefPkgInstall / prefPkgMatchUp) for different operations.
+- **hub_list_apps(scope='instances')** lists every installed app, disabled ones included, as a flat tree with `parentId` pointers. Built-in apps have `user=false`, user-installed apps `user=true`. A hidden parent is left out and its children move up to the nearest visible ancestor. `filter`: `builtin`, `user`, `disabled`, `parents` (apps with children, such as Rule Machine), `children` (individual rules and scenes). `appTypeId` is the type's code-class id, the same id as its scope='types' row, `hub_get_source(type='app', id)` and the hub's /app/editor/<id> page, or null when the hub omits it. Some built-in child types (Rule-5.1) are missing from scope='types'; for those, the parent's appTypeId names the parent app. A retired app type carries `deprecated: true`.
+- **hub_list_apps(scope='types')** lists community types (Apps Code, first) and built-in types. Each row adds `system`/`isBuiltIn` (true for built-in) and `menu`, the Apps/Automations/Integrations tab the type declares, null when it declares none or for a community type outside the hub's apps catalog (a child-app template). If the catalog read fails, community types still list, with `menu` null, no built-ins and a note.
+- **hub_list_device_dependents** — check it before deleting, disabling or replacing a device. `appsUsing` rows carry id, name (the app type), label, trueLabel and disabled.
+- **hub_get_app_config** renders one page as opening it in the UI does, which runs the app's page code.
+  - The pages a page links to are in `page.hrefs` as `{page, title}`; a sub-page's own links are in its `page.hrefs` (Room Lighting's optionsOnPage is linked from onMeansPage). A linked page's inputs are not in `sections`: read them with `pageName`.
+  - `controls` are the page's buttons and links as hub_set_rule(operation='form') (Rule Machine) or hub_set_native_app(operation='form') returns them; activate one there by its control_id after opening the same page.
+  - On a Rule Machine rule a paragraph holding a disabled action or trigger reads `{text, disabled: [...]}`, listing the text of each disabled row it holds. On selectActions (Button Rule: selectActionsX) a disabled action's `disable<N>` control reads 'Enable Action', and the control named `<N>.0.<bool>` carries that action's text; N is the action index, not the row position. The button toggles: never replay a click whose response was lost. hub_set_app_disabled disables the whole app.
+  - `pageNote` appears when the hub rendered another page than `pageName`: the app reaches that page only through its link, so open it in a form workflow.
+  - `appType.system` and `appType.menu` are the fields hub_list_apps(scope='types') gives for every type at once.
+  - `includeSettings=true` adds the raw settings map: 500-1000 app-encoded keys on large apps (Room Lighting stores per-device scene levels as `dm~<deviceId>~<scene>`). Secrets read `***redacted (password)***`: every setting the hub types as a password, on any page, and free-text settings with credential-shaped names (password, pass, secret, token, API key, credential, ...). OAuth accessToken settings follow the Hide access tokens setting. Page inputs are redacted the same way. When the setting types cannot be read the map is withheld and `settingsNote` says why.
+  - A type='mode' input's `value` is its stored setting. Day Lights uses ten of them for per-mode levels, gated by `useModeOverrides`; most apps use one as an "only during these modes" restriction.
+  - **Mode gating in the built-in apps.** The hub has no "modes in use by" list, so read each app; resolve mode IDs with hub_list_modes.
+    - **Notifier** — `modes` (mode ids) on `moreOptions`; restricts.
+    - **Motion Lighting** — `onModes` / `offModes` (names) on `onOptions` / `offOptions`, gated by `useModes`: the modes in which turning on or off is disabled.
+    - **Room Lights** — `modes` holds mode IDs (e.g. ["1","2","3","5"]) with `schedTypeL:"Hub Modes"`: per-mode settings, not a type='mode' input.
+    - **Thermostat Scheduler** — `modesR` (names, `moreOptions`) restricts; `schedTypeL:"Hub Modes"` on the main page selects per-mode settings. Only `modesR` is a type='mode' input.
+    - **Simple Automation Rules** — `modes` (names); restricts.
+    - **Button Controller** — no app-level mode key; each child Button Rule uses Rule Machine Mode conditions.
+    - **Basic Rules** — `trigCapab:"System Mode"` with `mode` (names, titled "Becomes") is a trigger, not a restriction, although it is a type='mode' input. "Set mode" is one of its actions.
+    - **Rule Machine** — mode restrictions and Mode conditions, read with the rule tools.
+    For a community app, read its type='mode' inputs or its source.
 
 ### hub_list_hpm_packages — HPM package state introspection (in hub_read_apps_code; Read master required)
 
@@ -37231,19 +36432,19 @@ RMUtils-based control surface (hub_list_rules = Read master; trigger/pause/priva
   - action="rule" (default): full evaluation (triggers + conditions + actions)
   - action="actions": run actions only, skip conditions
   - action="stop": stop running actions
-  - action="start": restart a stopped rule (re-initializes; resets private boolean)
+  - action="start": restart a stopped rule (clears stopped and re-initializes it; the private boolean is unchanged)
 - **hub_set_rule_paused** — pause (paused=true) or resume (paused=false) one or more rules in ONE call (ruleId takes an id or an array; multi-id batches existence-check every id first); reversible
 - **hub_set_rule_private_boolean** — set the private boolean of one or more rules (ruleId takes an id or an array; Boolean or lowercase "true"/"false" only)
 
-Native CRUD (hub admin-layer, additionally requires the Write master):
-- **hub_set_native_app** — create or edit other classic apps using the existing generic CRUD interface. Native RM rules are created and changed with hub_set_rule(operation:'create'|'update'), and their native editor forms are driven with hub_set_rule(operation:'form').
-- **hub_set_app_disabled** — enable or disable any installed app (red-X) via POST /installedapp/disable; reversible. Args: appId, disabled (bool). Read-back verified.
-- **hub_delete_native_app** — soft delete (default; refuses if children exist) or force=true. Args: appId, force, confirm. Auto-backs-up before deleting.
-- **hub_clone_native_app** — clone any classic SmartApp via Hubitat's first-party appCloner (deep: child apps and pause state copy, so a clone of an ACTIVE app lands ACTIVE). Args: sourceAppId, newName (opt), stageDisabled (opt: disable the clone + every descendant immediately; a staging failure returns success:false with per-app stageFailures -- do NOT re-clone, the app exists), confirm. Returns newAppId. Drives the appCloner's 4-step wizard (cloneRuleButton -> confirmation -> importRule sub-page -> importNow); typical clones complete in tens of seconds.
-- **hub_export_native_app** — export any classic SmartApp to its canonical JSON shape via Hubitat's first-party appCloner. Args: sourceAppId, saveAs (opt File Manager filename). Returns jsonContent. Self-contained document with appReplacements + deviceReplacements + full rule state; round-trips through hub_import_native_app.
-- **hub_import_native_app** — re-create a rule/app from a previously-exported JSON via Hubitat's first-party appCloner (the import lands ACTIVE). Args: jsonContent | fromFile, parentHintAppId, newName (opt), stageDisabled (opt: disable the import + every descendant immediately; failure contract as on clone), confirm. Returns newAppId. The cloner needs an existing rule under the target parent to seed itself (parentHintAppId).
+Native CRUD (also requires the Write master):
+- **hub_set_native_app** — create, update or drive the forms of every classic app other than Rule Machine rules (see set_native_app_reference). Rule Machine rules use hub_set_rule.
+- **hub_set_app_disabled** — the red-X enable or disable of any app; reversible, and read back after the write.
+- **hub_delete_native_app** — soft delete by default (refused while children exist), or force=true. It saves a snapshot first; hub_restore_backup re-creates the app from backup.backupKey.
+- **hub_clone_native_app** — Hubitat's appCloner copies the app with its child apps and pause state, so a clone of an active app is active; `stageDisabled` disables the clone and its descendants at once. A staging failure returns success:false with `stageFailures`: the clone exists, so do not clone again. Typical clones take tens of seconds.
+- **hub_export_native_app** — the appCloner's export JSON (appReplacements, deviceReplacements and the full app state), which hub_import_native_app re-creates.
+- **hub_import_native_app** — creates the app from that JSON under the parent of `parentHintAppId`; the import is active unless `stageDisabled`, with the same failure contract as clone.
 
-- Clone/import require a readable parent child-app snapshot before creation; a refusal says nothing was created and can be retried after restoring access. Discovery never guesses among ambiguous new children. If modern staging reaches its continuation limit, the terminal error retains newAppId, stagedDisabled, stageFailures and stageRemaining from the last slice. Disable the remaining/failed apps directly; do not repeat creation.
+- Clone and import read the parent's child apps first: if that read fails nothing is created and the call can be retried, and an ambiguous new child is never guessed at. When staging reaches its continuation limit, the error keeps newAppId, stagedDisabled, stageFailures and stageRemaining: disable those apps directly instead of creating again.
 - **hub_get_rule_health** — read-only health check on any installed app (Rule Machine AND Visual Rules Builder). Args: appId, source (auto|ruleBuilderJson|configPage, default auto). Prefers the compiled-state verdict: the classic RM `broken` boolean (/app/ruleBuilderJson) or a graph Visual Rule's validationErrors (/app/ruleBuilder20Json); for classic RM the HTML render scan is retained as cross-check + fallback. Returns ok / broken / source / ruleFormat / label / paused / stopped / configPageError / brokenMarkers / multipleFlagPoison / structuralIssues / orphanedActionRows (leftover actType/actSubType rows that are not among the rule's actions -- diagnostic only, never affects ok) / validationErrors / issues (+ predicate when read). Pause state comes from the rule's compiled Boolean or status state; tagged runtime decoration is a fallback. `paused:null` means unknown. Explicit stopped state outranks config-page markup. Literal `(Paused)` and `(Stopped)` name suffixes are preserved; Visual Rule labels come from their own document unless configPage is forced. Embedded write-response health carries compiled paused only; the standalone read adds status/markup fallbacks, stopped, and live subscription/job counts.
 
 For reading a native RM rule without editor renders, use hub_set_rule(operation='read'). hub_get_app_config remains available for native configuration diagnostics.
@@ -37251,36 +36452,15 @@ For reading a native RM rule without editor renders, use hub_set_rule(operation=
 For BACKUP enumeration and restore, use the unified **hub_list_backups** (in hub_read_apps_code) + **hub_restore_backup** (in hub_manage_backup) — RM rule snapshots have type="rm-rule" in those tools' output and hub_restore_backup auto-dispatches the rule-restore path.
 
 ### Safety model for native CRUD
-1. With backupBeforeRuleEdits enabled (default), each hub_set_rule update batch saves one fresh native snapshot in File Manager before editing. A native form workflow saves one snapshot before opening and reuses it for subsequent submissions. The response's backup.backupKey restores the configuration from before that batch or workflow. Snapshot failure prevents the edit.
-2. Native form writes validate native field types and cardinality before submission; omitted values remain unchanged.
-3. Inspect partial outcomes and native health after writes; a persisted setting alone does not prove runtime behavior.
-4. delete is soft by default. Pass force=true only when you know the rule has children you also want gone.
+1. With backupBeforeRuleEdits on (default), each hub_set_rule update batch, and a native form workflow before its first step, saves a native snapshot to File Manager; backup.backupKey restores the configuration from before it. A failed snapshot stops the edit.
+2. Native form writes check field types and cardinality before submitting. An omitted input keeps its stored value; an unset input with a page default is saved with that default, as the browser does.
+3. A stored setting does not prove runtime behavior: check partial outcomes and hub_get_rule_health after a write.
+4. Deletes are soft by default; force=true also removes children.
 
 ### CRUD workflow example
-  hub_set_rule(operation="create", args={parent_id:<Rule Machine parent>, name:"BAT-RM-demo", changes:[<native changes>]}, confirm=true)
-  hub_get_app_config(appId=974, includeSettings=true) → input schema + current settings
-
-
-  hub_get_rule_health(appId=974) → verify ok=true, no configPageError or brokenMarkers
-  hub_delete_native_app(appId=974, force=true, confirm=true) → {backup: {backupKey: "rm-rule_974_..."}}
-
-### hub_get_app_config (deferred internals: embeddedActions wire-format, disabled RM actions, includeSettings key encoding)
-
-- **embeddedActions in RM 5.1**: configuration diagnostics may expose native clickable controls; hub_set_rule(operation='form') supplies supported control IDs for editor operations.
-- **Disabled RM actions**: native configuration diagnostics expose disabled row markers. Use only returned native form controls to toggle a specific row; toggles must not be replayed after an uncertain response. hub_set_app_disabled disables the whole app.
-- **includeSettings raw-key encoding example**: large apps' raw app-internal settings keys use app-specific encoding — e.g. Room Lighting encodes per-device-per-scene keys as `dm~<deviceId>~<scene>`. (Set `includeSettings=true` only for power-user inspection; large apps can have 500-1000 such keys.)
-
-### hub_list_apps (scope='instances' filter — category meanings)
-
-The `filter` enum values select which category of instances to return (scope='instances' only):
-- **all** (default) — every instance
-- **builtin** — Hubitat native apps
-- **user** — custom Groovy apps
-- **disabled** — paused apps
-- **parents** — apps with children, e.g. Rule Machine, Room Lighting
-- **children** — individual rules, scenes
-
-Each instance carries `deprecated: true` when the hub has retired its app type (for example the legacy Sonos integration in firmware 2.5.2), so it can be flagged for replacement.
+  hub_set_rule(operation="create", args={parent_id:<Rule Machine parent>, name:"BAT-RM-demo", changes:[<native changes>]}, confirm=true) → app_id
+  hub_get_rule_health(appId=<app_id>) → ok=true, no configPageError or brokenMarkers
+  hub_delete_native_app(appId=<app_id>, force=true, confirm=true) → {backup: {backupKey: "rm-rule_<app_id>_..."}}
 
 ### hub_list_drivers (list device driver TYPES on the hub)
 
@@ -37290,11 +36470,6 @@ Each instance carries `deprecated: true` when the hub has retired its app type (
 - For an `include='all'` entry, its **id** is the driver-type id to pass to `hub_create_device`, while `hub_manage_virtual_device(customDriver={namespace, name})` takes that same entry's **namespace + name** (not the id).
 
 
-### hub_list_app_pages (curated page-name directory)
-
-Sub-pages are read from the live primary page: every page it links to is listed with its title, for any app type (Rule Machine rules link selectTriggers/selectActions; Room Lighting links onDevicesPage/onMeansPage/offMeansPage). Pages linked only from a sub-page (e.g. Room Lighting's optionsOnPage under onMeansPage) show up in hub_get_app_config(pageName=<sub-page>).hrefs. HPM additionally gets a curated directory: prefOptions (main menu), prefPkgUninstall (full installed-package list), prefPkgModify (modifiable subset), prefPkgInstall (install flow), prefPkgMatchUp (match-up flow).
-
-
 ### hub_call_rule
 
 `action` selects which Rule Machine verb to invoke (default `rule`):
@@ -37302,21 +36477,9 @@ Sub-pages are read from the live primary page: every page it links to is listed 
 - **`rule`** → `runRule`: re-evaluate the rule's conditions, then run the matching true/false action set.
 - **`actions`**: click the rule's Run Actions button (`runAction`) to run the action list directly, skipping condition evaluation.
 - **`stop`**: halt the rule's in-progress actions.
-- **`start`**: re-enable a stopped rule (also resets its private boolean).
+- **`start`**: restart a stopped rule (clears stopped and re-initializes it; the private boolean is unchanged).
 
 `actions`, `stop` and `start` drive RM's own page buttons (`runAction`, `stopRule`), not RMUtils: that is the route the hub UI takes, so the platform's per-app load limiter, which refuses RMUtils dispatches on a busy hub, does not apply to them. Only `rule` still goes through RMUtils (RMUtils has no startRule verb and there is no page button for a full re-evaluation).
-
-### hub_set_native_app
-
-Create or edit classic native apps through their native pages. Omit appId to create a shell with appType and name; provide appId to edit discovered settings, click a native button, or walk its pages. Read configuration fields with hub_get_app_config and discover linked pages with hub_list_app_pages. Native Rule Machine structures use hub_set_rule; this generic tool does not accept RM action, trigger, expression, local-variable or batch shortcuts.
-
-A settings object maps native input names to values. Device inputs accept ID lists or the {id:label} maps returned by configuration reads. pageName selects a sub-page; settings not exposed by that page are reported as skipped. Fields may appear only after another choice has been saved. The native type's own commit button and closing Done are used; Basic Rule and Button Controller do not have an updateRule button.
-
-walkStep preserves native navigation: introspect reads the current fields and controls; write submits its write object; click activates its click.name and optional stateAttribute; navigate follows navigate.targetPage; done submits the page's Done after validating required inputs. Set page and optional hrefContext={fromPage, hrefName, hrefIndex, hrefParams} from the native links. For ordered workflows use walkStep={operation:'drive',steps:[...]} and finish each sub-page with done. A drive can return stepsRemaining when its time budget is reached; completed steps have already run. Inspect per-step errors, valueEcho and health before retrying.
-
-buttonRule={controllerId,buttonNumber,event} creates a Button Rule through an existing Button Controller's add-button flow. The controller must have its button device assigned. The resulting buttonRuleId can be edited with hub_set_rule(operation='update') or through native fields; a Button Rule must not be created as a standalone shell.
-
-Write calls require confirm=true and a recent hub backup. Existing generic edits retain their File Manager baseline behavior: by default a same-app baseline is reused for one hour, or backupEveryRuleWrite requests a fresh snapshot for each edit. Returned backup metadata describes the rollback scope. A failed creation reports its child ID and cleanup attempt; inspect that result before retrying. Guide-only calls with appId and guide=true return this section without app mutation.
 
 ### hub_get_rule_health
 
@@ -37340,9 +36503,9 @@ List a Rule Machine rule's LOCAL variables (per-rule, distinct from hub globals)
 - Hub globals are covered by hub_list_variables; native locals are read/written through hub_set_rule(operation='read') / hub_set_rule(operation='update') variable changes.
 - Reads the rule's `statusJson` appState: names and types from `allLocalVars`, current values from each variable's live `lv_<name>` entry (`allLocalVars` keeps the old value after an action sets the variable until someone opens the rule's page).
 - Pure read -- no wizard, no mutation.
-- Returns `{appId, localVariables:[{name, type, value}], total}`. `type` is the hub's internal token, not the `addLocalVariable` enum. Map it back before reuse: integer→Number, bigdecimal→Decimal, string→String, boolean→Boolean, datetime→DateTime.
+- Returns `{appId, localVariables:[{name, type, value}], total}`. `type` is Rule Machine's own token (integer, bigdecimal, string, boolean, datetime), the same value a hub_set_rule variable change takes; the rule page shows it as Number, Decimal, String, Boolean, DateTime.
 
-- Use to confirm a local exists (and its type) before targeting it with the `setLocalVariable` action or `removeLocalVariable` shortcut.
+- Use to confirm a local exists (and its type) before targeting it with a Set Variable action or a hub_set_rule variable change.
 
 ### hub_delete_native_app
 
@@ -37633,13 +36796,12 @@ def getToolGuideSubSections() {
         ],
         builtin_app_tools: [
             builtin_app_tools_overview: [],
-            builtin_app_tools_apps: ["hub_read_apps_code", "hub_get_app_config", "hub_list_apps",
-                                     "hub_list_drivers", "hub_list_app_pages", "hub_list_hpm_packages",
+            builtin_app_tools_apps: ["hub_read_apps_code", "hub_list_drivers", "hub_list_hpm_packages",
                                      "hub_list_device_dependents"],
             builtin_app_tools_rules: ["hub_manage_native_rules_and_apps", "hub_call_rule",
                                       "hub_get_rule_health", "hub_list_rule_local_variables"],
             builtin_app_tools_crud: ["Safety model for native CRUD", "CRUD workflow example",
-                                     "hub_set_native_app", "hub_delete_native_app",
+                                     "hub_delete_native_app",
                                      "hub_clone_native_app", "hub_export_native_app",
                                      "hub_import_native_app"]
         ],
