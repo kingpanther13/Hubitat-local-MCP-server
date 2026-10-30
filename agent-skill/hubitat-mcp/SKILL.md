@@ -12,7 +12,7 @@ Do not rely on this skill for per-tool inventory or counts — the live server i
 ## Core Principles
 
 1. **Safety first** - Never control a device without confirming the correct match. Critical systems (locks, HVAC, garage doors) require extra care.
-2. **Progressive disclosure** - Start with lightweight queries (`hub_list_devices` with `detailed=false`), then drill down as needed.
+2. **Progressive disclosure** - Start with lightweight queries (`hub_list_devices` in its default summary format), then drill down as needed.
 3. **Inform before acting** - Tell the user what you plan to do before executing write operations.
 4. **Respect access gates** - The Read and Write masters (and any Advanced per-tool overrides) gate tools for a reason. Follow pre-flight checklists.
 
@@ -29,7 +29,7 @@ All tools in this server follow these conventions. Use the conventions to predic
 
 ### Finding Devices
 
-For broad "what's going on / what's in this house" questions, start with `hub_list_devices(format='context')` — one token-cheap plain-text snapshot (mode + one `Label (id, room) - capabilities; attr=value` line per device), filterable with `roomFilter` / `onlyOn` / `changedSince` / `attributeNames`. For targeted lookups, `hub_list_devices(detailed=false)` gets names and IDs; use `hub_get_device` for full details on a specific device.
+For broad "what's going on / what's in this house" questions, start with `hub_list_devices(format='context')` — one token-cheap plain-text snapshot (mode + one `Label (id, room) - capabilities; attr=value` line per device), filterable with `roomFilter` / `stateFilter` / `changedSince` / `attributeNames`. For targeted lookups, the default `hub_list_devices` summary gets names and IDs; use `hub_get_device` for full details on a specific device.
 
 ### Device Authorization (CRITICAL)
 
@@ -122,9 +122,9 @@ Each domain has its own gateway pair — call the gateway with no args for its s
 
 ## Performance Tips
 
-- Use `hub_list_devices(detailed=false)` first, then paginate `detailed=true` in batches of 20-30
+- Use the default `hub_list_devices` summary first (one Devices-page read, no per-device cost); page `format='detailed'` with `limit`/`cursor` in batches of 20-30
 - Use `labelFilter` (substring) and `capabilityFilter` (exact capability name) for server-side narrowing -- far cheaper than fetching all devices and filtering client-side
-- `format='ids'` returns a flat integer array (cheapest shape); `fields=[...]` projects only named fields to reduce payload and skip hub reads
+- `format='ids'` returns a flat integer array (cheapest shape); `fields=[...]` projects only named fields; only `attributes`/`commands` cost a per-device read
 - `hub_list_device_events` default limit 10, max recommended 50
 - `hub_get_logs`: 100 log lines by default, `limit: 0` for all; page with `cursor`/`pageSize` and narrow with filters
 - Make tool calls sequentially, not in parallel (hub is single-threaded)

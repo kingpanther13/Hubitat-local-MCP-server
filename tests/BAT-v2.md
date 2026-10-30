@@ -86,7 +86,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `hub_list_devices` with `detailed=true, limit=10`.
+**Expected**: Calls `hub_list_devices` with `format='detailed', limit=10`.
 
 ### T02b — hub_list_devices (server-side filtering)
 
@@ -130,7 +130,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `hub_list_devices` with `onlyOn=true` (optionally `format='context'`). Does NOT fetch the whole inventory and filter client-side.
+**Expected**: Calls `hub_list_devices` with `stateFilter={"switch":"on"}` (optionally `format='context'`). Does NOT fetch the whole inventory and filter client-side.
 
 ```json
 {
@@ -649,7 +649,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `hub_list_devices` with `filter='virtual'`. Lists MCP-managed virtual devices.
+**Expected**: Calls `hub_list_devices` with `scope='owned'`. Lists MCP-managed virtual devices.
 
 ### T19c — hub_manage_virtual_device (delete)
 
@@ -1420,7 +1420,7 @@ Complex scenarios spanning multiple tools and gateways.
 }
 ```
 
-**Expected (v0.8.0)**: All core tools: `hub_manage_virtual_device(action="create")`, `hub_list_devices(filter='virtual')`, `hub_call_device_command`, `hub_get_device_attribute`, `hub_manage_virtual_device(action="delete")`.
+**Expected (v0.8.0)**: All core tools: `hub_manage_virtual_device(action="create")`, `hub_list_devices(scope='owned')`, `hub_call_device_command`, `hub_get_device_attribute`, `hub_manage_virtual_device(action="delete")`.
 
 ### T82 — Room management workflow
 
@@ -1450,7 +1450,7 @@ Complex scenarios spanning multiple tools and gateways.
 }
 ```
 
-**Expected (v0.8.0)**: Uses gateways plus core: `hub_manage_rooms` (hub_list_rooms), `hub_read_devices` (`hub_list_devices(filter='virtual')`), `hub_manage_variables` (hub_list_variables), `hub_manage_files` (hub_list_files), `hub_read_apps_code` (hub_list_backups), core (`hub_get_info`), `hub_manage_diagnostics` (hub_get_device_health).
+**Expected (v0.8.0)**: Uses gateways plus core: `hub_manage_rooms` (hub_list_rooms), `hub_read_devices` (`hub_list_devices(scope='owned')`), `hub_manage_variables` (hub_list_variables), `hub_manage_files` (hub_list_files), `hub_read_apps_code` (hub_list_backups), core (`hub_get_info`), `hub_manage_diagnostics` (hub_get_device_health).
 
 ### T85 — Rule with virtual device end-to-end
 
@@ -1832,7 +1832,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `hub_list_devices` with `detailed=false`. Returns count and names.
+**Expected**: `hub_list_devices` (summary format). Returns count and names.
 **Equivalent to**: T01
 
 #### T201 — Show me everything about a device
@@ -1907,7 +1907,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `hub_list_devices` with `detailed=true`, paginated.
+**Expected**: `hub_list_devices` with `format='detailed'`, paginated.
 **Equivalent to**: T02
 
 ---
@@ -2065,7 +2065,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `hub_list_devices` with `filter='virtual'`.
+**Expected**: `hub_list_devices` with `scope='owned'`.
 **Equivalent to**: T19b
 
 #### T222 — Remove a test device
@@ -2581,7 +2581,7 @@ Multi-tool scenarios phrased as user stories, not numbered checklists. The LLM m
 }
 ```
 
-**Expected**: `hub_manage_virtual_device(action="create")` → `hub_list_devices(filter='virtual')` (or `hub_get_device`) → `hub_call_device_command` → `hub_get_device_attribute` → `hub_manage_virtual_device(action="delete")`.
+**Expected**: `hub_manage_virtual_device(action="create")` → `hub_list_devices(scope='owned')` (or `hub_get_device`) → `hub_call_device_command` → `hub_get_device_attribute` → `hub_manage_virtual_device(action="delete")`.
 **Equivalent to**: T81
 
 #### T297 — Room management end-to-end
@@ -2614,7 +2614,7 @@ Multi-tool scenarios phrased as user stories, not numbered checklists. The LLM m
 }
 ```
 
-**Expected**: `hub_list_rooms` + `hub_list_devices(filter='virtual')` + `hub_list_variables` + `hub_list_files` + `hub_list_backups` + `hub_get_info` + `hub_get_device_health`.
+**Expected**: `hub_list_rooms` + `hub_list_devices(scope='owned')` + `hub_list_variables` + `hub_list_files` + `hub_list_backups` + `hub_get_info` + `hub_get_device_health`.
 **Equivalent to**: T84
 
 #### T300 — Motion-activated light from scratch
