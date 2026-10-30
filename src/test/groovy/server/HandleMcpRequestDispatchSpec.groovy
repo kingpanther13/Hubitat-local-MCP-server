@@ -1,7 +1,6 @@
 package server
 
 import spock.lang.Shared
-import support.TestDevice
 import support.TestHub
 import support.TestLocation
 import support.ToolSpecBase
@@ -527,16 +526,11 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         // stray args.tool='hub_export_native_app' on hub_list_devices would get an hub_export_native_app
         // suggestion ("use saveAs=..."), nonsensical for hub_list_devices.
         given:
-        // Force hub_list_devices to blow the cap with a giant native device inventory.
+        // Force hub_list_devices to blow the cap. The leaf itself refuses unknown arguments, so it is
+        // stubbed: the stray arg must reach the size guard, which is what this pins.
         def padding = 'x' * 80
-        def bigDevices = (0..<2000).collect { i ->
-            def d = new TestDevice(id: i, name: "D${i}", label: "Device-${i}-${padding}")
-            d.metaClass.getLastActivity = { -> null }
-            d
-        }
-        settingsMap.selectedDevices = bigDevices
-        bigDevices.each { device ->
-            support.NativeInventoryFixture.register(hubGet, device.id.toString()) { device }
+        script.metaClass.toolListDevices = { Map listArgs ->
+            [devices: (0..<2000).collect { i -> [id: i.toString(), label: "Device-${i}-${padding}"] }]
         }
         mcpDriver.pushBody([
             jsonrpc: '2.0', id: 201, method: 'tools/call',

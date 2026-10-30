@@ -200,9 +200,9 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
         given:
         enableDeveloperModeAndAdminWrite()
         settingsMap.selectedDevices = []
-        // A real id present in the all-hub device list so atomic validation passes.
-        hubGet.register('/device/listWithCapabilities/json') { params ->
-            groovy.json.JsonOutput.toJson([[id: 81, label: 'D81', capabilities: ['Switch']]])
+        // A real id on the hub's Devices page so atomic validation passes.
+        hubGet.register('/hub2/devicesList') { params ->
+            groovy.json.JsonOutput.toJson([devices: [[key: 'DEV-81', data: [id: 81, name: 'D81'], children: []]]])
         }
 
         when:

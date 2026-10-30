@@ -37,7 +37,6 @@ class ToolNativeMetadataBoundarySpec extends ToolSpecBase {
             case 'history': return script.toolGetDeviceHistory([deviceId: '10', hoursBack: 1])
             case 'command': return script.toolSendCommand('10', 'on', [])
             case 'update': return script.toolUpdateDevice([deviceId: '10', fields: [label: 'Changed']])
-            case 'virtual': return script.toolListVirtualDevices([:]).devices[0]
             case 'deleteVirtual': return script.toolDeleteVirtualDevice([deviceNetworkId: 'mcp-10', confirm: true])
         }
         throw new AssertionError("Unhandled operation: ${operation}")
@@ -68,9 +67,33 @@ class ToolNativeMetadataBoundarySpec extends ToolSpecBase {
         !hubGet.calls.any { it.path in ['/device/eventsJson/10', '/logs/past/json'] }
 
         where:
-        [operation, identity, bypass] << ['summary', 'attribute', 'poll', 'events', 'history', 'command', 'update', 'virtual'].collectMany { op ->
+        [operation, identity, bypass] << ['summary', 'attribute', 'poll', 'events', 'history', 'command', 'update'].collectMany { op ->
             ['empty', 'missing', 'mismatched'].collectMany { identity -> [false, true].collect { [op, identity, it] } }
         }
+    }
+
+    @Unroll
+    def 'a detailed owned listing marks a #identity native identity unavailable instead of trusting it, bypass #bypass'() {
+        given:
+        settingsMap.bypassDeviceAllowlist = bypass
+        hubGet.register('/hub2/devicesList') { JsonOutput.toJson([devices: [[key: 'DEV-10', data: [id: 10, name: 'Page label'], children: []]]]) }
+        hubGet.register('/hub2/vrb/devices') { JsonOutput.toJson([[id: 10, capabilities: ['Switch']]]) }
+        if (identity == 'empty') model.device = [:]
+        if (identity == 'missing') model.device.remove('id')
+        if (identity == 'mismatched') model.device.id = 11
+
+        when:
+        def result = script.toolListDevices([scope: 'owned', format: 'detailed'])
+
+        then:
+        result.devices*.id == ['10']
+        result.devices[0].metadataUnavailable == true
+        !result.devices[0].containsKey('attributes')
+        result.partial == true
+        writes.empty
+
+        where:
+        [identity, bypass] << ['empty', 'missing', 'mismatched'].collectMany { identity -> [false, true].collect { [identity, it] } }
     }
 
     @Unroll
@@ -91,7 +114,6 @@ class ToolNativeMetadataBoundarySpec extends ToolSpecBase {
         tool                       | args
         'hub_get_device'            | [deviceId: '10']
         'hub_call_device_command'   | [deviceId: '10', command: 'on']
-        'hub_list_devices'          | [filter: 'virtual']
         'hub_get_device_attribute'  | [deviceId: '10', attribute: 'switch']
         'hub_list_device_events'    | [deviceId: '10']
         'hub_list_device_events'    | [deviceId: '10', hoursBack: 1]

@@ -9,9 +9,6 @@ class ToolNativeAccessSurfacesSpec extends ToolSpecBase {
     private void nativeDevices() {
         settingsMap.selectedDevices = [new TestDevice(id: 1, name: 'SDK old name')]
         childDevicesList << new TestDevice(id: 2, name: 'SDK child old name')
-        hubGet.register('/device/listWithCapabilities/json') {
-            JsonOutput.toJson((1..3).collect { [id: it, label: "Native ${it}", capabilities: []] })
-        }
         hubGet.register('/hub2/devicesList') {
             JsonOutput.toJson([devices: (1..3).collect { id ->
                 [data: [id: id, name: "Native ${id}", lastActivity:
