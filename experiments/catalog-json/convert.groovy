@@ -22,6 +22,7 @@ assert !output.exists() || (output.isDirectory() && !output.list()): 'Output mus
 File app = new File(root, 'hubitat-mcp-server.groovy')
 assert app.isFile()
 int chunkBudget = 48000
+int minimumEncoded = (System.getenv('CATALOG_MIN') ?: '256') as int
 String reader = '_bat529EmbeddedCatalogRead'
 String decoder = '_bat529EmbeddedCatalogDecode'
 String helperSource = '''
@@ -131,7 +132,7 @@ for (File file : files) {
             String json = JsonOutput.toJson(encode(expression))
             // Small one-off lists/maps are cheaper to construct than to parse.
             // Select maximal pure subtrees, including those inside dynamic schemas.
-            if (json.length() < 256) return false
+            if (json.length() < minimumEncoded) return false
             List<String> parts = chunks(json)
             String replacement = reader + '([' + parts.collect { quote(it) }.join(',\n        ') + '])'
             replacement = '(' + replacement + (expression instanceof MapExpression ? ' as Map)' : ' as List)')
@@ -188,7 +189,7 @@ for (String path : originals.keySet()) {
 }
 Map summary = [status: 'generated', sourceCommit: System.getenv('GITHUB_SHA'), groovy: GroovySystem.version,
                selectedExpressions: selected.size(), selectedMethods: selected.collect { it.file + ':' + it.method }.unique().size(),
-               skippedExpressions: skipped.size(), files: mapping.size(), minimumEncodedCharacters: 256,
+               skippedExpressions: skipped.size(), files: mapping.size(), minimumEncodedCharacters: minimumEncoded,
                chunkModifiedUtf8Budget: chunkBudget, validation: 'Input/output integrity only; actual candidate requires full non-E2E CI',
                encoding: 'tagged JSON arrays with ordered Map key/value pairs; fresh LinkedHashMap/ArrayList decoding']
 new File(output, 'replacement-mapping.json').setText(JsonOutput.prettyPrint(JsonOutput.toJson(mapping)) + '\n', 'UTF-8')

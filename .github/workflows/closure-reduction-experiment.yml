@@ -29,6 +29,8 @@ jobs:
           java -cp groovy.jar groovy.ui.GroovyMain experiments/closure-loops/cpcount.groovy dist/hubitat-mcp-server.groovy
       - name: Embed large constant data under Groovy 2.4
         if: ${{ !contains(github.event.head_commit.message, '[cpcount]') }}
+        env:
+          CATALOG_MIN: ${{ contains(github.event.head_commit.message, '[min64]') && '64' || '256' }}
         run: ./gradlew -p experiments/catalog-json prepareCatalog24 --console=plain --no-daemon
       - uses: actions/upload-artifact@v7
         if: always()
