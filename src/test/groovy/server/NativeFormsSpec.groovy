@@ -975,7 +975,8 @@ class NativeFormsSpec extends ToolSpecBase {
         thrown(IllegalArgumentException)
         calls.empty
         where:
-        step << [[kind: 'open', page: '../settings'], [kind: 'open', url: '/anything'], [kind: 'submit', fields: [:]], [kind: 'invoke', method: 'updated']]
+        step << [[kind: 'open', page: '../settings'], [kind: 'open', url: '/anything'], [kind: 'submit', fields: [:]], [kind: 'invoke', method: 'updated'],
+                 [kind: 'submit', expect_page: 'edit', fields: [text: '***redacted (password)***']]]
     }
 
     def 'sequential explicit opens reuse one caller workflow beyond eight apps'() {

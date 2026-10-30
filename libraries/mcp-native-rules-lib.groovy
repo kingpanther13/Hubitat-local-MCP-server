@@ -3355,6 +3355,8 @@ private Map _naUpdate(Long id, Map args) {
     Map fields = args.get('fields')
     String page = args.page
     String guide = " See hub_get_tool_guide(section='set_native_app_reference')."
+    def marked = fields instanceof Map ? fields.find { k, v -> _isRedactionMarker(v) } : null
+    if (marked) throw new IllegalArgumentException("${marked.key} is the redaction marker, not a value; omit the field to keep the stored one")
     _requireUnprotectedAppMutation(id, 'edit')
     def nativeApp = getAppByAppId(id)
     if (nativeApp?.id?.toString() != id.toString()) throw new IllegalArgumentException('app_id must identify an installed app')

@@ -5033,6 +5033,100 @@ private boolean _redactsAccessTokens() { settings.redactAccessTokens == true || 
 // them hidden, and File Manager snapshots drop secret settings whatever it says.
 private boolean _redactsCredentials() { settings.redactCredentials != false || callerClient != null }
 
+private String _appConfigRedactedMarker() { return "***redacted (password)***" }
+
+// A masked read passed back as a value would store the marker as the credential.
+private boolean _isRedactionMarker(value) { value instanceof CharSequence && value.toString() == _appConfigRedactedMarker() }
+
+private boolean _appConfigMasksSetting(name, type, value) { _redactsCredentials() && _appConfigIsSecretSetting(name, type, value) }
+
+// Whether a setting/input value must be redacted. A null or empty value hides nothing. The hub's
+// own password type always redacts. Otherwise a credential-shaped name redacts, unless the value
+// is a Boolean or the input type cannot hold free text (a "usePassword" toggle, a "tokenDevice"
+// picker). Number types stay in scope on purpose: a numeric PIN/passcode is still a secret.
+private boolean _appConfigIsSecretSetting(name, type, value) {
+    if (_appConfigEmptyValue(value)) return false
+    String t = type?.toString()
+    if (t == "password") return true
+    if (value instanceof Boolean) return false
+    if (t && (t in ["bool", "boolean", "enum", "mode", "time", "date", "button", "href", "hub", "icon", "color"] ||
+              t.startsWith("capability") || t.startsWith("device"))) return false
+    return _appConfigSecretName(name)
+}
+
+private boolean _appConfigEmptyValue(value) {
+    if (value == null) return true
+    if (value instanceof CharSequence && value.toString().isEmpty()) return true
+    (value instanceof Collection || value instanceof Map) && value.isEmpty()
+}
+
+// Credential-shaped setting names. The name is split into lowercase words at camelCase, acronym,
+// digit, and punctuation boundaries ("HPMPassword" -> hpm|password, "api_key2" -> api|key), and
+// each word is tested on its own, so substrings inside unrelated words do not match: "bypass",
+// "passThrough", "compass", "tokenizer", "secretary" are not secrets. A hit is ignored when the
+// next word marks metadata ABOUT the secret ("passwordSet", "tokenCount", "tokenExpiry").
+private boolean _appConfigSecretName(name) {
+    String raw = name?.toString()
+    if (!raw) return false
+    // OAuth access tokens are governed by the redactAccessTokens setting, which deliberately leaves
+    // them readable by default so the AI can read endpoint URLs.
+    if (raw ==~ /(?i)access_?token/) return false
+    // Cheap prefilter: a large app has 500-1000 keys and almost none can match.
+    String lower = raw.toLowerCase()
+    if (!(lower.contains("pass") || lower.contains("pwd") || lower.contains("secret") || lower.contains("token") ||
+          lower.contains("key") || lower.contains("credential") || lower.contains("psk") || lower.contains("pin") || lower.contains("code"))) return false
+    String spaced = raw.replaceAll(/([a-z0-9])([A-Z])/, '$1 $2').replaceAll(/([A-Z]+)([A-Z][a-z])/, '$1 $2')
+    List words = spaced.toLowerCase().split(/[^a-z]+/).findAll { part -> part }
+    Set metadata = ["count", "counter", "cnt", "expiry", "expires", "expire", "expired", "expiration", "time",
+                    "timestamp", "date", "length", "len", "type", "enabled", "enable", "set", "required", "url",
+                    "uri", "endpoint", "timeout", "interval", "mode", "policy", "hint", "label", "name"] as Set
+    Set keyQualifiers = ["api", "access", "private", "auth", "client", "secret", "encryption", "signing", "shared"] as Set
+    Set pinQualifiers = ["lock", "user", "access", "pass", "disarm", "arm", "alarm", "security", "unlock", "auth", "entry", "keypad", "door",
+                         "master", "admin", "guest", "installer", "duress", "gate", "garage", "hsm", "panel", "safe", "vault"] as Set
+    Set hardwarePins = ["led", "gpio", "relay", "io", "digital", "analog", "data", "output", "input", "sensor", "pwm", "signal", "button",
+                        "power", "reset", "enable", "interrupt", "irq", "clock", "clk", "sda", "scl", "tx", "rx", "servo", "motor", "trigger", "echo"] as Set
+    // A credential word anywhere in the name ("keypadInputPin", "alarmResetCode") outranks a hardware word,
+    // except a board word right before the pin ("doorLedPin") or a status or location word before the code
+    // ("lockErrorCode", "lockZipCode").
+    boolean qualified = words.any { it in pinQualifiers }
+    Set boardPins = ["led", "gpio", "relay", "pwm", "servo", "motor", "sda", "scl", "clk", "clock", "irq", "analog", "digital", "tx", "rx", "io"] as Set
+    Set statusCodes = ["status", "error", "result", "response", "reason", "fault", "event", "state", "zip", "postal", "country", "area"] as Set
+    for (int idx = 0; idx < words.size(); idx++) {
+        String w = words[idx]
+        String prev = idx > 0 ? words[idx - 1] : null
+        String next = idx + 1 < words.size() ? words[idx + 1] : null
+        boolean hit = w.contains("password") || w.contains("passwd") || w.contains("passphrase") ||
+            w.contains("passcode") || w.contains("pwd") || w.contains("apikey") || w.contains("privatekey") ||
+            w.contains("accesskey") || (w.contains("secret") && !w.startsWith("secretar")) ||
+            w.endsWith("token") || w.endsWith("tokens") || w.startsWith("credential") || w == "psk" ||
+            // "pass" alone is a password only as the final word ("mqttPass") or split from its
+            // own suffix ("passWord"); "passThrough", "passMode", and "byPass" are not.
+            (w == "pass" && prev != "by" && (next == null || next in ["word", "phrase", "code", "key"])) ||
+            (keyQualifiers.contains(w) && (next == "key" || next == "keys")) ||
+            // A PIN, and a code with a credential word or right after "pin" ("userCodes"), within the
+            // exceptions above; with no credential word any hardware word frees a pin ("ledPin").
+            (w in ["pin", "pins", "pincode", "pincodes"] && (qualified ? !(prev in boardPins) : !(prev in hardwarePins))) ||
+            (w in ["code", "codes"] && !(prev in statusCodes) && (qualified || prev in ["pin", "pins"])) ||
+            // One-word forms: "userpin", "alarmcode", "HSMPIN".
+            _appConfigQualifiedSuffix(w, pinQualifiers)
+        if (!hit) continue
+        // A metadata word right after the hit ("passwordSet", "tokenCount"); for the two-word
+        // "api key" form the metadata word follows "key".
+        boolean twoWords = ((next == "key" || next == "keys") && keyQualifiers.contains(w)) || (w in ["pin", "pins"] && next in ["code", "codes"])
+        String after = twoWords ? (idx + 2 < words.size() ? words[idx + 2] : null) : next
+        if (after != null && metadata.contains(after)) continue
+        return true
+    }
+    return false
+}
+
+private boolean _appConfigQualifiedSuffix(String word, Set qualifiers) {
+    for (suffix in ["pincodes", "pincode", "pins", "pin", "codes", "code"]) {
+        if (word.length() > suffix.length() && word.endsWith(suffix) && word.substring(0, word.length() - suffix.length()) in qualifiers) return true
+    }
+    return false
+}
+
 // redactAccessTokens (Advanced page). Covers the three shapes a token reaches a tool result in:
 // an access_token= URL parameter (app page paragraphs), an accessToken/access_token map key
 // (app settings and state) or the clientTokens map of per-client tokens, and that same key
@@ -10390,7 +10484,7 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
     def compiledReadError = null   // a thrown/bad-200 compiled-state read, surfaced if the HTML path also fails
     boolean useRuleBuilder = (source != "configPage")
     boolean useConfigPage = (source != "ruleBuilderJson")
-    // Only built-in apps are read; an app that cannot be identified gets only its compiled state. A
+    // Only a built-in app's page is read. A
     // user or community app's state can carry Rule Machine's keys without being a rule, and its
     // default page runs its own code, which can drop a wizard's pending input (Hubitat Package
     // Manager clears a pending install there).
@@ -11735,7 +11829,7 @@ If even one selected value exceeds the response budget, the tool returns `conten
 
 `hub_update_device(deviceId, fields={...}, preferences={...}, confirm?)` saves the way the device page does, one save per page section, then reads the device back once and reports each field in `changes`, `unchanged` (it already had the requested value) or `errors`. Put `bestPracticeKey` beside them when mandatory best-practice acknowledgment is enabled. The whole request is checked before anything is written; a field the device does not offer (configuration reports `writable:false` with a `reason`) is refused.
 
-- **Device Info save** (one request for all of these): `label`, `name`, `deviceNetworkId`, `room` (name or id; `""` clears), `tags` (replaces the set; `[]` clears), `notes`, `defaultIcon` (`""` clears), `maxEvents`/`maxStates` (1-2000), `spammyThreshold` (100-2000), `deviceTypeId`, `zigbeeId`, `dashboardIds` (the legacy Hubitat Dashboards that list this device; replaces the set; an Easy Dashboard picks its devices with `hub_update_dashboard` `deviceIds`), `meshEnabled`, `meshFullSync`. The hub rebuilds the device from this save, so every current value is sent with the change.
+- **Device Info save** (one request for all of these): `label`, `name`, `deviceNetworkId`, `room` (text matches a name, else an id; a number is an id; `""` clears), `tags` (replaces the set; `[]` clears), `notes`, `defaultIcon` (`""` clears), `maxEvents`/`maxStates` (1-2000), `spammyThreshold` (100-2000), `deviceTypeId`, `zigbeeId`, `dashboardIds` (the legacy Hubitat Dashboards that list this device; replaces the set; an Easy Dashboard picks its devices with `hub_update_dashboard` `deviceIds`), `meshEnabled`, `meshFullSync`. The hub rebuilds the device from this save, so every current value is sent with the change.
 - **Preferences save** (one request): `preferences`, `showOnHome`, `defaultCurrentState` (`""` selects None), `retryEnabled`. It runs the driver's `updated()`, as the page's Save Preferences does; settings that are not named keep their values.
 - `homeKitEnabled`, `amazonAlexaEnabled`, `googleHomeEnabled` go to the assistant integrations; a refusal names the integration's reason. `enabled` enables or disables the device. `dataValues` sets Data entries through the driver's `updateDataValue`.
 

@@ -3758,6 +3758,21 @@ class TestRunner:
             assert data.get("manufacturerName") == "Zooz", \
                 f"manufacturer 634 (0x027A) must resolve to Zooz: {data}"
             assert data.get("userCode") == "***redacted (password)***", f"userCode must read hidden: {data}"
+            # Writing a masked read back is refused, so the stored credential is never overwritten with the marker.
+            for edit in ({"fields": {"dataValues": {"userCode": "***redacted (password)***"}}},
+                         {"preferences": {"autoOff": "***redacted (password)***"}}):
+                try:
+                    echoed_back = self.client.call_tool("hub_update_device", {"deviceId": dev_id, **edit})
+                except McpToolError as exc:
+                    echoed_back = _tool_error_payload(exc)
+                assert "redaction marker" in str(echoed_back.get("error")), f"the masked value was accepted as a write: {echoed_back}"
+            try:
+                self._mcp_settings({"redactCredentials": False})
+                stored = (self.client.call_tool("hub_get_device", {
+                    "deviceId": dev_id, "mode": "details", "sections": ["data"]}).get("sections") or {}).get("data") or {}
+            finally:
+                self._mcp_settings({"redactCredentials": True})
+            assert stored.get("userCode") == "4321", f"the stored userCode changed: {stored}"
             try:
                 empty = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"dataValues": {}}})
             except McpToolError as exc:
@@ -4475,10 +4490,11 @@ class TestRunner:
             assert any(str(d.get("id")) == str(dev_id) for d in (got.get("devices") or [])), \
                 f"room '{room_name}' does not list device {dev_id} after the assign: {got}"
 
-            # By numeric id from outside the room, so the save has to move the device.
+            # By numeric id from outside the room, so the save has to move the device; a number is an id,
+            # and a whole number sent as a decimal is the same id.
             cleared = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"room": ""}})
             assert cleared.get("success") is True, f"hub_update_device room unassign failed: {cleared}"
-            by_id = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"room": int(room_id)}})
+            by_id = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"room": float(room_id)}})
             assert by_id.get("success") is True and any(
                 c.get("property") == "room" and c.get("newValue") == room_name for c in (by_id.get("changes") or [])), \
                 f"room assign by id did not read back as '{room_name}': {by_id}"
@@ -6376,6 +6392,16 @@ def updated() {}
             # A board pin and a status code next to a credential word are not credentials.
             assert named.get("doorLedPin") == "13" and named.get("lockErrorCode") == "E42", \
                 f"includeSettings hid a board pin or status code: {named}"
+            # A masked read written back is refused by update and by a form submit, so the stored
+            # password is never overwritten with the marker (the reads below still return the secret).
+            for call in (lambda: self._native_app("update", {"fields": {"p": "***redacted (password)***"}}, instance_id),
+                         lambda: self._native_app("form", {"steps": [{"kind": "submit", "expect_page": "pagePw",
+                                                                     "fields": {"apiKey": "***redacted (password)***"}}]}, instance_id)):
+                try:
+                    echoed_back = call()
+                except McpToolError as exc:
+                    echoed_back = _tool_error_payload(exc)
+                assert "redaction marker" in str(echoed_back.get("error")), f"the masked value was accepted as a write: {echoed_back}"
             # With Hide passwords and credentials off, the form and the settings read every value as stored.
             try:
                 self._mcp_settings({"redactCredentials": False})

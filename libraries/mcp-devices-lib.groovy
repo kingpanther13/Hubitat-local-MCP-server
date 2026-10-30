@@ -3954,6 +3954,7 @@ private void _checkDeviceEditValue(String field, Map spec, value) {
     else if (field == 'tags' && (!(value instanceof List) || value.any { !(it instanceof String) || it.contains(',') })) bad = 'must be an array of strings without commas'
     else if (field == 'dashboardIds' && (!(value instanceof List) || value.any { !_deviceEditInteger(it, [:]) })) bad = 'must be an array of dashboard IDs'
     else if (field == 'dataValues' && (!(value instanceof Map) || !value || value.any { k, v -> !k?.toString()?.trim() || !(v instanceof String) })) bad = 'must be a non-empty object of string values keyed by data name'
+    else if (field == 'dataValues' && value.any { k, v -> _isRedactionMarker(v) }) bad = 'cannot take the redaction marker as a value; omit the key to keep the stored one'
     else if (field in ['name', 'deviceNetworkId'] && !value.trim()) bad = 'cannot be empty'
     if (bad) throw new IllegalArgumentException("${field} ${bad}")
 }
@@ -3962,6 +3963,7 @@ private _normalizedDevicePreferenceValue(Map entry, value) {
     if (value == null || (value instanceof String && !value.trim()) || (value instanceof List && value.isEmpty())) {
         throw new IllegalArgumentException("Preference '${entry.name}' cannot use a blank value; omit it to preserve the setting or use {clear:true} to remove an optional setting")
     }
+    if (_isRedactionMarker(value)) throw new IllegalArgumentException("Preference '${entry.name}' is the redaction marker, not a value; omit it to keep the stored one")
     def type = entry.type?.toString()
     if (type in ["bool", "boolean"]) {
         if (value instanceof Boolean) return value
@@ -4070,7 +4072,7 @@ private Map _planDeviceEdit(Map fj, Map fields, Map preferences = [:]) {
         String unavailable = _deviceEditUnavailable(name, fj)
         if (unavailable) throw new IllegalArgumentException("${name} cannot be changed: ${unavailable}")
         if (name == 'room') {
-            def room = value == '' ? [id: 0, name: null] : _resolveDeviceRoom(value.toString())
+            def room = value == '' ? [id: 0, name: null] : _resolveDeviceRoom(value.toString(), value instanceof Number)
             send.roomId = room.id
             send.roomName = room.name
         } else if (name == 'defaultCurrentState' && value) {
@@ -4107,15 +4109,15 @@ private Map _planDeviceEdit(Map fj, Map fields, Map preferences = [:]) {
     return send
 }
 
-// Room name (case-insensitive), else id: a room named "3" wins over room id 3.
-private Map _resolveDeviceRoom(String room) {
+// Text: room name (case-insensitive), else id, so a room named "3" wins over room id 3. A number is an id.
+private Map _resolveDeviceRoom(String room, boolean byId = false) {
     def rooms
     try {
         rooms = getRooms()
     } catch (Exception e) {
         throw new IllegalArgumentException("Unable to list rooms to resolve '${room}': ${e.message ?: e.toString()}")
     }
-    def match = rooms?.find { it.name?.toString()?.toLowerCase() == room.toLowerCase() } ?: rooms?.find { it.id?.toString() == room }
+    def match = (byId ? null : rooms?.find { it.name?.toString()?.toLowerCase() == room.toLowerCase() }) ?: rooms?.find { it.id?.toString() == room }
     if (match == null) {
         def names = rooms ? rooms.collect { it.name } : []
         throw new IllegalArgumentException("Room '${room}' not found.${names ? ' Available rooms: ' + names.join(', ') : ''}")
@@ -4143,7 +4145,7 @@ def toolUpdateDevice(args) {
     }
     // A whole number sent as 100.0 would post "100.0", which the hub stores as no value.
     fields = fields.collectEntries { k, v ->
-        [(k): specs[k].type == 'integer' ? new BigDecimal(v.toString()).toBigInteger() :
+        [(k): specs[k].type == 'integer' || (k == 'room' && v instanceof Number) ? new BigDecimal(v.toString()).toBigInteger() :
               k == 'dashboardIds' ? v.collect { new BigDecimal(it.toString()).toBigInteger() } : v]
     }
     if (fields.keySet().any { specs[it].confirm }) requireDestructiveConfirm(args.confirm)
@@ -4395,7 +4397,8 @@ private void _verifyDevicePreferenceWrite(String name, Map setting, List changes
     }
 }
 
-// The driver's updateDataValue, one call per key. verify=false skips the read-back here.
+// The driver's updateDataValue, one call per key. verify=false skips the read-back; the update tool confirms
+// data values from its own single read-back.
 private void _applyNativeDeviceDataValues(deviceId, Map values, List changes, List errors, boolean verify = true) {
     for (item in values) {
         try {
@@ -5566,7 +5569,7 @@ Default: most-recent events for a device (deviceId + optional limit). Device eve
         ],
         [
             name: "hub_update_device",
-            description: """Change a device's settings the way its device page saves them: Device Info fields, driver preferences, assistant sharing and enabled state. Pre-flight: read hub_get_tool_guide(section='update_device') and hub_get_device(mode='configuration'); its editableFields and preferences give each name's type, options, current value and whether this device offers it. Only change devices the user asked about. Fields marked requiresConfirmation (driver, network or Zigbee ID, dashboards, Hub Mesh, assistants) need confirm=true and a backup under 24 hours old. Saving preferences, showOnHome, defaultCurrentState or retryEnabled runs the driver's updated(). The result lists each change and error from one read-back; inspect it before retrying.""",
+            description: """Change a device's settings the way its device page saves them: Device Info fields, driver preferences, assistant sharing and enabled state. Pre-flight: read hub_get_tool_guide(section='update_device') and hub_get_device(mode='configuration'); the configuration's editableFields and preferences give each name's type, options, current value and whether this device offers it. Only change devices the user asked about. Fields marked requiresConfirmation (driver, network or Zigbee ID, dashboards, Hub Mesh, assistants) need confirm=true and a backup under 24 hours old. Saving preferences, showOnHome, defaultCurrentState or retryEnabled runs the driver's updated(). The result lists each change and error from one read-back; inspect it before retrying.""",
             inputSchema: [
                 type: "object",
                 properties: [

@@ -299,6 +299,7 @@ private List _nfDevices(Map field) {
 
 private String _nfValue(Map field, Object value) {
     if (!field.supported || field.disabled || (!field.app_field && field.name =~ /[\[\]\r\n]/)) throw new IllegalArgumentException("Unsupported or disabled native field: ${field.name}")
+    if (_isRedactionMarker(value)) throw new IllegalArgumentException("${field.name} is the redaction marker, not a value; omit the field to keep the stored one")
     // A device input also takes the {id: label} map a configuration read returns.
     if (field.device && value instanceof Map) {
         List ids = value.keySet().collect { it.toString() }
@@ -517,6 +518,8 @@ Map toolCallAppForm(Map args, String toolName = 'hub_set_rule') {
         if (step.kind == 'open' && step.from != null && (step.page == null || !(step.from instanceof String) || !(step.from ==~ /[A-Za-z_][A-Za-z0-9_.-]*/))) throw new IllegalArgumentException('from names the parent page of the opened page and requires page')
         if (step.kind == 'submit' && (!(step.expect_page instanceof String) || (step.get('fields') != null && !(step.get('fields') instanceof Map)))) throw new IllegalArgumentException('Submit requires expect_page and an optional fields object')
         if (step.activate != null && !(step.activate instanceof String)) throw new IllegalArgumentException('activate requires a returned control_id string')
+        def marked = step.get('fields') instanceof Map ? step.get('fields').find { k, v -> _isRedactionMarker(v) } : null
+        if (marked) throw new IllegalArgumentException("${marked.key} is the redaction marker, not a value; omit the field to keep the stored one")
     }
     requireDestructiveConfirm(args.confirm)
     Long id = args.app_id.toString().toLong()

@@ -985,11 +985,8 @@ private List _normalizeDeviceIdList(raw) {
     return (raw != null) ? [raw.toString()] : []
 }
 
-// Build the /dashboard/create|update query. Booleans serialize as "true"/"false"; theme empty == legacy.
-// Tile/nav/pin values are read from an `options` sub-object first, else the top-level arg (keeps the flat
-// tools/list catalog small while supporting direct callers). The id param (update) is added by the caller.
 // A dashboard's PINs are app settings: Hide passwords and credentials masks them in every dashboard tool
-// result. Applied at dispatch only, since clone and update reuse the unmasked reads.
+// result, at the tool boundary only, so internal reads keep the real PINs.
 private _dashboardPublic(result) {
     if (!_redactsCredentials()) return result
     if (result instanceof Map) {
@@ -1001,6 +998,9 @@ private _dashboardPublic(result) {
     return result
 }
 
+// Build the /dashboard/create|update query. Booleans serialize as "true"/"false"; theme empty == legacy.
+// Tile/nav/pin values are read from an `options` sub-object first, else the top-level arg (keeps the flat
+// tools/list catalog small while supporting direct callers). The id param (update) is added by the caller.
 private Map _buildDashboardConfigQuery(Map args, String deviceCsv) {
     def boolStr = { v -> (v == true || v?.toString()?.toLowerCase() == "true") ? "true" : "false" }
     def opts = (args.options instanceof Map) ? args.options : [:]

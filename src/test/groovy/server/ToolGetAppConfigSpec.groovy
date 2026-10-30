@@ -451,10 +451,11 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         and: 'the page JSON carries only the code defaultValue; the stored values are in settings[name]'
         hubGet.register('/installedapp/configure/json/35') { params ->
             makeAppConfigJson([
-                settings: [debugLogging: 'true', logLevel: 'debug', origLabel: 'Kitchen', lights: ['12': 'Lamp']],
+                settings: [debugLogging: 'true', flagOn: 'false', logLevel: 'debug', origLabel: 'Kitchen', lights: ['12': 'Lamp']],
                 configPage: [name: 'mainPage', title: 'Main', install: true, refreshInterval: null, sections: [
                     [title: 'S', input: [
                         [name: 'debugLogging', type: 'bool', title: 'Debug', defaultValue: false],
+                        [name: 'flagOn', type: 'bool', title: 'On', defaultValue: true],
                         [name: 'logLevel', type: 'enum', title: 'Level', defaultValue: 'error', options: ['error', 'debug']],
                         [name: 'origLabel', type: 'text', title: 'Label'],
                         [name: 'retries', type: 'number', title: 'Retries', defaultValue: 3],
@@ -469,6 +470,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
 
         then: 'stored values win; an unset input shows its default; the device input is unchanged'
         inputs.debugLogging.value == 'true'
+        inputs.flagOn.value == 'false'
         inputs.logLevel.value == 'debug'
         inputs.origLabel.value == 'Kitchen'
         inputs.retries.value == 3

@@ -558,6 +558,7 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         'unknown device id' | [switches: ['99']]     | 'Invalid native choice for switches'
         'required emptied'  | [origLabel: '']        | 'Required field: origLabel'
         'object value'      | [logging: [a: 1]]      | 'Scalar values are required for logging'
+        'masked read back'  | [origLabel: '***redacted (password)***'] | 'origLabel is the redaction marker'
     }
 
     def 'a device input takes the {id: label} map a configuration read returns, posted as its ids'() {

@@ -290,6 +290,7 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
         [fields: [dataValues: [foo: 7]]]                          | 'dataValues must be a non-empty object of string values'
         [fields: [dataValues: [:]]]                               | 'dataValues must be a non-empty object of string values'
         [fields: [dataValues: [' ': 'x']]]                        | 'dataValues must be a non-empty object of string values'
+        [fields: [dataValues: [code: '***redacted (password)***']]] | 'dataValues cannot take the redaction marker'
         [fields: [room: true]]                                    | 'room must be a room name or id'
     }
 
@@ -349,6 +350,7 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
         [homeKitEnabled: false]          | null                  | { Map m -> m.remove('googleHomeEnabled') }    | 'current assistant assignments'
         [:]                              | [doesNotExist: true]  | { Map m -> }                                  | "Unknown preference 'doesNotExist'"
         [:]                              | [logEnable: 'perhaps'] | { Map m -> }                                 | 'requires a boolean value'
+        [:]                              | [logEnable: '***redacted (password)***'] | { Map m -> }               | "Preference 'logEnable' is the redaction marker"
         [:]                              | [offset: 11]          | { Map m -> }                                  | 'above its declared range'
         [deviceTypeId: 101]              | [logEnable: false]    | { Map m -> }                                  | 'Change the driver first'
     }
@@ -1139,9 +1141,7 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
         ['fixture-old-secret', 'fixture-new-secret', 'fixture-exception-secret'].every { !script.log.messages.join('\n').contains(it) }
     }
 
-    // ---- schema ------------------------------------------------------------------------
-
-    // ---- review follow-ups -------------------------------------------------------------------
+    // ---- value normalization, rooms, links, unchanged reporting ---------------------------------
 
     def 'a whole number sent as a decimal is posted as that integer'() {
         given:
@@ -1160,7 +1160,7 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
     }
 
     @Unroll
-    def 'room #room resolves by name before id, to #name'() {
+    def 'room #room resolves (text by name before id, a number by id) to #name'() {
         given:
         Map names = [1: 'Kitchen', 7: '1', 9: 'Den']
         script.metaClass.getRooms = { -> names.collect { key, label -> [id: key, name: label] } }
@@ -1183,7 +1183,9 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
         where:
         room  | roomId | name
         '1'   | '7'    | '1'
+        1     | '1'    | 'Kitchen'
         9     | '9'    | 'Den'
+        9.0   | '9'    | 'Den'
         'den' | '9'    | 'Den'
     }
 
@@ -1262,6 +1264,8 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
         'modes'     | 'enum' | ['a']  | '["a"]' | 'unchanged'
         'modes'     | 'enum' | ['a']  | 'a'     | 'changed, since the driver reads a comma-joined value as one String'
     }
+
+    // ---- schema ------------------------------------------------------------------------
 
     def 'the write schema takes fields and preferences, and configuration lists every editable field'() {
         when:
