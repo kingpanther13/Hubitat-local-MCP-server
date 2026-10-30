@@ -1,0 +1,18 @@
+plugins { id 'java' }
+repositories { mavenCentral() }
+configurations { groovy24 }
+dependencies { groovy24 'org.codehaus.groovy:groovy-all:2.4.21' }
+java { toolchain { languageVersion = JavaLanguageVersion.of(11) } }
+
+tasks.register('prepareCatalog24', JavaExec) {
+    javaLauncher = javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(11) }
+    classpath = configurations.groovy24
+    mainClass = 'groovy.ui.GroovyMain'
+    maxHeapSize = '1g'
+    args = [new File(projectDir, 'convert.groovy').absolutePath,
+            projectDir.parentFile.parentFile.absolutePath,
+            project.findProperty('catalogOutput') ?: new File(projectDir, 'results/groovy24').absolutePath]
+    doFirst {
+        if (System.getenv('GITHUB_ACTIONS') != 'true') throw new GradleException('Catalog preparation runs only in GitHub Actions')
+    }
+}
