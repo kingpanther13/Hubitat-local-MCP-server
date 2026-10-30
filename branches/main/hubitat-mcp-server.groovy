@@ -508,6 +508,10 @@ def toolUpdateDashboard(args) {
         throw new IllegalArgumentException("name is required. Update REPLACES the dashboard's config wholesale (there is no server-side read-merge), so pass the full desired config every time.")
     }
     def deviceCsv = _dashboardDeviceCsv(args.deviceIds, true)
+    String pinMarker = _appConfigRedactedMarker()
+    args = [:] + args
+    if (args.options instanceof Map) args.options = args.options.findAll { k, v -> !(k in ["dashboardPin", "hsmPin"] && v?.toString() == pinMarker) }
+    ["dashboardPin", "hsmPin"].each { k -> if (args[k]?.toString() == pinMarker) args.remove(k) }
     def argsForQuery = args
     boolean pinPreserveFailed = false
     def hasField = { String k -> (args.options instanceof Map && args.options.containsKey(k)) || args.containsKey(k) }
@@ -894,10 +898,25 @@ private List _normalizeDeviceIdList(raw) {
     }
     return (raw != null) ? [raw.toString()] : []
 }
+private _dashboardPublic(result) {
+    if (!_redactsCredentials()) return result
+    if (result instanceof Map) {
+        return result.collectEntries { k, v ->
+            [(k): (k in ["dashboardPin", "hsmPin"] && v != null && v.toString()) ? _appConfigRedactedMarker() : _dashboardPublic(v)]
+        }
+    }
+    if (result instanceof List) return result.collect { _dashboardPublic(it) }
+    return result
+}
 private Map _buildDashboardConfigQuery(Map args, String deviceCsv) {
     def boolStr = { v -> (v == true || v?.toString()?.toLowerCase() == "true") ? "true" : "false" }
     def opts = (args.options instanceof Map) ? args.options : [:]
     def opt = { String k -> opts.containsKey(k) ? opts.get(k) : args.get(k) }
+    ["dashboardPin", "hsmPin"].each { k ->
+        if (opt(k)?.toString() == _appConfigRedactedMarker()) {
+            throw new IllegalArgumentException("${k} is the redaction marker, not a PIN. Pass the real PIN, or omit it on hub_update_dashboard to keep the stored one.")
+        }
+    }
     return [
         name: args.name.toString(),
         deviceIds: deviceCsv,
@@ -5444,6 +5463,7 @@ private List _bugReportSettingsLines(String privacyMode) {
             "- **Back up before every native app edit:** ${eff(settings.backupEveryRuleWrite, false)}",
             "- **Backup storage budget (MB):** ${effNum(settings.backupBudgetMb, _itemBackupBudgetMb())}",
             "- **Hide access tokens in responses:** ${eff(settings.redactAccessTokens, false)}",
+            "- **Hide credentials in responses:** ${eff(_redactsCredentials(), true)}",
             "- **Keep recent errors for bug reports:** ${eff(settings.retainReportErrors, false)}",
             "- **Max captured states:** ${effNum(settings.maxCapturedStates, getMaxCapturedStates())}",
             "- **Loop guard max executions:** ${effNum(settings.loopGuardMax, settings.loopGuardMax ?: 30)}",
@@ -10844,16 +10864,6 @@ private Map _fetchDeviceFullJson(deviceId) {
         return null
     }
 }
-private Map _confirmDisabledFlip(deviceId, boolean wantDisabled) {
-    def fj = _fetchDeviceFullJson(deviceId)
-    if (fj?.device == null) return [ok: false, fetchFailed: true]
-    def raw = fj.device.disabled
-    if (!(raw instanceof Boolean) && !(raw instanceof CharSequence && raw.toString() in ['true', 'false'])) {
-        return [ok: false, fetchFailed: true]
-    }
-    def nowDisabled = (raw == true || raw?.toString() == "true")
-    return (nowDisabled == wantDisabled) ? [ok: true] : [ok: false, actualDisabled: nowDisabled]
-}
 private List _fetchBypassDeviceEvents(deviceId) {
     try {
         def txt = hubInternalGet("/device/eventsJson/${deviceId}")
@@ -11058,15 +11068,16 @@ private Map _lookupDevicePreference(Map model, name) {
     return model?.entries?.find { it.name == name?.toString() }
 }
 private boolean _devicePreferenceIsSecret(Map entry) {
-    return entry?.type?.toString() == 'password' || _deviceConfigurationSecretKey(entry?.name)
+    return _redactsCredentials() && (entry?.type?.toString() == 'password' || _deviceConfigurationSecretKey(entry?.name))
 }
 private boolean _deviceConfigurationSecretKey(key) {
     String normalized = key?.toString()?.toLowerCase()?.replaceAll(/[^a-z0-9]/, '') ?: ''
     return normalized.contains('password') || normalized.contains('token') || normalized.contains('secret') ||
         normalized.contains('credential') || normalized.contains('apikey') || normalized.contains('privatekey') ||
-        normalized.contains('accesskey') || normalized in ['psk', 'psw']
+        normalized.contains('accesskey') || normalized in ['psk', 'psw'] || _appConfigSecretName(key)
 }
 private _deviceConfigurationPublicValue(value, key = '') {
+    if (!_redactsCredentials()) return value
     if (_deviceConfigurationSecretKey(key)) return '***redacted (password)***'
     if (value instanceof Map) {
         def copy = [:]
@@ -11134,109 +11145,45 @@ private Map _deviceConfigurationProjection(Map source, List keys) {
     }
     return result
 }
-private List _deviceConfigurationFieldDefinitions() {
-    return [
-        [name: 'label', type: 'string'], [name: 'name', type: 'string'],
-        [name: 'deviceNetworkId', type: 'string', requiresConfirmation: true],
-        [name: 'room', type: 'string'], [name: 'enabled', type: 'boolean'],
-        [name: 'dataValues', type: 'object'], [name: 'preferences', type: 'object'],
-        [name: 'showOnHome', type: 'boolean'], [name: 'defaultCurrentState', type: 'string'],
-        [name: 'tags', type: 'array', items: [type: 'string']],
-        [name: 'deviceTypeId', type: 'integer', requiresConfirmation: true],
-        [name: 'zigbeeId', type: 'string', requiresConfirmation: true],
-        [name: 'notes', type: 'string'], [name: 'defaultIcon', type: 'string'],
-        [name: 'maxEvents', type: 'integer', minimum: 1, maximum: 2000],
-        [name: 'maxStates', type: 'integer', minimum: 1, maximum: 2000],
-        [name: 'spammyThreshold', type: 'integer', minimum: 100, maximum: 2000],
-        [name: 'dashboardIds', type: 'array', items: [type: 'integer'], requiresConfirmation: true],
-        [name: 'meshEnabled', type: 'boolean', requiresConfirmation: true],
-        [name: 'retryEnabled', type: 'boolean'],
-        [name: 'meshFullSync', type: 'boolean', requiresConfirmation: true],
-        [name: 'homeKitEnabled', type: 'boolean', requiresConfirmation: true],
-        [name: 'amazonAlexaEnabled', type: 'boolean', requiresConfirmation: true],
-        [name: 'googleHomeEnabled', type: 'boolean', requiresConfirmation: true]
-    ]
-}
-private List _deviceConfigurationEditableFields(Map fj, Map preferences) {
+private List _deviceConfigurationEditableFields(Map fj) {
     Map d = (fj?.device instanceof Map) ? fj.device : [:]
-    def values = _deviceConfigurationProjection(d, ['label', 'name', 'deviceNetworkId', 'showOnHome',
-        'defaultCurrentState', 'deviceTypeId', 'zigbeeId', 'notes', 'defaultIcon', 'maxEvents', 'maxStates',
-        'spammyThreshold', 'meshEnabled', 'retryEnabled', 'meshFullSync'])
-    if (d.containsKey('roomName')) values.room = d.roomName
-    if (d.containsKey('disabled')) {
-        def disabled = _normalizeDevicePreferenceValue(d.disabled, 'bool')
-        if (disabled.valid && disabled.value != null) values.enabled = !disabled.value
-    }
-    if (d.containsKey('data')) values.dataValues = _deviceConfigurationPublicValue(d.data)
-    if (d.containsKey('tags')) {
-        values.tags = _normalizedDeviceTags(d.tags)
-    }
-    if (fj?.dashboards instanceof List) values.dashboardIds = fj.dashboards.findAll { it.selected == true }.collect { it.id }
-    ['homeKitEnabled', 'amazonAlexaEnabled', 'googleHomeEnabled'].each { key ->
-        if (fj?.containsKey(key)) values.put(key, fj.get(key))
-    }
-    def applicable = [
-        label: !_deviceFlag(d.linkedAndDisabled),
-        name: !_deviceFlag(d.isComponent) && !_deviceFlag(d.linkedDevice),
-        deviceNetworkId: (!_deviceFlag(d.isComponent) || _deviceFlag(d.linkedDevice)) && !_deviceFlag(d.linkedLocally),
-        dataValues: true,
-        deviceTypeId: !_deviceFlag(d.isComponent) && !_deviceFlag(d.linkedDevice),
-        zigbeeId: !_deviceFlag(d.isComponent) && !_deviceFlag(d.linkedDevice) && d.zigbeeId instanceof String && !d.zigbeeId.isEmpty(),
-        dashboardIds: _deviceFlag(fj?.hasDashboards),
-        meshEnabled: _deviceFlag(d.meshSelectionEnabled),
-        retryEnabled: _deviceFlag(fj?.commandRetrySelectionEnabled) || _deviceFlag(d.retryAvailable),
-        meshFullSync: _deviceFlag(d.linkedDevice) && _deviceFlag(fj?.hubMeshRefreshEnabled),
-        homeKitEnabled: _deviceFlag(fj?.homeKitSelectionEnabled),
-        amazonAlexaEnabled: _deviceFlag(fj?.amazonAlexaInstalled) && _deviceFlag(fj?.amazonAlexaSupported),
-        googleHomeEnabled: _deviceFlag(fj?.googleHomeInstalled) && _deviceFlag(fj?.googleHomeSupported)
-    ]
-    def fields = _deviceConfigurationFieldDefinitions()
-    fields.each { field ->
-        String name = field.name
-        field.source = name in ['homeKitEnabled', 'amazonAlexaEnabled', 'googleHomeEnabled', 'dashboardIds'] ? 'fullJson' : 'fullJson.device'
-        field.valuePresent = values.containsKey(name)
-        if (field.valuePresent) field.value = values.get(name)
-        field.readStatus = field.valuePresent ? 'complete' : 'unavailable'
-        field.applicable = !applicable.containsKey(name) || applicable.get(name)
-        field.writable = !d.isEmpty() && field.applicable
-        if (field.requiresConfirmation) field.requiresBackup = true
-        if (!field.applicable) field.reason = 'This device or installed integration does not expose this edit control.'
-        else if (!field.valuePresent) field.reason = 'The native device response did not supply this current value.'
-        if (name == 'preferences') {
-            field.source = 'fullJson.settings'
-            field.valueReference = 'preferences'
-            field.readStatus = preferences.status
-            field.valuePresent = preferences.status != 'unavailable'
-            field.applicable = !_deviceFlag(d.linkedDevice)
-            field.writable = field.applicable && preferences.writeSafe == true
-            field.remove('reason')
-            if (!field.applicable) field.reason = 'Driver preferences cannot be saved on a linked device; edit the source device.'
-            else if (preferences.reason) field.reason = preferences.reason
-        }
+    def fields = []
+    for (spec in _deviceEditFields()) {
+        String name = spec.key
+        def field = [name: name, type: spec.value.type]
+        if (spec.value.minimum != null && spec.value.type == 'integer') field.minimum = spec.value.minimum
+        if (spec.value.maximum != null) field.maximum = spec.value.maximum
+        if (spec.value.confirm) field.requiresConfirmation = true
+        String unavailable = d ? _deviceEditUnavailable(name, fj) : 'The native device details could not be read.'
+        field.writable = unavailable == null
+        if (unavailable) field.reason = unavailable
+        if (d) field.value = _deviceConfigurationPublicValue(_deviceEditCurrentValue(name, fj), name)
         if (name == 'room') field.optionsReference = [gateway: 'hub_read_rooms', tool: 'hub_list_rooms', args: [:]]
         if (name == 'deviceTypeId') field.optionsReference = [gateway: 'hub_read_apps_code', tool: 'hub_list_drivers', args: [include: 'all']]
-        if (name == 'deviceNetworkId' && d.linkedDevice) {
-            field.options = [[value: '0', label: 'Keep current device link']]
-            try {
-                def text = hubInternalGet('/device/accessibleLinkedDevices')
-                def available = text ? new groovy.json.JsonSlurper().parseText(text) : null
-                if (!(available?.devices instanceof List)) throw new IllegalStateException('Unrecognized linked-device choices')
-                available.devices.each { row ->
-                    if (row instanceof Map && row.hubId != null && row.deviceId != null) {
-                        field.options << [value: "${row.hubId}-${row.deviceId}".toString(),
-                            label: row.label ?: row.name ?: row.deviceId.toString(), disabled: _deviceFlag(row.linkedLocally)]
-                    }
-                }
-            } catch (Exception ignored) {
-                mcpLog('error', 'device', "Device ${d.id}: /device/accessibleLinkedDevices choices could not be read; retry configuration discovery.")
-                field.optionsStatus = 'unavailable'
-                field.reason = 'Native linked-device choices could not be read; retry configuration discovery before retargeting.'
-            }
-        }
-        if (name == 'dashboardIds') field.options = _deviceConfigurationPublicValue(fj?.dashboards ?: [])
+        if (name == 'dashboardIds' && fj?.dashboards instanceof List) field.options = fj.dashboards.collect { [id: it.id, name: it.name] }
         if (name == 'defaultCurrentState') field.options = [''] + _fullJsonAttributeNames(fj)
+        if (name == 'deviceNetworkId' && _deviceFlag(d.linkedDevice)) _addLinkedDeviceOptions(field, d.id)
+        fields << field
     }
     return fields
+}
+private void _addLinkedDeviceOptions(Map field, deviceId) {
+    field.options = [[value: '0', label: 'Keep current device link']]
+    try {
+        def text = hubInternalGet('/device/accessibleLinkedDevices')
+        def available = text ? new groovy.json.JsonSlurper().parseText(text) : null
+        if (!(available?.devices instanceof List)) throw new IllegalStateException('Unrecognized linked-device choices')
+        for (row in available.devices) {
+            if (row instanceof Map && row.hubId != null && row.deviceId != null) {
+                field.options << [value: "${row.hubId}-${row.deviceId}".toString(),
+                    label: row.label ?: row.name ?: row.deviceId.toString(), disabled: _deviceFlag(row.linkedLocally)]
+            }
+        }
+    } catch (Exception ignored) {
+        mcpLog('error', 'device', "Device ${deviceId}: /device/accessibleLinkedDevices choices could not be read; retry configuration discovery.")
+        field.optionsStatus = 'unavailable'
+        field.reason = 'Native linked-device choices could not be read; retry configuration discovery before retargeting.'
+    }
 }
 private Map _deviceConfigurationDriverSource(Map d, deviceId) {
     def lookup = [gateway: 'hub_read_apps_code', tool: 'hub_list_drivers', args: [include: 'user']]
@@ -11288,7 +11235,7 @@ private Map _deviceConfigurationResult(deviceId, Map identity, Map fj, fields = 
     def infoRead = [status: available ? 'complete' : 'unavailable', source: "/device/fullJson/${deviceId}".toString()]
     if (!available) infoRead.reason = 'Native device information could not be fetched or recognized.'
     def result = [id: deviceId.toString(), name: identity.name, label: identity.label, mode: 'configuration',
-            editableFields: _deviceConfigurationEditableFields(fj, model),
+            editableFields: _deviceConfigurationEditableFields(fj),
             preferences: model.entries.collect {
                 def entry = _publicDevicePreference(it)
                 entry.writable = !linkedDevice && model.writeSafe == true && entry.writable
@@ -11509,7 +11456,7 @@ private Map _deviceExpandedResult(deviceId, Map identity, Map fj, String mode, s
                     note: 'Unset or cleared attributes can be absent; absence does not establish an unsupported attribute.']
                 if (d.currentStates instanceof Map) value.declaredAttributes = _nativeReportedDeviceAttributes(d).collect { row ->
                     def attribute = _deviceConfigurationPublicValue(row)
-                    if (row instanceof Map && _deviceConfigurationSecretKey(row.name)) {
+                    if (row instanceof Map && _redactsCredentials() && _deviceConfigurationSecretKey(row.name)) {
                         attribute.value = '***redacted (password)***'
                     }
                     attribute
@@ -12843,38 +12790,77 @@ def _prefSaveDeviceId(deviceId) {
     try { return (deviceId != null) ? (deviceId.toString() as Long) : deviceId }
     catch (Exception ignored) { return deviceId }
 }
-private Map _devicePreferencePanePayload(deviceId, Map overrides = [:], List preferenceRows = []) {
-    def fresh = _fetchDeviceFullJson(deviceId)
-    def d = fresh?.device
-    def controls = d instanceof Map ? d : [:]
-    def showOnHome = _normalizeDevicePreferenceValue(controls.get('showOnHome'), 'bool')
-    def retryEnabled = _normalizeDevicePreferenceValue(controls.get('retryEnabled'), 'bool')
-    if (!(d instanceof Map) || !showOnHome.valid || !(showOnHome.value instanceof Boolean) ||
-        !retryEnabled.valid || !(retryEnabled.value instanceof Boolean) || !d.containsKey("defaultCurrentState") ||
-        !(d.get("defaultCurrentState") == null || d.get("defaultCurrentState") instanceof String)) {
-        throw new RuntimeException("Unable to read complete preference-pane controls before saving; no preference update sent")
+private Map _deviceEditFields() {
+    return [
+        label: [type: 'string', save: 'form'], name: [type: 'string', save: 'form'],
+        deviceNetworkId: [type: 'string', save: 'form', confirm: true],
+        room: [type: 'string', save: 'form'], tags: [type: 'array', save: 'form'],
+        notes: [type: 'string', save: 'form'], defaultIcon: [type: 'string', save: 'form'],
+        maxEvents: [type: 'integer', minimum: 1, maximum: 2000, save: 'form'],
+        maxStates: [type: 'integer', minimum: 1, maximum: 2000, save: 'form'],
+        spammyThreshold: [type: 'integer', minimum: 100, maximum: 2000, save: 'form'],
+        deviceTypeId: [type: 'integer', minimum: 1, save: 'form', confirm: true],
+        zigbeeId: [type: 'string', save: 'form', confirm: true],
+        dashboardIds: [type: 'array', save: 'form', confirm: true],
+        meshEnabled: [type: 'boolean', save: 'form', confirm: true],
+        meshFullSync: [type: 'boolean', save: 'form', confirm: true],
+        showOnHome: [type: 'boolean', save: 'pane'], defaultCurrentState: [type: 'string', save: 'pane'],
+        retryEnabled: [type: 'boolean', save: 'pane'],
+        homeKitEnabled: [type: 'boolean', save: 'assistants', confirm: true],
+        amazonAlexaEnabled: [type: 'boolean', save: 'assistants', confirm: true],
+        googleHomeEnabled: [type: 'boolean', save: 'assistants', confirm: true],
+        enabled: [type: 'boolean', save: 'enabled'], dataValues: [type: 'object', save: 'data']
+    ]
+}
+private String _deviceEditUnavailable(String field, Map fj) {
+    Map d = fj.device
+    boolean component = _deviceFlag(d.isComponent)
+    boolean linked = _deviceFlag(d.linkedDevice)
+    switch (field) {
+        case 'label': return _deviceFlag(d.linkedAndDisabled) ? 'A disabled linked device keeps its label.' : null
+        case 'name': case 'deviceTypeId':
+            return component || linked ? 'A component or linked device takes its name and driver from its parent or source device.' : null
+        case 'zigbeeId':
+            if (component || linked) return 'A component or linked device takes its Zigbee ID from its parent or source device.'
+            return d.zigbeeId ? null : 'The device has no Zigbee ID.'
+        case 'deviceNetworkId':
+            return (component && !linked) || _deviceFlag(d.linkedLocally) ? 'This device takes its network ID from its parent.' : null
+        case 'dashboardIds': return _deviceFlag(fj.hasDashboards) && fj.dashboards instanceof List ? null : 'The hub has no Hubitat Dashboards (legacy) to assign. An Easy Dashboard picks its devices with hub_update_dashboard deviceIds.'
+        case 'meshEnabled': return _deviceFlag(d.meshSelectionEnabled) ? null : 'Hub Mesh sharing is not available for this device.'
+        case 'meshFullSync': return linked && _deviceFlag(fj.hubMeshRefreshEnabled) ? null : 'Full sync applies to a linked device while Hub Mesh refresh is enabled.'
+        case 'retryEnabled': return _deviceFlag(fj.commandRetrySelectionEnabled) || _deviceFlag(d.retryAvailable) ? null : 'Command retry is not available for this device.'
+        case 'homeKitEnabled': return _deviceFlag(fj.homeKitSelectionEnabled) ? null : 'HomeKit is not enabled or does not support this device.'
+        case 'amazonAlexaEnabled': return _deviceFlag(fj.amazonAlexaInstalled) && _deviceFlag(fj.amazonAlexaSupported) ? null : 'Amazon Alexa is not installed or does not support this device.'
+        case 'googleHomeEnabled': return _deviceFlag(fj.googleHomeInstalled) && _deviceFlag(fj.googleHomeSupported) ? null : 'Google Home is not installed or does not support this device.'
+        case 'preferences': return linked ? 'A linked device saves its driver preferences on the source hub.' : null
     }
-    def payload = [deviceId: _prefSaveDeviceId(deviceId),
-        defaultCurrentState: d.get("defaultCurrentState") == null ? "" : d.get("defaultCurrentState").toString(),
-        commandRetry: retryEnabled.value, showOnHome: showOnHome.value,
-        preferences: preferenceRows]
-    overrides.each { key, value -> payload.put(key, value) }
-    return payload
-}
-private List _deviceExtendedFormProperties() {
-    return ["deviceTypeId", "zigbeeId", "notes", "maxEvents", "maxStates", "spammyThreshold",
-        "defaultIcon", "dashboardIds", "meshEnabled", "retryEnabled", "meshFullSync"]
-}
-private Map _deviceAssistantProperties() {
-    return [homeKitEnabled: "homeKit", amazonAlexaEnabled: "amazonAlexa", googleHomeEnabled: "googleHome"]
+    return null
 }
 private boolean _deviceFlag(value) {
     return value == true || value?.toString() == "true"
+}
+private boolean _deviceEditInteger(value, Map spec) {
+    if (!(value instanceof Number) || new BigDecimal(value.toString()).stripTrailingZeros().scale() > 0) return false
+    return value >= (spec.minimum ?: 1) && (spec.maximum == null || value <= spec.maximum)
+}
+private void _checkDeviceEditValue(String field, Map spec, value) {
+    String bad = null
+    if (field == 'room' && !(value instanceof String) && !_deviceEditInteger(value, [:])) bad = 'must be a room name or id'
+    else if (spec.type == 'string' && field != 'room' && !(value instanceof String)) bad = 'must be a string'
+    else if (spec.type == 'boolean' && !(value instanceof Boolean)) bad = 'must be a boolean'
+    else if (spec.type == 'integer' && !_deviceEditInteger(value, spec)) bad = spec.maximum ? "must be an integer from ${spec.minimum} to ${spec.maximum}" : "must be a positive integer"
+    else if (field == 'tags' && (!(value instanceof List) || value.any { !(it instanceof String) || it.contains(',') })) bad = 'must be an array of strings without commas'
+    else if (field == 'dashboardIds' && (!(value instanceof List) || value.any { !_deviceEditInteger(it, [:]) })) bad = 'must be an array of dashboard IDs'
+    else if (field == 'dataValues' && (!(value instanceof Map) || !value || value.any { k, v -> !k?.toString()?.trim() || !(v instanceof String) })) bad = 'must be a non-empty object of string values keyed by data name'
+    else if (field == 'dataValues' && value.any { k, v -> _isRedactionMarker(v) }) bad = 'cannot take the redaction marker as a value; omit the key to keep the stored one'
+    else if (field in ['name', 'deviceNetworkId'] && !value.trim()) bad = 'cannot be empty'
+    if (bad) throw new IllegalArgumentException("${field} ${bad}")
 }
 private _normalizedDevicePreferenceValue(Map entry, value) {
     if (value == null || (value instanceof String && !value.trim()) || (value instanceof List && value.isEmpty())) {
         throw new IllegalArgumentException("Preference '${entry.name}' cannot use a blank value; omit it to preserve the setting or use {clear:true} to remove an optional setting")
     }
+    if (_isRedactionMarker(value)) throw new IllegalArgumentException("Preference '${entry.name}' is the redaction marker, not a value; omit it to keep the stored one")
     def type = entry.type?.toString()
     if (type in ["bool", "boolean"]) {
         if (value instanceof Boolean) return value
@@ -12890,7 +12876,7 @@ private _normalizedDevicePreferenceValue(Map entry, value) {
             def bounds = range.split("\\.\\.", -1)
             if (bounds.size() != 2) throw new IllegalArgumentException("Preference '${entry.name}' has an unsupported numeric range; inspect its configuration")
             def limits = []
-            bounds.each { bound ->
+            for (bound in bounds) {
                 def token = bound.trim()
                 if (!token || token == '*') limits << null
                 else {
@@ -12907,11 +12893,11 @@ private _normalizedDevicePreferenceValue(Map entry, value) {
         def multiple = _deviceFlag(entry.multiple)
         if (!multiple && value instanceof List) throw new IllegalArgumentException("Preference '${entry.name}' accepts a single option")
         def values = multiple ? (value instanceof List ? value : value.toString().split(",").toList()) : [value]
-        def options = entry.options
         def allowed = []
+        def options = entry.options
         if (options instanceof Map) allowed = options.keySet().collect { it.toString() }
         else if (options instanceof List) {
-            options.each { option ->
+            for (option in options) {
                 if (option instanceof Map) allowed.addAll(option.keySet().collect { it.toString() })
                 else if (option != null) allowed << option.toString()
             }
@@ -12925,119 +12911,31 @@ private _normalizedDevicePreferenceValue(Map entry, value) {
     }
     return value.toString()
 }
-private Map _prepareDeviceUpdatePatch(Map original, deviceId, Map suppliedFull = null) {
-    def args = new LinkedHashMap(original)
-    def allowed = ["deviceId", "bestPracticeKey", "label", "name", "deviceNetworkId", "room", "enabled", "dataValues", "preferences", "showOnHome", "defaultCurrentState", "tags", "confirm"] + _deviceExtendedFormProperties() + _deviceAssistantProperties().keySet().toList()
-    if (args.keySet().any { !allowed.contains(it.toString()) }) throw new IllegalArgumentException("Unknown device update property; read hub_get_device(mode='configuration') for supported fields")
-    def stringFields = ["label", "name", "deviceNetworkId", "room", "defaultCurrentState", "zigbeeId", "notes", "defaultIcon"]
-    stringFields.each { field ->
-        if (args.containsKey(field) && !(args.get(field) instanceof String)) throw new IllegalArgumentException("${field} must be a string")
+private Map _planDevicePreferences(Map fj, Map preferences, Map fields) {
+    String unavailable = _deviceEditUnavailable('preferences', fj)
+    if (unavailable) throw new IllegalArgumentException(unavailable)
+    if (fields.containsKey('deviceTypeId') && fields.deviceTypeId.toString() != fj.device.deviceTypeId?.toString()) {
+        throw new IllegalArgumentException("Change the driver first, then read its new preference definitions before updating preferences")
     }
-    def booleanFields = ["enabled", "showOnHome", "meshEnabled", "retryEnabled", "meshFullSync", "confirm"] + _deviceAssistantProperties().keySet().toList()
-    booleanFields.each { field ->
-        if (args.containsKey(field) && !(args.get(field) instanceof Boolean)) throw new IllegalArgumentException("${field} must be a boolean")
-    }
-    [maxEvents: [1, 2000], maxStates: [1, 2000], spammyThreshold: [100, 2000], deviceTypeId: [1, 2147483647]].each { field, bounds ->
-        if (args.containsKey(field)) {
-            def value = args.get(field)
-            if (!(value instanceof Number) || value < bounds[0] || value > bounds[1] || new BigDecimal(value.toString()).stripTrailingZeros().scale() > 0) {
-                throw new IllegalArgumentException("${field} must be an integer from ${bounds[0]} to ${bounds[1]}")
+    def model = _readDevicePreferenceModel(fj)
+    if (model.writeSafe != true) throw new IllegalArgumentException("Unable to read complete preference definitions/storage before updating; inspect hub_get_device(mode='configuration')")
+    def planned = [:]
+    for (pref in preferences) {
+        String name = pref.key.toString()
+        def setting = pref.value
+        def entry = _lookupDevicePreference(model, name)
+        if (!entry) throw new IllegalArgumentException("Unknown preference '${name}'; read hub_get_device(mode='configuration') for declared names")
+        def type = entry.type in ['bool', 'boolean'] ? 'bool' : entry.type
+        boolean clear = setting instanceof Map && setting.get('clear') == true
+        if (setting instanceof Map) {
+            def suppliedType = setting.type in ['bool', 'boolean'] ? 'bool' : setting.type
+            if ((setting.containsKey('clear') && (!clear || setting.containsKey('value'))) ||
+                (!clear && !setting.containsKey('value')) ||
+                (suppliedType != null && suppliedType.toString() != type) ||
+                setting.keySet().any { !(it in ['type', 'value', 'clear', 'multiple']) }) {
+                throw new IllegalArgumentException("Preference '${name}' takes a value of its declared type, {value, multiple} or {clear:true}; clear and value cannot be combined")
             }
-        }
-    }
-    if (args.containsKey("tags") && (!(args.tags instanceof List) || args.tags.any { !(it instanceof String) || it.contains(",") })) {
-        throw new IllegalArgumentException("tags must be an array of strings without commas")
-    }
-    if (args.containsKey("dashboardIds") && (!(args.dashboardIds instanceof List) || args.dashboardIds.any { !(it instanceof Number) || it < 1 || new BigDecimal(it.toString()).stripTrailingZeros().scale() > 0 })) {
-        throw new IllegalArgumentException("dashboardIds must be an array of positive integer IDs")
-    }
-    if (args.containsKey("dataValues") && (!(args.dataValues instanceof Map) || args.dataValues.any { k, v -> !(k instanceof String) || !(v instanceof String) })) {
-        throw new IllegalArgumentException("dataValues must be an object containing string values")
-    }
-    if (args.containsKey("preferences") && !(args.preferences instanceof Map)) throw new IllegalArgumentException("preferences must be an object keyed by declared preference name")
-    if (args.name != null && !args.name.trim()) throw new IllegalArgumentException("name cannot be empty")
-    if (args.deviceNetworkId != null && !args.deviceNetworkId.trim()) throw new IllegalArgumentException("deviceNetworkId cannot be empty")
-    def sensitive = ["deviceTypeId", "deviceNetworkId", "zigbeeId", "meshEnabled", "meshFullSync", "dashboardIds"] + _deviceAssistantProperties().keySet().toList()
-    if (sensitive.any { args.containsKey(it) }) requireDestructiveConfirm(args.confirm)
-    def nativeFields = _deviceExtendedFormProperties() + _deviceAssistantProperties().keySet().toList() + ["deviceNetworkId"]
-    def needModel = args.preferences || nativeFields.any { args.containsKey(it) }
-    if (settings.enableWrite == false && (_deviceExtendedFormProperties() + _deviceAssistantProperties().keySet().toList()).any { args.containsKey(it) }) {
-        throw new IllegalArgumentException("Requires 'Enable Write Tools' to be turned on in MCP Rule Server app settings")
-    }
-    def full = suppliedFull
-    def inspectModel = needModel || ['name', 'label', 'defaultCurrentState', 'showOnHome', 'tags', 'dataValues'].any { args.containsKey(it) }
-    if (full == null && inspectModel && settings.enableWrite != false) full = _fetchDeviceFullJson(deviceId)
-    if (needModel && !(full?.device instanceof Map)) throw new IllegalArgumentException("Unable to read device configuration before updating; use hub_get_device(mode='configuration') and retry")
-    def d = full?.device
-    if (args.defaultCurrentState && settings.enableWrite != false) {
-        if (!(d?.currentStates instanceof Map)) throw new IllegalArgumentException("Unable to read authoritative current-state attributes before updating defaultCurrentState; refresh device configuration first")
-        if (!d.currentStates.containsKey(args.defaultCurrentState)) throw new IllegalArgumentException("defaultCurrentState must name one of the device's current-state attributes")
-    }
-    if (d instanceof Map) {
-        if (_deviceFlag(d.linkedAndDisabled) && args.containsKey("label")) throw new IllegalArgumentException("label cannot be edited on a disabled linked device")
-        def componentIdentityFields = ["name", "deviceTypeId", "zigbeeId"]
-        if (!_deviceFlag(d.linkedDevice)) componentIdentityFields << "deviceNetworkId"
-        if (_deviceFlag(d.isComponent) && componentIdentityFields.any { args.containsKey(it) }) throw new IllegalArgumentException("This component device cannot have its identity or driver edited independently from its parent")
-        if (_deviceFlag(d.linkedDevice) && ["name", "deviceTypeId", "zigbeeId"].any { args.containsKey(it) }) throw new IllegalArgumentException("A linked device cannot have its source name, Zigbee ID or driver edited locally")
-        if (args.containsKey("zigbeeId") && !d.zigbeeId) throw new IllegalArgumentException("zigbeeId is not editable on a device without a Zigbee ID")
-        if (args.containsKey("meshEnabled") && !_deviceFlag(d.meshSelectionEnabled)) throw new IllegalArgumentException("meshEnabled is unavailable: Hub Mesh selection is disabled for this device")
-        if (args.containsKey("meshFullSync") && !(_deviceFlag(d.linkedDevice) && _deviceFlag(full.hubMeshRefreshEnabled))) throw new IllegalArgumentException("meshFullSync requires a linked device and Hub Mesh refresh enabled")
-        if (args.containsKey("retryEnabled") && !(_deviceFlag(full.commandRetrySelectionEnabled) || _deviceFlag(d.retryAvailable))) throw new IllegalArgumentException("retryEnabled is unavailable for this device; enable native command retry support first")
-        if (args.containsKey("dashboardIds")) {
-            if (!_deviceFlag(full.hasDashboards) || !(full.dashboards instanceof List)) throw new IllegalArgumentException("dashboardIds is unavailable: no native dashboard assignments are exposed")
-            def known = full.dashboards.collect { it.id?.toString() }
-            if (args.dashboardIds.any { !known.contains(it.toString()) }) throw new IllegalArgumentException("dashboardIds contains an unknown dashboard ID; read configuration options first")
-        }
-        def assistantAvailable = [homeKitEnabled: _deviceFlag(full.homeKitSelectionEnabled),
-            amazonAlexaEnabled: _deviceFlag(full.amazonAlexaInstalled) && _deviceFlag(full.amazonAlexaSupported),
-            googleHomeEnabled: _deviceFlag(full.googleHomeInstalled) && _deviceFlag(full.googleHomeSupported)]
-        _deviceAssistantProperties().each { property, integration ->
-            if (args.containsKey(property) && !assistantAvailable.get(property)) throw new IllegalArgumentException("${property} is unavailable: install/enable the native ${integration} integration and verify this device is supported")
-        }
-        if (_deviceAssistantProperties().keySet().any { args.containsKey(it) } && !_deviceAssistantProperties().keySet().every { full.containsKey(it) && full.get(it) instanceof Boolean }) {
-            throw new IllegalArgumentException("Unable to read all current assistant assignments before updating; refresh device configuration first")
-        }
-        if (args.containsKey("deviceTypeId")) {
-            def driversText = hubInternalGet("/device/drivers")
-            def drivers = driversText ? new groovy.json.JsonSlurper().parseText(driversText)?.drivers : null
-            if (!(drivers instanceof List)) throw new IllegalArgumentException("Unable to discover driver IDs from /device/drivers")
-            def driver = drivers.find { it.id?.toString() == args.deviceTypeId.toString() && ((it.type != "dep" && it.category != "Hidden") || it.id?.toString() == d.deviceTypeId?.toString()) }
-            if (!driver) throw new IllegalArgumentException("deviceTypeId is not an available driver ID; read configuration driver options first")
-        }
-        if (args.containsKey("deviceNetworkId") && _deviceFlag(d.linkedDevice)) {
-            if (args.deviceNetworkId == "0") args.remove("deviceNetworkId")
-            else {
-                def targetsText = hubInternalGet("/device/accessibleLinkedDevices")
-                def targets = targetsText ? new groovy.json.JsonSlurper().parseText(targetsText)?.devices : null
-                if (!(targets instanceof List) || !targets.any { !_deviceFlag(it.linkedLocally) && "${it.hubId}-${it.deviceId}" == args.deviceNetworkId }) {
-                    throw new IllegalArgumentException("deviceNetworkId is not an available linked-device target; read /device/accessibleLinkedDevices options first")
-                }
-            }
-        }
-    }
-    if (args.preferences) {
-        if (args.containsKey("deviceTypeId") && args.deviceTypeId?.toString() != d.deviceTypeId?.toString()) throw new IllegalArgumentException("Change the driver first, then read its new preference definitions before updating preferences")
-        if (_deviceFlag(d?.linkedDevice)) throw new IllegalArgumentException("Driver preferences cannot be saved on a linked device; edit the source device")
-        def model = _readDevicePreferenceModel(full)
-        if (model.writeSafe != true) throw new IllegalArgumentException("Unable to read complete preference definitions/storage before updating; inspect hub_get_device(mode='configuration')")
-        def normalized = [:]
-        args.preferences.each { key, setting ->
-            def name = key.toString()
-            def entry = _lookupDevicePreference(model, name)
-            if (!entry) throw new IllegalArgumentException("Unknown preference '${name}'; read hub_get_device(mode='configuration') for declared names")
-            if (entry.type in ["hidden", "paragraph"]) throw new IllegalArgumentException("Preference '${name}' is not an editable input")
-            def type = entry.type in ['bool', 'boolean'] ? 'bool' : entry.type
-            boolean clear = setting instanceof Map && setting.get('clear') == true
-            if (setting instanceof Map) {
-                def suppliedType = setting.type in ['bool', 'boolean'] ? 'bool' : setting.type
-                if ((setting.containsKey('clear') && (!clear || setting.containsKey('value'))) ||
-                    (!clear && !setting.containsKey('value')) ||
-                    (suppliedType != null && suppliedType.toString() != type) ||
-                    setting.keySet().any { !(it in ['type', 'value', 'clear', 'multiple']) }) {
-                    throw new IllegalArgumentException("Preference '${name}' requires its declared type and either a nonblank value or {clear:true}; clear and value cannot be combined")
-                }
-            }
-            if (setting instanceof Map && setting.containsKey('multiple')) {
+            if (setting.containsKey('multiple')) {
                 if (clear || type != 'enum' || !(setting.multiple instanceof Boolean)) {
                     throw new IllegalArgumentException("Preference '${name}' accepts a multiple boolean only with an enum value")
                 }
@@ -13046,426 +12944,349 @@ private Map _prepareDeviceUpdatePatch(Map original, deviceId, Map suppliedFull =
                 }
                 entry = entry + [multiple: setting.multiple]
             }
-            if (!clear && type == 'enum' && entry.multiple == null) {
-                throw new IllegalArgumentException("Preference '${name}' has unavailable selection cardinality; check driverSource or previously read metadata and supply multiple:true or multiple:false with the value")
-            }
-            if (clear && _deviceFlag(entry.required)) throw new IllegalArgumentException("Required preference '${name}' cannot be cleared")
-            def raw = setting instanceof Map ? setting.value : setting
-            def value = clear ? null : _normalizedDevicePreferenceValue(entry, raw)
-            normalized.put(name, clear ? [type: type, clear: true, value: null] : [type: type, value: value])
         }
-        args.preferences = normalized
+        if (!clear && type == 'enum' && entry.multiple == null) {
+            throw new IllegalArgumentException("Preference '${name}' has unavailable selection cardinality; check driverSource or previously read metadata and supply multiple:true or multiple:false with the value")
+        }
+        if (clear && _deviceFlag(entry.required)) throw new IllegalArgumentException("Required preference '${name}' cannot be cleared")
+        def raw = setting instanceof Map ? setting.value : setting
+        planned.put(name, clear ? [type: type, clear: true, value: null] : [type: type, value: _normalizedDevicePreferenceValue(entry, raw)])
     }
-    if (args.room != null && !(args.room in ["", "none", "null"])) _assertRoomExistsForBypass(args.room)
-    return [args: args, fullJson: full]
+    return planned
 }
-private void _verifyDevicePreferenceWrites(deviceId, Map preferences, List changes, List errors) {
-    def full = _fetchDeviceFullJson(deviceId)
-    if (!(full?.device instanceof Map)) {
-        preferences.each { name, setting ->
-            errors << [property: "preference.${name}", stage: "verify", status: "unavailable", error: "Update accepted but could not confirm the preference -- the read-back fetch failed."]
+private Map _planDeviceEdit(Map fj, Map fields, Map preferences = [:]) {
+    Map d = fj.device
+    def send = [:]
+    for (field in fields) {
+        String name = field.key
+        def value = field.value
+        String unavailable = _deviceEditUnavailable(name, fj)
+        if (unavailable) throw new IllegalArgumentException("${name} cannot be changed: ${unavailable}")
+        if (name == 'room') {
+            def room = value == '' ? [id: 0, name: null] : _resolveDeviceRoom(value.toString(), value instanceof Number)
+            send.roomId = room.id
+            send.roomName = room.name
+        } else if (name == 'defaultCurrentState' && value) {
+            if (!(d.currentStates instanceof Map)) throw new IllegalArgumentException("Unable to read authoritative current-state attributes before updating defaultCurrentState; refresh device configuration first")
+            if (!d.currentStates.containsKey(value)) throw new IllegalArgumentException("defaultCurrentState must name one of the device's current-state attributes")
+        } else if (name == 'dashboardIds') {
+            def known = fj.dashboards.collect { it.id?.toString() }
+            if (value.any { !known.contains(it.toString()) }) throw new IllegalArgumentException("dashboardIds contains an unknown dashboard ID; read configuration options first")
+        } else if (name == 'deviceTypeId' && value.toString() != d.deviceTypeId?.toString()) {
+            def driversText = hubInternalGet("/device/drivers")
+            def drivers = driversText ? new groovy.json.JsonSlurper().parseText(driversText)?.drivers : null
+            if (!(drivers instanceof List)) throw new IllegalArgumentException("Unable to discover driver IDs from /device/drivers")
+            if (!drivers.any { it.id?.toString() == value.toString() && it.type != "dep" && it.category != "Hidden" }) {
+                throw new IllegalArgumentException("deviceTypeId is not an available driver ID; read configuration driver options first")
+            }
+        } else if (name == 'deviceNetworkId' && _deviceFlag(d.linkedDevice) && value != '0') {
+            def targetsText = hubInternalGet("/device/accessibleLinkedDevices")
+            def targets = targetsText ? new groovy.json.JsonSlurper().parseText(targetsText)?.devices : null
+            if (!(targets instanceof List) || !targets.any { !_deviceFlag(it.linkedLocally) && "${it.hubId}-${it.deviceId}" == value }) {
+                throw new IllegalArgumentException("deviceNetworkId is not an available linked-device target; read hub_get_device(mode='configuration') options first")
+            }
         }
-        return
     }
-    def model = _readDevicePreferenceModel(full)
-    preferences.each { name, setting ->
-        _verifyDevicePreferenceWrite(deviceId, name.toString(), setting, changes, errors, model)
+    if (fields.keySet().any { _deviceEditFields()[it].save == 'assistants' } &&
+        !['homeKitEnabled', 'amazonAlexaEnabled', 'googleHomeEnabled'].every { fj.get(it) instanceof Boolean }) {
+        throw new IllegalArgumentException("Unable to read all current assistant assignments before updating; refresh device configuration first")
     }
+    if (fields.keySet().any { _deviceEditFields()[it].save == 'form' }) _requireCompleteDeviceFormSource(fj, d.id)
+    if ((preferences || fields.keySet().any { _deviceEditFields()[it].save == 'pane' }) &&
+        (!(d.showOnHome instanceof Boolean) || !(d.retryEnabled instanceof Boolean) || !d.containsKey('defaultCurrentState'))) {
+        throw new IllegalArgumentException("Unable to read the device's current Home visibility, Status attribute and command retry; no update sent. Refresh hub_get_device(mode='configuration') and retry.")
+    }
+    return send
 }
-private void _verifyDevicePreferenceWrite(deviceId, String name, Map setting, List changes, List errors, Map model = null) {
-    if (model == null) {
-        _verifyDevicePreferenceWrites(deviceId, [(name): setting], changes, errors)
-        return
-    }
-    def entry = _lookupDevicePreference(model, name)
-    if (model.writeSafe != true || entry == null || entry.valueStatus in ["unknown", "invalid"]) {
-        errors << [property: "preference.${name}", stage: "verify", status: entry?.valueStatus == "invalid" ? "invalid" : "unavailable", error: "Update accepted but could not confirm the preference -- saved-value storage is unavailable or invalid."]
-        return
-    }
-    def expected = setting.value
-    def actual = entry.value
-    boolean matches = setting.clear == true ? (!entry.valuePresent && entry.valueStatus == 'unset') :
-        (entry.valuePresent && entry.valueStatus == 'stored' && actual == expected)
-    if (matches) {
-        changes << [property: "preference.${name}", newValue: _devicePreferenceIsSecret(entry) ? [type: entry.type, value: "[REDACTED]"] : setting]
-    } else {
-        errors << [property: "preference.${name}", stage: "verify", status: "mismatch", error: "Update accepted but the preference read back as a different saved value. Inspect configuration and retry; no driver command was invoked."]
-    }
-}
-private void _applyNativeDeviceDataValues(deviceId, Map values, List changes, List errors) {
-    values.each { key, value ->
-        String stage = 'write'
-        try {
-            def payload = [id: _prefSaveDeviceId(deviceId), method: 'updateDataValue',
-                           args: [[type: 'STRING', value: key], [type: 'STRING', value: value]]]
-            def result = hubInternalPostJson('/device/runmethod', groovy.json.JsonOutput.toJson(payload))
-            if (!(result instanceof Map) || result.success != true) {
-                errors << [property: "dataValue.${key}", stage: stage, error: 'Native data-value update was not accepted; inspect device data before retrying.']
-                return
-            }
-            stage = 'verify'
-            def readback = _fetchDeviceFullJson(deviceId)
-            def data = readback?.device?.data
-            if (data instanceof Map && data.containsKey(key) && data.get(key)?.toString() == value) {
-                changes << [property: "dataValue.${key}", newValue: value]
-            } else {
-                errors << [property: "dataValue.${key}", stage: stage, error: 'Native update accepted but the data value could not be confirmed; inspect device data before retrying.']
-            }
-        } catch (Exception ignored) {
-            errors << [property: "dataValue.${key}", stage: stage, error: 'Native data-value update or verification failed; inspect device data before retrying.']
-        }
-    }
-}
-private void _applyDevicePreferencePatch(deviceId, Map preferences, List changes, List errors) {
-    boolean saveAccepted = false
-    def nativeSettings = new LinkedHashMap(preferences)
-    if (nativeSettings) {
-        def stage = 'prepare'
-        try {
-            def rows = nativeSettings.collect { name, setting ->
-                def value = setting.clear == true ? '' :
-                    (setting.type == 'enum' && setting.value instanceof List ? groovy.json.JsonOutput.toJson(setting.value) : setting.value)
-                [name: name.toString(), type: setting.type, value: value]
-            }
-            def payload = _devicePreferencePanePayload(deviceId, [:], rows)
-            stage = 'write'
-            def response = hubInternalPostJson('/device/preference/save', groovy.json.JsonOutput.toJson(payload))
-            if (response instanceof Map && (response.success == false || response._unparseable == true)) {
-                nativeSettings.each { name, setting ->
-                    errors << [property: "preference.${name}", stage: 'write',
-                        status: response._unparseable == true ? 'unavailable' : 'failed',
-                        error: response._unparseable == true ?
-                            'Preference save returned an unreadable response; inspect the device configuration before retrying.' :
-                            'Native preference save was rejected; inspect the device configuration before retrying.']
-                }
-            } else {
-                saveAccepted = true
-            }
-        } catch (Exception ignored) {
-            nativeSettings.each { name, setting ->
-                errors << [property: "preference.${name}", stage: stage, status: stage == 'write' ? 'failed' : 'unavailable',
-                    error: 'Preference update or verification failed; inspect the device configuration before retrying.']
-            }
-        }
-    }
-    if (saveAccepted) {
-        try {
-            _verifyDevicePreferenceWrites(deviceId, nativeSettings, changes, errors)
-        } catch (Exception ignored) {
-            nativeSettings.each { name, setting ->
-                errors << [property: "preference.${name}", stage: 'verify', status: 'unavailable',
-                    error: 'Preference update or verification failed; inspect the device configuration before retrying.']
-            }
-        }
-    }
-}
-private void _saveDevicePreferencePaneControls(deviceId, Map overrides) {
-    def payload = _devicePreferencePanePayload(deviceId, overrides)
-    def response = hubInternalPostJson('/device/preference/save', groovy.json.JsonOutput.toJson(payload))
-    if (response instanceof Map && (response.success == false || response._unparseable == true)) {
-        throw new RuntimeException(response._unparseable == true ?
-            'Native preference-pane save returned an unreadable response; inspect configuration before retrying.' :
-            'Native preference-pane save was rejected; inspect configuration before retrying.')
-    }
-}
-private void _applyExtendedDeviceUpdate(Map args, deviceId, Map full, List changes, List errors) {
-    if (args.containsKey("retryEnabled") && !_deviceFlag(full?.commandRetrySelectionEnabled) && _deviceFlag(full?.device?.retryAvailable)) {
-        def wanted = args.remove("retryEnabled")
-        try {
-            _saveDevicePreferencePaneControls(deviceId, [commandRetry: wanted])
-            def readback = _fetchDeviceFullJson(deviceId)?.device
-            if (readback?.retryEnabled instanceof Boolean && readback.retryEnabled == wanted) changes << [property: "retryEnabled", newValue: wanted]
-            else errors << [property: "retryEnabled", error: "POST accepted but could not confirm retryEnabled; native read-back did not match."]
-        } catch (Exception e) { errors << [property: "retryEnabled", error: e.message ?: e.toString()] }
-    }
-    def formProperties = _deviceExtendedFormProperties().findAll { args.containsKey(it) }
-    def linkedIdentity = args.containsKey("deviceNetworkId") && _deviceFlag(full?.device?.linkedDevice)
-    if (formProperties || args.containsKey("tags") || linkedIdentity) {
-        def overrides = [:]
-        (formProperties + ["label", "name", "deviceNetworkId", "tags"]).unique().each { property ->
-            if (args.containsKey(property)) overrides.put(property, property == "tags" ? args.tags.collect { it.trim() }.findAll { it }.join(",") : args.get(property))
-        }
-        def targets = new LinkedHashMap(overrides)
-        overrides.keySet().each { args.remove(it) }
-        try {
-            def updated = _postDeviceConfigurationForm(deviceId, overrides, errors)
-            targets.each { property, wanted ->
-                def present = updated?.device instanceof Map && updated.device.containsKey(property)
-                def actual = present ? updated.device.get(property) : null
-                if (property == "dashboardIds") {
-                    present = updated?.dashboards instanceof List
-                    actual = present ? updated.dashboards.findAll { _deviceFlag(it.selected) }.collect { it.id?.toString() }.sort() : null
-                }
-                def expected = property == "dashboardIds" ? wanted.collect { it.toString() }.sort() : wanted
-                def equal = present && (expected instanceof Boolean ? (actual instanceof Boolean || actual?.toString() in ["true", "false"]) && _deviceFlag(actual) == expected : expected instanceof List ? actual == expected : actual?.toString() == expected?.toString())
-                if (property == "tags") equal = present && _normalizedDeviceTags(actual) == _normalizedDeviceTags(wanted)
-                if (present && property in ["label", "notes", "defaultIcon", "tags"] && wanted == "" && actual == null) equal = true
-                if (equal) changes << [property: property, oldValue: full?.device?.get(property), newValue: wanted]
-                else errors << [property: property, error: present ? "POST accepted but ${property} read back as a different value; inspect configuration before retrying." : "POST accepted but could not confirm ${property}; native read-back is unavailable."]
-            }
-        } catch (Exception e) {
-            targets.each { property, wanted -> errors << [property: property, error: e.message ?: e.toString()] }
-        }
-    }
-    def assistants = _deviceAssistantProperties()
-    def assistantRequests = assistants.keySet().findAll { args.containsKey(it) }
-    if (assistantRequests) {
-        def targets = [:]
-        assistantRequests.each { targets.put(it, args.remove(it)) }
-        try {
-            def fresh = _fetchDeviceFullJson(deviceId)
-            if (!(fresh?.device instanceof Map) || !assistants.keySet().every { fresh.containsKey(it) && fresh.get(it) instanceof Boolean }) throw new RuntimeException("Unable to read all current assistant assignments before saving; no assistant update sent")
-            def payload = [deviceId: _prefSaveDeviceId(deviceId)]
-            assistants.each { property, integration -> payload.put(property, fresh.get(property)) }
-            payload.putAll(targets)
-            def response = hubInternalPostJson("/device/updateAssistants", groovy.json.JsonOutput.toJson(payload))
-            def readback = _fetchDeviceFullJson(deviceId)
-            targets.each { property, wanted ->
-                def nativeResult = response?.assistants?.get(assistants.get(property))
-                if (nativeResult?.success == false) errors << [property: property, error: "Native assistant update failed: ${nativeResult.reason ?: 'unspecified integration error'}"]
-                else if (response?.success == false && nativeResult?.success != true) errors << [property: property, error: "Native assistant update was rejected without a per-integration success result; inspect the native integration settings."]
-                else if (readback?.containsKey(property) && readback.get(property) instanceof Boolean && readback.get(property) == wanted) changes << [property: property, newValue: wanted]
-                else errors << [property: property, error: "POST accepted but could not confirm ${property}; inspect the native integration settings."]
-            }
-        } catch (Exception e) {
-            targets.each { property, wanted -> errors << [property: property, error: e.message ?: e.toString()] }
-        }
-    }
-    ["showOnHome", "defaultCurrentState"].each { property ->
-        if (args.containsKey(property)) {
-            def wanted = args.remove(property)
-            try {
-                boolean accepted = true
-                try {
-                    if (property == "showOnHome") {
-                        hubInternalGet("/device/setShowOnHome", [deviceId: deviceId, show: wanted ? "true" : "false"])
-                    } else {
-                        def result = hubInternalGet("/device/setDefaultCurrentState", [id: deviceId, currentState: wanted])
-                        accepted = result?.toString()?.trim()?.toLowerCase() == "true"
-                    }
-                } catch (IllegalStateException guardError) {
-                    throw guardError
-                } catch (Exception unavailable) {
-                    mcpLog("warn", "device", "Native ${property} setter unavailable for device ${deviceId}: ${unavailable.message}; trying preference controls.")
-                    _saveDevicePreferencePaneControls(deviceId, [(property): wanted])
-                }
-                if (!accepted) {
-                    errors << [property: property, error: "Hub did not accept defaultCurrentState; use an attribute name from the device's current states."]
-                    return
-                }
-                def readback = _fetchDeviceFullJson(deviceId)?.device
-                def actual = readback?.get(property)
-                def equal = readback?.containsKey(property) && (wanted instanceof Boolean ?
-                    (actual instanceof Boolean || actual?.toString() in ["true", "false"]) && _deviceFlag(actual) == wanted :
-                    (actual == null ? "" : actual.toString()) == wanted)
-                if (equal) changes << [property: property, newValue: wanted]
-                else if (!(readback instanceof Map) || !readback.containsKey(property)) {
-                    errors << [property: property, error: "POST accepted but could not confirm the change; native read-back is unavailable for ${property}."]
-                } else {
-                    errors << [property: property, error: "POST accepted but ${property} read back as '${actual}' (expected '${wanted}')."]
-                }
-            } catch (Exception e) { errors << [property: property, error: e.message ?: e.toString()] }
-        }
-    }
-}
-def toolUpdateDevice(args) {
-    def deviceId = _canonicalDeviceIdArg(args.deviceId)
-    if (deviceId == null) throw new IllegalArgumentException("deviceId is required")
-    if (settings.enableWrite == false) {
-        throw new IllegalArgumentException("Requires 'Enable Write Tools' to be turned on in MCP Rule Server app settings")
-    }
-    _requireDeviceToolAccess(deviceId)
-    def full = _fetchDeviceFullJson(deviceId)
-    if (!(full?.device instanceof Map)) {
-        return [success: false, isError: true, error: "Unable to read /device/fullJson before updating device ${deviceId}; no update sent.",
-                note: "Read hub_get_device(mode='configuration') and retry when native device details are available."]
-    }
-    def prepared = _prepareDeviceUpdatePatch(args, deviceId, full)
-    return _toolUpdateDeviceNative(prepared.args, deviceId, prepared.fullJson)
-}
-private Map _toolUpdateDeviceNative(args, deviceId, Map fj) {
-    def d = fj.device
-    def deviceLabel = _bypassDeviceLabel(fj, deviceId)
-    def changes = []
-    def errors = []
-    def requestedProps = args.keySet().findAll { !(it in ['deviceId', 'bestPracticeKey', 'confirm']) }.collect { key ->
-        def v = args[key]
-        (v instanceof Map || v instanceof List) ? "${key}(${v.size()})".toString() : key.toString()
-    }
-    mcpLog("warn", "device", "hub_update_device (native) for '${deviceLabel}' (ID: ${deviceId}), properties: ${requestedProps.join(', ')}")
-    _applyExtendedDeviceUpdate(args, deviceId, fj, changes, errors)
-    if (args.label != null && args.name == null && args.deviceNetworkId == null) {
-        def wanted = args.remove("label").toString()
-        try {
-            def readback
-            boolean usedForm = false
-            boolean accepted = true
-            try {
-                def response = hubInternalGet("/device/updateLabel", [deviceId: deviceId, label: wanted])
-                accepted = response?.toString()?.trim()?.toLowerCase() == "true"
-            } catch (IllegalStateException guardError) {
-                throw guardError
-            } catch (Exception unavailable) {
-                mcpLog("warn", "device", "Native label setter unavailable for device ${deviceId}: ${unavailable.message}; trying the complete form.")
-                readback = _postBypassDeviceModel(deviceId, [label: wanted], errors)
-                usedForm = true
-            }
-            if (!accepted) {
-                errors << [property: "label", error: "Hub did not accept the label update; inspect the native device details before retrying."]
-            } else {
-                if (!usedForm) readback = _fetchDeviceFullJson(deviceId)?.device
-                if (readback?.containsKey("label") && (readback.label == null ? "" : readback.label.toString()) == wanted) {
-                    changes << [property: "label", oldValue: d.label, newValue: wanted]
-                    deviceLabel = wanted ?: readback.name ?: "Device ${deviceId}"
-                } else {
-                    def reason = readback instanceof Map && readback.containsKey("label")
-                        ? "label read back as '${readback.label}' (expected '${wanted}')."
-                        : "could not confirm label; native read-back was unavailable."
-                    errors << [property: "label", error: "Update accepted but ${reason}"]
-                }
-            }
-        } catch (Exception e) {
-            errors << [property: "label", error: e.message ?: e.toString()]
-        }
-    }
-    if (args.label != null || args.name != null || args.deviceNetworkId != null) {
-        try {
-            def overrides = [:]
-            if (args.label != null) overrides.label = args.label.toString()
-            if (args.name != null) overrides.name = args.name.toString()
-            if (args.deviceNetworkId != null) overrides.deviceNetworkId = args.deviceNetworkId.toString()
-            def vd = _postBypassDeviceModel(deviceId, overrides, errors)
-            if (args.label != null) {
-                if (vd?.containsKey("label") && (vd.label == null ? "" : vd.label.toString()) == overrides.label) {
-                    changes << [property: "label", oldValue: d.label, newValue: overrides.label]
-                    deviceLabel = overrides.label ?: vd.name ?: "Device ${deviceId}"
-                } else {
-                    errors << [property: "label", error: "POST accepted but label read back as '${vd?.label}' (expected '${overrides.label}')."]
-                }
-            }
-            if (args.name != null) {
-                if (vd?.name?.toString() == overrides.name) changes << [property: "name", oldValue: d.name, newValue: overrides.name]
-                else errors << [property: "name", error: "POST accepted but name read back as '${vd?.name}' (expected '${overrides.name}')."]
-            }
-            if (args.deviceNetworkId != null) {
-                if (vd?.deviceNetworkId?.toString() == overrides.deviceNetworkId) changes << [property: "deviceNetworkId", oldValue: d.deviceNetworkId, newValue: overrides.deviceNetworkId]
-                else errors << [property: "deviceNetworkId", error: "POST accepted but deviceNetworkId read back as '${vd?.deviceNetworkId}' (expected '${overrides.deviceNetworkId}')."]
-            }
-        } catch (Exception e) {
-            errors << [property: "deviceModel", error: "${e.message ?: e.toString()}"]
-        }
-    }
-    if (args.dataValues) _applyNativeDeviceDataValues(deviceId, args.dataValues, changes, errors)
-    if (args.preferences) {
-        _applyDevicePreferencePatch(deviceId, args.preferences, changes, errors)
-    }
-    if (args.room != null) {
-        try {
-            if (args.room == "" || args.room == "none" || args.room == "null") {
-                def vd = _postBypassDeviceModel(deviceId, [roomId: 0], errors)
-                if (vd == null) {
-                    errors << [property: "room", error: "POST accepted but the read-back to confirm the unassign failed (/device/fullJson)."]
-                } else if (!vd.containsKey('roomName') ||
-                    (vd.roomName != null && !(vd.roomName instanceof String))) {
-                    errors << [property: "room", error: "POST accepted but roomName is unavailable or invalid; the unassign could not be confirmed."]
-                } else if (vd.roomName == null || vd.roomName == '') {
-                    changes << [property: "room", oldValue: d.roomName ?: "none", newValue: "none"]
-                } else {
-                    errors << [property: "room", error: "POST accepted but the device is still in room '${vd.roomName}' (expected unassigned)."]
-                }
-            } else {
-                def matchedRoom = _assertRoomExistsForBypass(args.room)
-                def canonicalName = matchedRoom.name.toString()
-                def r = hubInternalGet("/device/updateRoom", [deviceId: deviceId, room: canonicalName])
-                if (r?.toString()?.trim()?.toLowerCase() == "true") {
-                    def vd = _fetchDeviceFullJson(deviceId)?.device
-                    if (vd == null) {
-                        errors << [property: "room", error: "POST accepted but could not confirm the room change -- the read-back fetch failed."]
-                    } else if (vd.roomName?.toString() == canonicalName) {
-                        changes << [property: "room", oldValue: d.roomName ?: "none", newValue: canonicalName]
-                    } else {
-                        errors << [property: "room", error: "POST accepted but the device is in room '${vd.roomName}' (expected '${canonicalName}')."]
-                    }
-                } else {
-                    errors << [property: "room", error: "Hub did not accept the room update (returned '${r?.toString()?.take(120)}')."]
-                }
-            }
-        } catch (Exception e) {
-            errors << [property: "room", error: "${e.message ?: e.toString()}"]
-        }
-    }
-    if (args.enabled != null) {
-        try {
-            hubInternalPostJson("/device/disable", groovy.json.JsonOutput.toJson([id: _prefSaveDeviceId(deviceId), disable: !args.enabled]))
-            def res = _confirmDisabledFlip(deviceId, !args.enabled)
-            if (res.fetchFailed) {
-                errors << [property: "enabled", error: "POST accepted but could not confirm the change -- the read-back fetch failed."]
-            } else if (res.ok) {
-                changes << [property: "enabled", newValue: args.enabled]
-            } else {
-                errors << [property: "enabled", error: "POST accepted but the device read back as ${res.actualDisabled ? 'disabled' : 'enabled'} (expected ${!args.enabled ? 'disabled' : 'enabled'})."]
-            }
-        } catch (Exception e) {
-            errors << [property: "enabled", error: "${e.message ?: e.toString()}"]
-        }
-    }
-    if (!changes && !errors) {
-        return [
-            success: true,
-            device: deviceLabel,
-            deviceId: deviceId,
-            message: "No properties were provided to update. Specify at least one property: label, name, deviceNetworkId, room, enabled, or preferences."
-        ]
-    }
-    mcpLog(errors.isEmpty() ? "info" : "error", "device", "Updated device '${deviceLabel}' (ID: ${deviceId}) via native endpoints: ${changes.size()} changes, ${errors.size()} errors")
-    def result = [
-        success: errors.isEmpty(),
-        device: deviceLabel,
-        deviceId: deviceId,
-        changes: changes,
-        errors: errors.isEmpty() ? null : errors,
-        message: errors.isEmpty()
-            ? "Successfully updated ${changes.size()} ${changes.size() == 1 ? 'property' : 'properties'} on device '${deviceLabel}' (native)."
-            : "Updated ${changes.size()} ${changes.size() == 1 ? 'property' : 'properties'} with ${errors.size()} ${errors.size() == 1 ? 'error' : 'errors'} on device '${deviceLabel}' (native)."
-    ]
-    if (errors) result.isError = true
-    return result
-}
-private Map _assertRoomExistsForBypass(room) {
+private Map _resolveDeviceRoom(String room, boolean byId = false) {
     def rooms
     try {
         rooms = getRooms()
     } catch (Exception e) {
         throw new IllegalArgumentException("Unable to list rooms to resolve '${room}': ${e.message ?: e.toString()}")
     }
-    def match = rooms?.find { it.name?.toString()?.toLowerCase() == room?.toString()?.toLowerCase() }
+    def match = (byId ? null : rooms?.find { it.name?.toString()?.toLowerCase() == room.toLowerCase() }) ?: rooms?.find { it.id?.toString() == room }
     if (match == null) {
         def names = rooms ? rooms.collect { it.name } : []
         throw new IllegalArgumentException("Room '${room}' not found.${names ? ' Available rooms: ' + names.join(', ') : ''}")
     }
-    return match
+    return [id: match.id, name: match.name?.toString()]
 }
-private Map _postBypassDeviceModel(deviceId, Map fieldOverrides, List errors = null) {
-    return _postDeviceConfigurationForm(deviceId, fieldOverrides, errors)?.device
+def toolUpdateDevice(args) {
+    def deviceId = _canonicalDeviceIdArg(args.deviceId)
+    if (deviceId == null) throw new IllegalArgumentException("deviceId is required")
+    def unknown = args.keySet().findAll { !(it in ['deviceId', 'fields', 'preferences', 'confirm', 'bestPracticeKey']) }
+    if (unknown) throw new IllegalArgumentException("Unknown argument ${unknown.join(', ')}; device fields go in fields and driver preferences in preferences")
+    def fieldsArg = args.get('fields')
+    if (fieldsArg != null && !(fieldsArg instanceof Map)) throw new IllegalArgumentException("fields must be an object keyed by editable field name")
+    if (args.preferences != null && !(args.preferences instanceof Map)) throw new IllegalArgumentException("preferences must be an object keyed by declared preference name")
+    if (args.confirm != null && !(args.confirm instanceof Boolean)) throw new IllegalArgumentException("confirm must be a boolean")
+    Map fields = fieldsArg ?: [:]
+    Map preferences = args.preferences ?: [:]
+    if (!fields && !preferences) throw new IllegalArgumentException("Nothing to update: pass fields and/or preferences; hub_get_device(mode='configuration') lists them")
+    Map specs = _deviceEditFields()
+    for (field in fields) {
+        def spec = specs[field.key]
+        if (spec == null) throw new IllegalArgumentException("Unknown field '${field.key}'; hub_get_device(mode='configuration') lists the editable fields")
+        _checkDeviceEditValue(field.key, spec, field.value)
+    }
+    fields = fields.collectEntries { k, v ->
+        [(k): specs[k].type == 'integer' || (k == 'room' && v instanceof Number) ? new BigDecimal(v.toString()).toBigInteger() :
+              k == 'dashboardIds' ? v.collect { new BigDecimal(it.toString()).toBigInteger() } : v]
+    }
+    if (fields.keySet().any { specs[it].confirm }) requireDestructiveConfirm(args.confirm)
+    _requireDeviceToolAccess(deviceId)
+    def fj = _fetchDeviceFullJson(deviceId)
+    if (!(fj?.device instanceof Map)) {
+        return [success: false, isError: true, error: "Unable to read /device/fullJson before updating device ${deviceId}; no update sent.",
+                note: "Read hub_get_device(mode='configuration') and retry when native device details are available."]
+    }
+    Map send = _planDeviceEdit(fj, fields, preferences)
+    Map planned = preferences ? _planDevicePreferences(fj, preferences, fields) : [:]
+    return _applyDeviceEdit(deviceId, fj, fields, send, planned)
+}
+private Map _applyDeviceEdit(deviceId, Map fj, Map fields, Map send, Map preferences) {
+    Map d = fj.device
+    String deviceLabel = _bypassDeviceLabel(fj, deviceId)
+    Map specs = _deviceEditFields()
+    def requested = fields.keySet() + preferences.keySet().collect { "preference.${it}".toString() }
+    mcpLog("warn", "device", "hub_update_device for '${deviceLabel}' (ID: ${deviceId}): ${requested.join(', ')}")
+    def failed = [:]
+    def form = fields.findAll { specs[it.key].save == 'form' }
+    if (form) {
+        def overrides = new LinkedHashMap(form)
+        overrides.remove('room')
+        if (send.containsKey('roomId')) overrides.roomId = send.roomId
+        if (overrides.containsKey('tags')) overrides.tags = overrides.tags.collect { it.trim() }.findAll { it }.join(',')
+        String error = _saveDeviceInfoForm(fj, overrides)
+        if (error) form.keySet().each { failed.put(it, error) }
+    }
+    def pane = fields.findAll { specs[it.key].save == 'pane' }
+    if (pane || preferences) {
+        String error = _saveDevicePreferencesPane(deviceId, fj, pane, preferences)
+        if (error) (pane.keySet() + preferences.keySet().collect { "preference.${it}".toString() }).each { failed.put(it, error) }
+    }
+    def assistants = fields.findAll { specs[it.key].save == 'assistants' }
+    def assistantResults = null
+    if (assistants) {
+        def payload = [deviceId: _prefSaveDeviceId(deviceId), homeKitEnabled: fj.homeKitEnabled,
+                       amazonAlexaEnabled: fj.amazonAlexaEnabled, googleHomeEnabled: fj.googleHomeEnabled] + assistants
+        try {
+            assistantResults = hubInternalPostJson("/device/updateAssistants", groovy.json.JsonOutput.toJson(payload))?.assistants
+        } catch (Exception e) {
+            mcpLog("error", "device", "hub_update_device: assistant save for ${deviceId} failed (${e.class.simpleName})")
+            assistants.keySet().each { failed.put(it, "The assistant save failed; inspect the device before retrying.") }
+        }
+    }
+    if (fields.containsKey('enabled')) {
+        try {
+            hubInternalPostJson("/device/disable", groovy.json.JsonOutput.toJson([id: _prefSaveDeviceId(deviceId), disable: !fields.enabled]))
+        } catch (Exception e) {
+            mcpLog("error", "device", "hub_update_device: enable/disable for ${deviceId} failed (${e.class.simpleName})")
+            failed.put('enabled', "The enable/disable request failed; inspect the device before retrying.")
+        }
+    }
+    if (fields.dataValues) {
+        def dataErrors = []
+        _applyNativeDeviceDataValues(deviceId, fields.dataValues, [], dataErrors, false)
+        if (dataErrors) failed.put('dataValues', dataErrors.collect { it.error }.unique().join(' '))
+    }
+    def after = _fetchDeviceFullJson(deviceId)
+    def changes = []
+    def unchanged = []
+    def errors = []
+    for (field in fields) {
+        String name = field.key
+        if (failed.containsKey(name)) { errors << [property: name, error: failed.get(name)]; continue }
+        if (!(after?.device instanceof Map)) { errors << [property: name, error: "Saved, but the device could not be read back to confirm it."]; continue }
+        if (!_deviceEditReadable(name, after)) { errors << [property: name, error: "Saved, but ${name} could not be read back to confirm it."]; continue }
+        def actual = _deviceEditCurrentValue(name, after)
+        def wanted = field.value
+        if (name == 'dataValues') {
+            for (item in wanted) {
+                if (actual instanceof Map && actual.get(item.key)?.toString() == item.value) {
+                    if (d.data instanceof Map && d.data.get(item.key)?.toString() == item.value) unchanged << "dataValue.${item.key}".toString()
+                    else changes << [property: "dataValue.${item.key}", newValue: _deviceConfigurationPublicValue(item.value, item.key)]
+                }
+                else errors << [property: "dataValue.${item.key}", error: "Saved, but the data value reads back as ${groovy.json.JsonOutput.toJson(_deviceConfigurationPublicValue(actual.get(item.key), item.key))}; inspect device data before retrying."]
+            }
+            continue
+        }
+        if (name == 'room') wanted = send.roomName
+        boolean matches = _deviceEditValuesMatch(name, wanted, actual)
+        boolean keepLink = name == 'deviceNetworkId' && wanted == '0' && _deviceFlag(d.linkedDevice)
+        if (keepLink) matches = actual == d.deviceNetworkId
+        if (matches && (keepLink || _deviceEditReadable(name, fj) && _deviceEditValuesMatch(name, wanted, _deviceEditCurrentValue(name, fj)))) {
+            unchanged << name
+        } else if (matches) {
+            changes << [property: name, oldValue: _deviceConfigurationPublicValue(_deviceEditCurrentValue(name, fj), name),
+                        newValue: _deviceConfigurationPublicValue(name == 'room' ? (wanted ?: 'none') : wanted, name)]
+        } else {
+            def assistantError = specs[name].save == 'assistants' ?
+                assistantResults?.get(name.replace('Enabled', ''))?.reason : null
+            errors << [property: name, error: assistantError ? "Assistant update failed: ${assistantError}" :
+                "Saved, but ${name} reads back as ${groovy.json.JsonOutput.toJson(_deviceConfigurationPublicValue(actual, name))}; inspect the device before retrying."]
+        }
+    }
+    if (preferences) {
+        def model = after?.device instanceof Map ? _readDevicePreferenceModel(after) : null
+        def beforeModel = _readDevicePreferenceModel(fj)
+        for (pref in preferences) {
+            String key = "preference.${pref.key}".toString()
+            if (failed.containsKey(key)) errors << [property: key, error: failed.get(key)]
+            else if (_devicePreferenceUnchanged(beforeModel, pref.key.toString(), pref.value) &&
+                     _devicePreferenceMatches(model, pref.key.toString(), pref.value)) unchanged << key
+            else _verifyDevicePreferenceWrite(pref.key.toString(), pref.value, changes, errors, model)
+        }
+    }
+    if (changes.any { it.property == 'label' }) deviceLabel = after.device.label ?: after.device.name ?: deviceLabel
+    mcpLog(errors ? "error" : "info", "device", "Updated device '${deviceLabel}' (ID: ${deviceId}): ${changes.size()} changes, ${unchanged.size()} unchanged, ${errors.size()} errors")
+    def result = [success: errors.isEmpty(), device: deviceLabel, deviceId: deviceId, changes: changes]
+    if (unchanged) result.unchanged = unchanged
+    if (errors) {
+        result.errors = errors
+        result.isError = true
+        result.message = "Updated ${changes.size()} of ${changes.size() + unchanged.size() + errors.size()}; inspect errors and the device before retrying."
+    }
+    return result
+}
+private boolean _deviceEditReadable(String name, Map fj) {
+    Map d = fj.device
+    switch (name) {
+        case 'room': return d.containsKey('roomName') && (d.roomName == null || d.roomName instanceof String)
+        case 'enabled': return d.disabled instanceof Boolean || d.disabled?.toString() in ['true', 'false']
+        case 'tags': return d.containsKey('tags') && _normalizedDeviceTags(d.tags) != null
+        case 'dataValues': return d.data instanceof Map
+        case 'dashboardIds': return fj.dashboards instanceof List
+        case 'homeKitEnabled': case 'amazonAlexaEnabled': case 'googleHomeEnabled': return fj.get(name) instanceof Boolean
+    }
+    return d.containsKey(name)
+}
+private _deviceEditCurrentValue(String name, Map fj) {
+    Map d = fj.device
+    switch (name) {
+        case 'room': return d.roomName ?: null
+        case 'enabled': return d.disabled == null ? null : !_deviceFlag(d.disabled)
+        case 'tags': return _normalizedDeviceTags(d.tags)
+        case 'dataValues': return d.data
+        case 'dashboardIds': return fj.dashboards instanceof List ? fj.dashboards.findAll { _deviceFlag(it.selected) }.collect { it.id } : null
+        case 'homeKitEnabled': case 'amazonAlexaEnabled': case 'googleHomeEnabled': return fj.get(name)
+    }
+    return d.get(name)
+}
+private boolean _deviceEditValuesMatch(String name, wanted, actual) {
+    if (name == 'tags') return _normalizedDeviceTags(actual) == _normalizedDeviceTags(wanted)
+    if (name == 'dashboardIds') return actual instanceof List && actual.collect { it.toString() }.sort() == wanted.collect { it.toString() }.sort()
+    if (wanted instanceof Boolean) return (actual instanceof Boolean || actual?.toString() in ['true', 'false']) && _deviceFlag(actual) == wanted
+    return (actual == null ? '' : actual.toString()) == (wanted == null ? '' : wanted.toString())
+}
+private String _saveDeviceInfoForm(Map fj, Map overrides) {
+    Map d = fj.device
+    def model = [
+        name: d.name, label: d.label, zigbeeId: d.zigbeeId,
+        maxEvents: d.maxEvents, maxStates: d.maxStates, spammyThreshold: d.spammyThreshold,
+        deviceNetworkId: d.deviceNetworkId, deviceTypeId: d.deviceTypeId,
+        deviceTypeReadableType: d.deviceTypeReadableType, roomId: d.roomId,
+        meshEnabled: d.meshEnabled, retryEnabled: d.retryEnabled, meshFullSync: d.meshFullSync,
+        homeKitEnabled: fj.homeKitEnabled, locationId: d.locationId, hubId: d.hubId, groupId: d.groupId,
+        dashboardIds: fj.dashboards.findAll { _deviceFlag(it?.selected) }.collect { it.id }.join(','),
+        tags: d.tags, defaultIcon: d.defaultIcon, notes: d.notes,
+        id: d.id, version: d.version, controllerType: d.controllerType
+    ]
+    model.putAll(overrides)
+    if (overrides.dashboardIds instanceof List) model.dashboardIds = overrides.dashboardIds.join(',')
+    def parts = []
+    for (entry in model) {
+        if (entry.value == null) continue
+        def value = entry.value == true ? 'on' : entry.value.toString()
+        parts << "${java.net.URLEncoder.encode(entry.key, 'UTF-8')}=${java.net.URLEncoder.encode(value, 'UTF-8')}"
+    }
+    try {
+        def resp = hubInternalPostFormRaw("/device/update", parts.join('&'))
+        if (resp?.data instanceof String && resp.data.contains('"failure"')) return "The hub refused the Device Info save; none of its fields changed."
+    } catch (Exception e) {
+        mcpLog("error", "device", "hub_update_device: Device Info save for ${d.id} failed (${e.class.simpleName})")
+        return "The Device Info save failed; inspect the device before retrying."
+    }
+    return null
+}
+private String _saveDevicePreferencesPane(deviceId, Map fj, Map pane, Map preferences) {
+    Map d = fj.device
+    def rows = []
+    for (pref in preferences) {
+        def setting = pref.value
+        def value = setting.clear == true ? '' : (setting.value instanceof List ? groovy.json.JsonOutput.toJson(setting.value) : setting.value)
+        rows << [name: pref.key, type: setting.type, value: value]
+    }
+    def payload = [deviceId: _prefSaveDeviceId(deviceId),
+        defaultCurrentState: pane.containsKey('defaultCurrentState') ? pane.defaultCurrentState : (d.defaultCurrentState ?: ''),
+        commandRetry: pane.containsKey('retryEnabled') ? pane.retryEnabled : d.retryEnabled,
+        showOnHome: pane.containsKey('showOnHome') ? pane.showOnHome : d.showOnHome, preferences: rows]
+    try {
+        def response = hubInternalPostJson('/device/preference/save', groovy.json.JsonOutput.toJson(payload))
+        if (response instanceof Map && (response.success == false || response._unparseable == true)) {
+            return response._unparseable == true ? 'Preference save returned an unreadable response; inspect the device before retrying.' :
+                'The hub refused the preference save; inspect the device before retrying.'
+        }
+    } catch (Exception e) {
+        mcpLog("error", "device", "hub_update_device: preference save for ${deviceId} failed (${e.class.simpleName})")
+        return "The preference save failed; inspect the device before retrying."
+    }
+    return null
+}
+private boolean _devicePreferenceMatches(Map model, String name, Map setting) {
+    def entry = model == null ? null : _lookupDevicePreference(model, name)
+    if (model?.writeSafe != true || entry == null || entry.valueStatus in ["unknown", "invalid"]) return false
+    return setting.clear == true ? (!entry.valuePresent && entry.valueStatus == 'unset') :
+        (entry.valuePresent && entry.valueStatus == 'stored' && entry.value == setting.value)
+}
+private boolean _devicePreferenceUnchanged(Map model, String name, Map setting) {
+    if (!_devicePreferenceMatches(model, name, setting)) return false
+    def entry = _lookupDevicePreference(model, name)
+    return entry.multiple != true || setting.clear == true || entry.rawValue == groovy.json.JsonOutput.toJson(setting.value)
+}
+private void _verifyDevicePreferenceWrite(String name, Map setting, List changes, List errors, Map model) {
+    def entry = model == null ? null : _lookupDevicePreference(model, name)
+    if (model?.writeSafe != true || entry == null || entry.valueStatus in ["unknown", "invalid"]) {
+        errors << [property: "preference.${name}", stage: "verify", status: entry?.valueStatus == "invalid" ? "invalid" : "unavailable", error: "Saved, but the preference could not be read back to confirm it."]
+        return
+    }
+    if (_devicePreferenceMatches(model, name, setting)) {
+        changes << [property: "preference.${name}", newValue: _devicePreferenceIsSecret(entry) ? [type: entry.type, value: "[REDACTED]"] : setting]
+    } else {
+        errors << [property: "preference.${name}", stage: "verify", status: "mismatch", error: "Saved, but the preference reads back as a different value. Inspect the device configuration before retrying."]
+    }
+}
+private void _applyNativeDeviceDataValues(deviceId, Map values, List changes, List errors, boolean verify = true) {
+    for (item in values) {
+        try {
+            def payload = [id: _prefSaveDeviceId(deviceId), method: 'updateDataValue',
+                           args: [[type: 'STRING', value: item.key], [type: 'STRING', value: item.value]]]
+            def result = hubInternalPostJson('/device/runmethod', groovy.json.JsonOutput.toJson(payload))
+            if (!(result instanceof Map) || result.success != true) {
+                errors << [property: "dataValue.${item.key}", error: 'Native data-value update was not accepted; inspect device data before retrying.']
+            }
+        } catch (Exception ignored) {
+            errors << [property: "dataValue.${item.key}", error: 'Native data-value update failed; inspect device data before retrying.']
+        }
+    }
+    if (!verify || errors) return
+    def data = _fetchDeviceFullJson(deviceId)?.device?.data
+    for (item in values) {
+        if (data instanceof Map && data.get(item.key)?.toString() == item.value) changes << [property: "dataValue.${item.key}", newValue: item.value]
+        else errors << [property: "dataValue.${item.key}", error: 'Native update accepted but the data value could not be confirmed; inspect device data before retrying.']
+    }
 }
 private void _requireCompleteDeviceFormSource(Map full, deviceId) {
-    if (!(full?.device instanceof Map)) throw new RuntimeException("Incomplete /device/fullJson preservation source: missing device model; no form update sent")
     def d = full.device
     def required = ["id", "version", "controllerType", "name", "label", "zigbeeId", "maxEvents", "maxStates",
         "spammyThreshold", "deviceNetworkId", "deviceTypeId", "deviceTypeReadableType", "roomId",
         "meshEnabled", "retryEnabled", "meshFullSync", "locationId", "hubId", "groupId", "tags", "defaultIcon", "notes"]
     def missing = required.findAll { !d.containsKey(it) }
-    if (missing) throw new RuntimeException("Incomplete /device/fullJson preservation source: missing device fields ${missing.join(', ')}; no form update sent")
-    if (d.id == null || d.id.toString() != deviceId.toString()) throw new RuntimeException("Invalid /device/fullJson preservation source: device id does not match; no form update sent")
-    if (d.version == null) throw new RuntimeException("Incomplete /device/fullJson preservation source: version is unavailable; no form update sent")
-    if (!(full.get("homeKitEnabled") instanceof Boolean)) throw new RuntimeException("Incomplete /device/fullJson preservation source: homeKitEnabled is unavailable or invalid; no form update sent")
-    def dashboards = full.get("dashboards")
-    if (!(dashboards instanceof List) || dashboards.any { row ->
-        if (!(row instanceof Map) || !(row.get("selected") instanceof Boolean)) return true
-        def dashboardId = row.get("id")
-        return !(dashboardId instanceof Number) || dashboardId <= 0 || new BigDecimal(dashboardId.toString()).stripTrailingZeros().scale() > 0
-    }) {
-        throw new RuntimeException("Incomplete /device/fullJson preservation source: dashboards assignments are unavailable or invalid; no form update sent")
+    if (missing) throw new IllegalArgumentException("The device's native model is missing ${missing.join(', ')}; no update sent. Refresh hub_get_device(mode='configuration') and retry.")
+    if (d.id?.toString() != deviceId?.toString() || d.version == null || !(full.homeKitEnabled instanceof Boolean) ||
+        !(full.dashboards instanceof List) || full.dashboards.any { !(it instanceof Map) || !(it.selected instanceof Boolean) || !_deviceEditInteger(it.id, [:]) }) {
+        throw new IllegalArgumentException("The device's native model is incomplete (id, version, HomeKit or dashboard assignments); no update sent. Refresh hub_get_device(mode='configuration') and retry.")
     }
 }
 private List _normalizedDeviceTags(value) {
@@ -13473,71 +13294,6 @@ private List _normalizedDeviceTags(value) {
     def tags = value instanceof String ? value.split(',').toList() : value
     if (!(tags instanceof List) || tags.any { !(it instanceof String) }) return null
     return tags.collect { it.trim() }.findAll { it }
-}
-private String _deviceConfigurationFormBody(deviceId, Map fj, Map fieldOverrides) {
-    _requireCompleteDeviceFormSource(fj, deviceId)
-    def d = fj.device
-    def dashIds = (fj.dashboards ?: []).findAll { it?.selected }.collect { it?.id }
-    def model = [
-        name: d.name, label: d.label, zigbeeId: d.zigbeeId,
-        maxEvents: d.maxEvents, maxStates: d.maxStates, spammyThreshold: d.spammyThreshold,
-        deviceNetworkId: d.deviceNetworkId, deviceTypeId: d.deviceTypeId,
-        deviceTypeReadableType: d.deviceTypeReadableType, roomId: d.roomId,
-        meshEnabled: d.meshEnabled, retryEnabled: d.retryEnabled, meshFullSync: d.meshFullSync,
-        homeKitEnabled: fj.homeKitEnabled, locationId: d.locationId, hubId: d.hubId,
-        groupId: d.groupId, dashboardIds: dashIds, tags: d.tags,
-        defaultIcon: d.defaultIcon, notes: d.notes
-    ]
-    if (d.id != null) { model.id = d.id; model.version = d.version; model.controllerType = d.controllerType }
-    if (fieldOverrides) model.putAll(fieldOverrides)
-    ["groupId", "controllerType", "roomId", "notes", "tags", "zigbeeId", "defaultIcon"].each { key ->
-        if (model.get(key) == null) model.remove(key)
-    }
-    def enc = { v ->
-        if (v == true) return "on"
-        if (v == null) return ""
-        if (v instanceof List) return v.collect { it?.toString() }.join(",")
-        return v.toString()
-    }
-    return model.collect { k, v -> "${java.net.URLEncoder.encode(k.toString(), 'UTF-8')}=${java.net.URLEncoder.encode(enc(v), 'UTF-8')}" }.join("&")
-}
-private Map _postDeviceConfigurationForm(deviceId, Map fieldOverrides, List errors = null) {
-    def recoveryErrors = errors == null ? [] : errors
-    def fj = _fetchDeviceFullJson(deviceId)
-    if (fj?.device == null) {
-        throw new RuntimeException("Could not read the device model from /device/fullJson to rebuild the /device/update form; native device id ${deviceId} was unavailable or could not be verified")
-    }
-    def body = _deviceConfigurationFormBody(deviceId, fj, fieldOverrides)
-    hubInternalPostFormRaw("/device/update", body)
-    def updated = _fetchDeviceFullJson(deviceId)
-    if (!(updated?.device instanceof Map)) return updated
-    def restore = [:]
-    ["label", "name", "deviceNetworkId"].each { property ->
-        def original = fj.device.get(property)
-        boolean intentionalClear = fieldOverrides.containsKey(property) && !fieldOverrides.get(property)
-        if (original && !intentionalClear && updated.device.containsKey(property) && !updated.device.get(property)) {
-            restore.put(property, original)
-        }
-    }
-    if (restore) {
-        try {
-            def fresh = _fetchDeviceFullJson(deviceId)
-            def restoreBody = _deviceConfigurationFormBody(deviceId, fresh, restore)
-            hubInternalPostFormRaw("/device/update", restoreBody)
-        } catch (Exception recoveryError) {
-            mcpLog("error", "device", "Native identity restoration failed for device ${deviceId}: ${recoveryError.message}")
-        }
-        def recovered = _fetchDeviceFullJson(deviceId)
-        if (recovered?.device instanceof Map) updated = recovered
-        restore.each { property, original ->
-            if (!(recovered?.device instanceof Map) || recovered.device.get(property)?.toString() != original.toString()) {
-                recoveryErrors << [property: property, stage: 'restore',
-                    error: "Device-edit form blanked ${property}; native restoration could not be confirmed. Verify and re-set ${property} before retrying."]
-            }
-        }
-    }
-    if (errors == null && recoveryErrors) throw new RuntimeException(recoveryErrors.collect { it.error }.join(' '))
-    return updated
 }
 def toolCreateDevice(args) {
     args = args ?: [:]
@@ -13588,10 +13344,11 @@ def toolCreateDevice(args) {
         return [success: false, isError: true, error: 'Hub call failed reading the driver catalog; no device create request sent.',
                 note: "Verify the deviceTypeId via hub_list_drivers(include='all')."]
     }
+    String wantLabel = args?.label != null && args.label.toString().trim() ? args.label.toString() : null
     def resp
     try {
         def respText = driverType == 'usr'
-            ? hubInternalGet('/device/createVirtual', [deviceTypeId: typeId], 30)
+            ? hubInternalGet('/device/createVirtual', [deviceTypeId: typeId] + (wantLabel ? [deviceLabel: wantLabel] : [:]), 30)
             : hubInternalGet("/device/sysDriverByIdJson/${java.net.URLEncoder.encode(typeId, 'UTF-8')}", null, 30)
         resp = respText ? new groovy.json.JsonSlurper().parseText(respText) : null
     } catch (Exception e) {
@@ -13614,39 +13371,23 @@ def toolCreateDevice(args) {
     if (info == null) {
         warnings << "Created device ${newId} but could not read it back to confirm type -- if this is a radio driver it may be a non-functional orphan shell; verify with hub_get_device."
     }
-    def appliedLabel = null
-    if (args?.label != null && args.label.toString().trim()) {
-        def wantLabel = args.label.toString()
-        def labelFailNote = null
+    def appliedLabel = wantLabel != null && info?.label?.toString() == wantLabel ? wantLabel : null
+    if (wantLabel != null && appliedLabel == null) {
+        def fresh = _fetchDeviceFullJson(newId)
+        String error = null
         try {
-            def labelResult = hubInternalGet("/device/updateLabel", [deviceId: newId, label: wantLabel])
-            if (labelResult?.toString()?.trim()?.toLowerCase() == "true") {
-                def observed = _fetchDeviceFullJson(newId)?.device
-                if (observed?.label?.toString() == wantLabel) appliedLabel = wantLabel
-                else labelFailNote = 'native readback did not confirm the requested label'
-            } else {
-                labelFailNote = "hub returned '${labelResult?.toString()?.take(120)}'"
+            if (!(fresh?.device instanceof Map)) error = 'the new device could not be read'
+            else {
+                _requireCompleteDeviceFormSource(fresh, newId)
+                error = _saveDeviceInfoForm(fresh, [label: wantLabel])
             }
-        } catch (IllegalStateException guardErr) {
-            throw guardErr
-        } catch (Exception e) {
-            labelFailNote = "${e.message ?: e.toString()}"
+        } catch (IllegalArgumentException e) {
+            error = e.message
         }
-        if (appliedLabel == null) {
-            try {
-                def recoveryErrors = []
-                def vd = _postBypassDeviceModel(newId, [label: wantLabel], recoveryErrors)
-                warnings.addAll(recoveryErrors.collect { it.error })
-                if (vd?.label?.toString() == wantLabel) {
-                    appliedLabel = wantLabel
-                } else {
-                    warnings << "Device created but label '${args.label}' could not be applied (${labelFailNote}; wholesale /device/update read back '${vd?.label}'). Set it with hub_update_device(label=...)."
-                    mcpLog("warn", "device", "hub_create_device: label '${wantLabel}' not applied to ${newId} (${labelFailNote}; /device/update form read back '${vd?.label}')")
-                }
-            } catch (Exception e2) {
-                warnings << "Device created but label '${args.label}' could not be applied (${labelFailNote}; fallback threw: ${e2.message ?: e2.toString()}). Set it with hub_update_device(label=...)."
-                mcpLog("warn", "device", "hub_create_device: label '${wantLabel}' fallback /device/update threw for ${newId}: ${e2.message ?: e2.toString()}")
-            }
+        if (error == null && _fetchDeviceFullJson(newId)?.device?.label?.toString() == wantLabel) appliedLabel = wantLabel
+        else {
+            warnings << "Device created but label '${wantLabel}' could not be applied (${error ?: 'the label did not read back'}). Set it with hub_update_device(fields={label:...})."
+            mcpLog("warn", "device", "hub_create_device: label not applied to ${newId}: ${error ?: 'no read-back match'}")
         }
     }
     def readable = (info?.deviceTypeReadableType ?: "").toString().toLowerCase()
@@ -13668,7 +13409,7 @@ def toolCreateDevice(args) {
         capabilities: info?.capabilities,
         warnings: warnings ?: null,
         message: "Created device ${newId} from driver-type ${typeId}${appliedLabel ? " labeled '${appliedLabel}'" : ''}." + (warnings ? " WARNING: see warnings." : ""),
-        note: "Set room/preferences/showOnHome with hub_update_device, or delete it with hub_delete_device."
+        note: "Set its room, preferences and other fields with hub_update_device, or delete it with hub_delete_device."
     ]
 }
 private String _selectCreatedDevice(String deviceId) {
@@ -14482,39 +14223,14 @@ Default: most-recent events for a device (deviceId + optional limit). Device eve
         ],
         [
             name: "hub_update_device",
-            description: """Update device configuration and driver preferences. Read hub_get_device(mode='configuration') first for current values, valid options, and availability.
-
-Only modify devices user explicitly requested. Pre-flight: read configuration, choose the exact patch, obtain the update_device guide key.[[FLAT_TRIM]] Writes require Write master.[[/FLAT_TRIM]] Identity, driver, dashboard, mesh and assistant changes additionally require confirm=true and a backup less than 24 hours old. Saved preferences do not invoke device commands. Per-property changes/errors report partial success; inspect readback before retrying.""",
+            description: """Change a device's settings the way its device page saves them: Device Info fields, driver preferences, assistant sharing and enabled state. Pre-flight: read hub_get_tool_guide(section='update_device') and hub_get_device(mode='configuration'); the configuration's editableFields and preferences give each name's type, options, current value and whether this device offers it. Only change devices the user asked about. Fields marked requiresConfirmation (driver, network or Zigbee ID, dashboards, Hub Mesh, assistants) need confirm=true and a backup under 24 hours old. Saving preferences, showOnHome, defaultCurrentState or retryEnabled runs the driver's updated(). The result lists each change and error from one read-back; inspect it before retrying.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    deviceId: [type: "string", description: "The device ID to update (from hub_list_devices or hub_list_devices(filter='virtual'))"],
-                    label: [type: "string", description: "New display label for the device"],
-                    name: [type: "string", description: "New device name"],
-                    deviceNetworkId: [type: "string", description: "New device network ID (must be unique across all hub devices)"],
-                    room: [type: "string", description: "Existing room name (case-insensitive exact match); empty string removes the assignment."],
-                    enabled: [type: "boolean", description: "Set to true to enable or false to disable the device"],
-                    dataValues: [type: "object", description: "Key-value pairs to set in the device's Data section. Example: {\"firmware\": \"1.2.3\", \"model\": \"ABC\"}",
-                        additionalProperties: [type: "string"]],
-                    preferences: [type: "object", description: "Declared driver preferences; discover names/types/options using configuration mode. Use {type,value} or a compatible nonblank bare value. Use {clear:true} to remove an optional saved setting; omit a name to preserve it.[[FLAT_TRIM]] Null, blank strings, empty arrays and clear combined with value are rejected.[[/FLAT_TRIM]] Booleans, numbers and nonempty multiple-enum arrays retain native types.[[FLAT_TRIM]] If configuration reports multiple:null for an unset enum, check its driver declaration or pre-clear metadata and supply {value:...,multiple:true/false}; cardinality is never guessed.[[/FLAT_TRIM]]"],
-                    showOnHome: [type: "boolean", description: "Show this device on the hub Home page.[[FLAT_TRIM]] Also counts it in the quick status-bar summaries (climate/lights/locks/etc.)[[/FLAT_TRIM]]"],
-                    defaultCurrentState: [type: "string", description: "Which attribute appears in the Status column[[FLAT_TRIM]] (Devices/Rooms pages)[[/FLAT_TRIM]], e.g. \"switch\"; \"\" selects None."],
-                    tags: [type: "array", description: "Free-form device tags; REPLACES the full set ([] clears all).", items: [type: "string"]],
-                    deviceTypeId: [type: "integer", minimum: 1, description: "Driver selection ID from configuration driver options. Changes behavior[[FLAT_TRIM]]; requires confirm and recent backup[[/FLAT_TRIM]]."],
-                    zigbeeId: [type: "string", description: "Existing Zigbee device identity; unavailable on components or linked devices.[[FLAT_TRIM]] Requires confirm and recent backup.[[/FLAT_TRIM]]"],
-                    notes: [type: "string", description: "Device note; empty string clears it."],
-                    maxEvents: [type: "integer", minimum: 1, maximum: 2000, description: "Stored events per event type. Reducing retention can remove older history."],
-                    maxStates: [type: "integer", minimum: 1, maximum: 2000, description: "Stored states per attribute. Reducing retention can remove older history."],
-                    spammyThreshold: [type: "integer", minimum: 100, maximum: 2000, description: "Events per hour that trigger the too-many-events alert."],
-                    defaultIcon: [type: "string", description: "Native custom icon identifier; empty string removes the override."],
-                    dashboardIds: [type: "array", items: [type: "integer", minimum: 1], description: "Replace native dashboard assignments using configuration option IDs; [] clears.[[FLAT_TRIM]] Requires confirm and recent backup.[[/FLAT_TRIM]]"],
-                    meshEnabled: [type: "boolean", description: "Share through Hub Mesh.[[FLAT_TRIM]] When native selection is available; requires confirm and recent backup.[[/FLAT_TRIM]]"],
-                    retryEnabled: [type: "boolean", description: "Enable native command retry when available for this device."],
-                    meshFullSync: [type: "boolean", description: "Regularly sync a linked device.[[FLAT_TRIM]] When Hub Mesh refresh is enabled; requires confirm and recent backup.[[/FLAT_TRIM]]"],
-                    homeKitEnabled: [type: "boolean", description: "Native Apple HomeKit assignment when supported/enabled.[[FLAT_TRIM]] Requires confirm and recent backup.[[/FLAT_TRIM]]"],
-                    amazonAlexaEnabled: [type: "boolean", description: "Native Amazon Alexa assignment when installed and supported.[[FLAT_TRIM]] Requires confirm and recent backup.[[/FLAT_TRIM]]"],
-                    googleHomeEnabled: [type: "boolean", description: "Native Google Home assignment when installed and supported.[[FLAT_TRIM]] Requires confirm and recent backup.[[/FLAT_TRIM]]"],
-                    confirm: [type: "boolean", description: "Explicit approval for driver, identity, dashboard, mesh or assistant changes; also requires a hub backup within 24 hours."]
+                    deviceId: [type: "string", description: "Device ID from hub_list_devices."],
+                    fields: [type: "object", description: "Fields to change, by editableFields name: label, name, deviceNetworkId, room (name or id; \"\" clears), enabled, tags (replaces the set), notes, defaultIcon, maxEvents, maxStates, spammyThreshold, deviceTypeId, zigbeeId, dashboardIds, meshEnabled, meshFullSync, retryEnabled, showOnHome, defaultCurrentState, dataValues, homeKitEnabled, amazonAlexaEnabled, googleHomeEnabled. Omitted fields keep their values."],
+                    preferences: [type: "object", description: "Driver preferences by declared name: a value of the declared type, {value, multiple} for an enum whose configuration reports multiple:null, or {clear:true} to remove an optional saved value."],
+                    confirm: [type: "boolean", description: "Approval for requiresConfirmation fields; also needs a hub backup under 24 hours old."]
                 ],
                 required: ["deviceId"]
             ]
@@ -14620,7 +14336,7 @@ def _toolDisplayMeta_partDevices() {
         hub_call_device_command: [title: "Send Device Command", summary: "Send a command like on, off, or setLevel to one device, or up to 20 in one call."],
         hub_call_device_swap: [title: "Swap Device", summary: "Exchange two devices' identities so the apps on one run on the other's hardware."],
         hub_call_device_replace: [title: "Replace Device Hardware", summary: "Re-point a device to replacement hardware, keeping its id and all references."],
-        hub_update_device: [title: "Update Device Properties", summary: "Update applicable device identity, preferences, display, driver, history limits, or integration assignments."],
+        hub_update_device: [title: "Update Device Settings", summary: "Change a device's Device Info fields, driver preferences, assistant sharing or enabled state."],
         hub_create_device: [title: "Create Device From Driver", summary: "Create a device from a driver-type id, or link a device shared by a peer hub over Hub Mesh."],
         hub_get_compatible_devices: [title: "Search Compatible Devices", summary: "Search Hubitat's compatible-device catalog for models and pairing/reset instructions."],
         hub_delete_device: [title: "Delete Device", summary: "Permanently delete a device from the hub (no undo)."]
@@ -17625,9 +17341,10 @@ def toolGetAppConfig(args) {
             if (i.options) input.options = stripOptionsHtml(i.options)
             if (i.defaultValue != null && (i.defaultValue != true || i.type == "bool")) input.value = i.defaultValue
             else if (i.value != null && (i.value != true || i.type == "bool")) input.value = i.value
-            if (i.type == "mode" && parsed.settings instanceof Map && parsed.settings.containsKey(i.name)) input.value = parsed.settings[i.name]
+            String inputType = i.type?.toString() ?: ""
+            if (!inputType.startsWith("capability") && !inputType.startsWith("device.") && parsed.settings instanceof Map && parsed.settings[i.name] != null) input.value = parsed.settings[i.name]
             if (i.type == "password" && i.name) passwordInputNames << i.name.toString()
-            if (input.containsKey("value") && _appConfigIsSecretSetting(i.name, i.type, input.value)) input.value = redactedPw
+            if (input.containsKey("value") && _appConfigMasksSetting(i.name, i.type, input.value)) input.value = redactedPw
             else if (input.containsKey("value") && _redactsAccessTokens() && input.value instanceof CharSequence &&
                      i.name?.toString() ==~ /(?i)access_?token/) input.value = _accessTokenRedactedMarker()
             section.inputs << input
@@ -17686,7 +17403,7 @@ def toolGetAppConfig(args) {
     result.settingsKeyCount = settingsCount
     if (includeSettings) {
         def rawSettings = (parsed.settings instanceof Map) ? parsed.settings : [:]
-        if (!rawSettings) {
+        if (!rawSettings || !_redactsCredentials()) {
             result.settings = rawSettings
         } else {
             Map settingTypes = _appConfigSettingTypes(appIdStr as Integer)
@@ -17707,7 +17424,7 @@ def toolGetAppConfig(args) {
                     redacted.put(k, _appConfigIsSecretSetting(key, type, v) ? redactedPw : v)
                 }
                 result.settings = redacted
-                result.settingsRedactionNote = "Secret values read ${redactedPw}: every setting the hub types as a password, on any page of the app, plus free-text settings whose names look like credentials (password, passwd, pwd, pass, passphrase, passcode, secret, token, API/access/private key, credential, psk, PIN, or a lock, user, access or alarm code). OAuth accessToken settings follow the Hide access tokens setting instead. Empty values are shown as-is. The secret itself is never returned; read or change it in the Hubitat UI.".toString()
+                result.settingsRedactionNote = "Secret values read ${redactedPw}: every setting the hub types as a password, on any page of the app, plus free-text settings whose names look like credentials (password, passwd, pwd, pass, passphrase, passcode, secret, token, API/access/private key, credential, psk, a PIN, or a code named for a lock, user, alarm, keypad, installer or similar). OAuth accessToken settings follow the Hide access tokens setting instead. Empty values are shown as-is. Turn off Hide passwords and credentials in the MCP app's settings to read them.".toString()
             }
         }
     } else if (settingsCount > 0) {
@@ -17715,7 +17432,6 @@ def toolGetAppConfig(args) {
     }
     return result
 }
-private String _appConfigRedactedMarker() { return "***redacted (password)***" }
 private Map _appConfigSettingTypes(Integer appId) {
     def status
     try {
@@ -17733,56 +17449,6 @@ private Map _appConfigSettingTypes(Integer appId) {
         if (rec instanceof Map && rec.name != null && rec.type != null) types.put(rec.name.toString(), rec.type.toString())
     }
     return types
-}
-private boolean _appConfigIsSecretSetting(name, type, value) {
-    if (_appConfigEmptyValue(value)) return false
-    String t = type?.toString()
-    if (t == "password") return true
-    if (value instanceof Boolean) return false
-    if (t && (t in ["bool", "boolean", "enum", "mode", "time", "date", "button", "href", "hub", "icon", "color"] ||
-              t.startsWith("capability") || t.startsWith("device"))) return false
-    return _appConfigSecretName(name)
-}
-private boolean _appConfigEmptyValue(value) {
-    if (value == null) return true
-    if (value instanceof CharSequence && value.toString().isEmpty()) return true
-    (value instanceof Collection || value instanceof Map) && value.isEmpty()
-}
-private boolean _appConfigSecretName(name) {
-    String raw = name?.toString()
-    if (!raw) return false
-    if (raw ==~ /(?i)access_?token/) return false
-    String lower = raw.toLowerCase()
-    if (!(lower.contains("pass") || lower.contains("pwd") || lower.contains("secret") || lower.contains("token") ||
-          lower.contains("key") || lower.contains("credential") || lower.contains("psk") || lower.contains("pin") || lower.contains("code"))) return false
-    String spaced = raw.replaceAll(/([a-z0-9])([A-Z])/, '$1 $2').replaceAll(/([A-Z]+)([A-Z][a-z])/, '$1 $2')
-    List words = spaced.toLowerCase().split(/[^a-z]+/).findAll { part -> part }
-    Set metadata = ["count", "counter", "cnt", "expiry", "expires", "expire", "expired", "expiration", "time",
-                    "timestamp", "date", "length", "len", "type", "enabled", "enable", "set", "required", "url",
-                    "uri", "endpoint", "timeout", "interval", "mode", "policy", "hint", "label", "name"] as Set
-    Set keyQualifiers = ["api", "access", "private", "auth", "client", "secret", "encryption", "signing", "shared"] as Set
-    Set pinQualifiers = ["lock", "user", "access", "pass", "disarm", "arm", "alarm", "security", "unlock", "auth", "entry", "keypad", "door", "master", "admin", "guest"] as Set
-    Set hardwarePins = ["led", "gpio", "relay", "io", "digital", "analog", "data", "output", "input", "sensor", "pwm", "signal", "button",
-                        "power", "reset", "enable", "interrupt", "irq", "clock", "clk", "sda", "scl", "tx", "rx", "servo", "motor", "trigger", "echo"] as Set
-    for (int idx = 0; idx < words.size(); idx++) {
-        String w = words[idx]
-        String prev = idx > 0 ? words[idx - 1] : null
-        String next = idx + 1 < words.size() ? words[idx + 1] : null
-        boolean hit = w.contains("password") || w.contains("passwd") || w.contains("passphrase") ||
-            w.contains("passcode") || w.contains("pwd") || w.contains("apikey") || w.contains("privatekey") ||
-            w.contains("accesskey") || (w.contains("secret") && !w.startsWith("secretar")) ||
-            w.endsWith("token") || w.endsWith("tokens") || w.startsWith("credential") || w == "psk" ||
-            (w == "pass" && prev != "by" && (next == null || next in ["word", "phrase", "code", "key"])) ||
-            (keyQualifiers.contains(w) && (next == "key" || next == "keys")) ||
-            (w in ["pin", "pins", "pincode", "pincodes"] && !(prev in hardwarePins)) ||
-            (w in ["code", "codes"] && (prev in pinQualifiers || prev in ["pin", "pins"]))
-        if (!hit) continue
-        boolean twoWords = ((next == "key" || next == "keys") && keyQualifiers.contains(w)) || (w in ["pin", "pins"] && next in ["code", "codes"])
-        String after = twoWords ? (idx + 2 < words.size() ? words[idx + 2] : null) : next
-        if (after != null && metadata.contains(after)) continue
-        return true
-    }
-    return false
 }
 def toolGetSource(args) {
     def type = args.type
@@ -19776,7 +19442,7 @@ A transport drop can lose the response while the hub still commits this write; v
         ],
         [
             name: "hub_get_app_config",
-            description: """Read an installed classic app's page as the Hubitat UI renders it: the app's identity, the page's sections with each input's current value, and its child apps. The pages it links to are listed in page.hrefs. controls lists the page's buttons and links with the control_id that hub_set_native_app or hub_set_rule(operation:'form') activates, and pageNote says when the hub rendered another page than pageName. Secret values are redacted.""",
+            description: """Read an installed classic app's page as the Hubitat UI renders it: the app's identity, the page's sections with each input's current value, and its child apps. The pages it links to are listed in page.hrefs. controls lists the page's buttons and links with the control_id that hub_set_native_app or hub_set_rule(operation:'form') activates, and pageNote says when the hub rendered another page than pageName. Secret values are redacted unless Hide passwords and credentials is off (always for a per-client token).""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -20421,7 +20087,8 @@ def toolUpdateMcpSettings(args) {
         "backupBudgetMb":         "number",
         "enableLocalAccess":      "bool",
         "enableCloudAccess":      "bool",
-        "redactAccessTokens":     "bool"
+        "redactAccessTokens":     "bool",
+        "redactCredentials":      "bool"
     ]
     def allowedKeyNames = ((allowedSettings.keySet() + ["selectedDevices"]) as List).sort()
     def updates = [:]
@@ -21117,7 +20784,7 @@ def _getAllToolDefinitions_partSelfAdmin() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    settings: [type: "object", description: "Map of setting key → new value[[FLAT_TRIM]] (e.g. {\"mcpLogLevel\":\"warn\",\"enableCustomRuleEngine\":true})[[/FLAT_TRIM]]. Unlisted keys are rejected. bypassDeviceAllowlist (bool, default OFF): DANGEROUS escape hatch — when ON native device reads, writes, commands, inventory, health, dependents, swaps and replacements reach ANY hub device by id, IGNORING selectedDevices. Allowlisted keys: mcpLogLevel, debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableRead, enableCustomRuleEngine, useGateways, enableMandatoryBPS, bypassDeviceAllowlist, maxConcurrentWrites, backupBeforeRuleEdits, backupEveryRuleWrite, backupBudgetMb, enableLocalAccess, enableCloudAccess, redactAccessTokens, selectedDevices.[[FLAT_TRIM]] enableLocalAccess / enableCloudAccess (bool): allow requests over the LAN / Hubitat cloud endpoint; a call cannot turn off the connection it arrived on.[[/FLAT_TRIM]] mcpLogLevel: debug|info|warn|error. maxConcurrentWrites: integer 0-100[[FLAT_TRIM]] (default 2; 0 disables the server-side all-write concurrency cap)[[/FLAT_TRIM]]. backupBeforeRuleEdits (bool, default ON): take one fresh snapshot per native rule edit batch or form workflow. backupEveryRuleWrite (bool, default OFF): take a fresh snapshot before every edit instead of reusing the app's snapshot from the last hour.[[FLAT_TRIM]] backupBudgetMb: whole number of MB from 1 to 1000000 (default 10): code and rule backups are evicted only when together they exceed it, oldest first, and an item's newest backup is never evicted; see hub_get_tool_guide(section='backup').[[/FLAT_TRIM]][[FLAT_TRIM]] bypassDeviceAllowlist is independent of Developer Mode.[[/FLAT_TRIM]] selectedDevices = the device-access scope[[FLAT_TRIM]]: {mode:replace|add|remove, ids:[device id strings]}; a bare array is shorthand for a destructive replace[[/FLAT_TRIM]] — see hub_get_tool_guide(section='hub_admin_write_system') for per-mode semantics."],
+                    settings: [type: "object", description: "Map of setting key → new value[[FLAT_TRIM]] (e.g. {\"mcpLogLevel\":\"warn\",\"enableCustomRuleEngine\":true})[[/FLAT_TRIM]]. Unlisted keys are rejected. bypassDeviceAllowlist (bool, default OFF): DANGEROUS escape hatch — when ON native device reads, writes, commands, inventory, health, dependents, swaps and replacements reach ANY hub device by id, IGNORING selectedDevices. Allowlisted keys: mcpLogLevel, debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableRead, enableCustomRuleEngine, useGateways, enableMandatoryBPS, bypassDeviceAllowlist, maxConcurrentWrites, backupBeforeRuleEdits, backupEveryRuleWrite, backupBudgetMb, enableLocalAccess, enableCloudAccess, redactAccessTokens, redactCredentials, selectedDevices.[[FLAT_TRIM]] enableLocalAccess / enableCloudAccess (bool): allow requests over the LAN / Hubitat cloud endpoint; a call cannot turn off the connection it arrived on.[[/FLAT_TRIM]] mcpLogLevel: debug|info|warn|error. maxConcurrentWrites: integer 0-100[[FLAT_TRIM]] (default 2; 0 disables the server-side all-write concurrency cap)[[/FLAT_TRIM]]. backupBeforeRuleEdits (bool, default ON): take one fresh snapshot per native rule edit batch or form workflow. backupEveryRuleWrite (bool, default OFF): take a fresh snapshot before every edit instead of reusing the app's snapshot from the last hour.[[FLAT_TRIM]] backupBudgetMb: whole number of MB from 1 to 1000000 (default 10): code and rule backups are evicted only when together they exceed it, oldest first, and an item's newest backup is never evicted; see hub_get_tool_guide(section='backup').[[/FLAT_TRIM]][[FLAT_TRIM]] bypassDeviceAllowlist is independent of Developer Mode.[[/FLAT_TRIM]] selectedDevices = the device-access scope[[FLAT_TRIM]]: {mode:replace|add|remove, ids:[device id strings]}; a bare array is shorthand for a destructive replace[[/FLAT_TRIM]] — see hub_get_tool_guide(section='hub_admin_write_system') for per-mode semantics."],
                     clientToken: [type: "object", description: "Per-client tokens, instead of settings: see hub_get_tool_guide(section='hub_admin_write_system').[[FLAT_TRIM]] {action: list|create|update|rotate|revoke, ...}. Shape: clientId (update/rotate/revoke), label (create), access? {tools: [names]|\"all\", read, write, local, cloud, toolNumber: main|none|0-9}. create and rotate return the new token; a new client starts with every grantable tool on and access narrows it.[[/FLAT_TRIM]]"],
                     confirm: [type: "boolean", description: "REQUIRED: must be true to confirm the operation"]
                 ],
@@ -24125,9 +23792,12 @@ Map _rmSubmitMainPageDone(Integer appId) {
         mcpLog("warn", "rm-native", "_rmSubmitMainPageDone: Done POST for app ${appId} returned status ${resp.status}")
         return [done: false, reason: "Done POST returned status ${resp.status}".toString()]
     }
-    String replyText = resp?.data instanceof Map ? groovy.json.JsonOutput.toJson(resp.data) : (resp?.data?.toString() ?: '')
-    if (replyText.contains('"location"')) return [done: true]
-    return [done: false, reason: (replyText.contains('"configPage"') ? "the hub rendered page '${commitPage}' again instead of accepting its Done" :
+    def reply = resp?.data
+    if (!(reply instanceof Map)) {
+        try { reply = reply ? new groovy.json.JsonSlurper().parseText(reply.toString()) : null } catch (Exception ignored) { reply = null }
+    }
+    if (reply instanceof Map && reply.location != null) return [done: true]
+    return [done: false, reason: (reply instanceof Map && reply.containsKey('configPage') ? "the hub rendered page '${commitPage}' again instead of accepting its Done" :
         "the hub's reply to the Done named no location").toString()]
 }
 private Map _rmWriteSubPageField(Integer appId, String page, String parentPage, String hrefName, Integer hrefIndex, Map hrefParams, String key, Object value, Map cache = null) {
@@ -25125,14 +24795,18 @@ def toolListRuleLocalVariables(args) {
     def localVariables = []
     lvRead.vars.each { lvName, lvMeta ->
         def live = lvRead.live?.get(lvName?.toString())
-        localVariables << [
-            name: lvName?.toString(),
+        localVariables << _rmPublicLocalVariable(lvName?.toString(), [
             type: (lvMeta instanceof Map ? lvMeta?.type?.toString() : null),
             value: (live instanceof Map && live.containsKey("value")) ? live.value : (lvMeta instanceof Map ? lvMeta?.value : null)
-        ]
+        ])
     }
     localVariables = localVariables.sort { it.name }
     return [appId: appId, localVariables: localVariables, total: localVariables.size()]
+}
+Map _rmPublicLocalVariable(String name, Map row) {
+    Map result = [name: name, type: row?.type, value: row?.value]
+    if (_appConfigMasksSetting(name, row?.type == 'boolean' ? 'bool' : 'text', row?.value)) { result.value = null; result.redacted = true }
+    result
 }
 private boolean _rmReusableBackupFileMatches(Map entry, Integer ruleId) {
     def fileName = entry?.fileName?.toString()
@@ -25461,8 +25135,9 @@ private Map _naCreate(Map args) {
         try { back = _naReadBack(childId, child, written) }
         catch (Exception failure) {
             mcpLogError('rm-native', "hub_set_native_app create: reading back new app ${childId} failed", failure)
-            return [success: false, app_type: type, app_id: childId, fields_unverified: written.keySet().collect { it.toString() },
-                    error: "App ${childId} was saved, but reading it back failed: ${failure.message}".toString(),
+            return [success: false, app_type: type, app_id: childId, fields_unverified: written.keySet().collect { it.toString() }] +
+                   (saved.done && !saved.committed ? [committed: false] : [:]) +
+                   [error: "App ${childId} was saved, but reading it back failed: ${failure.message}".toString(),
                     note: "Check it with hub_get_app_config(appId=${childId}, includeSettings=true) before changing it; do not create it again.${guide}".toString()] + report
         }
         Map result = [success: back.not_landed.isEmpty(), app_id: childId, app_type: type, label: back.model.app?.label?.toString(),
@@ -25480,7 +25155,8 @@ private Map _naCreate(Map args) {
         boolean doneSaves = saved.done == '_action_done|Done|' && !saved.committed
         if (doneSaves) {
             result.committed = false
-            notes << "Its first page names both a next and a done page, so the hub answered its Done by saving and rendering the page again; the app did not install. Finish it with operation:'form'."
+            notes << "Its first page names both a next and a done page, so the hub answered its Done by saving and rendering the page again" +
+                (back.model.app?.installed == true ? '.' : "; the app did not install. Finish it with operation:'form'.")
         }
         if (back.model.app?.installed != true) {
             result.installed = false
@@ -25567,6 +25243,8 @@ private Map _naUpdate(Long id, Map args) {
     Map fields = args.get('fields')
     String page = args.page
     String guide = " See hub_get_tool_guide(section='set_native_app_reference')."
+    def marked = fields instanceof Map ? fields.find { k, v -> _isRedactionMarker(v) } : null
+    if (marked) throw new IllegalArgumentException("${marked.key} is the redaction marker, not a value; omit the field to keep the stored one")
     _requireUnprotectedAppMutation(id, 'edit')
     def nativeApp = getAppByAppId(id)
     if (nativeApp?.id?.toString() != id.toString()) throw new IllegalArgumentException('app_id must identify an installed app')
@@ -26609,7 +26287,7 @@ private List _ndSettings(Long id) {
     if (!(response instanceof Map) || !(response.settings instanceof List)) throw new IllegalStateException('Native settings are unavailable')
     response.settings.collect { row ->
         if (!(row instanceof Map) || !(row.name instanceof String)) throw new IllegalStateException('Unexpected native setting row')
-        boolean secret = row.type == 'password' || _appConfigIsSecretSetting(row.name, row.type, row.value)
+        boolean secret = _redactsCredentials() && (row.type == 'password' || _appConfigIsSecretSetting(row.name, row.type, row.value))
         def setting = [name: row.name, type: row.type, multiple: row.multiple, value: secret ? null : row.value, device_ids: row.deviceList instanceof Map ? row.deviceList.keySet().collect { it.toString() }.sort() : null]
         if (secret) setting.redacted = true
         setting
@@ -26708,7 +26386,11 @@ Map toolGetRuleDocument(Map args) {
     if ('conditions' in sections) document.conditions = nativeState.capabsfalse instanceof Map ? nativeState.capabsfalse : [:]
     if ('triggers' in sections) document.triggers = nativeState.capabstrue instanceof Map ? nativeState.capabstrue : [:]
     if ('expressions' in sections) document.expressions = nativeState.eval instanceof Map ? nativeState.eval : [:]
-    if ('variables' in sections) document.variables = _nrHandle(id).getAllLocalVars()
+    if ('variables' in sections) document.variables = _nrHandle(id).getAllLocalVars().collectEntries { name, row ->
+        Map shown = _rmPublicLocalVariable(name.toString(), row instanceof Map ? row : [value: row])
+        shown.remove('name')
+        [(name): row instanceof Map ? row + shown : shown]
+    }
     if ('settings' in sections) document.settings = _ndSettings(id)
     if (paged) {
         String section = sections[0]
@@ -26808,14 +26490,20 @@ private boolean _ndKnownRow(Map rows, String rowId, String missing) {
 }
 private String _ndPredictAppend(Map rows, Map counters, String part) {
     String family = part == 'action' ? 'action' : 'condition'
-    int next = counters.get(family) as int
+    List taken = family == 'action' ? [rows.action] : [rows.condition, rows.trigger]
+    int next = _ndCounter(counters.get(family), taken.any { !it.ids.isEmpty() })
     counters.put(family, next + 1)
     String predicted = next.toString()
+    if (taken.any { predicted in it.ids }) throw new IllegalArgumentException("Rule Machine's next ${family} id ${predicted} is already in use; read the rule again before appending")
     rows.get(part).predicted << predicted
     rows.get(part).added++
     predicted
 }
-private int _ndCounter(Object value) { value != null && value.toString().isInteger() && value.toString().toInteger() > 0 ? value.toString().toInteger() : 1 }
+private int _ndCounter(Object value, boolean hasRows) {
+    if (value != null && value.toString().isInteger() && value.toString().toInteger() > 0) return value.toString().toInteger()
+    if (hasRows) throw new IllegalArgumentException("The rule's row counter is unreadable; read the rule again before appending")
+    return 1
+}
 private void _ndDropRow(Map rows, String rowId, String missing) {
     if (_ndKnownRow(rows, rowId, missing)) rows.ids.remove(rowId)
     else { rows.predicted.remove(rowId); rows.added-- }
@@ -26833,7 +26521,7 @@ private void _ndPreflight(Long id, List changes) {
     Map rows = [action: [ids: (actionOrder + projectedActions.keySet()) as Set, added: 0, deleted: [] as Set, predicted: [] as Set],
                 condition: [ids: conditions.keySet().collect { it.toString() } as Set, added: 0, deleted: [] as Set, predicted: [] as Set],
                 trigger: [ids: triggers.keySet().collect { it.toString() } as Set, added: 0, deleted: [] as Set, predicted: [] as Set]]
-    Map counters = [condition: _ndCounter(before.ndx), action: _ndCounter(before.actNdx)]
+    Map counters = [condition: before.ndx, action: before.actNdx]
     boolean hasRequired = expressions.get('0') instanceof List && !expressions.get('0').isEmpty()
     boolean appendedActions = false
     Map locals = id == null ? [:] : null
@@ -26894,7 +26582,7 @@ private void _ndPreflight(Long id, List changes) {
                 projectedActions.remove(target)
                 actionOrder = actionOrder.findAll { it != target }
             }
-            if (change.part == 'required' && !hasRequired) { counters.put('condition', (counters.get('condition') as int) + 1); hasRequired = true }
+            if (change.part == 'required' && !hasRequired) { counters.put('condition', _ndCounter(counters.get('condition'), !(rows.condition.ids.isEmpty() && rows.trigger.ids.isEmpty())) + 1); hasRequired = true }
             if (change.part in ['expression', 'required']) {
                 String evalId = change.part == 'required' ? '0' : value.id.toString()
                 expressions.put(evalId, value.tokens)
@@ -27195,7 +26883,7 @@ Example changes: [{part:"action",value:{type:"messageActs",subtype:"getLogMsg",f
 
 hub_set_rule(operation:"form",rule_id,args:{steps:[{kind:"open"}]},confirm:true) operates an enabled Rule-5.1 or Button Rule-5.1 rule, or its Rule Machine parent; hub_set_native_app(operation:"form",app_id,...) runs the same steps on any other classic app. Read action variants, input names and option values from the returned forms instead of guessing them. Even open renders execute app code and can change state or cause side effects. An open's optional page names a registered native page, and from names the page that links to it, so a sub-page opened directly offers its Done back to that parent. Follow returned controls for page parameters and breadcrumbs. A create_child control creates the parent's native child type, returns created_app_id and closes the parent context; open the child separately to configure it. Apps are deleted with hub_delete_native_app.
 
-Submit with {kind:"submit",expect_page:"last returned page",fields:{"native field name":value},activate:"returned control_id"}; without activate it saves the fields and refreshes the page. Control IDs tell apart native buttons that share a name, such as editing and deleting the same variable. Form results mask password-typed fields and fields whose names look like credentials (API keys, tokens, passwords, PINs, lock codes) with the same marker hub_get_app_config uses. A page with both a next page and a done page renders its Done as the _action_done control, which the hub answers by saving the page and rendering that same page again. An app without pages also shows the hub's default fields, label (the app's name) and mode[mode] (a list of mode IDs from its options), and a page's own label and mode elements are the same two fields; the hub does not always keep the label posted with mode[mode], so after such a submit the label is checked and posted again on its own when the hub put back an older one (label_restored). Native enum keys, device IDs, booleans and single/multiple cardinality are checked before the request. Each submit posts the supplied settings and, as the browser does, the shown default of every other input with no stored value; a password's default is never posted, and page code can still change its own settings. args.options_for:["device field name"] expands device choices on the final returned page.
+Submit with {kind:"submit",expect_page:"last returned page",fields:{"native field name":value},activate:"returned control_id"}; without activate it saves the fields and refreshes the page. Control IDs tell apart native buttons that share a name, such as editing and deleting the same variable. With Hide passwords and credentials on (the default), form results mask password-typed fields and fields whose names look like credentials (API keys, tokens, passwords, PINs, lock codes) with the same marker hub_get_app_config uses; with it off they read as stored, except for a per-client token. A page with both a next page and a done page renders its Done as the _action_done control, which the hub answers by saving the page and rendering that same page again. An app without pages also shows the hub's default fields, label (the app's name) and mode[mode] (a list of mode IDs from its options), and a page's own label and mode elements are the same two fields; the hub does not always keep the label posted with mode[mode], so after such a submit the label is checked and posted again on its own when the hub put back an older one (label_restored). Native enum keys, device IDs, booleans and single/multiple cardinality are checked before the request. Each submit posts the supplied settings and, as the browser does, the shown default of every other input with no stored value; a password's default is never posted, and page code can still change its own settings. args.options_for:["device field name"] expands device choices on the final returned page.
 
 A batch holds 1 through 16 steps, each using the form the step before it returned, so dependent fields require another submit after they appear. A button handler runs before its step's fields are saved, as in the browser: submit the fields it needs in an earlier step. A button without submitOnChange reloads and needs a separate field submission.
 
@@ -27368,7 +27056,7 @@ private void _nfWalk(Object node, Map fields, Map controls, List messages, List 
             if (device && current instanceof Map) current = current.keySet().collect { it.toString() }
             if (device && !field.multiple && current instanceof List) current = current ? current[0] : null
             if (type == 'password') field.has_value = current != null && current != ''
-            else { field.value = current; field.value_source = exists ? 'stored' : 'default' }
+            if (type != 'password' || (exists && !_redactsCredentials())) { field.value = current; field.value_source = exists ? 'stored' : 'default' }
             if (!exists && type != 'password' && current != null && current != '' && !(current instanceof Collection && current.isEmpty())) field.default_value = current
             field.present = exists && current != null && current != '' && (!(current instanceof Collection) || !current.empty)
             field.options = _nfOptions(type == 'mode' ? model.modeMap : node.options)
@@ -27467,6 +27155,7 @@ private List _nfDevices(Map field) {
 }
 private String _nfValue(Map field, Object value) {
     if (!field.supported || field.disabled || (!field.app_field && field.name =~ /[\[\]\r\n]/)) throw new IllegalArgumentException("Unsupported or disabled native field: ${field.name}")
+    if (_isRedactionMarker(value)) throw new IllegalArgumentException("${field.name} is the redaction marker, not a value; omit the field to keep the stored one")
     if (field.device && value instanceof Map) {
         List ids = value.keySet().collect { it.toString() }
         value = field.multiple ? ids : (ids.size() == 1 ? ids[0] : ids)
@@ -27488,9 +27177,9 @@ private Map _nfPublic(Map context, List optionsFor) {
     List fields = context.get('fields').values().collect { field ->
         Map result = [:] + field
         ['device', 'ignore', 'capability', 'present', 'default_value', 'app_field', 'sidecars', 'hub_default'].each { result.remove(it) }
-        if (field.type == 'password') result.redacted = true
+        if (field.type == 'password' && _redactsCredentials()) result.redacted = true
         else if (field.name ==~ /(?i)access_?token/ && result.value instanceof CharSequence && result.value && _redactsAccessTokens()) result.value = _accessTokenRedactedMarker()
-        else if (_appConfigIsSecretSetting(field.name, field.type, result.value)) { result.value = _appConfigRedactedMarker(); result.redacted = true }
+        else if (_appConfigMasksSetting(field.name, field.type, result.value)) { result.value = _appConfigRedactedMarker(); result.redacted = true }
         if (field.device && field.name in optionsFor) result.options = _nfDevices(field)
         if (field.device) result.options_available = true
         result
@@ -27642,6 +27331,8 @@ Map toolCallAppForm(Map args, String toolName = 'hub_set_rule') {
         if (step.kind == 'open' && step.from != null && (step.page == null || !(step.from instanceof String) || !(step.from ==~ /[A-Za-z_][A-Za-z0-9_.-]*/))) throw new IllegalArgumentException('from names the parent page of the opened page and requires page')
         if (step.kind == 'submit' && (!(step.expect_page instanceof String) || (step.get('fields') != null && !(step.get('fields') instanceof Map)))) throw new IllegalArgumentException('Submit requires expect_page and an optional fields object')
         if (step.activate != null && !(step.activate instanceof String)) throw new IllegalArgumentException('activate requires a returned control_id string')
+        def marked = step.get('fields') instanceof Map ? step.get('fields').find { k, v -> _isRedactionMarker(v) } : null
+        if (marked) throw new IllegalArgumentException("${marked.key} is the redaction marker, not a value; omit the field to keep the stored one")
     }
     requireDestructiveConfirm(args.confirm)
     Long id = args.app_id.toString().toLong()
@@ -28377,6 +28068,11 @@ def advancedOverridesPage() {
             input "redactAccessTokens", "bool", title: "Hide access tokens in MCP responses",
                   description: "Leave OFF (default): tokens are returned as the hub shows them. ON: access_token= URL values and accessToken / access_token fields in tool results are replaced with ***redacted (access token)***.",
                   defaultValue: false
+        }
+        section("Passwords and credentials in responses") {
+            input "redactCredentials", "bool", title: "Hide passwords and credentials in MCP responses",
+                  description: "ON (default): password settings, and app, device and rule values whose names look like credentials (apiKey, brokerPassword, lockCode, alarmPin), read back hidden; the setting is still listed and can still be written. OFF: they are returned as stored. Per-client tokens always see them hidden. File Manager backups leave out password and credential-named settings either way.",
+                  defaultValue: true
         }
         section("Native app edit backups") {
             paragraph "Rule edits take one fresh File Manager snapshot before each changes batch or native editor workflow. A new rule has no earlier version to back up. Delete backups remain enabled independently."
@@ -31266,6 +30962,71 @@ private def _renderToolResult(id, toolName, reactiveToolName, args, result, bool
 }
 private String _accessTokenRedactedMarker() { return "***redacted (access token)***" }
 private boolean _redactsAccessTokens() { settings.redactAccessTokens == true || callerClient != null }
+private boolean _redactsCredentials() { settings.redactCredentials != false || callerClient != null }
+private String _appConfigRedactedMarker() { return "***redacted (password)***" }
+private boolean _isRedactionMarker(value) { value instanceof CharSequence && value.toString() == _appConfigRedactedMarker() }
+private boolean _appConfigMasksSetting(name, type, value) { _redactsCredentials() && _appConfigIsSecretSetting(name, type, value) }
+private boolean _appConfigIsSecretSetting(name, type, value) {
+    if (_appConfigEmptyValue(value)) return false
+    String t = type?.toString()
+    if (t == "password") return true
+    if (value instanceof Boolean) return false
+    if (t && (t in ["bool", "boolean", "enum", "mode", "time", "date", "button", "href", "hub", "icon", "color"] ||
+              t.startsWith("capability") || t.startsWith("device"))) return false
+    return _appConfigSecretName(name)
+}
+private boolean _appConfigEmptyValue(value) {
+    if (value == null) return true
+    if (value instanceof CharSequence && value.toString().isEmpty()) return true
+    (value instanceof Collection || value instanceof Map) && value.isEmpty()
+}
+private boolean _appConfigSecretName(name) {
+    String raw = name?.toString()
+    if (!raw) return false
+    if (raw ==~ /(?i)access_?token/) return false
+    String lower = raw.toLowerCase()
+    if (!(lower.contains("pass") || lower.contains("pwd") || lower.contains("secret") || lower.contains("token") ||
+          lower.contains("key") || lower.contains("credential") || lower.contains("psk") || lower.contains("pin") || lower.contains("code"))) return false
+    String spaced = raw.replaceAll(/([a-z0-9])([A-Z])/, '$1 $2').replaceAll(/([A-Z]+)([A-Z][a-z])/, '$1 $2')
+    List words = spaced.toLowerCase().split(/[^a-z]+/).findAll { part -> part }
+    Set metadata = ["count", "counter", "cnt", "expiry", "expires", "expire", "expired", "expiration", "time",
+                    "timestamp", "date", "length", "len", "type", "enabled", "enable", "set", "required", "url",
+                    "uri", "endpoint", "timeout", "interval", "mode", "policy", "hint", "label", "name"] as Set
+    Set keyQualifiers = ["api", "access", "private", "auth", "client", "secret", "encryption", "signing", "shared"] as Set
+    Set pinQualifiers = ["lock", "user", "access", "pass", "disarm", "arm", "alarm", "security", "unlock", "auth", "entry", "keypad", "door",
+                         "master", "admin", "guest", "installer", "duress", "gate", "garage", "hsm", "panel", "safe", "vault"] as Set
+    Set hardwarePins = ["led", "gpio", "relay", "io", "digital", "analog", "data", "output", "input", "sensor", "pwm", "signal", "button",
+                        "power", "reset", "enable", "interrupt", "irq", "clock", "clk", "sda", "scl", "tx", "rx", "servo", "motor", "trigger", "echo"] as Set
+    boolean qualified = words.any { it in pinQualifiers }
+    Set boardPins = ["led", "gpio", "relay", "pwm", "servo", "motor", "sda", "scl", "clk", "clock", "irq", "analog", "digital", "tx", "rx", "io"] as Set
+    Set statusCodes = ["status", "error", "result", "response", "reason", "fault", "event", "state", "zip", "postal", "country", "area"] as Set
+    for (int idx = 0; idx < words.size(); idx++) {
+        String w = words[idx]
+        String prev = idx > 0 ? words[idx - 1] : null
+        String next = idx + 1 < words.size() ? words[idx + 1] : null
+        boolean hit = w.contains("password") || w.contains("passwd") || w.contains("passphrase") ||
+            w.contains("passcode") || w.contains("pwd") || w.contains("apikey") || w.contains("privatekey") ||
+            w.contains("accesskey") || (w.contains("secret") && !w.startsWith("secretar")) ||
+            w.endsWith("token") || w.endsWith("tokens") || w.startsWith("credential") || w == "psk" ||
+            (w == "pass" && prev != "by" && (next == null || next in ["word", "phrase", "code", "key"])) ||
+            (keyQualifiers.contains(w) && (next == "key" || next == "keys")) ||
+            (w in ["pin", "pins", "pincode", "pincodes"] && (qualified ? !(prev in boardPins) : !(prev in hardwarePins))) ||
+            (w in ["code", "codes"] && !(prev in statusCodes) && (qualified || prev in ["pin", "pins"])) ||
+            _appConfigQualifiedSuffix(w, pinQualifiers)
+        if (!hit) continue
+        boolean twoWords = ((next == "key" || next == "keys") && keyQualifiers.contains(w)) || (w in ["pin", "pins"] && next in ["code", "codes"])
+        String after = twoWords ? (idx + 2 < words.size() ? words[idx + 2] : null) : next
+        if (after != null && metadata.contains(after)) continue
+        return true
+    }
+    return false
+}
+private boolean _appConfigQualifiedSuffix(String word, Set qualifiers) {
+    for (suffix in ["pincodes", "pincode", "pins", "pin", "codes", "code"]) {
+        if (word.length() > suffix.length() && word.endsWith(suffix) && word.substring(0, word.length() - suffix.length()) in qualifiers) return true
+    }
+    return false
+}
 private def _redactAccessTokens(value) {
     String marker = _accessTokenRedactedMarker()
     if (value instanceof Map) {
@@ -31796,14 +31557,14 @@ def getGatewayConfig() {
                 hub_call_device_command: "Send one device command, or batch up to 20 mixed commands in one call (commands cannot be combined with waitFor). Args: deviceId, command, parameters?, waitFor? | commands: [{deviceId, command, parameters?}]",
                 hub_call_device_swap: "Swap a device: apps/rules using from_device_id run on to_device_id's hardware afterwards (the hub exchanges the two identities). Args: from_device_id, to_device_id, confirm",
                 hub_call_device_replace: "Replace a dead device's hardware while KEEPING its id + all app/rule references (re-points to new_device_id; list_options=true reads compatible candidates). Args: old_device_id, new_device_id?, list_options?, confirm",
-                hub_update_device: "Update applicable device identity, configuration, driver, history, dashboard/mesh, retry, or assistant fields after hub_get_device(mode='configuration'). Args: deviceId plus one or more editable properties; confirm is required for high-impact fields.",
+                hub_update_device: "Change a device's Device Info fields, driver preferences, assistants or enabled state after hub_get_device(mode='configuration'). Args: deviceId, fields?, preferences?, confirm (for requiresConfirmation fields)",
                 hub_create_device: "Create a device from a driver-type id (hub_list_drivers include='all'); for LAN/integration/software drivers, NOT radio hardware (pair those). Args: deviceTypeId, label?, confirm",
                 hub_list_devices: "List devices with current states; format='context' = plain-text house snapshot. Args: detailed?, filter, labelFilter?, capabilityFilter?, roomFilter?, onlyOn?, changedSince?, attributeNames?, format, fields?, limit?, cursor?",
                 hub_get_device: "Inspect one device. Args: deviceId, mode? (summary/configuration/details), sections? (details mode), fields? (configuration/details field selector), cursor? (continue one oversized scalar). Configuration mode discovers editable fields and preference definitions/current values before an update.",
                 hub_get_device_attribute: "Read one attribute's value, or block-poll one OR several devices (deviceIds + mode any/all) until it reaches expectedValue/expectedValues. Args: deviceId | deviceIds (max 20), mode? (any/all), attribute, expectedValue?, expectedValues?, timeoutMs?, pollIntervalMs?, comparator?, stableForMs?",
                 hub_list_device_events: "Recent device events, a time-windowed history, an absolute bookmark (since) with an optional end (until), per-app events (appId), or location and hub events (reboots, low memory). Args: deviceId?, appId?, hoursBack?, since?, until?, attribute?, limit?",
                 hub_get_hub_mesh: "Read Hub Mesh (hub-to-hub device/variable sharing on the LAN): enabled state, peer hubs, shared/linked devices + hub variables, sync interval, mode-following hub. Args: include_token?",
-                hub_update_hub_mesh: "Change Hub Mesh settings (enable/disable needs a hub reboot; per-device sharing is hub_update_device meshEnabled). Args: enabled?, full_refresh_interval? (0/120/300/3600), mode_hub_id? ('none'=local modes), peer_hub_id?+peer_token?"
+                hub_update_hub_mesh: "Change Hub Mesh settings (enable/disable needs a hub reboot; per-device sharing is hub_update_device fields.meshEnabled). Args: enabled?, full_refresh_interval? (0/120/300/3600), mode_hub_id? ('none'=local modes), peer_hub_id?+peer_token?"
             ],
             searchHints: [
                 hub_call_device_command: "send command control turn on off set level dim lock unlock device run batch multiple several devices mixed commands ad hoc one call",
@@ -32507,12 +32268,12 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
         case "hub_get_visual_rule": return toolGetVisualRule(args)
         case "hub_set_visual_rule": return toolSetVisualRule(args)
         case "hub_delete_visual_rule": return toolDeleteVisualRule(args)
-        case "hub_list_dashboards": return toolListDashboards(args)
-        case "hub_get_dashboard": return toolGetDashboard(args)
-        case "hub_create_dashboard": return toolCreateDashboard(args)
-        case "hub_update_dashboard": return toolUpdateDashboard(args)
+        case "hub_list_dashboards": return _dashboardPublic(toolListDashboards(args))
+        case "hub_get_dashboard": return _dashboardPublic(toolGetDashboard(args))
+        case "hub_create_dashboard": return _dashboardPublic(toolCreateDashboard(args))
+        case "hub_update_dashboard": return _dashboardPublic(toolUpdateDashboard(args))
         case "hub_delete_dashboard": return toolDeleteDashboard(args)
-        case "hub_clone_dashboard": return toolCloneDashboard(args)
+        case "hub_clone_dashboard": return _dashboardPublic(toolCloneDashboard(args))
         case "hub_get_tool_guide": return toolGetToolGuide(args.section, args.cursor, [platform_api_search: args.platform_api_search, platform_api_page: args.platform_api_page])
         case "hub_search_tools": return toolSearchTools(args)
         case "hub_read_apps_code":
@@ -34929,13 +34690,16 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
     boolean useRuleBuilder = (source != "configPage")
     boolean useConfigPage = (source != "ruleBuilderJson")
     def installed = null
+    boolean identified = true
     try { installed = getAppByAppId(appId as Long) }
     catch (Exception lookup) {
-        useRuleBuilder = false; useConfigPage = false
-        checkErrors << "app ${appId} was not read: it could not be identified (${lookup.message ?: lookup.toString()}), and a user or community app is not read as a rule".toString()
+        identified = false
+        useConfigPage = false
+        checkErrors << "app ${appId}'s page was not read: the app could not be identified (${lookup.message ?: lookup.toString()}), and a user or community app's page runs its own code".toString()
     }
+    if (identified && installed == null) throw new IllegalArgumentException("App ${appId} not found; list installed apps with hub_list_apps")
     def namespace = installed?.appType?.namespace?.toString()
-    if (namespace && namespace != "hubitat") {
+    if (identified && namespace != "hubitat") {
         useRuleBuilder = false; useConfigPage = false
         label = installed.label?.toString()
         ruleFormat = "classic-app"
@@ -35053,7 +34817,7 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
     def brokenMarkerCounts = [:]
     brokenMarkers.each { m -> brokenMarkerCounts.put(m, (brokenMarkerCounts.get(m) ?: 0) + 1) }
     def result = [
-        ok: !sourcesUsed.isEmpty() && issues.isEmpty() && broken != true && validationErrors.isEmpty(),
+        ok: identified && !sourcesUsed.isEmpty() && issues.isEmpty() && broken != true && validationErrors.isEmpty(),
         unreadable: sourcesUsed.isEmpty(),
         broken: broken,
         source: (sourcesUsed ? sourcesUsed.join("+") : "none"),
@@ -35855,14 +35619,14 @@ PATCH-like write over Hub Mesh's hub-level settings; every parameter optional, v
 - `mode_hub_id` → `/device/followModes/<hubId|none>`; a peer `hubId` from `hub_get_hub_mesh` `peers[]`, or `'none'` for local modes.
 - `peer_hub_id` + `peer_token` (TOGETHER) → `POST /device/setHubMeshToken`; stores that peer's mesh token here, needed when the peer has UI login security. Read the token on the PEER via its own `hub_get_hub_mesh(include_token=true)`. An all-digits `peer_hub_id` is sent as a JSON number, matching the hub UI's wire format.
 
-Peer hubs are auto-discovered on the LAN — there is no "add peer" write; enabling mesh on both hubs is what makes them peers. Per-DEVICE sharing is `hub_update_device` (`meshEnabled`), not this tool; `meshFullSync` there applies to a LINKED device (with Hub Mesh refresh enabled), keeping the local proxy synced on the periodic refresh.
+Peer hubs are auto-discovered on the LAN — there is no "add peer" write; enabling mesh on both hubs is what makes them peers. Per-DEVICE sharing is `hub_update_device` (`fields.meshEnabled`), not this tool; `fields.meshFullSync` there applies to a LINKED device (with Hub Mesh refresh enabled), keeping the local proxy synced on the periodic refresh.
 
 ### Per-device and per-variable Hub Mesh linking & sharing
 
 The hub-LEVEL settings above are `hub_update_hub_mesh`; the per-entity share/link operations are folded into the device and variable tools (no dedicated tools):
 
-- **Share a device** into the mesh: `hub_update_device(deviceId, meshEnabled=true|false)`. Its full reference is `hub_get_tool_guide(section='update_device')`.
-- **Link a device** a peer shares: `hub_create_device(mesh_source_hub_id, mesh_source_device_id, confirm=true)` — pair from `hub_get_hub_mesh` `availableLinkedDevices[]`. On the resulting LINKED device, `hub_update_device(meshFullSync=true)` (requires Hub Mesh refresh enabled) keeps the local proxy synced on the periodic refresh.
+- **Share a device** into the mesh: `hub_update_device(deviceId, fields={meshEnabled: true|false}, confirm=true)`. Its full reference is `hub_get_tool_guide(section='update_device')`.
+- **Link a device** a peer shares: `hub_create_device(mesh_source_hub_id, mesh_source_device_id, confirm=true)` — pair from `hub_get_hub_mesh` `availableLinkedDevices[]`. On the resulting LINKED device, `hub_update_device(fields={meshFullSync: true}, confirm=true)` (requires Hub Mesh refresh enabled) keeps the local proxy synced on the periodic refresh.
 - **Unlink a device**: `hub_delete_device(deviceId, confirm=true)` — removes only the local proxy; warns on `appsUsing`, and distinctly when it could not check.
 - **Share a variable**: `hub_set_variable(name, mesh_shared=true|false)` (hub variables only).
 - **Link a variable** a peer shares: `hub_create_variable(mesh_source_hub_id, mesh_source_name, confirm=true)` — pair from `hub_get_hub_mesh` `availableLinkedHubVariables[]`. The variable references are in `hub_get_tool_guide(section='variables')`.
@@ -35954,43 +35718,29 @@ MCP-managed virtual devices:
 
 Call `hub_get_device(deviceId=..., mode="configuration")` before an update. It reports the fields that are applicable and writable for this device, declared preference types/options/ranges/defaults and current saved values, driver identity, and source/read status. A saved false, zero, empty string or null is distinct from an unset value; a driver default does not prove the setting was saved. Use `mode="details"` with optional `sections` for wider inspection.
 
-Details mode does not inline event or log history; it points to the read tools for them. Password values are redacted. Missing or unrecognized native data is reported as partial or unavailable. It never proves the device has no settings. `driverSource` gives a ready hub_get_source call when a user driver resolves to exactly one driver. Otherwise it gives the hub_list_drivers lookup and the reason. Built-in driver source is not available. Driver source can show more declarations, but it never shows the device's saved preference values. Every mode is read-only (it is also in hub_read_devices), and device authorization still applies.
+Details mode does not inline event or log history; it points to the read tools for them. Password values are redacted unless Hide passwords and credentials is off. Missing or unrecognized native data is reported as partial or unavailable. It never proves the device has no settings. `driverSource` gives a ready hub_get_source call when a user driver resolves to exactly one driver. Otherwise it gives the hub_list_drivers lookup and the reason. Built-in driver source is not available. Driver source can show more declarations, but it never shows the device's saved preference values. Every mode is read-only (it is also in hub_read_devices), and device authorization still applies.
 
 For smaller expanded reads, pass `fields=[]` to discover `availableFields`, then select exact names. Configuration selection applies to preference names, editable property names and device-info keys. Details selection applies to section keys; attributes also accepts an individual attribute name. Commands and jobs use the row indices returned by `availableFields`, so duplicate or unnamed rows remain selectable. Omitting `fields` retains the full selected sections.
 Examples: `fields=["txtEnable"]` in configuration mode, or `sections=["state"], fields=["lastRefresh"]` in details mode.
 
 If even one selected value exceeds the response budget, the tool returns `contentFormat="json-fragment"`, a `content` string (`contentText` for ChatGPT) and `nextCursor`. Repeat the same read with that cursor, concatenate the fragments in order, then parse the joined JSON. Pages retain the original redacted snapshot despite later telemetry changes. Continue within five minutes with the same device, mode, sections and fields. Expiry, eviction or a server reload requires restarting without cursor. At most eight snapshots and 2,097,152 characters of serialized JSON are retained in memory; select fewer fields if the budget is exceeded. Device authorization is checked on every page.
 
-Every update requires the Write master and applicable tool permissions. When mandatory best-practice acknowledgment is enabled, put `bestPracticeKey` inside the gateway's `args` alongside the patch.
+`hub_update_device(deviceId, fields={...}, preferences={...}, confirm?)` saves the way the device page does, one save per page section, then reads the device back once and reports each field in `changes`, `unchanged` (it already had the requested value) or `errors`. Put `bestPracticeKey` beside them when mandatory best-practice acknowledgment is enabled. The whole request is checked before anything is written; a field the device does not offer (configuration reports `writable:false` with a `reason`) is refused.
 
-| Properties | Behavior |
-|------------|----------|
-| `label`, `name`, `deviceNetworkId` | Device identity; network-ID changes require confirmation and backup. |
-| `dataValues`, `preferences` | Data-section values and declared driver preferences. Inspect configuration first. |
-| `room`, `enabled`, `showOnHome`, `defaultCurrentState`, `tags` | Room, availability, Home visibility, Status-column attribute, and replacement tag set. |
-| `deviceTypeId`, `zigbeeId` | Driver and radio identity where applicable; confirmation and backup required. |
-| `notes`, `defaultIcon` | Device note and icon override; empty string clears. |
-| `maxEvents`, `maxStates`, `spammyThreshold` | Native history limits (1-2000) and event-alert threshold (100-2000). |
-| `dashboardIds`, `meshEnabled`, `meshFullSync` | Applicable dashboard/mesh assignments; confirmation and backup required. |
-| `retryEnabled` | Command retry where the native device exposes it. |
-| `homeKitEnabled`, `amazonAlexaEnabled`, `googleHomeEnabled` | Supported and installed assistant assignments; confirmation and backup required. |
+- **Device Info save** (one request for all of these): `label`, `name`, `deviceNetworkId`, `room` (text matches a name, else an id; a number is an id; `""` clears), `tags` (replaces the set; `[]` clears), `notes`, `defaultIcon` (`""` clears), `maxEvents`/`maxStates` (1-2000), `spammyThreshold` (100-2000), `deviceTypeId`, `zigbeeId`, `dashboardIds` (the legacy Hubitat Dashboards that list this device; replaces the set; an Easy Dashboard picks its devices with `hub_update_dashboard` `deviceIds`), `meshEnabled`, `meshFullSync`. The hub rebuilds the device from this save, so every current value is sent with the change.
+- **Preferences save** (one request): `preferences`, `showOnHome`, `defaultCurrentState` (`""` selects None), `retryEnabled`. It runs the driver's `updated()`, as the page's Save Preferences does; settings that are not named keep their values.
+- `homeKitEnabled`, `amazonAlexaEnabled`, `googleHomeEnabled` go to the assistant integrations; a refusal names the integration's reason. `enabled` enables or disables the device. `dataValues` sets Data entries through the driver's `updateDataValue`.
 
-Omitted properties are preserved. The complete patch is validated before writes begin. A runtime partial failure reports per-property successes and errors; inspect the result before retrying.
+`requiresConfirmation` fields (driver, network and Zigbee IDs, dashboards, Hub Mesh, assistants) need `confirm=true` and a backup under 24 hours old.
 
-**Preferences format:**
-`{"pollInterval": {"type": "number", "value": 30}, "debugLogging": {"type": "bool", "value": true}}`
-
-Use the preference's declared type and constraints from configuration mode; bool and boolean declarations are supported. Unknown names are refused. Omit preferences to preserve them. Clearing an optional preference requires an explicit entry such as `{"debugLogging":{"clear":true}}`; null, empty strings, whitespace and empty arrays are rejected. Do not combine clear with value. Required preferences cannot be cleared. Read values and driver defaults do not constitute a write request. An unreadable schema/readback is reported separately from an unknown name or a value that did not persist. Room names use case-insensitive exact matching. `tags` replaces the full tag set; an empty array clears it.
-An empty `room` string removes the room assignment. A preference save re-sends the device's current Home visibility, Status-column attribute and command-retry values, so those stay unchanged unless the patch sets them.
-
-If an unset enum reports `multiple: null`, check `driverSource` or metadata captured before clearing, then supply `multiple: true` or `multiple: false` alongside `value` when restoring it. For example, `{"colors":{"value":["red"],"multiple":true}}` restores a declared multi-select enum; do not guess its selection cardinality.
+**Preferences format:** a value of the declared type, e.g. `{"pollInterval": 30, "debugLogging": true}`; `{"type": ..., "value": ...}` is also accepted when the type matches. Unknown names are refused. A multi-select enum takes a list. Clearing an optional preference needs `{"clear": true}`; null, blank strings and empty lists are refused, and required preferences cannot be cleared. If an unset enum reports `multiple: null`, check `driverSource` or metadata read before clearing and send `{"value": [...], "multiple": true}` (or `false`); its selection cardinality is never guessed.
 
 ### Hub Mesh: sharing, linking, and unlinking devices
 
 Hub Mesh shares devices between Hubitat hubs on the same LAN (not the Z-Wave/Zigbee radio mesh). Three device operations, split across tools:
 
-- **Share / unshare** one of THIS hub's devices into the mesh: `hub_update_device(deviceId, meshEnabled=true|false)`. No dedicated tool — it is a device property. (`meshFullSync` is NOT a share flag: it applies to a LINKED device, below.)
-- **Link** a device a PEER hub shares onto this hub: `hub_create_device(mesh_source_hub_id, mesh_source_device_id, confirm=true)` — the pair comes from `hub_get_hub_mesh` `availableLinkedDevices[]` (`hubId` + `deviceId`). The result carries the new local `deviceId` (resolved by a `localLinkedDevices` diff). On that resulting linked device, `hub_update_device(meshFullSync=true)` (requires Hub Mesh refresh enabled) keeps the local proxy synced on the periodic refresh. Linking a device already linked here returns `success` with `alreadyLinked:true` (no fresh link is issued). The `createLinked` GET returns 200 with an empty body even when nothing actually links, so the tool reads mesh state back and keys on the source: if the device links (it drops out of `availableLinkedDevices[]` or its row flips `linkedLocally:true`) you get `success` with the new id; if it stays present with `linkedLocally:false` (a confirmed silent no-op) you get a `success:false` FAILURE, NOT a soft warning; only an unreadable mesh list is a warn-not-fail. A no-op is usually transient — Hub Mesh takes time to re-establish a peer connection after that peer reboots or updates and a link briefly no-ops during that window before clearing itself — so wait and retry. If it persists, confirm the peer is online in `hub_get_hub_mesh` `peers[]` (`offline:false`, `warning:null`) and that this hub holds its mesh token (store it with `hub_update_hub_mesh(peer_hub_id, peer_token)`, read from the peer's OWN `hub_get_hub_mesh(include_token=true)`).
+- **Share / unshare** one of THIS hub's devices into the mesh: `hub_update_device(deviceId, fields={meshEnabled: true|false}, confirm=true)`. No dedicated tool — it is a device property. (`meshFullSync` is NOT a share flag: it applies to a LINKED device, below.)
+- **Link** a device a PEER hub shares onto this hub: `hub_create_device(mesh_source_hub_id, mesh_source_device_id, confirm=true)` — the pair comes from `hub_get_hub_mesh` `availableLinkedDevices[]` (`hubId` + `deviceId`). The result carries the new local `deviceId` (resolved by a `localLinkedDevices` diff). On that resulting linked device, `hub_update_device(fields={meshFullSync: true}, confirm=true)` (requires Hub Mesh refresh enabled) keeps the local proxy synced on the periodic refresh. Linking a device already linked here returns `success` with `alreadyLinked:true` (no fresh link is issued). The `createLinked` GET returns 200 with an empty body even when nothing actually links, so the tool reads mesh state back and keys on the source: if the device links (it drops out of `availableLinkedDevices[]` or its row flips `linkedLocally:true`) you get `success` with the new id; if it stays present with `linkedLocally:false` (a confirmed silent no-op) you get a `success:false` FAILURE, NOT a soft warning; only an unreadable mesh list is a warn-not-fail. A no-op is usually transient — Hub Mesh takes time to re-establish a peer connection after that peer reboots or updates and a link briefly no-ops during that window before clearing itself — so wait and retry. If it persists, confirm the peer is online in `hub_get_hub_mesh` `peers[]` (`offline:false`, `warning:null`) and that this hub holds its mesh token (store it with `hub_update_hub_mesh(peer_hub_id, peer_token)`, read from the peer's OWN `hub_get_hub_mesh(include_token=true)`).
 - **Unlink** a linked device: `hub_delete_device(deviceId, confirm=true)`. This removes ONLY the local proxy; the source device on the peer hub is untouched. The tool warns when the linked device is in use by local apps (`appsUsing`), which will break.
 
 Read the current mesh state (shared/linked/available lists, per-device `appsUsing`) with `hub_get_hub_mesh`; the hub-level mesh settings are in `hub_update_hub_mesh`.
@@ -36388,7 +36138,7 @@ A single tool can also be switched off under **Advanced: Per-tool Overrides**. A
   - On a Rule Machine rule a paragraph holding a disabled action or trigger reads `{text, disabled: [...]}`, listing the text of each disabled row it holds. On selectActions (Button Rule: selectActionsX) a disabled action's `disable<N>` control reads 'Enable Action', and the control named `<N>.0.<bool>` carries that action's text; N is the action index, not the row position. The button toggles: never replay a click whose response was lost. hub_set_app_disabled disables the whole app.
   - `pageNote` appears when the hub rendered another page than `pageName`: the app reaches that page only through its link, so open it in a form workflow.
   - `appType.system` and `appType.menu` are the fields hub_list_apps(scope='types') gives for every type at once.
-  - `includeSettings=true` adds the raw settings map: 500-1000 app-encoded keys on large apps (Room Lighting stores per-device scene levels as `dm~<deviceId>~<scene>`). Secrets read `***redacted (password)***`: every setting the hub types as a password, on any page, and free-text settings with credential-shaped names (password, pass, secret, token, API key, credential, ...). OAuth accessToken settings follow the Hide access tokens setting. Page inputs are redacted the same way. When the setting types cannot be read the map is withheld and `settingsNote` says why.
+  - `includeSettings=true` adds the raw settings map: 500-1000 app-encoded keys on large apps (Room Lighting stores per-device scene levels as `dm~<deviceId>~<scene>`). Secrets read `***redacted (password)***`: every setting the hub types as a password, on any page, and free-text settings with credential-shaped names (password, pass, secret, token, API key, credential, PIN, lock or alarm code, ...). OAuth accessToken settings follow the Hide access tokens setting. Page inputs are redacted the same way. With Hide passwords and credentials turned off in the MCP app's settings they read as stored. When the setting types cannot be read the map is withheld and `settingsNote` says why.
   - A type='mode' input's `value` is its stored setting. Day Lights uses ten of them for per-mode levels, gated by `useModeOverrides`; most apps use one as an "only during these modes" restriction.
   - **Mode gating in the built-in apps.** The hub has no "modes in use by" list, so read each app; resolve mode IDs with hub_list_modes.
     - **Notifier** — `modes` (mode ids) on `moreOptions`; restricts.
@@ -36669,7 +36419,7 @@ Read-only; each entry carries id, name, and `type` ('easy' or 'legacy'). Easy en
 
 ### hub_get_dashboard
 
-Read-only. For an Easy Dashboard: tiles, navigation, devices, and PINs. For a legacy dashboard: its authorized `deviceIds` plus a nested `layout` object (see "Legacy layout shape" below). Read before the wholesale `hub_update_dashboard` and pass its output straight back. A read that partly fails returns `partial: true` with a note — the missing fields are unavailable, not defaulted.
+Read-only. For an Easy Dashboard: tiles, navigation, devices, and PINs (read `***redacted (password)***` while Hide passwords and credentials is on; passing that back to `hub_update_dashboard` keeps the stored PIN). For a legacy dashboard: its authorized `deviceIds` plus a nested `layout` object (see "Legacy layout shape" below). Read before the wholesale `hub_update_dashboard` and pass its output straight back. A read that partly fails returns `partial: true` with a note — the missing fields are unavailable, not defaulted.
 
 ### hub_create_dashboard
 
