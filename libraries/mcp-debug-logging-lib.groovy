@@ -173,7 +173,7 @@ def toolGenerateBugReport(args) {
     if (history.status == "in_progress") {
         if (!retainedErrors) return history + [tool: "hub_report_issue"]
         logLoading = true
-        history = [error: "Native MCP log history is still loading; retained errors are included in the report.", retryable: true]
+        history = (_bat529EmbeddedCatalogRead(['["m",[["error","Native MCP log history is still loading; retained errors are included in the report."],["retryable",true]]]']) as Map)
     }
     def allEntries = ((history.entries ?: [])).findAll((this.&_bat529Cb_1fa286f7_19))
     def anchor = _bugReportResolveAnchor(args, allEntries)
@@ -474,19 +474,19 @@ private List _bugReportMissingContext(args, String issueType, Map client, String
         missing << [field: "llmClient", ask: "Confirm with the user that '${_mcpClientString(args.llmClient)}' is the host app they run: the server could not identify the client (${why}), so an inferred value must not stand.".toString()]
     }
     if (blank(args.llmModel)) {
-        missing << [field: "llmModel", ask: "Ask the user which model is in use (Claude Opus 5, Sonnet 5, GPT-5, ...) and pass it as llmModel -- do not guess."]
+        missing << (_bat529EmbeddedCatalogRead(['["m",[["field","llmModel"],["ask","Ask the user which model is in use (Claude Opus 5, Sonnet 5, GPT-5, ...) and pass it as llmModel -- do not guess."]]]']) as Map)
     }
     // An agent-behavior report is diagnosed from the same evidence as a bug: what was called,
     // what came back, and what the client's own log said.
     if (issueType in ["bug", "agent_behavior"]) {
         if (blank(args.stepsToReproduce)) {
-            missing << [field: "stepsToReproduce", ask: "Write the exact sequence that reproduces the failure and pass it as stepsToReproduce."]
+            missing << (_bat529EmbeddedCatalogRead(['["m",[["field","stepsToReproduce"],["ask","Write the exact sequence that reproduces the failure and pass it as stepsToReproduce."]]]']) as Map)
         }
         if (blank(args.verbatimToolCalls)) {
-            missing << [field: "verbatimToolCalls", ask: "Copy the exact failing tool call(s) and the raw response text out of the transcript and pass them as verbatimToolCalls."]
+            missing << (_bat529EmbeddedCatalogRead(['["m",[["field","verbatimToolCalls"],["ask","Copy the exact failing tool call(s) and the raw response text out of the transcript and pass them as verbatimToolCalls."]]]']) as Map)
         }
         if (blank(args.clientLogs)) {
-            missing << [field: "clientLogs", ask: "Collect the MCP client host's own log lines for the failure window and pass them as clientLogs."]
+            missing << (_bat529EmbeddedCatalogRead(['["m",[["field","clientLogs"],["ask","Collect the MCP client host\'s own log lines for the failure window and pass them as clientLogs."]]]']) as Map)
         }
     }
     return missing
@@ -577,7 +577,7 @@ private Map _bugReportRuleInfo(args) {
 }
 
 private String _bugReportSuggestedTitle(args, String issueType) {
-    def prefix = ["bug": "[bug]", "enhancement": "[feature]", "agent_behavior": "[agent-behavior]"][issueType]
+    def prefix = (_bat529EmbeddedCatalogRead(['["m",[["bug","[bug]"],["enhancement","[feature]"],["agent_behavior","[agent-behavior]"]]]']) as Map)[issueType]
     def toolCtx = _mcpClientString(args.failingTool)
     def userTitle = _bugReportScrubSecrets(args.title?.toString()?.trim()) ?: "Issue report"
     def body = toolCtx ? "${toolCtx}: ${userTitle}" : userTitle
@@ -588,9 +588,9 @@ private String _bugReportSuggestedTitle(args, String issueType) {
 // Prefills the form field ids mcp_version, hub_firmware, mcp_client and failing_tool, declared in
 // .github/ISSUE_TEMPLATE/{bug_report,enhancement,agent_behavior}.yml -- GitHub drops an unknown id.
 private String _bugReportSubmitUrl(String issueType, String suggestedTitle, Map env, args) {
-    def template = ["bug": "bug_report.yml", "enhancement": "enhancement.yml", "agent_behavior": "agent_behavior.yml"][issueType]
+    def template = (_bat529EmbeddedCatalogRead(['["m",[["bug","bug_report.yml"],["enhancement","enhancement.yml"],["agent_behavior","agent_behavior.yml"]]]']) as Map)[issueType]
     // A labels= query REPLACES the template's own default label, so it is repeated here.
-    def templateLabel = ["bug": "bug", "enhancement": "enhancement", "agent_behavior": "agent-behavior"][issueType]
+    def templateLabel = (_bat529EmbeddedCatalogRead(['["m",[["bug","bug"],["enhancement","enhancement"],["agent_behavior","agent-behavior"]]]']) as Map)[issueType]
     def base = "https://github.com/kingpanther13/Hubitat-local-MCP-server/issues/new"
     def encodedTitle = URLEncoder.encode(suggestedTitle ?: "", "UTF-8")
     def encField = { value -> URLEncoder.encode((value ?: "").toString().take(120), "UTF-8") }
@@ -631,7 +631,7 @@ private String _bugReportBuildMarkdown(Map params) {
     def env = params.env
     def ruleInfo = params.ruleInfo
     def scopedLogs = params.scopedLogs
-    def heading = ["bug": "Bug Report", "enhancement": "Feature Request", "agent_behavior": "Agent-Behavior Report"][issueType]
+    def heading = (_bat529EmbeddedCatalogRead(['["m",[["bug","Bug Report"],["enhancement","Feature Request"],["agent_behavior","Agent-Behavior Report"]]]']) as Map)[issueType]
     def expectedActualHeader = issueType == "enhancement" ? "## Request" : (issueType == "agent_behavior" ? "## Agent Behavior" : "## Bug Description")
     def relevantLines = (scopedLogs.relevant).collect((this.&_bat529Cb_1fa286f7_15))
     def otherLines = scopedLogs.includedUnrelated ? (scopedLogs.other).collect((this.&_bat529Cb_1fa286f7_12)): []

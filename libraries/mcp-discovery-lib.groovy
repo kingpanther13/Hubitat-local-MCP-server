@@ -65,7 +65,7 @@ def toolSearchTools(args) {
     // Tokenize the query (docs already tokenized from the cache above)
     def queryTokens = bm25Tokenize(query)
 
-    if (!queryTokens) return [results: [], message: "No searchable terms in query"]
+    if (!queryTokens) return (_bat529EmbeddedCatalogRead(['["m",[["results",["l",[]]],["message","No searchable terms in query"]]]']) as Map)
 
     // BM25 scoring
     def scores = bm25Score(docTokens, queryTokens)
@@ -140,8 +140,7 @@ def toolSearchCorpusFingerprint(List defs = null) {
     // Token-list length checks cannot detect changed token content. Probe both the tokenizer
     // and searchable-field template, whose changes need not alter corpus text or list length.
     h = _fpField(h, bm25Tokenize(_bm25DocText(
-        [name: 'hub_x-1', title: 'A_b', description: 'cd', params: 'ef', hints: 'gh',
-         gateway: 'ij'])).join(','))
+        (_bat529EmbeddedCatalogRead(['["m",[["name","hub_x-1"],["title","A_b"],["description","cd"],["params","ef"],["hints","gh"],["gateway","ij"]]]']) as Map))).join(','))
     return Long.toString(h)
 }
 
@@ -326,7 +325,7 @@ private Map _platformApiSearch(String query, cursor) {
         return out
     }
     if (!(index instanceof Map) || !(index.pages instanceof List)) {
-        return [success: false, error: "The hub's API documentation index has an unexpected shape."]
+        return (_bat529EmbeddedCatalogRead(['["m",[["success",false],["error","The hub\'s API documentation index has an unexpected shape."]]]']) as Map)
     }
     def hits = []
     index.pages.each { pg ->

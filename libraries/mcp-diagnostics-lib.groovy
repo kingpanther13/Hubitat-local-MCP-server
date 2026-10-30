@@ -121,7 +121,7 @@ private void _attachRadioIncludes(result, args) {
 private Map _zigbeeDeviceActivity() {
     def raw = _radioGetSafe("/hub/zigbee/getDevicesJson")
     if (!(raw instanceof Map) || !(raw.devices instanceof List)) {
-        return (raw instanceof Map && raw.error) ? raw : [error: "/hub/zigbee/getDevicesJson returned an unexpected shape."]
+        return (raw instanceof Map && raw.error) ? raw : (_bat529EmbeddedCatalogRead(['["m",[["error","/hub/zigbee/getDevicesJson returned an unexpected shape."]]]']) as Map)
     }
     long nowMs = now()
     def devices = (((raw.devices).findAll((this.&_bat529Cb_7399a956_9))).collect(((this.&_bat529Cb_7399a956_45).curry([nowMs] as Object[])))).sort((this.&_bat529Cb_7399a956_46))
@@ -558,7 +558,7 @@ def runNativeLogFetch(Map job = [:]) {
 // the MCP app's own log. What each mode accepts; a list of modes also takes pageSize for mcp and
 // status (see toolGetHubLogs).
 private Map _logsModeArgs() {
-    List shared = ["pattern", "patterns", "patternMode", "limit", "cursor", "pageSize"]
+    List shared = (_bat529EmbeddedCatalogRead(['["l",["pattern","patterns","patternMode","limit","cursor","pageSize"]]']) as List)
     return [
         past: shared + ["level", "deviceId", "appId", "since", "until"],
         devices: shared + ["deviceId", "sortBy"],
@@ -788,8 +788,7 @@ def toolGetHubLogs(args) {
             results.put(m, r)
         }
         if (pending) {
-            return [status: "in_progress", tool: "hub_get_logs", retryable: true,
-                    note: "Some tabs are still loading on the hub. Continue with requestState, or repeat the same call on a legacy client."]
+            return (_bat529EmbeddedCatalogRead(['["m",[["status","in_progress"],["tool","hub_get_logs"],["retryable",true],["note","Some tabs are still loading on the hub. Continue with requestState, or repeat the same call on a legacy client."]]]']) as Map)
         }
         Map out = [modes: results]
         // The Logs page tabs share one fetch: state its uptime and snapshot once, not per tab.
@@ -827,7 +826,7 @@ def toolGetHubLogs(args) {
 
     List rows
     Map result = [mode: mode]
-    Map logsJsonTables = [devices: "deviceStats", apps: "appStats", scheduledJobs: "jobs", runningJobs: "runningJobs", hubActions: "hubCommands"]
+    Map logsJsonTables = (_bat529EmbeddedCatalogRead(['["m",[["devices","deviceStats"],["apps","appStats"],["scheduledJobs","jobs"],["runningJobs","runningJobs"],["hubActions","hubCommands"]]]']) as Map)
     if (logsJsonTables.containsKey(mode)) {
         def snap
         try {
@@ -846,7 +845,7 @@ def toolGetHubLogs(args) {
         result.snapshot = _logsJsonProvenance(data)
     } else {
         // The other tabs are small enough to read inline.
-        String path = [cloudCalls: "/logs/cloudCalls/json", locationEvents: "/logs/eventsJson", hubEvents: "/hub/eventsJson"][mode]
+        String path = (_bat529EmbeddedCatalogRead(['["m",[["cloudCalls","/logs/cloudCalls/json"],["locationEvents","/logs/eventsJson"],["hubEvents","/hub/eventsJson"]]]']) as Map)[mode]
         def parsed
         try {
             def text = hubInternalGet(path, null, 30)
@@ -967,8 +966,7 @@ private Map _pastLogs(Map args, Map query) {
     try {
         def snapshot = _nativeLogSnapshot(scope, args)
         if (snapshot.state == "pending") {
-            return [status: "in_progress", tool: "hub_get_logs", retryable: true,
-                    note: "Native log history is still loading. Continue with requestState, or repeat the same call on a legacy client."]
+            return (_bat529EmbeddedCatalogRead(['["m",[["status","in_progress"],["tool","hub_get_logs"],["retryable",true],["note","Native log history is still loading. Continue with requestState, or repeat the same call on a legacy client."]]]']) as Map)
         }
         responseText = snapshot.text
         fetchedAt = snapshot.fetchedAt
@@ -1007,7 +1005,7 @@ private Map _pastLogs(Map args, Map query) {
     }
     // The rows are already filtered above (the hub scoped the read), so _logsPage only limits and
     // pages them here.
-    Map out = [mode: "past"] + _logsPage("past", entries, query + [patterns: [single: null, list: []], since: null, until: null, deviceId: null, appId: null])
+    Map out = [mode: "past"] + _logsPage("past", entries, query + (_bat529EmbeddedCatalogRead(['["m",[["patterns",["m",[["single",null],["list",["l",[]]]]]],["since",null],["until",null],["deviceId",null],["appId",null]]]']) as Map))
     out.total = rows.size()
     if (unparseable > 0) out.timeFilterUnparseable = unparseable
     if (fetchedAt != null) out.snapshot = [fetchedAt: fetchedAt, ageMs: Math.max(0L, now() - (fetchedAt as Long))]
@@ -1466,7 +1464,7 @@ def toolGetMemoryHistory(args) {
 
     def rawText = hubInternalGet("/hub/advanced/freeOSMemoryHistory")
     if (!rawText) {
-        return [entries: [], summary: [message: "No memory history data available"]]
+        return (_bat529EmbeddedCatalogRead(['["m",[["entries",["l",[]]],["summary",["m",[["message","No memory history data available"]]]]]]']) as Map)
     }
 
     def lines = rawText.trim().split("\n")
@@ -1601,7 +1599,7 @@ private Map _deviceHealthInventory() {
     boolean bypass = _bypassEnabled()
     def allowedIds = (((settings.selectedDevices ?: []) + (getChildDevices() ?: []))).collect((this.&_bat529Cb_7399a956_31))as Set
     if (!bypass && !allowedIds) {
-        return [devices: [], message: "No devices selected for MCP access and no MCP-managed virtual devices"]
+        return (_bat529EmbeddedCatalogRead(['["m",[["devices",["l",[]]],["message","No devices selected for MCP access and no MCP-managed virtual devices"]]]']) as Map)
     }
     // The Devices page carries activity for the whole tree in one read, including children.
     def text = hubInternalGet("/hub2/devicesList")
@@ -1942,12 +1940,10 @@ def toolSetZigbee(args) {
             def rebuildCur = cur.rebuildNetworkOnReboot
             def pingCur = cur.inactiveDevicePingEnabled
             if (args.rebuild_on_reboot == null && !(rebuildCur instanceof Boolean)) {
-                return [success: false, error: "Could not read the current rebuild-on-reboot setting to preserve it.",
-                        note: "Pass rebuild_on_reboot explicitly, or read hub_get_radio_details(radio='zigbee') first."]
+                return (_bat529EmbeddedCatalogRead(['["m",[["success",false],["error","Could not read the current rebuild-on-reboot setting to preserve it."],["note","Pass rebuild_on_reboot explicitly, or read hub_get_radio_details(radio=\'zigbee\') first."]]]']) as Map)
             }
             if (args.ping_inactive == null && !(pingCur instanceof Boolean)) {
-                return [success: false, error: "Could not read the current ping-inactive setting to preserve it.",
-                        note: "Pass ping_inactive explicitly, or read hub_get_radio_details(radio='zigbee') first."]
+                return (_bat529EmbeddedCatalogRead(['["m",[["success",false],["error","Could not read the current ping-inactive setting to preserve it."],["note","Pass ping_inactive explicitly, or read hub_get_radio_details(radio=\'zigbee\') first."]]]']) as Map)
             }
             boolean rebuild = (args.rebuild_on_reboot != null) ? (args.rebuild_on_reboot == true) : (rebuildCur == true)
             boolean ping = (args.ping_inactive != null) ? (args.ping_inactive == true) : (pingCur == true)
@@ -1998,7 +1994,7 @@ def toolCallZwave(args) {
     def action = args.action?.toString()
     if (!action) throw new IllegalArgumentException("action is required. See hub_get_tool_guide for the full action list.")
     def nodeId = args.node_id?.toString()?.trim()
-    def needsNode = action in ["repair_node", "node_refresh", "node_rediscover", "node_reinitialize", "node_remove", "node_replace"]
+    def needsNode = action in (_bat529EmbeddedCatalogRead(['["l",["repair_node","node_refresh","node_rediscover","node_reinitialize","node_remove","node_replace"]]']) as List)
     if (needsNode && !nodeId) {
         throw new IllegalArgumentException("node_id is required for action '${action}'.")
     }
@@ -2154,7 +2150,7 @@ def toolCallZwave(args) {
                 }
                 def lrKeys = args.security_keys.long_range ?: [:]
                 def mainKeys = (args.security_keys).findAll((this.&_bat529Cb_7399a956_16))
-                _zwValidateNetworkKeys(mainKeys, ["S0_Legacy", "S2_Unauthenticated", "S2_Authenticated", "S2_AccessControl"], "security_keys")
+                _zwValidateNetworkKeys(mainKeys, (_bat529EmbeddedCatalogRead(['["l",["S0_Legacy","S2_Unauthenticated","S2_Authenticated","S2_AccessControl"]]']) as List), "security_keys")
                 _zwValidateNetworkKeys(lrKeys, ["S2_Authenticated", "S2_AccessControl"], "security_keys.long_range")
                 def keyBody = [securityKeys: _zwNormalizeKeys(mainKeys), securityKeysLongRange: _zwNormalizeKeys(lrKeys)]
                 resp = _radioPost("/hub/zwave/localBackup/securityKeys/${URLEncoder.encode(args.import_id.toString(), 'UTF-8')}", groovy.json.JsonOutput.toJson(keyBody))
@@ -2175,7 +2171,7 @@ def toolCallZwave(args) {
         throw iae
     } catch (Exception e) {
         mcpLogError("hub-admin", "hub_call_zwave action '${action}' failed", e)
-        def zwJsOnly = action in ["reinterview", "link_test_start", "link_test_stop", "cc_command", "local_backup_create", "local_backup_download", "local_backup_import", "local_backup_keys"]
+        def zwJsOnly = action in (_bat529EmbeddedCatalogRead(['["l",["reinterview","link_test_start","link_test_stop","cc_command","local_backup_create","local_backup_download","local_backup_import","local_backup_keys"]]']) as List)
         def note = "Check Hub Security credentials and that the radio is enabled."
         if (zwJsOnly) {
             def details = _radioGetSafe("/hub/zwaveDetails/json")
@@ -2682,7 +2678,7 @@ def deleteCapturedState(stateId) {
     synchronized (store) {
         Map entries = _captureEntriesLocked(store)
         String id = stateId?.toString()
-        if (!entries) return [success: false, message: "No captured states exist"]
+        if (!entries) return (_bat529EmbeddedCatalogRead(['["m",[["success",false],["message","No captured states exist"]]]']) as Map)
         if (!entries.containsKey(id)) return [success: false, message: "Captured state '${stateId}' not found"]
         entries.remove(id)
         return [success: true, message: "Captured state '${stateId}' deleted", remaining: entries.size()]
@@ -2743,19 +2739,19 @@ def _getAllToolDefinitions_partDiagnostics() {
                 type: "object",
                 properties: [
                     mode: [anyOf: [[type: "string", enum: _logsModeArgs().keySet() as List], [type: "array", items: [type: "string", enum: _logsModeArgs().keySet() as List]]], default: "past", description: "A Logs page tab, or a list of them. past = log history; devices/apps = runtime stats; locationEvents = mode, HSM and variable changes; hubEvents = reboots and low memory; mcp = this app's own log; status = its level."],
-                    level: [type: "string", enum: ["trace", "debug", "info", "warn", "error", "all"], description: "past and mcp."],
-                    deviceId: [type: "string", description: "Numeric device id to scope past logs, stats or jobs to."],
-                    appId: [type: "string", description: "Numeric app id, the same way."],
-                    pattern: [type: "string", description: "Case-insensitive regex over the row's name, and its message, methodName, descriptionText or value where it has one."],
-                    patterns: [type: "array", items: [type: "string"], description: "More regexes, combined by patternMode."],
-                    patternMode: [type: "string", enum: ["any", "all"], description: "Default any."],
-                    since: [type: ["string", "integer"], description: "past and events: rows after this time, so a returned time never repeats. '30m', '2h', '7d', a time as rows show it (no zone = hub time), ISO-8601 with a zone, or epoch ms."],
-                    until: [type: ["string", "integer"], description: "Rows at or before this time."],
-                    sortBy: [type: "string", enum: ["pct", "count", "total", "stateSize", "name"], description: "devices and apps; default pct (% busy)."],
+                    level: (_bat529EmbeddedCatalogRead(['["m",[["type","string"],["enum",["l",["trace","debug","info","warn","error","all"]]],["description","past and mcp."]]]']) as Map),
+                    deviceId: (_bat529EmbeddedCatalogRead(['["m",[["type","string"],["description","Numeric device id to scope past logs, stats or jobs to."]]]']) as Map),
+                    appId: (_bat529EmbeddedCatalogRead(['["m",[["type","string"],["description","Numeric app id, the same way."]]]']) as Map),
+                    pattern: (_bat529EmbeddedCatalogRead(['["m",[["type","string"],["description","Case-insensitive regex over the row\'s name, and its message, methodName, descriptionText or value where it has one."]]]']) as Map),
+                    patterns: (_bat529EmbeddedCatalogRead(['["m",[["type","array"],["items",["m",[["type","string"]]]],["description","More regexes, combined by patternMode."]]]']) as Map),
+                    patternMode: (_bat529EmbeddedCatalogRead(['["m",[["type","string"],["enum",["l",["any","all"]]],["description","Default any."]]]']) as Map),
+                    since: (_bat529EmbeddedCatalogRead(['["m",[["type",["l",["string","integer"]]],["description","past and events: rows after this time, so a returned time never repeats. \'30m\', \'2h\', \'7d\', a time as rows show it (no zone = hub time), ISO-8601 with a zone, or epoch ms."]]]']) as Map),
+                    until: (_bat529EmbeddedCatalogRead(['["m",[["type",["l",["string","integer"]]],["description","Rows at or before this time."]]]']) as Map),
+                    sortBy: (_bat529EmbeddedCatalogRead(['["m",[["type","string"],["enum",["l",["pct","count","total","stateSize","name"]]],["description","devices and apps; default pct (% busy)."]]]']) as Map),
                     limit: [type: "integer", description: "Max rows; 0 = all."],
-                    component: [type: "string", description: "mcp: component substring."],
-                    ruleId: [type: "string", description: "mcp: custom rule id."],
-                    cursor: [type: "string", description: "\"\" for the first page, then nextCursor."],
+                    component: (_bat529EmbeddedCatalogRead(['["m",[["type","string"],["description","mcp: component substring."]]]']) as Map),
+                    ruleId: (_bat529EmbeddedCatalogRead(['["m",[["type","string"],["description","mcp: custom rule id."]]]']) as Map),
+                    cursor: (_bat529EmbeddedCatalogRead(['["m",[["type","string"],["description","\\"\\" for the first page, then nextCursor."]]]']) as Map),
                     pageSize: [type: "integer", description: "Rows per page, 1-100."]
                 ]
             ]
@@ -2783,31 +2779,13 @@ def _readOnlyToolNames_partDiagnostics() {
     // Read-only classification membership for this library's tools, contributed to the
     // app's getReadOnlyToolNames() aggregator (issue #209: per-tool metadata lives with
     // the tool). A tool absent from every part list is write+destructive by default.
-    return [
-        // Captured states (read)
-        "hub_list_captured_states",
-        // Diagnostics + logs (read)
-        "hub_get_logs", "hub_get_memory_history", "hub_get_radio_details",
-        // hub_get_metrics is read by default (recordSnapshot defaults false;
-        // pass recordSnapshot=true to also persist a CSV snapshot to File Manager).
-        "hub_get_metrics",
-        // hub_get_device_health has an optional identifyHub LED blink, but its
-        // primary mode is staleness + ICMP-ping observation; treating as read
-        // matches user expectation for a "health check" tool.
-        "hub_get_device_health"
-    ]
+    return (_bat529EmbeddedCatalogRead(['["l",["hub_list_captured_states","hub_get_logs","hub_get_memory_history","hub_get_radio_details","hub_get_metrics","hub_get_device_health"]]']) as List)
 }
 
 def _idempotentWriteToolNames_partDiagnostics() {
     // Retry-safe writes (MCP idempotentHint) for this library's tools -- contributed to the
     // app's getIdempotentWriteToolNames() aggregator; see the classification rules there.
-    return [
-        // Diagnostics + logs
-        "hub_delete_captured_state", "hub_delete_logs",
-        // Radio config is a state assignment: identical args land the radio in the same state. The
-        // zwave_js switch reads the running stack first and does nothing when it already matches.
-        "hub_set_zwave", "hub_set_zigbee"
-    ]
+    return (_bat529EmbeddedCatalogRead(['["l",["hub_delete_captured_state","hub_delete_logs","hub_set_zwave","hub_set_zigbee"]]']) as List)
 }
 
 def _openWorldToolNames_partDiagnostics() {

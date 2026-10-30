@@ -452,9 +452,9 @@ private Map _nmCompileWait(Long ruleId, String actionId, List events, boolean ed
     for (int position = 0; position < events.size(); position++) {
         Map fresh = _nrState(ruleId)
         def allocated = fresh.waitNdx instanceof Map ? fresh.waitNdx.get(key) : null
-        if (!(allocated instanceof List) || allocated.size() <= position) return [success: false, error: 'Native wait event allocation failed']
+        if (!(allocated instanceof List) || allocated.size() <= position) return (_bat529EmbeddedCatalogRead(['["m",[["success",false],["error","Native wait event allocation failed"]]]']) as Map)
         String eventId = _nmId(allocated.get(position))
-        if (eventIds.contains(eventId)) return [success: false, error: 'Native wait event identity was repeated']
+        if (eventIds.contains(eventId)) return (_bat529EmbeddedCatalogRead(['["m",[["success",false],["error","Native wait event identity was repeated"]]]']) as Map)
         eventIds << eventId
         Map event = events.get(position)
         List fields = [[name: "tCapab-${eventId}".toString(), type: 'enum', value: event.capability]] + _nmFields(event.get('fields') as List, "-${eventId}".toString())
@@ -905,7 +905,7 @@ def _bat529Cb_ba52df93_80(def id, List __bat529Tuple) {
     return _bat529Cb_ba52df93_80(id, *__bat529Tuple)
 }
 
-def _bat529Cb_ba52df93_81(def it) { !(it in ['id', 'type', 'subtype', 'fields', 'expression', 'events', 'condition']) 
+def _bat529Cb_ba52df93_81(def it) { !(it in (_bat529EmbeddedCatalogRead(['["l",["id","type","subtype","fields","expression","events","condition"]]']) as List)) 
 }
 
 def _bat529Cb_ba52df93_82(def it) { it.rule.toString() 
@@ -1063,7 +1063,7 @@ def _bat529Cb_ba52df93_105(def id, def row) {
             throw new IllegalArgumentException('Fields require native name templates containing #, type and value')
         }
         boolean device = row.type == 'capability' || row.type.startsWith('capability.')
-        if (!(row.type in ['text', 'textarea', 'password', 'enum', 'mode', 'bool', 'number', 'decimal', 'time']) && !device) throw new IllegalArgumentException('Unsupported native setting type')
+        if (!(row.type in (_bat529EmbeddedCatalogRead(['["l",["text","textarea","password","enum","mode","bool","number","decimal","time"]]']) as List)) && !device) throw new IllegalArgumentException('Unsupported native setting type')
         if (row.value == null) throw new IllegalArgumentException('Null native setting values are unsupported')
         if (row.value instanceof List) {
             if (!device && !(row.type in ['enum', 'mode'])) throw new IllegalArgumentException('Setting lists require enum, mode or capability type')

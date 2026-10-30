@@ -858,7 +858,7 @@ private Map _rmRestoreViaNativeImport(Map snapshot, Integer savedId, boolean exi
     def parsed
     try { parsed = new groovy.json.JsonSlurper().parseText(snapshot.nativeExport.toString()) } catch (Exception e) {
         mcpLog("warn", "rm-native", "Restore of app ${savedId}: the backup's App Cloner export does not parse (${e.message}); restoring by settings replay")
-        return [fallback: "the backup's App Cloner export could not be parsed"]
+        return (_bat529EmbeddedCatalogRead(['["m",[["fallback","the backup\'s App Cloner export could not be parsed"]]]']) as Map)
     }
     def gone = [:]
     def deadDevices = ((((parsed?.deviceReplacements instanceof Map) ? (parsed.deviceReplacements as Map).keySet() : [])).collect((this.&_bat529Cb_dbfd46be_64))).findAll(((this.&_bat529Cb_dbfd46be_73).curry([gone] as Object[])))
@@ -875,7 +875,7 @@ private Map _rmRestoreViaNativeImport(Map snapshot, Integer savedId, boolean exi
             mcpLog("warn", "rm-native", "Restore of app ${savedId}: finding a Rule Machine rule to seed the import failed (${e.message})")
             hint = null
         }
-        if (hint == null) return [fallback: "no Rule Machine rule was found to seed the App Cloner import"]
+        if (hint == null) return (_bat529EmbeddedCatalogRead(['["m",[["fallback","no Rule Machine rule was found to seed the App Cloner import"]]]']) as Map)
     }
     // The old rule is deleted after the import, so its protection is checked before anything is created.
     if (exists) {
@@ -1089,8 +1089,7 @@ private List _rmNativeCurrentSettings(Long id) {
 
 private Map _rmNativeModelSignature(Map state) {
     // Compare complete compiled records and references, not just row membership.
-    def keys = ['actions', 'actionList', 'capabstrue', 'capabsfalse', 'eval', 'disabledActions', 'disabledTriggers',
-                'actNdx', 'ndx', 'ruleNdx', 'waitCondNdx', 'predCapabs', 'hasPredicate']
+    def keys = (_bat529EmbeddedCatalogRead(['["l",["actions","actionList","capabstrue","capabsfalse","eval","disabledActions","disabledTriggers","actNdx","ndx","ruleNdx","waitCondNdx","predCapabs","hasPredicate"]]']) as List)
     Map result = (state).findAll(((this.&_bat529Cb_dbfd46be_10).curry([keys] as Object[])))
     (['actions', 'capabstrue', 'capabsfalse', 'eval']).each(((this.&_bat529Cb_dbfd46be_63).curry([result, state] as Object[])))
     result.actionList = state.actionList instanceof List ? state.actionList : []
@@ -1123,7 +1122,7 @@ private String _rmRestoredRuleName(List plan, Map identity) {
     def name = (plan).find((this.&_bat529Cb_dbfd46be_6))?.value
     if (name != null) return name.toString()
     String label = _rmLabelName(identity.appLabel)
-    ['*BROKEN*', '(Not Installed)', '(Stopped)', '(Paused)', '(Required Expression false)', '(Repeating)'].each { decoration ->
+    (_bat529EmbeddedCatalogRead(['["l",["*BROKEN*","(Not Installed)","(Stopped)","(Paused)","(Required Expression false)","(Repeating)"]]']) as List).each { decoration ->
         if (label.endsWith(' ' + decoration)) label = label.substring(0, label.length() - decoration.length() - 1)
     }
     label

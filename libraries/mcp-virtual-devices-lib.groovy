@@ -210,12 +210,7 @@ def toolListVirtualDevices(args) {
 
     if (!childDevs) {
         if (cursor != null) _parseListCursor(cursor, 0, "hub_list_devices(filter='virtual')")
-        def empty = [
-            devices: [],
-            count: 0,
-            total: 0,
-            message: "No MCP-managed virtual devices found. Use hub_manage_virtual_device(action=\"create\") to create one."
-        ]
+        def empty = (_bat529EmbeddedCatalogRead(['["m",[["devices",["l",[]]],["count",0],["total",0],["message","No MCP-managed virtual devices found. Use hub_manage_virtual_device(action=\\"create\\") to create one."]]]']) as Map)
         if (limit > 0) {
             empty.offset = 0
             empty.limit = limit
@@ -245,7 +240,7 @@ def toolListVirtualDevices(args) {
                 currentStates: [:]]
             (summary.attributes).each(((this.&_bat529Cb_0153e466_13).curry([info] as Object[])))
             if (!namespace || !typeName) {
-                info.warnings = ['Native driver namespace or type metadata is unavailable; no driver identity was inferred.']
+                info.warnings = (_bat529EmbeddedCatalogRead(['["l",["Native driver namespace or type metadata is unavailable; no driver identity was inferred."]]']) as List)
             }
             return info
         } catch (Exception ignored) {
@@ -283,7 +278,7 @@ def toolListVirtualDevices(args) {
         result.success = hasReadableDevices
         if (hasReadableDevices) {
             result.partialSuccess = true
-            result.warnings = ['Native information could not be read for one or more MCP-managed virtual devices.']
+            result.warnings = (_bat529EmbeddedCatalogRead(['["l",["Native information could not be read for one or more MCP-managed virtual devices."]]']) as List)
         } else {
             result.isError = true
             result.error = 'Native information could not be read for any requested MCP-managed virtual devices.'
@@ -368,13 +363,13 @@ action="delete": provide the target deviceNetworkId.
             inputSchema: [
                 type: "object",
                 properties: [
-                    action: [type: "string", description: "Operation to perform", enum: ["create", "delete"]],
+                    action: (_bat529EmbeddedCatalogRead(['["m",[["type","string"],["description","Operation to perform"],["enum",["l",["create","delete"]]]]]']) as Map),
                     deviceType: [type: "string", description: "Built-in virtual driver type for create; mutually exclusive with customDriver.",
                         enum: getSupportedVirtualDeviceTypes()],
                     customDriver: (_bat529EmbeddedCatalogRead(['["m",[["type","object"],["description","User-installed custom driver for create; mutually exclusive with deviceType."],["properties",["m",[["namespace",["m",[["type","string"],["description","Driver namespace (e.g., \'level99-vesync\')."]]]],["name",["m",[["type","string"],["description","Driver type name as registered on the hub (e.g., \'Levoit Classic 200S Humidifier\')."]]]]]]],["required",["l",["namespace","name"]]]]]']) as Map),
-                    deviceLabel: [type: "string", description: "Display label (required for create)"],
-                    deviceNetworkId: [type: "string", description: "Device network ID; auto-generated on create when omitted, REQUIRED for delete (find via hub_list_devices(filter='virtual'))."],
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true to confirm the operation."],
+                    deviceLabel: (_bat529EmbeddedCatalogRead(['["m",[["type","string"],["description","Display label (required for create)"]]]']) as Map),
+                    deviceNetworkId: (_bat529EmbeddedCatalogRead(['["m",[["type","string"],["description","Device network ID; auto-generated on create when omitted, REQUIRED for delete (find via hub_list_devices(filter=\'virtual\'))."]]]']) as Map),
+                    confirm: (_bat529EmbeddedCatalogRead(['["m",[["type","boolean"],["description","REQUIRED: Must be true to confirm the operation."]]]']) as Map),
                     args: [type: "object"]
                 ],
                 required: ["action", "confirm"]
@@ -391,9 +386,7 @@ action="delete": provide the target deviceNetworkId.
 def _toolDisplayMeta_partVirtualDevices() {
     // Human-facing title/summary per tool (MCP annotations.title + the Advanced per-tool
     // overrides menu) -- merged into the app's getToolDisplayMeta() aggregator (issue #209).
-    return [
-        hub_manage_virtual_device: [title: "Manage Virtual Device", summary: "Create or delete an MCP-managed virtual device."]
-    ]
+    return (_bat529EmbeddedCatalogRead(['["m",[["hub_manage_virtual_device",["m",[["title","Manage Virtual Device"],["summary","Create or delete an MCP-managed virtual device."]]]]]]']) as Map)
 }
 
 

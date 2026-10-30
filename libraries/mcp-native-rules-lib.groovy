@@ -861,23 +861,14 @@ Map _rmDeleteAction(Integer appId, Integer actionIdx, boolean skipStructuralChec
     // ELSE / ELSE-IF / END-IF rows, so also requiring actType would let a
     // UI-built closer skip the refusal and silently unbalance the rule.
     def sType = settingsByName["actSubType.${actionIdx}".toString()]?.value?.toString()
-    def structuralSubTypes = ["getIfThen", "getElseIf", "getElse", "getEndIf", "getRepeat", "getWhile", "getStopRepeat"]
+    def structuralSubTypes = (_bat529EmbeddedCatalogRead(['["l",["getIfThen","getElseIf","getElse","getEndIf","getRepeat","getWhile","getStopRepeat"]]']) as List)
     if (sType in structuralSubTypes && !skipStructuralCheck) {
         // Both sides walk the rule's OWN actions. A leftover settings row is not
         // part of the rule's structure, and the set-diff does not reliably cancel
         // it out: a stale closer can absorb the imbalance a real deletion creates,
         // so current and projected both come back clean and the refusal never fires.
         // One spelling for both structural refusals below.
-        def humanKind = [
-            "getIfThen": "IF",
-            "getElseIf": "ELSE-IF",
-            "getElse": "ELSE",
-            "getEndIf": "END-IF",
-            "getRepeat": "Repeat",
-            "getWhile": "Repeat-While",
-            "getStopRepeat": "End-Repeat"
-        ][sType] ?: sType
-        def orderedIndices = _rmOrderedActionIndices(appId)
+        def humanKind = (_bat529EmbeddedCatalogRead(['["m",[["getIfThen","IF"],["getElseIf","ELSE-IF"],["getElse","ELSE"],["getEndIf","END-IF"],["getRepeat","Repeat"],["getWhile","Repeat-While"],["getStopRepeat","End-Repeat"]]]']) as Map)_rmOrderedActionIndices(appId)
         if (orderedIndices == null) {
             // Without the compiled order the only guard left is the whole-settings scan, where a
             // leftover closer can mask the imbalance this deletion creates -- a structural row
@@ -1276,7 +1267,7 @@ Map _rmSubmitMainPageDone(Integer appId) {
         return [done: false, reason: "root page fetch failed: ${rootExc.message}".toString()]
     }
     String commitPage = cfg?.configPage?.name?.toString()
-    if (!commitPage) return [done: false, reason: "the app's root page carries no name"]
+    if (!commitPage) return (_bat529EmbeddedCatalogRead(['["m",[["done",false],["reason","the app\'s root page carries no name"]]]']) as Map)
     def schema = _rmCollectInputSchema(cfg?.configPage)
     def status
     try { status = _rmFetchStatusJson(appId) }
@@ -1291,7 +1282,7 @@ Map _rmSubmitMainPageDone(Integer appId) {
     // on a fresh shell still proceeds -- there is nothing to wipe.)
     if (!(status?.appSettings instanceof List)) {
         mcpLog("warn", "rm-native", "_rmSubmitMainPageDone: statusJson for app ${appId} has no appSettings list -- skipping Done click rather than blanking ${schema.size()} inputs")
-        return [done: false, reason: "statusJson carried no appSettings list"]
+        return (_bat529EmbeddedCatalogRead(['["m",[["done",false],["reason","statusJson carried no appSettings list"]]]']) as Map)
     }
     def liveSettings = _rmLiveSettingsFromStatus(status)
     def settingsMap = [:]
@@ -1640,7 +1631,7 @@ private Map _rmBuildRuleSnapshot(Integer ruleId, String reason, String activePag
     // The hub's appType record carries the app type's OAuth client credentials and passwords
     // (populated for Rule-5.1); restore never reads them, so they stay out of File Manager.
     if (config?.app?.appType instanceof Map) {
-        ["oauthClientId", "oauthClientSecret", "encryptedPassword", "sourcePassword"].each { config.app.appType.remove(it) }
+        (_bat529EmbeddedCatalogRead(['["l",["oauthClientId","oauthClientSecret","encryptedPassword","sourcePassword"]]']) as List).each { config.app.appType.remove(it) }
     }
     Set redacted = _rmRedactSnapshotPasswords(config, status instanceof Map ? status : null)
 
@@ -1987,7 +1978,7 @@ List _rmDeleteExpressionConditions(Integer appId, Collection ids) {
 // Returns [restored: Boolean, error: String?].
 private Map _rmTokSetExpression(Integer appId, List target) {
     // An empty target would delete every token and leave the rule ungated.
-    if (!target) return [restored: false, error: "no original tokens were recorded, so nothing was changed"]
+    if (!target) return (_bat529EmbeddedCatalogRead(['["m",[["restored",false],["error","no original tokens were recorded, so nothing was changed"]]]']) as Map)
     def cache = [:]
     def hrefParams = [unUsed: null]
     def writeST = { Map params, String key, Object value, String label = null ->
@@ -2043,9 +2034,9 @@ Map _rmReconcileRuleStructure(Integer appId, Map snapshot) {
     def conds = { Map st -> (st?.capabsfalse instanceof Map) ? ((st.capabsfalse as Map).keySet()).collect((this.&_bat529Cb_4076886b_51)): [] }
     def acts = { Map st -> (st?.actionList instanceof List) ? ((st.actionList as List)).collect((this.&_bat529Cb_4076886b_39)): [] }
     def live = _rmReadRuleState(appId)
-    if (live == null) return [structureRestored: false, structureError: "the rule's triggers and actions could not be read after the restore"]
+    if (live == null) return (_bat529EmbeddedCatalogRead(['["m",[["structureRestored",false],["structureError","the rule\'s triggers and actions could not be read after the restore"]]]']) as Map)
 
-    def removed = [triggers: [], actions: [], conditions: []]
+    def removed = (_bat529EmbeddedCatalogRead(['["m",[["triggers",["l",[]]],["actions",["l",[]]],["conditions",["l",[]]]]]']) as Map)
     def failures = []
     ((trigs(live) - trigs(snap))).each(((this.&_bat529Cb_4076886b_140).curry([appId, failures, removed] as Object[])))
     // Rows go one at a time, last first, so a removal never shifts a row still to go. The per-row
@@ -2114,7 +2105,7 @@ Map _rmReconcileRuleStructure(Integer appId, Map snapshot) {
     }
 
     def after = _rmReadRuleState(appId)
-    if (after == null) return [structureRestored: false, structureError: "the rule's triggers and actions could not be read after the restore"]
+    if (after == null) return (_bat529EmbeddedCatalogRead(['["m",[["structureRestored",false],["structureError","the rule\'s triggers and actions could not be read after the restore"]]]']) as Map)
     def snapTrigText = (snap.capabstrue instanceof Map) ? snap.capabstrue as Map : [:]
     def out = [structureRestored: true]
     if (removed.triggers) out.removedTriggers = removed.triggers
@@ -2279,13 +2270,13 @@ Map _rmRestoreRequiredExpression(Integer appId, Map snapshot) {
             _rmClickAppButton(appId, "updateRule")
             boolean gone = !_rmIsCommittedRETell(_rmCollectPageInputNames(appId, "STPage"))
             return gone ? [requiredExpressionRestored: true, requiredExpressionRemoved: true] :
-                [requiredExpressionRestored: false, requiredExpressionError: "the snapshot has no Required Expression but removing the live one did not take"]
+                (_bat529EmbeddedCatalogRead(['["m",[["requiredExpressionRestored",false],["requiredExpressionError","the snapshot has no Required Expression but removing the live one did not take"]]]']) as Map)
         } catch (Exception e) {
             return [requiredExpressionRestored: false, requiredExpressionError: "removing the live Required Expression failed (${e.message})"]
         }
     }
     def liveState = _rmReadRuleState(appId)
-    if (liveState == null) return [requiredExpressionRestored: false, requiredExpressionError: "the rule's expression state could not be read after the restore"]
+    if (liveState == null) return (_bat529EmbeddedCatalogRead(['["m",[["requiredExpressionRestored",false],["requiredExpressionError","the rule\'s expression state could not be read after the restore"]]]']) as Map)
     def liveTokens = (liveState.eval instanceof Map && (liveState.eval as Map)["0"] instanceof List) ? (liveState.eval as Map)["0"] as List : []
     // A condition naming a deleted device cannot be rebuilt (the wizard takes the dead id and the
     // condition never renders), so nothing is touched.
@@ -2367,7 +2358,7 @@ Map _rmRestoreRequiredExpression(Integer appId, Map snapshot) {
         }
         def after = _rmReadRuleState(appId)
         if (after == null) {
-            return [requiredExpressionRestored: false, requiredExpressionError: "the rebuilt expression could not be read back to confirm it"]
+            return (_bat529EmbeddedCatalogRead(['["m",[["requiredExpressionRestored",false],["requiredExpressionError","the rebuilt expression could not be read back to confirm it"]]]']) as Map)
         }
         def afterTokens = (after.eval instanceof Map && (after.eval as Map)["0"] instanceof List) ? (after.eval as Map)["0"] as List : []
         boolean committed = _rmIsCommittedRETell(_rmCollectPageInputNames(appId, "STPage"))
@@ -2691,8 +2682,8 @@ private Map _naOperationSchema(String operation) {
     if (operation == 'create') return [type: 'object', additionalProperties: false, properties: [
         app_type: [type: 'string', enum: _naCreateTypes()], name: [type: 'string', minLength: 1, maxLength: 200], fields: [type: 'object'],
         controller_id: [type: 'integer', minimum: 1], button_number: [type: 'integer', minimum: 1],
-        event: [type: 'string', enum: ['pushed', 'held', 'doubleTapped', 'released']]], required: ['app_type']]
-    if (operation == 'update') return [type: 'object', additionalProperties: false, properties: [fields: [type: 'object'], page: [type: 'string']], required: ['fields']]
+        event: (_bat529EmbeddedCatalogRead(['["m",[["type","string"],["enum",["l",["pushed","held","doubleTapped","released"]]]]]']) as Map)], required: ['app_type']]
+    if (operation == 'update') return (_bat529EmbeddedCatalogRead(['["m",[["type","object"],["additionalProperties",false],["properties",["m",[["fields",["m",[["type","object"]]]],["page",["m",[["type","string"]]]]]]],["required",["l",["fields"]]]]]']) as Map)
     if (operation == 'form') return _ndOperationSchema('form')
     throw new IllegalArgumentException('Unknown native app operation; use create, update or form')
 }
@@ -2704,7 +2695,7 @@ Map toolSetNativeApp(Map request) {
     if (request.containsKey('args') && !(request.args instanceof Map)) throw new IllegalArgumentException('args must be an object')
     if (!request.containsKey('operation')) {
         if (request.args) throw new IllegalArgumentException('Choose an operation before supplying args')
-        return [operations: ['create', 'update', 'form'], usage: 'Choose operation for its schema. Writes return schema until confirm=true. See set_native_app_reference.']
+        return (_bat529EmbeddedCatalogRead(['["m",[["operations",["l",["create","update","form"]]],["usage","Choose operation for its schema. Writes return schema until confirm=true. See set_native_app_reference."]]]']) as Map)
     }
     if (!(request.operation instanceof String)) throw new IllegalArgumentException('operation must be a string')
     String operation = request.operation
@@ -3193,21 +3184,13 @@ private Map _naUpdateFailure(Long id, Exception failure, Map backup, boolean att
 def _readOnlyToolNames_partNativeRM() {
     // Read-only classification for this library's tools (issue #209: per-tool metadata lives
     // with the tool), contributed to the app's getReadOnlyToolNames() aggregator.
-    return [
-        // Native rules (read) -- hub_get_rule_health inspects only;
-        // hub_list_rule_local_variables reads the rule's statusJson only.
-        // (hub_export_native_app -- in McpAppClonerLib -- instantiates a cloner app + persists, so it stays write.)
-        "hub_list_rules", "hub_get_rule_health", "hub_list_rule_local_variables"
-    ]
+    return (_bat529EmbeddedCatalogRead(['["l",["hub_list_rules","hub_get_rule_health","hub_list_rule_local_variables"]]']) as List)
 }
 
 def _idempotentWriteToolNames_partNativeRM() {
     // Retry-safe writes (MCP idempotentHint) for this library's tools -- contributed to the
     // app's getIdempotentWriteToolNames() aggregator; see the classification rules there.
-    return [
-        // Native rules / classic apps
-        "hub_set_rule_paused", "hub_set_rule_private_boolean", "hub_set_app_disabled"
-    ]
+    return (_bat529EmbeddedCatalogRead(['["l",["hub_set_rule_paused","hub_set_rule_private_boolean","hub_set_app_disabled"]]']) as List)
 }
 
 def _toolDisplayMeta_partNativeRM() {

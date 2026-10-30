@@ -413,9 +413,7 @@ private String _vrbTryCleanupShell(Integer appId) {
 private List _vrb2TriggerTypes() {
     // VRB 2.0 `type` catalogs. The Groovy sandbox rejects static field initializers, so each
     // catalog is a method. Source: the hub's own VRB2 authoring guide plus the builder chunk.
-    return ["timeOfDay", "sunriseSunset", "motion", "contact", "presence", "acceleration",
-            "water", "smoke", "co", "alarm", "temperature", "humidity", "illuminance",
-            "power", "switch", "button", "lock", "shock", "systemMode"]
+    return (_bat529EmbeddedCatalogRead(['["l",["timeOfDay","sunriseSunset","motion","contact","presence","acceleration","water","smoke","co","alarm","temperature","humidity","illuminance","power","switch","button","lock","shock","systemMode"]]']) as List)
 }
 
 private List _vrb2ConditionTypes() {
@@ -501,7 +499,7 @@ private void _vrb2ChainEdges(List edges, String from, String port, List chain, S
 }
 
 private List _vrb2EditorKeys() {
-    return ["triggers", "conditions", "decisionType", "thenActions", "elseActions", "commonActions", "structureIds"]
+    return (_bat529EmbeddedCatalogRead(['["l",["triggers","conditions","decisionType","thenActions","elseActions","commonActions","structureIds"]]']) as List)
 }
 
 private Map _vrb2Compose(Map editor) {
@@ -823,7 +821,7 @@ private void _vrbValidateClassicShape(Map definition) {
     // actions". The keys a hub_get_visual_rule read wraps around the three arrays are tolerated
     // (and ignored -- the top-level name/paused arguments govern) so a classic read can be fed
     // straight back, which is exactly what the format-mismatch note tells the caller to do.
-    def readEnvelope = ["promptHistory", "name", "rawName", "rulePaused", "success", "appId", "format"]
+    def readEnvelope = (_bat529EmbeddedCatalogRead(['["l",["promptHistory","name","rawName","rulePaused","success","appId","format"]]']) as List)
     def unknownKeys = ((definition.keySet()).collect((this.&_bat529Cb_c0a86baf_8))).findAll(((this.&_bat529Cb_c0a86baf_41).curry([readEnvelope] as Object[])))
     if (unknownKeys) throw new IllegalArgumentException("Unknown classic key(s): ${unknownKeys.join(', ')}. A classic definition takes only whenNodes, thenNodes, elseNodes (the keys a hub_get_visual_rule read adds around them are ignored).")
     (["whenNodes", "thenNodes", "elseNodes"]).each(((this.&_bat529Cb_c0a86baf_57).curry([definition] as Object[])))

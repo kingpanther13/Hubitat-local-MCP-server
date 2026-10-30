@@ -427,7 +427,7 @@ def mainPage() {
                   defaultValue: true
             input "mcpLogLevel", "enum", title: "MCP Debug Log Level",
                   description: "Controls MCP-accessible debug logs (default: errors only)",
-                  options: ["debug": "Debug (verbose)", "info": "Info (normal)", "warn": "Warnings only", "error": "Errors only (recommended)"],
+                  options: (_bat529EmbeddedCatalogRead(['["m",[["debug","Debug (verbose)"],["info","Info (normal)"],["warn","Warnings only"],["error","Errors only (recommended)"]]]']) as Map),
                   defaultValue: "error", required: false
             input "debugLogging", "bool", title: "Log MCP request/response traffic", defaultValue: false,
                   description: "Writes every MCP request, response and notification to Hubitat's log viewer. Other debug output follows the MCP Debug Log Level above."
@@ -465,14 +465,7 @@ def formatTimestamp(timestamp) {
         } else if (timestamp instanceof String) {
             // Try multiple ISO 8601 formats to handle variations from
             // different firmware versions or upstream APIs
-            def formats = [
-                "yyyy-MM-dd'T'HH:mm:ss.SSSZ",   // Full with millis and offset: 2025-01-15T10:30:00.000+0000
-                "yyyy-MM-dd'T'HH:mm:ssZ",         // No millis with offset:      2025-01-15T10:30:00+0000
-                "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'",   // Full with millis and Z:     2025-01-15T10:30:00.000Z
-                "yyyy-MM-dd'T'HH:mm:ss'Z'",       // No millis with Z:           2025-01-15T10:30:00Z
-                "yyyy-MM-dd'T'HH:mm:ss",          // No millis, no timezone:     2025-01-15T10:30:00
-                "yyyy-MM-dd HH:mm:ss",            // Space-separated:            2025-01-15 10:30:00
-            ]
+            def formats = (_bat529EmbeddedCatalogRead(['["l",["yyyy-MM-dd\'T\'HH:mm:ss.SSSZ","yyyy-MM-dd\'T\'HH:mm:ssZ","yyyy-MM-dd\'T\'HH:mm:ss.SSS\'Z\'","yyyy-MM-dd\'T\'HH:mm:ss\'Z\'","yyyy-MM-dd\'T\'HH:mm:ss","yyyy-MM-dd HH:mm:ss"]]']) as List)
             for (fmt in formats) {
                 try {
                     def date = Date.parse(fmt, timestamp)
@@ -2070,7 +2063,7 @@ private boolean _mcpClientIsWrapper(String name, String version) {
     String lower = name?.toLowerCase()
     if (!lower) return false
     if (lower == "mcp") return version == null || version == "0.1.0"
-    return ["mcp-remote", "mcp-proxy", "fastmcp-remote", "supergateway"].contains(lower)
+    return (_bat529EmbeddedCatalogRead(['["l",["mcp-remote","mcp-proxy","fastmcp-remote","supergateway"]]']) as List).contains(lower)
 }
 
 private boolean _openAiClientRequest() {
@@ -2277,10 +2270,7 @@ def handleInitialize(msg) {
 // stateless read-only: this endpoint is request-response only (no SSE), so subscribe
 // change-notifications are impossible by design and both flags are explicitly false.
 def serverCapabilities() {
-    [
-        tools: [:],
-        resources: [subscribe: false, listChanged: false]
-    ]
+    (_bat529EmbeddedCatalogRead(['["m",[["tools",["m",[]]],["resources",["m",[["subscribe",false],["listChanged",false]]]]]]']) as Map)
 }
 
 // server/discover (SEP-2575): the stateless successor to initialize -- servers MUST implement it.
@@ -2794,13 +2784,13 @@ def handleToolsCallLegacy(msg) {
             result = [isError: true, error: "Tool ${reactiveToolName} returned no result",
                       tool: reactiveToolName]
             // The tool may have changed the hub before failing to report it.
-            if (audit != null) outcome = [outcome: "unknown", error: "tool returned no result"]
+            if (audit != null) outcome = (_bat529EmbeddedCatalogRead(['["m",[["outcome","unknown"],["error","tool returned no result"]]]']) as Map)
         }
         if (audit != null && outcome == null) outcome = _writeOutcome(result)
         return _renderToolResult(msg.id, toolName, reactiveToolName, args, result,
             result instanceof Map && result.isError == true)
     } catch (IllegalArgumentException e) {
-        if (audit != null && outcome == null) outcome = [outcome: "failed", error: "validation refused the call"]
+        if (audit != null && outcome == null) outcome = (_bat529EmbeddedCatalogRead(['["m",[["outcome","failed"],["error","validation refused the call"]]]']) as Map)
         mcpLog("error", "server", "Validation error in ${reactiveToolName}: ${e.message}", null, [
             details: _toolLogDetails(reactiveToolName, toolName, args, [error: e.message])
         ])
@@ -2820,7 +2810,7 @@ def handleToolsCallLegacy(msg) {
         if (writeLeaseId != null) _writeReleaseRequest(writeLeaseId)
         if (audit != null && writeLeaseId != null) {
             // No captured outcome means an Error escaped before a result existed.
-            Map fin = outcome ?: [outcome: "unknown", error: "request ended before a result was produced"]
+            Map fin = outcome ?: (_bat529EmbeddedCatalogRead(['["m",[["outcome","unknown"],["error","request ended before a result was produced"]]]']) as Map)
             _writeAuditLog(audit, "finished", fin + [durationMs: now() - reqT0])
         }
     }
@@ -2872,9 +2862,7 @@ private void _writeAuditLog(Map audit, String phase, Map extra) {
 }
 
 private List _writeTargetKeys() {
-    return ["appId", "nativeAppId", "ruleId", "deviceId", "device_id",
-        "driverId", "roomId", "room_id", "variableName", "name", "id", "jobId", "type", "action", "scope",
-        "backupKey", "ref", "mode", "fileName", "filename", "path"]
+    return (_bat529EmbeddedCatalogRead(['["l",["appId","nativeAppId","ruleId","deviceId","device_id","driverId","roomId","room_id","variableName","name","id","jobId","type","action","scope","backupKey","ref","mode","fileName","filename","path"]]']) as List)
 }
 
 // Identifier-shaped arguments only, from a fixed allowlist; anything that could carry a
@@ -2910,19 +2898,19 @@ private Map _writeOutcome(result) {
     try {
         if (!(result instanceof Map)) return [outcome: "completed"]
         Map r = result as Map
-        if (r.__deviceValidation != null) return [outcome: "failed", error: "validation refused the call"]
+        if (r.__deviceValidation != null) return (_bat529EmbeddedCatalogRead(['["m",[["outcome","failed"],["error","validation refused the call"]]]']) as Map)
         if (r.status?.toString() == "in_progress") {
             return r.requestId != null ? [outcome: "accepted"]
-                : [outcome: "partial", error: "paused with remaining work in the result"]
+                : (_bat529EmbeddedCatalogRead(['["m",[["outcome","partial"],["error","paused with remaining work in the result"]]]']) as Map)
         }
         if (r.partial == true) return [outcome: "partial", error: _writeOutcomeCode(r, "some items did not apply")]
         if (r.isError == true || r.success == false) return [outcome: "failed", error: _writeOutcomeCode(r, "tool returned a failure result")]
         if (r.stateError instanceof CharSequence && r.stateError.toString().trim()) {
-            return [outcome: "unknown", error: "the write ran but reading the resulting state failed"]
+            return (_bat529EmbeddedCatalogRead(['["m",[["outcome","unknown"],["error","the write ran but reading the resulting state failed"]]]']) as Map)
         }
         return [outcome: "completed"]
     } catch (Exception ignored) {
-        return [outcome: "unknown", error: "outcome could not be classified"]
+        return (_bat529EmbeddedCatalogRead(['["m",[["outcome","unknown"],["error","outcome could not be classified"]]]']) as Map)
     }
 }
 
@@ -6424,7 +6412,7 @@ def validateCondition(condition) {
         case "days_of_week":
             if (!condition.days) throw new IllegalArgumentException("days_of_week condition requires days array")
             // Validate day names
-            def validDays = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
+            def validDays = (_bat529EmbeddedCatalogRead(['["l",["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"]]']) as List)
             (condition.days).each(((this.&_bat529Cb_ad9a62cb_216).curry([validDays] as Object[])))
             break
         case "sun_position":
@@ -6436,7 +6424,7 @@ def validateCondition(condition) {
             break
         case "hsm_status":
             if (!condition.status) throw new IllegalArgumentException("hsm_status condition requires status")
-            def validHsmStatuses = ["disarmed", "armedAway", "armedHome", "armedNight", "armingAway", "armingHome", "armingNight"]
+            def validHsmStatuses = (_bat529EmbeddedCatalogRead(['["l",["disarmed","armedAway","armedHome","armedNight","armingAway","armingHome","armingNight"]]']) as List)
             if (!validHsmStatuses.contains(condition.status)) {
                 throw new IllegalArgumentException("hsm_status condition: Invalid status '${condition.status}'. Valid statuses: ${validHsmStatuses.join(', ')}")
             }
@@ -6628,7 +6616,7 @@ def validateAction(action) {
             if (!action.deviceId) throw new IllegalArgumentException("set_fan_speed action requires deviceId")
             if (!findDevice(action.deviceId)) throw new IllegalArgumentException("Device not found: ${action.deviceId}")
             if (!action.speed) throw new IllegalArgumentException("set_fan_speed action requires speed")
-            if (!["low", "medium-low", "medium", "medium-high", "high", "on", "off", "auto"].contains(action.speed)) {
+            if (!(_bat529EmbeddedCatalogRead(['["l",["low","medium-low","medium","medium-high","high","on","off","auto"]]']) as List).contains(action.speed)) {
                 throw new IllegalArgumentException("set_fan_speed: invalid speed '${action.speed}'")
             }
             break
@@ -6759,15 +6747,7 @@ def _parseSinceArg(since) {
     // Z means UTC -- swap it for the equivalent numeric offset so the offset-bearing
     // formats below interpret the wall-clock as UTC rather than hub-local.
     if (s.endsWith("Z")) s = s.substring(0, s.length() - 1) + "+0000"
-    def formats = [
-        "yyyy-MM-dd'T'HH:mm:ss.SSSZ",   // canonical round-trip: 2026-06-23T10:00:00.000-0600
-        "yyyy-MM-dd'T'HH:mm:ssZ",       // no millis, offset:    2026-06-23T10:00:00-0600
-        // Colon-bearing offsets (2026-06-23T10:00:00-06:00) -- the XXX form
-        // formatLastActivity emits, so a lastActivity value round-trips into
-        // changedSince on a non-UTC hub.
-        "yyyy-MM-dd'T'HH:mm:ss.SSSXXX",
-        "yyyy-MM-dd'T'HH:mm:ssXXX",
-    ]
+    def formats = (_bat529EmbeddedCatalogRead(['["l",["yyyy-MM-dd\'T\'HH:mm:ss.SSSZ","yyyy-MM-dd\'T\'HH:mm:ssZ","yyyy-MM-dd\'T\'HH:mm:ss.SSSXXX","yyyy-MM-dd\'T\'HH:mm:ssXXX"]]']) as List)
     // NOTE: Date.parse() is backed by a lenient SimpleDateFormat, so a structurally-valid
     // but out-of-range field (e.g. month 13) parses to a rolled-over date rather than
     // failing here -- a malformed bookmark shifts the window instead of erroring. Callers
@@ -7665,7 +7645,7 @@ def _postMultipartBackup(String path, String field, String fileName, byte[] file
             try { result = new groovy.json.JsonSlurper().parseText(d?.toString() ?: "{}") }
             catch (Exception ig) {
                 mcpLogError("hub-admin", "${path} returned a non-JSON body (status=${resp?.status})", ig)
-                result = [success: false, message: "Upload returned an unexpected (non-JSON) response; not treated as success."]
+                result = (_bat529EmbeddedCatalogRead(['["m",[["success",false],["message","Upload returned an unexpected (non-JSON) response; not treated as success."]]]']) as Map)
             }
         }
     }
@@ -8339,8 +8319,7 @@ private Map _getDebugLogHistoryResult(Map args = [:]) {
             if (buffer.fetchError) throw new IllegalStateException("Native log recovery failed; retry this request: ${buffer.fetchError}")
         }
         long remaining = Math.min(remainingBudget, Math.max(0L, deadline - now()))
-        if (remaining <= 0L) return [status: "in_progress", retryable: true,
-            note: "Native log history is loading. Continue with requestState when supplied, otherwise repeat the same call."]
+        if (remaining <= 0L) return (_bat529EmbeddedCatalogRead(['["m",[["status","in_progress"],["retryable",true],["note","Native log history is loading. Continue with requestState when supplied, otherwise repeat the same call."]]]']) as Map)
         long waitMs = Math.min(WORKER_POLL_MS, remaining)
         pauseExecution(waitMs)
         remainingBudget -= waitMs
@@ -10089,21 +10068,16 @@ def _guideSectionForTool(toolName) {
     if (t == 'hub_set_visual_rule' || t == 'hub_delete_visual_rule') return 'visual_rule_reference'
     if (t.endsWith('_custom_rule')) return 'rules'
     if (t == 'hub_set_native_app') return 'set_native_app_reference'
-    if (t in ['hub_delete_native_app', 'hub_clone_native_app',
-              'hub_export_native_app', 'hub_import_native_app']) return 'builtin_app_tools_crud'
-    if (t in ['hub_set_app_disabled', 'hub_call_rule', 'hub_set_rule_paused',
-              'hub_set_rule_private_boolean']) return 'builtin_app_tools_rules'
+    if (t in (_bat529EmbeddedCatalogRead(['["l",["hub_delete_native_app","hub_clone_native_app","hub_export_native_app","hub_import_native_app"]]']) as List)) return 'builtin_app_tools_crud'
+    if (t in (_bat529EmbeddedCatalogRead(['["l",["hub_set_app_disabled","hub_call_rule","hub_set_rule_paused","hub_set_rule_private_boolean"]]']) as List)) return 'builtin_app_tools_rules'
     if (t in ['hub_get_device', 'hub_update_device']) return 'update_device'
     if (t == 'hub_manage_virtual_device') return 'virtual_devices'
-    if (t in ['hub_create_dashboard', 'hub_update_dashboard', 'hub_delete_dashboard', 'hub_clone_dashboard']) return 'dashboards'
+    if (t in (_bat529EmbeddedCatalogRead(['["l",["hub_create_dashboard","hub_update_dashboard","hub_delete_dashboard","hub_clone_dashboard"]]']) as List)) return 'dashboards'
     if (t in ['hub_create_backup', 'hub_restore_backup']) return 'backup'
     if (t in ['hub_write_file', 'hub_delete_file']) return 'file_manager'
-    if (t in ['hub_call_zwave', 'hub_set_zwave', 'hub_call_zigbee', 'hub_set_zigbee',
-              'hub_call_matter']) return 'hub_admin_write_radios'
-    if (t in ['hub_call_device_command', 'hub_call_device_swap', 'hub_call_device_replace',
-              'hub_create_device']) return 'hub_admin_write_devices'
-    if (t in ['hub_delete_device', 'hub_delete_room', 'hub_delete_item', 'hub_reboot', 'hub_shutdown',
-              'hub_update_firmware', 'hub_call_destructive_ops']) return 'hub_admin_write_destructive'
+    if (t in (_bat529EmbeddedCatalogRead(['["l",["hub_call_zwave","hub_set_zwave","hub_call_zigbee","hub_set_zigbee","hub_call_matter"]]']) as List)) return 'hub_admin_write_radios'
+    if (t in (_bat529EmbeddedCatalogRead(['["l",["hub_call_device_command","hub_call_device_swap","hub_call_device_replace","hub_create_device"]]']) as List)) return 'hub_admin_write_devices'
+    if (t in (_bat529EmbeddedCatalogRead(['["l",["hub_delete_device","hub_delete_room","hub_delete_item","hub_reboot","hub_shutdown","hub_update_firmware","hub_call_destructive_ops"]]']) as List)) return 'hub_admin_write_destructive'
     if (t == 'hub_get_device_attribute') return 'device_authorization'
     if (t == 'hub_report_issue') return 'performance_diagnostics'
     return null

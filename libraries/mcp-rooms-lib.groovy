@@ -3,7 +3,7 @@ library(name: "McpRoomsLib", namespace: "mcp", author: "kingpanther13", descript
 def toolListRooms(args = null) {
     def rooms = getRooms()
     if (!rooms) {
-        return [rooms: [], count: 0, message: "No rooms configured on this hub."]
+        return (_bat529EmbeddedCatalogRead(['["m",[["rooms",["l",[]]],["count",0],["message","No rooms configured on this hub."]]]']) as Map)
     }
     def roomList = (((rooms).findAll((this.&_bat529Cb_cfcfe2bd_4))).collect((this.&_bat529Cb_cfcfe2bd_28))).sort((this.&_bat529Cb_cfcfe2bd_29))
     def cursor = args?.cursor

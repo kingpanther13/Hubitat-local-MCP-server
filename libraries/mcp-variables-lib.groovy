@@ -185,8 +185,7 @@ def toolListVariables(args = null) {
     // type filter: the hub_create_variable names or the stored names the listing shows
     // (integer, bigdecimal, string, boolean, datetime).
     if (args?.type != null) {
-        def hubType = [number: "integer", integer: "integer", decimal: "bigdecimal", bigdecimal: "bigdecimal", string: "string",
-                       boolean: "boolean", datetime: "datetime"].get(args.type.toString().toLowerCase())
+        def hubType = (_bat529EmbeddedCatalogRead(['["m",[["number","integer"],["integer","integer"],["decimal","bigdecimal"],["bigdecimal","bigdecimal"],["string","string"],["boolean","boolean"],["datetime","datetime"]]]']) as Map).get(args.type.toString().toLowerCase())
         if (hubType == null) throw new IllegalArgumentException("type must be one of Number, Decimal, String, Boolean, DateTime (or the stored integer, bigdecimal, string, boolean, datetime).")
         hubVariables = (hubVariables).findAll(((this.&_bat529Cb_b8585dac_18).curry([hubType] as Object[])))
         ruleVariables = []
@@ -585,7 +584,7 @@ private Map _createLinkedMeshVariable(String meshHubId, String meshName) {
             message: "Hub Mesh variable '${meshName}' shared by hub ${meshHubId} was already linked here${existing ? " as '${existing.name}'" : ''}.",
             note: "This is a local mirror of a variable on the peer hub. Read all linked variables via hub_get_hub_mesh."
         ]
-        if (existing == null) already.warnings = ["Already linked, but the local mirror name did not resolve from hub_get_hub_mesh localLinkedHubVariables; the returned name is the bare source name and may not identify the mirror. Verify it with hub_get_hub_mesh."]
+        if (existing == null) already.warnings = (_bat529EmbeddedCatalogRead(['["l",["Already linked, but the local mirror name did not resolve from hub_get_hub_mesh localLinkedHubVariables; the returned name is the bare source name and may not identify the mirror. Verify it with hub_get_hub_mesh."]]']) as List)
         return already
     }
     if (availBefore != null && !sourceWasOffered) {
@@ -838,7 +837,7 @@ private Map _createOneVariable(Integer appId, String name, String type, value) {
     // Validate a DateTime value before any hub write, so a bad value writes nothing.
     String dtValue = (type == "DateTime") ? _dateTimeVariableValue(name, value) : null
     if (appId == null) {
-        def nativeType = [Number: "integer", Decimal: "bigdecimal", String: "string", Boolean: "boolean", DateTime: "datetime"][type]
+        def nativeType = (_bat529EmbeddedCatalogRead(['["m",[["Number","integer"],["Decimal","bigdecimal"],["String","string"],["Boolean","boolean"],["DateTime","datetime"]]]']) as Map)[type]
         def body = [name: name, type: nativeType, value: dtValue ?: value.toString()]
         if (dtValue != null) { body.mode = "datetime"; body.date = dtValue.take(10); body.time = dtValue.substring(11, 16) }
         _hubVarsNativePost("create", body)
@@ -892,7 +891,7 @@ private Map _createOneVariable(Integer appId, String name, String type, value) {
         }
     }
     if (appId == null && created != null) {
-        def expectedType = [Number: "integer", Decimal: "bigdecimal", String: "string", Boolean: "boolean", DateTime: "datetime"][type]
+        def expectedType = (_bat529EmbeddedCatalogRead(['["m",[["Number","integer"],["Decimal","bigdecimal"],["String","string"],["Boolean","boolean"],["DateTime","datetime"]]]']) as Map)[type]
         boolean matches = created.type?.toString()?.toLowerCase() == expectedType
         if (dtValue == null) {
             if (type in ["Number", "Decimal"]) {
@@ -1709,19 +1708,13 @@ def _readOnlyToolNames_partVariables() {
     // Read-only classification membership for this library's tools, contributed to the
     // app's getReadOnlyToolNames() aggregator (issue #209: per-tool metadata lives with
     // the tool). A tool absent from every part list is write+destructive by default.
-    return [
-        // Variables (reads); hub_get_variable folds in the dependents read via includeDependents
-        "hub_list_variables", "hub_get_variable", "hub_list_variable_changes"
-    ]
+    return (_bat529EmbeddedCatalogRead(['["l",["hub_list_variables","hub_get_variable","hub_list_variable_changes"]]']) as List)
 }
 
 def _idempotentWriteToolNames_partVariables() {
     // Retry-safe writes (MCP idempotentHint) for this library's tools -- contributed to the
     // app's getIdempotentWriteToolNames() aggregator; see the classification rules there.
-    return [
-        // Variables + connectors. hub_set_variable is not here: its increment re-adds on a retry.
-        "hub_delete_variable", "hub_create_connector", "hub_delete_connector"
-    ]
+    return (_bat529EmbeddedCatalogRead(['["l",["hub_delete_variable","hub_create_connector","hub_delete_connector"]]']) as List)
 }
 
 def _toolDisplayMeta_partVariables() {

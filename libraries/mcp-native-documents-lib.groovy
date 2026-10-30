@@ -75,7 +75,7 @@ private Map _ndRender(Long id, String page) {
 
 Map toolGetRuleDocument(Map args) {
     Long id = _ndId(args.rule_id)
-    def allowed = ['actions', 'conditions', 'triggers', 'expressions', 'variables', 'settings']
+    def allowed = (_bat529EmbeddedCatalogRead(['["l",["actions","conditions","triggers","expressions","variables","settings"]]']) as List)
     def sections = args.sections == null ? allowed : args.sections
     if (!(sections instanceof List) || (sections).any(((this.&_bat529Cb_18d8bae2_2).curry([allowed] as Object[])))) throw new IllegalArgumentException('Unknown document section')
     boolean paged = args.containsKey('cursor') || args.containsKey('limit')
@@ -408,7 +408,7 @@ private Map _ndApply(Long id, List changes, boolean created) {
             persistedState.stPrimed == false
         if (actualTriggers && !stopped && !paused && !suppressed && subscriptions.empty && jobs.empty) throw new IllegalStateException('Native triggers have no active subscriptions or scheduled jobs')
         if (created && getAppByAppId(id)?.installed != true) throw new IllegalStateException('Native rule is not installed after Done')
-        [success: true, rule_id: id, created: created, results: outcomes, broken: false, stopped: stopped, paused: paused, eventSubscriptions: subscriptions, scheduledJobs: jobs, verification: 'Native persistence, compilation and activation checks passed; verify intended device behavior independently.', document: toolGetRuleDocument([rule_id: id, sections: ['actions', 'conditions', 'triggers', 'expressions', 'variables']])] +
+        [success: true, rule_id: id, created: created, results: outcomes, broken: false, stopped: stopped, paused: paused, eventSubscriptions: subscriptions, scheduledJobs: jobs, verification: 'Native persistence, compilation and activation checks passed; verify intended device behavior independently.', document: toolGetRuleDocument([rule_id: id, sections: (_bat529EmbeddedCatalogRead(['["l",["actions","conditions","triggers","expressions","variables"]]']) as List)])] +
             (suppressed ? [subscriptionSettle: 'SUPPRESSED: Required Expression is false'] : [:])
     } catch (Exception failure) {
         mcpLogError('rm-native', "hub_set_rule ${created ? 'create' : 'update'} failed for rule ${id}: ${failure.message}".toString(), failure)
@@ -448,7 +448,7 @@ Map toolUpdateRuleDocument(Map args) {
 }
 
 private Map _ndEditBackup(Long id, String reason) {
-    if (_effectiveBackupSetting('backupBeforeRuleEdits') == 'false') return [skipped: true, reason: 'Automatic pre-edit backups are disabled']
+    if (_effectiveBackupSetting('backupBeforeRuleEdits') == 'false') return (_bat529EmbeddedCatalogRead(['["m",[["skipped",true],["reason","Automatic pre-edit backups are disabled"]]]']) as Map)
     Map backup = _rmBackupRuleSnapshot(id.toString().toInteger(), reason, true)
     if (!(backup?.backupKey instanceof String) || !backup.backupKey) throw new IllegalStateException('No recovery handle was returned')
     backup
@@ -471,7 +471,7 @@ Map toolCreateRuleDocument(Map args) {
     try {
         def response = hubInternalGetRaw("/installedapp/createchild/hubitat/Rule-5.1/parent/${parentId}")
         id = _nrCreatedAppId(response)
-        if (id == null) return [success: false, partial: true, error: 'Native child creation did not return its rule ID; inspect the parent before retrying']
+        if (id == null) return (_bat529EmbeddedCatalogRead(['["m",[["success",false],["partial",true],["error","Native child creation did not return its rule ID; inspect the parent before retrying"]]]']) as Map)
         def child = getAppByAppId(id)
         if (child?.parentAppId?.toString() != parentId.toString() || child?.appType?.namespace != 'hubitat' || child?.appType?.name != 'Rule-5.1') throw new IllegalStateException('Created child did not match the requested native parent and rule type')
         verifiedChild = true
@@ -501,7 +501,7 @@ private Map _ndOperationSchema(String operation) {
     Map properties = [:]
     List required = []
     if (operation == 'read') {
-        properties.sections = [type: 'array', items: [type: 'string', enum: ['actions', 'conditions', 'triggers', 'expressions', 'variables', 'settings']]]
+        properties.sections = (_bat529EmbeddedCatalogRead(['["m",[["type","array"],["items",["m",[["type","string"],["enum",["l",["actions","conditions","triggers","expressions","variables","settings"]]]]]]]]']) as Map)
         properties.cursor = [type: 'string']
         properties.limit = [type: 'integer', minimum: 1, maximum: 100]
     } else if (operation == 'create') {
@@ -541,7 +541,7 @@ Map toolSetRule(Map request) {
     if (request.containsKey('args') && !(request.args instanceof Map)) throw new IllegalArgumentException('args must be an object')
     if (!request.containsKey('operation')) {
         if (request.args) throw new IllegalArgumentException('Choose an operation before supplying args')
-        return [operations: ['read', 'create', 'update', 'form'], usage: 'Choose operation for its schema. Writes return schema until confirm=true. See set_rule_reference.']
+        return (_bat529EmbeddedCatalogRead(['["m",[["operations",["l",["read","create","update","form"]]],["usage","Choose operation for its schema. Writes return schema until confirm=true. See set_rule_reference."]]]']) as Map)
     }
     if (!(request.operation instanceof String)) throw new IllegalArgumentException('operation must be a string')
     String operation = request.operation
@@ -574,7 +574,7 @@ def _getAllToolDefinitions_partNativeDocuments() {
 def _readOnlyToolNames_partNativeDocuments() { [] }
 
 def _toolDisplayMeta_partNativeDocuments() {
-    [hub_set_rule: [title: 'Set Native Rule', summary: 'Read, create and update native rules or use their native editor forms.']]
+    (_bat529EmbeddedCatalogRead(['["m",[["hub_set_rule",["m",[["title","Set Native Rule"],["summary","Read, create and update native rules or use their native editor forms."]]]]]]']) as Map)
 }
 
 String _ndGuide() {
@@ -744,7 +744,7 @@ def _bat529Cb_18d8bae2_34(def it) { it == null || !it.toString().isInteger() || 
 def _bat529Cb_18d8bae2_35(def id, def page) { _ndRender(id, page) 
 }
 
-def _bat529Cb_18d8bae2_36(def it) { !(it in ['operation', 'rule_id', 'args', 'confirm', 'bestPracticeKey']) 
+def _bat529Cb_18d8bae2_36(def it) { !(it in (_bat529EmbeddedCatalogRead(['["l",["operation","rule_id","args","confirm","bestPracticeKey"]]']) as List)) 
 }
 
 def _bat529Cb_18d8bae2_37(def id, def entry) { entry.value.app_id?.toString() == id.toString() 

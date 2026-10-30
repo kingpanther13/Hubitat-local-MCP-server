@@ -88,7 +88,7 @@ def _appTypeEnrichment() {
     // (the appsList catalog and the code registry share the app-type class id; ns+name is a
     // fallback), the built-in type list, and a `note` when the enrichment could not be read
     // (best-effort: a failure just leaves community menus null and omits built-in types).
-    def out = [menuById: [:], menuByNsName: [:], builtIn: [], note: null]
+    def out = (_bat529EmbeddedCatalogRead(['["m",[["menuById",["m",[]]],["menuByNsName",["m",[]]],["builtIn",["l",[]]],["note",null]]]']) as Map)
     try {
         def txt = hubInternalGet("/hub2/appsList")
         def parsed = txt ? new groovy.json.JsonSlurper().parseText(txt) : null
@@ -1148,7 +1148,7 @@ private Map toolInstallItem(String type, args) {
                 return [success: allSucceeded, status: "in_progress", installs: itemResults,
                         installsRemaining: args.installs.subList(idx, args.installs.size()),
                         lastBackup: formatTimestamp(state.lastBackupTimestamp),
-                        resume: [note: "Completed driver installs are retained. Continue with only installsRemaining; do not repeat completed installs."]]
+                        resume: (_bat529EmbeddedCatalogRead(['["m",[["note","Completed driver installs are retained. Continue with only installsRemaining; do not repeat completed installs."]]]']) as Map)]
             }
             def item = args.installs[idx]
             if (!(item instanceof Map) || (item.source == null && item.sourceFile == null && item.importUrl == null)) {
@@ -1747,7 +1747,7 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args, Map packa
                 if (triggerId == null || triggerId < 1) {
                     successResult.triggerUpdated = args.triggerUpdated
                     successResult.updatedFired = false
-                    successResult.repairHints = ["triggerUpdated must be a positive integer (instance appId). The code save succeeded; lifecycle was NOT refreshed."]
+                    successResult.repairHints = (_bat529EmbeddedCatalogRead(['["l",["triggerUpdated must be a positive integer (instance appId). The code save succeeded; lifecycle was NOT refreshed."]]']) as List)
                     return successResult
                 }
                 successResult.triggerUpdated = triggerId
@@ -1987,8 +1987,7 @@ private Map _updateAppOAuth(appId, oauth) {
                     note: "That is not a hub OAuth answer -- an HTML body here is typically the Hub Security login page, so check the MCP app's Hub Security credentials (and that the hub is not mid-reboot). This says nothing about whether the app's source declares OAuth."]
         }
         if (!respText) {
-            return [success: false, error: "/app/updateOAuth returned an empty body",
-                    note: "The request reached the hub but produced no answer -- retry; if it persists, check Hub Security credentials."]
+            return (_bat529EmbeddedCatalogRead(['["m",[["success",false],["error","/app/updateOAuth returned an empty body"],["note","The request reached the hub but produced no answer -- retry; if it persists, check Hub Security credentials."]]]']) as Map)
         }
         return [success: false, error: "/app/updateOAuth did not report success", response: respText?.take(300),
                 note: "The app's source must declare OAuth (an oauth block + mappings) before it can be enabled."]
@@ -2042,7 +2041,7 @@ def toolUpdateDriverCode(args) {
                 return [success: allSucceeded, status: "in_progress", updates: itemResults,
                         updatesRemaining: args.updates.subList(idx, args.updates.size()),
                         lastBackup: formatTimestamp(state.lastBackupTimestamp),
-                        resume: [note: "Completed driver updates are retained. Continue with only updatesRemaining, preserving their order and expectedVersion values."]]
+                        resume: (_bat529EmbeddedCatalogRead(['["m",[["note","Completed driver updates are retained. Continue with only updatesRemaining, preserving their order and expectedVersion values."]]]']) as Map)]
             }
             def item = args.updates[idx]
             if (!(item instanceof Map) || !item.driverId) {
@@ -2705,7 +2704,7 @@ def toolListInstalledApps(args) {
     try {
         def responseText = hubInternalGet("/hub2/appsList")
         if (!responseText) {
-            return [success: false, error: "Empty response from /hub2/appsList", note: "Hub internal API may be transiently unavailable."]
+            return (_bat529EmbeddedCatalogRead(['["m",[["success",false],["error","Empty response from /hub2/appsList"],["note","Hub internal API may be transiently unavailable."]]]']) as Map)
         }
         def parsed
         try {
@@ -2924,29 +2923,19 @@ def _readOnlyToolNames_partCodeManagement() {
     // Read-only classification membership for this library's tools, contributed to the
     // app's getReadOnlyToolNames() aggregator (issue #209: per-tool metadata lives with
     // the tool). A tool absent from every part list is write+destructive by default.
-    return [
-        // Apps/drivers (read)
-        "hub_list_apps", "hub_list_drivers", "hub_list_libraries", "hub_get_source",
-        // Installed apps (read) -- instances list folded into hub_list_apps(scope='instances').
-        "hub_list_device_dependents", "hub_get_app_config"
-    ]
+    return (_bat529EmbeddedCatalogRead(['["l",["hub_list_apps","hub_list_drivers","hub_list_libraries","hub_get_source","hub_list_device_dependents","hub_get_app_config"]]']) as List)
 }
 
 def _idempotentWriteToolNames_partCodeManagement() {
     // Retry-safe writes (MCP idempotentHint) for this library's tools -- contributed to the
     // app's getIdempotentWriteToolNames() aggregator; see the classification rules there.
-    return [
-        // Code (apps/drivers/libraries/bundles/backups)
-        "hub_update_app", "hub_update_driver", "hub_update_library", "hub_delete_item"
-    ]
+    return (_bat529EmbeddedCatalogRead(['["l",["hub_update_app","hub_update_driver","hub_update_library","hub_delete_item"]]']) as List)
 }
 
 def _openWorldToolNames_partCodeManagement() {
     // Tools in this library that reach BEYOND the hub to the open internet (MCP
     // openWorldHint) -- contributed to the app's getOpenWorldToolNames() aggregator.
-    return [
-        "hub_create_app", "hub_create_driver", "hub_create_library", "hub_update_app", "hub_update_driver", "hub_update_library"
-    ]
+    return (_bat529EmbeddedCatalogRead(['["l",["hub_create_app","hub_create_driver","hub_create_library","hub_update_app","hub_update_driver","hub_update_library"]]']) as List)
 }
 
 def _toolDisplayMeta_partCodeManagement() {

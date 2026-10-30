@@ -91,7 +91,7 @@ private void _nrCheckSettingRow(Object row) {
         throw new IllegalArgumentException('Each setting requires name, type and value')
     }
     boolean device = _nrIsDeviceType(row.type)
-    if (!(row.type in ['text', 'textarea', 'password', 'enum', 'mode', 'bool', 'number', 'decimal', 'time']) && !device) throw new IllegalArgumentException('Unsupported native setting type')
+    if (!(row.type in (_bat529EmbeddedCatalogRead(['["l",["text","textarea","password","enum","mode","bool","number","decimal","time"]]']) as List)) && !device) throw new IllegalArgumentException('Unsupported native setting type')
     if (row.value == null) throw new IllegalArgumentException('Null setting values are unsupported; they do not reliably clear native settings')
     if (row.value instanceof List) {
         if (!device && !(row.type in ['enum', 'mode'])) throw new IllegalArgumentException('Lists require enum, mode or capability type')
@@ -142,7 +142,7 @@ private Map _nrRulePages(Long ruleId) {
 }
 
 Map _nrPage(Long ruleId, String page, Map params = [:]) {
-    if (!(page in ['mainPage', 'selectActions', 'selectActionsX', 'doActPage', 'STPage', 'selectTriggers', 'selectConditions', 'localVar'])) throw new IllegalArgumentException('Unsupported native page')
+    if (!(page in (_bat529EmbeddedCatalogRead(['["l",["mainPage","selectActions","selectActionsX","doActPage","STPage","selectTriggers","selectConditions","localVar"]]']) as List))) throw new IllegalArgumentException('Unsupported native page')
     if (params == null || (params && !(page in ['selectActions', 'STPage', 'selectConditions']))) throw new IllegalArgumentException('This page does not accept parameters')
     def handle = _nrHandle(ruleId)
     def result

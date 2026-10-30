@@ -540,9 +540,7 @@ def _validateListDeviceStateArgTypes(roomFilter, onlyOn, changedSince, attribute
 // The common state-bearing attributes an LLM needs to answer "what's going on in the house";
 // a device reports only the ones it has, so unused entries cost nothing per device.
 private List _contextAttributeNames() {
-    ["switch", "level", "motion", "contact", "presence", "lock", "temperature", "humidity",
-     "illuminance", "battery", "power", "energy", "thermostatMode", "thermostatOperatingState",
-     "heatingSetpoint", "coolingSetpoint", "speed", "position", "valve", "water", "smoke"]
+    (_bat529EmbeddedCatalogRead(['["l",["switch","level","motion","contact","presence","lock","temperature","humidity","illuminance","battery","power","energy","thermostatMode","thermostatOperatingState","heatingSetpoint","coolingSetpoint","speed","position","valve","water","smoke"]]']) as List)
 }
 
 // The "Mode:" (+ optional "HSM:") header lines every context-format result leads with;
@@ -656,8 +654,7 @@ private int _hydrateNativeInventory(List records, List requiredCollections, bool
             def fj = _fetchDeviceFullJson(record.id)
             if (!(fj?.device instanceof Map)) {
                 if (!allowPartial) throw new IllegalStateException("Native device metadata is unavailable for device ${record.id}; no SDK fallback was used.")
-                record.putAll([_nativeLoaded: true, _nativeReadError: true,
-                    _nativeUnavailableCollections: ['currentStates', 'capabilities', 'commands']])
+                record.putAll((_bat529EmbeddedCatalogRead(['["m",[["_nativeLoaded",true],["_nativeReadError",true],["_nativeUnavailableCollections",["l",["currentStates","capabilities","commands"]]]]]']) as Map))
                 continue
             }
             def d = fj.device
@@ -743,7 +740,7 @@ private int _loadContextResourcePopulation(List records, Map inventory = null) {
             }
         } else {
             unread++
-            record.putAll([_nativeReadError: true, _nativeUnavailableCollections: ['currentStates', 'capabilities', 'commands']])
+            record.putAll((_bat529EmbeddedCatalogRead(['["m",[["_nativeReadError",true],["_nativeUnavailableCollections",["l",["currentStates","capabilities","commands"]]]]]']) as Map))
         }
     }
     if (unread) mcpLog("warn", "device", "context resource: ${unread} device(s) not covered by the bulk inventory exceeded the per-device read cap (${_contextResourcePerDeviceFetchCap()}); reported with state unavailable.")
@@ -949,7 +946,7 @@ private Map _fetchAllHubDeviceRecords(String logCategory, String logPrefix) {
         spine = _flattenHub2DeviceTree(parsed instanceof Map ? parsed.devices : null)
         if (!(spine instanceof List)) {
             mcpLog("warn", logCategory, "${logPrefix}: /hub2/devicesList returned an unexpected shape")
-            spineFailure = [source: "/hub2/devicesList", capabilities: false, records: null, failure: "shape"]
+            spineFailure = (_bat529EmbeddedCatalogRead(['["m",[["source","/hub2/devicesList"],["capabilities",false],["records",null],["failure","shape"]]]']) as Map)
             spine = null
         }
     } catch (Exception e) {
@@ -1106,8 +1103,7 @@ private Map _listAllHubDevices(offset, limit, labelFilter, capabilityFilter, for
     }
     def raw = inventory.records
     if (!(raw instanceof List) || (raw).any((this.&_bat529Cb_15d0a4c9_79))) {
-        return [success: false, isError: true, error: "Native device inventory contained an invalid record.",
-                note: "Retry after checking hub firmware; an incomplete device list was not returned."]
+        return (_bat529EmbeddedCatalogRead(['["m",[["success",false],["isError",true],["error","Native device inventory contained an invalid record."],["note","Retry after checking hub firmware; an incomplete device list was not returned."]]]']) as Map)
     }
     def sourceEndpoint = inventory.source
     def capabilitiesComplete = inventory.capabilities && (raw).every((this.&_bat529Cb_15d0a4c9_62))
@@ -1445,10 +1441,9 @@ private Map _normalizeDevicePreferenceValue(raw, String type, boolean multiple =
 private Map _readDevicePreferenceModel(Map fullJson) {
     def definitions = fullJson?.get('settings')
     if (!(definitions instanceof List)) {
-        return [status: 'unavailable', source: 'settings', entries: [],
-                reason: 'Native device details did not contain a recognized top-level settings array.']
+        return (_bat529EmbeddedCatalogRead(['["m",[["status","unavailable"],["source","settings"],["entries",["l",[]]],["reason","Native device details did not contain a recognized top-level settings array."]]]']) as Map)
     }
-    def model = [status: 'complete', source: 'settings', entries: [], writeSafe: true]
+    def model = (_bat529EmbeddedCatalogRead(['["m",[["status","complete"],["source","settings"],["entries",["l",[]]],["writeSafe",true]]]']) as Map)
     def inputs = [:]
     def duplicates = []
     def rawInputs = fullJson.get('inputValues')
@@ -1572,9 +1567,7 @@ private List _deviceConfigurationFieldDefinitions() {
 
 private List _deviceConfigurationEditableFields(Map fj, Map preferences) {
     Map d = (fj?.device instanceof Map) ? fj.device : [:]
-    def values = _deviceConfigurationProjection(d, ['label', 'name', 'deviceNetworkId', 'showOnHome',
-        'defaultCurrentState', 'deviceTypeId', 'zigbeeId', 'notes', 'defaultIcon', 'maxEvents', 'maxStates',
-        'spammyThreshold', 'meshEnabled', 'retryEnabled', 'meshFullSync'])
+    def values = _deviceConfigurationProjection(d, (_bat529EmbeddedCatalogRead(['["l",["label","name","deviceNetworkId","showOnHome","defaultCurrentState","deviceTypeId","zigbeeId","notes","defaultIcon","maxEvents","maxStates","spammyThreshold","meshEnabled","retryEnabled","meshFullSync"]]']) as List))
     if (d.containsKey('roomName')) values.room = d.roomName
     if (d.containsKey('disabled')) {
         def disabled = _normalizeDevicePreferenceValue(d.disabled, 'bool')
@@ -1607,7 +1600,7 @@ private List _deviceConfigurationEditableFields(Map fj, Map preferences) {
 }
 
 private Map _deviceConfigurationDriverSource(Map d, deviceId) {
-    def lookup = [gateway: 'hub_read_apps_code', tool: 'hub_list_drivers', args: [include: 'user']]
+    def lookup = (_bat529EmbeddedCatalogRead(['["m",[["gateway","hub_read_apps_code"],["tool","hub_list_drivers"],["args",["m",[["include","user"]]]]]]']) as Map)
     if (d.systemDeviceType == true || (d.driverType ?: d.deviceTypeType) in ['sys', 'system']) {
         return [status: 'unavailable', reason: 'Built-in driver source is not exposed by the user driver-code endpoint.', lookup: lookup]
     }
@@ -1736,7 +1729,7 @@ private _fullJsonCommandArgs(c) {
 }
 
 private List _deviceDetailSections() {
-    return ['configuration', 'identity', 'attributes', 'commands', 'data', 'state', 'relationships', 'jobs', 'integrations', 'metadata']
+    return (_bat529EmbeddedCatalogRead(['["l",["configuration","identity","attributes","commands","data","state","relationships","jobs","integrations","metadata"]]']) as List)
 }
 
 private Map _deviceDetailSourceCoverage(Map fj) {
@@ -1746,13 +1739,12 @@ private Map _deviceDetailSourceCoverage(Map fj) {
     def unknownDevice = fj?.device instanceof Map ? (fj.device.keySet()).findAll(((this.&_bat529Cb_15d0a4c9_96).curry([deviceKeys] as Object[]))).toList() : []
     return [status: fj?.device instanceof Map ? (unknownRoot || unknownDevice ? 'partial' : 'complete') : 'unavailable',
             unmappedRootFields: unknownRoot, unmappedDeviceFields: unknownDevice,
-            representedSeparately: [settings: 'configuration.preferences', inputValues: 'configuration.preferences',
-                                   'device.dataJson': 'data (parsed native data map; raw duplicate omitted)']]
+            representedSeparately: (_bat529EmbeddedCatalogRead(['["m",[["settings","configuration.preferences"],["inputValues","configuration.preferences"],["device.dataJson","data (parsed native data map; raw duplicate omitted)"]]]']) as Map)]
 }
 
 private Map _deviceDetailReadStatus(String section, Map fj, Map d, value, deviceId) {
     def status = [status: 'complete', source: "/device/fullJson/${deviceId}".toString()]
-    if (d.isEmpty()) return status + [status: 'unavailable', reason: 'Native device details could not be fetched or recognized.']
+    if (d.isEmpty()) return status + (_bat529EmbeddedCatalogRead(['["m",[["status","unavailable"],["reason","Native device details could not be fetched or recognized."]]]']) as Map)
     if (section == 'configuration') {
         return status + [status: value.preferenceRead.status] + (value.preferenceRead.reason ? [reason: value.preferenceRead.reason] : [:])
     }
@@ -2343,8 +2335,7 @@ private Map _fireBypassCommand(deviceId, command, List params, Map fullJson) {
     def args = _buildRunMethodArgs(command, params, fullJson)
     def body = groovy.json.JsonOutput.toJson([id: _runMethodDeviceId(deviceId), method: command, args: args])
     def resp
-    def unknownOutcome = [success: false, isError: true, outcomeUnknown: true,
-        note: "The command may already have executed. Inspect device state and events before deciding whether to repeat it; do not automatically replay non-idempotent commands."]
+    def unknownOutcome = (_bat529EmbeddedCatalogRead(['["m",[["success",false],["isError",true],["outcomeUnknown",true],["note","The command may already have executed. Inspect device state and events before deciding whether to repeat it; do not automatically replay non-idempotent commands."]]]']) as Map)
     try {
         resp = hubInternalPostJson("/device/runmethod", body)
     } catch (Exception e) {
@@ -3517,12 +3508,11 @@ private Map _devicePreferencePanePayload(deviceId, Map overrides = [:], List pre
 }
 
 private List _deviceExtendedFormProperties() {
-    return ["deviceTypeId", "zigbeeId", "notes", "maxEvents", "maxStates", "spammyThreshold",
-        "defaultIcon", "dashboardIds", "meshEnabled", "retryEnabled", "meshFullSync"]
+    return (_bat529EmbeddedCatalogRead(['["l",["deviceTypeId","zigbeeId","notes","maxEvents","maxStates","spammyThreshold","defaultIcon","dashboardIds","meshEnabled","retryEnabled","meshFullSync"]]']) as List)
 }
 
 private Map _deviceAssistantProperties() {
-    return [homeKitEnabled: "homeKit", amazonAlexaEnabled: "amazonAlexa", googleHomeEnabled: "googleHome"]
+    return (_bat529EmbeddedCatalogRead(['["m",[["homeKitEnabled","homeKit"],["amazonAlexaEnabled","amazonAlexa"],["googleHomeEnabled","googleHome"]]]']) as Map)
 }
 
 private boolean _deviceFlag(value) {
@@ -3582,7 +3572,7 @@ private Map _prepareDeviceUpdatePatch(Map original, deviceId, Map suppliedFull =
     def args = new LinkedHashMap(original)
     def allowed = ["deviceId", "bestPracticeKey", "label", "name", "deviceNetworkId", "room", "enabled", "dataValues", "preferences", "showOnHome", "defaultCurrentState", "tags", "confirm"] + _deviceExtendedFormProperties() + _deviceAssistantProperties().keySet().toList()
     if ((args.keySet()).any(((this.&_bat529Cb_15d0a4c9_94).curry([allowed] as Object[])))) throw new IllegalArgumentException("Unknown device update property; read hub_get_device(mode='configuration') for supported fields")
-    def stringFields = ["label", "name", "deviceNetworkId", "room", "defaultCurrentState", "zigbeeId", "notes", "defaultIcon"]
+    def stringFields = (_bat529EmbeddedCatalogRead(['["l",["label","name","deviceNetworkId","room","defaultCurrentState","zigbeeId","notes","defaultIcon"]]']) as List)
     (stringFields).each(((this.&_bat529Cb_15d0a4c9_221).curry([args] as Object[])))
     def booleanFields = ["enabled", "showOnHome", "meshEnabled", "retryEnabled", "meshFullSync", "confirm"] + _deviceAssistantProperties().keySet().toList()
     (booleanFields).each(((this.&_bat529Cb_15d0a4c9_223).curry([args] as Object[])))
@@ -3756,7 +3746,7 @@ private void _applyExtendedDeviceUpdate(Map args, deviceId, Map full, List chang
             _saveDevicePreferencePaneControls(deviceId, [commandRetry: wanted])
             def readback = _fetchDeviceFullJson(deviceId)?.device
             if (readback?.retryEnabled instanceof Boolean && readback.retryEnabled == wanted) changes << [property: "retryEnabled", newValue: wanted]
-            else errors << [property: "retryEnabled", error: "POST accepted but could not confirm retryEnabled; native read-back did not match."]
+            else errors << (_bat529EmbeddedCatalogRead(['["m",[["property","retryEnabled"],["error","POST accepted but could not confirm retryEnabled; native read-back did not match."]]]']) as Map)
         } catch (Exception e) { errors << [property: "retryEnabled", error: e.message ?: e.toString()] }
     }
     def formProperties = (_deviceExtendedFormProperties()).findAll(((this.&_bat529Cb_15d0a4c9_130).curry([args] as Object[])))
@@ -3844,7 +3834,7 @@ private Map _toolUpdateDeviceNative(args, deviceId, Map fj) {
                 usedForm = true
             }
             if (!accepted) {
-                errors << [property: "label", error: "Hub did not accept the label update; inspect the native device details before retrying."]
+                errors << (_bat529EmbeddedCatalogRead(['["m",[["property","label"],["error","Hub did not accept the label update; inspect the native device details before retrying."]]]']) as Map)
             } else {
                 if (!usedForm) readback = _fetchDeviceFullJson(deviceId)?.device
                 if (readback?.containsKey("label") && (readback.label == null ? "" : readback.label.toString()) == wanted) {
@@ -3908,10 +3898,10 @@ private Map _toolUpdateDeviceNative(args, deviceId, Map fj) {
             if (args.room == "" || args.room == "none" || args.room == "null") {
                 def vd = _postBypassDeviceModel(deviceId, [roomId: 0], errors)
                 if (vd == null) {
-                    errors << [property: "room", error: "POST accepted but the read-back to confirm the unassign failed (/device/fullJson)."]
+                    errors << (_bat529EmbeddedCatalogRead(['["m",[["property","room"],["error","POST accepted but the read-back to confirm the unassign failed (/device/fullJson)."]]]']) as Map)
                 } else if (!vd.containsKey('roomName') ||
                     (vd.roomName != null && !(vd.roomName instanceof String))) {
-                    errors << [property: "room", error: "POST accepted but roomName is unavailable or invalid; the unassign could not be confirmed."]
+                    errors << (_bat529EmbeddedCatalogRead(['["m",[["property","room"],["error","POST accepted but roomName is unavailable or invalid; the unassign could not be confirmed."]]]']) as Map)
                 } else if (vd.roomName == null || vd.roomName == '') {
                     changes << [property: "room", oldValue: d.roomName ?: "none", newValue: "none"]
                 } else {
@@ -3930,7 +3920,7 @@ private Map _toolUpdateDeviceNative(args, deviceId, Map fj) {
                     // mirroring the unassign leg.
                     def vd = _fetchDeviceFullJson(deviceId)?.device
                     if (vd == null) {
-                        errors << [property: "room", error: "POST accepted but could not confirm the room change -- the read-back fetch failed."]
+                        errors << (_bat529EmbeddedCatalogRead(['["m",[["property","room"],["error","POST accepted but could not confirm the room change -- the read-back fetch failed."]]]']) as Map)
                     } else if (vd.roomName?.toString() == canonicalName) {
                         changes << [property: "room", oldValue: d.roomName ?: "none", newValue: canonicalName]
                     } else {
@@ -3953,7 +3943,7 @@ private Map _toolUpdateDeviceNative(args, deviceId, Map fj) {
             hubInternalPostJson("/device/disable", groovy.json.JsonOutput.toJson([id: _prefSaveDeviceId(deviceId), disable: !args.enabled]))
             def res = _confirmDisabledFlip(deviceId, !args.enabled)
             if (res.fetchFailed) {
-                errors << [property: "enabled", error: "POST accepted but could not confirm the change -- the read-back fetch failed."]
+                errors << (_bat529EmbeddedCatalogRead(['["m",[["property","enabled"],["error","POST accepted but could not confirm the change -- the read-back fetch failed."]]]']) as Map)
             } else if (res.ok) {
                 changes << [property: "enabled", newValue: args.enabled]
             } else {
@@ -4154,8 +4144,7 @@ def toolCreateDevice(args) {
         def catalogText = hubInternalGet('/device/drivers')
         def catalog = catalogText ? new groovy.json.JsonSlurper().parseText(catalogText) : null
         if (!(catalog instanceof Map) || !(catalog.drivers instanceof List)) {
-            return [success: false, isError: true, error: 'The native driver catalog is unavailable or invalid; no device create request sent.',
-                    note: "Verify the deviceTypeId via hub_list_drivers(include='all')."]
+            return (_bat529EmbeddedCatalogRead(['["m",[["success",false],["isError",true],["error","The native driver catalog is unavailable or invalid; no device create request sent."],["note","Verify the deviceTypeId via hub_list_drivers(include=\'all\')."]]]']) as Map)
         }
         def matches = catalog.drivers.findAll { row -> row instanceof Map && row.id?.toString() == typeId }
         if (matches.size() != 1 || !(matches[0].type in ['sys', 'usr'])) {
@@ -4164,8 +4153,7 @@ def toolCreateDevice(args) {
         }
         driverType = matches[0].type.toString()
     } catch (Exception e) {
-        return [success: false, isError: true, error: 'Hub call failed reading the driver catalog; no device create request sent.',
-                note: "Verify the deviceTypeId via hub_list_drivers(include='all')."]
+        return (_bat529EmbeddedCatalogRead(['["m",[["success",false],["isError",true],["error","Hub call failed reading the driver catalog; no device create request sent."],["note","Verify the deviceTypeId via hub_list_drivers(include=\'all\')."]]]']) as Map)
     }
 
     def resp
@@ -4337,7 +4325,7 @@ private Map _createLinkedMeshDevice(String meshHubId, String meshDeviceId) {
             message: "Hub Mesh device shared by hub ${meshHubId} was already linked here${existing ? " as local device ${existing.id}" : ''}.",
             note: "This is a local proxy for a device on the peer hub; unlink it (local only) with hub_delete_device. Read all linked devices via hub_get_hub_mesh."
         ]
-        if (existing == null) already.warnings = ["Already linked, but could not resolve the existing local id from hub_get_hub_mesh localLinkedDevices. Find it with hub_get_hub_mesh."]
+        if (existing == null) already.warnings = (_bat529EmbeddedCatalogRead(['["l",["Already linked, but could not resolve the existing local id from hub_get_hub_mesh localLinkedDevices. Find it with hub_get_hub_mesh."]]']) as List)
         return already
     }
     if (availBefore != null && srcBefore == null) {
@@ -4466,7 +4454,7 @@ def toolGetCompatibleDevices(args) {
                 note: "This is Hubitat's static compatibility catalog; it needs hub connectivity."]
     }
     if (!(list instanceof List)) {
-        return [success: false, error: "Unexpected response shape from /hub/compatibleDevices.", devices: []]
+        return (_bat529EmbeddedCatalogRead(['["m",[["success",false],["error","Unexpected response shape from /hub/compatibleDevices."],["devices",["l",[]]]]]']) as Map)
     }
 
     def stripHtml = { s ->
@@ -5103,7 +5091,7 @@ def _getAllToolDefinitions_partDevices() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    deviceId: [type: "string", description: "Device ID from hub_list_devices, e.g. \"42\""],
+                    deviceId: (_bat529EmbeddedCatalogRead(['["m",[["type","string"],["description","Device ID from hub_list_devices, e.g. \\"42\\""]]]']) as Map),
                     mode: (_bat529EmbeddedCatalogRead(['["m",[["type","string"],["enum",["l",["summary","configuration","details"]]],["default","summary"],["description","summary: concise capabilities/attributes/commands; configuration: valid editable fields and preference definitions/current values; details: all available information in selectable sections."]]]']) as Map),
                     sections: [type: "array", items: [type: "string", enum: _deviceDetailSections()],
                                description: "details mode only: non-empty section selection. Omit for all sections.[[FLAT_TRIM]] Large histories remain reachable through read-tool references.[[/FLAT_TRIM]]"],
@@ -5131,12 +5119,7 @@ def _readOnlyToolNames_partDevices() {
     // Read-only classification membership for this library's tools, contributed to the
     // app's getReadOnlyToolNames() aggregator (issue #209: per-tool metadata lives with
     // the tool). A tool absent from every part list is write+destructive by default.
-    return [
-        // Device introspection
-        "hub_list_devices", "hub_get_device", "hub_get_device_attribute", "hub_list_device_events",
-        // Compatible-devices catalog (static reference read)
-        "hub_get_compatible_devices"
-    ]
+    return (_bat529EmbeddedCatalogRead(['["l",["hub_list_devices","hub_get_device","hub_get_device_attribute","hub_list_device_events","hub_get_compatible_devices"]]']) as List)
 }
 
 def _idempotentWriteToolNames_partDevices() {
@@ -6715,10 +6698,10 @@ def _bat529Cb_15d0a4c9_270(def applicable, def d, def fj, def preferences, def v
             if (!field.applicable) field.reason = 'Driver preferences cannot be saved on a linked device; edit the source device.'
             else if (preferences.reason) field.reason = preferences.reason
         }
-        if (name == 'room') field.optionsReference = [gateway: 'hub_read_rooms', tool: 'hub_list_rooms', args: [:]]
-        if (name == 'deviceTypeId') field.optionsReference = [gateway: 'hub_read_apps_code', tool: 'hub_list_drivers', args: [include: 'all']]
+        if (name == 'room') field.optionsReference = (_bat529EmbeddedCatalogRead(['["m",[["gateway","hub_read_rooms"],["tool","hub_list_rooms"],["args",["m",[]]]]]']) as Map)
+        if (name == 'deviceTypeId') field.optionsReference = (_bat529EmbeddedCatalogRead(['["m",[["gateway","hub_read_apps_code"],["tool","hub_list_drivers"],["args",["m",[["include","all"]]]]]]']) as Map)
         if (name == 'deviceNetworkId' && d.linkedDevice) {
-            field.options = [[value: '0', label: 'Keep current device link']]
+            field.options = (_bat529EmbeddedCatalogRead(['["l",[["m",[["value","0"],["label","Keep current device link"]]]]]']) as List)
             try {
                 def text = hubInternalGet('/device/accessibleLinkedDevices')
                 def available = text ? new groovy.json.JsonSlurper().parseText(text) : null
@@ -6747,10 +6730,9 @@ def _bat529Cb_15d0a4c9_271(def d, def deviceId, def fields, def fj, def identity
                 value.driver = _deviceConfigurationInfo(fj).driver
                 break
             case 'attributes':
-                value = _deviceConfigurationProjection(d, ['capabilities', 'currentStates', 'displayAttributes', 'defaultCurrentState'])
+                value = _deviceConfigurationProjection(d, (_bat529EmbeddedCatalogRead(['["l",["capabilities","currentStates","displayAttributes","defaultCurrentState"]]']) as List))
                 // Keep the historical key while identifying its native, reported-state coverage.
-                value.attributeCoverage = [source: 'device.currentStates', declarationsComplete: false,
-                    note: 'Unset or cleared attributes can be absent; absence does not establish an unsupported attribute.']
+                value.attributeCoverage = (_bat529EmbeddedCatalogRead(['["m",[["source","device.currentStates"],["declarationsComplete",false],["note","Unset or cleared attributes can be absent; absence does not establish an unsupported attribute."]]]']) as Map)
                 if (d.currentStates instanceof Map) value.declaredAttributes = (_nativeReportedDeviceAttributes(d)).collect((this.&_bat529Cb_15d0a4c9_246))
                 break
             case 'commands':
@@ -6763,9 +6745,9 @@ def _bat529Cb_15d0a4c9_271(def d, def deviceId, def fields, def fj, def identity
                 value = _deviceConfigurationPublicValue(fj?.deviceState)
                 break
             case 'relationships':
-                keys = ['parentApp', 'childDevices', 'hasChildren', 'appsUsing', 'appsUsingCount', 'appsUsingForDialog', 'appsUsingForDialogMore']
+                keys = (_bat529EmbeddedCatalogRead(['["l",["parentApp","childDevices","hasChildren","appsUsing","appsUsingCount","appsUsingForDialog","appsUsingForDialogMore"]]']) as List)
                 value = _deviceConfigurationProjection(fj, keys)
-                value.device = _deviceConfigurationProjection(d, ['parentDeviceId', 'parentAppId', 'displayAsChild', 'compatibleDeviceId', 'linkedDevice', 'linkedAndDisabled'])
+                value.device = _deviceConfigurationProjection(d, (_bat529EmbeddedCatalogRead(['["l",["parentDeviceId","parentAppId","displayAsChild","compatibleDeviceId","linkedDevice","linkedAndDisabled"]]']) as List))
                 break
             case 'jobs':
                 value = _deviceConfigurationPublicValue(fj?.scheduledJobs)
@@ -6773,13 +6755,11 @@ def _bat529Cb_15d0a4c9_271(def d, def deviceId, def fields, def fj, def identity
             case 'integrations':
                 keys = (_bat529EmbeddedCatalogRead(['["l",["amazonAlexaEnabled","amazonAlexaInstalled","amazonAlexaSupported","googleHomeEnabled","googleHomeInstalled","googleHomeSupported","homeKitEnabled","homeKitSelectionEnabled","dashboards","hasDashboards","dashboardTypes","commandRetrySelectionEnabled","hubMeshRefreshEnabled"]]']) as List)
                 value = _deviceConfigurationProjection(fj, keys)
-                value.device = _deviceConfigurationProjection(d, ['meshEnabled', 'meshFullSync', 'meshSelectionEnabled',
-                    'retryEnabled', 'retryAvailable', 'homeKitCompatible', 'remoteDeviceUrl', 'linkedDevice',
-                    'linkedAndDisabled', 'linkedLocally', 'ZWave', 'zigbee', 'matter', 'bluetooth'])
+                value.device = _deviceConfigurationProjection(d, (_bat529EmbeddedCatalogRead(['["l",["meshEnabled","meshFullSync","meshSelectionEnabled","retryEnabled","retryAvailable","homeKitCompatible","remoteDeviceUrl","linkedDevice","linkedAndDisabled","linkedLocally","ZWave","zigbee","matter","bluetooth"]]']) as List))
                 break
             case 'metadata':
                 value = _deviceConfigurationProjection(d, (_bat529EmbeddedCatalogRead(['["l",["notes","tags","maxEvents","maxStates","spammyThreshold","defaultIcon","icon","showOnHome","deviceTypeClassLocation","deviceTypePopulated","deviceTypeSingleThreaded","deviceTypeReadableType","deviceTypeType","driverType","systemDeviceType","deviceTypeId","deviceTypeName","deviceTypeNamespace"]]']) as List))
-                value.ui = _deviceConfigurationProjection(fj, ['showInstructionSearchLink', 'extraBreadcrumb', 'virtualFirst', 'tags'])
+                value.ui = _deviceConfigurationProjection(fj, (_bat529EmbeddedCatalogRead(['["l",["showInstructionSearchLink","extraBreadcrumb","virtualFirst","tags"]]']) as List))
                 break
         }
         result.sectionRead.put(section, _deviceDetailReadStatus(section, fj, d, value, deviceId))

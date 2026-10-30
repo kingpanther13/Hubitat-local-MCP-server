@@ -152,7 +152,7 @@ def toolGetDashboard(args) {
         }
         // Enrichment read FAILED: return id + name but flag it as partial, so a caller doesn't mistake
         // "config unreadable" for "a dashboard whose tile/device/pin fields are all empty/default".
-        return match + [partial: true, note: "Only id + name could be read (the dashboard's config page was unreadable); tile/device/pin fields are unavailable, not defaulted. Retry hub_get_dashboard."]
+        return match + (_bat529EmbeddedCatalogRead(['["m",[["partial",true],["note","Only id + name could be read (the dashboard\'s config page was unreadable); tile/device/pin fields are unavailable, not defaulted. Retry hub_get_dashboard."]]]']) as Map)
     }
     return match
 }
@@ -232,12 +232,12 @@ private Map _legacyLayoutPost(String id, String accessToken, Map layout) {
 private Map _getLegacyDashboard(String id, Map match) {
     def probe = _legacyDashboardProbe(id)
     if (probe == null || probe.legacy != true) {
-        return match + [partial: true, note: "Listed as a legacy dashboard but its status page was unreadable; layout unavailable (not empty). Retry hub_get_dashboard."]
+        return match + (_bat529EmbeddedCatalogRead(['["m",[["partial",true],["note","Listed as a legacy dashboard but its status page was unreadable; layout unavailable (not empty). Retry hub_get_dashboard."]]]']) as Map)
     }
     def out = [id: id, name: (probe.label ?: match.name), type: "legacy"]
     if (probe.deviceIds != null) out.deviceIds = probe.deviceIds
     if (!probe.accessToken) {
-        return out + [partial: true, note: "The dashboard's access token could not be read from its app state, so its layout endpoint is unreachable. Open the dashboard app page once and retry."]
+        return out + (_bat529EmbeddedCatalogRead(['["m",[["partial",true],["note","The dashboard\'s access token could not be read from its app state, so its layout endpoint is unreachable. Open the dashboard app page once and retry."]]]']) as Map)
     }
     def layout = null
     try { layout = _legacyLayoutFetch(id, probe.accessToken) } catch (Exception e) {
@@ -511,7 +511,7 @@ def toolUpdateDashboard(args) {
     if (probe.legacy == true) {
         return _updateLegacyDashboard(updateId, probe, args)
     }
-    def legacyOnlyArgs = ["layout", "setOptions", "addTiles", "updateTiles", "removeTileIds"].findAll { args.get(it) != null }
+    def legacyOnlyArgs = (_bat529EmbeddedCatalogRead(['["l",["layout","setOptions","addTiles","updateTiles","removeTileIds"]]']) as List).findAll { args.get(it) != null }
     if (legacyOnlyArgs) {
         throw new IllegalArgumentException("${legacyOnlyArgs.join(', ')} appl${legacyOnlyArgs.size() == 1 ? 'ies' : 'y'} only to legacy Hubitat® Dashboards; dashboard ${updateId} is an Easy Dashboard. Easy updates replace the config wholesale: pass name, deviceIds, and options (read hub_get_dashboard first).")
     }

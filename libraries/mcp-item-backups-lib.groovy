@@ -21,7 +21,7 @@ def toolListItemBackups(args = null) {
         // backups (it answers 403 without them; the UI reads them only then). Never a listing failure.
         if (!_hubFirmwareBefore("2.5.2")) {
             if (sched.ok && sched.schedule?.hasFullLocalBackup == false) {
-                hubSections.networkBackup = [available: false, note: "Network-share backups come with the Full Local Backup subscription, which this hub does not have."]
+                hubSections.networkBackup = (_bat529EmbeddedCatalogRead(['["m",[["available",false],["note","Network-share backups come with the Full Local Backup subscription, which this hub does not have."]]]']) as Map)
             } else {
                 def netCfg = _readNetworkBackupSettings()
                 hubSections.networkBackup = netCfg.ok ? netCfg.settings : [error: netCfg.error]
@@ -36,7 +36,7 @@ def toolListItemBackups(args = null) {
     }
     if (scope == "source") return _listSourceItemBackups(args)
     if (!(scope in ["source", "all"])) {
-        return ([scope: scope] + hubSections + [note: "Whole-hub database backups. Restore via hub_restore_backup (scope=hub_local|hub_cloud); delete via hub_delete_backup."])
+        return ([scope: scope] + hubSections + (_bat529EmbeddedCatalogRead(['["m",[["note","Whole-hub database backups. Restore via hub_restore_backup (scope=hub_local|hub_cloud); delete via hub_delete_backup."]]]']) as Map))
     }
     // scope == "all": source-code backups + the hub-DB sections in one response.
     return ([scope: scope] + _listSourceItemBackups(args) + hubSections)
@@ -101,7 +101,7 @@ private Map _healPendingItemBackup(String backupKey, Map entry) {
         Map manifest = _itemBackupManifest()
         Map current = manifest[backupKey]
         if (!(current instanceof Map) || current.fileName?.toString() != entry.fileName?.toString()) {
-            return [success: false, error: "The indexed backup changed; refresh hub_list_backups and retry."]
+            return (_bat529EmbeddedCatalogRead(['["m",[["success",false],["error","The indexed backup changed; refresh hub_list_backups and retry."]]]']) as Map)
         }
         byte[] bytes = null
         try { bytes = downloadHubFile(current.fileName.toString()) }
@@ -110,7 +110,7 @@ private Map _healPendingItemBackup(String backupKey, Map entry) {
             return [success: false, error: "File verification failed: ${probeErr.message}. Check File Manager and retry."]
         }
         if (bytes == null || bytes.length == 0) {
-            return [success: false, error: "The file is missing or empty. Check File Manager or choose another backup."]
+            return (_bat529EmbeddedCatalogRead(['["m",[["success",false],["error","The file is missing or empty. Check File Manager or choose another backup."]]]']) as Map)
         }
         current.remove("deletePending")
         try { _commitItemBackupManifest(manifest) }
@@ -816,7 +816,7 @@ def backupResponseSink(response, data) {
 // POST /hub2/updateBackupSchedule {localBackupFrequency,cloudBackupFrequency,hour,minute,cloudBackupPassword}.
 // Returns [success:true, schedule:<echo>] or [success:false, error:...]. Called by toolCreateHubBackup.
 private _setHubBackupSchedule(Map schedule) {
-    if (schedule == null) return [success: false, error: "schedule object is required"]
+    if (schedule == null) return (_bat529EmbeddedCatalogRead(['["m",[["success",false],["error","schedule object is required"]]]']) as Map)
     // READ-MERGE from GET /hub2/backup/json so omitted fields keep their current value -- the
     // POST is wholesale-shaped (it carries localBackupFrequency/cloudBackupFrequency/hour/minute),
     // so sending a partial set would blank the rest. Field names differ across the two endpoints:
@@ -885,7 +885,7 @@ private Map _readHubBackupSchedule() {
         def raw = hubInternalGet("/hub2/backup/json")
         def parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
         if (!(parsed instanceof Map)) {
-            return [ok: false, error: "schedule: the hub did not return a readable backup schedule (/hub2/backup/json)"]
+            return (_bat529EmbeddedCatalogRead(['["m",[["ok",false],["error","schedule: the hub did not return a readable backup schedule (/hub2/backup/json)"]]]']) as Map)
         }
         cur = parsed
     } catch (Exception e) {
@@ -930,7 +930,7 @@ private Map _readNetworkBackupSettings() {
     try {
         def raw = hubInternalGet("/hub2/networkBackup/settings")
         def parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
-        if (!(parsed instanceof Map)) return [ok: false, error: "networkBackup: the hub did not return readable settings (/hub2/networkBackup/settings)"]
+        if (!(parsed instanceof Map)) return (_bat529EmbeddedCatalogRead(['["m",[["ok",false],["error","networkBackup: the hub did not return readable settings (/hub2/networkBackup/settings)"]]]']) as Map)
         return [ok: true, raw: parsed, settings: [enabled: parsed.enabled == true, networkPath: parsed.networkPath ?: null,
                                                    username: parsed.username ?: null, passwordSet: (parsed.password ? true : false)]]
     } catch (Exception e) {
@@ -1144,7 +1144,7 @@ private boolean _isFullLocalHubBackup(String fileName) {
 // before anything is fetched or sent.
 private Map _fullRestoreOptions(opts) {
     if (opts != null && !(opts instanceof Map)) throw new IllegalArgumentException("fullRestore must be an object: {restoreZigbee, restoreZwave, restoreFiles, deleteExistingFiles, allowZwaveFirmwareMismatch} (all booleans, default false).")
-    def known = ["restoreZigbee", "restoreZwave", "restoreFiles", "deleteExistingFiles", "allowZwaveFirmwareMismatch"]
+    def known = (_bat529EmbeddedCatalogRead(['["l",["restoreZigbee","restoreZwave","restoreFiles","deleteExistingFiles","allowZwaveFirmwareMismatch"]]']) as List)
     def m = (opts ?: [:]) as Map
     def unknown = (m.keySet()).findAll(((this.&_bat529Cb_8f5ba462_2).curry([known] as Object[])))
     if (unknown) throw new IllegalArgumentException("Unknown fullRestore field(s): ${unknown.join(', ')}. Valid: ${known.join(', ')}.")

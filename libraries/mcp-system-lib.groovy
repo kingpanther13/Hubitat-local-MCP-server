@@ -120,9 +120,9 @@ private Map _hubSubscriptions() {
         if (_hubFirmwareBefore("2.5.2")) out.note = "Subscription status needs firmware 2.5.2 or later."
         return out
     }
-    if (!(raw instanceof Map)) return [error: "/hub/subscriptions/json returned an unexpected shape."]
+    if (!(raw instanceof Map)) return (_bat529EmbeddedCatalogRead(['["m",[["error","/hub/subscriptions/json returned an unexpected shape."]]]']) as Map)
     def out = [:]
-    ["hubProtect", "remoteAdmin", "cloudBackup", "fullLocalBackup"].each { k ->
+    (_bat529EmbeddedCatalogRead(['["l",["hubProtect","remoteAdmin","cloudBackup","fullLocalBackup"]]']) as List).each { k ->
         def v = raw[k]
         if (v instanceof Map) out[k] = [active: v.isActive == true, pendingCancellation: v.pendingCancellation == true, endsAt: v.end_ts, trialAvailable: v.trialAvailable == true]
     }
@@ -426,7 +426,7 @@ def toolSetSystemSettings(args) {
     // locationFields go through the wholesale /location/update read-merge POST below; darkMode is an
     // INDEPENDENT setter (GET /hub/applyDarkMode/<bool>, HTTP 200 empty, no read-back -- same shape as
     // /device/setShowOnHome) so it is excluded from that POST and applied on its own leg.
-    def locationFields = ["hubName", "timeZone", "latitude", "longitude", "zipCode", "temperatureScale"]
+    def locationFields = (_bat529EmbeddedCatalogRead(['["l",["hubName","timeZone","latitude","longitude","zipCode","temperatureScale"]]']) as List)
     def settable = locationFields + ["darkMode", "network", "dismissAlert"]
     if (!settable.any { args.containsKey(it) }) {
         throw new IllegalArgumentException("Provide at least one field to change: ${settable.join(', ')}. All are optional; pass only what changes.")
@@ -463,8 +463,7 @@ def toolSetSystemSettings(args) {
                     applied: [], note: "Nothing was changed. Verify the hub is reachable and retry."]
         }
         if (!(cur instanceof Map)) {
-            return [success: false, error: "Unexpected /hub/details/json response; cannot safely merge.",
-                    applied: [], note: "Nothing was changed."]
+            return (_bat529EmbeddedCatalogRead(['["m",[["success",false],["error","Unexpected /hub/details/json response; cannot safely merge."],["applied",["l",[]]],["note","Nothing was changed."]]]']) as Map)
         }
 
         // Read-merge the FULL wholesale payload from the current values, overriding only the provided args
@@ -550,7 +549,7 @@ private _validateNetworkArgs(network) {
     if (!(network instanceof Map)) {
         throw new IllegalArgumentException("network must be an object, e.g. {ipMode:'static', address, netmask, gateway, nameserver} or {ipMode:'dhcp'} or {ethernetAutoneg:true} or {wifiSsid, wifiPassword}.")
     }
-    def known = ["ipMode", "address", "netmask", "gateway", "nameserver", "useDNSFallover", "ethernetAutoneg", "wifiSsid", "wifiPassword"]
+    def known = (_bat529EmbeddedCatalogRead(['["l",["ipMode","address","netmask","gateway","nameserver","useDNSFallover","ethernetAutoneg","wifiSsid","wifiPassword"]]']) as List)
     def unknown = (network.keySet()).findAll(((this.&_bat529Cb_523e098a_9).curry([known] as Object[])))
     if (unknown) throw new IllegalArgumentException("Unknown network field(s): ${unknown.join(', ')}. Valid: ${known.join(', ')}.")
     if (network.isEmpty()) {
@@ -817,7 +816,7 @@ def toolGetHubMesh(args = null) {
 
 def toolUpdateHubMesh(args) {
     args = args ?: [:]
-    def settable = ["enabled", "full_refresh_interval", "mode_hub_id", "peer_hub_id", "peer_token"]
+    def settable = (_bat529EmbeddedCatalogRead(['["l",["enabled","full_refresh_interval","mode_hub_id","peer_hub_id","peer_token"]]']) as List)
 
     // VALIDATION FIRST -- every check below runs before ANY hub call, so a validation rejection
     // can be corrected and retried without having half-applied something.
@@ -1225,9 +1224,7 @@ private Map _readHubNetworkSettings() {
     }
     if (!(parsed instanceof Map)) {
         mcpLog("warn", "server", "hub_get_info includeNetwork: /hub2/networkConfiguration parsed to a non-object shape")
-        return [success: false,
-                error: "Unexpected /hub2/networkConfiguration response; it parsed as JSON but not as an object.",
-                note: "The endpoint returned an unrecognized shape. See hub_get_tool_guide(section='hub_admin_write_system')."]
+        return (_bat529EmbeddedCatalogRead(['["m",[["success",false],["error","Unexpected /hub2/networkConfiguration response; it parsed as JSON but not as an object."],["note","The endpoint returned an unrecognized shape. See hub_get_tool_guide(section=\'hub_admin_write_system\')."]]]']) as Map)
     }
     // An empty or error object ({} or {success:false,...}) would otherwise project to success:true with
     // every field null and dnsList:[] -- indistinguishable from a real "no DNS". Require at least one
@@ -1438,11 +1435,7 @@ def checkForUpdate() {
 // isn't actually pending.
 def doUpdateCheck() {
     try {
-        def params = [
-            uri: "https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server/main/packageManifest.json",
-            contentType: "application/json",
-            timeout: 30
-        ]
+        def params = (_bat529EmbeddedCatalogRead(['["m",[["uri","https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server/main/packageManifest.json"],["contentType","application/json"],["timeout",30]]]']) as Map)
         asynchttpGet("handleUpdateCheckResponse", params)
         return true
     } catch (Exception e) {
@@ -1547,9 +1540,9 @@ private Map _parseFirmwareCheck(rawText) {
             out.remove("accountEmails")
             return out
         }
-        return [parseError: "The update check did not answer with a JSON object."]
+        return (_bat529EmbeddedCatalogRead(['["m",[["parseError","The update check did not answer with a JSON object."]]]']) as Map)
     } catch (Exception ignored) {
-        return [parseError: "The update check's answer could not be parsed as JSON."]
+        return (_bat529EmbeddedCatalogRead(['["m",[["parseError","The update check\'s answer could not be parsed as JSON."]]]']) as Map)
     }
 }
 
@@ -1572,10 +1565,10 @@ def _getAllToolDefinitions_partSystem() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    enabled: [type: "boolean", description: "Hub Mesh on/off. ⚠️ Needs a hub reboot to take effect."],
+                    enabled: (_bat529EmbeddedCatalogRead(['["m",[["type","boolean"],["description","Hub Mesh on/off. \\u26a0\\ufe0f Needs a hub reboot to take effect."]]]']) as Map),
                     full_refresh_interval: [type: "integer", enum: _meshRefreshIntervals(), description: "Full-sync interval in seconds; 0 = never."],
-                    mode_hub_id: [type: "string", description: "Peer hubId whose modes to follow, or 'none' for local modes.[[FLAT_TRIM]] From hub_get_hub_mesh peers[].hubId.[[/FLAT_TRIM]]"],
-                    peer_hub_id: [type: "string", description: "Peer hubId whose mesh token is stored here; send with peer_token.[[FLAT_TRIM]] A UUID (or legacy numeric id) from hub_get_hub_mesh peers[].hubId.[[/FLAT_TRIM]]"],
+                    mode_hub_id: (_bat529EmbeddedCatalogRead(['["m",[["type","string"],["description","Peer hubId whose modes to follow, or \'none\' for local modes.[[FLAT_TRIM]] From hub_get_hub_mesh peers[].hubId.[[/FLAT_TRIM]]"]]]']) as Map),
+                    peer_hub_id: (_bat529EmbeddedCatalogRead(['["m",[["type","string"],["description","Peer hubId whose mesh token is stored here; send with peer_token.[[FLAT_TRIM]] A UUID (or legacy numeric id) from hub_get_hub_mesh peers[].hubId.[[/FLAT_TRIM]]"]]]']) as Map),
                     peer_token: [type: "string", description: "That peer's mesh token; send with peer_hub_id.[[FLAT_TRIM]] Read it on the peer via hub_get_hub_mesh(include_token=true); needed when the peer has UI login security.[[/FLAT_TRIM]]"]
                 ]
             ]
@@ -1591,28 +1584,13 @@ def _readOnlyToolNames_partSystem() {
     // Read-only classification membership for this library's tools, contributed to the
     // app's getReadOnlyToolNames() aggregator (issue #209: per-tool metadata lives with
     // the tool). A tool absent from every part list is write+destructive by default.
-    return [
-        // Hub state reads (hub_get_info folds in the network-config read via includeNetwork)
-        "hub_get_info", "hub_list_modes", "hub_get_hsm_status", "hub_get_hub_mesh"
-    ]
+    return (_bat529EmbeddedCatalogRead(['["l",["hub_get_info","hub_list_modes","hub_get_hsm_status","hub_get_hub_mesh"]]']) as List)
 }
 
 def _idempotentWriteToolNames_partSystem() {
     // Retry-safe writes (MCP idempotentHint) for this library's tools -- contributed to the
     // app's getIdempotentWriteToolNames() aggregator; see the classification rules there.
-    return [
-        // Hub state
-        "hub_set_hsm", "hub_set_mode_manager",
-        // hub_update_hub_mesh: every leg assigns a value or flips a persistent flag
-        // (enable/disable, sync interval, mode-following hub, a peer's stored token), so an
-        // identical retry converges on the same state with no additional effect. The tool
-        // itself never reboots -- the reboot an `enabled` change needs is the caller's own
-        // separate hub_reboot -- so retrying it cannot re-trigger one.
-        "hub_update_hub_mesh"
-        // hub_set_system_settings is deliberately OMITTED here (non-idempotent): its timeZone leg
-        // reboots the hub, so a retry with the same args re-triggers the reboot -- not "no additional
-        // effect" -- which is the conservative, accurate idempotentHint for this tool.
-    ]
+    return (_bat529EmbeddedCatalogRead(['["l",["hub_set_hsm","hub_set_mode_manager","hub_update_hub_mesh"]]']) as List)
 }
 
 def _openWorldToolNames_partSystem() {

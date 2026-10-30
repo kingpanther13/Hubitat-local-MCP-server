@@ -207,7 +207,7 @@ def toolGetHpmDrift(args) {
     try {
         def userAppTypesText = hubInternalGet("/hub2/userAppTypes")
         if (!userAppTypesText) {
-            orphanDetection = [enabled: false, reason: "Empty response from /hub2/userAppTypes -- orphan-app signals were not evaluated this call"]
+            orphanDetection = (_bat529EmbeddedCatalogRead(['["m",[["enabled",false],["reason","Empty response from /hub2/userAppTypes -- orphan-app signals were not evaluated this call"]]]']) as Map)
             mcpLog("warn", "hpm", "get_hpm_drift: empty /hub2/userAppTypes response -- orphan detection disabled")
         } else {
             def userAppTypesParsed = new groovy.json.JsonSlurper().parseText(userAppTypesText)
@@ -236,7 +236,7 @@ def toolGetHpmDrift(args) {
     try {
         def userDeviceTypesText = hubInternalGet("/hub2/userDeviceTypes")
         if (!userDeviceTypesText) {
-            orphanDriverDetection = [enabled: false, reason: "Empty response from /hub2/userDeviceTypes -- orphan-driver signals were not evaluated this call"]
+            orphanDriverDetection = (_bat529EmbeddedCatalogRead(['["m",[["enabled",false],["reason","Empty response from /hub2/userDeviceTypes -- orphan-driver signals were not evaluated this call"]]]']) as Map)
             mcpLog("warn", "hpm", "get_hpm_drift: empty /hub2/userDeviceTypes response -- orphan driver detection disabled")
         } else {
             def userDeviceTypesParsed = new groovy.json.JsonSlurper().parseText(userDeviceTypesText)
@@ -285,11 +285,7 @@ def toolGetHpmDrift(args) {
         (manifest.apps ?: []).each { a ->
             if (!(a instanceof Map)) {
                 skippedAppCount++
-                dataQualityWarnings << [
-                    type         : "skipped-malformed-component",
-                    componentType: "app",
-                    _warning     : "app component entry is not a Map -- skipped"
-                ]
+                dataQualityWarnings << (_bat529EmbeddedCatalogRead(['["m",[["type","skipped-malformed-component"],["componentType","app"],["_warning","app component entry is not a Map -- skipped"]]]']) as Map)
                 mcpLog("warn", "hpm", "get_hpm_drift: non-Map app component in '${manifest.packageName}' (value: ${a?.toString()?.take(60) ?: 'null'}) -- skipped")
                 return
             }
@@ -371,11 +367,7 @@ def toolGetHpmDrift(args) {
         (manifest.drivers ?: []).each { d ->
             if (!(d instanceof Map)) {
                 skippedDriverCount++
-                dataQualityWarnings << [
-                    type         : "skipped-malformed-component",
-                    componentType: "driver",
-                    _warning     : "driver component entry is not a Map -- skipped"
-                ]
+                dataQualityWarnings << (_bat529EmbeddedCatalogRead(['["m",[["type","skipped-malformed-component"],["componentType","driver"],["_warning","driver component entry is not a Map -- skipped"]]]']) as Map)
                 mcpLog("warn", "hpm", "get_hpm_drift: non-Map driver component in '${manifest.packageName}' (value: ${d?.toString()?.take(60) ?: 'null'}) -- skipped")
                 return
             }
@@ -532,9 +524,7 @@ def _readOnlyToolNames_partHpm() {
 def _toolDisplayMeta_partHpm() {
     // Human-facing title/summary per tool (MCP annotations.title + the Advanced per-tool
     // overrides menu) -- merged into the app's getToolDisplayMeta() aggregator (issue #209).
-    return [
-        hub_list_hpm_packages: [title: "List HPM Packages", summary: "List packages tracked by Hubitat Package Manager, optionally with drift detection."]
-    ]
+    return (_bat529EmbeddedCatalogRead(['["m",[["hub_list_hpm_packages",["m",[["title","List HPM Packages"],["summary","List packages tracked by Hubitat Package Manager, optionally with drift detection."]]]]]]']) as Map)
 }
 
 

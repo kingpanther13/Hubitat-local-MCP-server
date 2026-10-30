@@ -5,7 +5,7 @@ private Map _parseBundleContent(String content) {
     // [apps:[...], drivers:[...], libraries:[...]]. Returns null if the shape is unrecognized so
     // the caller surfaces the raw string instead of a wrong parse.
     if (!content) return null
-    def out = [apps: [], drivers: [], libraries: []]
+    def out = (_bat529EmbeddedCatalogRead(['["m",[["apps",["l",[]]],["drivers",["l",[]]],["libraries",["l",[]]]]]']) as Map)
     boolean matched = false
     ["apps", "drivers", "libraries"].each { key ->
         def token = "${key} ["
@@ -366,10 +366,7 @@ def _readOnlyToolNames_partBundles() {
 def _idempotentWriteToolNames_partBundles() {
     // Retry-safe writes (MCP idempotentHint) for this library's tools -- contributed to the
     // app's getIdempotentWriteToolNames() aggregator; see the classification rules there.
-    return [
-        // Code (apps/drivers/libraries/bundles/backups)
-        "hub_install_bundle", "hub_delete_bundle", "hub_export_bundle"
-    ]
+    return (_bat529EmbeddedCatalogRead(['["l",["hub_install_bundle","hub_delete_bundle","hub_export_bundle"]]']) as List)
 }
 
 def _openWorldToolNames_partBundles() {

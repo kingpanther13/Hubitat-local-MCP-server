@@ -202,9 +202,9 @@ private Map _nfContext(Long id, Map model, String from = null) {
         (from ? _nfEncode(groovy.json.JsonOutput.toJson([from])) : '%5B%5D')
     if (page.install || model.doneButton) _nfControl(controls, [name: '_action_update', value: 'Done', kind: 'navigation', title: model.cancelButton ? 'Save' : 'Done'])
     else if (page.nextPage && !page.donePage) _nfControl(controls, [name: '_action_next', value: page.nextPageLabel ?: 'Next', kind: 'navigation', title: page.nextPageLabel ?: 'Next'])
-    else if (page.nextPage && page.donePage) _nfControl(controls, [name: '_action_done', value: 'Done', kind: 'navigation', title: 'Done'])
-    else if (trail != '%5B%5D') _nfControl(controls, [name: '_action_previous', value: 'Done', kind: 'navigation', title: 'Done (previous page)'])
-    if (model.cancelButton) _nfControl(controls, [name: '_action_update', value: 'Cancel', kind: 'navigation', title: 'Cancel'])
+    else if (page.nextPage && page.donePage) _nfControl(controls, (_bat529EmbeddedCatalogRead(['["m",[["name","_action_done"],["value","Done"],["kind","navigation"],["title","Done"]]]']) as Map))
+    else if (trail != '%5B%5D') _nfControl(controls, (_bat529EmbeddedCatalogRead(['["m",[["name","_action_previous"],["value","Done"],["kind","navigation"],["title","Done (previous page)"]]]']) as Map))
+    if (model.cancelButton) _nfControl(controls, (_bat529EmbeddedCatalogRead(['["m",[["name","_action_update"],["value","Cancel"],["kind","navigation"],["title","Cancel"]]]']) as Map))
     if (model.removeButton) unsupported << 'Remove app: use the dedicated native-app deletion tool'
     Map envelope = [id: id.toString(), currentPage: page.name ?: '', pageBreadcrumbs: trail]
     (['returnPath', 'referrer', 'url', 'formAction']).each(((this.&_bat529Cb_82110e0f_24).curry([envelope, model] as Object[])))
@@ -284,9 +284,9 @@ private Map _nfPublic(Map context, List optionsFor) {
 // when pre-edit backups are off.
 private Map _nfBackup(Long id, def nativeApp, String page) {
     boolean builtIn = nativeApp?.appType?.namespace == 'hubitat'
-    if (builtIn && nativeApp.appType.name == 'Rule Machine') return [skipped: true, reason: 'Parent creation/navigation has no existing child state to restore; opening a child starts its own protected workflow']
+    if (builtIn && nativeApp.appType.name == 'Rule Machine') return (_bat529EmbeddedCatalogRead(['["m",[["skipped",true],["reason","Parent creation/navigation has no existing child state to restore; opening a child starts its own protected workflow"]]]']) as Map)
     if (builtIn && nativeApp.appType.name in ['Rule-5.1', 'Button Rule-5.1']) return _ndEditBackup(id, 'pre-native-form')
-    if (_effectiveBackupSetting('backupBeforeRuleEdits') == 'false') return [skipped: true, reason: 'Automatic pre-edit backups are disabled']
+    if (_effectiveBackupSetting('backupBeforeRuleEdits') == 'false') return (_bat529EmbeddedCatalogRead(['["m",[["skipped",true],["reason","Automatic pre-edit backups are disabled"]]]']) as Map)
     _rmBackupBeforeEdit(id.toInteger(), 'pre-native-form', page)
 }
 
@@ -599,7 +599,7 @@ def _bat529Cb_82110e0f_19(def envelope, def page, def key) { if (page[key]) enve
 def _bat529Cb_82110e0f_20(def it) { _nfEncode(it) 
 }
 
-def _bat529Cb_82110e0f_21(def it) { !(it in ['app_id', 'steps', 'options_for', 'confirm', 'bestPracticeKey']) 
+def _bat529Cb_82110e0f_21(def it) { !(it in (_bat529EmbeddedCatalogRead(['["l",["app_id","steps","options_for","confirm","bestPracticeKey"]]']) as List)) 
 }
 
 def _bat529Cb_82110e0f_22(def controls, def fields, def messages, def model, def unsupported, def item, def index) { _nfWalk(item, fields, controls, messages, unsupported, model, index) 

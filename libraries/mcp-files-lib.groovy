@@ -104,12 +104,7 @@ def toolListFiles(args = null) {
     }
 
     if (!responseText) {
-        return [
-            files: [],
-            total: 0,
-            message: "File Manager API not available on this firmware. Use Hubitat > Settings > File Manager to view files.",
-            manualAccess: "Go to Hubitat > Settings > File Manager to view files in the web UI."
-        ]
+        return (_bat529EmbeddedCatalogRead(['["m",[["files",["l",[]]],["total",0],["message","File Manager API not available on this firmware. Use Hubitat > Settings > File Manager to view files."],["manualAccess","Go to Hubitat > Settings > File Manager to view files in the web UI."]]]']) as Map)
     }
 
     try {

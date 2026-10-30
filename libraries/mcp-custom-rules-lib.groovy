@@ -300,9 +300,7 @@ private String findRuleAppRedirect(ruleId, String verb) {
     // Type-string fragments that identify rule-like built-in apps. Matched case-insensitively
     // as substrings of the app's type field. "visual rule" (singular) covers both
     // "Visual Rule Builder" (child instances) and "Visual Rules Builder" (parent app).
-    def ruleTypeFragments = [
-        "rule machine", "rule-5", "rule-4", "room light", "basic rules", "visual rule"
-    ]
+    def ruleTypeFragments = (_bat529EmbeddedCatalogRead(['["l",["rule machine","rule-5","rule-4","room light","basic rules","visual rule"]]']) as List)
 
     // Subset of ruleTypeFragments that are RM-specific. hub_call_rule (RMUtils) only works for
     // Rule Machine rules -- pointing Room Lighting / Basic Rules / VRB ids there would fail.
