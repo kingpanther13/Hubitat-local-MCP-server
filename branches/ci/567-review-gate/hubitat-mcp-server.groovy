@@ -12852,6 +12852,7 @@ private void _checkDeviceEditValue(String field, Map spec, value) {
     else if (field == 'tags' && (!(value instanceof List) || value.any { !(it instanceof String) || it.contains(',') })) bad = 'must be an array of strings without commas'
     else if (field == 'dashboardIds' && (!(value instanceof List) || value.any { !_deviceEditInteger(it, [:]) })) bad = 'must be an array of dashboard IDs'
     else if (field == 'dataValues' && (!(value instanceof Map) || !value || value.any { k, v -> !k?.toString()?.trim() || !(v instanceof String) })) bad = 'must be a non-empty object of string values keyed by data name'
+    else if (field == 'dataValues' && value.any { k, v -> _isRedactionMarker(v) }) bad = 'cannot take the redaction marker as a value; omit the key to keep the stored one'
     else if (field in ['name', 'deviceNetworkId'] && !value.trim()) bad = 'cannot be empty'
     if (bad) throw new IllegalArgumentException("${field} ${bad}")
 }
@@ -12859,6 +12860,7 @@ private _normalizedDevicePreferenceValue(Map entry, value) {
     if (value == null || (value instanceof String && !value.trim()) || (value instanceof List && value.isEmpty())) {
         throw new IllegalArgumentException("Preference '${entry.name}' cannot use a blank value; omit it to preserve the setting or use {clear:true} to remove an optional setting")
     }
+    if (_isRedactionMarker(value)) throw new IllegalArgumentException("Preference '${entry.name}' is the redaction marker, not a value; omit it to keep the stored one")
     def type = entry.type?.toString()
     if (type in ["bool", "boolean"]) {
         if (value instanceof Boolean) return value
@@ -12961,7 +12963,7 @@ private Map _planDeviceEdit(Map fj, Map fields, Map preferences = [:]) {
         String unavailable = _deviceEditUnavailable(name, fj)
         if (unavailable) throw new IllegalArgumentException("${name} cannot be changed: ${unavailable}")
         if (name == 'room') {
-            def room = value == '' ? [id: 0, name: null] : _resolveDeviceRoom(value.toString())
+            def room = value == '' ? [id: 0, name: null] : _resolveDeviceRoom(value.toString(), value instanceof Number)
             send.roomId = room.id
             send.roomName = room.name
         } else if (name == 'defaultCurrentState' && value) {
@@ -12996,14 +12998,14 @@ private Map _planDeviceEdit(Map fj, Map fields, Map preferences = [:]) {
     }
     return send
 }
-private Map _resolveDeviceRoom(String room) {
+private Map _resolveDeviceRoom(String room, boolean byId = false) {
     def rooms
     try {
         rooms = getRooms()
     } catch (Exception e) {
         throw new IllegalArgumentException("Unable to list rooms to resolve '${room}': ${e.message ?: e.toString()}")
     }
-    def match = rooms?.find { it.name?.toString()?.toLowerCase() == room.toLowerCase() } ?: rooms?.find { it.id?.toString() == room }
+    def match = (byId ? null : rooms?.find { it.name?.toString()?.toLowerCase() == room.toLowerCase() }) ?: rooms?.find { it.id?.toString() == room }
     if (match == null) {
         def names = rooms ? rooms.collect { it.name } : []
         throw new IllegalArgumentException("Room '${room}' not found.${names ? ' Available rooms: ' + names.join(', ') : ''}")
@@ -13029,7 +13031,7 @@ def toolUpdateDevice(args) {
         _checkDeviceEditValue(field.key, spec, field.value)
     }
     fields = fields.collectEntries { k, v ->
-        [(k): specs[k].type == 'integer' ? new BigDecimal(v.toString()).toBigInteger() :
+        [(k): specs[k].type == 'integer' || (k == 'room' && v instanceof Number) ? new BigDecimal(v.toString()).toBigInteger() :
               k == 'dashboardIds' ? v.collect { new BigDecimal(it.toString()).toBigInteger() } : v]
     }
     if (fields.keySet().any { specs[it].confirm }) requireDestructiveConfirm(args.confirm)
@@ -14221,7 +14223,7 @@ Default: most-recent events for a device (deviceId + optional limit). Device eve
         ],
         [
             name: "hub_update_device",
-            description: """Change a device's settings the way its device page saves them: Device Info fields, driver preferences, assistant sharing and enabled state. Pre-flight: read hub_get_tool_guide(section='update_device') and hub_get_device(mode='configuration'); its editableFields and preferences give each name's type, options, current value and whether this device offers it. Only change devices the user asked about. Fields marked requiresConfirmation (driver, network or Zigbee ID, dashboards, Hub Mesh, assistants) need confirm=true and a backup under 24 hours old. Saving preferences, showOnHome, defaultCurrentState or retryEnabled runs the driver's updated(). The result lists each change and error from one read-back; inspect it before retrying.""",
+            description: """Change a device's settings the way its device page saves them: Device Info fields, driver preferences, assistant sharing and enabled state. Pre-flight: read hub_get_tool_guide(section='update_device') and hub_get_device(mode='configuration'); the configuration's editableFields and preferences give each name's type, options, current value and whether this device offers it. Only change devices the user asked about. Fields marked requiresConfirmation (driver, network or Zigbee ID, dashboards, Hub Mesh, assistants) need confirm=true and a backup under 24 hours old. Saving preferences, showOnHome, defaultCurrentState or retryEnabled runs the driver's updated(). The result lists each change and error from one read-back; inspect it before retrying.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -17430,7 +17432,6 @@ def toolGetAppConfig(args) {
     }
     return result
 }
-private String _appConfigRedactedMarker() { return "***redacted (password)***" }
 private Map _appConfigSettingTypes(Integer appId) {
     def status
     try {
@@ -17448,68 +17449,6 @@ private Map _appConfigSettingTypes(Integer appId) {
         if (rec instanceof Map && rec.name != null && rec.type != null) types.put(rec.name.toString(), rec.type.toString())
     }
     return types
-}
-private boolean _appConfigMasksSetting(name, type, value) { _redactsCredentials() && _appConfigIsSecretSetting(name, type, value) }
-private boolean _appConfigIsSecretSetting(name, type, value) {
-    if (_appConfigEmptyValue(value)) return false
-    String t = type?.toString()
-    if (t == "password") return true
-    if (value instanceof Boolean) return false
-    if (t && (t in ["bool", "boolean", "enum", "mode", "time", "date", "button", "href", "hub", "icon", "color"] ||
-              t.startsWith("capability") || t.startsWith("device"))) return false
-    return _appConfigSecretName(name)
-}
-private boolean _appConfigEmptyValue(value) {
-    if (value == null) return true
-    if (value instanceof CharSequence && value.toString().isEmpty()) return true
-    (value instanceof Collection || value instanceof Map) && value.isEmpty()
-}
-private boolean _appConfigSecretName(name) {
-    String raw = name?.toString()
-    if (!raw) return false
-    if (raw ==~ /(?i)access_?token/) return false
-    String lower = raw.toLowerCase()
-    if (!(lower.contains("pass") || lower.contains("pwd") || lower.contains("secret") || lower.contains("token") ||
-          lower.contains("key") || lower.contains("credential") || lower.contains("psk") || lower.contains("pin") || lower.contains("code"))) return false
-    String spaced = raw.replaceAll(/([a-z0-9])([A-Z])/, '$1 $2').replaceAll(/([A-Z]+)([A-Z][a-z])/, '$1 $2')
-    List words = spaced.toLowerCase().split(/[^a-z]+/).findAll { part -> part }
-    Set metadata = ["count", "counter", "cnt", "expiry", "expires", "expire", "expired", "expiration", "time",
-                    "timestamp", "date", "length", "len", "type", "enabled", "enable", "set", "required", "url",
-                    "uri", "endpoint", "timeout", "interval", "mode", "policy", "hint", "label", "name"] as Set
-    Set keyQualifiers = ["api", "access", "private", "auth", "client", "secret", "encryption", "signing", "shared"] as Set
-    Set pinQualifiers = ["lock", "user", "access", "pass", "disarm", "arm", "alarm", "security", "unlock", "auth", "entry", "keypad", "door",
-                         "master", "admin", "guest", "installer", "duress", "gate", "garage", "hsm", "panel", "safe", "vault"] as Set
-    Set hardwarePins = ["led", "gpio", "relay", "io", "digital", "analog", "data", "output", "input", "sensor", "pwm", "signal", "button",
-                        "power", "reset", "enable", "interrupt", "irq", "clock", "clk", "sda", "scl", "tx", "rx", "servo", "motor", "trigger", "echo"] as Set
-    boolean qualified = words.any { it in pinQualifiers }
-    Set boardPins = ["led", "gpio", "relay", "pwm", "servo", "motor", "sda", "scl", "clk", "clock", "irq", "analog", "digital", "tx", "rx", "io"] as Set
-    Set statusCodes = ["status", "error", "result", "response", "reason", "fault", "event", "state", "zip", "postal", "country", "area"] as Set
-    for (int idx = 0; idx < words.size(); idx++) {
-        String w = words[idx]
-        String prev = idx > 0 ? words[idx - 1] : null
-        String next = idx + 1 < words.size() ? words[idx + 1] : null
-        boolean hit = w.contains("password") || w.contains("passwd") || w.contains("passphrase") ||
-            w.contains("passcode") || w.contains("pwd") || w.contains("apikey") || w.contains("privatekey") ||
-            w.contains("accesskey") || (w.contains("secret") && !w.startsWith("secretar")) ||
-            w.endsWith("token") || w.endsWith("tokens") || w.startsWith("credential") || w == "psk" ||
-            (w == "pass" && prev != "by" && (next == null || next in ["word", "phrase", "code", "key"])) ||
-            (keyQualifiers.contains(w) && (next == "key" || next == "keys")) ||
-            (w in ["pin", "pins", "pincode", "pincodes"] && (qualified ? !(prev in boardPins) : !(prev in hardwarePins))) ||
-            (w in ["code", "codes"] && !(prev in statusCodes) && (qualified || prev in ["pin", "pins"])) ||
-            _appConfigQualifiedSuffix(w, pinQualifiers)
-        if (!hit) continue
-        boolean twoWords = ((next == "key" || next == "keys") && keyQualifiers.contains(w)) || (w in ["pin", "pins"] && next in ["code", "codes"])
-        String after = twoWords ? (idx + 2 < words.size() ? words[idx + 2] : null) : next
-        if (after != null && metadata.contains(after)) continue
-        return true
-    }
-    return false
-}
-private boolean _appConfigQualifiedSuffix(String word, Set qualifiers) {
-    for (suffix in ["pincodes", "pincode", "pins", "pin", "codes", "code"]) {
-        if (word.length() > suffix.length() && word.endsWith(suffix) && word.substring(0, word.length() - suffix.length()) in qualifiers) return true
-    }
-    return false
 }
 def toolGetSource(args) {
     def type = args.type
@@ -19503,7 +19442,7 @@ A transport drop can lose the response while the hub still commits this write; v
         ],
         [
             name: "hub_get_app_config",
-            description: """Read an installed classic app's page as the Hubitat UI renders it: the app's identity, the page's sections with each input's current value, and its child apps. The pages it links to are listed in page.hrefs. controls lists the page's buttons and links with the control_id that hub_set_native_app or hub_set_rule(operation:'form') activates, and pageNote says when the hub rendered another page than pageName. Secret values are redacted unless Hide passwords and credentials is off.""",
+            description: """Read an installed classic app's page as the Hubitat UI renders it: the app's identity, the page's sections with each input's current value, and its child apps. The pages it links to are listed in page.hrefs. controls lists the page's buttons and links with the control_id that hub_set_native_app or hub_set_rule(operation:'form') activates, and pageNote says when the hub rendered another page than pageName. Secret values are redacted unless Hide passwords and credentials is off (always for a per-client token).""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -25304,6 +25243,8 @@ private Map _naUpdate(Long id, Map args) {
     Map fields = args.get('fields')
     String page = args.page
     String guide = " See hub_get_tool_guide(section='set_native_app_reference')."
+    def marked = fields instanceof Map ? fields.find { k, v -> _isRedactionMarker(v) } : null
+    if (marked) throw new IllegalArgumentException("${marked.key} is the redaction marker, not a value; omit the field to keep the stored one")
     _requireUnprotectedAppMutation(id, 'edit')
     def nativeApp = getAppByAppId(id)
     if (nativeApp?.id?.toString() != id.toString()) throw new IllegalArgumentException('app_id must identify an installed app')
@@ -26942,7 +26883,7 @@ Example changes: [{part:"action",value:{type:"messageActs",subtype:"getLogMsg",f
 
 hub_set_rule(operation:"form",rule_id,args:{steps:[{kind:"open"}]},confirm:true) operates an enabled Rule-5.1 or Button Rule-5.1 rule, or its Rule Machine parent; hub_set_native_app(operation:"form",app_id,...) runs the same steps on any other classic app. Read action variants, input names and option values from the returned forms instead of guessing them. Even open renders execute app code and can change state or cause side effects. An open's optional page names a registered native page, and from names the page that links to it, so a sub-page opened directly offers its Done back to that parent. Follow returned controls for page parameters and breadcrumbs. A create_child control creates the parent's native child type, returns created_app_id and closes the parent context; open the child separately to configure it. Apps are deleted with hub_delete_native_app.
 
-Submit with {kind:"submit",expect_page:"last returned page",fields:{"native field name":value},activate:"returned control_id"}; without activate it saves the fields and refreshes the page. Control IDs tell apart native buttons that share a name, such as editing and deleting the same variable. With Hide passwords and credentials on (the default), form results mask password-typed fields and fields whose names look like credentials (API keys, tokens, passwords, PINs, lock codes) with the same marker hub_get_app_config uses; with it off they read as stored. A page with both a next page and a done page renders its Done as the _action_done control, which the hub answers by saving the page and rendering that same page again. An app without pages also shows the hub's default fields, label (the app's name) and mode[mode] (a list of mode IDs from its options), and a page's own label and mode elements are the same two fields; the hub does not always keep the label posted with mode[mode], so after such a submit the label is checked and posted again on its own when the hub put back an older one (label_restored). Native enum keys, device IDs, booleans and single/multiple cardinality are checked before the request. Each submit posts the supplied settings and, as the browser does, the shown default of every other input with no stored value; a password's default is never posted, and page code can still change its own settings. args.options_for:["device field name"] expands device choices on the final returned page.
+Submit with {kind:"submit",expect_page:"last returned page",fields:{"native field name":value},activate:"returned control_id"}; without activate it saves the fields and refreshes the page. Control IDs tell apart native buttons that share a name, such as editing and deleting the same variable. With Hide passwords and credentials on (the default), form results mask password-typed fields and fields whose names look like credentials (API keys, tokens, passwords, PINs, lock codes) with the same marker hub_get_app_config uses; with it off they read as stored, except for a per-client token. A page with both a next page and a done page renders its Done as the _action_done control, which the hub answers by saving the page and rendering that same page again. An app without pages also shows the hub's default fields, label (the app's name) and mode[mode] (a list of mode IDs from its options), and a page's own label and mode elements are the same two fields; the hub does not always keep the label posted with mode[mode], so after such a submit the label is checked and posted again on its own when the hub put back an older one (label_restored). Native enum keys, device IDs, booleans and single/multiple cardinality are checked before the request. Each submit posts the supplied settings and, as the browser does, the shown default of every other input with no stored value; a password's default is never posted, and page code can still change its own settings. args.options_for:["device field name"] expands device choices on the final returned page.
 
 A batch holds 1 through 16 steps, each using the form the step before it returned, so dependent fields require another submit after they appear. A button handler runs before its step's fields are saved, as in the browser: submit the fields it needs in an earlier step. A button without submitOnChange reloads and needs a separate field submission.
 
@@ -27214,6 +27155,7 @@ private List _nfDevices(Map field) {
 }
 private String _nfValue(Map field, Object value) {
     if (!field.supported || field.disabled || (!field.app_field && field.name =~ /[\[\]\r\n]/)) throw new IllegalArgumentException("Unsupported or disabled native field: ${field.name}")
+    if (_isRedactionMarker(value)) throw new IllegalArgumentException("${field.name} is the redaction marker, not a value; omit the field to keep the stored one")
     if (field.device && value instanceof Map) {
         List ids = value.keySet().collect { it.toString() }
         value = field.multiple ? ids : (ids.size() == 1 ? ids[0] : ids)
@@ -27389,6 +27331,8 @@ Map toolCallAppForm(Map args, String toolName = 'hub_set_rule') {
         if (step.kind == 'open' && step.from != null && (step.page == null || !(step.from instanceof String) || !(step.from ==~ /[A-Za-z_][A-Za-z0-9_.-]*/))) throw new IllegalArgumentException('from names the parent page of the opened page and requires page')
         if (step.kind == 'submit' && (!(step.expect_page instanceof String) || (step.get('fields') != null && !(step.get('fields') instanceof Map)))) throw new IllegalArgumentException('Submit requires expect_page and an optional fields object')
         if (step.activate != null && !(step.activate instanceof String)) throw new IllegalArgumentException('activate requires a returned control_id string')
+        def marked = step.get('fields') instanceof Map ? step.get('fields').find { k, v -> _isRedactionMarker(v) } : null
+        if (marked) throw new IllegalArgumentException("${marked.key} is the redaction marker, not a value; omit the field to keep the stored one")
     }
     requireDestructiveConfirm(args.confirm)
     Long id = args.app_id.toString().toLong()
@@ -31019,6 +30963,70 @@ private def _renderToolResult(id, toolName, reactiveToolName, args, result, bool
 private String _accessTokenRedactedMarker() { return "***redacted (access token)***" }
 private boolean _redactsAccessTokens() { settings.redactAccessTokens == true || callerClient != null }
 private boolean _redactsCredentials() { settings.redactCredentials != false || callerClient != null }
+private String _appConfigRedactedMarker() { return "***redacted (password)***" }
+private boolean _isRedactionMarker(value) { value instanceof CharSequence && value.toString() == _appConfigRedactedMarker() }
+private boolean _appConfigMasksSetting(name, type, value) { _redactsCredentials() && _appConfigIsSecretSetting(name, type, value) }
+private boolean _appConfigIsSecretSetting(name, type, value) {
+    if (_appConfigEmptyValue(value)) return false
+    String t = type?.toString()
+    if (t == "password") return true
+    if (value instanceof Boolean) return false
+    if (t && (t in ["bool", "boolean", "enum", "mode", "time", "date", "button", "href", "hub", "icon", "color"] ||
+              t.startsWith("capability") || t.startsWith("device"))) return false
+    return _appConfigSecretName(name)
+}
+private boolean _appConfigEmptyValue(value) {
+    if (value == null) return true
+    if (value instanceof CharSequence && value.toString().isEmpty()) return true
+    (value instanceof Collection || value instanceof Map) && value.isEmpty()
+}
+private boolean _appConfigSecretName(name) {
+    String raw = name?.toString()
+    if (!raw) return false
+    if (raw ==~ /(?i)access_?token/) return false
+    String lower = raw.toLowerCase()
+    if (!(lower.contains("pass") || lower.contains("pwd") || lower.contains("secret") || lower.contains("token") ||
+          lower.contains("key") || lower.contains("credential") || lower.contains("psk") || lower.contains("pin") || lower.contains("code"))) return false
+    String spaced = raw.replaceAll(/([a-z0-9])([A-Z])/, '$1 $2').replaceAll(/([A-Z]+)([A-Z][a-z])/, '$1 $2')
+    List words = spaced.toLowerCase().split(/[^a-z]+/).findAll { part -> part }
+    Set metadata = ["count", "counter", "cnt", "expiry", "expires", "expire", "expired", "expiration", "time",
+                    "timestamp", "date", "length", "len", "type", "enabled", "enable", "set", "required", "url",
+                    "uri", "endpoint", "timeout", "interval", "mode", "policy", "hint", "label", "name"] as Set
+    Set keyQualifiers = ["api", "access", "private", "auth", "client", "secret", "encryption", "signing", "shared"] as Set
+    Set pinQualifiers = ["lock", "user", "access", "pass", "disarm", "arm", "alarm", "security", "unlock", "auth", "entry", "keypad", "door",
+                         "master", "admin", "guest", "installer", "duress", "gate", "garage", "hsm", "panel", "safe", "vault"] as Set
+    Set hardwarePins = ["led", "gpio", "relay", "io", "digital", "analog", "data", "output", "input", "sensor", "pwm", "signal", "button",
+                        "power", "reset", "enable", "interrupt", "irq", "clock", "clk", "sda", "scl", "tx", "rx", "servo", "motor", "trigger", "echo"] as Set
+    boolean qualified = words.any { it in pinQualifiers }
+    Set boardPins = ["led", "gpio", "relay", "pwm", "servo", "motor", "sda", "scl", "clk", "clock", "irq", "analog", "digital", "tx", "rx", "io"] as Set
+    Set statusCodes = ["status", "error", "result", "response", "reason", "fault", "event", "state", "zip", "postal", "country", "area"] as Set
+    for (int idx = 0; idx < words.size(); idx++) {
+        String w = words[idx]
+        String prev = idx > 0 ? words[idx - 1] : null
+        String next = idx + 1 < words.size() ? words[idx + 1] : null
+        boolean hit = w.contains("password") || w.contains("passwd") || w.contains("passphrase") ||
+            w.contains("passcode") || w.contains("pwd") || w.contains("apikey") || w.contains("privatekey") ||
+            w.contains("accesskey") || (w.contains("secret") && !w.startsWith("secretar")) ||
+            w.endsWith("token") || w.endsWith("tokens") || w.startsWith("credential") || w == "psk" ||
+            (w == "pass" && prev != "by" && (next == null || next in ["word", "phrase", "code", "key"])) ||
+            (keyQualifiers.contains(w) && (next == "key" || next == "keys")) ||
+            (w in ["pin", "pins", "pincode", "pincodes"] && (qualified ? !(prev in boardPins) : !(prev in hardwarePins))) ||
+            (w in ["code", "codes"] && !(prev in statusCodes) && (qualified || prev in ["pin", "pins"])) ||
+            _appConfigQualifiedSuffix(w, pinQualifiers)
+        if (!hit) continue
+        boolean twoWords = ((next == "key" || next == "keys") && keyQualifiers.contains(w)) || (w in ["pin", "pins"] && next in ["code", "codes"])
+        String after = twoWords ? (idx + 2 < words.size() ? words[idx + 2] : null) : next
+        if (after != null && metadata.contains(after)) continue
+        return true
+    }
+    return false
+}
+private boolean _appConfigQualifiedSuffix(String word, Set qualifiers) {
+    for (suffix in ["pincodes", "pincode", "pins", "pin", "codes", "code"]) {
+        if (word.length() > suffix.length() && word.endsWith(suffix) && word.substring(0, word.length() - suffix.length()) in qualifiers) return true
+    }
+    return false
+}
 private def _redactAccessTokens(value) {
     String marker = _accessTokenRedactedMarker()
     if (value instanceof Map) {
@@ -35719,7 +35727,7 @@ If even one selected value exceeds the response budget, the tool returns `conten
 
 `hub_update_device(deviceId, fields={...}, preferences={...}, confirm?)` saves the way the device page does, one save per page section, then reads the device back once and reports each field in `changes`, `unchanged` (it already had the requested value) or `errors`. Put `bestPracticeKey` beside them when mandatory best-practice acknowledgment is enabled. The whole request is checked before anything is written; a field the device does not offer (configuration reports `writable:false` with a `reason`) is refused.
 
-- **Device Info save** (one request for all of these): `label`, `name`, `deviceNetworkId`, `room` (name or id; `""` clears), `tags` (replaces the set; `[]` clears), `notes`, `defaultIcon` (`""` clears), `maxEvents`/`maxStates` (1-2000), `spammyThreshold` (100-2000), `deviceTypeId`, `zigbeeId`, `dashboardIds` (the legacy Hubitat Dashboards that list this device; replaces the set; an Easy Dashboard picks its devices with `hub_update_dashboard` `deviceIds`), `meshEnabled`, `meshFullSync`. The hub rebuilds the device from this save, so every current value is sent with the change.
+- **Device Info save** (one request for all of these): `label`, `name`, `deviceNetworkId`, `room` (text matches a name, else an id; a number is an id; `""` clears), `tags` (replaces the set; `[]` clears), `notes`, `defaultIcon` (`""` clears), `maxEvents`/`maxStates` (1-2000), `spammyThreshold` (100-2000), `deviceTypeId`, `zigbeeId`, `dashboardIds` (the legacy Hubitat Dashboards that list this device; replaces the set; an Easy Dashboard picks its devices with `hub_update_dashboard` `deviceIds`), `meshEnabled`, `meshFullSync`. The hub rebuilds the device from this save, so every current value is sent with the change.
 - **Preferences save** (one request): `preferences`, `showOnHome`, `defaultCurrentState` (`""` selects None), `retryEnabled`. It runs the driver's `updated()`, as the page's Save Preferences does; settings that are not named keep their values.
 - `homeKitEnabled`, `amazonAlexaEnabled`, `googleHomeEnabled` go to the assistant integrations; a refusal names the integration's reason. `enabled` enables or disables the device. `dataValues` sets Data entries through the driver's `updateDataValue`.
 
