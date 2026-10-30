@@ -497,7 +497,7 @@ boolean _isNativeAppSchemaOnlyCall(args) {
 
 private Map _ndOperationSchema(String operation) {
     def changes = [type: 'array', minItems: operation == 'create' ? 0 : 1, maxItems: 100,
-        items: [type: 'object', additionalProperties: false, properties: [part: [type: 'string', enum: ['condition', 'trigger', 'action', 'expression', 'required', 'variable', 'terminator', 'delete', 'order']], value: [type: 'object']], required: ['part', 'value']]]
+        items: (_bat529EmbeddedCatalogRead(['["m",[["type","object"],["additionalProperties",false],["properties",["m",[["part",["m",[["type","string"],["enum",["l",["condition","trigger","action","expression","required","variable","terminator","delete","order"]]]]]],["value",["m",[["type","object"]]]]]]],["required",["l",["part","value"]]]]]']) as Map)]
     Map properties = [:]
     List required = []
     if (operation == 'read') {
@@ -511,9 +511,7 @@ private Map _ndOperationSchema(String operation) {
         properties.changes = changes
         required = ['changes']
     } else if (operation == 'form') {
-        properties = [steps: [type: 'array', minItems: 1, maxItems: 16, items: [type: 'object', additionalProperties: false,
-            properties: [kind: [type: 'string', enum: ['open', 'submit']], page: [type: 'string'], from: [type: 'string'], expect_page: [type: 'string'], fields: [type: 'object'], activate: [type: 'string']], required: ['kind']]],
-            options_for: [type: 'array', maxItems: 32, items: [type: 'string']]]
+        properties = (_bat529EmbeddedCatalogRead(['["m",[["steps",["m",[["type","array"],["minItems",1],["maxItems",16],["items",["m",[["type","object"],["additionalProperties",false],["properties",["m",[["kind",["m",[["type","string"],["enum",["l",["open","submit"]]]]]],["page",["m",[["type","string"]]]],["from",["m",[["type","string"]]]],["expect_page",["m",[["type","string"]]]],["fields",["m",[["type","object"]]]],["activate",["m",[["type","string"]]]]]]],["required",["l",["kind"]]]]]]]]],["options_for",["m",[["type","array"],["maxItems",32],["items",["m",[["type","string"]]]]]]]]]']) as Map)
         required = ['steps']
     } else throw new IllegalArgumentException('Unknown rule operation; use read, create, update or form')
     [type: 'object', additionalProperties: false, properties: properties, required: required]
@@ -570,9 +568,7 @@ Map toolSetRule(Map request) {
 }
 
 def _getAllToolDefinitions_partNativeDocuments() {
-    return [[
-      name: 'hub_set_rule', description: 'Read, create or update native Rule Machine rules, or use their native forms. Omit operation for help; select a write operation without confirm for its schema. Writes require confirm=true and a recent backup; partial changes can remain. Guide: set_rule_reference.',
-      inputSchema: [type: 'object', additionalProperties: false, properties: [operation: [type: 'string', enum: ['read', 'create', 'update', 'form']], rule_id: [type: 'integer', minimum: 1], args: [type: 'object'], confirm: [type: 'boolean'], bestPracticeKey: [type: 'string']]]]]
+    return (_bat529EmbeddedCatalogRead(['["l",[["m",[["name","hub_set_rule"],["description","Read, create or update native Rule Machine rules, or use their native forms. Omit operation for help; select a write operation without confirm for its schema. Writes require confirm=true and a recent backup; partial changes can remain. Guide: set_rule_reference."],["inputSchema",["m",[["type","object"],["additionalProperties",false],["properties",["m",[["operation",["m",[["type","string"],["enum",["l",["read","create","update","form"]]]]]],["rule_id",["m",[["type","integer"],["minimum",1]]]],["args",["m",[["type","object"]]]],["confirm",["m",[["type","boolean"]]]],["bestPracticeKey",["m",[["type","string"]]]]]]]]]]]]]]']) as List)
 }
 
 def _readOnlyToolNames_partNativeDocuments() { [] }

@@ -17,6 +17,22 @@ import re
 import sys
 from pathlib import Path
 
+_embedded_catalog_module = None
+
+
+def _catalog_metadata_source(source: str) -> str:
+    """Decode embedded constant data for extractors; raw sandbox scans stay untouched."""
+    if "_bat529EmbeddedCatalogRead" not in source:
+        return source
+    global _embedded_catalog_module
+    if _embedded_catalog_module is None:
+        spec = importlib.util.spec_from_file_location(
+            "embedded_catalog_source", Path(__file__).with_name("embedded_catalog_source.py")
+        )
+        _embedded_catalog_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(_embedded_catalog_module)
+    return _embedded_catalog_module.expand_embedded_catalogs(source)
+
 # Force UTF-8 on stdout/stderr so prints containing em dashes, arrows, and
 # other non-ASCII characters in messages don't crash on Windows consoles
 # whose default codepage is cp1252. The lint runs cleanly on Linux/macOS
@@ -913,6 +929,7 @@ def _extract_canonical_counts() -> dict | None:
     if _lib_dir.is_dir():
         for _lib in sorted(_lib_dir.glob("*.groovy")):
             src += "\n" + _lib.read_text(encoding="utf-8", errors="replace")
+    src = _catalog_metadata_source(src)
 
     # Comment-stripping intentionally NOT done. Reasoning: this codebase's
     # tool description heredocs commonly contain both `//` (URLs like
@@ -1822,6 +1839,7 @@ def check_tool_guide_pointers(src_override: str | None = None,
         if not server.exists():
             return findings
         src = server.read_text(encoding="utf-8", errors="replace")
+    src = _catalog_metadata_source(src)
 
     # 1. Extract every section key from getToolGuideSections().
     #    Match lines like `        device_authorization: '''## Device Authorization (CRITICAL)`
@@ -1885,6 +1903,7 @@ def check_tool_guide_pointers(src_override: str | None = None,
             pointer_sources.append((f"libraries/{lib.name}",
                                     lib.read_text(encoding="utf-8", errors="replace")))
     for rel, text in pointer_sources:
+        text = _catalog_metadata_source(text)
         for line_no, line in enumerate(text.splitlines(), start=1):
             for ptr in pointer_re.findall(line):
                 if ptr not in section_keys and ptr not in sub_section_keys:
@@ -2235,6 +2254,7 @@ def check_read_write_split(src_override: str | None = None) -> list[dict]:
         if _lib_dir.is_dir():
             for _lib in sorted(_lib_dir.glob("*.groovy")):
                 src += "\n" + _lib.read_text(encoding="utf-8", errors="replace")
+    src = _catalog_metadata_source(src)
 
     rel = str(server.relative_to(REPO_ROOT))
 

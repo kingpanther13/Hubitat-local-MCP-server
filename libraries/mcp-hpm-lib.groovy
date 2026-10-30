@@ -516,23 +516,7 @@ def toolListHpmPackagesWithDrift(args) {
 }
 
 def _getAllToolDefinitions_partHpm() {
-    return [
-        // HPM Package State Tools
-        [
-            name: "hub_list_hpm_packages",
-            description: """List all packages tracked by Hubitat Package Manager (HPM): name, version, beta flag, author, and component inventory (apps/drivers/files) as HPM recorded at install/update time. Requires Read master; HPM must be installed.[[FLAT_TRIM]]
-Set includeDrift=true to ALSO cross-reference tracked state against what is actually installed and attach a `drift` block (missing-required / orphan signals). See `hub_get_tool_guide(section='builtin_app_tools_apps')` for the full drift-signal taxonomy, response-field reference, and caveats.[[/FLAT_TRIM]]""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    hpmAppId: [type: "string", description: "HPM's installed-app ID (decimal). Auto-discovered if omitted.[[FLAT_TRIM]] Scans installed apps for type='Hubitat Package Manager'; pass explicitly to skip that discovery call.[[/FLAT_TRIM]]"],
-                    includeDrift: [type: "boolean", description: "Also attach a drift cross-reference under a `drift` key.[[FLAT_TRIM]] Signal types: missing-required/orphan-app/orphan-driver.[[/FLAT_TRIM]] Default false; adds 1-2 hub calls.", default: false],
-                    packageFilter: [type: "string", description: "Drift mode only (includeDrift=true): case-insensitive substring filter on packageName."],
-                    cursor: [type: "string", description: "Opt-in pagination cursor for the packages list. Omit for unbounded; pass \"\" for the first page, iterate nextCursor.[[FLAT_TRIM]] Page size 25 -- HPM entries carry full app/driver/file inventories so each entry can be large.[[/FLAT_TRIM]]"]
-                ]
-            ]
-        ],
-    ]
+    return (_bat529EmbeddedCatalogRead(['["l",[["m",[["name","hub_list_hpm_packages"],["description","List all packages tracked by Hubitat Package Manager (HPM): name, version, beta flag, author, and component inventory (apps/drivers/files) as HPM recorded at install/update time. Requires Read master; HPM must be installed.[[FLAT_TRIM]]\\nSet includeDrift=true to ALSO cross-reference tracked state against what is actually installed and attach a `drift` block (missing-required / orphan signals). See `hub_get_tool_guide(section=\'builtin_app_tools_apps\')` for the full drift-signal taxonomy, response-field reference, and caveats.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["hpmAppId",["m",[["type","string"],["description","HPM\'s installed-app ID (decimal). Auto-discovered if omitted.[[FLAT_TRIM]] Scans installed apps for type=\'Hubitat Package Manager\'; pass explicitly to skip that discovery call.[[/FLAT_TRIM]]"]]]],["includeDrift",["m",[["type","boolean"],["description","Also attach a drift cross-reference under a `drift` key.[[FLAT_TRIM]] Signal types: missing-required/orphan-app/orphan-driver.[[/FLAT_TRIM]] Default false; adds 1-2 hub calls."],["default",false]]]],["packageFilter",["m",[["type","string"],["description","Drift mode only (includeDrift=true): case-insensitive substring filter on packageName."]]]],["cursor",["m",[["type","string"],["description","Opt-in pagination cursor for the packages list. Omit for unbounded; pass \\"\\" for the first page, iterate nextCursor.[[FLAT_TRIM]] Page size 25 -- HPM entries carry full app/driver/file inventories so each entry can be large.[[/FLAT_TRIM]]"]]]]]]]]]]]]]]']) as List)
 }
 
 def _readOnlyToolNames_partHpm() {

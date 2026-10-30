@@ -611,7 +611,7 @@ def _bat529Cb_82110e0f_22(def controls, def fields, def messages, def model, def
     return _bat529Cb_82110e0f_22(controls, fields, messages, model, unsupported, *__bat529Tuple)
 }
 
-def _bat529Cb_82110e0f_23(def field, def node, def key) { if (node.containsKey(key)) field[key] = node[key] 
+def _bat529Cb_82110e0f_23(def field, def node, def key) { if (node.containsKey(key)) field.put(key, node.get(key)) 
 }
 
 def _bat529Cb_82110e0f_24(def envelope, def model, def key) { if (model.containsKey(key)) envelope[key] = model[key] 

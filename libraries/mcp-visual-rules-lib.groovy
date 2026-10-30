@@ -419,20 +419,11 @@ private List _vrb2TriggerTypes() {
 }
 
 private List _vrb2ConditionTypes() {
-    return ["timeIsBetween", "daysOfWeek", "motionCondition", "contactCondition",
-            "presenceCondition", "accelerationCondition", "waterCondition", "smokeCondition",
-            "coCondition", "temperatureCondition", "humidityCondition", "illuminanceCondition",
-            "powerCondition", "switchCondition", "lockCondition", "thermostatModeCondition",
-            "systemModeCondition"]
+    return (_bat529EmbeddedCatalogRead(['["l",["timeIsBetween","daysOfWeek","motionCondition","contactCondition","presenceCondition","accelerationCondition","waterCondition","smokeCondition","coCondition","temperatureCondition","humidityCondition","illuminanceCondition","powerCondition","switchCondition","lockCondition","thermostatModeCondition","systemModeCondition"]]']) as List)
 }
 
 private List _vrb2ActionTypes() {
-    return ["turnOn", "turnOff", "toggle", "setBrightness", "setColorTemp", "setColor",
-            "setLightEffect", "lock", "unlock", "turnOnAlarm", "turnOffAlarm", "openValve",
-            "closeValve", "openGarageDoor", "closeGarageDoor", "openWindowShade",
-            "closeWindowShade", "pushButton", "sendNotification", "speakNotification",
-            "controlPlayer", "controlThermostat", "setFanSpeed", "setMode", "setModeUnlessAway",
-            "exitAwayMode", "runRule", "wait", "cancelWait", "sample"]
+    return (_bat529EmbeddedCatalogRead(['["l",["turnOn","turnOff","toggle","setBrightness","setColorTemp","setColor","setLightEffect","lock","unlock","turnOnAlarm","turnOffAlarm","openValve","closeValve","openGarageDoor","closeGarageDoor","openWindowShade","closeWindowShade","pushButton","sendNotification","speakNotification","controlPlayer","controlThermostat","setFanSpeed","setMode","setModeUnlessAway","exitAwayMode","runRule","wait","cancelWait","sample"]]']) as List)
 }
 
 private Map _vrb2NodeFromDialog(Map node, String typeKey) {
@@ -1247,10 +1238,7 @@ private Map _toolSetVisualRuleImpl(args) {
                             note: "Send the full definition together with the new name (hub_set_visual_rule with definition + name), or repair the rule in the Visual Rules Builder UI first."]
                 }
                 if (existing == null) {
-                    existing = [version: 1,
-                                nodes: [[id: "trigger-merge", kind: "merge", type: "triggerMerge", config: [:]],
-                                        [id: "decision", kind: "decision", type: "all", config: [conditions: []]]],
-                                edges: [[from: "trigger-merge", to: "decision", port: "next"]]]
+                    existing = (_bat529EmbeddedCatalogRead(['["m",[["version",1],["nodes",["l",[["m",[["id","trigger-merge"],["kind","merge"],["type","triggerMerge"],["config",["m",[]]]]],["m",[["id","decision"],["kind","decision"],["type","all"],["config",["m",[["conditions",["l",[]]]]]]]]]]],["edges",["l",[["m",[["from","trigger-merge"],["to","decision"],["port","next"]]]]]]]]']) as Map)
                 }
             } else {
                 existing = [whenNodes: detected.data.whenNodes, thenNodes: detected.data.thenNodes, elseNodes: detected.data.elseNodes]
@@ -1862,46 +1850,7 @@ Sending a classic definition to CREATE a rule on a hub that offers both builders
 // the impl). Concatenated into getAllToolDefinitions() in the main app; gateway membership +
 // dispatch stay in main.
 def _getAllToolDefinitions_partVisualRules() {
-    return [
-        [
-            name: "hub_get_visual_rule",
-            description: "List Visual Rules Builder rules (omit appId) or read one rule's full definition.[[FLAT_TRIM]] Each list entry: appId, name, version, disabled, paused. List-mode `paused` is read from the hub's own (Paused) name decoration and `version` ('2.0' / '1.0') comes from the hub's own child type; call with appId for the authoritative `rulePaused`. A single-rule read returns `format`: 'graph' (VRB 2.0, {version, nodes, edges}) or 'classic' (VRB 1.0, {whenNodes, thenNodes, elseNodes}). A graph read ALSO returns `editor` -- the same rule as {triggers, conditions, decisionType, thenActions, elseActions, commonActions}, the shape to modify and hand straight back to hub_set_visual_rule -- plus `activated` (false means the hub stored it as an inactive draft; see validationErrors).[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    appId: [type: "integer", description: "Visual Rule app id. Omit to list all VRB rules."],
-                    includeRuleApps: [type: "boolean", description: "[[FLAT_TRIM]]2.0 rule: list ruleApps (runRule targets).[[/FLAT_TRIM]]"]
-                ]
-            ]
-        ],
-        [
-            name: "hub_set_visual_rule",
-            description: "Create or update a Visual Rules Builder rule.[[FLAT_TRIM]] VRB is the PRIMARY rule engine for new automations; VRB 2.0 adds AND/OR condition gates, then/else branches and a shared action tail. Most automations fit it; use hub_set_rule for Rule Machine structures and native editor controls. On create the definition's shape picks the builder version (editor/graph -> 2.0, classic -> 1.0). Editor and graph definitions are structurally pre-flight validated before anything is created or saved, so a malformed 2.0 rule never strands an empty shell; a classic definition is saved as-is and validated by the hub.[[/FLAT_TRIM]] Omit appId to create (name + definition required). On EDIT two refusals (isError validation results, nothing written): a 2.0 type name this build does not know unless the rule already uses it, and a classic key outside whenNodes/thenNodes/elseNodes. Pre-flight: backup within 24h + confirm=true. Schemas + worked example: hub_get_tool_guide(section='visual_rule_reference').",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    appId: [type: "integer", description: "Existing Visual Rule app id to edit. Omit to create."],
-                    name: [type: "string", description: "Rule name. Required on create; renames on edit."],
-                    definition: [type: "object", description: "Full rule definition (wholesale replacement). RECOMMENDED shape: the editor form {triggers, conditions, decisionType, thenActions, elseActions, commonActions}.[[FLAT_TRIM]] A raw 2.0 graph ({version, nodes, edges}) and a classic 1.0 node-list ({whenNodes, thenNodes, elseNodes}) are also accepted. On CREATE the shape picks the builder version: classic makes a Visual Rule Builder 1.0 rule, editor/graph a 2.0 one. On EDIT a 2.0 rule takes any of the three (a classic node-list is translated and the response says translatedFrom); a 1.0 rule takes classic only.[[/FLAT_TRIM]] Field schemas: hub_get_tool_guide(section='visual_rule_reference')."],
-                    paused: [type: "boolean", description: "true=pause, false=resume. May be sent alone with appId."],
-                    confirm: [type: "boolean", description: "REQUIRED: must be true (recent backup + user approval)."]
-                ],
-                required: ["confirm"]
-            ]
-        ],
-        [
-            name: "hub_delete_visual_rule",
-            description: "Delete a Visual Rules Builder rule by appId.[[FLAT_TRIM]] Type-gated: refuses ids that are not VRB rules (use hub_delete_native_app for RM rules / other classic apps). Returns the pre-delete definition for recovery via hub_set_visual_rule.[[/FLAT_TRIM]] Pre-flight: backup within 24h + confirm=true.",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    appId: [type: "integer", description: "The Visual Rule app id from hub_get_visual_rule."],
-                    confirm: [type: "boolean", description: "REQUIRED: must be true (recent backup + user approval)."]
-                ],
-                required: ["appId", "confirm"]
-            ]
-        ]
-    ]
+    return (_bat529EmbeddedCatalogRead(['["l",[["m",[["name","hub_get_visual_rule"],["description","List Visual Rules Builder rules (omit appId) or read one rule\'s full definition.[[FLAT_TRIM]] Each list entry: appId, name, version, disabled, paused. List-mode `paused` is read from the hub\'s own (Paused) name decoration and `version` (\'2.0\' / \'1.0\') comes from the hub\'s own child type; call with appId for the authoritative `rulePaused`. A single-rule read returns `format`: \'graph\' (VRB 2.0, {version, nodes, edges}) or \'classic\' (VRB 1.0, {whenNodes, thenNodes, elseNodes}). A graph read ALSO returns `editor` -- the same rule as {triggers, conditions, decisionType, thenActions, elseActions, commonActions}, the shape to modify and hand straight back to hub_set_visual_rule -- plus `activated` (false means the hub stored it as an inactive draft; see validationErrors).[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["appId",["m",[["type","integer"],["description","Visual Rule app id. Omit to list all VRB rules."]]]],["includeRuleApps",["m",[["type","boolean"],["description","[[FLAT_TRIM]]2.0 rule: list ruleApps (runRule targets).[[/FLAT_TRIM]]"]]]]]]]]]]]],["m",[["name","hub_set_visual_rule"],["description","Create or update a Visual Rules Builder rule.[[FLAT_TRIM]] VRB is the PRIMARY rule engine for new automations; VRB 2.0 adds AND/OR condition gates, then/else branches and a shared action tail. Most automations fit it; use hub_set_rule for Rule Machine structures and native editor controls. On create the definition\'s shape picks the builder version (editor/graph -> 2.0, classic -> 1.0). Editor and graph definitions are structurally pre-flight validated before anything is created or saved, so a malformed 2.0 rule never strands an empty shell; a classic definition is saved as-is and validated by the hub.[[/FLAT_TRIM]] Omit appId to create (name + definition required). On EDIT two refusals (isError validation results, nothing written): a 2.0 type name this build does not know unless the rule already uses it, and a classic key outside whenNodes/thenNodes/elseNodes. Pre-flight: backup within 24h + confirm=true. Schemas + worked example: hub_get_tool_guide(section=\'visual_rule_reference\')."],["inputSchema",["m",[["type","object"],["properties",["m",[["appId",["m",[["type","integer"],["description","Existing Visual Rule app id to edit. Omit to create."]]]],["name",["m",[["type","string"],["description","Rule name. Required on create; renames on edit."]]]],["definition",["m",[["type","object"],["description","Full rule definition (wholesale replacement). RECOMMENDED shape: the editor form {triggers, conditions, decisionType, thenActions, elseActions, commonActions}.[[FLAT_TRIM]] A raw 2.0 graph ({version, nodes, edges}) and a classic 1.0 node-list ({whenNodes, thenNodes, elseNodes}) are also accepted. On CREATE the shape picks the builder version: classic makes a Visual Rule Builder 1.0 rule, editor/graph a 2.0 one. On EDIT a 2.0 rule takes any of the three (a classic node-list is translated and the response says translatedFrom); a 1.0 rule takes classic only.[[/FLAT_TRIM]] Field schemas: hub_get_tool_guide(section=\'visual_rule_reference\')."]]]],["paused",["m",[["type","boolean"],["description","true=pause, false=resume. May be sent alone with appId."]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: must be true (recent backup + user approval)."]]]]]]],["required",["l",["confirm"]]]]]]]],["m",[["name","hub_delete_visual_rule"],["description","Delete a Visual Rules Builder rule by appId.[[FLAT_TRIM]] Type-gated: refuses ids that are not VRB rules (use hub_delete_native_app for RM rules / other classic apps). Returns the pre-delete definition for recovery via hub_set_visual_rule.[[/FLAT_TRIM]] Pre-flight: backup within 24h + confirm=true."],["inputSchema",["m",[["type","object"],["properties",["m",[["appId",["m",[["type","integer"],["description","The Visual Rule app id from hub_get_visual_rule."]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: must be true (recent backup + user approval)."]]]]]]],["required",["l",["appId","confirm"]]]]]]]]]]']) as List)
 }
 
 def _readOnlyToolNames_partVisualRules() {
@@ -1928,12 +1877,7 @@ def _idempotentWriteToolNames_partVisualRules() {
 def _toolDisplayMeta_partVisualRules() {
     // Human-facing title/summary per tool (MCP annotations.title + the Advanced per-tool
     // overrides menu) -- merged into the app's getToolDisplayMeta() aggregator (issue #209).
-    return [
-        // Visual Rules Builder
-        hub_get_visual_rule: [title: "Get Visual Rule", summary: "List Visual Rules Builder rules or read one rule's full definition."],
-        hub_set_visual_rule: [title: "Author Visual Rule", summary: "Create or edit a Visual Rules Builder rule, including rename and pause/resume."],
-        hub_delete_visual_rule: [title: "Delete Visual Rule", summary: "Delete a Visual Rules Builder rule, returning its definition for recovery."]
-    ]
+    return (_bat529EmbeddedCatalogRead(['["m",[["hub_get_visual_rule",["m",[["title","Get Visual Rule"],["summary","List Visual Rules Builder rules or read one rule\'s full definition."]]]],["hub_set_visual_rule",["m",[["title","Author Visual Rule"],["summary","Create or edit a Visual Rules Builder rule, including rename and pause/resume."]]]],["hub_delete_visual_rule",["m",[["title","Delete Visual Rule"],["summary","Delete a Visual Rules Builder rule, returning its definition for recovery."]]]]]]']) as Map)
 }
 
 

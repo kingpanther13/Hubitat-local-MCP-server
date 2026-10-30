@@ -42,25 +42,7 @@ def toolUpdateMcpSettings(args) {
     //   enableWrite          — would footgun: could disable own write path mid-session
     //   enableDeveloperMode  — lockout protection (must remain UI-only to disable)
     //   disabled_tools / disabled_gateways — could self-disable this tool; UI-only (Advanced page)
-    def allowedSettings = [
-        "mcpLogLevel":            "enum",
-        "debugLogging":           "bool",
-        "maxCapturedStates":      "number",
-        "loopGuardMax":           "number",
-        "loopGuardWindowSec":     "number",
-        "enableRead":             "bool",
-        "enableCustomRuleEngine": "bool",
-        "useGateways":            "bool",
-        "enableMandatoryBPS":     "bool",
-        "bypassDeviceAllowlist":  "bool",
-        "maxConcurrentWrites":    "number",
-        "backupBeforeRuleEdits":  "bool",
-        "backupEveryRuleWrite":   "bool",
-        "backupBudgetMb":         "number",
-        "enableLocalAccess":      "bool",
-        "enableCloudAccess":      "bool",
-        "redactAccessTokens":     "bool"
-    ]
+    def allowedSettings = (_bat529EmbeddedCatalogRead(['["m",[["mcpLogLevel","enum"],["debugLogging","bool"],["maxCapturedStates","number"],["loopGuardMax","number"],["loopGuardWindowSec","number"],["enableRead","bool"],["enableCustomRuleEngine","bool"],["useGateways","bool"],["enableMandatoryBPS","bool"],["bypassDeviceAllowlist","bool"],["maxConcurrentWrites","number"],["backupBeforeRuleEdits","bool"],["backupEveryRuleWrite","bool"],["backupBudgetMb","number"],["enableLocalAccess","bool"],["enableCloudAccess","bool"],["redactAccessTokens","bool"]]]']) as Map)
     // Allowed keys for the not-allowed error message = scalar allowlist + the special selectedDevices key.
     def allowedKeyNames = ((allowedSettings.keySet() + ["selectedDevices"]) as List).sort()
 
@@ -1028,41 +1010,7 @@ private Map _planAppArtifact(String name, String location, String artifactUrl, S
 }
 
 def _getAllToolDefinitions_partSelfAdmin() {
-    return [
-        [
-            name: "hub_update_mcp_settings",
-            description: "Update one or more of the MCP rule app's own settings (toggles, log levels, tuning, the device-access scope) in place[[FLAT_TRIM]], or manage its per-client access tokens[[/FLAT_TRIM]] — self-administer the app without the Hubitat UI. Gated on enableDeveloperMode + the Write master + confirm=true + a recent backup.[[FLAT_TRIM]] Every successful write is logged at WARN for audit. Changing an enable* toggle or useGateways reshapes tools/list, and changing selectedDevices changes which devices are visible, so MCP clients may need to reconnect to refresh cached schemas / device visibility.[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    settings: [type: "object", description: "Map of setting key → new value[[FLAT_TRIM]] (e.g. {\"mcpLogLevel\":\"warn\",\"enableCustomRuleEngine\":true})[[/FLAT_TRIM]]. Unlisted keys are rejected. bypassDeviceAllowlist (bool, default OFF): DANGEROUS escape hatch — when ON native device reads, writes, commands, inventory, health, dependents, swaps and replacements reach ANY hub device by id, IGNORING selectedDevices. Allowlisted keys: mcpLogLevel, debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableRead, enableCustomRuleEngine, useGateways, enableMandatoryBPS, bypassDeviceAllowlist, maxConcurrentWrites, backupBeforeRuleEdits, backupEveryRuleWrite, backupBudgetMb, enableLocalAccess, enableCloudAccess, redactAccessTokens, selectedDevices.[[FLAT_TRIM]] enableLocalAccess / enableCloudAccess (bool): allow requests over the LAN / Hubitat cloud endpoint; a call cannot turn off the connection it arrived on.[[/FLAT_TRIM]] mcpLogLevel: debug|info|warn|error. maxConcurrentWrites: integer 0-100[[FLAT_TRIM]] (default 2; 0 disables the server-side all-write concurrency cap)[[/FLAT_TRIM]]. backupBeforeRuleEdits (bool, default ON): take one fresh snapshot per native rule edit batch or form workflow. backupEveryRuleWrite (bool, default OFF): take a fresh snapshot before every edit instead of reusing the app's snapshot from the last hour.[[FLAT_TRIM]] backupBudgetMb: whole number of MB from 1 to 1000000 (default 10): code and rule backups are evicted only when together they exceed it, oldest first, and an item's newest backup is never evicted; see hub_get_tool_guide(section='backup').[[/FLAT_TRIM]][[FLAT_TRIM]] bypassDeviceAllowlist is independent of Developer Mode.[[/FLAT_TRIM]] selectedDevices = the device-access scope[[FLAT_TRIM]]: {mode:replace|add|remove, ids:[device id strings]}; a bare array is shorthand for a destructive replace[[/FLAT_TRIM]] — see hub_get_tool_guide(section='hub_admin_write_system') for per-mode semantics."],
-                    clientToken: [type: "object", description: "Per-client tokens, instead of settings: see hub_get_tool_guide(section='hub_admin_write_system').[[FLAT_TRIM]] {action: list|create|update|rotate|revoke, ...}. Shape: clientId (update/rotate/revoke), label (create), access? {tools: [names]|\"all\", read, write, local, cloud, toolNumber: main|none|0-9}. create and rotate return the new token; a new client starts with every grantable tool on and access narrows it.[[/FLAT_TRIM]]"],
-                    confirm: [type: "boolean", description: "REQUIRED: must be true to confirm the operation"]
-                ],
-                required: ["confirm"]
-            ]
-        ],
-        [
-            name: "hub_update_package",
-            description: """Developer Mode self-deploy: full HPM-repair of the MCP package at a git ref in one call -- OVERRIDES whatever is installed, anchored to packageManifest.json AT `ref` so an UNMERGED PR installs.[[FLAT_TRIM]] (Plain HPM Repair only reads the PUBLISHED manifest, so it can't reach an unmerged PR's artifacts.)[[/FLAT_TRIM]]
-
-Gated on enableDeveloperMode[[FLAT_TRIM]] (the tool is hidden from tools/list when Developer Mode is off)[[/FLAT_TRIM]] + the Write master + confirm=true + a recent backup. Use dryRun=true to fetch + parse + plan with ZERO writes (no confirm/backup needed)[[FLAT_TRIM]] and see exactly which bundles and apps would deploy[[/FLAT_TRIM]].
-
-A real deploy is accepted quickly with `status: "in_progress"` and runs in the background; do NOT submit it again while one is in flight.[[FLAT_TRIM]] The background run uses Hubitat's own scheduler, so neither the cloud relay nor the MCP client's request timeout has to stay open for the minutes-long repair; a concurrent second deploy is refused. Poll hub_get_info.lastSelfDeploy until its `requestId` matches the acceptance response; that bound record's `success`/`error` fields carry the outcome. No client extension or custom token is required.[[/FLAT_TRIM]]
-""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    ref: [type: "string", description: "Branch, tag, or commit SHA to deploy (e.g. 'main' or a PR head SHA)."],
-                    dryRun: [type: "boolean", description: "OPTIONAL. When true, report the deploy plan with NO writes (skips the confirm/backup gate). Default false."],
-                    baseUrl: [type: "string", description: "OPTIONAL raw-source base override (no trailing slash); defaults to the canonical repo.[[FLAT_TRIM]] Per-call URLs are built as <baseUrl>/<ref>/<path>. Use for forks / CI branches on a different remote.[[/FLAT_TRIM]]"],
-                    confirm: [type: "boolean", description: "REQUIRED for a real deploy (omit for dryRun). Must be true; confirms a recent backup exists and the user approved the self-deploy."],
-                    args: [type: "object"]
-                ],
-                required: ["ref"]
-            ]
-        ],
-    ]
+    return (_bat529EmbeddedCatalogRead(['["l",[["m",[["name","hub_update_mcp_settings"],["description","Update one or more of the MCP rule app\'s own settings (toggles, log levels, tuning, the device-access scope) in place[[FLAT_TRIM]], or manage its per-client access tokens[[/FLAT_TRIM]] \\u2014 self-administer the app without the Hubitat UI. Gated on enableDeveloperMode + the Write master + confirm=true + a recent backup.[[FLAT_TRIM]] Every successful write is logged at WARN for audit. Changing an enable* toggle or useGateways reshapes tools/list, and changing selectedDevices changes which devices are visible, so MCP clients may need to reconnect to refresh cached schemas / device visibility.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["settings",["m",[["type","object"],["description","Map of setting key \\u2192 new value[[FLAT_TRIM]] (e.g. {\\"mcpLogLevel\\":\\"warn\\",\\"enableCustomRuleEngine\\":true})[[/FLAT_TRIM]]. Unlisted keys are rejected. bypassDeviceAllowlist (bool, default OFF): DANGEROUS escape hatch \\u2014 when ON native device reads, writes, commands, inventory, health, dependents, swaps and replacements reach ANY hub device by id, IGNORING selectedDevices. Allowlisted keys: mcpLogLevel, debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableRead, enableCustomRuleEngine, useGateways, enableMandatoryBPS, bypassDeviceAllowlist, maxConcurrentWrites, backupBeforeRuleEdits, backupEveryRuleWrite, backupBudgetMb, enableLocalAccess, enableCloudAccess, redactAccessTokens, selectedDevices.[[FLAT_TRIM]] enableLocalAccess / enableCloudAccess (bool): allow requests over the LAN / Hubitat cloud endpoint; a call cannot turn off the connection it arrived on.[[/FLAT_TRIM]] mcpLogLevel: debug|info|warn|error. maxConcurrentWrites: integer 0-100[[FLAT_TRIM]] (default 2; 0 disables the server-side all-write concurrency cap)[[/FLAT_TRIM]]. backupBeforeRuleEdits (bool, default ON): take one fresh snapshot per native rule edit batch or form workflow. backupEveryRuleWrite (bool, default OFF): take a fresh snapshot before every edit instead of reusing the app\'s snapshot from the last hour.[[FLAT_TRIM]] backupBudgetMb: whole number of MB from 1 to 1000000 (default 10): code and rule backups are evicted only when together they exceed it, oldest first, and an item\'s newest backup is never evicted; see hub_get_tool_guide(section=\'backup\').[[/FLAT_TRIM]][[FLAT_TRIM]] bypassDeviceAllowlist is independent of Developer Mode.[[/FLAT_TRIM]] selectedDevices = the device-access scope[[FLAT_TRIM]]: {mode:replace|add|remove, ids:[device id strings]}; a bare array is shorthand for a destructive replace[[/FLAT_TRIM]] \\u2014 see hub_get_tool_guide(section=\'hub_admin_write_system\') for per-mode semantics."]]]],["clientToken",["m",[["type","object"],["description","Per-client tokens, instead of settings: see hub_get_tool_guide(section=\'hub_admin_write_system\').[[FLAT_TRIM]] {action: list|create|update|rotate|revoke, ...}. Shape: clientId (update/rotate/revoke), label (create), access? {tools: [names]|\\"all\\", read, write, local, cloud, toolNumber: main|none|0-9}. create and rotate return the new token; a new client starts with every grantable tool on and access narrows it.[[/FLAT_TRIM]]"]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: must be true to confirm the operation"]]]]]]],["required",["l",["confirm"]]]]]]]],["m",[["name","hub_update_package"],["description","Developer Mode self-deploy: full HPM-repair of the MCP package at a git ref in one call -- OVERRIDES whatever is installed, anchored to packageManifest.json AT `ref` so an UNMERGED PR installs.[[FLAT_TRIM]] (Plain HPM Repair only reads the PUBLISHED manifest, so it can\'t reach an unmerged PR\'s artifacts.)[[/FLAT_TRIM]]\\n\\nGated on enableDeveloperMode[[FLAT_TRIM]] (the tool is hidden from tools/list when Developer Mode is off)[[/FLAT_TRIM]] + the Write master + confirm=true + a recent backup. Use dryRun=true to fetch + parse + plan with ZERO writes (no confirm/backup needed)[[FLAT_TRIM]] and see exactly which bundles and apps would deploy[[/FLAT_TRIM]].\\n\\nA real deploy is accepted quickly with `status: \\"in_progress\\"` and runs in the background; do NOT submit it again while one is in flight.[[FLAT_TRIM]] The background run uses Hubitat\'s own scheduler, so neither the cloud relay nor the MCP client\'s request timeout has to stay open for the minutes-long repair; a concurrent second deploy is refused. Poll hub_get_info.lastSelfDeploy until its `requestId` matches the acceptance response; that bound record\'s `success`/`error` fields carry the outcome. No client extension or custom token is required.[[/FLAT_TRIM]]\\n"],["inputSchema",["m",[["type","object"],["properties",["m",[["ref",["m",[["type","string"],["description","Branch, tag, or commit SHA to deploy (e.g. \'main\' or a PR head SHA)."]]]],["dryRun",["m",[["type","boolean"],["description","OPTIONAL. When true, report the deploy plan with NO writes (skips the confirm/backup gate). Default false."]]]],["baseUrl",["m",[["type","string"],["description","OPTIONAL raw-source base override (no trailing slash); defaults to the canonical repo.[[FLAT_TRIM]] Per-call URLs are built as <baseUrl>/<ref>/<path>. Use for forks / CI branches on a different remote.[[/FLAT_TRIM]]"]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED for a real deploy (omit for dryRun). Must be true; confirms a recent backup exists and the user approved the self-deploy."]]]],["args",["m",[["type","object"]]]]]]],["required",["l",["ref"]]]]]]]]]]']) as List)
 }
 
 def _idempotentWriteToolNames_partSelfAdmin() {
@@ -1103,11 +1051,7 @@ def _developerModeOnlyToolNames_partSelfAdmin() {
 def _toolDisplayMeta_partSelfAdmin() {
     // Human-facing title/summary per tool (MCP annotations.title + the Advanced per-tool
     // overrides menu) -- merged into the app's getToolDisplayMeta() aggregator (issue #209).
-    return [
-        // MCP self-administration (Developer Mode)
-        hub_update_mcp_settings: [title: "Update MCP Settings", summary: "Update the MCP app's own settings, device-access scope and per-client tokens (Developer Mode)."],
-        hub_update_package: [title: "Deploy MCP Package", summary: "Full repair-install of the MCP package at a git ref (Developer Mode)."]
-    ]
+    return (_bat529EmbeddedCatalogRead(['["m",[["hub_update_mcp_settings",["m",[["title","Update MCP Settings"],["summary","Update the MCP app\'s own settings, device-access scope and per-client tokens (Developer Mode)."]]]],["hub_update_package",["m",[["title","Deploy MCP Package"],["summary","Full repair-install of the MCP package at a git ref (Developer Mode)."]]]]]]']) as Map)
 }
 
 

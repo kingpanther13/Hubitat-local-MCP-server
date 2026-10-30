@@ -806,46 +806,7 @@ private String _bugReportRawSection(String heading, String body, boolean include
 }
 
 def _getAllToolDefinitions_partDebugLogging() {
-    return [
-        // Debug Logging Tools
-        [
-            name: "hub_set_log_level",
-            description: "Set the minimum log level threshold. Logs below this level won't be stored.",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    level: [type: "string", enum: ["debug", "info", "warn", "error"], description: "Minimum log level to store"]
-                ],
-                required: ["level"]
-            ]
-        ],
-        [
-            name: "hub_report_issue",
-            description: "File or report a bug, open a GitHub issue, request a feature/enhancement, or flag agent-behavior issues. Does NOT submit the issue itself: returns a prefilled GitHub issue link (template + title) plus the report body.[[FLAT_TRIM]] It gathers scoped recent logs and hub/version info; the user opens the link and posts. Paste real tool calls and client-host log lines rather than describing them; the result's preflight and missingContext name anything still missing.[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    title: [type: "string", description: "Short bug/issue narrative. Seeds GitHub title."],
-                    expected: [type: "string", description: "What should have happened."],
-                    actual: [type: "string", description: "What actually happened."],
-                    stepsToReproduce: [type: "string", description: "Exact repro sequence."],
-                    issueType: [type: "string", enum: ["bug", "enhancement", "agent_behavior"], description: "Default bug."],
-                    failingTool: [type: "string", description: "Failed MCP tool; scopes logs and title."],
-                    ruleId: [type: "string", description: "Legacy custom MCP rule-engine rule id; scopes logs to it.[[FLAT_TRIM]] A native Rule Machine rule goes in nativeAppId, not here.[[/FLAT_TRIM]]"],
-                    nativeAppId: [type: "string", description: "Native Rule Machine app id; scopes logs to that app.[[FLAT_TRIM]] A legacy custom MCP rule goes in ruleId.[[/FLAT_TRIM]]"],
-                    llmClient: [type: "string", description: "Host app + version, e.g. Claude Code 2.1 or Claude Desktop; ask the user, never guess."],
-                    llmModel: [type: "string", description: "Model in use, e.g. Opus 5; ask if unknown."],
-                    verbatimToolCalls: [type: "string", description: "EXACT failing call (tool + args JSON) and raw response text, not paraphrased.[[FLAT_TRIM]] Copy from the transcript: the wording of the real error is usually the whole diagnosis.[[/FLAT_TRIM]]"],
-                    clientLogs: [type: "string", description: "Raw MCP client-host log lines for the failure window.[[FLAT_TRIM]] Claude Desktop writes mcp-server-*.log; Claude Code has its own debug log. Paste the lines, not a summary. Also takes pasted hub_get_logs output.[[/FLAT_TRIM]]"],
-                    privacyMode: [type: "string", enum: ["private", "public"], description: "'public' placeholders hub name; withholds raw logs and the pasted verbatim/client-log sections."],
-                    includeRawLogs: [type: "boolean", description: "Private only (default true). false also hides pasted sections. Public always withholds."],
-                    includeUnrelatedRecentLogs: [type: "boolean", description: "When scoped (failingTool/ruleId/nativeAppId set), also attach recent logs outside that scope.[[FLAT_TRIM]] Default false, no-op when unscoped.[[/FLAT_TRIM]]"],
-                    logWindowSeconds: [type: "integer", description: "Default 120."]
-                ],
-                required: ["title", "expected", "actual"]
-            ]
-        ],
-    ]
+    return (_bat529EmbeddedCatalogRead(['["l",[["m",[["name","hub_set_log_level"],["description","Set the minimum log level threshold. Logs below this level won\'t be stored."],["inputSchema",["m",[["type","object"],["properties",["m",[["level",["m",[["type","string"],["enum",["l",["debug","info","warn","error"]]],["description","Minimum log level to store"]]]]]]],["required",["l",["level"]]]]]]]],["m",[["name","hub_report_issue"],["description","File or report a bug, open a GitHub issue, request a feature/enhancement, or flag agent-behavior issues. Does NOT submit the issue itself: returns a prefilled GitHub issue link (template + title) plus the report body.[[FLAT_TRIM]] It gathers scoped recent logs and hub/version info; the user opens the link and posts. Paste real tool calls and client-host log lines rather than describing them; the result\'s preflight and missingContext name anything still missing.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["title",["m",[["type","string"],["description","Short bug/issue narrative. Seeds GitHub title."]]]],["expected",["m",[["type","string"],["description","What should have happened."]]]],["actual",["m",[["type","string"],["description","What actually happened."]]]],["stepsToReproduce",["m",[["type","string"],["description","Exact repro sequence."]]]],["issueType",["m",[["type","string"],["enum",["l",["bug","enhancement","agent_behavior"]]],["description","Default bug."]]]],["failingTool",["m",[["type","string"],["description","Failed MCP tool; scopes logs and title."]]]],["ruleId",["m",[["type","string"],["description","Legacy custom MCP rule-engine rule id; scopes logs to it.[[FLAT_TRIM]] A native Rule Machine rule goes in nativeAppId, not here.[[/FLAT_TRIM]]"]]]],["nativeAppId",["m",[["type","string"],["description","Native Rule Machine app id; scopes logs to that app.[[FLAT_TRIM]] A legacy custom MCP rule goes in ruleId.[[/FLAT_TRIM]]"]]]],["llmClient",["m",[["type","string"],["description","Host app + version, e.g. Claude Code 2.1 or Claude Desktop; ask the user, never guess."]]]],["llmModel",["m",[["type","string"],["description","Model in use, e.g. Opus 5; ask if unknown."]]]],["verbatimToolCalls",["m",[["type","string"],["description","EXACT failing call (tool + args JSON) and raw response text, not paraphrased.[[FLAT_TRIM]] Copy from the transcript: the wording of the real error is usually the whole diagnosis.[[/FLAT_TRIM]]"]]]],["clientLogs",["m",[["type","string"],["description","Raw MCP client-host log lines for the failure window.[[FLAT_TRIM]] Claude Desktop writes mcp-server-*.log; Claude Code has its own debug log. Paste the lines, not a summary. Also takes pasted hub_get_logs output.[[/FLAT_TRIM]]"]]]],["privacyMode",["m",[["type","string"],["enum",["l",["private","public"]]],["description","\'public\' placeholders hub name; withholds raw logs and the pasted verbatim/client-log sections."]]]],["includeRawLogs",["m",[["type","boolean"],["description","Private only (default true). false also hides pasted sections. Public always withholds."]]]],["includeUnrelatedRecentLogs",["m",[["type","boolean"],["description","When scoped (failingTool/ruleId/nativeAppId set), also attach recent logs outside that scope.[[FLAT_TRIM]] Default false, no-op when unscoped.[[/FLAT_TRIM]]"]]]],["logWindowSeconds",["m",[["type","integer"],["description","Default 120."]]]]]]],["required",["l",["title","expected","actual"]]]]]]]]]]']) as List)
 }
 
 def _readOnlyToolNames_partDebugLogging() {
@@ -870,10 +831,7 @@ def _idempotentWriteToolNames_partDebugLogging() {
 def _toolDisplayMeta_partDebugLogging() {
     // Human-facing title/summary per tool (MCP annotations.title + the Advanced per-tool
     // overrides menu) -- merged into the app's getToolDisplayMeta() aggregator (issue #209).
-    return [
-        hub_report_issue: [title: "Generate Diagnostic Report", summary: "Generate a comprehensive diagnostic report for bug reports."],
-        hub_set_log_level: [title: "Set MCP Log Level", summary: "Set the MCP log level (debug, info, warn, error)."]
-    ]
+    return (_bat529EmbeddedCatalogRead(['["m",[["hub_report_issue",["m",[["title","Generate Diagnostic Report"],["summary","Generate a comprehensive diagnostic report for bug reports."]]]],["hub_set_log_level",["m",[["title","Set MCP Log Level"],["summary","Set the MCP log level (debug, info, warn, error)."]]]]]]']) as Map)
 }
 
 

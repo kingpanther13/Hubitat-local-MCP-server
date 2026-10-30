@@ -1,113 +1,7 @@
 library(name: "McpNativeRulesLib", namespace: "mcp", author: "kingpanther13", description: "Native Rule Machine runtime, generic native app authoring, app deletion and backup compatibility for the MCP Rule Server.")
 
 def _getAllToolDefinitions_partNativeRM() {
-    return [
-        // Native Rule Machine runtime and administrative tools.
-        [
-            name: "hub_list_rules",
-            description: "List all Rule Machine rules (RM 4.x + 5.x, deduplicated by id) with each rule's id, label, and live `status` (`active`/`paused`/`stopped`/`disabled`).[[FLAT_TRIM]] Requires the Read master.[[/FLAT_TRIM]][[FLAT_TRIM]] `status` is `unknown` when the hub's app list is momentarily unreadable. CAVEAT: the runtime-STOPPED state is only visible here when the hub's list source decorates the label (many firmwares don't) — the authoritative stopped check is hub_get_rule_health's `stopped` field. For ONE rule's state, call hub_get_rule_health(appId) instead of listing every rule — it returns that rule's paused/disabled/stopped/broken directly. For the enabled/disabled state of NON-RM classic apps (Room Lighting, Notifier, Basic Rules, Button Controllers) use `hub_list_apps` (scope='instances'). Call `hub_get_tool_guide(section='builtin_app_tools_rules')` for the status-detection semantics and platform limitations on RM rule internals.[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    labelFilter: [type: "string", description: "Case-insensitive label substring; applied before pagination."],
-                    cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 50)."]
-                ]
-            ]
-        ],
-        [
-            name: "hub_call_rule",
-            description: "Trigger one or more Rule Machine rules. Not destructive (invokes existing user-configured automation).[[FLAT_TRIM]] Requires the Write master.[[/FLAT_TRIM]] Call `hub_get_tool_guide(section='builtin_app_tools_rules')` for action semantics.",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    ruleId: [type: ["integer", "array"], items: [type: "integer"], description: "Rule ID from hub_list_rules, or an array of rule IDs to act on in one call"],
-                    action: [type: "string", enum: ["rule", "actions", "stop", "start"], description: "Which RM action to invoke. Default: rule."],
-                ],
-                required: ["ruleId"]
-            ]
-        ],
-        [
-            name: "hub_set_rule_paused",
-            description: "Pause or resume one or more Rule Machine rules in one call (paused rules don't fire on triggers). paused=true pauses, paused=false resumes (idempotent on the hub). Pass an array of ruleIds to pause/resume a whole set at once — one RMUtils dispatch, e.g. a staged-migration cutover.[[FLAT_TRIM]] Requires the Write master.[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    ruleId: [type: ["integer", "array"], items: [type: "integer"], description: "Rule ID from hub_list_rules, or an array of rule IDs to pause/resume together"],
-                    paused: [type: "boolean", description: "true = pause the rule(s); false = resume."]
-                ],
-                required: ["ruleId", "paused"]
-            ]
-        ],
-        [
-            name: "hub_set_rule_private_boolean",
-            description: "Set the private boolean of one or more Rule Machine rules to true or false (strict: accepts Boolean or lowercase string 'true'/'false' only).[[FLAT_TRIM]] Requires the Write master.[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    ruleId: [type: ["integer", "array"], items: [type: "integer"], description: "Rule ID from hub_list_rules, or an array of rule IDs to set together"],
-                    value: [type: "boolean", description: "Target value for the rule's Private Boolean."]
-                ],
-                required: ["ruleId", "value"]
-            ]
-        ],
-        [
-            name: "hub_set_native_app",
-            description: "Create, update or drive the native forms of classic Hubitat apps: Room Lighting, Button Controllers and Button Rules, Basic Rules, Notifier, Groups and Scenes, Thermostat Scheduler and Controller, and user or community apps. Omit operation for help; select a write operation without confirm for its schema. create and update run the app's own pages and Done as the browser does. Writes require confirm=true and a recent backup; partial changes can remain. Rule Machine rules use hub_set_rule (create app_type rule_machine makes only an empty rule); guide: set_native_app_reference.",
-            inputSchema: [type: "object", additionalProperties: false, properties: [operation: [type: "string", enum: ["create", "update", "form"]], app_id: [type: "integer", minimum: 1], args: [type: "object"], confirm: [type: "boolean"], bestPracticeKey: [type: "string"]]]
-        ],
-        [
-            name: "hub_get_rule_health",
-            description: """Inspect a rule's current state and return a structured health report.[[FLAT_TRIM]] Works for Rule Machine, Visual Rules Builder, and other classic apps (Button Controller, Basic Rule). This standalone read adds live eventSubscriptionCount/scheduledJobCount, runtime stopped, and status/markup fallbacks for paused. paused is true/false/null (unknown); explicit stopped state outranks display markup. Embedded health from write tools carries the structural verdict and compiled paused only, without these extra reads. With auto or ruleBuilderJson, Visual Rule labels preserve the raw own name; forcing configPage uses the rendered label.[[/FLAT_TRIM]] Run after every mutation. ok=false with unreadable=false means at least one issue was found (the issues list explains what); ok=false with unreadable=true means NEITHER source could be read (a transient fetch failure, or the app does not exist) -- a couldn't-check verdict, not evidence of breakage.""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    appId: [type: "integer", description: "Installed-app ID to check (Rule Machine or Visual Rules Builder rule)."],
-                    source: [type: "string", enum: ["auto", "ruleBuilderJson", "configPage"], description: "Which source(s) to read; default auto."]
-                ],
-                required: ["appId"]
-            ]
-        ],
-        [
-            name: "hub_list_rule_local_variables",
-            description: "List a Rule Machine rule's LOCAL variables (per-rule, distinct from hub globals).[[FLAT_TRIM]] Requires the Read master.[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    appId: [type: "integer", description: "The Rule Machine rule's installed-app id (the rule whose local variables to list)."]
-                ],
-                required: ["appId"]
-            ]
-        ],
-        [
-            name: "hub_delete_native_app",
-            description: """Delete any classic native automation app (RM rule, Room Lighting instance, Button Controller / Button Rule, Basic Rule, Notifier, Group, Scene, etc.). Same endpoint family across all of them.[[FLAT_TRIM]] force=false (default) soft-deletes (hub refuses if the app has child apps/devices); force=true hard-deletes with no child safety checks.[[/FLAT_TRIM]]
-
-BEFORE DELETE: full snapshot saved to File Manager (backup.backupKey).[[FLAT_TRIM]] Call hub_restore_backup (in hub_manage_backup) with that key to recreate the app with all its settings re-applied.[[/FLAT_TRIM]]
-
-Requires Write master + confirm=true + recent hub backup.""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    appId: [type: "integer", description: "Installed-app ID."],
-                    force: [type: "boolean", description: "true = bypass child/device safety checks and force-delete. Default false."],
-                    confirm: [type: "boolean", description: "Must be true."]
-                ],
-                required: ["appId", "confirm"]
-            ]
-        ],
-        [
-            name: "hub_set_app_disabled",
-            description: "Enable or disable any installed app (the admin UI red-X) without deleting it — reversible and preserves the app's config. For Rule Machine rules use hub_set_rule_paused instead. Write master only — no confirm/backup needed[[FLAT_TRIM]]; the disabled flag is read-back verified[[/FLAT_TRIM]].",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    appId: [type: "integer", description: "Installed-app ID to enable/disable (from hub_list_apps)."],
-                    disabled: [type: "boolean", description: "true = disable the app (stop it running), false = enable it."]
-                ],
-                required: ["appId", "disabled"]
-            ]
-        ],
-    ]
+    return (_bat529EmbeddedCatalogRead(['["l",[["m",[["name","hub_list_rules"],["description","List all Rule Machine rules (RM 4.x + 5.x, deduplicated by id) with each rule\'s id, label, and live `status` (`active`/`paused`/`stopped`/`disabled`).[[FLAT_TRIM]] Requires the Read master.[[/FLAT_TRIM]][[FLAT_TRIM]] `status` is `unknown` when the hub\'s app list is momentarily unreadable. CAVEAT: the runtime-STOPPED state is only visible here when the hub\'s list source decorates the label (many firmwares don\'t) \\u2014 the authoritative stopped check is hub_get_rule_health\'s `stopped` field. For ONE rule\'s state, call hub_get_rule_health(appId) instead of listing every rule \\u2014 it returns that rule\'s paused/disabled/stopped/broken directly. For the enabled/disabled state of NON-RM classic apps (Room Lighting, Notifier, Basic Rules, Button Controllers) use `hub_list_apps` (scope=\'instances\'). Call `hub_get_tool_guide(section=\'builtin_app_tools_rules\')` for the status-detection semantics and platform limitations on RM rule internals.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["labelFilter",["m",[["type","string"],["description","Case-insensitive label substring; applied before pagination."]]]],["cursor",["m",[["type","string"],["description","Opt-in pagination cursor. Omit for unbounded; pass \\"\\" for the first page, iterate nextCursor (page size 50)."]]]]]]]]]]]],["m",[["name","hub_call_rule"],["description","Trigger one or more Rule Machine rules. Not destructive (invokes existing user-configured automation).[[FLAT_TRIM]] Requires the Write master.[[/FLAT_TRIM]] Call `hub_get_tool_guide(section=\'builtin_app_tools_rules\')` for action semantics."],["inputSchema",["m",[["type","object"],["properties",["m",[["ruleId",["m",[["type",["l",["integer","array"]]],["items",["m",[["type","integer"]]]],["description","Rule ID from hub_list_rules, or an array of rule IDs to act on in one call"]]]],["action",["m",[["type","string"],["enum",["l",["rule","actions","stop","start"]]],["description","Which RM action to invoke. Default: rule."]]]]]]],["required",["l",["ruleId"]]]]]]]],["m",[["name","hub_set_rule_paused"],["description","Pause or resume one or more Rule Machine rules in one call (paused rules don\'t fire on triggers). paused=true pauses, paused=false resumes (idempotent on the hub). Pass an array of ruleIds to pause/resume a whole set at once \\u2014 one RMUtils dispatch, e.g. a staged-migration cutover.[[FLAT_TRIM]] Requires the Write master.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["ruleId",["m",[["type",["l",["integer","array"]]],["items",["m",[["type","integer"]]]],["description","Rule ID from hub_list_rules, or an array of rule IDs to pause/resume together"]]]],["paused",["m",[["type","boolean"],["description","true = pause the rule(s); false = resume."]]]]]]],["required",["l",["ruleId","paused"]]]]]]]],["m",[["name","hub_set_rule_private_boolean"],["description","Set the private boolean of one or more Rule Machine rules to true or false (strict: accepts Boolean or lowercase string \'true\'/\'false\' only).[[FLAT_TRIM]] Requires the Write master.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["ruleId",["m",[["type",["l",["integer","array"]]],["items",["m",[["type","integer"]]]],["description","Rule ID from hub_list_rules, or an array of rule IDs to set together"]]]],["value",["m",[["type","boolean"],["description","Target value for the rule\'s Private Boolean."]]]]]]],["required",["l",["ruleId","value"]]]]]]]],["m",[["name","hub_set_native_app"],["description","Create, update or drive the native forms of classic Hubitat apps: Room Lighting, Button Controllers and Button Rules, Basic Rules, Notifier, Groups and Scenes, Thermostat Scheduler and Controller, and user or community apps. Omit operation for help; select a write operation without confirm for its schema. create and update run the app\'s own pages and Done as the browser does. Writes require confirm=true and a recent backup; partial changes can remain. Rule Machine rules use hub_set_rule (create app_type rule_machine makes only an empty rule); guide: set_native_app_reference."],["inputSchema",["m",[["type","object"],["additionalProperties",false],["properties",["m",[["operation",["m",[["type","string"],["enum",["l",["create","update","form"]]]]]],["app_id",["m",[["type","integer"],["minimum",1]]]],["args",["m",[["type","object"]]]],["confirm",["m",[["type","boolean"]]]],["bestPracticeKey",["m",[["type","string"]]]]]]]]]]]],["m",[["name","hub_get_rule_health"],["description","Inspect a rule\'s current state and return a structured health report.[[FLAT_TRIM]] Works for Rule Machine, Visual Rules Builder, and other classic apps (Button Controller, Basic Rule). This standalone read adds live eventSubscriptionCount/scheduledJobCount, runtime stopped, and status/markup fallbacks for paused. paused is true/false/null (unknown); explicit stopped state outranks display markup. Embedded health from write tools carries the structural verdict and compiled paused only, without these extra reads. With auto or ruleBuilderJson, Visual Rule labels preserve the raw own name; forcing configPage uses the rendered label.[[/FLAT_TRIM]] Run after every mutation. ok=false with unreadable=false means at least one issue was found (the issues list explains what); ok=false with unreadable=true means NEITHER source could be read (a transient fetch failure, or the app does not exist) -- a couldn\'t-check verdict, not evidence of breakage."],["inputSchema",["m",[["type","object"],["properties",["m",[["appId",["m",[["type","integer"],["description","Installed-app ID to check (Rule Machine or Visual Rules Builder rule)."]]]],["source",["m",[["type","string"],["enum",["l",["auto","ruleBuilderJson","configPage"]]],["description","Which source(s) to read; default auto."]]]]]]],["required",["l",["appId"]]]]]]]],["m",[["name","hub_list_rule_local_variables"],["description","List a Rule Machine rule\'s LOCAL variables (per-rule, distinct from hub globals).[[FLAT_TRIM]] Requires the Read master.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["appId",["m",[["type","integer"],["description","The Rule Machine rule\'s installed-app id (the rule whose local variables to list)."]]]]]]],["required",["l",["appId"]]]]]]]],["m",[["name","hub_delete_native_app"],["description","Delete any classic native automation app (RM rule, Room Lighting instance, Button Controller / Button Rule, Basic Rule, Notifier, Group, Scene, etc.). Same endpoint family across all of them.[[FLAT_TRIM]] force=false (default) soft-deletes (hub refuses if the app has child apps/devices); force=true hard-deletes with no child safety checks.[[/FLAT_TRIM]]\\n\\nBEFORE DELETE: full snapshot saved to File Manager (backup.backupKey).[[FLAT_TRIM]] Call hub_restore_backup (in hub_manage_backup) with that key to recreate the app with all its settings re-applied.[[/FLAT_TRIM]]\\n\\nRequires Write master + confirm=true + recent hub backup."],["inputSchema",["m",[["type","object"],["properties",["m",[["appId",["m",[["type","integer"],["description","Installed-app ID."]]]],["force",["m",[["type","boolean"],["description","true = bypass child/device safety checks and force-delete. Default false."]]]],["confirm",["m",[["type","boolean"],["description","Must be true."]]]]]]],["required",["l",["appId","confirm"]]]]]]]],["m",[["name","hub_set_app_disabled"],["description","Enable or disable any installed app (the admin UI red-X) without deleting it \\u2014 reversible and preserves the app\'s config. For Rule Machine rules use hub_set_rule_paused instead. Write master only \\u2014 no confirm/backup needed[[FLAT_TRIM]]; the disabled flag is read-back verified[[/FLAT_TRIM]]."],["inputSchema",["m",[["type","object"],["properties",["m",[["appId",["m",[["type","integer"],["description","Installed-app ID to enable/disable (from hub_list_apps)."]]]],["disabled",["m",[["type","boolean"],["description","true = disable the app (stop it running), false = enable it."]]]]]]],["required",["l",["appId","disabled"]]]]]]]]]]']) as List)
 }
 
 // Enable/disable any installed app via POST /installedapp/disable {id, disable} -- the documented
@@ -3318,18 +3212,7 @@ def _idempotentWriteToolNames_partNativeRM() {
 
 def _toolDisplayMeta_partNativeRM() {
     // Human-facing title/summary per tool -- merged into the app's getToolDisplayMeta() aggregator.
-    return [
-        // Native Rule Machine + classic apps
-        hub_list_rules: [title: "List Rule Machine Rules", summary: "List all Rule Machine rules."],
-        hub_call_rule: [title: "Trigger Rule Machine Rule", summary: "Trigger one or more Rule Machine rules, run their actions, or stop them."],
-        hub_set_rule_paused: [title: "Pause or Resume Rule", summary: "Pause or resume one or more Rule Machine rules in one call."],
-        hub_set_rule_private_boolean: [title: "Set Rule Private Boolean", summary: "Set the private boolean of one or more Rule Machine rules."],
-        hub_get_rule_health: [title: "Get Rule Health", summary: "Read-only health check on any installed app."],
-        hub_list_rule_local_variables: [title: "List Rule Local Variables", summary: "Read-only list of a Rule Machine rule's local variables."],
-        hub_set_native_app: [title: "Set Native App", summary: "Create, update or drive the native forms of classic apps (Room Lighting, Thermostat Scheduler and Controller, user apps)."],
-        hub_delete_native_app: [title: "Delete Native App", summary: "Delete a classic native app (auto-snapshot first)."],
-        hub_set_app_disabled: [title: "Enable or Disable App", summary: "Enable or disable any installed app without deleting it (reversible)."]
-    ]
+    return (_bat529EmbeddedCatalogRead(['["m",[["hub_list_rules",["m",[["title","List Rule Machine Rules"],["summary","List all Rule Machine rules."]]]],["hub_call_rule",["m",[["title","Trigger Rule Machine Rule"],["summary","Trigger one or more Rule Machine rules, run their actions, or stop them."]]]],["hub_set_rule_paused",["m",[["title","Pause or Resume Rule"],["summary","Pause or resume one or more Rule Machine rules in one call."]]]],["hub_set_rule_private_boolean",["m",[["title","Set Rule Private Boolean"],["summary","Set the private boolean of one or more Rule Machine rules."]]]],["hub_get_rule_health",["m",[["title","Get Rule Health"],["summary","Read-only health check on any installed app."]]]],["hub_list_rule_local_variables",["m",[["title","List Rule Local Variables"],["summary","Read-only list of a Rule Machine rule\'s local variables."]]]],["hub_set_native_app",["m",[["title","Set Native App"],["summary","Create, update or drive the native forms of classic apps (Room Lighting, Thermostat Scheduler and Controller, user apps)."]]]],["hub_delete_native_app",["m",[["title","Delete Native App"],["summary","Delete a classic native app (auto-snapshot first)."]]]],["hub_set_app_disabled",["m",[["title","Enable or Disable App"],["summary","Enable or disable any installed app without deleting it (reversible)."]]]]]]']) as Map)
 }
 
 String _naGuide() {

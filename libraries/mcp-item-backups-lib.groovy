@@ -850,8 +850,7 @@ private _setHubBackupSchedule(Map schedule) {
     int cloudNow = ((cur.cloudBackupFrequency ?: 0) as Integer)
     int cloudAfter = ((cloudFreq ?: 0) as Integer)
     if ((cloudNow > 0 || cloudAfter > 0) && !schedule.containsKey("cloudBackupPassword")) {
-        return [success: false, error: "Cloud backup is enabled but cloudBackupPassword was not provided.",
-                note: "Changing the schedule replaces the cloud-backup password, which the hub does not expose for read-back. Pass cloudBackupPassword (the current cloud-backup encryption password) to keep cloud backups working, or pass cloudBackupFrequency=0 to turn cloud backup off."]
+        return (_bat529EmbeddedCatalogRead(['["m",[["success",false],["error","Cloud backup is enabled but cloudBackupPassword was not provided."],["note","Changing the schedule replaces the cloud-backup password, which the hub does not expose for read-back. Pass cloudBackupPassword (the current cloud-backup encryption password) to keep cloud backups working, or pass cloudBackupFrequency=0 to turn cloud backup off."]]]']) as Map)
     }
     def body = [
         localBackupFrequency: localFreq,
@@ -1007,9 +1006,7 @@ private Map _createFullLocalBackup(boolean scheduleUpdated, networkBackup) {
     def out = [full: true, scheduleUpdated: scheduleUpdated]
     if (networkBackup) out.networkBackup = networkBackup
     if (!confirmed) {
-        return out + [success: false, confirmed: false,
-                error: "The full backup was requested but no new full backup appeared within ~60s.",
-                note: "A full backup with many File Manager files can take minutes. Check hub_list_backups(scope='hub_local') for a fullBackup:true entry before relying on it; a hub refusal shows in hub_get_logs(mode='mcp'). The 24h destructive-confirm gate was not stamped."]
+        return out + (_bat529EmbeddedCatalogRead(['["m",[["success",false],["confirmed",false],["error","The full backup was requested but no new full backup appeared within ~60s."],["note","A full backup with many File Manager files can take minutes. Check hub_list_backups(scope=\'hub_local\') for a fullBackup:true entry before relying on it; a hub refusal shows in hub_get_logs(mode=\'mcp\'). The 24h destructive-confirm gate was not stamped."]]]']) as Map)
     }
     def stamp = now()
     state.lastBackupTimestamp = stamp
@@ -1398,9 +1395,7 @@ private _restoreUploadedBackup(Map args) {
         return _restoreRequestFailed("hub-db", "hub_uploaded", e)
     }
     if (parsed instanceof Map && parsed.success == true) {
-        return [success: true, type: "hub-db", location: "hub_uploaded",
-                message: "Uploaded backup accepted — the hub is rebooting now to restore it.",
-                note: "Re-check hub reachability after the reboot; the database is being replaced from the uploaded backup."]
+        return (_bat529EmbeddedCatalogRead(['["m",[["success",true],["type","hub-db"],["location","hub_uploaded"],["message","Uploaded backup accepted \\u2014 the hub is rebooting now to restore it."],["note","Re-check hub reachability after the reboot; the database is being replaced from the uploaded backup."]]]']) as Map)
     }
     return [success: false, type: "hub-db", location: "hub_uploaded",
             error: (parsed instanceof Map) ? (parsed.message ?: parsed.error ?: "restore did not report success") : "unexpected response",
@@ -1412,95 +1407,12 @@ def _getAllToolDefinitions_partItemBackups() {
     // near the JVM 65,535 constant-pool limit.
     def defs = { [
         // ==================== Hub-DB (whole-hub) backup tools — issue #259 item #1 ====================
-        [
-            name: "hub_create_backup",
-            description: """Create a hub-database backup. Destructive tools require one within 24h.[[FLAT_TRIM]] Whole-hub .lzf, or with full=true a full local backup (.tar.gz: database, File Manager files, Zigbee and Z-Wave data). Optionally set the automatic-backup schedule (`schedule`) and the network-share backup (`networkBackup`, `testNetworkBackup`); scheduleOnly=true changes those settings only. cloudDownload copies an existing cloud backup into File Manager instead. The only write tool needing no prior backup.[[/FLAT_TRIM]]
-[[FLAT_TRIM]]
-A transport drop can lose the response while the hub still commits this write; verify current hub state before retrying. See hub_get_tool_guide(section='slow_ops').
-[[/FLAT_TRIM]]
-""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    confirm: [type: "boolean", description: "true to create a backup now (omit with scheduleOnly)."],
-                    mock: [type: "boolean", description: "Developer Mode only: stamp the 24h gate record; no real backup (test envs)."],
-                    mockEpoch: [type: "integer", description: "Developer Mode only, with mock=true: stamp this epoch-millis instead of now (test envs; lets tests set a stale gate record)."],
-                    schedule: [type: "object", description: "Optional: set the automatic-backup schedule. Omitted fields keep their current value (read-merged from the hub).[[FLAT_TRIM]] If cloud backup is enabled you MUST pass cloudBackupPassword (the hub doesn't expose it for read-back) or pass cloudBackupFrequency=0 to turn cloud backup off.[[/FLAT_TRIM]]", properties: [
-                        hour: [type: "integer", description: "[[FLAT_TRIM]]Hour 0-23 (kept if omitted)[[/FLAT_TRIM]]"],
-                        minute: [type: "integer", description: "[[FLAT_TRIM]]Minute 0-59 (kept if omitted)[[/FLAT_TRIM]]"],
-                        localBackupFrequency: [type: "integer", enum: [0, 1, 2, 3, 5, 7, 14, 21, 28], description: "[[FLAT_TRIM]]Local backup interval in DAYS (0=off); kept if omitted[[/FLAT_TRIM]]"],
-                        cloudBackupFrequency: [type: "integer", enum: [0, 1, 2, 3, 5, 7, 14, 21, 28], description: "[[FLAT_TRIM]]Cloud backup interval in DAYS (0=off); kept if omitted[[/FLAT_TRIM]]"],
-                        cloudBackupPassword: [type: "string", description: "[[FLAT_TRIM]]Cloud-backup encryption password. Required when cloud backup is/stays enabled.[[/FLAT_TRIM]]"]
-                    ]],
-                    scheduleOnly: [type: "boolean", description: "With schedule/networkBackup: settings only, no backup now."],
-                    full: [type: "boolean", description: "[[FLAT_TRIM]]Full local backup (database + files + radio data). Needs the Full Local Backup subscription.[[/FLAT_TRIM]]"],
-                    networkBackup: [type: "object", description: "[[FLAT_TRIM]]Network-share backup: {enabled?, networkPath?, username?, password?}; omitted fields keep their value.[[/FLAT_TRIM]]"],
-                    testNetworkBackup: [type: "boolean", description: "[[FLAT_TRIM]]Test the network share.[[/FLAT_TRIM]]"],
-                    cloudDownload: [type: "object", description: "[[FLAT_TRIM]]Copy a cloud backup into File Manager: {path, cloudBackupPassword, part? (database|files)}; send alone.[[/FLAT_TRIM]]"],
-                    args: [type: "object"]
-                ]
-            ]
-        ],
-        [
-            name: "hub_delete_backup",
-            description: """⚠️ Delete a whole-hub database backup (DESTRUCTIVE; tell the user first). Write master + confirm + a recent backup.""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    location: [type: "string", enum: ["local", "cloud"], description: "Which store to delete from."],
-                    fileName: [type: "string", description: "location=local: backup name from hub_list_backups."],
-                    path: [type: "string", description: "location=cloud: backup path from hub_list_backups."],
-                    confirm: [type: "boolean", description: "REQUIRED true. Confirms the delete."]
-                ],
-                required: ["location", "confirm"]
-            ]
-        ],
+        (_bat529EmbeddedCatalogRead(['["m",[["name","hub_create_backup"],["description","Create a hub-database backup. Destructive tools require one within 24h.[[FLAT_TRIM]] Whole-hub .lzf, or with full=true a full local backup (.tar.gz: database, File Manager files, Zigbee and Z-Wave data). Optionally set the automatic-backup schedule (`schedule`) and the network-share backup (`networkBackup`, `testNetworkBackup`); scheduleOnly=true changes those settings only. cloudDownload copies an existing cloud backup into File Manager instead. The only write tool needing no prior backup.[[/FLAT_TRIM]]\\n[[FLAT_TRIM]]\\nA transport drop can lose the response while the hub still commits this write; verify current hub state before retrying. See hub_get_tool_guide(section=\'slow_ops\').\\n[[/FLAT_TRIM]]\\n"],["inputSchema",["m",[["type","object"],["properties",["m",[["confirm",["m",[["type","boolean"],["description","true to create a backup now (omit with scheduleOnly)."]]]],["mock",["m",[["type","boolean"],["description","Developer Mode only: stamp the 24h gate record; no real backup (test envs)."]]]],["mockEpoch",["m",[["type","integer"],["description","Developer Mode only, with mock=true: stamp this epoch-millis instead of now (test envs; lets tests set a stale gate record)."]]]],["schedule",["m",[["type","object"],["description","Optional: set the automatic-backup schedule. Omitted fields keep their current value (read-merged from the hub).[[FLAT_TRIM]] If cloud backup is enabled you MUST pass cloudBackupPassword (the hub doesn\'t expose it for read-back) or pass cloudBackupFrequency=0 to turn cloud backup off.[[/FLAT_TRIM]]"],["properties",["m",[["hour",["m",[["type","integer"],["description","[[FLAT_TRIM]]Hour 0-23 (kept if omitted)[[/FLAT_TRIM]]"]]]],["minute",["m",[["type","integer"],["description","[[FLAT_TRIM]]Minute 0-59 (kept if omitted)[[/FLAT_TRIM]]"]]]],["localBackupFrequency",["m",[["type","integer"],["enum",["l",[0,1,2,3,5,7,14,21,28]]],["description","[[FLAT_TRIM]]Local backup interval in DAYS (0=off); kept if omitted[[/FLAT_TRIM]]"]]]],["cloudBackupFrequency",["m",[["type","integer"],["enum",["l",[0,1,2,3,5,7,14,21,28]]],["description","[[FLAT_TRIM]]Cloud backup interval in DAYS (0=off); kept if omitted[[/FLAT_TRIM]]"]]]],["cloudBackupPassword",["m",[["type","string"],["description","[[FLAT_TRIM]]Cloud-backup encryption password. Required when cloud backup is/stays enabled.[[/FLAT_TRIM]]"]]]]]]]]]],["scheduleOnly",["m",[["type","boolean"],["description","With schedule/networkBackup: settings only, no backup now."]]]],["full",["m",[["type","boolean"],["description","[[FLAT_TRIM]]Full local backup (database + files + radio data). Needs the Full Local Backup subscription.[[/FLAT_TRIM]]"]]]],["networkBackup",["m",[["type","object"],["description","[[FLAT_TRIM]]Network-share backup: {enabled?, networkPath?, username?, password?}; omitted fields keep their value.[[/FLAT_TRIM]]"]]]],["testNetworkBackup",["m",[["type","boolean"],["description","[[FLAT_TRIM]]Test the network share.[[/FLAT_TRIM]]"]]]],["cloudDownload",["m",[["type","object"],["description","[[FLAT_TRIM]]Copy a cloud backup into File Manager: {path, cloudBackupPassword, part? (database|files)}; send alone.[[/FLAT_TRIM]]"]]]],["args",["m",[["type","object"]]]]]]]]]]]]']) as Map),
+        (_bat529EmbeddedCatalogRead(['["m",[["name","hub_delete_backup"],["description","\\u26a0\\ufe0f Delete a whole-hub database backup (DESTRUCTIVE; tell the user first). Write master + confirm + a recent backup."],["inputSchema",["m",[["type","object"],["properties",["m",[["location",["m",[["type","string"],["enum",["l",["local","cloud"]]],["description","Which store to delete from."]]]],["fileName",["m",[["type","string"],["description","location=local: backup name from hub_list_backups."]]]],["path",["m",[["type","string"],["description","location=cloud: backup path from hub_list_backups."]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED true. Confirms the delete."]]]]]]],["required",["l",["location","confirm"]]]]]]]]']) as Map),
         // ==================== Source-code item backup tools ====================
-        [
-            name: "hub_list_backups",
-            description: "List backups: scope=source (default; auto-created code backups, each with a backupKey) | hub_local | hub_cloud | hub | all. Read-only. The hub scopes also return the automatic-backup `schedule` and the `networkBackup` share settings.[[FLAT_TRIM]] Whole-hub DB backups come back under hubLocalBackups/hubCloudBackups — a local backup's name and a cloud backup's path feed hub_restore_backup/hub_delete_backup; fullBackup:true marks a full local backup (database + files + radio data). The `schedule` block carries the frequencies (days) + daily hour/minute and the full-backup / last-backup status fields; no password is ever returned. A failed schedule read joins hubBackupErrors (partial:true) and a failed share read stays inside networkBackup; neither fails the listing. The response reports storageBudget and the retention policy. See hub_get_tool_guide(section='backup').[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    scope: [type: "string", enum: ["source", "hub_local", "hub_cloud", "hub", "all"], description: "Which backups to list; default source."],
-                    cursor: [type: "string", description: "Source backups page 50 at a time, newest first; pass the returned nextCursor to continue."]
-                ],
-                required: []
-            ]
-        ],
-        [
-            name: "hub_get_backup",
-            description: "Read the saved source code from one backup. Call hub_list_backups first to find the backupKey.[[FLAT_TRIM]] Use this to inspect or diff a prior version before restoring; to re-apply it use hub_restore_backup, not this tool. Large sources are omitted from the response (sourceTooLargeForResponse=true) with a File Manager download link instead.[[/FLAT_TRIM]] Read-only.",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    backupKey: [type: "string", description: "The backup key from hub_list_backups (e.g., 'app_123', 'driver_456', or 'library_42')"]
-                ],
-                required: ["backupKey"]
-            ]
-        ],
-        [
-            name: "hub_restore_backup",
-            description: """⚠️ Restore a backup — tell the user first; hub-DB scopes REBOOT the hub.[[FLAT_TRIM]] scope=source (default): an app/driver/rule by backupKey, or an edited complete rule snapshot by sourceFile (existing original rule only). For backupKey: deleted code → hub_create_*; deleted rules DO recreate; a rule restores in place by default; preserveRuleId:false restores a Rule Machine backup that has an App Cloner export as an exact copy with a NEW id -- read ruleId and restoredVia from the result. scope=hub_local/hub_cloud: restore the WHOLE hub DB (hub_local→fileName; hub_cloud→path+cloudBackupPassword); a full local backup (fullBackup:true) runs the full-restore flow with fullRestore choosing radios/files. scope=hub_uploaded: upload an external .lzf (or a full .tar.gz) from backupUrl, then restore (open-world).[[/FLAT_TRIM]] Write master + confirm.
-A transport drop can lose the response while the hub still commits this write; verify current hub state before retrying.[[FLAT_TRIM]] See hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]
-""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    scope: [type: "string", enum: ["source", "hub_local", "hub_cloud", "hub_uploaded"], description: "Default source."],
-                    backupKey: [type: "string", description: "scope=source: backupKey from hub_list_backups (e.g. app_123)."],
-                    sourceFile: [type: "string", description: "scope=source: separate unindexed File Manager JSON copy of a complete native-rule-edit-v1 snapshot, optionally edited. Restores its existing original rule in place. Mutually exclusive with backupKey; the file is not changed or indexed."],
-                    fileName: [type: "string", description: "scope=hub_local: backup name from hub_list_backups."],
-                    path: [type: "string", description: "scope=hub_cloud: `path` from hub_list_backups."],
-                    cloudBackupPassword: [type: "string", description: "scope=hub_cloud: cloud backup encryption password."],
-                    backupUrl: [type: "string", description: "scope=hub_uploaded: http(s) URL of the .lzf or full .tar.gz."],
-                    fullRestore: [type: "object", description: "[[FLAT_TRIM]]Full backups: {restoreZigbee?, restoreZwave?, restoreFiles?, deleteExistingFiles?, allowZwaveFirmwareMismatch?} (default false).[[/FLAT_TRIM]]"],
-                    preserveRuleId: [type: "boolean", description: "Keep the rule id (default true).[[FLAT_TRIM]] true: restore an RM/native app backup in place; complete rule snapshots, including complete older formats, replay native state and settings. Incomplete older snapshots use compatibility settings replay. false: restore a Rule Machine backupKey that carries an App Cloner export as an exact copy with a NEW id, deleting the old rule once the copy matches the backup. When the original rule no longer exists the snapshot is recreated under a NEW id even with true. sourceFile requires true or omitted.[[/FLAT_TRIM]]"],
-                    confirm: [type: "boolean", description: "REQUIRED true. Confirms the restore (hub-DB scopes reboot)."],
-                ],
-                required: ["confirm"]
-            ]
-        ],
+        (_bat529EmbeddedCatalogRead(['["m",[["name","hub_list_backups"],["description","List backups: scope=source (default; auto-created code backups, each with a backupKey) | hub_local | hub_cloud | hub | all. Read-only. The hub scopes also return the automatic-backup `schedule` and the `networkBackup` share settings.[[FLAT_TRIM]] Whole-hub DB backups come back under hubLocalBackups/hubCloudBackups \\u2014 a local backup\'s name and a cloud backup\'s path feed hub_restore_backup/hub_delete_backup; fullBackup:true marks a full local backup (database + files + radio data). The `schedule` block carries the frequencies (days) + daily hour/minute and the full-backup / last-backup status fields; no password is ever returned. A failed schedule read joins hubBackupErrors (partial:true) and a failed share read stays inside networkBackup; neither fails the listing. The response reports storageBudget and the retention policy. See hub_get_tool_guide(section=\'backup\').[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["scope",["m",[["type","string"],["enum",["l",["source","hub_local","hub_cloud","hub","all"]]],["description","Which backups to list; default source."]]]],["cursor",["m",[["type","string"],["description","Source backups page 50 at a time, newest first; pass the returned nextCursor to continue."]]]]]]],["required",["l",[]]]]]]]]']) as Map),
+        (_bat529EmbeddedCatalogRead(['["m",[["name","hub_get_backup"],["description","Read the saved source code from one backup. Call hub_list_backups first to find the backupKey.[[FLAT_TRIM]] Use this to inspect or diff a prior version before restoring; to re-apply it use hub_restore_backup, not this tool. Large sources are omitted from the response (sourceTooLargeForResponse=true) with a File Manager download link instead.[[/FLAT_TRIM]] Read-only."],["inputSchema",["m",[["type","object"],["properties",["m",[["backupKey",["m",[["type","string"],["description","The backup key from hub_list_backups (e.g., \'app_123\', \'driver_456\', or \'library_42\')"]]]]]]],["required",["l",["backupKey"]]]]]]]]']) as Map),
+        (_bat529EmbeddedCatalogRead(['["m",[["name","hub_restore_backup"],["description","\\u26a0\\ufe0f Restore a backup \\u2014 tell the user first; hub-DB scopes REBOOT the hub.[[FLAT_TRIM]] scope=source (default): an app/driver/rule by backupKey, or an edited complete rule snapshot by sourceFile (existing original rule only). For backupKey: deleted code \\u2192 hub_create_*; deleted rules DO recreate; a rule restores in place by default; preserveRuleId:false restores a Rule Machine backup that has an App Cloner export as an exact copy with a NEW id -- read ruleId and restoredVia from the result. scope=hub_local/hub_cloud: restore the WHOLE hub DB (hub_local\\u2192fileName; hub_cloud\\u2192path+cloudBackupPassword); a full local backup (fullBackup:true) runs the full-restore flow with fullRestore choosing radios/files. scope=hub_uploaded: upload an external .lzf (or a full .tar.gz) from backupUrl, then restore (open-world).[[/FLAT_TRIM]] Write master + confirm.\\nA transport drop can lose the response while the hub still commits this write; verify current hub state before retrying.[[FLAT_TRIM]] See hub_get_tool_guide(section=\'slow_ops\').[[/FLAT_TRIM]]\\n"],["inputSchema",["m",[["type","object"],["properties",["m",[["scope",["m",[["type","string"],["enum",["l",["source","hub_local","hub_cloud","hub_uploaded"]]],["description","Default source."]]]],["backupKey",["m",[["type","string"],["description","scope=source: backupKey from hub_list_backups (e.g. app_123)."]]]],["sourceFile",["m",[["type","string"],["description","scope=source: separate unindexed File Manager JSON copy of a complete native-rule-edit-v1 snapshot, optionally edited. Restores its existing original rule in place. Mutually exclusive with backupKey; the file is not changed or indexed."]]]],["fileName",["m",[["type","string"],["description","scope=hub_local: backup name from hub_list_backups."]]]],["path",["m",[["type","string"],["description","scope=hub_cloud: `path` from hub_list_backups."]]]],["cloudBackupPassword",["m",[["type","string"],["description","scope=hub_cloud: cloud backup encryption password."]]]],["backupUrl",["m",[["type","string"],["description","scope=hub_uploaded: http(s) URL of the .lzf or full .tar.gz."]]]],["fullRestore",["m",[["type","object"],["description","[[FLAT_TRIM]]Full backups: {restoreZigbee?, restoreZwave?, restoreFiles?, deleteExistingFiles?, allowZwaveFirmwareMismatch?} (default false).[[/FLAT_TRIM]]"]]]],["preserveRuleId",["m",[["type","boolean"],["description","Keep the rule id (default true).[[FLAT_TRIM]] true: restore an RM/native app backup in place; complete rule snapshots, including complete older formats, replay native state and settings. Incomplete older snapshots use compatibility settings replay. false: restore a Rule Machine backupKey that carries an App Cloner export as an exact copy with a NEW id, deleting the old rule once the copy matches the backup. When the original rule no longer exists the snapshot is recreated under a NEW id even with true. sourceFile requires true or omitted.[[/FLAT_TRIM]]"]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED true. Confirms the restore (hub-DB scopes reboot)."]]]]]]],["required",["l",["confirm"]]]]]]]]']) as Map),
     ] }
     return defs()
 }
@@ -1536,13 +1448,7 @@ def _openWorldToolNames_partItemBackups() {
 def _toolDisplayMeta_partItemBackups() {
     // Human-facing title/summary per tool (MCP annotations.title + the Advanced per-tool
     // overrides menu) -- merged into the app's getToolDisplayMeta() aggregator (issue #209).
-    return [
-        hub_create_backup: [title: "Create Hub Backup", summary: "Create a database or full local backup, set backup schedule and network share, or copy a cloud backup."],
-        hub_delete_backup: [title: "Delete Hub Backup", summary: "Delete a whole-hub database backup (local or cloud)."],
-        hub_list_backups: [title: "List Backups", summary: "List code backups and (by scope) hub database/full backups plus the backup schedule and network share."],
-        hub_get_backup: [title: "Get Code Backup", summary: "Read source code from a backup."],
-        hub_restore_backup: [title: "Restore Backup", summary: "Restore a code/rule backup, or (by scope) the whole hub database."]
-    ]
+    return (_bat529EmbeddedCatalogRead(['["m",[["hub_create_backup",["m",[["title","Create Hub Backup"],["summary","Create a database or full local backup, set backup schedule and network share, or copy a cloud backup."]]]],["hub_delete_backup",["m",[["title","Delete Hub Backup"],["summary","Delete a whole-hub database backup (local or cloud)."]]]],["hub_list_backups",["m",[["title","List Backups"],["summary","List code backups and (by scope) hub database/full backups plus the backup schedule and network share."]]]],["hub_get_backup",["m",[["title","Get Code Backup"],["summary","Read source code from a backup."]]]],["hub_restore_backup",["m",[["title","Restore Backup"],["summary","Restore a code/rule backup, or (by scope) the whole hub database."]]]]]]']) as Map)
 }
 
 

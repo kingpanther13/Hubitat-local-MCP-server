@@ -211,18 +211,44 @@ private bm25Score(List<List<String>> docTokens, List<String> queryTokens) {
     if (n == 0) return []
 
     // Document lengths and average
-    def docLengths = (docTokens).collect((this.&_bat529Cb_ac505e8e_4))
+    def docLengths = docTokens.collect { it.size() }
     def avgDl = docLengths.sum() / (double) n
     if (avgDl == 0) return new double[n] as List
 
     // Document frequency: how many docs contain each token. Preserve the token
     // namespace while using Map methods to avoid sandbox property resolution.
     def df = [:]
-    (docTokens).each(((this.&_bat529Cb_ac505e8e_22).curry([df] as Object[])))
+    docTokens.each { tokens ->
+        tokens.toSet().each { token ->
+            def k = _bm25Key(token)
+            df.put(k, (df.get(k) ?: 0) + 1)
+        }
+    }
 
     // Score each document
     def scores = new double[n]
-    (docTokens).eachWithIndex(((this.&_bat529Cb_ac505e8e_28).curry([avgDl, b, df, docLengths, k1, n, queryTokens, scores] as Object[])))
+    docTokens.eachWithIndex { tokens, docIdx ->
+        // Term frequency for this doc
+        def tf = [:]
+        tokens.each { t -> def k = _bm25Key(t); tf.put(k, (tf.get(k) ?: 0) + 1) }
+
+        def dl = docLengths[docIdx]
+        double score = 0.0
+
+        queryTokens.each { rawQt ->
+            def qt = _bm25Key(rawQt)
+            def termFreq = tf.get(qt) ?: 0
+            if (termFreq > 0) {
+                def docFreq = df.get(qt) ?: 0
+                def idf = Math.log((n - docFreq + 0.5) / (docFreq + 0.5) + 1.0)
+                def num = termFreq * (k1 + 1)
+                def den = termFreq + k1 * (1 - b + b * dl / avgDl)
+                score += idf * num / den
+            }
+        }
+
+        scores[docIdx] = score
+    }
 
     return scores as List
 }
@@ -390,32 +416,9 @@ def _getAllToolDefinitions_partDiscovery() {
     // near the JVM 65,535 constant-pool limit.
     def defs = { [
         // Tool Guide
-        [
-            name: "hub_get_tool_guide",
-            description: "Get the deep-reference guide for an MCP tool topic[[FLAT_TRIM]] (exhaustive capability tables, wire formats, worked examples)[[/FLAT_TRIM]]. Read a write tool's section before calling that tool: the section publishes the acknowledgment key the best-practice gate requires, and best_practice_reference maps each write tool to its section. A `<parent>_<part>` key (e.g. hub_admin_write_devices) returns just that part of its parent section; the bare parent key returns all of it.[[FLAT_TRIM]] A parent's response lists its own sub-keys.[[/FLAT_TRIM]] Prefer a section: omitting it returns the key list plus the first page of the whole guide (30,000-character pages via nextCursor)[[FLAT_TRIM]], the largest response this tool produces, so on a timeout retry a specific section[[/FLAT_TRIM]].[[FLAT_TRIM]] platform_api_search / platform_api_page read the hub's own Groovy API documentation instead.[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    section: [type: "string", description: "One section key from the enum. Omit to get the key list plus the first page of the full guide.", enum: ["set_rule_reference", "set_native_app_reference", "device_authorization", "best_practice_reference", "tool_access", "hub_admin_write", "hub_admin_write_overview", "hub_admin_write_destructive", "hub_admin_write_radios", "hub_admin_write_devices", "hub_admin_write_code", "hub_admin_write_system", "virtual_devices", "update_device", "rules", "backup", "file_manager", "performance", "performance_overview", "performance_devices", "performance_diagnostics", "builtin_app_tools", "builtin_app_tools_overview", "builtin_app_tools_apps", "builtin_app_tools_rules", "builtin_app_tools_crud", "visual_rule_reference", "variables", "dashboards", "bundles", "rooms", "slow_ops"]],
-                    cursor: [type: "string", description: "Continue a paged payload: pass the prior call's nextCursor. Omit otherwise -- a cursor is rejected on a payload that fit one response."],
-                    platform_api_search: [type: "string", description: "[[FLAT_TRIM]]Instead of a section: search the hub's Groovy API docs, e.g. 'eventsBetween'.[[/FLAT_TRIM]]"],
-                    platform_api_page: [type: "string", description: "[[FLAT_TRIM]]Instead of a section: one API docs class page by pageId.[[/FLAT_TRIM]]"]
-                ]
-            ]
-        ],
+        (_bat529EmbeddedCatalogRead(['["m",[["name","hub_get_tool_guide"],["description","Get the deep-reference guide for an MCP tool topic[[FLAT_TRIM]] (exhaustive capability tables, wire formats, worked examples)[[/FLAT_TRIM]]. Read a write tool\'s section before calling that tool: the section publishes the acknowledgment key the best-practice gate requires, and best_practice_reference maps each write tool to its section. A `<parent>_<part>` key (e.g. hub_admin_write_devices) returns just that part of its parent section; the bare parent key returns all of it.[[FLAT_TRIM]] A parent\'s response lists its own sub-keys.[[/FLAT_TRIM]] Prefer a section: omitting it returns the key list plus the first page of the whole guide (30,000-character pages via nextCursor)[[FLAT_TRIM]], the largest response this tool produces, so on a timeout retry a specific section[[/FLAT_TRIM]].[[FLAT_TRIM]] platform_api_search / platform_api_page read the hub\'s own Groovy API documentation instead.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["section",["m",[["type","string"],["description","One section key from the enum. Omit to get the key list plus the first page of the full guide."],["enum",["l",["set_rule_reference","set_native_app_reference","device_authorization","best_practice_reference","tool_access","hub_admin_write","hub_admin_write_overview","hub_admin_write_destructive","hub_admin_write_radios","hub_admin_write_devices","hub_admin_write_code","hub_admin_write_system","virtual_devices","update_device","rules","backup","file_manager","performance","performance_overview","performance_devices","performance_diagnostics","builtin_app_tools","builtin_app_tools_overview","builtin_app_tools_apps","builtin_app_tools_rules","builtin_app_tools_crud","visual_rule_reference","variables","dashboards","bundles","rooms","slow_ops"]]]]]],["cursor",["m",[["type","string"],["description","Continue a paged payload: pass the prior call\'s nextCursor. Omit otherwise -- a cursor is rejected on a payload that fit one response."]]]],["platform_api_search",["m",[["type","string"],["description","[[FLAT_TRIM]]Instead of a section: search the hub\'s Groovy API docs, e.g. \'eventsBetween\'.[[/FLAT_TRIM]]"]]]],["platform_api_page",["m",[["type","string"],["description","[[FLAT_TRIM]]Instead of a section: one API docs class page by pageId.[[/FLAT_TRIM]]"]]]]]]]]]]]]']) as Map),
         // Tool Search (BM25)
-        [
-            name: "hub_search_tools",
-            description: "Search all MCP tools by natural language query (BM25 ranking). Searches tool names, friendly titles, descriptions, and parameter names. Returns matching tools with their gateway location so you know how to call them. Use when unsure which gateway contains the tool you need.",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    query: [type: "string", description: "Natural language search query (e.g. 'zigbee radio', 'delete app', 'memory leak', 'room management')"],
-                    maxResults: [type: "integer", description: "Max results to return. Default: 5.", default: 5]
-                ],
-                required: ["query"]
-            ]
-        ],
+        (_bat529EmbeddedCatalogRead(['["m",[["name","hub_search_tools"],["description","Search all MCP tools by natural language query (BM25 ranking). Searches tool names, friendly titles, descriptions, and parameter names. Returns matching tools with their gateway location so you know how to call them. Use when unsure which gateway contains the tool you need."],["inputSchema",["m",[["type","object"],["properties",["m",[["query",["m",[["type","string"],["description","Natural language search query (e.g. \'zigbee radio\', \'delete app\', \'memory leak\', \'room management\')"]]]],["maxResults",["m",[["type","integer"],["description","Max results to return. Default: 5."],["default",5]]]]]]],["required",["l",["query"]]]]]]]]']) as Map),
     ] }
     return defs()
 }
@@ -433,11 +436,7 @@ def _readOnlyToolNames_partDiscovery() {
 def _toolDisplayMeta_partDiscovery() {
     // Human-facing title/summary per tool (MCP annotations.title + the Advanced per-tool
     // overrides menu) -- merged into the app's getToolDisplayMeta() aggregator (issue #209).
-    return [
-        // Reference
-        hub_get_tool_guide: [title: "Get Tool Guide", summary: "Deep-reference guide for MCP tool topics, plus search of the hub's own Groovy API documentation."],
-        hub_search_tools: [title: "Search Tools", summary: "Search all MCP tools by natural-language query."]
-    ]
+    return (_bat529EmbeddedCatalogRead(['["m",[["hub_get_tool_guide",["m",[["title","Get Tool Guide"],["summary","Deep-reference guide for MCP tool topics, plus search of the hub\'s own Groovy API documentation."]]]],["hub_search_tools",["m",[["title","Search Tools"],["summary","Search all MCP tools by natural-language query."]]]]]]']) as Map)
 }
 
 
@@ -456,8 +455,6 @@ def _bat529Cb_ac505e8e_3(List __bat529Tuple) {
     return _bat529Cb_ac505e8e_3(*__bat529Tuple)
 }
 
-def _bat529Cb_ac505e8e_4(def it) { it.size() 
-}
 
 def _bat529Cb_ac505e8e_5(def it) { -(it.score as int) 
 }
@@ -510,8 +507,6 @@ def _bat529Cb_ac505e8e_17(List __bat529Tuple) {
     return _bat529Cb_ac505e8e_17(*__bat529Tuple)
 }
 
-def _bat529Cb_ac505e8e_18(def tf, def t) { def k = _bm25Key(t); tf.put(k, (tf.get(k) ?: 0) + 1) 
-}
 
 def _bat529Cb_ac505e8e_19(def k, def v) { [(k): v.keySet().toList()] 
 }
@@ -525,16 +520,7 @@ def _bat529Cb_ac505e8e_19(List __bat529Tuple) {
 def _bat529Cb_ac505e8e_20(def h) { (h).findAll((this.&_bat529Cb_ac505e8e_13))
 }
 
-def _bat529Cb_ac505e8e_21(def df, def token) {
-            def k = _bm25Key(token)
-            df.put(k, (df.get(k) ?: 0) + 1)
-        
-}
 
-def _bat529Cb_ac505e8e_22(def df, def tokens) {
-        (tokens.toSet()).each(((this.&_bat529Cb_ac505e8e_21).curry([df] as Object[])))
-    
-}
 
 def _bat529Cb_ac505e8e_23(def seenSearchNames, def visibleCorpus, def r) {
         def nm = visibleCorpus[r.index].name
@@ -580,35 +566,7 @@ def _bat529Cb_ac505e8e_27(def allDefsMap, def corpus, def displayMeta, List __ba
     return _bat529Cb_ac505e8e_27(allDefsMap, corpus, displayMeta, *__bat529Tuple)
 }
 
-def _bat529Cb_ac505e8e_28(def avgDl, def b, def df, def docLengths, def k1, def n, def queryTokens, def scores, def tokens, def docIdx) {
-        // Term frequency for this doc
-        def tf = [:]
-        (tokens).each(((this.&_bat529Cb_ac505e8e_18).curry([tf] as Object[])))
 
-        def dl = docLengths[docIdx]
-        double score = 0.0
-
-        queryTokens.each { rawQt ->
-            def qt = _bm25Key(rawQt)
-            def termFreq = tf.get(qt) ?: 0
-            if (termFreq > 0) {
-                def docFreq = df.get(qt) ?: 0
-                def idf = Math.log((n - docFreq + 0.5) / (docFreq + 0.5) + 1.0)
-                def num = termFreq * (k1 + 1)
-                def den = termFreq + k1 * (1 - b + b * dl / avgDl)
-                score += idf * num / den
-            }
-        }
-
-        scores[docIdx] = score
-    
-}
-
-def _bat529Cb_ac505e8e_28(def avgDl, def b, def df, def docLengths, def k1, def n, def queryTokens, def scores, List __bat529Tuple) {
-    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
-        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
-    return _bat529Cb_ac505e8e_28(avgDl, b, df, docLengths, k1, n, queryTokens, scores, *__bat529Tuple)
-}
 
 def _bat529Cb_ac505e8e_29(def displayMeta, def gatewayConfig, def searchHideByName, def visibleCorpus, def r) {
         def tool = visibleCorpus[r.index]

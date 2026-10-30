@@ -1942,8 +1942,7 @@ private Map _updateAppOAuth(appId, oauth) {
         if (cur == null) {
             // Read FAILED -- can't tell whether the app already has creds. Submitting empty would
             // clobber existing ones, so refuse rather than risk blanking a live OAuth client.
-            return [success: false, error: "Could not read the app's current OAuth credentials to preserve them.",
-                    note: "Refusing to submit empty credentials (would clobber an already-enabled app's live creds). Pass client_id + client_secret explicitly, or retry."]
+            return (_bat529EmbeddedCatalogRead(['["m",[["success",false],["error","Could not read the app\'s current OAuth credentials to preserve them."],["note","Refusing to submit empty credentials (would clobber an already-enabled app\'s live creds). Pass client_id + client_secret explicitly, or retry."]]]']) as Map)
         }
         if (clientId == null) clientId = cur.clientId?.toString() ?: ""
         if (clientSecret == null) clientSecret = cur.clientSecret?.toString() ?: ""
@@ -2899,291 +2898,24 @@ def _getAllToolDefinitions_partCodeManagement() {
     def defs = { [
         // ==================== HUB ADMIN READ TOOLS ====================
         // get_hub_details merged into hub_get_info (core tool)
-        [
-            name: "hub_list_apps",
-            description: """List apps on the hub — running instances or installed app code/types (see scope).[[FLAT_TRIM]] scope='types' returns both community and built-in app types, each tagged system/isBuiltIn and with its menu tab (Apps/Automations/Integrations). Use system=false/isBuiltIn=false to isolate community (user-installed) types, or menu to group types by the admin UI's Apps/Automations/Integrations tabs. menu is null for a type that declares none. See hub_get_tool_guide(section='builtin_app_tools_apps').[[/FLAT_TRIM]] Per-app event history: hub_list_device_events with appId.[[FLAT_TRIM]] Each instance row carries appTypeId, the app type's code-class id shared with scope='types' and hub_get_source(type='app'), so an instance resolves to its code without matching on the type name. Requires the Read master.[[/FLAT_TRIM]]""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    scope: [type: "string", enum: ["instances", "types"], description: "What to list. 'instances' (default) = running app instances with parent/child tree; 'types' = installed app-type catalog (community + built-in), each with system/isBuiltIn and menu (Apps/Automations/Integrations tab, null if undeclared).", default: "instances"],
-                    filter: [type: "string", enum: ["all", "builtin", "user", "disabled", "parents", "children"], description: "scope='instances' only: category filter."],
-                    nameFilter: [type: "string", description: "Name contains (case-insensitive)."],
-                    includeHidden: [type: "boolean", description: "scope='instances' only: include hidden apps (typically Hubitat internal). Default: false", default: false],
-                    cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded (subject to 120KB guard); pass \"\" for the first page, iterate nextCursor (page size 50)."]
-                ]
-            ]
-        ],
-        [
-            name: "hub_list_drivers",
-            description: "List device driver types on the hub.[[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    include: [type: "string", enum: ["user", "all"], description: "Scope: 'user' (default) = user-installed drivers only; 'all' = full catalog (system + virtual + user)."],
-                    nameFilter: [type: "string", description: "Name contains (case-insensitive)."],
-                    cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 50)."]
-                ]
-            ]
-        ],
-        [
-            name: "hub_list_libraries",
-            description: "List all Groovy libraries installed on the hub (id, name, namespace, version). Use this to discover a library's id, then read its source with hub_get_source(type='library', id=N)[[FLAT_TRIM]]; the source is omitted here to keep the list lean[[/FLAT_TRIM]].[[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 50)."]
-                ]
-            ]
-        ],
+        (_bat529EmbeddedCatalogRead(['["m",[["name","hub_list_apps"],["description","List apps on the hub \\u2014 running instances or installed app code/types (see scope).[[FLAT_TRIM]] scope=\'types\' returns both community and built-in app types, each tagged system/isBuiltIn and with its menu tab (Apps/Automations/Integrations). Use system=false/isBuiltIn=false to isolate community (user-installed) types, or menu to group types by the admin UI\'s Apps/Automations/Integrations tabs. menu is null for a type that declares none. See hub_get_tool_guide(section=\'builtin_app_tools_apps\').[[/FLAT_TRIM]] Per-app event history: hub_list_device_events with appId.[[FLAT_TRIM]] Each instance row carries appTypeId, the app type\'s code-class id shared with scope=\'types\' and hub_get_source(type=\'app\'), so an instance resolves to its code without matching on the type name. Requires the Read master.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["scope",["m",[["type","string"],["enum",["l",["instances","types"]]],["description","What to list. \'instances\' (default) = running app instances with parent/child tree; \'types\' = installed app-type catalog (community + built-in), each with system/isBuiltIn and menu (Apps/Automations/Integrations tab, null if undeclared)."],["default","instances"]]]],["filter",["m",[["type","string"],["enum",["l",["all","builtin","user","disabled","parents","children"]]],["description","scope=\'instances\' only: category filter."]]]],["nameFilter",["m",[["type","string"],["description","Name contains (case-insensitive)."]]]],["includeHidden",["m",[["type","boolean"],["description","scope=\'instances\' only: include hidden apps (typically Hubitat internal). Default: false"],["default",false]]]],["cursor",["m",[["type","string"],["description","Opt-in pagination cursor. Omit for unbounded (subject to 120KB guard); pass \\"\\" for the first page, iterate nextCursor (page size 50)."]]]]]]]]]]]]']) as Map),
+        (_bat529EmbeddedCatalogRead(['["m",[["name","hub_list_drivers"],["description","List device driver types on the hub.[[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["include",["m",[["type","string"],["enum",["l",["user","all"]]],["description","Scope: \'user\' (default) = user-installed drivers only; \'all\' = full catalog (system + virtual + user)."]]]],["nameFilter",["m",[["type","string"],["description","Name contains (case-insensitive)."]]]],["cursor",["m",[["type","string"],["description","Opt-in pagination cursor. Omit for unbounded; pass \\"\\" for the first page, iterate nextCursor (page size 50)."]]]]]]]]]]]]']) as Map),
+        (_bat529EmbeddedCatalogRead(['["m",[["name","hub_list_libraries"],["description","List all Groovy libraries installed on the hub (id, name, namespace, version). Use this to discover a library\'s id, then read its source with hub_get_source(type=\'library\', id=N)[[FLAT_TRIM]]; the source is omitted here to keep the list lean[[/FLAT_TRIM]].[[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["cursor",["m",[["type","string"],["description","Opt-in pagination cursor. Omit for unbounded; pass \\"\\" for the first page, iterate nextCursor (page size 50)."]]]]]]]]]]]]']) as Map),
         // Hub Admin App/Driver Source Read Tools
-        [
-            name: "hub_get_source",
-            description: "Get the Groovy source of an installed app, driver, or library. Supports chunked reading (offset/length); large sources are auto-saved to the File Manager for use with the matching update tool's sourceFile mode.[[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    type: [type: "string", enum: ["app", "driver", "library"], description: "What kind of code to read."],
-                    id: [type: "string", description: "App/driver/library ID (positive integer), from hub_list_apps / hub_list_drivers / hub_list_libraries respectively (library id is also in a hub_create_library response or the Hubitat Libraries code page)."],
-                    offset: [type: "integer", description: "Char offset to start reading from. Default: 0"],
-                    length: [type: "integer", description: "Max chars (default 30000, max 64000)."]
-                ],
-                required: ["type", "id"]
-            ]
-        ],
+        (_bat529EmbeddedCatalogRead(['["m",[["name","hub_get_source"],["description","Get the Groovy source of an installed app, driver, or library. Supports chunked reading (offset/length); large sources are auto-saved to the File Manager for use with the matching update tool\'s sourceFile mode.[[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["type",["m",[["type","string"],["enum",["l",["app","driver","library"]]],["description","What kind of code to read."]]]],["id",["m",[["type","string"],["description","App/driver/library ID (positive integer), from hub_list_apps / hub_list_drivers / hub_list_libraries respectively (library id is also in a hub_create_library response or the Hubitat Libraries code page)."]]]],["offset",["m",[["type","integer"],["description","Char offset to start reading from. Default: 0"]]]],["length",["m",[["type","integer"],["description","Max chars (default 30000, max 64000)."]]]]]]],["required",["l",["type","id"]]]]]]]]']) as Map),
         // Hub Admin App/Driver Management Write Tools
-        [
-            name: "hub_create_app",
-            description: """⚠️ Install new app. Show code to user and get confirmation first.
-
-Supply the code via exactly one of source / sourceFile / importUrl (mutually exclusive; see each param).
-
-[[FLAT_TRIM]]
-After the code installs, create a running instance with a SECOND call: hub_create_app(codeAppId: <newAppId>, confirm: true).
-[[/FLAT_TRIM]]
-
-Verifies the install compiled -- returns success=false with the error if it didn't. Requires Write master + confirm + backup <24h. Returns the new app ID.
-[[FLAT_TRIM]]
-A transport drop can lose the response while the hub still commits this write; verify current hub state before retrying. See hub_get_tool_guide(section='slow_ops').
-[[/FLAT_TRIM]]
-""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    source: [type: "string", description: "Inline Groovy source (stubs only)."],
-                    sourceFile: [type: "string", description: "File Manager filename (write it first via hub_write_file), e.g. my-app.groovy."],
-                    importUrl: [type: "string", description: "URL the hub fetches directly (http/https)."],
-                    codeAppId: [type: "integer", description: "Second-step mode: instantiate already-installed code (codeAppId from a prior call) and commit the install; not combinable with source/sourceFile/importUrl."],
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."],
-                ],
-                required: ["confirm"]
-            ]
-        ],
-        [
-            name: "hub_create_driver",
-            description: """⚠️ Install new driver. Show code to user and get confirmation first.
-
-Supply the code via exactly one of source / sourceFile / importUrl (mutually exclusive; see each param). For >1 driver use BULK mode (the installs param).
-
-Verifies the install compiled: returns success=false with the error if the hub accepted the request but the driver failed to compile. Requires Write master + confirm + backup <24h. Returns new driver ID(s).
-[[FLAT_TRIM]]
-MCP 2026-07-28 clients automatically continue this slow write and can replay its retained terminal response. Older clients can still lose the response on a transport drop; verify current hub state before retrying. See hub_get_tool_guide(section='slow_ops').
-[[/FLAT_TRIM]]
-""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    source: [type: "string", description: "Inline Groovy source (stubs only)."],
-                    sourceFile: [type: "string", description: "File Manager filename (write it first via hub_write_file), e.g. my-code.groovy."],
-                    importUrl: [type: "string", description: "URL the hub fetches directly (http/https)."],
-                    installs: [
-                        type: "array",
-                        description: "Bulk mode: one round-trip for many drivers. Each entry {source|sourceFile|importUrl}; cannot mix with single-driver fields; continue-on-error.",
-                        items: [
-                            type: "object",
-                            properties: [
-                                sourceFile: [type: "string", description: "File Manager filename (preferred)."],
-                                source: [type: "string", description: "Inline source (stubs only)."],
-                                importUrl: [type: "string", description: "URL the hub fetches directly."]
-                            ]
-                        ]
-                    ],
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."],
-                ],
-                required: ["confirm"]
-            ]
-        ],
-        [
-            name: "hub_update_app",
-            description: """⚠️ CRITICAL: Modify existing app code. Read current source first, explain changes, get confirmation.
-
-Supply the new code via exactly one of source / sourceFile / importUrl, or resave to recompile in place (see each param). Optionally enable OAuth via the oauth param (apps only), alone or alongside a source change.
-
-Auto-backs up before modifying. Requires Write master + confirm + backup <24h.[[FLAT_TRIM]]
-
-Self-update guard: refuses to overwrite the MCP server's own app source or OAuth unless Developer Mode is on.[[/FLAT_TRIM]]
-[[FLAT_TRIM]]
-A transport drop can lose the response while the hub still commits this write; verify current hub state before retrying. See hub_get_tool_guide(section='slow_ops').
-[[/FLAT_TRIM]]
-""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    appId: [type: "string", description: "The app ID (Apps Code id) to update"],
-                    source: [type: "string", description: "Inline Groovy source (stubs only)."],
-                    sourceFile: [type: "string", description: "File Manager filename (write it first via hub_write_file), e.g. my-code.groovy."],
-                    importUrl: [type: "string", description: "URL the hub fetches directly (http/https)."],
-                    resave: [type: "boolean", description: "Re-save the current source without changes.[[FLAT_TRIM]] Runs entirely on-hub.[[/FLAT_TRIM]]"],
-                    backup: [type: "boolean", description: "false: no pre-save backup.[[FLAT_TRIM]] Default true: the current source goes to File Manager first (hub_list_backups scope=source). Never taken in importUrl mode: the URL's publisher keeps the history.[[/FLAT_TRIM]]"],
-                    expectedVersion: [type: "integer", description: "OPTIONAL optimistic-lock guard; aborts with conflict:true on mismatch.[[FLAT_TRIM]] Stringified integers coerced; explicit null rejected.[[/FLAT_TRIM]]"],
-                    triggerUpdated: [type: "integer", description: "OPTIONAL: running instance appId to refresh via updated() after saving code; re-initializes subscriptions, schedules and atomicState. Protected targets require Developer Mode. Submits mainPage's Done form, RE-SENDING EVERY input from live settings. If live settings cannot be read, refuses the submit to avoid clearing device selections. On refusal/failure, saved code remains deployed: success:true, partial:true, updatedFired:false and repairHints. Omit for the hub editor's normal Save behavior (no lifecycle refresh)."],
-                    oauth: [type: "object", description: "OPTIONAL: enable/configure OAuth on this app (apps only); e.g. {enabled:true}. Full shape: hub_get_tool_guide(section='hub_admin_write_code')."],
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."],
-                ],
-                required: ["appId", "confirm"]
-            ]
-        ],
-        [
-            name: "hub_update_driver",
-            description: """⚠️ CRITICAL: Modify existing driver code. Read current source first, explain changes, get confirmation.
-
-Supply the new code via exactly one of source / sourceFile / importUrl, or resave to recompile in place (see each param). For >1 driver use BULK mode (the updates param).
-
-Auto-backs up before modifying. Requires Write master + confirm + backup <24h.
-[[FLAT_TRIM]]
-MCP 2026-07-28 clients automatically continue this slow write and can replay its retained terminal response. Older clients can still lose the response on a transport drop; verify current hub state before retrying. See hub_get_tool_guide(section='slow_ops').
-[[/FLAT_TRIM]]
-""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    driverId: [type: "string", description: "The driver ID to update (single-driver mode). Omit when using 'updates' array."],
-                    source: [type: "string", description: "Inline Groovy source (stubs only)."],
-                    sourceFile: [type: "string", description: "File Manager filename (write it first via hub_write_file), e.g. my-code.groovy."],
-                    importUrl: [type: "string", description: "URL the hub fetches directly (http/https)."],
-                    resave: [type: "boolean", description: "Re-save the current source without changes.[[FLAT_TRIM]] Runs entirely on-hub.[[/FLAT_TRIM]]"],
-                    backup: [type: "boolean", description: "false: no pre-save backup.[[FLAT_TRIM]] Default true: the current source goes to File Manager first (hub_list_backups scope=source). Never taken in importUrl mode: the URL's publisher keeps the history.[[/FLAT_TRIM]]"],
-                    expectedVersion: [type: "integer", description: "Optional optimistic-lock guard; aborts with conflict:true on mismatch.[[FLAT_TRIM]] In bulk mode, put it inside each updates[] entry.[[/FLAT_TRIM]]"],
-                    updates: [
-                        type: "array",
-                        description: "Bulk mode: one round-trip for many drivers. Each entry {driverId, sourceFile|source|importUrl|resave, optional expectedVersion}; cannot mix with single-driver fields; continue-on-error.",
-                        items: [
-                            type: "object",
-                            properties: [
-                                driverId: [type: "string", description: "The driver ID to update"],
-                                sourceFile: [type: "string", description: "File Manager filename (preferred)."],
-                                source: [type: "string", description: "Inline source (stubs only)."],
-                                importUrl: [type: "string", description: "URL the hub fetches directly."],
-                                resave: [type: "boolean", description: "Re-save without changes."],
-                                backup: [type: "boolean"],
-                                expectedVersion: [type: "integer", description: "OPTIONAL optimistic-lock guard for this item only."]
-                            ],
-                            required: ["driverId"]
-                        ]
-                    ],
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."],
-                ],
-                required: ["confirm"]
-            ]
-        ],
-        [
-            name: "hub_delete_item",
-            description: """⚠️ DESTRUCTIVE: Permanently delete an app, driver, or library. Auto-backs up the source before deletion.
-
-[[FLAT_TRIM]]
-Pre-flight by type: apps -- remove app instances via the Hubitat UI first; drivers -- switch any devices to a different driver first; libraries -- ensure no apps/drivers still #include it (else compile errors).
-[[/FLAT_TRIM]]
-
-Tell the user the item name/ID, warn it's permanent, get confirmation. Requires Write master + confirm + backup <24h.
-[[FLAT_TRIM]]
-For type=driver, MCP 2026-07-28 clients automatically continue this slow write and can replay its retained terminal response. Other item types and older clients can still lose the response on a transport drop; verify current hub state before retrying. See hub_get_tool_guide(section='slow_ops').
-[[/FLAT_TRIM]]
-""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    type: [type: "string", enum: ["app", "driver", "library"], description: "What to delete."],
-                    item_id: [type: "string", description: "The app/driver/library ID to delete."],
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
-                ],
-                required: ["type", "item_id", "confirm"]
-            ]
-        ],
+        (_bat529EmbeddedCatalogRead(['["m",[["name","hub_create_app"],["description","\\u26a0\\ufe0f Install new app. Show code to user and get confirmation first.\\n\\nSupply the code via exactly one of source / sourceFile / importUrl (mutually exclusive; see each param).\\n\\n[[FLAT_TRIM]]\\nAfter the code installs, create a running instance with a SECOND call: hub_create_app(codeAppId: <newAppId>, confirm: true).\\n[[/FLAT_TRIM]]\\n\\nVerifies the install compiled -- returns success=false with the error if it didn\'t. Requires Write master + confirm + backup <24h. Returns the new app ID.\\n[[FLAT_TRIM]]\\nA transport drop can lose the response while the hub still commits this write; verify current hub state before retrying. See hub_get_tool_guide(section=\'slow_ops\').\\n[[/FLAT_TRIM]]\\n"],["inputSchema",["m",[["type","object"],["properties",["m",[["source",["m",[["type","string"],["description","Inline Groovy source (stubs only)."]]]],["sourceFile",["m",[["type","string"],["description","File Manager filename (write it first via hub_write_file), e.g. my-app.groovy."]]]],["importUrl",["m",[["type","string"],["description","URL the hub fetches directly (http/https)."]]]],["codeAppId",["m",[["type","integer"],["description","Second-step mode: instantiate already-installed code (codeAppId from a prior call) and commit the install; not combinable with source/sourceFile/importUrl."]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: Must be true. Confirms backup was created and user approved."]]]]]]],["required",["l",["confirm"]]]]]]]]']) as Map),
+        (_bat529EmbeddedCatalogRead(['["m",[["name","hub_create_driver"],["description","\\u26a0\\ufe0f Install new driver. Show code to user and get confirmation first.\\n\\nSupply the code via exactly one of source / sourceFile / importUrl (mutually exclusive; see each param). For >1 driver use BULK mode (the installs param).\\n\\nVerifies the install compiled: returns success=false with the error if the hub accepted the request but the driver failed to compile. Requires Write master + confirm + backup <24h. Returns new driver ID(s).\\n[[FLAT_TRIM]]\\nMCP 2026-07-28 clients automatically continue this slow write and can replay its retained terminal response. Older clients can still lose the response on a transport drop; verify current hub state before retrying. See hub_get_tool_guide(section=\'slow_ops\').\\n[[/FLAT_TRIM]]\\n"],["inputSchema",["m",[["type","object"],["properties",["m",[["source",["m",[["type","string"],["description","Inline Groovy source (stubs only)."]]]],["sourceFile",["m",[["type","string"],["description","File Manager filename (write it first via hub_write_file), e.g. my-code.groovy."]]]],["importUrl",["m",[["type","string"],["description","URL the hub fetches directly (http/https)."]]]],["installs",["m",[["type","array"],["description","Bulk mode: one round-trip for many drivers. Each entry {source|sourceFile|importUrl}; cannot mix with single-driver fields; continue-on-error."],["items",["m",[["type","object"],["properties",["m",[["sourceFile",["m",[["type","string"],["description","File Manager filename (preferred)."]]]],["source",["m",[["type","string"],["description","Inline source (stubs only)."]]]],["importUrl",["m",[["type","string"],["description","URL the hub fetches directly."]]]]]]]]]]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: Must be true. Confirms backup was created and user approved."]]]]]]],["required",["l",["confirm"]]]]]]]]']) as Map),
+        (_bat529EmbeddedCatalogRead(['["m",[["name","hub_update_app"],["description","\\u26a0\\ufe0f CRITICAL: Modify existing app code. Read current source first, explain changes, get confirmation.\\n\\nSupply the new code via exactly one of source / sourceFile / importUrl, or resave to recompile in place (see each param). Optionally enable OAuth via the oauth param (apps only), alone or alongside a source change.\\n\\nAuto-backs up before modifying. Requires Write master + confirm + backup <24h.[[FLAT_TRIM]]\\n\\nSelf-update guard: refuses to overwrite the MCP server\'s own app source or OAuth unless Developer Mode is on.[[/FLAT_TRIM]]\\n[[FLAT_TRIM]]\\nA transport drop can lose the response while the hub still commits this write; verify current hub state before retrying. See hub_get_tool_guide(section=\'slow_ops\').\\n[[/FLAT_TRIM]]\\n"],["inputSchema",["m",[["type","object"],["properties",["m",[["appId",["m",[["type","string"],["description","The app ID (Apps Code id) to update"]]]],["source",["m",[["type","string"],["description","Inline Groovy source (stubs only)."]]]],["sourceFile",["m",[["type","string"],["description","File Manager filename (write it first via hub_write_file), e.g. my-code.groovy."]]]],["importUrl",["m",[["type","string"],["description","URL the hub fetches directly (http/https)."]]]],["resave",["m",[["type","boolean"],["description","Re-save the current source without changes.[[FLAT_TRIM]] Runs entirely on-hub.[[/FLAT_TRIM]]"]]]],["backup",["m",[["type","boolean"],["description","false: no pre-save backup.[[FLAT_TRIM]] Default true: the current source goes to File Manager first (hub_list_backups scope=source). Never taken in importUrl mode: the URL\'s publisher keeps the history.[[/FLAT_TRIM]]"]]]],["expectedVersion",["m",[["type","integer"],["description","OPTIONAL optimistic-lock guard; aborts with conflict:true on mismatch.[[FLAT_TRIM]] Stringified integers coerced; explicit null rejected.[[/FLAT_TRIM]]"]]]],["triggerUpdated",["m",[["type","integer"],["description","OPTIONAL: running instance appId to refresh via updated() after saving code; re-initializes subscriptions, schedules and atomicState. Protected targets require Developer Mode. Submits mainPage\'s Done form, RE-SENDING EVERY input from live settings. If live settings cannot be read, refuses the submit to avoid clearing device selections. On refusal/failure, saved code remains deployed: success:true, partial:true, updatedFired:false and repairHints. Omit for the hub editor\'s normal Save behavior (no lifecycle refresh)."]]]],["oauth",["m",[["type","object"],["description","OPTIONAL: enable/configure OAuth on this app (apps only); e.g. {enabled:true}. Full shape: hub_get_tool_guide(section=\'hub_admin_write_code\')."]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: Must be true. Confirms backup was created and user approved."]]]]]]],["required",["l",["appId","confirm"]]]]]]]]']) as Map),
+        (_bat529EmbeddedCatalogRead(['["m",[["name","hub_update_driver"],["description","\\u26a0\\ufe0f CRITICAL: Modify existing driver code. Read current source first, explain changes, get confirmation.\\n\\nSupply the new code via exactly one of source / sourceFile / importUrl, or resave to recompile in place (see each param). For >1 driver use BULK mode (the updates param).\\n\\nAuto-backs up before modifying. Requires Write master + confirm + backup <24h.\\n[[FLAT_TRIM]]\\nMCP 2026-07-28 clients automatically continue this slow write and can replay its retained terminal response. Older clients can still lose the response on a transport drop; verify current hub state before retrying. See hub_get_tool_guide(section=\'slow_ops\').\\n[[/FLAT_TRIM]]\\n"],["inputSchema",["m",[["type","object"],["properties",["m",[["driverId",["m",[["type","string"],["description","The driver ID to update (single-driver mode). Omit when using \'updates\' array."]]]],["source",["m",[["type","string"],["description","Inline Groovy source (stubs only)."]]]],["sourceFile",["m",[["type","string"],["description","File Manager filename (write it first via hub_write_file), e.g. my-code.groovy."]]]],["importUrl",["m",[["type","string"],["description","URL the hub fetches directly (http/https)."]]]],["resave",["m",[["type","boolean"],["description","Re-save the current source without changes.[[FLAT_TRIM]] Runs entirely on-hub.[[/FLAT_TRIM]]"]]]],["backup",["m",[["type","boolean"],["description","false: no pre-save backup.[[FLAT_TRIM]] Default true: the current source goes to File Manager first (hub_list_backups scope=source). Never taken in importUrl mode: the URL\'s publisher keeps the history.[[/FLAT_TRIM]]"]]]],["expectedVersion",["m",[["type","integer"],["description","Optional optimistic-lock guard; aborts with conflict:true on mismatch.[[FLAT_TRIM]] In bulk mode, put it inside each updates[] entry.[[/FLAT_TRIM]]"]]]],["updates",["m",[["type","array"],["description","Bulk mode: one round-trip for many drivers. Each entry {driverId, sourceFile|source|importUrl|resave, optional expectedVersion}; cannot mix with single-driver fields; continue-on-error."],["items",["m",[["type","object"],["properties",["m",[["driverId",["m",[["type","string"],["description","The driver ID to update"]]]],["sourceFile",["m",[["type","string"],["description","File Manager filename (preferred)."]]]],["source",["m",[["type","string"],["description","Inline source (stubs only)."]]]],["importUrl",["m",[["type","string"],["description","URL the hub fetches directly."]]]],["resave",["m",[["type","boolean"],["description","Re-save without changes."]]]],["backup",["m",[["type","boolean"]]]],["expectedVersion",["m",[["type","integer"],["description","OPTIONAL optimistic-lock guard for this item only."]]]]]]],["required",["l",["driverId"]]]]]]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: Must be true. Confirms backup was created and user approved."]]]]]]],["required",["l",["confirm"]]]]]]]]']) as Map),
+        (_bat529EmbeddedCatalogRead(['["m",[["name","hub_delete_item"],["description","\\u26a0\\ufe0f DESTRUCTIVE: Permanently delete an app, driver, or library. Auto-backs up the source before deletion.\\n\\n[[FLAT_TRIM]]\\nPre-flight by type: apps -- remove app instances via the Hubitat UI first; drivers -- switch any devices to a different driver first; libraries -- ensure no apps/drivers still #include it (else compile errors).\\n[[/FLAT_TRIM]]\\n\\nTell the user the item name/ID, warn it\'s permanent, get confirmation. Requires Write master + confirm + backup <24h.\\n[[FLAT_TRIM]]\\nFor type=driver, MCP 2026-07-28 clients automatically continue this slow write and can replay its retained terminal response. Other item types and older clients can still lose the response on a transport drop; verify current hub state before retrying. See hub_get_tool_guide(section=\'slow_ops\').\\n[[/FLAT_TRIM]]\\n"],["inputSchema",["m",[["type","object"],["properties",["m",[["type",["m",[["type","string"],["enum",["l",["app","driver","library"]]],["description","What to delete."]]]],["item_id",["m",[["type","string"],["description","The app/driver/library ID to delete."]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: Must be true. Confirms backup was created and user approved."]]]]]]],["required",["l",["type","item_id","confirm"]]]]]]]]']) as Map),
         // Hub Admin Library Management Tools
-        [
-            name: "hub_create_library",
-            description: """⚠️ Install new Groovy library code. Libraries are #include'd by drivers/apps. Show code to user and get confirmation first.
-
-Provide exactly one of source / sourceFile / importUrl (see each param).
-
-Source must include a library() block with name/namespace/author/description (all required). The hub does NOT compile-check libraries at install -- syntax errors surface only when an app/driver #includes it. Requires Write master + confirm + backup <24h. Returns new libraryId.
-[[FLAT_TRIM]]
-A transport drop can lose the response while the hub still commits this write; verify current hub state before retrying. See hub_get_tool_guide(section='slow_ops').
-[[/FLAT_TRIM]]
-""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    source: [type: "string", description: "Inline source (stubs only)."],
-                    sourceFile: [type: "string", description: "File Manager filename (write it first via hub_write_file), e.g. my-code.groovy."],
-                    importUrl: [type: "string", description: "URL the hub fetches directly (http/https)."],
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."],
-                ],
-                required: ["confirm"]
-            ]
-        ],
-        [
-            name: "hub_update_library",
-            description: """⚠️ CRITICAL: Modify existing library code. Read current source first, explain changes, get confirmation.
-
-Supply the new code via exactly one of source / sourceFile / importUrl, or resave to recompile in place (see each param). Not compile-checked at save (see hub_create_library).
-
-Auto-backs up before modifying. Requires Write master + confirm + backup <24h.
-[[FLAT_TRIM]]
-A transport drop can lose the response while the hub still commits this write; verify current hub state before retrying. See hub_get_tool_guide(section='slow_ops').
-[[/FLAT_TRIM]]
-""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    libraryId: [type: "string", description: "The library ID to update"],
-                    source: [type: "string", description: "Inline source (stubs only)."],
-                    sourceFile: [type: "string", description: "File Manager filename (write it first via hub_write_file), e.g. my-code.groovy."],
-                    importUrl: [type: "string", description: "URL the hub fetches directly (http/https)."],
-                    resave: [type: "boolean", description: "Re-save the current source without changes.[[FLAT_TRIM]] Runs entirely on-hub.[[/FLAT_TRIM]]"],
-                    backup: [type: "boolean", description: "false: no pre-save backup.[[FLAT_TRIM]] Default true: the current source goes to File Manager first (hub_list_backups scope=source). Never taken in importUrl mode: the URL's publisher keeps the history.[[/FLAT_TRIM]]"],
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."],
-                ],
-                required: ["libraryId", "confirm"]
-            ]
-        ],
+        (_bat529EmbeddedCatalogRead(['["m",[["name","hub_create_library"],["description","\\u26a0\\ufe0f Install new Groovy library code. Libraries are #include\'d by drivers/apps. Show code to user and get confirmation first.\\n\\nProvide exactly one of source / sourceFile / importUrl (see each param).\\n\\nSource must include a library() block with name/namespace/author/description (all required). The hub does NOT compile-check libraries at install -- syntax errors surface only when an app/driver #includes it. Requires Write master + confirm + backup <24h. Returns new libraryId.\\n[[FLAT_TRIM]]\\nA transport drop can lose the response while the hub still commits this write; verify current hub state before retrying. See hub_get_tool_guide(section=\'slow_ops\').\\n[[/FLAT_TRIM]]\\n"],["inputSchema",["m",[["type","object"],["properties",["m",[["source",["m",[["type","string"],["description","Inline source (stubs only)."]]]],["sourceFile",["m",[["type","string"],["description","File Manager filename (write it first via hub_write_file), e.g. my-code.groovy."]]]],["importUrl",["m",[["type","string"],["description","URL the hub fetches directly (http/https)."]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: Must be true. Confirms backup was created and user approved."]]]]]]],["required",["l",["confirm"]]]]]]]]']) as Map),
+        (_bat529EmbeddedCatalogRead(['["m",[["name","hub_update_library"],["description","\\u26a0\\ufe0f CRITICAL: Modify existing library code. Read current source first, explain changes, get confirmation.\\n\\nSupply the new code via exactly one of source / sourceFile / importUrl, or resave to recompile in place (see each param). Not compile-checked at save (see hub_create_library).\\n\\nAuto-backs up before modifying. Requires Write master + confirm + backup <24h.\\n[[FLAT_TRIM]]\\nA transport drop can lose the response while the hub still commits this write; verify current hub state before retrying. See hub_get_tool_guide(section=\'slow_ops\').\\n[[/FLAT_TRIM]]\\n"],["inputSchema",["m",[["type","object"],["properties",["m",[["libraryId",["m",[["type","string"],["description","The library ID to update"]]]],["source",["m",[["type","string"],["description","Inline source (stubs only)."]]]],["sourceFile",["m",[["type","string"],["description","File Manager filename (write it first via hub_write_file), e.g. my-code.groovy."]]]],["importUrl",["m",[["type","string"],["description","URL the hub fetches directly (http/https)."]]]],["resave",["m",[["type","boolean"],["description","Re-save the current source without changes.[[FLAT_TRIM]] Runs entirely on-hub.[[/FLAT_TRIM]]"]]]],["backup",["m",[["type","boolean"],["description","false: no pre-save backup.[[FLAT_TRIM]] Default true: the current source goes to File Manager first (hub_list_backups scope=source). Never taken in importUrl mode: the URL\'s publisher keeps the history.[[/FLAT_TRIM]]"]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: Must be true. Confirms backup was created and user approved."]]]]]]],["required",["l",["libraryId","confirm"]]]]]]]]']) as Map),
         // Hub Admin App Configuration Read (grouped with installed-apps peers)
-        [
-            name: "hub_get_app_config",
-            description: """Read an installed classic app's page as the Hubitat UI renders it: the app's identity, the page's sections with each input's current value, and its child apps. The pages it links to are listed in page.hrefs. controls lists the page's buttons and links with the control_id that hub_set_native_app or hub_set_rule(operation:'form') activates, and pageNote says when the hub rendered another page than pageName. Secret values are redacted.""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    appId: [type: "string", description: "Installed-app ID (decimal). From hub_list_apps (scope='instances'), hub_list_rules, or the numeric id in the Hubitat UI URL (/installedapp/configure/<id>)."],
-                    pageName: [type: "string", description: "The page to read instead of the default page: a page.hrefs[].page name from a page of this app already read."],
-                    includeSettings: [type: "boolean", description: "Include the raw app-internal settings key-value map (default false). Set true only for power-user inspection.", default: false],
-                    summary: [type: "boolean", description: "Fast identity-only read: returns the thin app record (id, name, type, disabled, user), no config page; pageName/includeSettings ignored.", default: false]
-                ],
-                required: ["appId"]
-            ]
-        ],
+        (_bat529EmbeddedCatalogRead(['["m",[["name","hub_get_app_config"],["description","Read an installed classic app\'s page as the Hubitat UI renders it: the app\'s identity, the page\'s sections with each input\'s current value, and its child apps. The pages it links to are listed in page.hrefs. controls lists the page\'s buttons and links with the control_id that hub_set_native_app or hub_set_rule(operation:\'form\') activates, and pageNote says when the hub rendered another page than pageName. Secret values are redacted."],["inputSchema",["m",[["type","object"],["properties",["m",[["appId",["m",[["type","string"],["description","Installed-app ID (decimal). From hub_list_apps (scope=\'instances\'), hub_list_rules, or the numeric id in the Hubitat UI URL (/installedapp/configure/<id>)."]]]],["pageName",["m",[["type","string"],["description","The page to read instead of the default page: a page.hrefs[].page name from a page of this app already read."]]]],["includeSettings",["m",[["type","boolean"],["description","Include the raw app-internal settings key-value map (default false). Set true only for power-user inspection."],["default",false]]]],["summary",["m",[["type","boolean"],["description","Fast identity-only read: returns the thin app record (id, name, type, disabled, user), no config page; pageName/includeSettings ignored."],["default",false]]]]]]],["required",["l",["appId"]]]]]]]]']) as Map),
         // Installed Apps Integration (built-in + user app visibility)
-        [
-            name: "hub_list_device_dependents",
-            description: """List all apps that reference a specific device[[FLAT_TRIM]] (Room Lighting instances, Rule Machine rules, Groups and Scenes, Mode Manager, dashboards, Maker API, Echo Skill, etc.)[[/FLAT_TRIM]] — critical before device cleanup, troubleshooting, or reassignment.[[FLAT_TRIM]] Requires the Read master.[[/FLAT_TRIM]]""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    deviceId: [type: "string", description: "Device ID from hub_list_devices"],
-                    cursor: [type: "string", description: "Opt-in pagination cursor for the appsUsing list. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 100)."]
-                ],
-                required: ["deviceId"]
-            ]
-        ],
+        (_bat529EmbeddedCatalogRead(['["m",[["name","hub_list_device_dependents"],["description","List all apps that reference a specific device[[FLAT_TRIM]] (Room Lighting instances, Rule Machine rules, Groups and Scenes, Mode Manager, dashboards, Maker API, Echo Skill, etc.)[[/FLAT_TRIM]] \\u2014 critical before device cleanup, troubleshooting, or reassignment.[[FLAT_TRIM]] Requires the Read master.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["deviceId",["m",[["type","string"],["description","Device ID from hub_list_devices"]]]],["cursor",["m",[["type","string"],["description","Opt-in pagination cursor for the appsUsing list. Omit for unbounded; pass \\"\\" for the first page, iterate nextCursor (page size 100)."]]]]]]],["required",["l",["deviceId"]]]]]]]]']) as Map),
     ] }
     return defs()
 }
@@ -3220,22 +2952,7 @@ def _openWorldToolNames_partCodeManagement() {
 def _toolDisplayMeta_partCodeManagement() {
     // Human-facing title/summary per tool (MCP annotations.title + the Advanced per-tool
     // overrides menu) -- merged into the app's getToolDisplayMeta() aggregator (issue #209).
-    return [
-        // Apps / drivers / libraries / backups / HPM
-        hub_list_apps: [title: "List Apps", summary: "List installed app types or enumerate app instances."],
-        hub_list_drivers: [title: "List Drivers", summary: "List all installed drivers."],
-        hub_list_libraries: [title: "List Libraries", summary: "List installed Groovy libraries."],
-        hub_get_source: [title: "Get Source Code", summary: "Read Groovy source for an app, driver, or library."],
-        hub_create_app: [title: "Install App", summary: "Install a new app from source, a File Manager file, or a URL, or instantiate installed app code."],
-        hub_create_driver: [title: "Install Driver", summary: "Install one or more drivers from source, File Manager files, or a URL."],
-        hub_update_app: [title: "Update App Code", summary: "Modify an existing app's source code, or enable/configure its OAuth (client id/secret)."],
-        hub_update_driver: [title: "Update Driver Code", summary: "Modify an existing driver's source code."],
-        hub_create_library: [title: "Install Library", summary: "Install a new Groovy library."],
-        hub_update_library: [title: "Update Library Code", summary: "Modify an existing library's source code."],
-        hub_delete_item: [title: "Delete Code Item", summary: "Permanently delete an app, driver, or library (auto-backs up first)."],
-        hub_list_device_dependents: [title: "List Device Dependents", summary: "Find all apps that reference a device."],
-        hub_get_app_config: [title: "Get App Configuration", summary: "Read an installed app's configuration page."]
-    ]
+    return (_bat529EmbeddedCatalogRead(['["m",[["hub_list_apps",["m",[["title","List Apps"],["summary","List installed app types or enumerate app instances."]]]],["hub_list_drivers",["m",[["title","List Drivers"],["summary","List all installed drivers."]]]],["hub_list_libraries",["m",[["title","List Libraries"],["summary","List installed Groovy libraries."]]]],["hub_get_source",["m",[["title","Get Source Code"],["summary","Read Groovy source for an app, driver, or library."]]]],["hub_create_app",["m",[["title","Install App"],["summary","Install a new app from source, a File Manager file, or a URL, or instantiate installed app code."]]]],["hub_create_driver",["m",[["title","Install Driver"],["summary","Install one or more drivers from source, File Manager files, or a URL."]]]],["hub_update_app",["m",[["title","Update App Code"],["summary","Modify an existing app\'s source code, or enable/configure its OAuth (client id/secret)."]]]],["hub_update_driver",["m",[["title","Update Driver Code"],["summary","Modify an existing driver\'s source code."]]]],["hub_create_library",["m",[["title","Install Library"],["summary","Install a new Groovy library."]]]],["hub_update_library",["m",[["title","Update Library Code"],["summary","Modify an existing library\'s source code."]]]],["hub_delete_item",["m",[["title","Delete Code Item"],["summary","Permanently delete an app, driver, or library (auto-backs up first)."]]]],["hub_list_device_dependents",["m",[["title","List Device Dependents"],["summary","Find all apps that reference a device."]]]],["hub_get_app_config",["m",[["title","Get App Configuration"],["summary","Read an installed app\'s configuration page."]]]]]]']) as Map)
 }
 
 
