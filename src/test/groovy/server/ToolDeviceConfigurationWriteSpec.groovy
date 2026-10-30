@@ -1163,7 +1163,7 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
     def 'room #room resolves by name before id, to #name'() {
         given:
         Map names = [1: 'Kitchen', 7: '1', 9: 'Den']
-        script.metaClass.getRooms = { -> names.collect { id, name -> [id: id, name: name] } }
+        script.metaClass.getRooms = { -> names.collect { key, label -> [id: key, name: label] } }
         def model = fixture()
         registerFixture(model, false)
         def posts = stubPosts { path, form ->
