@@ -10602,7 +10602,8 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
     // predicate is included only when the compiled state carried one. The dual-path cost is one
     // extra localhost GET, not response size — the empty arrays are a few bytes.
     def result = [
-        ok: !sourcesUsed.isEmpty() && issues.isEmpty() && broken != true && validationErrors.isEmpty(),
+        // An app that could not be identified may be a user app whose state only looks like a rule's.
+        ok: identified && !sourcesUsed.isEmpty() && issues.isEmpty() && broken != true && validationErrors.isEmpty(),
         // unreadable: NEITHER source could be read -- a "couldn't check" verdict, not
         // a "checked and broken" one (ok stays false; there is no positive evidence
         // either way). Callers gating committed work on ok should treat unreadable

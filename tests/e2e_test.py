@@ -6358,8 +6358,8 @@ def updated() {}
             assert named.get("doorLedPin") == "13" and named.get("lockErrorCode") == "E42", \
                 f"includeSettings hid a board pin or status code: {named}"
             # With Hide passwords and credentials off, the form and the settings read every value as stored.
-            self._mcp_settings({"redactCredentials": False})
             try:
+                self._mcp_settings({"redactCredentials": False})
                 plain = {f["name"]: f.get("value") for f in self._native_app_form(instance_id, {"kind": "open"}).get("fields", [])}
                 stored = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config", "args": {
                     "appId": instance_id, "includeSettings": True}}).get("settings") or {}

@@ -649,6 +649,22 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         h.ok == false
     }
 
+    def "an app whose lookup throws is never reported healthy, even when its compiled state reads not broken"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/app/ruleBuilderJson/100') { ruleBuilderJson([broken: false]) }
+        hubGet.register('/installedapp/statusJson/100') { statusJson(100) }
+        script.metaClass.getAppByAppId = { Long id -> throw new IllegalStateException('lookup failed') }
+
+        when:
+        def h = script._rmCheckRuleHealth(100)
+
+        then:
+        h.broken == false
+        h.checkErrors.any { it.contains("could not be identified (lookup failed)") }
+        h.ok == false
+    }
+
     def "an app id the hub does not know is refused instead of being read as a built-in app"() {
         given:
         settingsMap.enableRead = true
