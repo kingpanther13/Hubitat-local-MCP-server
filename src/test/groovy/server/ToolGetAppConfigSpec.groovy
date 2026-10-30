@@ -1000,8 +1000,8 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         then: 'the settings map redacts the password key even though the input carried no value'
         result.settings.apiKey == '***redacted (password)***'
 
-        and: 'the structured input leaks no value at all'
-        !result.page.sections[0].inputs.find { it.name == 'apiKey' }.containsKey('value')
+        and: 'the structured input reads the stored value, masked'
+        result.page.sections[0].inputs.find { it.name == 'apiKey' }.value == '***redacted (password)***'
 
         and: 'no secret anywhere in the result'
         !JsonOutput.toJson(result).contains('hunter2-SECRET')
