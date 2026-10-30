@@ -19,9 +19,16 @@ jobs:
             17
       - uses: gradle/actions/setup-gradle@v6.4.0
       - name: Generate named collection callbacks under Groovy 2.4
-        if: ${{ !contains(github.event.head_commit.message, '[catalog]') }}
+        if: ${{ !contains(github.event.head_commit.message, '[catalog]') && !contains(github.event.head_commit.message, '[cpcount]') }}
         run: ./gradlew --no-daemon -I experiments/closure-loops/remote.gradle bat529BroadClosurePrepare --console=plain
+      - name: Count main-class constant-pool entries under Groovy 2.4
+        if: ${{ contains(github.event.head_commit.message, '[cpcount]') }}
+        run: |
+          python3 tools/build-release-app.py
+          curl -sSLo groovy.jar https://repo1.maven.org/maven2/org/codehaus/groovy/groovy-all/2.4.21/groovy-all-2.4.21.jar
+          java -cp groovy.jar groovy.ui.GroovyMain experiments/closure-loops/cpcount.groovy dist/hubitat-mcp-server.groovy
       - name: Embed large constant data under Groovy 2.4
+        if: ${{ !contains(github.event.head_commit.message, '[cpcount]') }}
         run: ./gradlew -p experiments/catalog-json prepareCatalog24 --console=plain --no-daemon
       - uses: actions/upload-artifact@v7
         if: always()
