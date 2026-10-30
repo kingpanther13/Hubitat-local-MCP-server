@@ -580,8 +580,10 @@ def toolGetAppConfig(args) {
             // a bool's true is its value.
             if (i.defaultValue != null && (i.defaultValue != true || i.type == "bool")) input.value = i.defaultValue
             else if (i.value != null && (i.value != true || i.type == "bool")) input.value = i.value
-            // A mode input renders no value; it is stored in settings, as the form engine reads it.
-            if (i.type == "mode" && parsed.settings instanceof Map && parsed.settings.containsKey(i.name)) input.value = parsed.settings[i.name]
+            // The page's defaultValue is the code default; a stored value lives in settings, as the form engine
+            // reads it. A device input keeps its selection in the description.
+            String inputType = i.type?.toString() ?: ""
+            if (!inputType.startsWith("capability") && !inputType.startsWith("device.") && parsed.settings instanceof Map && parsed.settings[i.name] != null) input.value = parsed.settings[i.name]
             if (i.type == "password" && i.name) passwordInputNames << i.name.toString()
             if (input.containsKey("value") && _appConfigMasksSetting(i.name, i.type, input.value)) input.value = redactedPw
             // An accessToken input stores its token under "value", which the whole-result pass (keyed on

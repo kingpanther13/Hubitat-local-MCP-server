@@ -6781,12 +6781,12 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
         case "hub_delete_visual_rule": return toolDeleteVisualRule(args)
 
         // Dashboard CRUD -- Easy (classic /dashboard/* endpoints) + legacy Hubitat® Dashboards; impl in McpDashboardsLib
-        case "hub_list_dashboards": return toolListDashboards(args)
-        case "hub_get_dashboard": return toolGetDashboard(args)
-        case "hub_create_dashboard": return toolCreateDashboard(args)
-        case "hub_update_dashboard": return toolUpdateDashboard(args)
+        case "hub_list_dashboards": return _dashboardPublic(toolListDashboards(args))
+        case "hub_get_dashboard": return _dashboardPublic(toolGetDashboard(args))
+        case "hub_create_dashboard": return _dashboardPublic(toolCreateDashboard(args))
+        case "hub_update_dashboard": return _dashboardPublic(toolUpdateDashboard(args))
         case "hub_delete_dashboard": return toolDeleteDashboard(args)
-        case "hub_clone_dashboard": return toolCloneDashboard(args)
+        case "hub_clone_dashboard": return _dashboardPublic(toolCloneDashboard(args))
 
         // Tool Guide
         case "hub_get_tool_guide": return toolGetToolGuide(args.section, args.cursor, [platform_api_search: args.platform_api_search, platform_api_page: args.platform_api_page])
@@ -11735,7 +11735,7 @@ If even one selected value exceeds the response budget, the tool returns `conten
 
 `hub_update_device(deviceId, fields={...}, preferences={...}, confirm?)` saves the way the device page does, one save per page section, then reads the device back once and reports each field in `changes`, `unchanged` (it already had the requested value) or `errors`. Put `bestPracticeKey` beside them when mandatory best-practice acknowledgment is enabled. The whole request is checked before anything is written; a field the device does not offer (configuration reports `writable:false` with a `reason`) is refused.
 
-- **Device Info save** (one request for all of these): `label`, `name`, `deviceNetworkId`, `room` (name or id; `""` clears), `tags` (replaces the set; `[]` clears), `notes`, `defaultIcon` (`""` clears), `maxEvents`/`maxStates` (1-2000), `spammyThreshold` (100-2000), `deviceTypeId`, `zigbeeId`, `dashboardIds` (replaces the set), `meshEnabled`, `meshFullSync`. The hub rebuilds the device from this save, so every current value is sent with the change.
+- **Device Info save** (one request for all of these): `label`, `name`, `deviceNetworkId`, `room` (name or id; `""` clears), `tags` (replaces the set; `[]` clears), `notes`, `defaultIcon` (`""` clears), `maxEvents`/`maxStates` (1-2000), `spammyThreshold` (100-2000), `deviceTypeId`, `zigbeeId`, `dashboardIds` (the legacy Hubitat Dashboards that list this device; replaces the set; an Easy Dashboard picks its devices with `hub_update_dashboard` `deviceIds`), `meshEnabled`, `meshFullSync`. The hub rebuilds the device from this save, so every current value is sent with the change.
 - **Preferences save** (one request): `preferences`, `showOnHome`, `defaultCurrentState` (`""` selects None), `retryEnabled`. It runs the driver's `updated()`, as the page's Save Preferences does; settings that are not named keep their values.
 - `homeKitEnabled`, `amazonAlexaEnabled`, `googleHomeEnabled` go to the assistant integrations; a refusal names the integration's reason. `enabled` enables or disables the device. `dataValues` sets Data entries through the driver's `updateDataValue`.
 
@@ -12434,7 +12434,7 @@ Read-only; each entry carries id, name, and `type` ('easy' or 'legacy'). Easy en
 
 ### hub_get_dashboard
 
-Read-only. For an Easy Dashboard: tiles, navigation, devices, and PINs. For a legacy dashboard: its authorized `deviceIds` plus a nested `layout` object (see "Legacy layout shape" below). Read before the wholesale `hub_update_dashboard` and pass its output straight back. A read that partly fails returns `partial: true` with a note — the missing fields are unavailable, not defaulted.
+Read-only. For an Easy Dashboard: tiles, navigation, devices, and PINs (read `***redacted (password)***` while Hide passwords and credentials is on; passing that back to `hub_update_dashboard` keeps the stored PIN). For a legacy dashboard: its authorized `deviceIds` plus a nested `layout` object (see "Legacy layout shape" below). Read before the wholesale `hub_update_dashboard` and pass its output straight back. A read that partly fails returns `partial: true` with a note — the missing fields are unavailable, not defaulted.
 
 ### hub_create_dashboard
 

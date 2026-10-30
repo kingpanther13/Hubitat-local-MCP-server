@@ -379,7 +379,7 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
         'meshEnabled'        | true               | { Map m -> m.device.meshSelectionEnabled = false }                      | 'Hub Mesh sharing'
         'meshFullSync'       | true               | { Map m -> m.device.linkedDevice = true; m.hubMeshRefreshEnabled = false } | 'Full sync'
         'retryEnabled'       | true               | { Map m -> m.commandRetrySelectionEnabled = false }                     | 'Command retry'
-        'dashboardIds'       | [2]                | { Map m -> m.hasDashboards = false }                                    | 'no dashboards'
+        'dashboardIds'       | [2]                | { Map m -> m.hasDashboards = false }                                    | 'no Hubitat Dashboards (legacy)'
         'homeKitEnabled'     | false              | { Map m -> m.homeKitSelectionEnabled = false }                          | 'HomeKit'
         'amazonAlexaEnabled' | true               | { Map m -> m.amazonAlexaInstalled = false }                             | 'Amazon Alexa'
         'googleHomeEnabled'  | false              | { Map m -> m.googleHomeSupported = false }                              | 'Google Home'

@@ -5481,7 +5481,7 @@ class TestRunner:
             lambda: self.client.call_tool("hub_manage_dashboards", {
                 "tool": "hub_create_dashboard",
                 "args": {"name": dash_name, "deviceIds": [str(switch_id)],
-                         "options": {"showClockTile": True, "theme": "dark"}},
+                         "options": {"showClockTile": True, "theme": "dark", "dashboardPin": "4321"}},
             }),
             lambda: self._find_dashboard_id_by_name(dash_name),
             "create dashboard",
@@ -5515,6 +5515,8 @@ class TestRunner:
         # The read reaches the hub's full dashboard list (not the id-and-name fallback), so the
         # theme set on create comes back and a wholesale update can carry it.
         assert got.get("theme") == "dark", f"hub_get_dashboard lost the dashboard's theme: {got}"
+        # Hide passwords and credentials masks the PIN in the read.
+        assert got.get("dashboardPin") == "***redacted (password)***", f"hub_get_dashboard returned the PIN in clear: {got}"
         listed_all = self.client.call_tool("hub_read_dashboards", {"tool": "hub_list_dashboards", "args": {}})
         assert listed_all.get("source") == "dashboard-all", \
             f"hub_list_dashboards fell back to the child-app list: {listed_all.get('source')} {listed_all.get('note')}"
@@ -5527,7 +5529,7 @@ class TestRunner:
             lambda: self.client.call_tool("hub_manage_dashboards", {
                 "tool": "hub_update_dashboard",
                 "args": {"dashboardId": dash_id, "name": dash_name, "deviceIds": upd_devices,
-                         "options": {"showClockTile": new_clock}}}),
+                         "options": {"showClockTile": new_clock, "dashboardPin": got.get("dashboardPin")}}}),
             lambda: bool((self.client.call_tool("hub_manage_dashboards", {
                 "tool": "hub_get_dashboard", "args": {"dashboardId": dash_id}}) or {}).get("showClockTile")) == new_clock,
             "update dashboard",
@@ -5541,6 +5543,13 @@ class TestRunner:
                 "tool": "hub_get_dashboard", "args": {"dashboardId": dash_id}})
             assert bool(reread.get("showClockTile")) == new_clock, \
                 f"hub_update_dashboard reported success but showClockTile didn't change: {reread}"
+        # The masked PIN passed back through the update kept the stored one.
+        try:
+            self._mcp_settings({"redactCredentials": False})
+            stored = self.client.call_tool("hub_manage_dashboards", {"tool": "hub_get_dashboard", "args": {"dashboardId": dash_id}})
+        finally:
+            self._mcp_settings({"redactCredentials": True})
+        assert stored.get("dashboardPin") == "4321", f"the update with the masked PIN changed the stored PIN: {stored}"
 
         # CLONE (clone-by-value: copies the source config into a new dashboard named "<name> (copy)")
         clone = self.client.call_tool("hub_manage_dashboards", {
@@ -6320,6 +6329,11 @@ def installed() {}
 def updated() {}
 """
 
+    @staticmethod
+    def _app_config_input_values(config: dict) -> dict:
+        return {i.get("name"): i.get("value") for s in (config.get("page") or {}).get("sections", [])
+                for i in s.get("inputs", []) if "value" in i}
+
     @test("native_apps")
     def test_set_native_app_snapshot_redacts_password_settings(self) -> None:
         # #552: a pre-write snapshot never stores a password-typed setting, and an in-place restore of
@@ -6350,10 +6364,15 @@ def updated() {}
             shown = {f["name"]: f.get("value") for f in form.get("fields", []) if f["name"] in ("apiKey", "disarmPin")}
             assert shown == {"apiKey": "***redacted (password)***", "disarmPin": "***redacted (password)***"}, \
                 f"the form returned credential-named values in clear: {shown}"
-            named = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config", "args": {
-                "appId": instance_id, "includeSettings": True}}).get("settings") or {}
+            config = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config", "args": {
+                "appId": instance_id, "includeSettings": True}})
+            named = config.get("settings") or {}
             assert named.get("apiKey") == "***redacted (password)***" and named.get("disarmPin") == "***redacted (password)***", \
                 f"includeSettings returned credential-named values in clear: {named}"
+            # Page inputs read the stored values (the page JSON carries only code defaults), masked the same way.
+            page = self._app_config_input_values(config)
+            assert page.get("doorLedPin") == "13" and page.get("p") == "***redacted (password)***" and \
+                page.get("apiKey") == "***redacted (password)***", f"page inputs did not read the stored values: {page}"
             # A board pin and a status code next to a credential word are not credentials.
             assert named.get("doorLedPin") == "13" and named.get("lockErrorCode") == "E42", \
                 f"includeSettings hid a board pin or status code: {named}"
@@ -6361,11 +6380,14 @@ def updated() {}
             try:
                 self._mcp_settings({"redactCredentials": False})
                 plain = {f["name"]: f.get("value") for f in self._native_app_form(instance_id, {"kind": "open"}).get("fields", [])}
-                stored = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config", "args": {
-                    "appId": instance_id, "includeSettings": True}}).get("settings") or {}
+                stored_config = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config", "args": {
+                    "appId": instance_id, "includeSettings": True}})
+                stored = stored_config.get("settings") or {}
             finally:
                 self._mcp_settings({"redactCredentials": True})
             assert plain.get("p") == secret and plain.get("apiKey") == api_key, f"with the setting off the form hid a value: {plain}"
+            assert self._app_config_input_values(stored_config).get("p") == secret, \
+                f"with the setting off a page input hid a value: {self._app_config_input_values(stored_config)}"
             assert stored.get("p") == secret and stored.get("disarmPin") == pin, \
                 f"with the setting off includeSettings hid a value: {stored}"
             more = self._native_app("update", {"fields": {"note2": "sub edit"}, "page": "pageMore"}, instance_id)

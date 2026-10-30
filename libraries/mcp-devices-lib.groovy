@@ -3924,7 +3924,7 @@ private String _deviceEditUnavailable(String field, Map fj) {
             return d.zigbeeId ? null : 'The device has no Zigbee ID.'
         case 'deviceNetworkId':
             return (component && !linked) || _deviceFlag(d.linkedLocally) ? 'This device takes its network ID from its parent.' : null
-        case 'dashboardIds': return _deviceFlag(fj.hasDashboards) && fj.dashboards instanceof List ? null : 'The hub has no dashboards to assign.'
+        case 'dashboardIds': return _deviceFlag(fj.hasDashboards) && fj.dashboards instanceof List ? null : 'The hub has no Hubitat Dashboards (legacy) to assign. An Easy Dashboard picks its devices with hub_update_dashboard deviceIds.'
         case 'meshEnabled': return _deviceFlag(d.meshSelectionEnabled) ? null : 'Hub Mesh sharing is not available for this device.'
         case 'meshFullSync': return linked && _deviceFlag(fj.hubMeshRefreshEnabled) ? null : 'Full sync applies to a linked device while Hub Mesh refresh is enabled.'
         case 'retryEnabled': return _deviceFlag(fj.commandRetrySelectionEnabled) || _deviceFlag(d.retryAvailable) ? null : 'Command retry is not available for this device.'
