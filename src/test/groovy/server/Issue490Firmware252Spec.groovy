@@ -1623,7 +1623,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
 
     def "until earlier than the window start is refused"() {
         when:
-        script.toolGetDeviceHistory([since: '2026-10-08T02:00:00.000+0000', until: '2026-10-08T01:00:00.000+0000'])
+        script.toolGetDeviceHistory([deviceId: '42', since: '2026-10-08T02:00:00.000+0000', until: '2026-10-08T01:00:00.000+0000'])
 
         then:
         def ex = thrown(IllegalArgumentException)
@@ -2457,22 +2457,5 @@ class Issue490Firmware252Spec extends ToolSpecBase {
 
         expect:
         script._typeName([a: 1]) == 'LinkedHashMap'
-    }
-
-    def "until bounds the location history window"() {
-        given:
-        settingsMap.enableRead = true
-        hubGet.register('/logs/eventsJson') { p ->
-            JsonOutput.toJson([[name: 'mode', value: 'Night', date: '2026-10-08T03:00:00.000+0000'],
-                               [name: 'mode', value: 'Day', date: '2026-10-08T02:10:00.000+0000'],
-                               [name: 'mode', value: 'Away', date: '2026-10-08T01:00:00.000+0000']])
-        }
-
-        when:
-        def r = script.toolGetDeviceHistory([since: '2026-10-08T02:00:00.000+0000', until: '2026-10-08T02:15:00.000+0000'])
-
-        then:
-        r.events*.value == ['Day']
-        r.untilTimestamp != null
     }
 }

@@ -1827,7 +1827,7 @@ def _getAllToolDefinitions_partVariables() {
         ],
         [
             name: "hub_list_variable_changes",
-            description: "List recent hub-variable change events captured by the MCP app's location-event subscription, most-recent first.[[FLAT_TRIM]] Use this to audit or debug what changed a variable and when, without polling hub_get_variable. The buffer holds at most the 200 most recent changes (oldest dropped) and survives app and hub restarts, but it is not a complete history — an empty or partial result does NOT mean the variable never changed. For the hub's separately retained location-event history call hub_list_device_events with no deviceId (location-event mode).[[/FLAT_TRIM]]",
+            description: "List recent hub-variable change events captured by the MCP app's location-event subscription, most-recent first.[[FLAT_TRIM]] Use this to audit or debug what changed a variable and when, without polling hub_get_variable. The buffer holds at most the 200 most recent changes (oldest dropped) and survives app and hub restarts, but it is not a complete history — an empty or partial result does NOT mean the variable never changed. For the hub's separately retained location-event history call hub_get_logs(mode='locationEvents').[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [

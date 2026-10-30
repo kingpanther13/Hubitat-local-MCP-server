@@ -269,8 +269,6 @@ class ToolManageLogsSpec extends ToolSpecBase {
         result.total == 0
     }
 
-    // -------- toolGetDeviceHistory --------
-
     // -------- hub_get_logs: location and hub events --------
 
     private static final String LOCATION_ROWS = '''[
@@ -697,209 +695,23 @@ class ToolManageLogsSpec extends ToolSpecBase {
         'past'           | [until: 30]                     || "Cannot read until='30' as a time"
     }
 
-    def "hub_list_device_events returns location events when deviceId is omitted (reads /logs/eventsJson)"() {
-        given: '/logs/eventsJson stubbed with mode + HSM + hub-variable rows (real wire shape)'
-        hubGet.register('/logs/eventsJson') { params ->
-            '''[
-              {"name":"mode","value":"Night","unit":null,"descriptionText":"Mode changed to Night","isStateChange":true,"type":"API","date":"2026-06-02T20:19:00.073-0400"},
-              {"name":"hsmStatus","value":"armedAway","unit":null,"descriptionText":"HSM armed away","isStateChange":true,"type":"API","date":"2026-06-02T20:18:00.000-0400"},
-              {"name":"variable:guestCount","value":"3","unit":null,"descriptionText":"hub variable updated","isStateChange":true,"type":"HUB_VARIABLE_SET","date":"2026-06-02T20:17:00.000-0400"}
-            ]'''
-        }
-
-        when:
-        def result = script.toolGetDeviceHistory([hoursBack: 6, limit: 25])
-
-        then: 'it reads the same endpoint the hub Logs page uses'
-        hubGet.calls.any { it.path == '/logs/eventsJson' }
-
-        and:
-        result.source == 'location'
-        !result.containsKey('device')
-        !result.containsKey('deviceId')
-        result.hoursBack == 6
-        result.count == 3
-        result.events*.name == ['mode', 'hsmStatus', 'variable:guestCount']
-        result.events[0].value == 'Night'
-        result.events[0].description == 'Mode changed to Night'
-    }
-
-    def "hub_list_device_events location mode merges the hub events newest first and tags each row's kind"() {
-        given: 'a reboot the Logs page lists under Hub events, between two location events'
-        hubGet.register('/logs/eventsJson') { params ->
-            '''[
-              {"name":"mode","value":"Night","descriptionText":"m1","isStateChange":true,"type":"API","date":"2026-06-02T20:19:00.000-0400"},
-              {"name":"mode","value":"Day","descriptionText":"m2","isStateChange":true,"type":"API","date":"2026-06-02T20:10:00.000-0400"}
-            ]'''
-        }
-        hubGet.register('/hub/eventsJson') { params ->
-            '[{"name":"lowMemory","value":"","descriptionText":"Hub memory is critically low, rebooting now","date":"2026-06-02T20:15:00.000-0400"}]'
-        }
-
-        when:
-        def all = script.toolGetDeviceHistory([hoursBack: 168])
-        def reboots = script.toolGetDeviceHistory([hoursBack: 168, attribute: 'lowMemory'])
-
-        then:
-        all.events*.name == ['mode', 'lowMemory', 'mode']
-        all.events*.kind == ['location', 'hub', 'location']
-        !all.containsKey('hubEventsError')
-        reboots.count == 1
-        reboots.events[0].description.contains('rebooting now')
-    }
-
-    def "hub_list_device_events location mode keeps the location events when the hub events read fails"() {
-        given:
-        hubGet.register('/logs/eventsJson') { params ->
-            '[{"name":"mode","value":"Night","descriptionText":"m1","isStateChange":true,"type":"API","date":"2026-06-02T20:19:00.000-0400"}]'
-        }
-        hubGet.register('/hub/eventsJson') { params -> throw new RuntimeException('hub events unavailable') }
-
-        when:
-        def result = script.toolGetDeviceHistory([hoursBack: 168])
-
-        then:
-        result.count == 1
-        result.events[0].kind == 'location'
-        result.hubEventsError.contains('hub events unavailable')
-    }
-
-    @spock.lang.Unroll
-    def "hub_list_device_events location mode reports a hub events read that is #label"() {
-        given:
-        hubGet.register('/logs/eventsJson') { params ->
-            '[{"name":"mode","value":"Night","descriptionText":"m1","isStateChange":true,"type":"API","date":"2026-06-02T20:19:00.000-0400"}]'
-        }
-        hubGet.register('/hub/eventsJson') { params -> body }
-
-        when:
-        def result = script.toolGetDeviceHistory([hoursBack: 168])
-
-        then:
-        result.count == 1
-        result.hubEventsError.contains(says)
-
-        where:
-        label            | body          || says
-        'empty'          | ''            || 'empty response'
-        'not an array'   | '{"a":1}'     || 'not a JSON array'
-    }
-
-    def "hub_list_device_events limit keeps the newest rows across both kinds and says it cut"() {
-        given:
-        hubGet.register('/logs/eventsJson') { params ->
-            '''[
-              {"name":"mode","value":"Night","descriptionText":"m1","isStateChange":true,"type":"API","date":"2026-06-02T20:19:00.000-0400"},
-              {"name":"mode","value":"Day","descriptionText":"m2","isStateChange":true,"type":"API","date":"2026-06-02T20:10:00.000-0400"}
-            ]'''
-        }
-        hubGet.register('/hub/eventsJson') { params ->
-            '[{"name":"lowMemory","value":"","descriptionText":"low","date":"2026-06-02T20:15:00.000-0400"}]'
-        }
-
-        when:
-        def result = script.toolGetDeviceHistory([hoursBack: 168, limit: 2])
-
-        then:
-        result.events*.description == ['m1', 'low']
-        result.truncated == true
-        result.matchedCount == 3
-    }
-
-    def "hub_list_device_events since drops hub events at or before the bookmark"() {
-        given:
-        hubGet.register('/logs/eventsJson') { params -> '[]' }
-        hubGet.register('/hub/eventsJson') { params ->
-            '''[
-              {"name":"systemStart","value":"","descriptionText":"after","date":"2026-06-02T20:16:00.000-0400"},
-              {"name":"lowMemory","value":"","descriptionText":"at","date":"2026-06-02T20:15:00.000-0400"}
-            ]'''
-        }
-
-        when:
-        def result = script.toolGetDeviceHistory([since: '2026-06-02T20:15:00.000-0400'])
-
-        then:
-        result.events*.description == ['after']
-        result.events[0].kind == 'hub'
-        !result.containsKey('truncated')
-    }
-
-    def "hub_list_device_events applies attribute filter to location events"() {
-        given:
-        hubGet.register('/logs/eventsJson') { params ->
-            '''[
-              {"name":"mode","value":"Night","descriptionText":"m1","isStateChange":true,"type":"API","date":"2026-06-02T20:19:00.000-0400"},
-              {"name":"hsmStatus","value":"armedAway","descriptionText":"h1","isStateChange":true,"type":"API","date":"2026-06-02T20:18:00.000-0400"},
-              {"name":"mode","value":"Day","descriptionText":"m2","isStateChange":true,"type":"API","date":"2026-06-02T20:17:00.000-0400"}
-            ]'''
-        }
-
-        when:
-        def result = script.toolGetDeviceHistory([attribute: 'mode'])
-
-        then:
-        result.source == 'location'
-        result.attributeFilter == 'mode'
-        result.count == 2
-        result.events.every { it.name == 'mode' }
-    }
-
-    def "hub_list_device_events returns an error map when /logs/eventsJson fetch fails"() {
-        given:
-        hubGet.register('/logs/eventsJson') { params ->
-            throw new RuntimeException('location event store unavailable')
-        }
-
-        when:
-        def result = script.toolGetDeviceHistory([:])
-
-        then:
-        result.success == false
-        result.source == 'location'
-        result.error.contains('failed')
-        result.error.contains('location event store unavailable')
-        result.note.contains('retry')
-    }
+    // -------- toolGetDeviceHistory --------
 
     @Unroll
-    def "hub_list_device_events validates supplied #idCase instead of reading location history"() {
-        given:
-        hubGet.register('/logs/eventsJson') { '[]' }
-
-        when:
-        script.toolGetDeviceHistory([deviceId: inputId, hoursBack: 1])
-
-        then:
-        def ex = thrown(IllegalArgumentException)
-        ex.message.contains(expectedError)
-        hubGet.calls.empty
-
-        where:
-        idCase          | inputId | expectedError
-        'integer zero'  | 0       | 'Device not found: 0'
-        'string zero'   | '0'     | 'Device not found: 0'
-        'empty string'  | ''      | 'deviceId must be a non-empty string or integral number'
-        'blank string'  | ' '     | 'deviceId must be a non-empty string or integral number'
-        'boolean false' | false   | 'deviceId must be a non-empty string or integral number'
-    }
-
-    @Unroll
-    def "hub_list_device_events via dispatch preserves location history for #idCase deviceId (useGateways=#useGateways)"() {
+    def "hub_list_device_events via dispatch refuses a call with neither deviceId nor appId and points at hub_get_logs (#idCase, useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        hubGet.register('/logs/eventsJson') { '[]' }
 
         when:
         def response = mcpDriver.callTool('hub_list_device_events', args)
 
         then:
         response.error == null
-        !response.result.isError
-        def inner = mcpDriver.parseInner(response)
-        inner.source == 'location'
-        inner.events == []
-        hubGet.calls*.path == ['/logs/eventsJson', '/hub/eventsJson']
+        response.result.isError == true
+        def error = mcpDriver.parseInner(response).error
+        error.contains("hub_get_logs(mode='locationEvents')")
+        error.contains("hub_get_logs(mode='hubEvents')")
+        hubGet.calls.empty
 
         where:
         useGateways | idCase    | args
@@ -907,81 +719,6 @@ class ToolManageLogsSpec extends ToolSpecBase {
         false       | 'null'    | [deviceId: null, hoursBack: 1]
         true        | 'omitted' | [hoursBack: 1]
         true        | 'null'    | [deviceId: null, hoursBack: 1]
-    }
-
-    def "hub_list_device_events location mode surfaces timeFilterUnparseable the same way"() {
-        given:
-        hubGet.register('/logs/eventsJson') { params ->
-            '''[
-              {"name":"mode","value":"Night","descriptionText":"in window","isStateChange":true,"type":"API","date":"2009-02-13T22:00:00.000+0000"},
-              {"name":"mode","value":"Day","descriptionText":"no date","isStateChange":true,"type":"API"}
-            ]'''
-        }
-
-        when:
-        def result = script.toolGetDeviceHistory([hoursBack: 6])
-
-        then: 'the dateless row survives and is counted'
-        result.count == 2
-        result.timeFilterUnparseable == 1
-    }
-
-    def "hub_list_device_events location mode: since drops pre-bookmark rows and echoes the bookmark"() {
-        given: 'no deviceId/appId -> location branch; one row after the bookmark, one before it'
-        hubGet.register('/logs/eventsJson') { params ->
-            '''[
-              {"name":"mode","value":"Night","descriptionText":"after bookmark","isStateChange":true,"type":"API","date":"2009-02-13T22:30:00.000+0000"},
-              {"name":"mode","value":"Day","descriptionText":"before bookmark","isStateChange":true,"type":"API","date":"2009-02-13T21:00:00.000+0000"}
-            ]'''
-        }
-
-        when:
-        def result = script.toolGetDeviceHistory([since: '2009-02-13T22:00:00.000+0000'])
-
-        then: 'location source; only the post-bookmark row survives'
-        result.source == 'location'
-        result.count == 1
-        result.events*.description == ['after bookmark']
-
-        and: 'the explicit window is reported (caller string echoed verbatim); no hoursBack as if it bounded the result'
-        result.sinceMode == 'explicit'
-        result.since == '2009-02-13T22:00:00.000+0000'
-        !result.containsKey('hoursBack')
-        Date.parse("yyyy-MM-dd'T'HH:mm:ss.SSSZ", result.sinceTimestamp).time == 1234562400000L
-    }
-
-    def "hub_list_device_events location mode without since reports sinceMode=relative and echoes hoursBack"() {
-        given:
-        hubGet.register('/logs/eventsJson') { params ->
-            '[{"name":"mode","value":"Night","descriptionText":"in window","isStateChange":true,"type":"API","date":"2009-02-13T22:00:00.000+0000"}]'
-        }
-
-        when:
-        def result = script.toolGetDeviceHistory([hoursBack: 6])
-
-        then: 'the relative path is labelled and hoursBack is the bounding field; no spurious since'
-        result.sinceMode == 'relative'
-        result.hoursBack == 6
-        !result.containsKey('since')
-        result.sinceTimestamp == new Date(1234567890000L - (6 * 3600000L)).format("yyyy-MM-dd'T'HH:mm:ss.SSSZ")
-    }
-
-    def "hub_list_device_events location mode: the bookmarked instant is EXCLUDED (strictly after)"() {
-        given: 'one row exactly AT the bookmark, one strictly after it'
-        hubGet.register('/logs/eventsJson') { params ->
-            '''[
-              {"name":"mode","value":"Night","descriptionText":"after bookmark","isStateChange":true,"type":"API","date":"2009-02-13T22:30:00.000+0000"},
-              {"name":"mode","value":"Day","descriptionText":"at the bookmark","isStateChange":true,"type":"API","date":"2009-02-13T22:00:00.000+0000"}
-            ]'''
-        }
-
-        when:
-        def result = script.toolGetDeviceHistory([since: '2009-02-13T22:00:00.000+0000'])
-
-        then: 'the at-bookmark row is dropped; only the strictly-newer row survives'
-        result.source == 'location'
-        result.count == 1
-        result.events*.description == ['after bookmark']
     }
 
     def "hub_list_device_events throws when device is not found"() {
