@@ -6301,6 +6301,8 @@ def pagePw() {
             input "p", "password", title: "Password", required: false
             input "apiKey", "text", title: "API key", required: false
             input "disarmPin", "text", title: "Disarm PIN", required: false
+            input "doorLedPin", "text", title: "Door LED pin", required: false
+            input "lockErrorCode", "text", title: "Lock error code", required: false
             input "note", "text", title: "Note", required: false
             paragraph "p-state: ${settings.p == 'SECRET_VALUE' ? 'kept' : 'changed'}"
             href "pageMore", title: "More", description: "open"
@@ -6340,7 +6342,8 @@ def updated() {}
             instance_id = inst.get("instanceAppId")
             assert inst.get("committed") is True and instance_id, f"creating the password app instance failed: {inst}"
             api_key, pin = "ak-e2e-5d1f", "pin-9731"
-            first = self._native_app("update", {"fields": {"p": secret, "apiKey": api_key, "disarmPin": pin}}, instance_id)
+            first = self._native_app("update", {"fields": {"p": secret, "apiKey": api_key, "disarmPin": pin,
+                                                           "doorLedPin": "13", "lockErrorCode": "E42"}}, instance_id)
             assert first.get("success") is True, f"setting the password failed: {first}"
             # Credential-named text inputs: the form result masks them like hub_get_app_config does.
             form = self._native_app_form(instance_id, {"kind": "open"})
@@ -6351,6 +6354,20 @@ def updated() {}
                 "appId": instance_id, "includeSettings": True}}).get("settings") or {}
             assert named.get("apiKey") == "***redacted (password)***" and named.get("disarmPin") == "***redacted (password)***", \
                 f"includeSettings returned credential-named values in clear: {named}"
+            # A board pin and a status code next to a credential word are not credentials.
+            assert named.get("doorLedPin") == "13" and named.get("lockErrorCode") == "E42", \
+                f"includeSettings hid a board pin or status code: {named}"
+            # With Hide passwords and credentials off, the form and the settings read every value as stored.
+            self._mcp_settings({"redactCredentials": False})
+            try:
+                plain = {f["name"]: f.get("value") for f in self._native_app_form(instance_id, {"kind": "open"}).get("fields", [])}
+                stored = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config", "args": {
+                    "appId": instance_id, "includeSettings": True}}).get("settings") or {}
+            finally:
+                self._mcp_settings({"redactCredentials": True})
+            assert plain.get("p") == secret and plain.get("apiKey") == api_key, f"with the setting off the form hid a value: {plain}"
+            assert stored.get("p") == secret and stored.get("disarmPin") == pin, \
+                f"with the setting off includeSettings hid a value: {stored}"
             more = self._native_app("update", {"fields": {"note2": "sub edit"}, "page": "pageMore"}, instance_id)
             assert more.get("success") is True and more.get("page") == "pageMore", \
                 f"the sub-page update under a root page not named mainPage failed: {more}"
