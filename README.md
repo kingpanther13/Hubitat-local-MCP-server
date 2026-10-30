@@ -1676,6 +1676,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v5.1.1** - feat: rebuild hub_update_device on the device page's native saves. PRs: [#567](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/567)
 - **v5.1.0** - feat: rebuild hub_set_native_app on the native form engine. PRs: [#563](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/563)
 - **v5.0.3** - fix: rename top-level content key in ChatGPT tool results. PRs: [#566](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/566)
 - **v5.0.2** - fix: hub_get_logs event cursors, cache after a job delete, relative-age overflow. PRs: [#564](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/564)
