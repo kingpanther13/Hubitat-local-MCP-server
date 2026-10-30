@@ -1353,6 +1353,10 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         'gateCode'     | 'text'              | '8888'     | true
         'zipCode'      | 'text'              | '02139'    | false
         'opcode'       | 'text'              | 'x'        | false
+        'doorLedPin'   | 'text'              | '13'       | false
+        'garageRelayPin' | 'number'          | 5          | false
+        'lockErrorCode' | 'text'             | 'E42'      | false
+        'alarmStatusCode' | 'text'           | 'S7'       | false
         'lockPasscode' | 'number'            | 1234       | true
         'apiTokens'    | null                | ['a', 'b'] | true
         'apiTokens'    | null                | []         | false

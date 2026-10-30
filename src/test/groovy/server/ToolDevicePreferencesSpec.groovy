@@ -578,6 +578,46 @@ class ToolDevicePreferencesSpec extends ToolSpecBase {
         result.sections.attributes.declaredAttributes[0].value == '***redacted (password)***'
     }
 
+    def "with Hide passwords and credentials off, details returns secret attribute records as stored"() {
+        given:
+        settingsMap.redactCredentials = false
+        childDevicesList << new TestDevice(id: 901, name: 'Fixture')
+        def nativeModel = fixture()
+        nativeModel.device.currentStates = [apiToken: [name: 'apiToken', value: 'private-attribute-value', dataType: 'STRING']]
+        nativeModel.remove('commands')
+        registerFixture(DEVICE_ID, nativeModel)
+
+        when:
+        def result = script.toolGetDevice(DEVICE_ID, 'details', ['attributes'])
+
+        then:
+        result.sections.attributes.declaredAttributes[0].value == 'private-attribute-value'
+        result.sections.attributes.currentStates.apiToken.value == 'private-attribute-value'
+    }
+
+    @spock.lang.Unroll
+    def "a #type preference named #name reads #expected"() {
+        given:
+        def fullJson = fixture()
+        fullJson.settings << [defaultValue: null, deviceId: 901, id: 10100, multiple: false, name: name, options: [:],
+                              range: null, required: false, title: name, type: type, value: stored, version: 1]
+        fullJson.inputValues << [name: name, inputValue: stored]
+        addListedDevice()
+        registerFixture(DEVICE_ID, fullJson)
+
+        when:
+        def exposed = script.toolGetDevice(DEVICE_ID, 'configuration').preferences.find { it.name == name }
+
+        then:
+        exposed.value == expected
+
+        where:
+        name       | type   | stored  | expected
+        'alarmPin' | 'text' | '1111'  | '***redacted (password)***'
+        'lockCode' | 'text' | '2222'  | '***redacted (password)***'
+        'zipCode'  | 'text' | '02134' | '02134'
+    }
+
     def "empty multiple enum storage is a saved empty selection while explicit null remains null"() {
         given:
         def full = [device: [id: 1], settings: [[name: 'choices', type: 'enum', multiple: true, value: '']], inputValues: []]

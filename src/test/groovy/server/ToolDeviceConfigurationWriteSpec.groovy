@@ -287,7 +287,10 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
         [fields: [name: ' ']]                                     | 'name cannot be empty'
         [fields: [tags: ['a,b']]]                                 | 'tags must be an array of strings without commas'
         [fields: [dashboardIds: ['one']], confirm: true]          | 'dashboardIds must be an array of dashboard IDs'
-        [fields: [dataValues: [foo: 7]]]                          | 'dataValues must be an object of string values'
+        [fields: [dataValues: [foo: 7]]]                          | 'dataValues must be a non-empty object of string values'
+        [fields: [dataValues: [:]]]                               | 'dataValues must be a non-empty object of string values'
+        [fields: [dataValues: [' ': 'x']]]                        | 'dataValues must be a non-empty object of string values'
+        [fields: [room: true]]                                    | 'room must be a room name or id'
     }
 
     @Unroll
@@ -1138,17 +1141,141 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
 
     // ---- schema ------------------------------------------------------------------------
 
+    // ---- review follow-ups -------------------------------------------------------------------
+
+    def 'a whole number sent as a decimal is posted as that integer'() {
+        given:
+        def model = fixture()
+        registerFixture(model, false)
+        def posts = stubPosts { path, form -> model.device.maxEvents = form.maxEvents as Integer; null }
+
+        when:
+        def result = script.toolUpdateDevice([deviceId: '10', fields: [maxEvents: 150.0]])
+
+        then:
+        posts*.body*.maxEvents == ['150']
+        result.success == true
+        result.changes*.property == ['maxEvents']
+        result.changes[0].newValue == 150
+    }
+
+    @Unroll
+    def 'room #room resolves by name before id, to #name'() {
+        given:
+        Map names = [1: 'Kitchen', 7: '1', 9: 'Den']
+        script.metaClass.getRooms = { -> names.collect { id, name -> [id: id, name: name] } }
+        def model = fixture()
+        registerFixture(model, false)
+        def posts = stubPosts { path, form ->
+            model.device.roomId = form.roomId as Integer
+            model.device.roomName = names[form.roomId as Integer]
+            null
+        }
+
+        when:
+        def result = script.toolUpdateDevice([deviceId: '10', fields: [room: room]])
+
+        then:
+        posts[0].body.roomId == roomId
+        result.success == true
+        result.changes == [[property: 'room', oldValue: null, newValue: name]]
+
+        where:
+        room  | roomId | name
+        '1'   | '7'    | '1'
+        9     | '9'    | 'Den'
+        'den' | '9'    | 'Den'
+    }
+
+    def "keeping a linked device's link ('0') is reported unchanged"() {
+        given:
+        def model = fixture()
+        model.device.linkedDevice = true
+        model.device.deviceNetworkId = 'hub-11'
+        registerFixture(model, true)
+        def posts = stubPosts()
+
+        when:
+        def result = script.toolUpdateDevice([deviceId: '10', fields: [deviceNetworkId: '0'], confirm: true])
+
+        then:
+        posts[0].body.deviceNetworkId == '0'
+        result.success == true
+        result.changes.empty
+        result.unchanged == ['deviceNetworkId']
+    }
+
+    def 'a credential-named data value is echoed hidden'() {
+        given:
+        def model = fixture()
+        registerFixture(model, true)
+        stubPosts { path, body -> model.device.data.put(body.args[0].value, body.args[1].value); null }
+
+        when:
+        def result = script.toolUpdateDevice([deviceId: '10', fields: [dataValues: [userCode: '4321', firmware: '1.2']]])
+
+        then:
+        result.success == true
+        result.changes as Set == [[property: 'dataValue.userCode', newValue: '***redacted (password)***'],
+                                  [property: 'dataValue.firmware', newValue: '1.2']] as Set
+        !groovy.json.JsonOutput.toJson(result).contains('4321')
+    }
+
+    def 'a refused section fails only its own fields'() {
+        given:
+        def model = fixture()
+        registerFixture(model, true)
+        stubPosts { path, body ->
+            if (path == '/device/update') { model.device.notes = body.notes; return null }
+            [success: false]
+        }
+
+        when:
+        def result = script.toolUpdateDevice([deviceId: '10', fields: [notes: 'kept', showOnHome: true]])
+
+        then:
+        result.success == false
+        result.changes*.property == ['notes']
+        result.errors*.property == ['showOnHome']
+        result.errors[0].error.contains('The hub refused the preference save')
+    }
+
+    @Unroll
+    def 'preference #name already stored as #stored is #outcome'() {
+        given:
+        def model = fixture()
+        model.settings.find { it.name == name }.value = stored
+        registerFixture(model, true)
+        stubPosts { path, body -> model.settings.find { it.name == name }.value = body.preferences[0].value.toString(); null }
+
+        when:
+        def result = script.toolUpdateDevice([deviceId: '10', preferences: [(name): [type: type, value: value]]])
+
+        then:
+        result.success == true
+        (result.unchanged ?: []) == (outcome == 'unchanged' ? ["preference.${name}".toString()] : [])
+        result.changes*.property == (outcome == 'unchanged' ? [] : ["preference.${name}".toString()])
+
+        where:
+        name        | type   | value  | stored  | outcome
+        'logEnable' | 'bool' | false  | 'false' | 'unchanged'
+        'modes'     | 'enum' | ['a']  | '["a"]' | 'unchanged'
+        'modes'     | 'enum' | ['a']  | 'a'     | 'changed, since the driver reads a comma-joined value as one String'
+    }
+
     def 'the write schema takes fields and preferences, and configuration lists every editable field'() {
         when:
         def schema = script.getAllToolDefinitions().find { it.name == 'hub_update_device' }.inputSchema
         def editable = script._deviceConfigurationEditableFields(fixture())
+        def described = (schema.properties.fields.description =~ /editableFields name: (.*)\. Omitted/)[0][1]
+        def listed = described.split(', ').collect { it.replaceAll(/ \(.*\)$/, '') } as Set
 
         then:
         schema.properties.keySet() == ['deviceId', 'fields', 'preferences', 'confirm'] as Set
         !schema.containsKey('additionalProperties')
         schema.required == ['deviceId']
         editable*.name as Set == script._deviceEditFields().keySet()
-        editable.every { schema.properties.fields.description.contains(it.name) }
+        listed == script._deviceEditFields().keySet()
         editable.findAll { it.requiresConfirmation }*.name as Set ==
             ['deviceTypeId', 'deviceNetworkId', 'zigbeeId', 'dashboardIds', 'meshEnabled', 'meshFullSync',
              'homeKitEnabled', 'amazonAlexaEnabled', 'googleHomeEnabled'] as Set

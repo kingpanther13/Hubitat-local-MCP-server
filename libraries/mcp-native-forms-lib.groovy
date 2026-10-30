@@ -189,7 +189,8 @@ private void _nfWalk(Object node, Map fields, Map controls, List messages, List 
             if (device && current instanceof Map) current = current.keySet().collect { it.toString() }
             if (device && !field.multiple && current instanceof List) current = current ? current[0] : null
             if (type == 'password') field.has_value = current != null && current != ''
-            else { field.value = current; field.value_source = exists ? 'stored' : 'default' }
+            // With Hide passwords and credentials off, a stored password reads back as stored.
+            if (type != 'password' || (exists && !_redactsCredentials())) { field.value = current; field.value_source = exists ? 'stored' : 'default' }
             // The page default the browser posts for an input with no stored value; a password's default is never posted.
             if (!exists && type != 'password' && current != null && current != '' && !(current instanceof Collection && current.isEmpty())) field.default_value = current
             field.present = exists && current != null && current != '' && (!(current instanceof Collection) || !current.empty)

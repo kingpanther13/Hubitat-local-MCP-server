@@ -5635,7 +5635,7 @@ def getGatewayConfig() {
                 hub_get_device_attribute: "Read one attribute's value, or block-poll one OR several devices (deviceIds + mode any/all) until it reaches expectedValue/expectedValues. Args: deviceId | deviceIds (max 20), mode? (any/all), attribute, expectedValue?, expectedValues?, timeoutMs?, pollIntervalMs?, comparator?, stableForMs?",
                 hub_list_device_events: "Recent device events, a time-windowed history, an absolute bookmark (since) with an optional end (until), per-app events (appId), or location and hub events (reboots, low memory). Args: deviceId?, appId?, hoursBack?, since?, until?, attribute?, limit?",
                 hub_get_hub_mesh: "Read Hub Mesh (hub-to-hub device/variable sharing on the LAN): enabled state, peer hubs, shared/linked devices + hub variables, sync interval, mode-following hub. Args: include_token?",
-                hub_update_hub_mesh: "Change Hub Mesh settings (enable/disable needs a hub reboot; per-device sharing is hub_update_device meshEnabled). Args: enabled?, full_refresh_interval? (0/120/300/3600), mode_hub_id? ('none'=local modes), peer_hub_id?+peer_token?"
+                hub_update_hub_mesh: "Change Hub Mesh settings (enable/disable needs a hub reboot; per-device sharing is hub_update_device fields.meshEnabled). Args: enabled?, full_refresh_interval? (0/120/300/3600), mode_hub_id? ('none'=local modes), peer_hub_id?+peer_token?"
             ],
             searchHints: [
                 hub_call_device_command: "send command control turn on off set level dim lock unlock device run batch multiple several devices mixed commands ad hoc one call",
@@ -7759,8 +7759,7 @@ private String _redactSecretsInPath(String path) {
  * routes 404 (/app/updateOAuth, /device/updateLabel, /device/setShowOnHome) while WILDCARD routes
  * MASK it by absorbing the junk into their path-parameter. The query map also URL-encodes, so
  * pre-encoding a value double-encodes it. RETHROW CONTRACT: a degrading catch must rethrow
- * IllegalStateException before falling back (see _radioGetSafe and the showOnHome /
- * setDefaultCurrentState / create-label legs in McpDevicesLib) or the guard becomes the silent
+ * IllegalStateException before falling back (see _radioGetSafe) or the guard becomes the silent
  * 404 it exists to end.
  */
 private _hubRequest(String method, String path, Map opts = [:]) {
@@ -10391,9 +10390,10 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
     def compiledReadError = null   // a thrown/bad-200 compiled-state read, surfaced if the HTML path also fails
     boolean useRuleBuilder = (source != "configPage")
     boolean useConfigPage = (source != "ruleBuilderJson")
-    // Only built-in apps are read. A user or community app's state can carry Rule Machine's keys
-    // without being a rule, and its default page runs its own code, which can drop a wizard's pending
-    // input (Hubitat Package Manager clears a pending install there).
+    // Only built-in apps are read; an app that cannot be identified gets only its compiled state. A
+    // user or community app's state can carry Rule Machine's keys without being a rule, and its
+    // default page runs its own code, which can drop a wizard's pending input (Hubitat Package
+    // Manager clears a pending install there).
     def installed = null
     boolean identified = true
     try { installed = getAppByAppId(appId as Long) }
@@ -11624,7 +11624,7 @@ PATCH-like write over Hub Mesh's hub-level settings; every parameter optional, v
 - `mode_hub_id` → `/device/followModes/<hubId|none>`; a peer `hubId` from `hub_get_hub_mesh` `peers[]`, or `'none'` for local modes.
 - `peer_hub_id` + `peer_token` (TOGETHER) → `POST /device/setHubMeshToken`; stores that peer's mesh token here, needed when the peer has UI login security. Read the token on the PEER via its own `hub_get_hub_mesh(include_token=true)`. An all-digits `peer_hub_id` is sent as a JSON number, matching the hub UI's wire format.
 
-Peer hubs are auto-discovered on the LAN — there is no "add peer" write; enabling mesh on both hubs is what makes them peers. Per-DEVICE sharing is `hub_update_device` (`meshEnabled`), not this tool; `meshFullSync` there applies to a LINKED device (with Hub Mesh refresh enabled), keeping the local proxy synced on the periodic refresh.
+Peer hubs are auto-discovered on the LAN — there is no "add peer" write; enabling mesh on both hubs is what makes them peers. Per-DEVICE sharing is `hub_update_device` (`fields.meshEnabled`), not this tool; `fields.meshFullSync` there applies to a LINKED device (with Hub Mesh refresh enabled), keeping the local proxy synced on the periodic refresh.
 
 ### Per-device and per-variable Hub Mesh linking & sharing
 

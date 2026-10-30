@@ -1639,7 +1639,7 @@ private boolean _deviceConfigurationSecretKey(key) {
     String normalized = key?.toString()?.toLowerCase()?.replaceAll(/[^a-z0-9]/, '') ?: ''
     return normalized.contains('password') || normalized.contains('token') || normalized.contains('secret') ||
         normalized.contains('credential') || normalized.contains('apikey') || normalized.contains('privatekey') ||
-        normalized.contains('accesskey') || normalized in ['psk', 'psw']
+        normalized.contains('accesskey') || normalized in ['psk', 'psw'] || _appConfigSecretName(key)
 }
 
 private _deviceConfigurationPublicValue(value, key = '') {
@@ -1732,7 +1732,7 @@ private Map _deviceConfigurationProjection(Map source, List keys) {
     return result
 }
 
-// One entry per field hub_update_device accepts, from the same table it validates against.
+// One entry per _deviceEditFields() entry, so the listed fields and the accepted ones cannot drift.
 private List _deviceConfigurationEditableFields(Map fj) {
     Map d = (fj?.device instanceof Map) ? fj.device : [:]
     def fields = []
@@ -2068,7 +2068,7 @@ private Map _deviceExpandedResult(deviceId, Map identity, Map fj, String mode, s
                     note: 'Unset or cleared attributes can be absent; absence does not establish an unsupported attribute.']
                 if (d.currentStates instanceof Map) value.declaredAttributes = _nativeReportedDeviceAttributes(d).collect { row ->
                     def attribute = _deviceConfigurationPublicValue(row)
-                    if (row instanceof Map && _deviceConfigurationSecretKey(row.name)) {
+                    if (row instanceof Map && _redactsCredentials() && _deviceConfigurationSecretKey(row.name)) {
                         attribute.value = '***redacted (password)***'
                     }
                     attribute
@@ -3947,12 +3947,13 @@ private boolean _deviceEditInteger(value, Map spec) {
 
 private void _checkDeviceEditValue(String field, Map spec, value) {
     String bad = null
-    if (spec.type == 'string' && !(value instanceof String)) bad = 'must be a string'
+    if (field == 'room' && !(value instanceof String) && !_deviceEditInteger(value, [:])) bad = 'must be a room name or id'
+    else if (spec.type == 'string' && field != 'room' && !(value instanceof String)) bad = 'must be a string'
     else if (spec.type == 'boolean' && !(value instanceof Boolean)) bad = 'must be a boolean'
     else if (spec.type == 'integer' && !_deviceEditInteger(value, spec)) bad = spec.maximum ? "must be an integer from ${spec.minimum} to ${spec.maximum}" : "must be a positive integer"
     else if (field == 'tags' && (!(value instanceof List) || value.any { !(it instanceof String) || it.contains(',') })) bad = 'must be an array of strings without commas'
     else if (field == 'dashboardIds' && (!(value instanceof List) || value.any { !_deviceEditInteger(it, [:]) })) bad = 'must be an array of dashboard IDs'
-    else if (field == 'dataValues' && (!(value instanceof Map) || value.any { k, v -> !(v instanceof String) })) bad = 'must be an object of string values'
+    else if (field == 'dataValues' && (!(value instanceof Map) || !value || value.any { k, v -> !k?.toString()?.trim() || !(v instanceof String) })) bad = 'must be a non-empty object of string values keyed by data name'
     else if (field in ['name', 'deviceNetworkId'] && !value.trim()) bad = 'cannot be empty'
     if (bad) throw new IllegalArgumentException("${field} ${bad}")
 }
@@ -4069,7 +4070,7 @@ private Map _planDeviceEdit(Map fj, Map fields, Map preferences = [:]) {
         String unavailable = _deviceEditUnavailable(name, fj)
         if (unavailable) throw new IllegalArgumentException("${name} cannot be changed: ${unavailable}")
         if (name == 'room') {
-            def room = value == '' ? [id: 0, name: null] : _resolveDeviceRoom(value)
+            def room = value == '' ? [id: 0, name: null] : _resolveDeviceRoom(value.toString())
             send.roomId = room.id
             send.roomName = room.name
         } else if (name == 'defaultCurrentState' && value) {
@@ -4086,7 +4087,7 @@ private Map _planDeviceEdit(Map fj, Map fields, Map preferences = [:]) {
                 throw new IllegalArgumentException("deviceTypeId is not an available driver ID; read configuration driver options first")
             }
         } else if (name == 'deviceNetworkId' && _deviceFlag(d.linkedDevice) && value != '0') {
-            // The hub keeps the current link for any other value.
+            // '0' keeps the current link; any other value must be a listed target.
             def targetsText = hubInternalGet("/device/accessibleLinkedDevices")
             def targets = targetsText ? new groovy.json.JsonSlurper().parseText(targetsText)?.devices : null
             if (!(targets instanceof List) || !targets.any { !_deviceFlag(it.linkedLocally) && "${it.hubId}-${it.deviceId}" == value }) {
@@ -4106,7 +4107,7 @@ private Map _planDeviceEdit(Map fj, Map fields, Map preferences = [:]) {
     return send
 }
 
-// Room name (case-insensitive) or id. The hub's room setters create a room for an unknown name.
+// Room name (case-insensitive), else id: a room named "3" wins over room id 3.
 private Map _resolveDeviceRoom(String room) {
     def rooms
     try {
@@ -4114,7 +4115,7 @@ private Map _resolveDeviceRoom(String room) {
     } catch (Exception e) {
         throw new IllegalArgumentException("Unable to list rooms to resolve '${room}': ${e.message ?: e.toString()}")
     }
-    def match = rooms?.find { it.id?.toString() == room || it.name?.toString()?.toLowerCase() == room.toLowerCase() }
+    def match = rooms?.find { it.name?.toString()?.toLowerCase() == room.toLowerCase() } ?: rooms?.find { it.id?.toString() == room }
     if (match == null) {
         def names = rooms ? rooms.collect { it.name } : []
         throw new IllegalArgumentException("Room '${room}' not found.${names ? ' Available rooms: ' + names.join(', ') : ''}")
@@ -4140,6 +4141,11 @@ def toolUpdateDevice(args) {
         if (spec == null) throw new IllegalArgumentException("Unknown field '${field.key}'; hub_get_device(mode='configuration') lists the editable fields")
         _checkDeviceEditValue(field.key, spec, field.value)
     }
+    // A whole number sent as 100.0 would post "100.0", which the hub stores as no value.
+    fields = fields.collectEntries { k, v ->
+        [(k): specs[k].type == 'integer' ? new BigDecimal(v.toString()).toBigInteger() :
+              k == 'dashboardIds' ? v.collect { new BigDecimal(it.toString()).toBigInteger() } : v]
+    }
     if (fields.keySet().any { specs[it].confirm }) requireDestructiveConfirm(args.confirm)
     _requireDeviceToolAccess(deviceId)
     def fj = _fetchDeviceFullJson(deviceId)
@@ -4152,7 +4158,8 @@ def toolUpdateDevice(args) {
     return _applyDeviceEdit(deviceId, fj, fields, send, planned)
 }
 
-// One native save per page section, in the page's order, then one read-back verifies every field.
+// One native save per page section (data values: one call per key), in the page's order, then one
+// read-back verifies every field.
 private Map _applyDeviceEdit(deviceId, Map fj, Map fields, Map send, Map preferences) {
     Map d = fj.device
     String deviceLabel = _bypassDeviceLabel(fj, deviceId)
@@ -4216,7 +4223,7 @@ private Map _applyDeviceEdit(deviceId, Map fj, Map fields, Map send, Map prefere
             for (item in wanted) {
                 if (actual instanceof Map && actual.get(item.key)?.toString() == item.value) {
                     if (d.data instanceof Map && d.data.get(item.key)?.toString() == item.value) unchanged << "dataValue.${item.key}".toString()
-                    else changes << [property: "dataValue.${item.key}", newValue: item.value]
+                    else changes << [property: "dataValue.${item.key}", newValue: _deviceConfigurationPublicValue(item.value, item.key)]
                 }
                 else errors << [property: "dataValue.${item.key}", error: "Saved, but the data value reads back as ${groovy.json.JsonOutput.toJson(_deviceConfigurationPublicValue(actual.get(item.key), item.key))}; inspect device data before retrying."]
             }
@@ -4224,8 +4231,9 @@ private Map _applyDeviceEdit(deviceId, Map fj, Map fields, Map send, Map prefere
         }
         if (name == 'room') wanted = send.roomName
         boolean matches = _deviceEditValuesMatch(name, wanted, actual)
-        if (name == 'deviceNetworkId' && wanted == '0' && _deviceFlag(d.linkedDevice)) matches = actual == d.deviceNetworkId
-        if (matches && _deviceEditReadable(name, fj) && _deviceEditValuesMatch(name, wanted, _deviceEditCurrentValue(name, fj))) {
+        boolean keepLink = name == 'deviceNetworkId' && wanted == '0' && _deviceFlag(d.linkedDevice)
+        if (keepLink) matches = actual == d.deviceNetworkId
+        if (matches && (keepLink || _deviceEditReadable(name, fj) && _deviceEditValuesMatch(name, wanted, _deviceEditCurrentValue(name, fj)))) {
             unchanged << name
         } else if (matches) {
             changes << [property: name, oldValue: _deviceConfigurationPublicValue(_deviceEditCurrentValue(name, fj), name),
@@ -4275,7 +4283,7 @@ private boolean _deviceEditReadable(String name, Map fj) {
     return d.containsKey(name)
 }
 
-// The value hub_get_device(mode='configuration') reports for an editable field.
+// An editable field's current value as the device model holds it.
 private _deviceEditCurrentValue(String name, Map fj) {
     Map d = fj.device
     switch (name) {
@@ -4387,7 +4395,7 @@ private void _verifyDevicePreferenceWrite(String name, Map setting, List changes
     }
 }
 
-// The driver's updateDataValue, one call per key. verify=false leaves confirmation to the caller's read-back.
+// The driver's updateDataValue, one call per key. verify=false skips the read-back here.
 private void _applyNativeDeviceDataValues(deviceId, Map values, List changes, List errors, boolean verify = true) {
     for (item in values) {
         try {

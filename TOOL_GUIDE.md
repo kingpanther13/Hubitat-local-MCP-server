@@ -503,7 +503,7 @@ PATCH-like write over Hub Mesh's hub-level settings; every parameter optional, v
 - `mode_hub_id` → `/device/followModes/<hubId|none>`; a peer `hubId` from `hub_get_hub_mesh` `peers[]`, or `'none'` for local modes.
 - `peer_hub_id` + `peer_token` (TOGETHER) → `POST /device/setHubMeshToken`; stores that peer's mesh token here, needed when the peer has UI login security. Read the token on the PEER via its own `hub_get_hub_mesh(include_token=true)`. An all-digits `peer_hub_id` is sent as a JSON number, matching the hub UI's wire format.
 
-Peer hubs are auto-discovered on the LAN — there is no "add peer" write; enabling mesh on both hubs is what makes them peers. Per-DEVICE sharing is `hub_update_device` (`meshEnabled`), not this tool; `meshFullSync` there applies to a LINKED device (with Hub Mesh refresh enabled), keeping the local proxy synced on the periodic refresh.
+Peer hubs are auto-discovered on the LAN — there is no "add peer" write; enabling mesh on both hubs is what makes them peers. Per-DEVICE sharing is `hub_update_device` (`fields.meshEnabled`), not this tool; `fields.meshFullSync` there applies to a LINKED device (with Hub Mesh refresh enabled), keeping the local proxy synced on the periodic refresh.
 
 ### Per-device and per-variable Hub Mesh linking & sharing
 

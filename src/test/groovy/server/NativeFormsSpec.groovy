@@ -784,6 +784,17 @@ class NativeFormsSpec extends ToolSpecBase {
         !fields.find { it.name == 'zipCode' }.containsKey('redacted')
     }
 
+    def 'with Hide passwords and credentials off, a stored password reads as stored'() {
+        given:
+        settingsMap.redactCredentials = false
+        when:
+        def field = open().fields.find { it.name == 'credential' }
+        then:
+        field.value == 'private-password'
+        field.value_source == 'stored'
+        !field.containsKey('redacted')
+    }
+
     @Unroll
     def 'an accessToken input reads #shown when the toggle is #toggle and the caller is #caller'() {
         given:

@@ -450,7 +450,7 @@ Monitoring tools are gated by the Read master (ON by default). The network confi
 | `hub_get_device_attribute` | Get a specific attribute value. Pass exactly one of `expectedValue` or `expectedValues` to block-poll the attribute until it matches or times out — `timeoutMs` in MILLISECONDS (default 5000ms = 5 seconds, max 60000ms). `comparator` (eq/ne/gt/gte/lt/lte/between) and `stableForMs` (debounce) refine the match; a numeric comparator on a non-numeric attribute times out with `nonNumericAttribute: true`. For multi-device convergence pass `deviceIds` (a list, mutually exclusive with `deviceId`, max 20) with `mode` (all/any), returning a compact per-device array (`{deviceId, device, finalValue, matched}`) plus `convergedCount`. Polling BLOCKS the MCP request; use sparingly and prefer event-driven flows when available. (also in `hub_read_devices`) |
 | `hub_list_device_events` | Recent events for a device. Add `hoursBack` for a relative window (up to 7 days) or `since` for an absolute bookmark (events after an exact timestamp; round-trip a returned `date`); the response echoes `sinceMode` (`explicit`/`relative`) and the bounding field (`since` or `hoursBack`). Omit `deviceId` for mode/HSM/hub-variable/sendLocationEvent location events. (also in `hub_read_devices`) |
 | `hub_get_hub_mesh` | Read Hub Mesh config: enabled state, peer hubs, shared/linked devices + hub variables, sync interval, mode-following hub (also in `hub_read_devices`) |
-| `hub_update_hub_mesh` | Change Hub Mesh settings: `enabled` (⚠️ needs a hub reboot to take effect), `full_refresh_interval` (0/120/300/3600 s), `mode_hub_id` (follow a peer hub's modes, or `'none'` for local modes), and `peer_hub_id`+`peer_token` (store a peer's mesh auth token, needed when that peer has UI login security). Peers are auto-discovered on the LAN so there is no add-peer write; per-DEVICE sharing is `hub_update_device` (`meshEnabled`/`meshFullSync`) |
+| `hub_update_hub_mesh` | Change Hub Mesh settings: `enabled` (⚠️ needs a hub reboot to take effect), `full_refresh_interval` (0/120/300/3600 s), `mode_hub_id` (follow a peer hub's modes, or `'none'` for local modes), and `peer_hub_id`+`peer_token` (store a peer's mesh auth token, needed when that peer has UI login security). Peers are auto-discovered on the LAN so there is no add-peer write; per-DEVICE sharing is `hub_update_device` (`fields.meshEnabled`/`fields.meshFullSync`) |
 
 </details>
 
@@ -1176,7 +1176,7 @@ For easier bug reporting:
   > *Already implemented.* The existing `device_command` action type accepts any device ID, command, and parameters via dynamic invocation (`device."${command}"(*params)`). This is the "any capability + command" feature.
 
 - [ ] **Disable/Enable a device** — `Difficulty: 1 | Effort: S`
-  > *Feasible (partially done).* The `hub_update_device` MCP tool already supports the `enabled` property via the internal `/device/disable` endpoint. A new `set_device_enabled` rule action type wraps the same call. Requires the Write master. Should warn if the target device is used in active rule triggers.
+  > *Feasible (partially done).* The `hub_update_device` MCP tool already supports the `enabled` field via the internal `/device/disable` endpoint. A new `set_device_enabled` rule action type wraps the same call. Requires the Write master. Should warn if the target device is used in active rule triggers.
   >
   > **Implementation plan:**
   > 1. Add `set_device_enabled` action type with `deviceId` and `enabled` boolean

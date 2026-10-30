@@ -1743,7 +1743,7 @@ private Set _rmRedactSnapshotPasswords(Map config, Map status) {
     names
 }
 
-// The App Cloner export with every password-typed setting value nulled; names collects them.
+// The App Cloner export with every password-typed or credential-named setting value nulled; names collects them.
 private String _rmRedactExportSecrets(String nativeExport, Set names) {
     def payload = new groovy.json.JsonSlurper().parseText(nativeExport)
     boolean changed = false

@@ -3181,7 +3181,10 @@ class TestRunner:
             assert got == expected, \
                 f"roomFilter={room.lower()!r} returned {got}, expected {expected} (case-insensitive exact match)"
         finally:
-            restored = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"room": original_room or ""}})
+            try:
+                restored = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"room": original_room or ""}})
+            except McpError as exc:
+                restored = exc
             if not isinstance(restored, dict) or restored.get("success") is not True:
                 self._fixture_reset_failures.append(f"room filter: restoring {dev_id} to {original_room!r} failed: {restored}")
 
@@ -3739,9 +3742,14 @@ class TestRunner:
         try:
             # updateDataValue writes arbitrary keys onto device.data; the inClusters marker makes the
             # resolver treat the record as Z-Wave (a bare numeric id with no marker stays unlabelled).
-            self.client.call_tool("hub_update_device", {
+            # userCode is credential-named: Hide passwords and credentials (pinned on) hides it in
+            # the write's echo and in every read.
+            written = self.client.call_tool("hub_update_device", {
                 "deviceId": dev_id,
-                "fields": {"dataValues": {"manufacturer": "634", "inClusters": "0x5E,0x25,0x70"}}})
+                "fields": {"dataValues": {"manufacturer": "634", "inClusters": "0x5E,0x25,0x70", "userCode": "4321"}}})
+            echoed = {row.get("property"): row.get("newValue") for row in written.get("changes", [])}
+            assert echoed.get("dataValue.userCode") == "***redacted (password)***", \
+                f"a credential-named data value must not be echoed: {written}"
             result = self.client.call_tool("hub_get_device", {
                 "deviceId": dev_id, "mode": "details", "sections": ["data"]})
             data = (result.get("sections") or {}).get("data") or {}
@@ -3749,6 +3757,13 @@ class TestRunner:
                 f"raw manufacturer id must be preserved beside manufacturerName: {data}"
             assert data.get("manufacturerName") == "Zooz", \
                 f"manufacturer 634 (0x027A) must resolve to Zooz: {data}"
+            assert data.get("userCode") == "***redacted (password)***", f"userCode must read hidden: {data}"
+            try:
+                empty = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"dataValues": {}}})
+            except McpToolError as exc:
+                empty = _tool_error_payload(exc)
+            assert "dataValues must be a non-empty object" in str(empty.get("error")), \
+                f"an empty dataValues must be refused, not reported as a successful no-op: {empty}"
         finally:
             if dni:
                 try:
@@ -4148,6 +4163,9 @@ class TestRunner:
             assert native["runtimeMultipleIsList"] is True and native["runtimeMultiple"] == ["red", "blue"], (
                 f"Driver did not receive a List: {native}"
             )
+            # A whole number sent as a JSON float is the same limit, not a cleared one.
+            same_limit = update({"maxEvents": float(edits["maxEvents"])})
+            assert same_limit.get("unchanged") == ["maxEvents"], f"maxEvents {float(edits['maxEvents'])} was not kept: {same_limit}"
             remaining = desired
             if common_contract:
                 try:
@@ -4457,10 +4475,10 @@ class TestRunner:
             assert any(str(d.get("id")) == str(dev_id) for d in (got.get("devices") or [])), \
                 f"room '{room_name}' does not list device {dev_id} after the assign: {got}"
 
-            # By id from outside the room, so the save has to move the device.
+            # By numeric id from outside the room, so the save has to move the device.
             cleared = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"room": ""}})
             assert cleared.get("success") is True, f"hub_update_device room unassign failed: {cleared}"
-            by_id = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"room": room_id}})
+            by_id = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"room": int(room_id)}})
             assert by_id.get("success") is True and any(
                 c.get("property") == "room" and c.get("newValue") == room_name for c in (by_id.get("changes") or [])), \
                 f"room assign by id did not read back as '{room_name}': {by_id}"
@@ -7316,6 +7334,12 @@ def updated() {}
             assert page.get("source") == "configPage" and page.get("broken") is None, page
         finally:
             self._delete_native(app_id)
+        # An id no app holds is reported as not found, not read as a built-in app.
+        try:
+            missing = self.client.call_tool("hub_get_rule_health", {"appId": 999999999})
+        except McpToolError as exc:
+            missing = _tool_error_payload(exc)
+        assert isinstance(missing, dict) and "App 999999999 not found" in str(missing.get("error")), missing
 
     @test("native_apps")
     def test_rule_health_broken_true_on_dangling_trigger(self) -> None:
@@ -12946,9 +12970,8 @@ def updated() {}
         # hub_set_system_settings(darkMode) sets the admin-UI theme via an INDEPENDENT setter
         # (GET /hub/applyDarkMode/<bool>, HTTP 200 empty, no read-back -- /hub/details/json has no
         # dark/theme key). FIRMWARE-TOLERANT: /hub/applyDarkMode may not exist on older firmware
-        # (it 404s there). The tool then returns a
-        # structured {success:false, error:"Failed to apply dark mode: ..."} envelope (NOT isError,
-        # so call_tool hands it back as a dict). Treat a genuine endpoint-absent failure as a CLEAN
+        # (it 404s there). The tool then returns a structured {success:false, error:"Failed to apply
+        # dark mode: ..."} envelope (NOT isError, so call_tool hands it back as a dict). Treat a genuine endpoint-absent failure as a CLEAN
         # SKIP, distinct from a flaky relay 504 (which the runner retries). Sets dark then reverts to
         # light so the hub theme is left as we found it.
         def _dark_call(on: bool) -> Any:
