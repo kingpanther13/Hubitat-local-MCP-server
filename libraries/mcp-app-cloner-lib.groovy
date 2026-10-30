@@ -39,10 +39,7 @@ private Map _appClonerInit(Integer sourceAppId) {
     def justPath = parts[0]
     def query = [:]
     if (parts.length > 1) {
-        parts[1].split('&').each { kv ->
-            def eq = kv.indexOf('=')
-            if (eq > 0) query[kv.substring(0, eq)] = kv.substring(eq + 1)
-        }
+        (parts[1].split('&')).each(((this.&_bat529Cb_dbfd46be_69).curry([query] as Object[])))
     }
     try {
         hubInternalGet(justPath, query)
@@ -118,7 +115,7 @@ private Map _appClonerSubmitForm(Integer clonerAppId, String currentPage, String
     if (extras) body.putAll(extras)
     // A navigation submit (an _action_* marker) is one the UI validates first: refuse it where the
     // cloner's own page would, with the values this POST is about to send overlaid on its current ones.
-    if (extras?.keySet()?.any { it.toString().startsWith("_action_") }) {
+    if ((extras?.keySet())?.any((this.&_bat529Cb_dbfd46be_28))) {
         def navCfg = null
         try { navCfg = _rmFetchConfigJson(clonerAppId, currentPage) } catch (Exception readExc) {
             // An unreadable page cannot be checked; the cloner's own flow verifies the transition.
@@ -126,16 +123,11 @@ private Map _appClonerSubmitForm(Integer clonerAppId, String currentPage, String
         }
         if (navCfg?.configPage instanceof Map) {
             def navValues = (navCfg.settings instanceof Map) ? new LinkedHashMap(navCfg.settings as Map) : [:]
-            extras.each { k, v ->
-                def m = (k.toString() =~ /^settings\[(.+)\]$/)
-                if (m.find()) navValues.put(m[0][1], v)
-            }
+            (extras).each(((this.&_bat529Cb_dbfd46be_70).curry([navValues] as Object[])))
             def navSchema = _rmCollectInputSchema(navCfg.configPage as Map)
             _requireUiNavigationValid(clonerAppId, "leaving cloner page '${currentPage}'".toString(), navSchema, navValues)
             // The page submits an unset input's defaultValue with the navigation; send what the check accepted.
-            def defaults = navSchema.findAll { k, meta ->
-                meta?.disabled != true && meta?.type != "button" && meta?.defaultValue != null && _uiValueIsEmpty(navValues.get(k), meta as Map)
-            }.collectEntries { k, meta -> [(k): meta.defaultValue] }
+            def defaults = ((navSchema).findAll(((this.&_bat529Cb_dbfd46be_76).curry([navValues] as Object[])))).collectEntries((this.&_bat529Cb_dbfd46be_80))
             if (defaults) {
                 def defaultBody = _rmBuildSettingsBody(clonerAppId, defaults, navSchema)
                 defaultBody.remove("id")
@@ -264,7 +256,7 @@ private Map _appClonerSnapshotChildren(Integer parentAppId) {
         if (!(cfg.childApps instanceof List)) {
             throw new IllegalStateException("missing childApps list")
         }
-        return [ids: cfg.childApps.collect { it?.id?.toString() }.findAll { it }]
+        return [ids: ((cfg.childApps).collect((this.&_bat529Cb_dbfd46be_11))).findAll((this.&_bat529Cb_dbfd46be_22))]
     } catch (Exception e) {
         return [success: false, isError: true,
                 error: "Cannot read the child-app snapshot for parent ${parentAppId}: ${e.message}".toString(),
@@ -281,14 +273,14 @@ private Integer _appClonerDiscoverNewChild(Integer parentAppId, Set<String> preC
         mcpLog("warn", "rm-native", "appCloner: parent ${parentAppId} fetch after commit failed: ${e.message}")
         return null
     }
-    def afterIds = ((afterCfg?.childApps ?: []) as List).collect { it?.id?.toString() }.findAll { it }
-    def added = afterIds.findAll { !preCloneIds.contains(it) }
+    def afterIds = ((((afterCfg?.childApps ?: []) as List)).collect((this.&_bat529Cb_dbfd46be_33))).findAll((this.&_bat529Cb_dbfd46be_51))
+    def added = (afterIds).findAll(((this.&_bat529Cb_dbfd46be_15).curry([preCloneIds] as Object[])))
     if (added.isEmpty()) return null
     if (added.size() == 1) return added[0] as Integer
     // Concurrent creations can appear in the same diff. Only an unambiguous
     // requested name identifies our result; a prefix or largest ID is a guess.
-    def candidates = (afterCfg.childApps as List).findAll { added.contains(it?.id?.toString()) }
-    def hintMatches = hint ? candidates.findAll { (it.label?.toString() ?: "") == hint } : []
+    def candidates = ((afterCfg.childApps as List)).findAll(((this.&_bat529Cb_dbfd46be_38).curry([added] as Object[])))
+    def hintMatches = hint ? (candidates).findAll(((this.&_bat529Cb_dbfd46be_23).curry([hint] as Object[]))): []
     if (hintMatches.size() == 1) return hintMatches[0].id as Integer
     mcpLog("warn", "rm-native", "appCloner: ambiguous new children ${added} for '${hint ?: sourceLabel}'; no app selected")
     return null
@@ -718,10 +710,7 @@ private Map _appClonerStagePlan(Integer newAppId) {
             targets << tid
             try {
                 def cfg = _rmFetchConfigJson(tid)
-                ((cfg?.childApps ?: []) as List).each { c ->
-                    def cid = c?.id?.toString()
-                    if (cid?.isInteger()) queue << cid.toInteger()
-                }
+                (((cfg?.childApps ?: []) as List)).each(((this.&_bat529Cb_dbfd46be_75).curry([queue] as Object[])))
             } catch (Exception childErr) {
                 failures << [appId: tid, kind: "childEnumeration", error: "child enumeration failed for app ${tid}: ${childErr.message} -- its DESCENDANTS (if any) were not discovered and were NOT disabled; app ${tid} itself is still attempted below"]
             }
@@ -736,7 +725,7 @@ private Map _appClonerDisableTargets(List targets, Long reqT0, List staged, List
     List stageRemaining = []
     for (int i = 0; i < targets.size(); i++) {
         if (i > 0 && _timeBudgetExceeded(reqT0)) {
-            stageRemaining = targets.subList(i, targets.size()).collect { it }
+            stageRemaining = (targets.subList(i, targets.size())).collect((this.&_bat529Cb_dbfd46be_17))
             break
         }
         def tid = targets[i]
@@ -762,7 +751,7 @@ private void _appClonerFinishStaging(Map result, Integer newAppId, Map outcome) 
         result.partial = true
         result.success = false
         result.isError = true
-        def newAppItselfFailed = failures.any { it.kind == "disable" && it.appId == newAppId }
+        def newAppItselfFailed = (failures).any(((this.&_bat529Cb_dbfd46be_25).curry([newAppId] as Object[])))
         def remainderText = stageRemaining ? "Response budget ran out before ${stageRemaining.size()} app(s) were disabled (${stageRemaining.join(', ')}). " : ""
         result.error = "stageDisabled did NOT fully land: ${failures.size()} failure(s)${stageRemaining ? " + ${stageRemaining.size()} not yet attempted" : ""} -- see stageFailures/stageRemaining. ${newAppItselfFailed ? "The NEW APP ITSELF (${newAppId}) is still ENABLED and live. " : ""}${remainderText}The clone/import DID commit (newAppId=${newAppId}) -- do NOT re-issue this call (that would create a duplicate app); disable the listed apps via hub_set_app_disabled(appId=<id>, disabled=true) instead."
         result.note = "${result.note} STAGING ${stageRemaining ? 'INCOMPLETE' : 'FAILED'} -- see error/stageFailures."
@@ -872,8 +861,7 @@ private Map _rmRestoreViaNativeImport(Map snapshot, Integer savedId, boolean exi
         return [fallback: "the backup's App Cloner export could not be parsed"]
     }
     def gone = [:]
-    def deadDevices = ((parsed?.deviceReplacements instanceof Map) ? (parsed.deviceReplacements as Map).keySet() : [])
-        .collect { it.toString() }.findAll { _rmDeviceGone(it, gone) }
+    def deadDevices = ((((parsed?.deviceReplacements instanceof Map) ? (parsed.deviceReplacements as Map).keySet() : [])).collect((this.&_bat529Cb_dbfd46be_64))).findAll(((this.&_bat529Cb_dbfd46be_73).curry([gone] as Object[])))
     if (deadDevices) {
         mcpLog("info", "rm-native", "Restore of app ${savedId}: device(s) ${deadDevices} no longer exist, so the App Cloner import is skipped for the settings replay")
         return [fallback: "device(s) ${deadDevices.join(', ')} named by the App Cloner export no longer exist".toString()]
@@ -882,7 +870,7 @@ private Map _rmRestoreViaNativeImport(Map snapshot, Integer savedId, boolean exi
     if (hint == null) {
         try {
             def kids = _appClonerSnapshotChildren(_discoverParentAppId(snapshot?.appType ?: "rule_machine"))
-            hint = (kids?.ids ?: []).collect { it.toString() }.find { it.isInteger() }?.toInteger()
+            hint = (((kids?.ids ?: [])).collect((this.&_bat529Cb_dbfd46be_9))).find((this.&_bat529Cb_dbfd46be_32))?.toInteger()
         } catch (Exception e) {
             mcpLog("warn", "rm-native", "Restore of app ${savedId}: finding a Rule Machine rule to seed the import failed (${e.message})")
             hint = null
@@ -970,12 +958,7 @@ private Map _rmRestoreViaNativeImport(Map snapshot, Integer savedId, boolean exi
     def reenableFailed = []
     if (liveDisabled) out.leftDisabled = true
     if (snapshot?.configJson?.app?.disabled != true && !liveDisabled) {
-        def failed = (imp.stagedDisabled ?: [newId]).findAll { id ->
-            try { toolSetAppDisabled([appId: id, disabled: false])?.success != true } catch (Exception enableExc) {
-                mcpLog("warn", "rm-native", "Restore of app ${savedId}: re-enabling app ${id} threw (${enableExc.message})")
-                true
-            }
-        }
+        def failed = ((imp.stagedDisabled ?: [newId])).findAll(((this.&_bat529Cb_dbfd46be_83).curry([savedId] as Object[])))
         if (failed) {
             reenableFailed = failed
             out.success = false
@@ -998,27 +981,27 @@ private Map _rmRestoreViaNativeImport(Map snapshot, Integer savedId, boolean exi
 // otherwise why not. Unreadable counts as a mismatch, since the old rule goes next.
 String _rmNativeCopyMismatch(Integer copyId, Map snapshot) {
     def snap = [:]
-    (snapshot?.statusJson?.appState ?: []).each { if (it instanceof Map && it.name != null) snap.put(it.name.toString(), it.value) }
+    ((snapshot?.statusJson?.appState ?: [])).each(((this.&_bat529Cb_dbfd46be_62).curry([snap] as Object[])))
     def copy = _rmReadRuleState(copyId)
     if (!copy) return "app ${copyId}'s state could not be read".toString()
     if (copy.broken == true) return "app ${copyId} reads as broken".toString()
     if (snapshot.captureFormat == 'native-rule-edit-v1') {
         try {
             Map payload = _rmDecodeRuleExport(_ndId(snapshot.ruleId).toString().toInteger(), snapshot.nativeExport)
-            Map data = payload.appData.find { key, value -> key.toString() == snapshot.ruleId.toString() }.value as Map
+            Map data = (payload.appData).find(((this.&_bat529Cb_dbfd46be_50).curry([snapshot] as Object[]))).value as Map
             def expected = _rmNativeModelSignature(data.state)
-            def actual = _rmNativeModelSignature(copy).findAll { key, value -> expected.containsKey(key) }
+            def actual = (_rmNativeModelSignature(copy)).findAll(((this.&_bat529Cb_dbfd46be_47).curry([expected] as Object[])))
             if (_rmNativeComparable(actual) != _rmNativeComparable(expected)) return 'the compiled native configuration differs from recovery'
             List redacted = _rmRedactedSettings(snapshot)
-            if (_rmNativeComparable(_rmNativeSettingsSignature(_rmNativeCurrentSettings(copyId.toLong()).findAll { !(it.name in redacted) })) != _rmNativeComparable(_rmNativeSettingsSignature(data.appSettings))) return 'the native settings differ from recovery'
+            if (_rmNativeComparable(_rmNativeSettingsSignature((_rmNativeCurrentSettings(copyId.toLong())).findAll(((this.&_bat529Cb_dbfd46be_39).curry([redacted] as Object[]))))) != _rmNativeComparable(_rmNativeSettingsSignature(data.appSettings))) return 'the native settings differ from recovery'
             // Imported copies are staged disabled, so verify persisted locals without executing app code.
             def locals = _rmNativeLocalSignature(copy)
             if (_rmNativeComparable(locals) != _rmNativeComparable(_rmNativeLocalSignature(data.state))) return 'the native local variables differ from recovery'
             return null
         } catch (Exception failure) { return "the native recovery configuration could not be verified: ${failure.message}".toString() }
     }
-    def keys = { m -> (m instanceof Map) ? (m as Map).keySet().collect { it.toString() }.sort() : [] }
-    def list = { l -> (l instanceof List) ? (l as List).collect { it.toString() } : [] }
+    def keys = { m -> (m instanceof Map) ? ((m as Map).keySet()).collect((this.&_bat529Cb_dbfd46be_12)).sort() : [] }
+    def list = { l -> (l instanceof List) ? ((l as List)).collect((this.&_bat529Cb_dbfd46be_8)): [] }
     def problems = []
     if (keys(copy.capabstrue) != keys(snap.capabstrue)) problems << "triggers ${keys(copy.capabstrue)} vs the backup's ${keys(snap.capabstrue)}".toString()
     if (list(copy.actionList) != list(snap.actionList)) problems << "actions ${list(copy.actionList)} vs the backup's ${list(snap.actionList)}".toString()
@@ -1045,12 +1028,12 @@ void _rmRecordNativeRestore(String backupKey, Integer newId, boolean keepDisable
 
 // The live typed settings without the password rows a snapshot never stored.
 private List _rmUnredactedSettings(Long id, List redacted) {
-    _rmNativeCurrentSettings(id).findAll { !(it.name in redacted) }
+    (_rmNativeCurrentSettings(id)).findAll(((this.&_bat529Cb_dbfd46be_30).curry([redacted] as Object[])))
 }
 
 // Password-typed settings a snapshot left out; empty for snapshots taken before redaction.
 private List _rmRedactedSettings(Map snapshot) {
-    snapshot?.redactedSettings instanceof List ? snapshot.redactedSettings.collect { it.toString() } : []
+    snapshot?.redactedSettings instanceof List ? (snapshot.redactedSettings).collect((this.&_bat529Cb_dbfd46be_20)): []
 }
 
 // A restore never writes a password, so each redacted name is reported from the restored app: kept
@@ -1072,7 +1055,7 @@ private void _rmReportPasswords(Map out, Map snapshot, Integer appId, Closure re
         out.note = "${out.note ?: ''} Password settings ${names.join(', ')} are not stored in backups, and the app's settings could not be read to confirm them; check them in the app's native page.".toString().trim()
         return
     }
-    List kept = names.findAll { name -> rows.any { it instanceof Map && it.name?.toString() == name && it.value != null && it.value.toString() != '' } }
+    List kept = names.findAll { name -> (rows).any(((this.&_bat529Cb_dbfd46be_60).curry([name] as Object[])))}
     List missing = names - kept
     if (kept) out.passwordsKept = kept
     if (!missing) return
@@ -1081,65 +1064,35 @@ private void _rmReportPasswords(Map out, Map snapshot, Integer appId, Closure re
 }
 
 private Object _rmNativeComparable(Object value) {
-    if (value instanceof Map) return value.collectEntries { key, item -> [(key.toString()): _rmNativeComparable(item)] }
-    if (value instanceof List) return value.collect { item -> _rmNativeComparable(item) }
+    if (value instanceof Map) return (value).collectEntries((this.&_bat529Cb_dbfd46be_48))
+    if (value instanceof List) return (value).collect((this.&_bat529Cb_dbfd46be_19))
     if (value instanceof Number) return new BigDecimal(value.toString()).stripTrailingZeros()
     value
 }
 
 private List _rmNativeSettingPlan(List rows) {
     List plan = []
-    rows.each { row ->
-        String settingName = row instanceof Map && row.name != null ? row.name.toString() : 'an unnamed setting'
-        try {
-            if (!(row instanceof Map) || !(row.name instanceof String) || !row.name || !(row.type instanceof String) || !row.type ||
-                (row.multiple != null && !(row.multiple instanceof Boolean))) throw new IllegalArgumentException('Invalid native recovery setting')
-            if (row.type == 'button') {
-                if (row.value != null && row.value != '') throw new IllegalArgumentException('Recovery contains an unfinished native button operation')
-            } else {
-                boolean device = row.type == 'capability' || row.type.startsWith('capability.')
-                def value = row.value
-                if (device) {
-                    if (row.deviceList != null && !(row.deviceList instanceof Map)) throw new IllegalArgumentException('Invalid recovery device selection')
-                    List ids = row.deviceList instanceof Map ? row.deviceList.keySet().collect { it.toString() } :
-                        (row.deviceIdsForDeviceList instanceof List ? row.deviceIdsForDeviceList.collect { it.toString() } : [])
-                    if (ids.any { !it.isLong() || it.toLong() <= 0L } || (row.multiple != true && ids.size() > 1)) throw new IllegalArgumentException('Invalid recovery device IDs')
-                    value = ids ? (row.multiple == true ? ids : ids[0]) : null
-                } else if (row.multiple == true && value instanceof String) {
-                    try { value = new groovy.json.JsonSlurper().parseText(value) }
-                    catch (Exception e) { throw new IllegalArgumentException('Recovery setting is not valid JSON', e) }
-                }
-                if (value != null) {
-                    if (row.multiple == true && !(value instanceof List)) throw new IllegalArgumentException('Recovery setting requires a list')
-                    if (row.multiple != true && value instanceof List) throw new IllegalArgumentException('Recovery setting requires a scalar')
-                    List values = value instanceof List ? value : [value]
-                    if (values.any { !(it instanceof String || it instanceof Number || it instanceof Boolean) }) throw new IllegalArgumentException('Recovery settings require scalar values')
-                    _nrComparableSetting(row.type, value)
-                    plan << [name: row.name, type: row.type, multiple: row.multiple == true, value: value]
-                }
-            }
-        } catch (IllegalArgumentException failure) { throw new IllegalArgumentException("${failure.message} for ${settingName}".toString(), failure) }
-    }
-    List names = rows.collect { it.name }
-    List duplicates = names.findAll { names.count(it) > 1 }.unique()
+    (rows).each(((this.&_bat529Cb_dbfd46be_88).curry([plan] as Object[])))
+    List names = (rows).collect((this.&_bat529Cb_dbfd46be_1))
+    List duplicates = (names).findAll(((this.&_bat529Cb_dbfd46be_7).curry([names] as Object[]))).unique()
     if (duplicates) throw new IllegalArgumentException("Duplicate recovery setting for ${duplicates.join(', ')}".toString())
     plan
 }
 
 private Map _rmNativeSettingsSignature(List rows) {
-    _rmNativeSettingPlan(rows).collectEntries { row -> [(row.name): [type: row.type, multiple: row.multiple, value: _nrComparableSetting(row.type, row.value)]] }
+    (_rmNativeSettingPlan(rows)).collectEntries((this.&_bat529Cb_dbfd46be_71))
 }
 
 private List _rmNativeCurrentSettings(Long id) {
-    _nmSettingsInventory(id).collect { name, row -> [name: name] + row }
+    (_nmSettingsInventory(id)).collect((this.&_bat529Cb_dbfd46be_34))
 }
 
 private Map _rmNativeModelSignature(Map state) {
     // Compare complete compiled records and references, not just row membership.
     def keys = ['actions', 'actionList', 'capabstrue', 'capabsfalse', 'eval', 'disabledActions', 'disabledTriggers',
                 'actNdx', 'ndx', 'ruleNdx', 'waitCondNdx', 'predCapabs', 'hasPredicate']
-    Map result = state.findAll { key, value -> key in keys }
-    ['actions', 'capabstrue', 'capabsfalse', 'eval'].each { key -> result[key] = state.get(key) instanceof Map ? state.get(key) : [:] }
+    Map result = (state).findAll(((this.&_bat529Cb_dbfd46be_10).curry([keys] as Object[])))
+    (['actions', 'capabstrue', 'capabsfalse', 'eval']).each(((this.&_bat529Cb_dbfd46be_63).curry([result, state] as Object[])))
     result.actionList = state.actionList instanceof List ? state.actionList : []
     result
 }
@@ -1147,8 +1100,8 @@ private Map _rmNativeModelSignature(Map state) {
 private Map _rmNativeLocalSignature(Map state) {
     // Native getAllLocalVars enumerates lv_ records; allLocalVars is only a rendered cache.
     Map locals = [:]
-    state.each { key, value -> if (key.toString().startsWith('lv_') && value instanceof Map) locals.put(key.toString().substring(3), value) }
-    locals.collectEntries { name, row -> [(name.toString()): [type: row.type, value: row.value]] }
+    (state).each(((this.&_bat529Cb_dbfd46be_65).curry([locals] as Object[])))
+    (locals).collectEntries((this.&_bat529Cb_dbfd46be_56))
 }
 
 private void _rmNativeRestoreFlags(Long id, Map savedState) {
@@ -1167,7 +1120,7 @@ private String _rmLabelName(label) {
 }
 
 private String _rmRestoredRuleName(List plan, Map identity) {
-    def name = plan.find { it.name == 'origLabel' }?.value
+    def name = (plan).find((this.&_bat529Cb_dbfd46be_6))?.value
     if (name != null) return name.toString()
     String label = _rmLabelName(identity.appLabel)
     ['*BROKEN*', '(Not Installed)', '(Stopped)', '(Paused)', '(Required Expression false)', '(Repeating)'].each { decoration ->
@@ -1179,37 +1132,22 @@ private String _rmRestoredRuleName(List plan, Map identity) {
 private Map _rmRestoreNativeEdit(Map snapshot, String sourceBackupKey) {
     Long id = _ndId(snapshot.ruleId)
     Map payload = _rmDecodeRuleExport(id.toString().toInteger(), snapshot.nativeExport)
-    Map identity = payload.appReplacements.find { key, value -> key.toString() == id.toString() }.value as Map
-    Map data = payload.appData.find { key, value -> key.toString() == id.toString() }.value as Map
+    Map identity = (payload.appReplacements).find(((this.&_bat529Cb_dbfd46be_45).curry([id] as Object[]))).value as Map
+    Map data = (payload.appData).find(((this.&_bat529Cb_dbfd46be_35).curry([id] as Object[]))).value as Map
     def target = getAppByAppId(id)
     _requireUnprotectedAppMutation(id, 'restore native rule configuration')
     if (target?.id?.toString() != id.toString() || target?.appType?.namespace != 'hubitat' || target?.appType?.name != identity.appTypeName ||
         target.parentAppId?.toString() != identity.parentAppInstalledAppId?.toString()) throw new IllegalArgumentException('Recovery target must be the original native rule under its original parent')
     if (target.disabled == true) throw new IllegalArgumentException('Enable the native rule before restoring its configuration')
     Map expectedState = data.state as Map
-    if (_ndStructuralIssues(expectedState, data.appSettings.any { it.name == 'useST' && it.value?.toString() == 'true' }) ||
+    if (_ndStructuralIssues(expectedState, (data.appSettings).any((this.&_bat529Cb_dbfd46be_43))) ||
         _nmValidateStructure(id, expectedState).success != true) throw new IllegalArgumentException('Recovery contains an unfinished native rule model')
     List plan = _rmNativeSettingPlan(data.appSettings)
     List redacted = _rmRedactedSettings(snapshot)
-    def deviceIds = payload.deviceReplacements.keySet().collect { it.toString() }
-    plan.findAll { it.type == 'capability' || it.type.startsWith('capability.') }.each { row -> deviceIds.addAll(row.value instanceof List ? row.value : [row.value]) }
+    def deviceIds = (payload.deviceReplacements.keySet()).collect((this.&_bat529Cb_dbfd46be_24))
+    ((plan).findAll((this.&_bat529Cb_dbfd46be_42))).each(((this.&_bat529Cb_dbfd46be_72).curry([deviceIds] as Object[])))
     List missingDeviceIds = []
-    deviceIds.unique().each { wanted ->
-        if (!wanted.toString().isLong() || wanted.toString().toLong() <= 0L) throw new IllegalArgumentException('Invalid recovery device reference')
-        def raw
-        try { raw = hubInternalGet("/device/fullJson/${wanted}") }
-        catch (Exception failure) {
-            Integer status = _httpStatusOf(failure)
-            String message = failure.message ?: ''
-            boolean missing = status != null ? status == 404 : message ==~ /(?s).*status code:? 404\b.*/ && message.contains('Not Found')
-            if (!missing) throw failure
-            missingDeviceIds << wanted.toString()
-            return
-        }
-        def device = raw instanceof Map ? raw : new groovy.json.JsonSlurper().parseText(raw?.toString() ?: '')
-        if (device instanceof Map && device.isEmpty()) { missingDeviceIds << wanted.toString(); return }
-        if (!(device instanceof Map) || device.device?.id?.toString() != wanted.toString()) throw new IllegalArgumentException("Recovery device ${wanted} could not be verified; nothing was restored".toString())
-    }
+    (deviceIds.unique()).each(((this.&_bat529Cb_dbfd46be_87).curry([missingDeviceIds] as Object[])))
     if (missingDeviceIds) return [success: false, partial: false, type: 'rm-rule', ruleId: id, originalRuleId: id,
         failedStep: 'devicePreflight', missingDeviceIds: missingDeviceIds,
         error: "Recovery references devices that no longer exist: ${missingDeviceIds.join(', ')}. Nothing was restored; the rule was not changed.".toString()]
@@ -1220,15 +1158,15 @@ private Map _rmRestoreNativeEdit(Map snapshot, String sourceBackupKey) {
     try {
         undo = _rmBackupRuleSnapshot(id.toString().toInteger(), 'pre-native-restore', true, sourceBackupKey)
         if (!(undo?.backupKey instanceof String) || !undo.backupKey) throw new IllegalStateException('Pre-restore recovery capture returned no handle')
-        NATIVE_FORM_CONTEXTS.entrySet().findAll { entry -> entry.value.app_id?.toString() == id.toString() }.each { entry -> NATIVE_FORM_CONTEXTS.remove(entry.key, entry.value) }
+        ((NATIVE_FORM_CONTEXTS.entrySet()).findAll(((this.&_bat529Cb_dbfd46be_58).curry([id] as Object[])))).each((this.&_bat529Cb_dbfd46be_74))
         attempted = true
         if (_nrState(id).stopped != true) _nrHandle(id).appButtonHandler('stopRule')
-        def wantedNames = plan.collect { it.name }
-        _rmUnredactedSettings(id, redacted).each { row -> if (!(row.name in wantedNames) || !plan.any { it.name == row.name && it.type == row.type && it.multiple == (row.multiple == true) }) _nrHandle(id).removeSetting(row.name) }
-        plan.each { row -> _nrHandle(id).updateSetting(row.name, [type: row.type, value: row.value]) }
+        def wantedNames = (plan).collect((this.&_bat529Cb_dbfd46be_2))
+        (_rmUnredactedSettings(id, redacted)).each(((this.&_bat529Cb_dbfd46be_78).curry([id, plan, wantedNames] as Object[])))
+        (plan).each(((this.&_bat529Cb_dbfd46be_55).curry([id] as Object[])))
         if (_rmNativeComparable(_rmNativeSettingsSignature(_rmUnredactedSettings(id, redacted))) != _rmNativeComparable(_rmNativeSettingsSignature(data.appSettings))) throw new IllegalStateException('Native typed settings did not restore exactly')
         Map restoreState = [:] + expectedState + [stopped: true]
-        _nrStatePatch(id, restoreState, _nrState(id).keySet().findAll { !restoreState.containsKey(it) }.collect { it.toString() })
+        _nrStatePatch(id, restoreState, ((_nrState(id).keySet()).findAll(((this.&_bat529Cb_dbfd46be_29).curry([restoreState] as Object[])))).collect((this.&_bat529Cb_dbfd46be_54)))
         if (_rmNativeComparable(_nrState(id)) != _rmNativeComparable(restoreState)) throw new IllegalStateException('Complete native state did not persist exactly')
         String restoredName = _rmRestoredRuleName(plan, identity)
         _nrHandle(id).updateLabel(restoredName)
@@ -1238,9 +1176,9 @@ private Map _rmRestoreNativeEdit(Map snapshot, String sourceBackupKey) {
         if (rebuilt.success != true || rebuilt.broken != false) throw new IllegalStateException(rebuilt.error?.toString() ?: 'Native rule rebuild failed')
         Map actual = _nrState(id)
         def expectedModel = _rmNativeModelSignature(expectedState)
-        def actualModel = _rmNativeModelSignature(actual).findAll { key, value -> expectedModel.containsKey(key) }
+        def actualModel = (_rmNativeModelSignature(actual)).findAll(((this.&_bat529Cb_dbfd46be_53).curry([expectedModel] as Object[])))
         if (_rmNativeComparable(actualModel) != _rmNativeComparable(expectedModel)) throw new IllegalStateException('Rebuilt native actions, triggers, conditions or expressions differ from recovery')
-        Map actualLocals = _nrHandle(id).getAllLocalVars().collectEntries { name, row -> [(name.toString()): [type: row.type, value: row.value]] }
+        Map actualLocals = (_nrHandle(id).getAllLocalVars()).collectEntries((this.&_bat529Cb_dbfd46be_61))
         if (_rmNativeComparable(actualLocals) != _rmNativeComparable(_rmNativeLocalSignature(expectedState))) throw new IllegalStateException('Native local variables differ from recovery')
         if (_rmNativeComparable(_rmNativeSettingsSignature(_rmUnredactedSettings(id, redacted))) != _rmNativeComparable(_rmNativeSettingsSignature(data.appSettings))) throw new IllegalStateException('Native rebuild changed restored settings')
         if ((actual.stopped == true) != (expectedState.stopped == true) || (actual.paused == true) != (expectedState.paused == true) ||
@@ -1269,9 +1207,7 @@ private Map _rmRestoreNativeEdit(Map snapshot, String sourceBackupKey) {
 
 // The App Cloner export double-escapes control characters in state strings; statusJson does not.
 private void _rmUnescapeLegacyIndents(Map nativeState) {
-    if (nativeState.actions instanceof Map) nativeState.actions = nativeState.actions.collectEntries { key, action ->
-        [(key): action instanceof Map && action.indent instanceof String ? [:] + action + [indent: action.indent.replace('\\t', '\t')] : action]
-    }
+    if (nativeState.actions instanceof Map) nativeState.actions = (nativeState.actions).collectEntries((this.&_bat529Cb_dbfd46be_77))
     if (nativeState.actLabelIndent instanceof String) nativeState.actLabelIndent = nativeState.actLabelIndent.replace('\\t', '\t')
 }
 
@@ -1294,19 +1230,15 @@ private Map _rmLegacyNativeRecovery(Map snapshot) {
     Map savedState = [:]
     if (status.appState instanceof Map) savedState.putAll(status.appState)
     else if (status.appState instanceof List) {
-        status.appState.each { row ->
-            if (!(row instanceof Map) || !(row.name instanceof String) || !row.name || !row.containsKey('value') || savedState.containsKey(row.name))
-                throw new IllegalArgumentException('Legacy recovery contains invalid or duplicate native state records')
-            savedState.put(row.name, row.value)
-        }
+        (status.appState).each(((this.&_bat529Cb_dbfd46be_84).curry([savedState] as Object[])))
     } else throw new IllegalArgumentException('Legacy recovery is missing complete native state')
     // statusJson reports a rule with no subscriptions (no triggers, or stopped) as null.
     def appSubscriptions = status.appSubscriptions
     def eventSubscriptions = status.eventSubscriptions
-    if ([appSubscriptions, eventSubscriptions].any { it != null && !(it instanceof List) } ||
+    if (([appSubscriptions, eventSubscriptions]).any((this.&_bat529Cb_dbfd46be_49))||
         (appSubscriptions != null && eventSubscriptions != null && _rmNativeComparable(appSubscriptions) != _rmNativeComparable(eventSubscriptions)))
         throw new IllegalArgumentException('Legacy recovery contains invalid native subscriptions')
-    def subscriptions = [appSubscriptions, eventSubscriptions, []].find { it != null }
+    def subscriptions = ([appSubscriptions, eventSubscriptions, []]).find((this.&_bat529Cb_dbfd46be_27))
     def originalLabel = config.settings instanceof Map ? config.settings.origLabel : null
     if (app.label != null && !(app.label instanceof String)) throw new IllegalArgumentException('Legacy recovery contains an invalid installed label')
     Map identity = [appTypeNamespace: app.appType.namespace, appTypeName: app.appType.name,
@@ -1314,10 +1246,10 @@ private Map _rmLegacyNativeRecovery(Map snapshot) {
     Map payload
     if (snapshot.nativeExport) {
         payload = _rmDecodeRuleExport(id.toString().toInteger(), snapshot.nativeExport)
-        def exported = payload.appReplacements.find { key, value -> key.toString() == id.toString() }.value
+        def exported = (payload.appReplacements).find(((this.&_bat529Cb_dbfd46be_44).curry([id] as Object[]))).value
         if (exported.appTypeName != identity.appTypeName || exported.parentAppInstalledAppId.toString() != identity.parentAppInstalledAppId)
             throw new IllegalArgumentException('Legacy native export conflicts with saved rule identity')
-        _rmUnescapeLegacyIndents(payload.appData.find { key, value -> key.toString() == id.toString() }.value.state as Map)
+        _rmUnescapeLegacyIndents((payload.appData).find(((this.&_bat529Cb_dbfd46be_37).curry([id] as Object[]))).value.state as Map)
     } else {
         payload = [appReplacements: [(id.toString()): identity], deviceReplacements: [:],
             appData: [(id.toString()): [state: savedState, appSettings: status.appSettings, subscriptions: subscriptions]]]
@@ -1340,7 +1272,7 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
         if (preserveRuleId) {
             if (getAppByAppId(_ndId(snapshot.ruleId)) != null) return _rmRestoreNativeEdit(snapshot, backupKey)
             def inventory = _collectLiveApps()
-            if (!(inventory instanceof Map) || inventory.keySet().any { it.toString() == snapshot.ruleId.toString() }) throw new IllegalArgumentException('The original native rule could not be confirmed absent; nothing was restored')
+            if (!(inventory instanceof Map) || (inventory.keySet()).any(((this.&_bat529Cb_dbfd46be_36).curry([snapshot] as Object[])))) throw new IllegalArgumentException('The original native rule could not be confirmed absent; nothing was restored')
         }
     }
     def savedId = snapshot.ruleId as Integer
@@ -1354,7 +1286,7 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
     // Older snapshots recorded any app the registry lacks (user, community) as rule_machine.
     String savedTypeName = snapshot?.appTypeName?.toString() ?: snapshot?.configJson?.app?.appType?.name?.toString()
     if (savedAppType == "rule_machine" && savedTypeName && !(savedTypeName ==~ /Rule-[0-9.]+/) &&
-            !_appTypeRegistry().values().any { it.appName == savedTypeName }) savedAppType = "app"
+            !(_appTypeRegistry().values()).any(((this.&_bat529Cb_dbfd46be_31).curry([savedTypeName] as Object[])))) savedAppType = "app"
     if (savedAppType == "visual_rule") {
         // Visual Rules don't speak the classic createchild + settings-replay protocol below
         // (incl. the configure/json exists-probe, which Vue children may not serve); their
@@ -1435,16 +1367,7 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
     // declared it. Page-derived entries take precedence (they include
     // `required` and other UI-only metadata) so this is additive only.
     def savedSchema = _rmCollectInputSchema(snapshot?.configJson?.configPage) ?: [:]
-    snapshot?.statusJson?.appSettings?.each { s ->
-        def n = s?.name?.toString()
-        if (n && !savedSchema.containsKey(n)) {
-            savedSchema.put(n, [
-                name: n,
-                type: s?.type?.toString(),
-                multiple: s?.multiple == true
-            ])
-        }
-    }
+    (snapshot?.statusJson?.appSettings)?.each(((this.&_bat529Cb_dbfd46be_82).curry([savedSchema] as Object[])))
     // Two steps that fail differently: a rejected replay leaves the rule as it was (nothing is
     // committed on a 4xx/5xx), while a failed closing Done after a committed replay leaves the
     // restored settings in place with subscriptions not yet rebuilt. Name the step, and log it --
@@ -1454,44 +1377,21 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
     // those through the update endpoint is at best a no-op and at worst a press. The replay of one
     // such snapshot answered 500 on a live 2.5.1.177 hub; the same shapes replay cleanly without
     // the button rows. Replay only value-bearing inputs.
-    def replaySettings = savedSettings.findAll { k, v -> savedSchema.get(k.toString())?.type != "button" }
-    def skippedButtons = (savedSettings.keySet() - replaySettings.keySet()).collect { it.toString() }.sort()
+    def replaySettings = (savedSettings).findAll(((this.&_bat529Cb_dbfd46be_46).curry([savedSchema] as Object[])))
+    def skippedButtons = ((savedSettings.keySet() - replaySettings.keySet())).collect((this.&_bat529Cb_dbfd46be_41)).sort()
     // A device picker is snapshotted as configure/json renders it, an {id: label} map.
     // statusJson's deviceIdsForDeviceList (the id list the hub stores for the picker) is used when
     // the snapshot carries it; otherwise the map's keys are the id list.
     // An EMPTY id list is not authoritative (every sibling reader falls back on empty or absent):
     // trusting it would post an empty picker and report the key applied.
     def liveDeviceIds = [:]
-    snapshot?.statusJson?.appSettings?.each { st ->
-        def n = st?.name?.toString()
-        if (n && st?.deviceIdsForDeviceList instanceof List && st.deviceIdsForDeviceList) liveDeviceIds.put(n, st.deviceIdsForDeviceList)
-    }
+    (snapshot?.statusJson?.appSettings)?.each(((this.&_bat529Cb_dbfd46be_79).curry([liveDeviceIds] as Object[])))
     def skippedMaps = []
     // A device deleted since the backup must not go back into a picker: RM's pages then dereference
     // a null device and stop rendering (seen live on fw 2.5.2.129).
     def deviceGone = [:]
     def skippedDevices = []
-    replaySettings = replaySettings.collectEntries { k, v ->
-        String key = k.toString()
-        boolean isPicker = _isDevicePickerType(savedSchema.get(key)?.type)
-        if (!isPicker) {
-            // A Map that is NOT a device picker cannot be replayed through the settings endpoint as
-            // its keys; rewriting it silently would be a value change reported as applied.
-            if (v instanceof Map) { skippedMaps << key; return [:] }
-            return [(key): v]
-        }
-        def ids = liveDeviceIds.containsKey(key) ? liveDeviceIds.get(key) : _devicePickerIds(v)
-        if (ids instanceof List) {
-            ids = ids.collect { it?.toString() }
-            def gone = ids.findAll { _rmDeviceGone(it, deviceGone) }
-            if (gone) {
-                skippedDevices << [key: key, ids: gone]
-                ids = ids - gone
-                if (!ids) return [:]
-            }
-        }
-        return [(key): ids]
-    }
+    replaySettings = (replaySettings).collectEntries(((this.&_bat529Cb_dbfd46be_86).curry([deviceGone, liveDeviceIds, savedSchema, skippedDevices, skippedMaps] as Object[])))
     boolean isRm = savedAppType == "rule_machine"
     def settingsCleared = []
     def clearMiss = null
@@ -1542,9 +1442,7 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
         restoredVia: "settingsReplay",
         backupFile: fileName,
         settingsApplied: replaySettings.keySet().toList(),
-        settingsSkipped: skippedButtons.collect { key -> [key: key, reason: "button input excluded from replay"] }
-            + skippedMaps.collect { key -> [key: key, reason: "map value without a device-picker schema; not replayable through the settings endpoint"] }
-            + skippedDevices.collect { sd -> [key: sd.key, reason: "device(s) ${sd.ids.join(', ')} no longer exist on the hub; left out of the replay".toString()] },
+        settingsSkipped: (skippedButtons).collect((this.&_bat529Cb_dbfd46be_59))+ (skippedMaps).collect((this.&_bat529Cb_dbfd46be_68))+ (skippedDevices).collect((this.&_bat529Cb_dbfd46be_66)),
         note: exists ? "Settings restored in place." : "Rule was deleted; recreated with new id ${ruleId} and replayed settings."
     ]
     if (settingsCleared) {
@@ -1567,7 +1465,7 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
     }
     if (skippedDevices) {
         out.partial = true
-        out.note = "${out.note} Device(s) deleted since the backup were left out: ${skippedDevices.collect { "${it.key} (${it.ids.join(', ')})" }.join(', ')}. Pick replacements using the native device choices returned by hub_set_rule if the rule needs them.".toString()
+        out.note = "${out.note} Device(s) deleted since the backup were left out: ${(skippedDevices).collect((this.&_bat529Cb_dbfd46be_26)).join(', ')}. Pick replacements using the native device choices returned by hub_set_rule if the rule needs them.".toString()
     }
     if (skippedMaps) {
         out.partial = true
@@ -1595,7 +1493,7 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
     _rmReportPasswords(out, snapshot, ruleId as Integer)
     if (out.leftoverConditionIds && structure?.removedConditionIds) {
         def gone = (structure.removedConditionIds as List)*.toString()
-        out.leftoverConditionIds = (out.leftoverConditionIds as List).findAll { !gone.contains(it.toString()) }
+        out.leftoverConditionIds = ((out.leftoverConditionIds as List)).findAll(((this.&_bat529Cb_dbfd46be_40).curry([gone] as Object[])))
         if (!out.leftoverConditionIds) out.remove("leftoverConditionIds")
     }
     if (structure?.structureRestored == false) {
@@ -1609,7 +1507,7 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
     if (reOutcome?.requiredExpressionRestored == false) {
         out.success = false
         out.partial = true
-        out.error = [out.error, "Settings were restored, but the rule's Required Expression does not match the backup: ${reOutcome.requiredExpressionError}"].findAll { it }.join(" ").toString()
+        out.error = ([out.error, "Settings were restored, but the rule's Required Expression does not match the backup: ${reOutcome.requiredExpressionError}"]).findAll((this.&_bat529Cb_dbfd46be_67)).join(" ").toString()
         out.note = "${out.note} The Required Expression was NOT restored -- inspect it with hub_get_app_config(appId=${ruleId}) and rebuild it with hub_set_rule required tokens.".toString()
     } else if (reOutcome?.requiredExpressionRemoved == true) {
         out.note = "${out.note} The backup had no Required Expression, so the rule's expression was removed.".toString()
@@ -1625,24 +1523,13 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
 List _rmClearSettingsNotInBackup(Integer appId, Map savedSettings, Collection keep = []) {
     def status = _rmFetchStatusJson(appId)
     if (!(status?.appSettings instanceof List)) return []
-    def saved = (savedSettings.keySet().collect { it.toString() } + keep.collect { it.toString() }) as Set
-    def extra = (status.appSettings as List).findAll { rec ->
-        def n = rec?.name?.toString()
-        // A device picker reports its devices in deviceIdsForDeviceList, with a null value.
-        boolean hasValue = (rec?.value != null && rec?.value != "") ||
-            (rec?.deviceIdsForDeviceList instanceof List && !(rec.deviceIdsForDeviceList as List).isEmpty())
-        n && !saved.contains(n) && rec?.type?.toString() != "button" && hasValue
-    }
+    def saved = ((savedSettings.keySet()).collect((this.&_bat529Cb_dbfd46be_16))+ (keep).collect((this.&_bat529Cb_dbfd46be_4))) as Set
+    def extra = ((status.appSettings as List)).findAll(((this.&_bat529Cb_dbfd46be_85).curry([saved] as Object[])))
     if (!extra) return []
     def body = [id: appId.toString()]
-    extra.each { rec ->
-        def n = rec.name.toString()
-        body["settings[${n}]".toString()] = ""
-        if (rec.type) body["${n}.type".toString()] = rec.type.toString()
-        body["${n}.multiple".toString()] = (rec.multiple == true).toString()
-    }
+    (extra).each(((this.&_bat529Cb_dbfd46be_81).curry([body] as Object[])))
     _rmPostSettings(appId, body)
-    return extra.collect { it.name.toString() }.sort()
+    return (extra).collect((this.&_bat529Cb_dbfd46be_5)).sort()
 }
 
 // True only when the hub positively says the device is gone (404 or an empty object). An empty or
@@ -1961,4 +1848,493 @@ private Map _mrtrAppClonerStageSlice(Map cp, String operationLabel) {
     _appClonerFinishStaging(result, cp.newAppId as Integer, outcome)
     _appClonerCleanup(cp.clonerAppId as Integer)
     return result
+}
+
+
+def _bat529Cb_dbfd46be_1(def it) { it.name 
+}
+
+def _bat529Cb_dbfd46be_2(def it) { it.name 
+}
+
+def _bat529Cb_dbfd46be_3(def it) { it?.toString() 
+}
+
+def _bat529Cb_dbfd46be_4(def it) { it.toString() 
+}
+
+def _bat529Cb_dbfd46be_5(def it) { it.name.toString() 
+}
+
+def _bat529Cb_dbfd46be_6(def it) { it.name == 'origLabel' 
+}
+
+def _bat529Cb_dbfd46be_7(def names, def it) { names.count(it) > 1 
+}
+
+def _bat529Cb_dbfd46be_8(def it) { it.toString() 
+}
+
+def _bat529Cb_dbfd46be_9(def it) { it.toString() 
+}
+
+def _bat529Cb_dbfd46be_10(def keys, def key, def value) { key in keys 
+}
+
+def _bat529Cb_dbfd46be_10(def keys, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_dbfd46be_10(keys, *__bat529Tuple)
+}
+
+def _bat529Cb_dbfd46be_11(def it) { it?.id?.toString() 
+}
+
+def _bat529Cb_dbfd46be_12(def it) { it.toString() 
+}
+
+def _bat529Cb_dbfd46be_13(def deviceGone, def it) { _rmDeviceGone(it, deviceGone) 
+}
+
+def _bat529Cb_dbfd46be_14(def it) { !it.isLong() || it.toLong() <= 0L 
+}
+
+def _bat529Cb_dbfd46be_15(def preCloneIds, def it) { !preCloneIds.contains(it) 
+}
+
+def _bat529Cb_dbfd46be_16(def it) { it.toString() 
+}
+
+def _bat529Cb_dbfd46be_17(def it) { it 
+}
+
+def _bat529Cb_dbfd46be_18(def it) { it.toString() 
+}
+
+def _bat529Cb_dbfd46be_19(def item) { _rmNativeComparable(item) 
+}
+
+def _bat529Cb_dbfd46be_20(def it) { it.toString() 
+}
+
+def _bat529Cb_dbfd46be_21(def it) { it.toString() 
+}
+
+def _bat529Cb_dbfd46be_22(def it) { it 
+}
+
+def _bat529Cb_dbfd46be_23(def hint, def it) { (it.label?.toString() ?: "") == hint 
+}
+
+def _bat529Cb_dbfd46be_24(def it) { it.toString() 
+}
+
+def _bat529Cb_dbfd46be_25(def newAppId, def it) { it.kind == "disable" && it.appId == newAppId 
+}
+
+def _bat529Cb_dbfd46be_26(def it) { "${it.key} (${it.ids.join(', ')})" 
+}
+
+def _bat529Cb_dbfd46be_27(def it) { it != null 
+}
+
+def _bat529Cb_dbfd46be_28(def it) { it.toString().startsWith("_action_") 
+}
+
+def _bat529Cb_dbfd46be_29(def restoreState, def it) { !restoreState.containsKey(it) 
+}
+
+def _bat529Cb_dbfd46be_30(def redacted, def it) { !(it.name in redacted) 
+}
+
+def _bat529Cb_dbfd46be_31(def savedTypeName, def it) { it.appName == savedTypeName 
+}
+
+def _bat529Cb_dbfd46be_32(def it) { it.isInteger() 
+}
+
+def _bat529Cb_dbfd46be_33(def it) { it?.id?.toString() 
+}
+
+def _bat529Cb_dbfd46be_34(def name, def row) { [name: name] + row 
+}
+
+def _bat529Cb_dbfd46be_34(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_dbfd46be_34(*__bat529Tuple)
+}
+
+def _bat529Cb_dbfd46be_35(def id, def key, def value) { key.toString() == id.toString() 
+}
+
+def _bat529Cb_dbfd46be_35(def id, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_dbfd46be_35(id, *__bat529Tuple)
+}
+
+def _bat529Cb_dbfd46be_36(def snapshot, def it) { it.toString() == snapshot.ruleId.toString() 
+}
+
+def _bat529Cb_dbfd46be_37(def id, def key, def value) { key.toString() == id.toString() 
+}
+
+def _bat529Cb_dbfd46be_37(def id, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_dbfd46be_37(id, *__bat529Tuple)
+}
+
+def _bat529Cb_dbfd46be_38(def added, def it) { added.contains(it?.id?.toString()) 
+}
+
+def _bat529Cb_dbfd46be_39(def redacted, def it) { !(it.name in redacted) 
+}
+
+def _bat529Cb_dbfd46be_40(def gone, def it) { !gone.contains(it.toString()) 
+}
+
+def _bat529Cb_dbfd46be_41(def it) { it.toString() 
+}
+
+def _bat529Cb_dbfd46be_42(def it) { it.type == 'capability' || it.type.startsWith('capability.') 
+}
+
+def _bat529Cb_dbfd46be_43(def it) { it.name == 'useST' && it.value?.toString() == 'true' 
+}
+
+def _bat529Cb_dbfd46be_44(def id, def key, def value) { key.toString() == id.toString() 
+}
+
+def _bat529Cb_dbfd46be_44(def id, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_dbfd46be_44(id, *__bat529Tuple)
+}
+
+def _bat529Cb_dbfd46be_45(def id, def key, def value) { key.toString() == id.toString() 
+}
+
+def _bat529Cb_dbfd46be_45(def id, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_dbfd46be_45(id, *__bat529Tuple)
+}
+
+def _bat529Cb_dbfd46be_46(def savedSchema, def k, def v) { savedSchema.get(k.toString())?.type != "button" 
+}
+
+def _bat529Cb_dbfd46be_46(def savedSchema, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_dbfd46be_46(savedSchema, *__bat529Tuple)
+}
+
+def _bat529Cb_dbfd46be_47(def expected, def key, def value) { expected.containsKey(key) 
+}
+
+def _bat529Cb_dbfd46be_47(def expected, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_dbfd46be_47(expected, *__bat529Tuple)
+}
+
+def _bat529Cb_dbfd46be_48(def key, def item) { [(key.toString()): _rmNativeComparable(item)] 
+}
+
+def _bat529Cb_dbfd46be_48(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_dbfd46be_48(*__bat529Tuple)
+}
+
+def _bat529Cb_dbfd46be_49(def it) { it != null && !(it instanceof List) 
+}
+
+def _bat529Cb_dbfd46be_50(def snapshot, def key, def value) { key.toString() == snapshot.ruleId.toString() 
+}
+
+def _bat529Cb_dbfd46be_50(def snapshot, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_dbfd46be_50(snapshot, *__bat529Tuple)
+}
+
+def _bat529Cb_dbfd46be_51(def it) { it 
+}
+
+def _bat529Cb_dbfd46be_52(def it) { !(it instanceof String || it instanceof Number || it instanceof Boolean) 
+}
+
+def _bat529Cb_dbfd46be_53(def expectedModel, def key, def value) { expectedModel.containsKey(key) 
+}
+
+def _bat529Cb_dbfd46be_53(def expectedModel, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_dbfd46be_53(expectedModel, *__bat529Tuple)
+}
+
+def _bat529Cb_dbfd46be_54(def it) { it.toString() 
+}
+
+def _bat529Cb_dbfd46be_55(def id, def row) { _nrHandle(id).updateSetting(row.name, [type: row.type, value: row.value]) 
+}
+
+def _bat529Cb_dbfd46be_56(def name, def row) { [(name.toString()): [type: row.type, value: row.value]] 
+}
+
+def _bat529Cb_dbfd46be_56(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_dbfd46be_56(*__bat529Tuple)
+}
+
+def _bat529Cb_dbfd46be_57(def row, def it) { it.name == row.name && it.type == row.type && it.multiple == (row.multiple == true) 
+}
+
+def _bat529Cb_dbfd46be_58(def id, def entry) { entry.value.app_id?.toString() == id.toString() 
+}
+
+def _bat529Cb_dbfd46be_59(def key) { [key: key, reason: "button input excluded from replay"] 
+}
+
+def _bat529Cb_dbfd46be_60(def name, def it) { it instanceof Map && it.name?.toString() == name && it.value != null && it.value.toString() != '' 
+}
+
+def _bat529Cb_dbfd46be_61(def name, def row) { [(name.toString()): [type: row.type, value: row.value]] 
+}
+
+def _bat529Cb_dbfd46be_61(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_dbfd46be_61(*__bat529Tuple)
+}
+
+def _bat529Cb_dbfd46be_62(def snap, def it) { if (it instanceof Map && it.name != null) snap.put(it.name.toString(), it.value) 
+}
+
+def _bat529Cb_dbfd46be_63(def result, def state, def key) { result[key] = state.get(key) instanceof Map ? state.get(key) : [:] 
+}
+
+def _bat529Cb_dbfd46be_64(def it) { it.toString() 
+}
+
+def _bat529Cb_dbfd46be_65(def locals, def key, def value) { if (key.toString().startsWith('lv_') && value instanceof Map) locals.put(key.toString().substring(3), value) 
+}
+
+def _bat529Cb_dbfd46be_65(def locals, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_dbfd46be_65(locals, *__bat529Tuple)
+}
+
+def _bat529Cb_dbfd46be_66(def sd) { [key: sd.key, reason: "device(s) ${sd.ids.join(', ')} no longer exist on the hub; left out of the replay".toString()] 
+}
+
+def _bat529Cb_dbfd46be_67(def it) { it 
+}
+
+def _bat529Cb_dbfd46be_68(def key) { [key: key, reason: "map value without a device-picker schema; not replayable through the settings endpoint"] 
+}
+
+def _bat529Cb_dbfd46be_69(def query, def kv) {
+            def eq = kv.indexOf('=')
+            if (eq > 0) query[kv.substring(0, eq)] = kv.substring(eq + 1)
+        
+}
+
+def _bat529Cb_dbfd46be_70(def navValues, def k, def v) {
+                def m = (k.toString() =~ /^settings\[(.+)\]$/)
+                if (m.find()) navValues.put(m[0][1], v)
+            
+}
+
+def _bat529Cb_dbfd46be_70(def navValues, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_dbfd46be_70(navValues, *__bat529Tuple)
+}
+
+def _bat529Cb_dbfd46be_71(def row) { [(row.name): [type: row.type, multiple: row.multiple, value: _nrComparableSetting(row.type, row.value)]] 
+}
+
+def _bat529Cb_dbfd46be_72(def deviceIds, def row) { deviceIds.addAll(row.value instanceof List ? row.value : [row.value]) 
+}
+
+def _bat529Cb_dbfd46be_73(def gone, def it) { _rmDeviceGone(it, gone) 
+}
+
+def _bat529Cb_dbfd46be_74(def entry) { NATIVE_FORM_CONTEXTS.remove(entry.key, entry.value) 
+}
+
+def _bat529Cb_dbfd46be_75(def queue, def c) {
+                    def cid = c?.id?.toString()
+                    if (cid?.isInteger()) queue << cid.toInteger()
+                
+}
+
+def _bat529Cb_dbfd46be_76(def navValues, def k, def meta) {
+                meta?.disabled != true && meta?.type != "button" && meta?.defaultValue != null && _uiValueIsEmpty(navValues.get(k), meta as Map)
+            
+}
+
+def _bat529Cb_dbfd46be_76(def navValues, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_dbfd46be_76(navValues, *__bat529Tuple)
+}
+
+def _bat529Cb_dbfd46be_77(def key, def action) {
+        [(key): action instanceof Map && action.indent instanceof String ? [:] + action + [indent: action.indent.replace('\\t', '\t')] : action]
+    
+}
+
+def _bat529Cb_dbfd46be_77(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_dbfd46be_77(*__bat529Tuple)
+}
+
+def _bat529Cb_dbfd46be_78(def id, def plan, def wantedNames, def row) { if (!(row.name in wantedNames) || !(plan).any(((this.&_bat529Cb_dbfd46be_57).curry([row] as Object[])))) _nrHandle(id).removeSetting(row.name) 
+}
+
+def _bat529Cb_dbfd46be_79(def liveDeviceIds, def st) {
+        def n = st?.name?.toString()
+        if (n && st?.deviceIdsForDeviceList instanceof List && st.deviceIdsForDeviceList) liveDeviceIds.put(n, st.deviceIdsForDeviceList)
+    
+}
+
+def _bat529Cb_dbfd46be_80(def k, def meta) { [(k): meta.defaultValue] 
+}
+
+def _bat529Cb_dbfd46be_80(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_dbfd46be_80(*__bat529Tuple)
+}
+
+def _bat529Cb_dbfd46be_81(def body, def rec) {
+        def n = rec.name.toString()
+        body["settings[${n}]".toString()] = ""
+        if (rec.type) body["${n}.type".toString()] = rec.type.toString()
+        body["${n}.multiple".toString()] = (rec.multiple == true).toString()
+    
+}
+
+def _bat529Cb_dbfd46be_82(def savedSchema, def s) {
+        def n = s?.name?.toString()
+        if (n && !savedSchema.containsKey(n)) {
+            savedSchema.put(n, [
+                name: n,
+                type: s?.type?.toString(),
+                multiple: s?.multiple == true
+            ])
+        }
+    
+}
+
+def _bat529Cb_dbfd46be_83(def savedId, def id) {
+            try { toolSetAppDisabled([appId: id, disabled: false])?.success != true } catch (Exception enableExc) {
+                mcpLog("warn", "rm-native", "Restore of app ${savedId}: re-enabling app ${id} threw (${enableExc.message})")
+                true
+            }
+        
+}
+
+def _bat529Cb_dbfd46be_84(def savedState, def row) {
+            if (!(row instanceof Map) || !(row.name instanceof String) || !row.name || !row.containsKey('value') || savedState.containsKey(row.name))
+                throw new IllegalArgumentException('Legacy recovery contains invalid or duplicate native state records')
+            savedState.put(row.name, row.value)
+        
+}
+
+def _bat529Cb_dbfd46be_85(def saved, def rec) {
+        def n = rec?.name?.toString()
+        // A device picker reports its devices in deviceIdsForDeviceList, with a null value.
+        boolean hasValue = (rec?.value != null && rec?.value != "") ||
+            (rec?.deviceIdsForDeviceList instanceof List && !(rec.deviceIdsForDeviceList as List).isEmpty())
+        n && !saved.contains(n) && rec?.type?.toString() != "button" && hasValue
+    
+}
+
+def _bat529Cb_dbfd46be_86(def deviceGone, def liveDeviceIds, def savedSchema, def skippedDevices, def skippedMaps, def k, def v) {
+        String key = k.toString()
+        boolean isPicker = _isDevicePickerType(savedSchema.get(key)?.type)
+        if (!isPicker) {
+            // A Map that is NOT a device picker cannot be replayed through the settings endpoint as
+            // its keys; rewriting it silently would be a value change reported as applied.
+            if (v instanceof Map) { skippedMaps << key; return [:] }
+            return [(key): v]
+        }
+        def ids = liveDeviceIds.containsKey(key) ? liveDeviceIds.get(key) : _devicePickerIds(v)
+        if (ids instanceof List) {
+            ids = (ids).collect((this.&_bat529Cb_dbfd46be_3))
+            def gone = (ids).findAll(((this.&_bat529Cb_dbfd46be_13).curry([deviceGone] as Object[])))
+            if (gone) {
+                skippedDevices << [key: key, ids: gone]
+                ids = ids - gone
+                if (!ids) return [:]
+            }
+        }
+        return [(key): ids]
+    
+}
+
+def _bat529Cb_dbfd46be_86(def deviceGone, def liveDeviceIds, def savedSchema, def skippedDevices, def skippedMaps, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_dbfd46be_86(deviceGone, liveDeviceIds, savedSchema, skippedDevices, skippedMaps, *__bat529Tuple)
+}
+
+def _bat529Cb_dbfd46be_87(def missingDeviceIds, def wanted) {
+        if (!wanted.toString().isLong() || wanted.toString().toLong() <= 0L) throw new IllegalArgumentException('Invalid recovery device reference')
+        def raw
+        try { raw = hubInternalGet("/device/fullJson/${wanted}") }
+        catch (Exception failure) {
+            Integer status = _httpStatusOf(failure)
+            String message = failure.message ?: ''
+            boolean missing = status != null ? status == 404 : message ==~ /(?s).*status code:? 404\b.*/ && message.contains('Not Found')
+            if (!missing) throw failure
+            missingDeviceIds << wanted.toString()
+            return
+        }
+        def device = raw instanceof Map ? raw : new groovy.json.JsonSlurper().parseText(raw?.toString() ?: '')
+        if (device instanceof Map && device.isEmpty()) { missingDeviceIds << wanted.toString(); return }
+        if (!(device instanceof Map) || device.device?.id?.toString() != wanted.toString()) throw new IllegalArgumentException("Recovery device ${wanted} could not be verified; nothing was restored".toString())
+    
+}
+
+def _bat529Cb_dbfd46be_88(def plan, def row) {
+        String settingName = row instanceof Map && row.name != null ? row.name.toString() : 'an unnamed setting'
+        try {
+            if (!(row instanceof Map) || !(row.name instanceof String) || !row.name || !(row.type instanceof String) || !row.type ||
+                (row.multiple != null && !(row.multiple instanceof Boolean))) throw new IllegalArgumentException('Invalid native recovery setting')
+            if (row.type == 'button') {
+                if (row.value != null && row.value != '') throw new IllegalArgumentException('Recovery contains an unfinished native button operation')
+            } else {
+                boolean device = row.type == 'capability' || row.type.startsWith('capability.')
+                def value = row.value
+                if (device) {
+                    if (row.deviceList != null && !(row.deviceList instanceof Map)) throw new IllegalArgumentException('Invalid recovery device selection')
+                    List ids = row.deviceList instanceof Map ? (row.deviceList.keySet()).collect((this.&_bat529Cb_dbfd46be_18)):
+                        (row.deviceIdsForDeviceList instanceof List ? (row.deviceIdsForDeviceList).collect((this.&_bat529Cb_dbfd46be_21)): [])
+                    if ((ids).any((this.&_bat529Cb_dbfd46be_14))|| (row.multiple != true && ids.size() > 1)) throw new IllegalArgumentException('Invalid recovery device IDs')
+                    value = ids ? (row.multiple == true ? ids : ids[0]) : null
+                } else if (row.multiple == true && value instanceof String) {
+                    try { value = new groovy.json.JsonSlurper().parseText(value) }
+                    catch (Exception e) { throw new IllegalArgumentException('Recovery setting is not valid JSON', e) }
+                }
+                if (value != null) {
+                    if (row.multiple == true && !(value instanceof List)) throw new IllegalArgumentException('Recovery setting requires a list')
+                    if (row.multiple != true && value instanceof List) throw new IllegalArgumentException('Recovery setting requires a scalar')
+                    List values = value instanceof List ? value : [value]
+                    if ((values).any((this.&_bat529Cb_dbfd46be_52))) throw new IllegalArgumentException('Recovery settings require scalar values')
+                    _nrComparableSetting(row.type, value)
+                    plan << [name: row.name, type: row.type, multiple: row.multiple == true, value: value]
+                }
+            }
+        } catch (IllegalArgumentException failure) { throw new IllegalArgumentException("${failure.message} for ${settingName}".toString(), failure) }
+    
 }

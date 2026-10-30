@@ -19,7 +19,7 @@ def _nrHandle(Long ruleId) {
     if (parentId == null || !parentId.toString().isLong() || parentId.toString().toLong() <= 0L) {
         throw new IllegalArgumentException('Native rule has no valid parent')
     }
-    def handle = getChildAppsByParentId(parentId.toString().toLong())?.find { child -> child.id?.toString() == ruleId.toString() }
+    def handle = (getChildAppsByParentId(parentId.toString().toLong()))?.find(((this.&_bat529Cb_656e061c_19).curry([ruleId] as Object[])))
     if (handle == null) throw new IllegalArgumentException('Native rule is not a child of its recorded parent')
     handle
 }
@@ -31,15 +31,15 @@ Map _nrState(Long ruleId) {
 }
 
 Map _nrStatePatch(Long ruleId, Map put, List remove = []) {
-    if (put == null || remove == null || put.keySet().any { !(it instanceof String) || !it } || remove.any { !(it instanceof String) || !it }) {
+    if (put == null || remove == null || (put.keySet()).any((this.&_bat529Cb_656e061c_9))|| (remove).any((this.&_bat529Cb_656e061c_7))) {
         throw new IllegalArgumentException('State changes require named keys')
     }
-    if (remove.any { put.containsKey(it) }) throw new IllegalArgumentException('A state key cannot be assigned and removed together')
+    if ((remove).any(((this.&_bat529Cb_656e061c_1).curry([put] as Object[])))) throw new IllegalArgumentException('A state key cannot be assigned and removed together')
     def handle = _nrHandle(ruleId)
     def fresh = handle.getState()
     if (!(fresh instanceof Map)) throw new IllegalStateException('Native state is unavailable')
     def next = [:] + fresh
-    remove.each { key -> next.remove(key) }
+    (remove).each(((this.&_bat529Cb_656e061c_3).curry([next] as Object[])))
     next.putAll(put)
     handle.setState(next)
     def result = handle.saveState()
@@ -47,16 +47,16 @@ Map _nrStatePatch(Long ruleId, Map put, List remove = []) {
 }
 
 Map _nrSettings(Long ruleId, List names) {
-    if (names == null || names.any { !(it instanceof String) || !it }) throw new IllegalArgumentException('Setting names are required')
+    if (names == null || (names).any((this.&_bat529Cb_656e061c_6))) throw new IllegalArgumentException('Setting names are required')
     def handle = _nrHandle(ruleId)
     def rows = [:]
-    names.each { name -> rows.put(name, [type: handle.getSettingType(name), value: _nrSettingValue(handle.getSetting(name))]) }
+    (names).each(((this.&_bat529Cb_656e061c_21).curry([handle, rows] as Object[])))
     rows
 }
 
 private Object _nrSettingValue(Object value) {
     if (value == null || value instanceof String || value instanceof Number || value instanceof Boolean) return value
-    if (value instanceof List) return value.collect { item -> _nrSettingValue(item) }
+    if (value instanceof List) return (value).collect((this.&_bat529Cb_656e061c_8))
     def id = value.id
     if (id != null) return id.toString()
     throw new IllegalStateException('Unsupported native setting value')
@@ -65,9 +65,9 @@ private Object _nrSettingValue(Object value) {
 private Object _nrComparableSetting(String type, Object value) {
     if (_nrIsDeviceType(type)) {
         def ids = value instanceof List ? value : (value == null ? [] : [value])
-        return ids.collect { id -> id.toString().isLong() ? id.toString().toLong().toString() : id.toString() }.sort()
+        return (ids).collect((this.&_bat529Cb_656e061c_16)).sort()
     }
-    if (value instanceof List) return value.collect { item -> _nrComparableSetting(type, item) }.sort()
+    if (value instanceof List) return (value).collect(((this.&_bat529Cb_656e061c_12).curry([type] as Object[]))).sort()
     if (value == null) return null
     if (type == 'number' || type == 'decimal') return value.toString().isBigDecimal() ? new BigDecimal(value.toString()).stripTrailingZeros().toPlainString() : value.toString()
     if (type == 'bool') return value.toString().toLowerCase()
@@ -87,7 +87,7 @@ boolean _nrIsDeviceType(String type) { type == 'capability' || type?.startsWith(
 // One native setting row: name, type and a non-null scalar value (a list only for enum, mode or
 // device pickers) with positive device ids. Callers add their own rules about the name.
 private void _nrCheckSettingRow(Object row) {
-    if (!(row instanceof Map) || !(row.name instanceof String) || !row.name || !(row.type instanceof String) || !row.containsKey('value') || row.keySet().any { !(it in ['name', 'type', 'value']) }) {
+    if (!(row instanceof Map) || !(row.name instanceof String) || !row.name || !(row.type instanceof String) || !row.containsKey('value') || (row.keySet()).any((this.&_bat529Cb_656e061c_11))) {
         throw new IllegalArgumentException('Each setting requires name, type and value')
     }
     boolean device = _nrIsDeviceType(row.type)
@@ -95,26 +95,19 @@ private void _nrCheckSettingRow(Object row) {
     if (row.value == null) throw new IllegalArgumentException('Null setting values are unsupported; they do not reliably clear native settings')
     if (row.value instanceof List) {
         if (!device && !(row.type in ['enum', 'mode'])) throw new IllegalArgumentException('Lists require enum, mode or capability type')
-        if (row.value.any { !(it instanceof String || it instanceof Number || it instanceof Boolean) }) throw new IllegalArgumentException('Setting lists require scalar values')
+        if ((row.value).any((this.&_bat529Cb_656e061c_15))) throw new IllegalArgumentException('Setting lists require scalar values')
     } else if (!(row.value instanceof String || row.value instanceof Number || row.value instanceof Boolean)) {
         throw new IllegalArgumentException('Unsupported native setting value')
     }
-    if (device && (row.value instanceof List ? row.value : [row.value]).any { !it.toString().isLong() || it.toString().toLong() <= 0L }) throw new IllegalArgumentException('Capability settings require positive device IDs')
+    if (device && ((row.value instanceof List ? row.value : [row.value])).any((this.&_bat529Cb_656e061c_20))) throw new IllegalArgumentException('Capability settings require positive device IDs')
 }
 
 Map _nrWriteSettings(Long ruleId, List rows) {
     if (rows == null) throw new IllegalArgumentException('Setting rows are required')
     def names = []
-    rows.each { row ->
-        _nrCheckSettingRow(row)
-        if (row.name in names) throw new IllegalArgumentException('Repeated setting name')
-        names << row.name
-    }
+    (rows).each(((this.&_bat529Cb_656e061c_24).curry([names] as Object[])))
     def handle = _nrHandle(ruleId)
-    def incompatible = rows.findAll { row ->
-        def existing = handle.getSettingType(row.name)
-        existing != null && existing.toString() != row.type
-    }.collect { row -> row.name }
+    def incompatible = ((rows).findAll(((this.&_bat529Cb_656e061c_22).curry([handle] as Object[])))).collect((this.&_bat529Cb_656e061c_23))
     if (incompatible) return [success: false, partial: false, verificationNeeded: true, attempted: [], rejected: incompatible, reason: 'existing_type_mismatch']
     def attempted = []
     def results = []
@@ -129,10 +122,7 @@ Map _nrWriteSettings(Long ruleId, List rows) {
     }
     try {
         def actual = _nrSettings(ruleId, names)
-        def rejected = rows.findAll { row ->
-            actual.get(row.name).type?.toString() != row.type ||
-                _nrComparableSetting(row.type, actual.get(row.name).value) != _nrComparableSetting(row.type, row.value)
-        }.collect { row -> row.name }
+        def rejected = ((rows).findAll(((this.&_bat529Cb_656e061c_25).curry([actual] as Object[])))).collect((this.&_bat529Cb_656e061c_26))
         return [success: rejected.empty, verificationNeeded: true, settingsVerified: rejected.empty,
                 partial: !rejected.empty && !attempted.empty, attempted: attempted, results: results,
                 rejected: rejected, settings: actual]
@@ -186,11 +176,11 @@ Map _nrButton(Long ruleId, String name) {
 
 private List _nrChoiceKeys(Object options) {
     // Shared native descriptor checks. Callers retain their own admission and wire encoding.
-    if (options instanceof Map) return options.keySet().collect { it.toString() }.unique()
+    if (options instanceof Map) return (options.keySet()).collect((this.&_bat529Cb_656e061c_5)).unique()
     if (!(options instanceof List)) return null
     List keys = []
     for (Object option in options) {
-        if (option instanceof Map) keys.addAll(option.keySet().collect { it.toString() })
+        if (option instanceof Map) keys.addAll((option.keySet()).collect((this.&_bat529Cb_656e061c_4)))
         else if (option instanceof String || option instanceof Number || option instanceof Boolean) keys << option.toString()
         else return null
     }
@@ -202,8 +192,8 @@ private List _nrDeviceChoices(Map field) {
     def devices = raw instanceof List ? raw : new groovy.json.JsonSlurper().parseText(raw?.toString() ?: '')
     if (!(devices instanceof List)) throw new IllegalStateException('Native device choices could not be read')
     def ignored = field.containsKey('ignore') ? field.ignore : field.ignoreDevices
-    List excluded = (ignored instanceof List ? ignored : (ignored?.toString()?.tokenize(',') ?: [])).collect { it.toString() }
-    devices.findAll { device -> device instanceof Map && device.id && !(device.id.toString() in excluded) }
+    List excluded = ((ignored instanceof List ? ignored : (ignored?.toString()?.tokenize(',') ?: []))).collect((this.&_bat529Cb_656e061c_18))
+    (devices).findAll(((this.&_bat529Cb_656e061c_17).curry([excluded] as Object[])))
 }
 
 private void _nrValidateScalar(Map field, Object value, boolean allowClear = false) {
@@ -220,12 +210,12 @@ private void _nrValidateInput(Map field, Object value, boolean allowClear = fals
     if (value == null) throw new IllegalArgumentException("Use an empty string or list to clear ${field.name}")
     if (field.multiple != (value instanceof List)) throw new IllegalArgumentException("Incorrect cardinality for ${field.name}")
     List values = value instanceof List ? value : [value]
-    if (values.any { !(it instanceof String || it instanceof Number || it instanceof Boolean) }) throw new IllegalArgumentException("Scalar values are required for ${field.name}")
-    if (field.required && (!values || values.any { it.toString() == '' })) throw new IllegalArgumentException("Required field: ${field.name}")
+    if ((values).any((this.&_bat529Cb_656e061c_14))) throw new IllegalArgumentException("Scalar values are required for ${field.name}")
+    if (field.required && (!values || (values).any((this.&_bat529Cb_656e061c_2)))) throw new IllegalArgumentException("Required field: ${field.name}")
     boolean device = _nrIsDeviceType(field.type) || field.type.startsWith('device.')
-    List options = device ? _nrDeviceChoices(field).collect { it.id.toString() } : (field.containsKey('option_keys') ? field.option_keys : _nrChoiceKeys(field.options))
+    List options = device ? (_nrDeviceChoices(field)).collect((this.&_bat529Cb_656e061c_10)): (field.containsKey('option_keys') ? field.option_keys : _nrChoiceKeys(field.options))
     if ((device || field.type in ['enum', 'mode']) && options == null) throw new IllegalArgumentException("Native choices are unavailable for ${field.name}")
-    if (options != null && values.any { !(allowClear && it.toString() == '') && !(it.toString() in options) }) throw new IllegalArgumentException("Invalid native choice for ${field.name}")
+    if (options != null && (values).any(((this.&_bat529Cb_656e061c_13).curry([allowClear, options] as Object[])))) throw new IllegalArgumentException("Invalid native choice for ${field.name}")
     _nrValidateScalar(field, value, allowClear)
     if (field.type in ['number', 'decimal'] && !(allowClear && value.toString() == '')) {
         BigDecimal number = value.toString().toBigDecimal()
@@ -235,4 +225,93 @@ private void _nrValidateInput(Map field, Object value, boolean allowClear = fals
         if (minimum?.toString()?.isBigDecimal() && number < minimum.toString().toBigDecimal()) throw new IllegalArgumentException("Below minimum for ${field.name}")
         if (maximum?.toString()?.isBigDecimal() && number > maximum.toString().toBigDecimal()) throw new IllegalArgumentException("Above maximum for ${field.name}")
     }
+}
+
+
+def _bat529Cb_656e061c_1(def put, def it) { put.containsKey(it) 
+}
+
+def _bat529Cb_656e061c_2(def it) { it.toString() == '' 
+}
+
+def _bat529Cb_656e061c_3(def next, def key) { next.remove(key) 
+}
+
+def _bat529Cb_656e061c_4(def it) { it.toString() 
+}
+
+def _bat529Cb_656e061c_5(def it) { it.toString() 
+}
+
+def _bat529Cb_656e061c_6(def it) { !(it instanceof String) || !it 
+}
+
+def _bat529Cb_656e061c_7(def it) { !(it instanceof String) || !it 
+}
+
+def _bat529Cb_656e061c_8(def item) { _nrSettingValue(item) 
+}
+
+def _bat529Cb_656e061c_9(def it) { !(it instanceof String) || !it 
+}
+
+def _bat529Cb_656e061c_10(def it) { it.id.toString() 
+}
+
+def _bat529Cb_656e061c_11(def it) { !(it in ['name', 'type', 'value']) 
+}
+
+def _bat529Cb_656e061c_12(def type, def item) { _nrComparableSetting(type, item) 
+}
+
+def _bat529Cb_656e061c_13(def allowClear, def options, def it) { !(allowClear && it.toString() == '') && !(it.toString() in options) 
+}
+
+def _bat529Cb_656e061c_14(def it) { !(it instanceof String || it instanceof Number || it instanceof Boolean) 
+}
+
+def _bat529Cb_656e061c_15(def it) { !(it instanceof String || it instanceof Number || it instanceof Boolean) 
+}
+
+def _bat529Cb_656e061c_16(def id) { id.toString().isLong() ? id.toString().toLong().toString() : id.toString() 
+}
+
+def _bat529Cb_656e061c_17(def excluded, def device) { device instanceof Map && device.id && !(device.id.toString() in excluded) 
+}
+
+def _bat529Cb_656e061c_18(def it) { it.toString() 
+}
+
+def _bat529Cb_656e061c_19(def ruleId, def child) { child.id?.toString() == ruleId.toString() 
+}
+
+def _bat529Cb_656e061c_20(def it) { !it.toString().isLong() || it.toString().toLong() <= 0L 
+}
+
+def _bat529Cb_656e061c_21(def handle, def rows, def name) { rows.put(name, [type: handle.getSettingType(name), value: _nrSettingValue(handle.getSetting(name))]) 
+}
+
+def _bat529Cb_656e061c_22(def handle, def row) {
+        def existing = handle.getSettingType(row.name)
+        existing != null && existing.toString() != row.type
+    
+}
+
+def _bat529Cb_656e061c_23(def row) { row.name 
+}
+
+def _bat529Cb_656e061c_24(def names, def row) {
+        _nrCheckSettingRow(row)
+        if (row.name in names) throw new IllegalArgumentException('Repeated setting name')
+        names << row.name
+    
+}
+
+def _bat529Cb_656e061c_25(def actual, def row) {
+            actual.get(row.name).type?.toString() != row.type ||
+                _nrComparableSetting(row.type, actual.get(row.name).value) != _nrComparableSetting(row.type, row.value)
+        
+}
+
+def _bat529Cb_656e061c_26(def row) { row.name 
 }

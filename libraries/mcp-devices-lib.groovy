@@ -4,9 +4,7 @@ library(name: "McpDevicesLib", namespace: "mcp", author: "kingpanther13", descri
 // objects (read `.name`, as every other reader in this library does), a spec's `[name:]` map, or
 // a bare string from a JSON inventory.
 private List _capabilityNames(def caps) {
-    (caps instanceof List ? caps : []).collect { c ->
-        (c instanceof CharSequence) ? c.toString() : (c?.name?.toString() ?: c?.toString())
-    }.findAll { it != null }
+    (((caps instanceof List ? caps : [])).collect((this.&_bat529Cb_15d0a4c9_212))).findAll((this.&_bat529Cb_15d0a4c9_219))
 }
 
 def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, capabilityFilter = null, format = null, fields = null, cursor = null, scope = null, roomFilter = null, onlyOn = null, changedSince = null, attributeNames = null, reqT0 = null) {
@@ -156,18 +154,12 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
     if (filterType || labelFilter || capabilityFilter || roomFilter || onlyOn == true || changedSinceDate != null) {
         def required = (onlyOn == true ? ['currentStates'] : []) + (capabilityFilter ? ['capabilities'] : [])
         _seedNativeInventoryFromTree(allDevices, inventoryMeta.inventory as Map)
-        def needFull = allDevices.findAll { rec ->
-            if (rec._nativeLoaded == true) return false
-            if (labelOnly && rec._nativeFilterLabel instanceof String && rec._nativeFilterLabel) return false
-            rec._nativeSeeded != true || required.any { rec._nativeUnavailableCollections?.contains(it) }
-        }
+        def needFull = (allDevices).findAll(((this.&_bat529Cb_15d0a4c9_242).curry([labelOnly, required] as Object[])))
         _hydrateNativeInventory(needFull, required, true)
-        def unreadable = allDevices.findAll { rec ->
-            rec._nativeReadError == true || required.any { rec._nativeUnavailableCollections?.contains(it) }
-        }.collect { it.id.toString() } as Set
+        def unreadable = ((allDevices).findAll(((this.&_bat529Cb_15d0a4c9_210).curry([required] as Object[])))).collect((this.&_bat529Cb_15d0a4c9_222))as Set
         if (unreadable) {
             metadataUnavailableIds.addAll(unreadable.sort())
-            allDevices = allDevices.findAll { !unreadable.contains(it.id.toString()) }
+            allDevices = (allDevices).findAll(((this.&_bat529Cb_15d0a4c9_118).curry([unreadable] as Object[])))
         }
     }
 
@@ -190,29 +182,24 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
     // Apply labelFilter (case-insensitive substring match on device label)
     if (labelFilter) {
         def lf = labelFilter.toLowerCase()
-        allDevices = allDevices.findAll { d ->
-            def lbl = (d.label ?: d._nativeFilterLabel ?: d.name)?.toString()?.toLowerCase()
-            lbl != null && lbl.contains(lf)
-        }
+        allDevices = (allDevices).findAll(((this.&_bat529Cb_15d0a4c9_220).curry([lf] as Object[])))
     }
 
     // Apply capabilityFilter (case-insensitive exact match on capability name).
     if (capabilityFilter) {
         def cf = capabilityFilter.toLowerCase()
-        allDevices = allDevices.findAll { d ->
-            d.capabilities?.any { cap -> cap.name?.toLowerCase() == cf }
-        }
+        allDevices = (allDevices).findAll(((this.&_bat529Cb_15d0a4c9_189).curry([cf] as Object[])))
     }
 
     // Apply roomFilter (case-insensitive exact match on the device's assigned room).
     if (roomFilter) {
-        allDevices = allDevices.findAll { d -> d.roomName?.toString()?.equalsIgnoreCase(roomFilter) }
+        allDevices = (allDevices).findAll(((this.&_bat529Cb_15d0a4c9_157).curry([roomFilter] as Object[])))
     }
 
     // onlyOn keeps devices whose switch attribute currently reads "on" -- "what's on right
     // now" in one call. onlyOn=false is a no-op (not "only off"): absence of the filter.
     if (onlyOn == true) {
-        allDevices = allDevices.findAll { d -> _deviceStatesByName(d).get("switch")?.value?.toString() == "on" }
+        allDevices = (allDevices).findAll((this.&_bat529Cb_15d0a4c9_174))
     }
 
     // changedSince keeps devices ACTIVE since the timestamp -- the inverse of filter=stale:N.
@@ -258,11 +245,11 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
                 changedSinceDate.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ") : changedSince.toString().trim()
         }
         if (capabilityFilter && totalCount == 0) {
-            def allCaps = unfilteredDevices.collectMany { d -> d.capabilities?.collect { cap -> cap.name?.toLowerCase() } ?: [] } as Set
+            def allCaps = (unfilteredDevices).collectMany((this.&_bat529Cb_15d0a4c9_187))as Set
             r.capabilityFilterMatchedKnownCapability = allCaps.contains(capabilityFilter.toLowerCase())
         }
         if (roomFilter && totalCount == 0) {
-            def allRooms = unfilteredDevices.collect { d -> d.roomName?.toString()?.toLowerCase() }.findAll { it != null } as Set
+            def allRooms = ((unfilteredDevices).collect((this.&_bat529Cb_15d0a4c9_144))).findAll((this.&_bat529Cb_15d0a4c9_177))as Set
             r.roomFilterMatchedKnownRoom = allRooms.contains(roomFilter.toLowerCase())
         }
         if (metadataUnavailableIds) {
@@ -307,7 +294,7 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
     // format="ids" returns a flat array of integer IDs; ignores detailed/fields
     if (resolvedFormat == "ids") {
         def pagedDevices = totalCount > 0 ? allDevices.subList(startIndex, endIndex) : []
-        def ids = pagedDevices.collect { it.id as Integer }
+        def ids = (pagedDevices).collect((this.&_bat529Cb_15d0a4c9_52))
         def result = applyFilterEchoes([deviceIds: ids, count: ids.size(), total: totalCount])
         if (limit && limit > 0) {
             result.offset = startIndex
@@ -337,8 +324,8 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
             endIndex = startIndex + hydrated
         }
         if (onlyOn == true) pagedDevices = _stillOnAfterPageRead(pagedDevices, metadataUnavailableIds)
-        def attrNames = (attributeNames && !attributeNames.isEmpty()) ? attributeNames.collect { it.toString() } : _contextAttributeNames()
-        def lines = pagedDevices.collect { d -> _contextDeviceLine(d, attrNames) }
+        def attrNames = (attributeNames && !attributeNames.isEmpty()) ? (attributeNames).collect((this.&_bat529Cb_15d0a4c9_54)): _contextAttributeNames()
+        def lines = (pagedDevices).collect(((this.&_bat529Cb_15d0a4c9_122).curry([attrNames] as Object[])))
         def header = _contextHeaderLines()
         def hsm = _safeHsmStatus()
         def deviceLine = "Devices: ${lines.size()} of ${totalCount}"
@@ -351,11 +338,11 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
             total: totalCount
         ])
         if (hsm) result.hsmStatus = hsm
-        if (pagedDevices.any { it._nativeReadError || it._nativeUnavailableCollections?.any { it in ['currentStates', 'capabilities'] } }) result.partial = true
+        if ((pagedDevices).any((this.&_bat529Cb_15d0a4c9_195))) result.partial = true
         // Typo-vs-absence for the projection, mirroring roomFilter/capabilityFilter: an
         // explicit attributeNames that matched nothing on any line would otherwise be
         // indistinguishable from genuinely attribute-less devices.
-        if (attributeNames && !attributeNames.isEmpty() && lines.size() > 0 && lines.every { !it.contains("; ") }) {
+        if (attributeNames && !attributeNames.isEmpty() && lines.size() > 0 && (lines).every((this.&_bat529Cb_15d0a4c9_22))) {
             result.attributeNamesMatchedNoAttributes = true
         }
         if (limit && limit > 0) {
@@ -372,7 +359,7 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
     }
 
     def pagedDevices = totalCount > 0 ? allDevices.subList(startIndex, endIndex) : []
-    def childDeviceIds = childDevs.collect { it.id.toString() } as Set
+    def childDeviceIds = (childDevs).collect((this.&_bat529Cb_15d0a4c9_44))as Set
 
     // Build the requested field set. null/empty means "all fields for this format mode".
     def fieldSet = (fields && !fields.isEmpty()) ? (fields as Set) : null
@@ -395,7 +382,7 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
     // Auto-promote so fields=['id','capabilities'] works without requiring detailed=true.
     def detailFields = ['capabilities', 'attributes', 'commands'] as Set
     def useDetailed = (resolvedFormat == "detailed") || detailed ||
-        (fieldSet != null && fieldSet.any { detailFields.contains(it) })
+        (fieldSet != null && (fieldSet).any(((this.&_bat529Cb_15d0a4c9_57).curry([detailFields] as Object[]))))
 
     // Page hydration tolerates a per-device failure: the unreadable device is still listed
     // (id + metadataUnavailable) so the caller can enumerate around it, and the response says
@@ -403,15 +390,15 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
     def requiredCollections = []
     boolean budgetCut = false
     boolean labelOnlyProjection = fieldSet != null && !useDetailed && fieldSet.contains("label") &&
-        fieldSet.every { it in ["id", "mcpManaged", "label"] }
+        (fieldSet).every((this.&_bat529Cb_15d0a4c9_95))
     if (labelOnlyProjection) {
         // The bulk inventory carries labels, so an id/label page needs no per-device fullJson; only a
         // device it lists without one is fetched.
-        def listedLabel = { rec -> [rec.label, rec._nativeFilterLabel].any { it instanceof String && it } }
-        def unlabeled = pagedDevices.findAll { it._nativeLoaded != true && !listedLabel(it) }
+        def listedLabel = { rec -> ([rec.label, rec._nativeFilterLabel]).any((this.&_bat529Cb_15d0a4c9_141))}
+        def unlabeled = (pagedDevices).findAll(((this.&_bat529Cb_15d0a4c9_138).curry([listedLabel] as Object[])))
         if (unlabeled) _seedNativeInventoryFromTree(unlabeled, inventoryMeta.inventory as Map)
-        _hydrateNativeInventory(unlabeled.findAll { !listedLabel(it) }, [], true)
-    } else if (fieldSet == null || fieldSet.any { !(it in ["id", "mcpManaged"]) }) {
+        _hydrateNativeInventory((unlabeled).findAll(((this.&_bat529Cb_15d0a4c9_42).curry([listedLabel] as Object[]))), [], true)
+    } else if (fieldSet == null || (fieldSet).any((this.&_bat529Cb_15d0a4c9_68))) {
         if (useDetailed) {
             if (fieldSet == null || fieldSet.contains('capabilities')) requiredCollections << 'capabilities'
             if (fieldSet == null || fieldSet.contains('commands')) requiredCollections << 'commands'
@@ -434,56 +421,7 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
         pagedDevices = stillOn
     }
 
-    def devices = pagedDevices.collect { device ->
-        def deviceIdStr = device.id.toString()
-
-        // Metadata hydration is page-scoped; id is always emitted as the correlation key.
-        def info = [:]
-
-        info.id = deviceIdStr
-        if (fieldSet == null || fieldSet.contains("name")) info.name = device.name
-        if (fieldSet == null || fieldSet.contains("label")) info.label = device.label ?: device._nativeFilterLabel ?: device.name
-        if (fieldSet == null || fieldSet.contains("room")) info.room = device.roomName
-        if (fieldSet == null || fieldSet.contains("disabled")) info.disabled = isDeviceDisabled(device)
-        if (fieldSet == null || fieldSet.contains("deviceNetworkId")) info.deviceNetworkId = safeDni(device)
-        if (fieldSet == null || fieldSet.contains("lastActivity")) {
-            def la = safeLastActivity(device)
-            info.lastActivity = device._nativeActivityUnavailable == true ? "unavailable" : formatLastActivity(la)
-        }
-        if (fieldSet == null || fieldSet.contains("parentDeviceId")) info.parentDeviceId = safeParentDeviceId(device)
-
-        if (childDeviceIds.contains(deviceIdStr)) {
-            if (fieldSet == null || fieldSet.contains("mcpManaged")) info.mcpManaged = true
-        }
-
-        if (useDetailed) {
-            if (fieldSet == null || fieldSet.contains("capabilities")) {
-                info.capabilities = device.capabilities?.collect { it.name }
-            }
-            if (fieldSet == null || fieldSet.contains("attributes")) {
-                // Reported current states only (fullJson carries no declaration list): an attribute
-                // the driver declares but has never set is absent here, not unsupported.
-                info.attributes = device.currentStates?.collect { st -> [name: st.name, value: st.value] }
-            }
-            if (fieldSet == null || fieldSet.contains("commands")) {
-                info.commands = device.commands?.collect { it.name }
-            }
-        } else {
-            // Summary mode: populate currentStates only when requested (or when no projection active)
-            if (fieldSet == null || fieldSet.contains("currentStates")) {
-                info.currentStates = [:]
-                def byName = _deviceStatesByName(device)
-                ["switch", "level", "motion", "contact", "temperature", "humidity", "battery"].each { attr ->
-                    def val = byName.get(attr)?.value
-                    if (val != null) info.currentStates[attr] = val
-                }
-            }
-        }
-        if (device._nativeReadError == true || device._nativeActivityUnavailable == true ||
-            requiredCollections.any { device._nativeUnavailableCollections?.contains(it) }) info.metadataUnavailable = true
-
-        return info
-    }
+    def devices = (pagedDevices).collect(((this.&_bat529Cb_15d0a4c9_268).curry([childDeviceIds, fieldSet, requiredCollections, useDetailed] as Object[])))
 
     // A paged response keeps the bulk-read population as its total, so every page reports the same
     // total its cursor counts through; a single page reports what it lists.
@@ -493,7 +431,7 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
         count: devices.size(),
         total: paged ? totalCount : totalCount - droppedNotOn
     ])
-    if (devices.any { it.metadataUnavailable }) result.partial = true
+    if ((devices).any((this.&_bat529Cb_15d0a4c9_40))) result.partial = true
 
     // Include pagination info if pagination was used
     if (limit && limit > 0) {
@@ -587,7 +525,7 @@ def _validateListDeviceStateArgTypes(roomFilter, onlyOn, changedSince, attribute
     if (onlyOn != null && !(onlyOn instanceof Boolean)) {
         throw new IllegalArgumentException("onlyOn must be a boolean")
     }
-    if (attributeNames != null && (!(attributeNames instanceof List) || attributeNames.any { !(it instanceof String) })) {
+    if (attributeNames != null && (!(attributeNames instanceof List) || (attributeNames).any((this.&_bat529Cb_15d0a4c9_66)))) {
         throw new IllegalArgumentException("attributeNames must be an array of attribute-name strings")
     }
     if (format && !["summary", "detailed", "ids", "context"].contains(format)) {
@@ -620,12 +558,8 @@ private List _contextHeaderLines() {
 // onlyOn filters on the bulk read and the page is then read per device: a switch that turned off between
 // the two reads is dropped, so a listed device always reads on in the response.
 private List _stillOnAfterPageRead(List paged, List metadataUnavailableIds) {
-    paged.each { device ->
-        if (device._nativeUnavailableCollections?.contains('currentStates') && !metadataUnavailableIds.contains(device.id.toString())) {
-            metadataUnavailableIds << device.id.toString()
-        }
-    }
-    paged.findAll { it._nativeLoaded != true || it._nativeReadError == true || _deviceStatesByName(it).get("switch")?.value?.toString() == "on" }
+    (paged).each(((this.&_bat529Cb_15d0a4c9_231).curry([metadataUnavailableIds] as Object[])))
+    (paged).findAll((this.&_bat529Cb_15d0a4c9_206))
 }
 
 // A device's states by attribute name. A native state list can carry an attribute twice; the
@@ -633,9 +567,7 @@ private List _stillOnAfterPageRead(List paged, List metadataUnavailableIds) {
 // and projection reads the same value.
 private Map _deviceStatesByName(device) {
     def states = [:]
-    device?.currentStates?.each { st ->
-        if (st?.name != null && st.value != null) states.put(st.name.toString(), st)
-    }
+    (device?.currentStates)?.each(((this.&_bat529Cb_15d0a4c9_198).curry([states] as Object[])))
     return states
 }
 
@@ -664,7 +596,7 @@ private String _contextDeviceLine(device, List attrNames) {
             attrParts << "${an}=${st.value}${unit ?: ''}"
         }
     }
-    def caps = device.capabilities?.collect { it.name }?.findAll { it != null } ?: []
+    def caps = ((device.capabilities)?.collect((this.&_bat529Cb_15d0a4c9_48)))?.findAll((this.&_bat529Cb_15d0a4c9_135))?: []
     def line = "- ${device.label ?: device.name ?: "Device ${device.id}"} (${device.id}, ${device.roomName ?: 'No room'})"
     if (caps) line += " - ${caps.join(', ')}"
     if (attrParts) line += "; ${attrParts.join(', ')}"
@@ -695,7 +627,7 @@ private List _mcpVisibleDevices(List childDevs = null, Map meta = null) {
         if (inventory?.failure || !(inventory?.records instanceof List)) {
             throw new IllegalStateException("Native device inventory is unavailable; retry before using the device list.")
         }
-        if (inventory.records.any { !(it instanceof Map) || it.id == null }) {
+        if ((inventory.records).any((this.&_bat529Cb_15d0a4c9_124))) {
             throw new IllegalStateException("Native device inventory contained an invalid device record; retry after checking hub firmware.")
         }
         if (inventory.idsComplete == false && meta != null) {
@@ -705,13 +637,11 @@ private List _mcpVisibleDevices(List childDevs = null, Map meta = null) {
         // Lets the caller seed from this same read instead of fetching the inventory again.
         if (meta != null) meta.inventory = inventory
         def byId = [:]
-        inventory.records.each { d -> byId.put(d.id.toString(), [id: d.id.toString(), _nativeFilterLabel: d.label]) }
+        (inventory.records).each(((this.&_bat529Cb_15d0a4c9_190).curry([byId] as Object[])))
         return byId.values() as List
     }
     def byId = [:]
-    ((selectedDevices ?: []) + ((childDevs != null ? childDevs : getChildDevices()) ?: [])).each { d ->
-        if (d?.id != null) byId.put(d.id.toString(), [id: d.id.toString()])
-    }
+    (((selectedDevices ?: []) + ((childDevs != null ? childDevs : getChildDevices()) ?: []))).each(((this.&_bat529Cb_15d0a4c9_224).curry([byId] as Object[])))
     return byId.values() as List
 }
 
@@ -732,23 +662,20 @@ private int _hydrateNativeInventory(List records, List requiredCollections, bool
             }
             def d = fj.device
             def states = d.currentStates instanceof Map ? [] : null
-            if (states != null) d.currentStates.each { name, st ->
-                states << [name: name.toString(), value: _nativeDeviceStateValue(st),
-                           unit: st instanceof Map ? st.unit : null]
-            }
+            if (states != null) (d.currentStates).each(((this.&_bat529Cb_15d0a4c9_227).curry([states] as Object[])))
             // A room the bulk tree already supplied stays authoritative when fullJson omits the key,
             // so the rooms index and the per-device room can never name different rooms.
             record.putAll([name: d.name, label: d.label,
                 roomName: (d.containsKey('roomName') || !record.containsKey('roomName')) ? d.roomName : record.roomName,
                 disabled: d.disabled, status: d.status, deviceNetworkId: d.deviceNetworkId,
                 parentDeviceId: d.parentDeviceId, lastActivityTime: d.lastActivityTime,
-                capabilities: d.capabilities instanceof List ? _capabilityNames(d.capabilities).collect { [name: it] } : null,
+                capabilities: d.capabilities instanceof List ? (_capabilityNames(d.capabilities)).collect((this.&_bat529Cb_15d0a4c9_100)): null,
                 currentStates: states, commands: fj.commands instanceof List ? fj.commands : null,
                 _nativeUnavailableCollections: _unavailableNativeDeviceCollections(fj), _nativeLoaded: true])
             record.remove('_nativeActivityParsed')
         }
         // Filters and page projections can consume different collections from the same fetch.
-        def unavailable = requiredCollections.findAll { record._nativeUnavailableCollections.contains(it) }
+        def unavailable = (requiredCollections).findAll(((this.&_bat529Cb_15d0a4c9_160).curry([record] as Object[])))
         if (unavailable && !allowPartial) {
             throw new IllegalStateException("Native device collections are unavailable for device ${record.id}: ${unavailable.join(', ')}.")
         }
@@ -769,31 +696,8 @@ private boolean _seedNativeInventoryFromTree(List records, Map inventory = null)
     if (inventory == null) inventory = _fetchAllHubDeviceRecords("device", "native bulk device read")
     if (inventory?.failure || !(inventory?.records instanceof List)) return false
     def byId = [:]
-    inventory.records.each { r -> if (r instanceof Map && r.id != null) byId.put(r.id.toString(), r) }
-    records.each { record ->
-        if (record._nativeLoaded == true || record._nativeSeeded == true) return
-        def r = byId.get(record.id?.toString())
-        if (!(r instanceof Map)) return
-        if (r.label instanceof String && r.label) record._nativeFilterLabel = r.label
-        // Identity and room ride along whenever the source carries them (a fullJson fallback
-        // keeps a tree-supplied room when it omits the key). A record counts as SEEDED only
-        // when the tree also carried its states -- older firmware lists no currentStates, and
-        // there a consumer that needs state still falls back to a per-device read.
-        ['label', 'roomName', 'disabled', 'lastActivity'].each { key ->
-            if (r.containsKey(key)) record.put(key == 'lastActivity' ? 'lastActivityTime' : key, r.get(key))
-        }
-        record.remove('_nativeActivityParsed')
-        if (!r.containsKey('currentStates')) return
-        def states = r.currentStates instanceof List ? r.currentStates.findAll { it instanceof Map && it.key != null }
-            .collect { [name: it.key.toString(), value: it.value, unit: null] } : null
-        def unavailable = []
-        if (states == null) unavailable << 'currentStates'
-        if (!(r.capabilities instanceof List)) unavailable << 'capabilities'
-        unavailable << 'commands'
-        record.putAll([currentStates: states,
-            capabilities: r.capabilities instanceof List ? _capabilityNames(r.capabilities).collect { [name: it] } : null,
-            _nativeUnavailableCollections: unavailable, _nativeSeeded: true])
-    }
+    (inventory.records).each(((this.&_bat529Cb_15d0a4c9_180).curry([byId] as Object[])))
+    (records).each(((this.&_bat529Cb_15d0a4c9_264).curry([byId] as Object[])))
     return true
 }
 
@@ -835,9 +739,7 @@ private int _loadContextResourcePopulation(List records, Map inventory = null) {
             // with no units -- so a fallback read never puts a typed value or a unit suffix next
             // to a bulk-covered one.
             if (record.currentStates instanceof List) {
-                record.currentStates = record.currentStates.collect { st ->
-                    [name: st.name, value: st.value == null ? null : st.value.toString(), unit: null]
-                }
+                record.currentStates = (record.currentStates).collect((this.&_bat529Cb_15d0a4c9_213))
             }
         } else {
             unread++
@@ -912,16 +814,11 @@ def _buildContextJson() {
     // One bulk read seeds room membership AND state for the whole population, so the rooms
     // index and the per-device room come from the same record and cannot disagree.
     _loadContextResourcePopulation(allDevices, meta.inventory as Map)
-    allDevices.each { d -> if (d._nativeReadError) d._nativeRoomUnavailable = true }
+    (allDevices).each((this.&_bat529Cb_15d0a4c9_156))
     def contextAttrs = _contextAttributeNames() as Set
-    int roomUnavailableCount = allDevices.count { it._nativeRoomUnavailable == true }
+    int roomUnavailableCount = (allDevices).count((this.&_bat529Cb_15d0a4c9_93))
     def roomIndex = [:]
-    allDevices.each { d ->
-        // A null key keeps unknown membership distinct even from a room named "Room unavailable".
-        def r = d._nativeRoomUnavailable ? null : (d.roomName?.toString() ?: "No room")
-        if (!roomIndex.containsKey(r)) roomIndex.put(r, [])
-        roomIndex.get(r) << d.id.toString()
-    }
+    (allDevices).each(((this.&_bat529Cb_15d0a4c9_243).curry([roomIndex] as Object[])))
     // The rooms index scales with the inventory too, so it gets its own cap (half the
     // budget) -- on an extreme fleet it could exceed the whole budget by itself, and no
     // amount of device-record clamping would save the response.
@@ -929,9 +826,7 @@ def _buildContextJson() {
     int roomsUsed = 0
     boolean roomsTruncated = false
     def rooms = []
-    for (entry in roomIndex.collect { name, ids ->
-        name == null ? [name: "Room unavailable", roomUnavailable: true, deviceIds: ids] : [name: name, deviceIds: ids]
-    }) {
+    for (entry in (roomIndex).collect((this.&_bat529Cb_15d0a4c9_215))) {
         roomsUsed += _escapedLen(groovy.json.JsonOutput.toJson(entry))
         if (roomsUsed > roomsCap) {
             roomsTruncated = true
@@ -949,16 +844,14 @@ def _buildContextJson() {
         def attrs = [:]
         boolean stateReadFailed = d._nativeReadError == true || d._nativeUnavailableCollections?.contains('currentStates') == true
         try {
-            _deviceStatesByName(d).each { name, st ->
-                if (contextAttrs.contains(name)) attrs.put(name, st.value.toString())
-            }
+            (_deviceStatesByName(d)).each(((this.&_bat529Cb_15d0a4c9_205).curry([attrs, contextAttrs] as Object[])))
         } catch (Exception e) {
             // Mirror the text form: mark the record in-band, not just in the log.
             stateReadFailed = true
             mcpLog("warn", "device", "context snapshot: currentStates read failed for device ${d?.id}: ${e.message}")
         }
         def rec = [id: d.id.toString(), label: d.label ?: d.name, room: d.roomName,
-                   capabilities: d.capabilities?.collect { it.name }?.findAll { it != null } ?: [],
+                   capabilities: ((d.capabilities)?.collect((this.&_bat529Cb_15d0a4c9_25)))?.findAll((this.&_bat529Cb_15d0a4c9_115))?: [],
                    attributes: attrs]
         if (stateReadFailed) rec.stateUnavailable = true
         if (d._nativeUnavailableCollections?.contains('capabilities')) rec.capabilitiesUnavailable = true
@@ -973,14 +866,14 @@ def _buildContextJson() {
     }
     def result = [
         currentMode: location.mode?.toString(),
-        modes: location.modes?.collect { it?.name?.toString() }?.findAll { it != null } ?: [],
+        modes: ((location.modes)?.collect((this.&_bat529Cb_15d0a4c9_77)))?.findAll((this.&_bat529Cb_15d0a4c9_147))?: [],
         deviceCount: devices.size(),
         totalDevices: allDevices.size(),
         rooms: rooms,
         devices: devices
     ]
     if (roomUnavailableCount) result.roomUnavailableCount = roomUnavailableCount
-    if (roomUnavailableCount || devices.any { it.stateUnavailable || it.capabilitiesUnavailable || it.metadataUnavailable }) result.partial = true
+    if (roomUnavailableCount || (devices).any((this.&_bat529Cb_15d0a4c9_172))) result.partial = true
     if (meta.idsComplete == false) {
         result.idsComplete = false
         result.partialNote = meta.partialNote
@@ -1127,15 +1020,15 @@ private Map _fetchAllHubDeviceRecords(String logCategory, String logPrefix) {
             def entry = feed.get(key)
             // The tree's per-node extras (activity, room, disabled flag, current states) ride along
             // so a bulk consumer never needs a per-device fullJson read for them.
-            def record = [id: d.id, label: d.label] + d.findAll { k, v -> k != 'id' && k != 'label' }
+            def record = [id: d.id, label: d.label] + (d).findAll((this.&_bat529Cb_15d0a4c9_70))
             if (entry != null && entry.containsKey("capabilities")) { record.capabilities = entry.capabilities; return record }
             missingCapabilities++
             return record   // no `capabilities` key on purpose: routes to the model fill-in
         }
         // The union's other direction: a device only the feed lists keeps its feed record. Its
         // presence PROVES the tree short, so the id set is complete only when there are none.
-        def feedOnly = feed.findAll { key, rec -> !spineIds.contains(key) }.values() as List
-        def feedOnlyWithoutCapabilities = feedOnly.findAll { !it.containsKey("capabilities") }.size()
+        def feedOnly = (feed).findAll(((this.&_bat529Cb_15d0a4c9_88).curry([spineIds] as Object[]))).values() as List
+        def feedOnlyWithoutCapabilities = (feedOnly).findAll((this.&_bat529Cb_15d0a4c9_87)).size()
         records.addAll(feedOnly)
         boolean idsComplete = feedOnly.isEmpty()
         def notes = []
@@ -1212,14 +1105,14 @@ private Map _listAllHubDevices(offset, limit, labelFilter, capabilityFilter, for
         return [success: false, isError: true, error: "Unexpected ${inventory.source} response (expected {devices:[...]}).", note: "Hub firmware may have changed the endpoint contract."]
     }
     def raw = inventory.records
-    if (!(raw instanceof List) || raw.any { !(it instanceof Map) || it.id == null }) {
+    if (!(raw instanceof List) || (raw).any((this.&_bat529Cb_15d0a4c9_79))) {
         return [success: false, isError: true, error: "Native device inventory contained an invalid record.",
                 note: "Retry after checking hub firmware; an incomplete device list was not returned."]
     }
     def sourceEndpoint = inventory.source
-    def capabilitiesComplete = inventory.capabilities && raw.every { it.capabilities instanceof List }
-    def authorizedIds = ((selectedDevices ?: []).collect { it.id?.toString() }.findAll { it != null } as Set)
-    (getChildDevices() ?: []).each { def cid = it.id?.toString(); if (cid != null) authorizedIds.add(cid) }
+    def capabilitiesComplete = inventory.capabilities && (raw).every((this.&_bat529Cb_15d0a4c9_62))
+    def authorizedIds = ((((selectedDevices ?: [])).collect((this.&_bat529Cb_15d0a4c9_92))).findAll((this.&_bat529Cb_15d0a4c9_151))as Set)
+    ((getChildDevices() ?: [])).each(((this.&_bat529Cb_15d0a4c9_186).curry([authorizedIds] as Object[])))
     // // Capability lookup for the capability-less source, built once from the authorization-scoped model.
     // def capsById = [:]
     // if (!capabilitiesComplete) {
@@ -1231,7 +1124,7 @@ private Map _listAllHubDevices(offset, limit, labelFilter, capabilityFilter, for
     // if (did != null) capsById.put(did, _capabilityNames(dev.capabilities))
     // }
     // }
-    if (_bypassEnabled()) raw.each { d -> if (d instanceof Map && d.id != null) authorizedIds.add(d.id.toString()) }
+    if (_bypassEnabled()) (raw).each(((this.&_bat529Cb_15d0a4c9_170).curry([authorizedIds] as Object[])))
     def capsById = [:]
     def unavailableCapabilityIds = []
     if (!capabilitiesComplete) {
@@ -1249,22 +1142,15 @@ private Map _listAllHubDevices(offset, limit, labelFilter, capabilityFilter, for
     }
 
     // Invalid records were rejected above so the reported inventory cannot silently shrink.
-    def devices = raw.collect { d ->
-        def idStr = d.id?.toString()
-        def caps = (d.capabilities instanceof List) ? _capabilityNames(d.capabilities)
-                                                   : (idStr != null ? (capsById.get(idStr) ?: []) : [])
-        def record = [id: idStr, label: d.label, capabilities: caps, mcpAuthorized: idStr != null && authorizedIds.contains(idStr)]
-        if (unavailableCapabilityIds.contains(idStr)) record.capabilitiesUnavailable = true
-        record
-    }
+    def devices = (raw).collect(((this.&_bat529Cb_15d0a4c9_253).curry([authorizedIds, capsById, unavailableCapabilityIds] as Object[])))
     def unfilteredTotal = devices.size()
     if (labelFilter) {
         def lf = labelFilter.toLowerCase()
-        devices = devices.findAll { (it.label ?: "").toString().toLowerCase().contains(lf) }
+        devices = (devices).findAll(((this.&_bat529Cb_15d0a4c9_148).curry([lf] as Object[])))
     }
     if (capabilityFilter) {
         def cf = capabilityFilter.toLowerCase()
-        devices = devices.findAll { dev -> dev.capabilities.any { c -> c?.toLowerCase() == cf } }
+        devices = (devices).findAll(((this.&_bat529Cb_15d0a4c9_155).curry([cf] as Object[])))
     }
     def totalCount = devices.size()
     def startIndex = (offset && offset > 0) ? (offset as Integer) : 0
@@ -1273,7 +1159,7 @@ private Map _listAllHubDevices(offset, limit, labelFilter, capabilityFilter, for
     def paged = (totalCount > 0 && startIndex < endIndex) ? devices.subList(startIndex, endIndex) : []
 
     if (resolvedFormat == "ids") {
-        def ids = paged.findAll { it.id?.isInteger() }.collect { it.id as Integer }
+        def ids = ((paged).findAll((this.&_bat529Cb_15d0a4c9_34))).collect((this.&_bat529Cb_15d0a4c9_133))
         def r = [deviceIds: ids, count: ids.size(), total: totalCount, scope: "all", unfilteredTotal: unfilteredTotal]
         // Same inventory metadata as the summary shape: the ids caller must also be able to see
         // that capabilityFilter matched authorized devices only.
@@ -1296,7 +1182,7 @@ private Map _listAllHubDevices(offset, limit, labelFilter, capabilityFilter, for
         }
         return r
     }
-    def authorizedCount = devices.findAll { it.mcpAuthorized }.size()
+    def authorizedCount = (devices).findAll((this.&_bat529Cb_15d0a4c9_33)).size()
     def result = [
         devices: paged,
         count: paged.size(),
@@ -1414,7 +1300,7 @@ private List _fetchBypassDeviceEvents(deviceId) {
     try {
         def txt = hubInternalGet("/device/eventsJson/${deviceId}")
         def parsed = txt ? new groovy.json.JsonSlurper().parseText(txt) : null
-        if (!(parsed instanceof List) || parsed.any { !(it instanceof Map) }) {
+        if (!(parsed instanceof List) || (parsed).any((this.&_bat529Cb_15d0a4c9_28))) {
             mcpLog("warn", "device", "native: /device/eventsJson/${deviceId} returned an invalid event list or row")
             return null
         }
@@ -1510,33 +1396,31 @@ private List _fullJsonAttributeNames(Map fullJson) {
 // set the bypass send-command path validates against.
 private List _fullJsonCommandNames(Map fullJson) {
     def cmds = fullJson?.commands
-    return (cmds instanceof List) ? cmds.collect { it?.name }.findAll { it != null } : []
+    return (cmds instanceof List) ? ((cmds).collect((this.&_bat529Cb_15d0a4c9_8))).findAll((this.&_bat529Cb_15d0a4c9_78)): []
 }
 
 private List _unavailableNativeDeviceCollections(Map fullJson, List required = ['currentStates', 'capabilities', 'commands']) {
     // An empty native collection is valid; an absent or malformed collection cannot prove emptiness.
     def values = [currentStates: fullJson?.device?.currentStates,
                   capabilities: fullJson?.device?.capabilities, commands: fullJson?.commands]
-    return required.findAll { key ->
-        key == 'currentStates' ? !(values.get(key) instanceof Map) : !(values.get(key) instanceof List)
-    }
+    return (required).findAll(((this.&_bat529Cb_15d0a4c9_203).curry([values] as Object[])))
 }
 
 private Map _normalizeDevicePreferenceValue(raw, String type, boolean multiple = false) {
     if (raw == null) return [valid: true, value: null]
     if (multiple) {
         if (raw == '') return [valid: true, value: []]
-        if (raw instanceof List) return [valid: true, value: raw.collect { it?.toString() }]
+        if (raw instanceof List) return [valid: true, value: (raw).collect((this.&_bat529Cb_15d0a4c9_18))]
         if (raw instanceof String) {
             if (raw.trim().startsWith('[')) {
                 try {
                     def selection = new groovy.json.JsonSlurper().parseText(raw)
-                    if (selection instanceof List) return [valid: true, value: selection.collect { it?.toString() }]
+                    if (selection instanceof List) return [valid: true, value: (selection).collect((this.&_bat529Cb_15d0a4c9_35))]
                 } catch (Exception ignored) {
                     // Non-JSON option names still use the native comma-separated representation.
                 }
             }
-            return [valid: true, value: raw.split(',').collect { it.trim() }]
+            return [valid: true, value: (raw.split(',')).collect((this.&_bat529Cb_15d0a4c9_32))]
         }
         return [valid: false, value: null]
     }
@@ -1573,70 +1457,11 @@ private Map _readDevicePreferenceModel(Map fullJson) {
         model.status = 'partial'
         model.reason = 'Native inputValues is not a recognized array; stored values may be incomplete.'
     } else {
-        (rawInputs ?: []).each { row ->
-            if (!(row instanceof Map) || row.name == null) {
-                model.writeSafe = false
-                model.status = 'partial'
-                model.reason = 'Native inputValues contains an unnamed or malformed value.'
-            } else {
-                String key = row.name.toString()
-                if (inputs.containsKey(key)) duplicates << key
-                inputs.put(key, row)
-            }
-        }
+        ((rawInputs ?: [])).each(((this.&_bat529Cb_15d0a4c9_252).curry([duplicates, inputs, model] as Object[])))
     }
     def names = []
-    definitions.each { row ->
-        if (!(row instanceof Map) || row.name == null || row.type == null) {
-            model.writeSafe = false
-            model.status = 'partial'
-            model.reason = 'Native settings contains an unnamed or malformed declaration.'
-            return
-        }
-        String name = row.name.toString()
-        String type = row.type.toString()
-        if (names.contains(name)) {
-            model.writeSafe = false
-            model.status = 'partial'
-            model.reason = 'Native settings contains duplicate preference names.'
-            model.entries.removeAll { it.name == name }
-            return
-        }
-        names << name
-        if (type in ['paragraph', 'hidden', 'button', 'image']) return
-        def input = inputs.get(name)
-        // Cleared native settings lose their storage identity; inputValues can still prefill the UI default.
-        boolean nativeUnset = row.containsKey('id') && row.get('id') == null &&
-            row.containsKey('deviceId') && row.get('deviceId') == null && row.containsKey('value') && row.get('value') == null
-        boolean present = !nativeUnset && ((input instanceof Map && input.containsKey('inputValue')) || row.containsKey('value'))
-        def raw = nativeUnset ? null : ((input instanceof Map && input.containsKey('inputValue')) ? input.get('inputValue') : row.get('value'))
-        // Unset enum rows lose stored cardinality even when the driver declares multiple:true.
-        Boolean multiple = type == 'enum' && nativeUnset && !_deviceFlag(row.multiple) ? null : _deviceFlag(row.multiple)
-        def normalized = _normalizeDevicePreferenceValue(raw, type, multiple == true)
-        def entry = [name: name, type: type, declared: true, multiple: multiple,
-                     valuePresent: present, valueStatus: present ? 'stored' : 'unset',
-                     rawValue: raw, value: normalized.value]
-        if (multiple == null) {
-            entry.multipleStatus = 'unavailable'
-            entry.multipleReason = 'Native unset enum metadata does not identify single or multiple selection. Check driverSource or previously read metadata and pass an explicit multiple boolean when setting it.'
-        }
-        ['title', 'description', 'options', 'range', 'required'].each { key ->
-            if (row.containsKey(key)) entry.put(key, row.get(key))
-        }
-        if (row.containsKey('defaultValue')) {
-            def defaultValue = _normalizeDevicePreferenceValue(row.get('defaultValue'), type, multiple == true)
-            entry.defaultValue = defaultValue.valid ? defaultValue.value : row.get('defaultValue')
-        }
-        if (!normalized.valid || duplicates.contains(name)) {
-            model.writeSafe = false
-            entry.valueStatus = duplicates.contains(name) ? 'unknown' : 'invalid'
-            entry.value = null
-            model.status = 'partial'
-            model.reason = 'A stored preference value is ambiguous or does not match its declared type.'
-        }
-        model.entries << entry
-    }
-    if (duplicates || inputs.keySet().any { key -> !names.contains(key) }) {
+    (definitions).each(((this.&_bat529Cb_15d0a4c9_269).curry([duplicates, inputs, model, names] as Object[])))
+    if (duplicates || (inputs.keySet()).any(((this.&_bat529Cb_15d0a4c9_82).curry([names] as Object[])))) {
         if (duplicates) model.writeSafe = false
         model.status = 'partial'
         model.reason = 'Native inputValues contains duplicate or undeclared preference names.'
@@ -1645,7 +1470,7 @@ private Map _readDevicePreferenceModel(Map fullJson) {
 }
 
 private Map _lookupDevicePreference(Map model, name) {
-    return model?.entries?.find { it.name == name?.toString() }
+    return (model?.entries)?.find(((this.&_bat529Cb_15d0a4c9_85).curry([name] as Object[])))
 }
 
 private boolean _devicePreferenceIsSecret(Map entry) {
@@ -1663,10 +1488,10 @@ private _deviceConfigurationPublicValue(value, key = '') {
     if (_deviceConfigurationSecretKey(key)) return '***redacted (password)***'
     if (value instanceof Map) {
         def copy = [:]
-        value.each { k, v -> copy.put(k, _deviceConfigurationPublicValue(v, k)) }
+        (value).each(((this.&_bat529Cb_15d0a4c9_145).curry([copy] as Object[])))
         return copy
     }
-    if (value instanceof List) return value.collect { _deviceConfigurationPublicValue(it) }
+    if (value instanceof List) return (value).collect((this.&_bat529Cb_15d0a4c9_89))
     return value
 }
 
@@ -1719,18 +1544,13 @@ private _withResolvedManufacturer(value) {
     String name = _zwaveManufacturerName(value.get('manufacturer'))
     if (name == null) return value
     def copy = [:]
-    value.each { k, v ->
-        copy.put(k, v)
-        if (k == 'manufacturer') copy.put('manufacturerName', name)
-    }
+    (value).each(((this.&_bat529Cb_15d0a4c9_192).curry([copy, name] as Object[])))
     return copy
 }
 
 private Map _publicDevicePreference(Map entry) {
     def copy = [:]
-    entry.each { key, value ->
-        if (!(key in ['rawValue', 'declared'])) copy.put(key, _deviceConfigurationPublicValue(value))
-    }
+    (entry).each(((this.&_bat529Cb_15d0a4c9_202).curry([copy] as Object[])))
     if (_devicePreferenceIsSecret(entry)) {
         if (copy.containsKey('value')) copy.value = '***redacted (password)***'
         if (copy.containsKey('defaultValue')) copy.defaultValue = '***redacted (password)***'
@@ -1742,9 +1562,7 @@ private Map _publicDevicePreference(Map entry) {
 
 private Map _deviceConfigurationProjection(Map source, List keys) {
     def result = [:]
-    keys.each { key ->
-        if (source?.containsKey(key)) result.put(key, _deviceConfigurationPublicValue(source.get(key), key))
-    }
+    (keys).each(((this.&_bat529Cb_15d0a4c9_201).curry([result, source] as Object[])))
     return result
 }
 
@@ -1786,10 +1604,8 @@ private List _deviceConfigurationEditableFields(Map fj, Map preferences) {
     if (d.containsKey('tags')) {
         values.tags = _normalizedDeviceTags(d.tags)
     }
-    if (fj?.dashboards instanceof List) values.dashboardIds = fj.dashboards.findAll { it.selected == true }.collect { it.id }
-    ['homeKitEnabled', 'amazonAlexaEnabled', 'googleHomeEnabled'].each { key ->
-        if (fj?.containsKey(key)) values.put(key, fj.get(key))
-    }
+    if (fj?.dashboards instanceof List) values.dashboardIds = ((fj.dashboards).findAll((this.&_bat529Cb_15d0a4c9_63))).collect((this.&_bat529Cb_15d0a4c9_123))
+    (['homeKitEnabled', 'amazonAlexaEnabled', 'googleHomeEnabled']).each(((this.&_bat529Cb_15d0a4c9_207).curry([fj, values] as Object[])))
     def applicable = [
         label: !_deviceFlag(d.linkedAndDisabled),
         name: !_deviceFlag(d.isComponent) && !_deviceFlag(d.linkedDevice),
@@ -1806,51 +1622,7 @@ private List _deviceConfigurationEditableFields(Map fj, Map preferences) {
         googleHomeEnabled: _deviceFlag(fj?.googleHomeInstalled) && _deviceFlag(fj?.googleHomeSupported)
     ]
     def fields = _deviceConfigurationFieldDefinitions()
-    fields.each { field ->
-        String name = field.name
-        field.source = name in ['homeKitEnabled', 'amazonAlexaEnabled', 'googleHomeEnabled', 'dashboardIds'] ? 'fullJson' : 'fullJson.device'
-        field.valuePresent = values.containsKey(name)
-        if (field.valuePresent) field.value = values.get(name)
-        field.readStatus = field.valuePresent ? 'complete' : 'unavailable'
-        field.applicable = !applicable.containsKey(name) || applicable.get(name)
-        field.writable = !d.isEmpty() && field.applicable
-        if (field.requiresConfirmation) field.requiresBackup = true
-        if (!field.applicable) field.reason = 'This device or installed integration does not expose this edit control.'
-        else if (!field.valuePresent) field.reason = 'The native device response did not supply this current value.'
-        if (name == 'preferences') {
-            field.source = 'fullJson.settings'
-            field.valueReference = 'preferences'
-            field.readStatus = preferences.status
-            field.valuePresent = preferences.status != 'unavailable'
-            field.applicable = !_deviceFlag(d.linkedDevice)
-            field.writable = field.applicable && preferences.writeSafe == true
-            field.remove('reason')
-            if (!field.applicable) field.reason = 'Driver preferences cannot be saved on a linked device; edit the source device.'
-            else if (preferences.reason) field.reason = preferences.reason
-        }
-        if (name == 'room') field.optionsReference = [gateway: 'hub_read_rooms', tool: 'hub_list_rooms', args: [:]]
-        if (name == 'deviceTypeId') field.optionsReference = [gateway: 'hub_read_apps_code', tool: 'hub_list_drivers', args: [include: 'all']]
-        if (name == 'deviceNetworkId' && d.linkedDevice) {
-            field.options = [[value: '0', label: 'Keep current device link']]
-            try {
-                def text = hubInternalGet('/device/accessibleLinkedDevices')
-                def available = text ? new groovy.json.JsonSlurper().parseText(text) : null
-                if (!(available?.devices instanceof List)) throw new IllegalStateException('Unrecognized linked-device choices')
-                available.devices.each { row ->
-                    if (row instanceof Map && row.hubId != null && row.deviceId != null) {
-                        field.options << [value: "${row.hubId}-${row.deviceId}".toString(),
-                            label: row.label ?: row.name ?: row.deviceId.toString(), disabled: _deviceFlag(row.linkedLocally)]
-                    }
-                }
-            } catch (Exception ignored) {
-                mcpLog('error', 'device', "Device ${d.id}: /device/accessibleLinkedDevices choices could not be read; retry configuration discovery.")
-                field.optionsStatus = 'unavailable'
-                field.reason = 'Native linked-device choices could not be read; retry configuration discovery before retargeting.'
-            }
-        }
-        if (name == 'dashboardIds') field.options = _deviceConfigurationPublicValue(fj?.dashboards ?: [])
-        if (name == 'defaultCurrentState') field.options = [''] + _fullJsonAttributeNames(fj)
-    }
+    (fields).each(((this.&_bat529Cb_15d0a4c9_270).curry([applicable, d, fj, preferences, values] as Object[])))
     return fields
 }
 
@@ -1866,13 +1638,9 @@ private Map _deviceConfigurationDriverSource(Map d, deviceId) {
         def text = hubInternalGet('/hub2/userDeviceTypes')
         def catalog = text ? new groovy.json.JsonSlurper().parseText(text) : null
         if (!(catalog instanceof List)) throw new IllegalStateException('Unrecognized user driver catalog')
-        def matches = catalog.findAll { row -> row instanceof Map && row.name == d.deviceTypeName && row.namespace == d.deviceTypeNamespace }
+        def matches = (catalog).findAll(((this.&_bat529Cb_15d0a4c9_194).curry([d] as Object[])))
         if (matches.size() > 1) {
-            matches = matches.findAll { row ->
-                row.usedBy instanceof List && row.usedBy.any { use ->
-                    use instanceof Map && use.id != null && deviceId != null && use.id.toString() == deviceId.toString()
-                }
-            }
+            matches = (matches).findAll(((this.&_bat529Cb_15d0a4c9_234).curry([deviceId] as Object[])))
         }
         if (matches.size() == 1 && matches[0].id != null) {
             return [status: 'available', gateway: 'hub_read_apps_code', tool: 'hub_get_source',
@@ -1907,23 +1675,15 @@ private Map _deviceConfigurationResult(deviceId, Map identity, Map fj, fields = 
     if (!available) infoRead.reason = 'Native device information could not be fetched or recognized.'
     def result = [id: deviceId.toString(), name: identity.name, label: identity.label, mode: 'configuration',
             editableFields: _deviceConfigurationEditableFields(fj, model),
-            preferences: model.entries.collect {
-                def entry = _publicDevicePreference(it)
-                entry.writable = !linkedDevice && model.writeSafe == true && entry.writable
-                if (linkedDevice) {
-                    entry.applicable = false
-                    entry.reason = 'Driver preferences cannot be saved on a linked device; edit the source device.'
-                }
-                entry
-            }, preferenceRead: read,
+            preferences: (model.entries).collect(((this.&_bat529Cb_15d0a4c9_251).curry([linkedDevice, model] as Object[]))), preferenceRead: read,
             deviceInfo: _deviceConfigurationInfo(fj), deviceInfoRead: infoRead,
             driverSource: _deviceConfigurationDriverSource(available ? fj.device : [:], deviceId)]
     if (fields != null) {
-        result.availableFields = [editableFields: result.editableFields.collect { it.name },
-                                  preferences: result.preferences.collect { it.name },
+        result.availableFields = [editableFields: (result.editableFields).collect((this.&_bat529Cb_15d0a4c9_51)),
+                                  preferences: (result.preferences).collect((this.&_bat529Cb_15d0a4c9_39)),
                                   deviceInfo: result.deviceInfo.keySet().toList()]
-        result.editableFields = result.editableFields.findAll { fields.contains(it.name) }
-        result.preferences = result.preferences.findAll { fields.contains(it.name) }
+        result.editableFields = (result.editableFields).findAll(((this.&_bat529Cb_15d0a4c9_105).curry([fields] as Object[])))
+        result.preferences = (result.preferences).findAll(((this.&_bat529Cb_15d0a4c9_98).curry([fields] as Object[])))
         result.deviceInfo = _deviceConfigurationProjection(result.deviceInfo, fields)
     }
     return result
@@ -1957,13 +1717,7 @@ private List _nativeReportedDeviceAttributes(Map d) {
     def attributes = []
     def cs = d?.currentStates
     if (cs instanceof Map) {
-        cs.each { name, st ->
-            if (name != null) {
-                def dataType = (st instanceof Map) ? st.dataType?.toString() : null
-                def value = _nativeDeviceStateValue(st)
-                attributes << [name: name, dataType: dataType, value: value]
-            }
-        }
+        (cs).each(((this.&_bat529Cb_15d0a4c9_239).curry([attributes] as Object[])))
     }
     return attributes
 }
@@ -1977,11 +1731,9 @@ private Map _getDeviceFromFullJson(deviceId, Map fj) {
     def d = fj.device
     def commands = []
     if (fj.commands instanceof List) {
-        fj.commands.each { c ->
-            if (c?.name != null) commands << [name: c.name, arguments: _fullJsonCommandArgs(c)]
-        }
+        (fj.commands).each(((this.&_bat529Cb_15d0a4c9_200).curry([commands] as Object[])))
     }
-    def caps = (d.capabilities instanceof List) ? d.capabilities.collect { (it instanceof Map) ? it.name : it } : []
+    def caps = (d.capabilities instanceof List) ? (d.capabilities).collect((this.&_bat529Cb_15d0a4c9_120)): []
     return [
         id: deviceId.toString(),
         name: d.name,
@@ -1998,13 +1750,10 @@ private Map _getDeviceFromFullJson(deviceId, Map fj) {
 // `arguments` (type tokens) -- prefer the richer `parameters` when present.
 private _fullJsonCommandArgs(c) {
     if (c?.parameters instanceof List && !c.parameters.isEmpty()) {
-        return c.parameters.collect { p ->
-            (p instanceof Map) ? [name: (p.name ?: "arg"), type: (p.type ?: "unknown")?.toString()]
-                               : [name: p?.toString(), type: "unknown"]
-        }
+        return (c.parameters).collect((this.&_bat529Cb_15d0a4c9_228))
     }
     if (c?.arguments instanceof List && !c.arguments.isEmpty()) {
-        return c.arguments.collect { a -> [name: "arg", type: a?.toString()] }
+        return (c.arguments).collect((this.&_bat529Cb_15d0a4c9_127))
     }
     return null
 }
@@ -2033,8 +1782,8 @@ private Map _deviceDetailSourceCoverage(Map fj) {
         'icon', 'showOnHome', 'deviceTypeClassLocation', 'deviceTypePopulated', 'deviceTypeSingleThreaded',
         'deviceTypeReadableType', 'deviceTypeType', 'driverType', 'systemDeviceType', 'deviceTypeId',
         'deviceTypeName', 'deviceTypeNamespace']
-    def unknownRoot = fj?.keySet()?.findAll { !rootKeys.contains(it) }?.toList() ?: []
-    def unknownDevice = fj?.device instanceof Map ? fj.device.keySet().findAll { !deviceKeys.contains(it) }.toList() : []
+    def unknownRoot = (fj?.keySet())?.findAll(((this.&_bat529Cb_15d0a4c9_75).curry([rootKeys] as Object[])))?.toList() ?: []
+    def unknownDevice = fj?.device instanceof Map ? (fj.device.keySet()).findAll(((this.&_bat529Cb_15d0a4c9_96).curry([deviceKeys] as Object[]))).toList() : []
     return [status: fj?.device instanceof Map ? (unknownRoot || unknownDevice ? 'partial' : 'complete') : 'unavailable',
             unmappedRootFields: unknownRoot, unmappedDeviceFields: unknownDevice,
             representedSeparately: [settings: 'configuration.preferences', inputValues: 'configuration.preferences',
@@ -2062,16 +1811,7 @@ private Map _deviceDetailReadStatus(String section, Map fj, Map d, value, device
             spammyThreshold: 'scalar', defaultIcon: 'scalar', showOnHome: 'scalar']]
     ]
     def problems = []
-    contracts.get(section)?.each { scope, definitions ->
-        Map source = scope == 'device' ? d : fj
-        definitions.each { key, shape ->
-            def nativeValue = source.get(key)
-            boolean valid = nativeValue == null || (shape == 'map' ? nativeValue instanceof Map :
-                shape == 'list' ? nativeValue instanceof List : shape == 'stringOrList' ? nativeValue instanceof String || nativeValue instanceof List :
-                !(nativeValue instanceof Map || nativeValue instanceof List))
-            if (!source.containsKey(key) || !valid) problems << "${scope}.${key}".toString()
-        }
-    }
+    (contracts.get(section))?.each(((this.&_bat529Cb_15d0a4c9_258).curry([d, fj, problems] as Object[])))
     if (problems) return status + [status: 'partial', reason: 'Native section fields are missing or malformed.', incompleteFields: problems]
     return status
 }
@@ -2080,12 +1820,12 @@ private List _deviceDetailFieldNames(String section, value) {
     if (value instanceof Map) {
         def names = value.keySet().toList()
         if (section == 'attributes' && value.currentStates instanceof Map) names.addAll(value.currentStates.keySet())
-        if (section == 'attributes' && value.declaredAttributes instanceof List) names.addAll(value.declaredAttributes.collect { it.name })
-        return names.findAll { it != null }.unique()
+        if (section == 'attributes' && value.declaredAttributes instanceof List) names.addAll((value.declaredAttributes).collect((this.&_bat529Cb_15d0a4c9_60)))
+        return (names).findAll((this.&_bat529Cb_15d0a4c9_14)).unique()
     }
     if (value instanceof List) {
         def names = []
-        value.eachWithIndex { row, index -> names << index.toString() }
+        (value).eachWithIndex(((this.&_bat529Cb_15d0a4c9_128).curry([names] as Object[])))
         return names
     }
     return []
@@ -2100,7 +1840,7 @@ private _deviceDetailSelectedFields(String section, value, List fields) {
                 if (states) selected.currentStates = states
             }
             if (value.declaredAttributes instanceof List && !fields.contains('declaredAttributes')) {
-                def attributes = value.declaredAttributes.findAll { fields.contains(it.name) }
+                def attributes = (value.declaredAttributes).findAll(((this.&_bat529Cb_15d0a4c9_116).curry([fields] as Object[])))
                 if (attributes) selected.declaredAttributes = attributes
             }
         }
@@ -2108,7 +1848,7 @@ private _deviceDetailSelectedFields(String section, value, List fields) {
     }
     if (value instanceof List) {
         def selected = []
-        value.eachWithIndex { row, index -> if (fields.contains(index.toString())) selected << row }
+        (value).eachWithIndex(((this.&_bat529Cb_15d0a4c9_175).curry([fields, selected] as Object[])))
         return selected
     }
     return value
@@ -2125,76 +1865,7 @@ private Map _deviceExpandedResult(deviceId, Map identity, Map fj, String mode, s
                                        args: [deviceId: deviceId.toString(), limit: 50]],
                                dependents: [gateway: 'hub_read_apps_code', tool: 'hub_list_device_dependents',
                                             args: [deviceId: deviceId.toString()]]]]
-    selected.each { section ->
-        def value
-        def keys = []
-        switch (section) {
-            case 'configuration':
-                value = _deviceConfigurationResult(deviceId, identity, fj, fields)
-                break
-            case 'identity':
-                value = _deviceConfigurationProjection(d, ['id', 'deviceId', 'name', 'label', 'displayName',
-                    'deviceNetworkId', 'zigbeeId', 'lanId', 'endpointId', 'network', 'controllerType',
-                    'roomId', 'roomName', 'roomAssigned', 'hubId', 'hubName', 'locationId', 'locationName',
-                    'groupId', 'groupName', 'virtual', 'isComponent', 'disabled', 'status', 'orphan',
-                    'createTime', 'updateTime', 'lastActivityTime', 'version'])
-                value.driver = _deviceConfigurationInfo(fj).driver
-                break
-            case 'attributes':
-                value = _deviceConfigurationProjection(d, ['capabilities', 'currentStates', 'displayAttributes', 'defaultCurrentState'])
-                // Keep the historical key while identifying its native, reported-state coverage.
-                value.attributeCoverage = [source: 'device.currentStates', declarationsComplete: false,
-                    note: 'Unset or cleared attributes can be absent; absence does not establish an unsupported attribute.']
-                if (d.currentStates instanceof Map) value.declaredAttributes = _nativeReportedDeviceAttributes(d).collect { row ->
-                    def attribute = _deviceConfigurationPublicValue(row)
-                    if (row instanceof Map && _deviceConfigurationSecretKey(row.name)) {
-                        attribute.value = '***redacted (password)***'
-                    }
-                    attribute
-                }
-                break
-            case 'commands':
-                value = _deviceConfigurationPublicValue(fj?.commands)
-                break
-            case 'data':
-                value = _withResolvedManufacturer(_deviceConfigurationPublicValue(d.get('data')))
-                break
-            case 'state':
-                value = _deviceConfigurationPublicValue(fj?.deviceState)
-                break
-            case 'relationships':
-                keys = ['parentApp', 'childDevices', 'hasChildren', 'appsUsing', 'appsUsingCount', 'appsUsingForDialog', 'appsUsingForDialogMore']
-                value = _deviceConfigurationProjection(fj, keys)
-                value.device = _deviceConfigurationProjection(d, ['parentDeviceId', 'parentAppId', 'displayAsChild', 'compatibleDeviceId', 'linkedDevice', 'linkedAndDisabled'])
-                break
-            case 'jobs':
-                value = _deviceConfigurationPublicValue(fj?.scheduledJobs)
-                break
-            case 'integrations':
-                keys = ['amazonAlexaEnabled', 'amazonAlexaInstalled', 'amazonAlexaSupported', 'googleHomeEnabled',
-                    'googleHomeInstalled', 'googleHomeSupported', 'homeKitEnabled', 'homeKitSelectionEnabled',
-                    'dashboards', 'hasDashboards', 'dashboardTypes', 'commandRetrySelectionEnabled', 'hubMeshRefreshEnabled']
-                value = _deviceConfigurationProjection(fj, keys)
-                value.device = _deviceConfigurationProjection(d, ['meshEnabled', 'meshFullSync', 'meshSelectionEnabled',
-                    'retryEnabled', 'retryAvailable', 'homeKitCompatible', 'remoteDeviceUrl', 'linkedDevice',
-                    'linkedAndDisabled', 'linkedLocally', 'ZWave', 'zigbee', 'matter', 'bluetooth'])
-                break
-            case 'metadata':
-                value = _deviceConfigurationProjection(d, ['notes', 'tags', 'maxEvents', 'maxStates', 'spammyThreshold',
-                    'defaultIcon', 'icon', 'showOnHome', 'deviceTypeClassLocation', 'deviceTypePopulated',
-                    'deviceTypeSingleThreaded', 'deviceTypeReadableType', 'deviceTypeType', 'driverType',
-                    'systemDeviceType', 'deviceTypeId', 'deviceTypeName', 'deviceTypeNamespace'])
-                value.ui = _deviceConfigurationProjection(fj, ['showInstructionSearchLink', 'extraBreadcrumb', 'virtualFirst', 'tags'])
-                break
-        }
-        result.sectionRead.put(section, _deviceDetailReadStatus(section, fj, d, value, deviceId))
-        if (fields != null && section != 'configuration') {
-            if (!result.containsKey('availableFields')) result.availableFields = [:]
-            result.availableFields.put(section, _deviceDetailFieldNames(section, value))
-            value = _deviceDetailSelectedFields(section, value, fields)
-        }
-        result.sections.put(section, value)
-    }
+    (selected).each(((this.&_bat529Cb_15d0a4c9_271).curry([d, deviceId, fields, fj, identity, result] as Object[])))
     return result
 }
 
@@ -2266,9 +1937,8 @@ private Map _deviceReadPage(Map result, String selection) {
     String token = java.util.UUID.randomUUID().toString()
     Map snapshot = [id: result.id, mode: result.mode, content: serialized, selection: selection, at: now()]
     synchronized (DEVICE_READ_SNAPSHOTS) {
-        DEVICE_READ_SNAPSHOTS.entrySet().findAll { now() - (it.value.at as Long) >= 300000L }
-            .collect { it.key }.each { DEVICE_READ_SNAPSHOTS.remove(it) }
-        int retained = DEVICE_READ_SNAPSHOTS.values().sum { it.content.length() } ?: 0
+        (((DEVICE_READ_SNAPSHOTS.entrySet()).findAll((this.&_bat529Cb_15d0a4c9_164))).collect((this.&_bat529Cb_15d0a4c9_193))).each((this.&_bat529Cb_15d0a4c9_216))
+        int retained = (DEVICE_READ_SNAPSHOTS.values()).sum((this.&_bat529Cb_15d0a4c9_108))?: 0
         while (DEVICE_READ_SNAPSHOTS.size() >= 8 || retained + serialized.length() > 2097152) {
             def oldest = DEVICE_READ_SNAPSHOTS.keySet().iterator().next()
             retained -= DEVICE_READ_SNAPSHOTS.remove(oldest).content.length()
@@ -2284,10 +1954,10 @@ def toolGetDevice(deviceId, mode = 'summary', sections = null, fields = null, cu
         throw new IllegalArgumentException("mode must be summary, configuration, or details.")
     }
     if (sections != null && (selectedMode != 'details' || !(sections instanceof List) || sections.isEmpty() ||
-        sections.any { !(it instanceof String) || !_deviceDetailSections().contains(it) })) {
+        (sections).any((this.&_bat529Cb_15d0a4c9_159)))) {
         throw new IllegalArgumentException("sections is a non-empty array for mode=details; use ${_deviceDetailSections().join(', ')}.")
     }
-    if (fields != null && (selectedMode == 'summary' || !(fields instanceof List) || fields.any { !(it instanceof String) })) {
+    if (fields != null && (selectedMode == 'summary' || !(fields instanceof List) || (fields).any((this.&_bat529Cb_15d0a4c9_41)))) {
         throw new IllegalArgumentException('fields is an array of field names for configuration/details; use [] to discover names.')
     }
     if (cursor != null && (selectedMode == 'summary' || !(cursor instanceof String))) {
@@ -2369,7 +2039,7 @@ def toolSendCommand(deviceId, command, parameters, waitFor = null, commands = nu
     if (stableRefusal) throw new IllegalArgumentException("waitFor.${stableRefusal}")
     if (parameters instanceof String && !parameters.trim()) parameters = null
     if (parameters && parameters.size() > 0) {
-        def declaration = fullJson.commands?.find { it?.name == command }
+        def declaration = (fullJson.commands)?.find(((this.&_bat529Cb_15d0a4c9_72).curry([command] as Object[])))
         parameters = normalizeCommandParams(parameters, _commandParamTypes(declaration))
     }
     def fireErr = _fireBypassCommand(deviceId, command, (parameters && parameters.size() > 0) ? parameters : [], fullJson)
@@ -2494,30 +2164,7 @@ private _sendCommandBatch(commands, reqT0 = null) {
     // gives on the single-device path.
     def validEntryKeys = ["deviceId", "command", "parameters"] as Set
     def entryDeviceIds = []
-    commands.eachWithIndex { entry, i ->
-        if (!(entry instanceof Map)) {
-            throw new IllegalArgumentException("commands[${i}] must be an object with deviceId and command")
-        }
-        // A hub device id is numeric, so a caller that sends it as a JSON number is not wrong --
-        // coerce to the string form every downstream comparison uses instead of rejecting it.
-        def id = _canonicalDeviceIdArg(entry.deviceId)
-        if (!(id instanceof String) || !id.trim()) {
-            throw new IllegalArgumentException("commands[${i}].deviceId is required and must be a non-empty string or integral number (got: ${_describeValueForError(entry.deviceId)})")
-        }
-        if (!(entry.command instanceof String) || !entry.command.trim()) {
-            throw new IllegalArgumentException("commands[${i}].command is required and must be a non-empty string (got: ${_describeValueForError(entry.command)})")
-        }
-        // A String parameters value is passed straight through: normalizeCommandParams repairs the
-        // shape the hub's JSON parser produces when a nested object defeats it.
-        if (entry.parameters != null && !(entry.parameters instanceof List) && !(entry.parameters instanceof String)) {
-            throw new IllegalArgumentException("commands[${i}].parameters must be an array when present (got: ${_describeValueForError(entry.parameters)})")
-        }
-        def unknown = (entry.keySet() - validEntryKeys).sort()
-        if (unknown) {
-            throw new IllegalArgumentException("commands[${i}] has unknown keys: ${unknown.join(', ')}. Valid keys: ${validEntryKeys.sort().join(', ')}")
-        }
-        entryDeviceIds << id
-    }
+    (commands).eachWithIndex(((this.&_bat529Cb_15d0a4c9_265).curry([entryDeviceIds, validEntryKeys] as Object[])))
 
     // One entry failing must not abandon the rest. A batch is a list of independent intents, and
     // a caller turning off six lights would rather five went off with one reported failure than
@@ -2533,7 +2180,7 @@ private _sendCommandBatch(commands, reqT0 = null) {
         // past the relay's response window, where a dropped response leaves the caller unable to
         // tell what actuated. Never on the first entry: a batch always attempts at least one.
         if (i > 0 && _timeBudgetExceeded(t0)) {
-            remaining = commands.subList(i, commands.size()).collect { it }
+            remaining = (commands.subList(i, commands.size())).collect((this.&_bat529Cb_15d0a4c9_81))
             break
         }
         def e = commands[i]
@@ -2570,7 +2217,7 @@ private _sendCommandBatch(commands, reqT0 = null) {
         }
     }
 
-    def failed = results.count { it.success == false }
+    def failed = (results).count((this.&_bat529Cb_15d0a4c9_38))
     def sent = results.size() - failed
     def result = [
         success    : failed == 0,
@@ -2580,7 +2227,7 @@ private _sendCommandBatch(commands, reqT0 = null) {
         results    : results
     ]
     if (failed > 0) {
-        result.failedDeviceIds = results.findAll { it.success == false }.collect { it.deviceId }
+        result.failedDeviceIds = ((results).findAll((this.&_bat529Cb_15d0a4c9_45))).collect((this.&_bat529Cb_15d0a4c9_125))
         if (failed < results.size()) result.partial = true
         result.error = "${failed} of ${results.size()} device command(s) failed; ${sent} were sent. See results[] for the per-device cause.".toString()
         result.note = "The entries that succeeded ALREADY actuated -- do NOT re-send the whole batch. Before re-sending a failed entry, read its error/note: an outcome the hub did not CONFIRM may still have actuated, so verify with hub_get_device_attribute first. See hub_get_tool_guide(section='device_authorization') for what makes an entry fail."
@@ -2639,11 +2286,7 @@ private Map _buildWaitForPollArgs(deviceId, deviceLabel, waitFor) {
         if (!(waitFor.expectedValues instanceof List) || waitFor.expectedValues.isEmpty()) {
             throw new IllegalArgumentException("waitFor.expectedValues must be a non-empty list of strings")
         }
-        waitFor.expectedValues.eachWithIndex { v, i ->
-            if (!(v instanceof String)) {
-                throw new IllegalArgumentException("waitFor.expectedValues[${i}] must be a string, got: ${_describeValueForError(v)}")
-            }
-        }
+        (waitFor.expectedValues).eachWithIndex((this.&_bat529Cb_15d0a4c9_235))
     }
     // Accept any Number (not just Integer) so a Long/BigDecimal that the engine would
     // accept is not wrongly rejected pre-fire -- toolPollUntilAttribute validates these
@@ -2796,13 +2439,10 @@ private _runMethodDeviceId(deviceId) {
 // typing each positionally from the command's declared parameters in fullJson, else inferring.
 private List _buildRunMethodArgs(command, List params, Map fullJson) {
     if (!params) return []
-    def cmdDef = (fullJson?.commands instanceof List) ? fullJson.commands.find { it?.name == command } : null
+    def cmdDef = (fullJson?.commands instanceof List) ? (fullJson.commands).find(((this.&_bat529Cb_15d0a4c9_71).curry([command] as Object[]))): null
     def declaredTypes = _commandParamTypes(cmdDef)
     def out = []
-    params.eachWithIndex { v, i ->
-        def t = (i < declaredTypes.size() && declaredTypes[i]) ? declaredTypes[i] : _inferRunMethodArgType(v)
-        out << [type: t, value: v]
-    }
+    (params).eachWithIndex(((this.&_bat529Cb_15d0a4c9_225).curry([declaredTypes, out] as Object[])))
     return out
 }
 
@@ -2810,10 +2450,10 @@ private List _buildRunMethodArgs(command, List params, Map fullJson) {
 // `arguments` (type tokens). Empty when the command declares no typed parameters.
 private List _commandParamTypes(cmdDef) {
     if (cmdDef?.parameters instanceof List && !cmdDef.parameters.isEmpty()) {
-        return cmdDef.parameters.collect { p -> (p instanceof Map) ? p.type?.toString() : p?.toString() }
+        return (cmdDef.parameters).collect((this.&_bat529Cb_15d0a4c9_171))
     }
     if (cmdDef?.arguments instanceof List && !cmdDef.arguments.isEmpty()) {
-        return cmdDef.arguments.collect { a -> (a instanceof Map) ? a.type?.toString() : a?.toString() }
+        return (cmdDef.arguments).collect((this.&_bat529Cb_15d0a4c9_169))
     }
     return []
 }
@@ -2839,13 +2479,7 @@ private Map _snapshotBypassDeviceState(deviceId, deviceLabel, errOut = null) {
             return null
         }
         def snapshot = [:]
-        cs.each { name, st ->
-            if (name != null) {
-                def val = _nativeDeviceStateValue(st)
-                def rawDate = (st instanceof Map) ? st.date : null
-                snapshot.put(name, [value: val, timestamp: _formatBypassStateDate(rawDate)])
-            }
-        }
+        (cs).each(((this.&_bat529Cb_15d0a4c9_238).curry([snapshot] as Object[])))
         return snapshot
     } catch (Throwable t) {
         def detail = "${t.class.simpleName}: ${t.message ?: '(no message)'}".toString()
@@ -2918,26 +2552,7 @@ def normalizeCommandParams(params, List declaredTypes = []) {
 }
 
 def convertParamElements(List params, List declaredTypes = []) {
-    return params.withIndex().collect { param, index ->
-        if (param == null) return param
-        def declaredType = index < declaredTypes.size() ? declaredTypes[index]?.toString()?.toUpperCase() : null
-        if (declaredType in ['STRING', 'ENUM'] && param instanceof CharSequence) return param.toString()
-        if (param instanceof Map || param instanceof List) return param
-        def s = param.toString()
-        // Numeric conversion
-        try {
-            if (s.isNumber()) {
-                return s.contains(".") ? s.toDouble() : s.toInteger()
-            }
-        } catch (Exception e) {}
-        // JSON object/array string → parse to Map/List
-        if ((s.startsWith("{") || s.startsWith("[")) && s.length() > 1) {
-            try {
-                return new groovy.json.JsonSlurper().parseText(s)
-            } catch (Exception e) {}
-        }
-        return param
-    }
+    return (params.withIndex()).collect(((this.&_bat529Cb_15d0a4c9_260).curry([declaredTypes] as Object[])))
 }
 
 def toolGetDeviceEvents(deviceId, limit) {
@@ -2948,7 +2563,7 @@ def toolGetDeviceEvents(deviceId, limit) {
     def label = _bypassDeviceLabel(full, deviceId)
     def rows = _fetchBypassDeviceEvents(deviceId)
     if (rows == null) return [success: false, isError: true, error: "Device event history fetch failed (/device/eventsJson/${deviceId})", device: label, note: 'Check the native device Events page and retry.']
-    def events = rows.take(limit as Integer).collect { _mapBypassEventRow(it) }
+    def events = (rows.take(limit as Integer)).collect((this.&_bat529Cb_15d0a4c9_121))
     return [device: label, events: events, count: events.size()]
 }
 
@@ -2982,8 +2597,8 @@ def toolGetAttribute(deviceId, attribute) {
 def _evalAttrCondition(value, comparator, matchSet, numericThreshold, betweenLow, betweenHigh) {
     if (comparator == "eq" || comparator == "ne") {
         def inSet = matchSet.contains(value?.toString()) ||
-            (value instanceof Number && matchSet.any { it instanceof String && it.isNumber() && (it as BigDecimal) == (value as BigDecimal) }) ||
-            (value instanceof String && value.isNumber() && matchSet.any { it instanceof String && it.isNumber() && (it as BigDecimal) == (value as BigDecimal) })
+            (value instanceof Number && (matchSet).any(((this.&_bat529Cb_15d0a4c9_182).curry([value] as Object[])))) ||
+            (value instanceof String && value.isNumber() && (matchSet).any(((this.&_bat529Cb_15d0a4c9_181).curry([value] as Object[]))))
         def matched = (comparator == "eq") ? inSet : (value != null && !inSet)
         return [matched, false]
     }
@@ -3089,19 +2704,13 @@ def _pollUntilAttributeCore(args, Long deadlineMs = null) {
         // coerce to the string form the rest of the engine compares on. Coercing here also makes
         // the duplicate check see 5 and "5" as the same device.
         def coercedIds = []
-        args.deviceIds.eachWithIndex { v, i ->
-            def id = _canonicalDeviceIdArg(v)
-            if (!(id instanceof String) || !id) {
-                throw new IllegalArgumentException("deviceIds[${i}] must be a non-empty string or integral number, got: ${_describeValueForError(v)}")
-            }
-            coercedIds << id
-        }
+        (args.deviceIds).eachWithIndex(((this.&_bat529Cb_15d0a4c9_245).curry([coercedIds] as Object[])))
         if (coercedIds.size() > MAX_POLL_DEVICES) {
             throw new IllegalArgumentException("deviceIds has ${coercedIds.size()} device IDs -- the cap is ${MAX_POLL_DEVICES} per poll")
         }
         // Reject duplicates: a repeated id would double-count convergedCount and emit duplicate
         // devices[] rows. Each device may appear at most once.
-        def dupes = coercedIds.countBy { it }.findAll { k, c -> c > 1 }.keySet().sort()
+        def dupes = ((coercedIds).countBy((this.&_bat529Cb_15d0a4c9_10))).findAll((this.&_bat529Cb_15d0a4c9_83)).keySet().sort()
         if (dupes) {
             throw new IllegalArgumentException("deviceIds contains duplicate entries: ${dupes} -- each device may appear once")
         }
@@ -3123,7 +2732,9 @@ def _pollUntilAttributeCore(args, Long deadlineMs = null) {
         throw new IllegalArgumentException("attribute is required and must be a non-empty string")
     }
 
-    deviceIdList.each { did -> _requireDeviceToolAccess(did) }
+    for (def did : deviceIdList) {
+        _requireDeviceToolAccess(did)
+    }
 
     // 2b. Validate mode (any/all over deviceIds). Only meaningful with deviceIds; default "all"
     //     (converge when EVERY device matches). "any" converges on the first device to match.
@@ -3176,11 +2787,7 @@ def _pollUntilAttributeCore(args, Long deadlineMs = null) {
         if (args.expectedValues.isEmpty()) {
             throw new IllegalArgumentException("expectedValues must not be empty (omit the arg or pass at least one value)")
         }
-        args.expectedValues.eachWithIndex { v, i ->
-            if (!(v instanceof String)) {
-                throw new IllegalArgumentException("expectedValues[${i}] must be a string, got: ${_describeValueForError(v)}")
-            }
-        }
+        (args.expectedValues).eachWithIndex((this.&_bat529Cb_15d0a4c9_233))
     }
 
     // 4. Validate timeoutMs.
@@ -3524,16 +3131,16 @@ def _pollMultiDevice(args, devices, deviceLabels, deviceIdList, mode, comparator
     def startMs     = now()
     def polledCount = 0
     // Per-device honesty tracking, index-aligned with devices/deviceIdList/deviceLabels.
-    def everNonNull = (0..<n).collect { false }
-    def sawNumeric  = (0..<n).collect { false }
-    def sawChange   = (0..<n).collect { false }
-    def lastNonNull = (0..<n).collect { null }
-    def finalValue  = (0..<n).collect { null }
-    def matched     = (0..<n).collect { false }
+    def everNonNull = ((0..<n)).collect((this.&_bat529Cb_15d0a4c9_6))
+    def sawNumeric  = ((0..<n)).collect((this.&_bat529Cb_15d0a4c9_9))
+    def sawChange   = ((0..<n)).collect((this.&_bat529Cb_15d0a4c9_11))
+    def lastNonNull = ((0..<n)).collect((this.&_bat529Cb_15d0a4c9_3))
+    def finalValue  = ((0..<n)).collect((this.&_bat529Cb_15d0a4c9_4))
+    def matched     = ((0..<n)).collect((this.&_bat529Cb_15d0a4c9_7))
     // Latches per device if its read threw on any poll (e.g. removed mid-poll). A read fault on
     // one device degrades only THAT device's tick to an unread value -- the poll continues and
     // every other device's converged/honest state is still returned, never discarded by a throw.
-    def sawReadError = (0..<n).collect { false }
+    def sawReadError = ((0..<n)).collect((this.&_bat529Cb_15d0a4c9_5))
     // Aggregate-debounce anchor: the whole any/all predicate must hold continuously for stableForMs.
     def conditionTrueSince = null
 
@@ -3567,7 +3174,7 @@ def _pollMultiDevice(args, devices, deviceLabels, deviceIdList, mode, comparator
         def elapsedMs = (now() - startMs) as Integer
 
         // mode predicate: any = at least one device matched; all = every device matched.
-        def convergedCount = matched.count { it }
+        def convergedCount = (matched).count((this.&_bat529Cb_15d0a4c9_2))
         def aggregate = (mode == "any") ? (convergedCount > 0) : (convergedCount == n)
 
         // Debounce the AGGREGATE predicate: the whole any/all condition must hold continuously
@@ -3579,18 +3186,7 @@ def _pollMultiDevice(args, devices, deviceLabels, deviceIdList, mode, comparator
                 return [
                     success        : true,
                     mode           : mode,
-                    devices        : (0..<n).collect { i ->
-                        def entry = [
-                            deviceId  : deviceIdList[i],
-                            device    : deviceLabels[i],
-                            finalValue: finalValue[i],
-                            matched   : matched[i]
-                        ]
-                        // A read fault on this device did not block aggregate convergence, but
-                        // its value was unreliable at least once -- surface it.
-                        if (sawReadError[i]) entry.readError = true
-                        entry
-                    },
+                    devices        : ((0..<n)).collect(((this.&_bat529Cb_15d0a4c9_257).curry([deviceIdList, deviceLabels, finalValue, matched, sawReadError] as Object[]))),
                     convergedCount : convergedCount,
                     elapsedMs      : elapsedMs,
                     polledCount    : polledCount,
@@ -3661,17 +3257,8 @@ def _pollMultiDevice(args, devices, deviceLabels, deviceIdList, mode, comparator
                 success        : false,
                 interrupted    : true,
                 mode           : mode,
-                devices        : (0..<n).collect { i ->
-                    def entry = [
-                        deviceId  : deviceIdList[i],
-                        device    : deviceLabels[i],
-                        finalValue: finalValue[i],
-                        matched   : matched[i]
-                    ]
-                    if (sawReadError[i]) entry.readError = true
-                    entry
-                },
-                convergedCount : matched.count { it },
+                devices        : ((0..<n)).collect(((this.&_bat529Cb_15d0a4c9_248).curry([deviceIdList, deviceLabels, finalValue, matched, sawReadError] as Object[]))),
+                convergedCount : (matched).count((this.&_bat529Cb_15d0a4c9_1)),
                 elapsedMs      : elapsedMs,
                 polledCount    : polledCount
             ]
@@ -3876,8 +3463,8 @@ def toolGetDeviceHistory(args) {
         int hubCount = locResults.size()
         addRows(hubRows, "hub")
         hubCount = locResults.size() - hubCount
-        if (hubCount > 0) locResults = locResults.sort { a, b -> (b._at ?: 0L) <=> (a._at ?: 0L) }
-        locResults.each { it.remove("_at") }
+        if (hubCount > 0) locResults = (locResults).sort((this.&_bat529Cb_15d0a4c9_109))
+        (locResults).each((this.&_bat529Cb_15d0a4c9_31))
         int matchedCount = locResults.size()
         if (matchedCount > limit) locResults = locResults.take(limit)
 
@@ -3978,7 +3565,7 @@ private Map _devicePreferencePanePayload(deviceId, Map overrides = [:], List pre
         defaultCurrentState: d.get("defaultCurrentState") == null ? "" : d.get("defaultCurrentState").toString(),
         commandRetry: retryEnabled.value, showOnHome: showOnHome.value,
         preferences: preferenceRows]
-    overrides.each { key, value -> payload.put(key, value) }
+    (overrides).each(((this.&_bat529Cb_15d0a4c9_101).curry([payload] as Object[])))
     return payload
 }
 
@@ -4014,14 +3601,7 @@ private _normalizedDevicePreferenceValue(Map entry, value) {
             def bounds = range.split("\\.\\.", -1)
             if (bounds.size() != 2) throw new IllegalArgumentException("Preference '${entry.name}' has an unsupported numeric range; inspect its configuration")
             def limits = []
-            bounds.each { bound ->
-                def token = bound.trim()
-                if (!token || token == '*') limits << null
-                else {
-                    try { limits << new BigDecimal(token) }
-                    catch (Exception ignored) { throw new IllegalArgumentException("Preference '${entry.name}' has an unsupported numeric range; inspect its configuration") }
-                }
-            }
+            (bounds).each(((this.&_bat529Cb_15d0a4c9_249).curry([entry, limits] as Object[])))
             if (limits[0] != null && number < limits[0]) throw new IllegalArgumentException("Preference '${entry.name}' is below its declared range ${range}")
             if (limits[1] != null && number > limits[1]) throw new IllegalArgumentException("Preference '${entry.name}' is above its declared range ${range}")
         }
@@ -4033,14 +3613,14 @@ private _normalizedDevicePreferenceValue(Map entry, value) {
         def values = multiple ? (value instanceof List ? value : value.toString().split(",").toList()) : [value]
         def options = entry.options
         def allowed = []
-        if (options instanceof Map) allowed = options.keySet().collect { it.toString() }
+        if (options instanceof Map) allowed = (options.keySet()).collect((this.&_bat529Cb_15d0a4c9_58))
         else if (options instanceof List) {
             options.each { option ->
-                if (option instanceof Map) allowed.addAll(option.keySet().collect { it.toString() })
+                if (option instanceof Map) allowed.addAll((option.keySet()).collect((this.&_bat529Cb_15d0a4c9_50)))
                 else if (option != null) allowed << option.toString()
             }
         }
-        def normalized = values.collect { it?.toString() }
+        def normalized = (values).collect((this.&_bat529Cb_15d0a4c9_21))
         if (allowed && normalized.any { !allowed.contains(it) }) throw new IllegalArgumentException("Preference '${entry.name}' contains an unknown option; read its configuration options first")
         return multiple ? normalized : normalized[0]
     }
@@ -4054,30 +3634,19 @@ private _normalizedDevicePreferenceValue(Map entry, value) {
 private Map _prepareDeviceUpdatePatch(Map original, deviceId, Map suppliedFull = null) {
     def args = new LinkedHashMap(original)
     def allowed = ["deviceId", "bestPracticeKey", "label", "name", "deviceNetworkId", "room", "enabled", "dataValues", "preferences", "showOnHome", "defaultCurrentState", "tags", "confirm"] + _deviceExtendedFormProperties() + _deviceAssistantProperties().keySet().toList()
-    if (args.keySet().any { !allowed.contains(it.toString()) }) throw new IllegalArgumentException("Unknown device update property; read hub_get_device(mode='configuration') for supported fields")
+    if ((args.keySet()).any(((this.&_bat529Cb_15d0a4c9_94).curry([allowed] as Object[])))) throw new IllegalArgumentException("Unknown device update property; read hub_get_device(mode='configuration') for supported fields")
     def stringFields = ["label", "name", "deviceNetworkId", "room", "defaultCurrentState", "zigbeeId", "notes", "defaultIcon"]
-    stringFields.each { field ->
-        if (args.containsKey(field) && !(args.get(field) instanceof String)) throw new IllegalArgumentException("${field} must be a string")
-    }
+    (stringFields).each(((this.&_bat529Cb_15d0a4c9_221).curry([args] as Object[])))
     def booleanFields = ["enabled", "showOnHome", "meshEnabled", "retryEnabled", "meshFullSync", "confirm"] + _deviceAssistantProperties().keySet().toList()
-    booleanFields.each { field ->
-        if (args.containsKey(field) && !(args.get(field) instanceof Boolean)) throw new IllegalArgumentException("${field} must be a boolean")
-    }
-    [maxEvents: [1, 2000], maxStates: [1, 2000], spammyThreshold: [100, 2000], deviceTypeId: [1, 2147483647]].each { field, bounds ->
-        if (args.containsKey(field)) {
-            def value = args.get(field)
-            if (!(value instanceof Number) || value < bounds[0] || value > bounds[1] || new BigDecimal(value.toString()).stripTrailingZeros().scale() > 0) {
-                throw new IllegalArgumentException("${field} must be an integer from ${bounds[0]} to ${bounds[1]}")
-            }
-        }
-    }
-    if (args.containsKey("tags") && (!(args.tags instanceof List) || args.tags.any { !(it instanceof String) || it.contains(",") })) {
+    (booleanFields).each(((this.&_bat529Cb_15d0a4c9_223).curry([args] as Object[])))
+    ([maxEvents: [1, 2000], maxStates: [1, 2000], spammyThreshold: [100, 2000], deviceTypeId: [1, 2147483647]]).each(((this.&_bat529Cb_15d0a4c9_255).curry([args] as Object[])))
+    if (args.containsKey("tags") && (!(args.tags instanceof List) || (args.tags).any((this.&_bat529Cb_15d0a4c9_117)))) {
         throw new IllegalArgumentException("tags must be an array of strings without commas")
     }
-    if (args.containsKey("dashboardIds") && (!(args.dashboardIds instanceof List) || args.dashboardIds.any { !(it instanceof Number) || it < 1 || new BigDecimal(it.toString()).stripTrailingZeros().scale() > 0 })) {
+    if (args.containsKey("dashboardIds") && (!(args.dashboardIds instanceof List) || (args.dashboardIds).any((this.&_bat529Cb_15d0a4c9_196)))) {
         throw new IllegalArgumentException("dashboardIds must be an array of positive integer IDs")
     }
-    if (args.containsKey("dataValues") && (!(args.dataValues instanceof Map) || args.dataValues.any { k, v -> !(k instanceof String) || !(v instanceof String) })) {
+    if (args.containsKey("dataValues") && (!(args.dataValues instanceof Map) || (args.dataValues).any((this.&_bat529Cb_15d0a4c9_158)))) {
         throw new IllegalArgumentException("dataValues must be an object containing string values")
     }
     if (args.containsKey("preferences") && !(args.preferences instanceof Map)) throw new IllegalArgumentException("preferences must be an object keyed by declared preference name")
@@ -4085,14 +3654,14 @@ private Map _prepareDeviceUpdatePatch(Map original, deviceId, Map suppliedFull =
     if (args.deviceNetworkId != null && !args.deviceNetworkId.trim()) throw new IllegalArgumentException("deviceNetworkId cannot be empty")
 
     def sensitive = ["deviceTypeId", "deviceNetworkId", "zigbeeId", "meshEnabled", "meshFullSync", "dashboardIds"] + _deviceAssistantProperties().keySet().toList()
-    if (sensitive.any { args.containsKey(it) }) requireDestructiveConfirm(args.confirm)
+    if ((sensitive).any(((this.&_bat529Cb_15d0a4c9_43).curry([args] as Object[])))) requireDestructiveConfirm(args.confirm)
     def nativeFields = _deviceExtendedFormProperties() + _deviceAssistantProperties().keySet().toList() + ["deviceNetworkId"]
-    def needModel = args.preferences || nativeFields.any { args.containsKey(it) }
-    if (settings.enableWrite == false && (_deviceExtendedFormProperties() + _deviceAssistantProperties().keySet().toList()).any { args.containsKey(it) }) {
+    def needModel = args.preferences || (nativeFields).any(((this.&_bat529Cb_15d0a4c9_55).curry([args] as Object[])))
+    if (settings.enableWrite == false && ((_deviceExtendedFormProperties() + _deviceAssistantProperties().keySet().toList())).any(((this.&_bat529Cb_15d0a4c9_191).curry([args] as Object[])))) {
         throw new IllegalArgumentException("Requires 'Enable Write Tools' to be turned on in MCP Rule Server app settings")
     }
     def full = suppliedFull
-    def inspectModel = needModel || ['name', 'label', 'defaultCurrentState', 'showOnHome', 'tags', 'dataValues'].any { args.containsKey(it) }
+    def inspectModel = needModel || (['name', 'label', 'defaultCurrentState', 'showOnHome', 'tags', 'dataValues']).any(((this.&_bat529Cb_15d0a4c9_188).curry([args] as Object[])))
     if (full == null && inspectModel && settings.enableWrite != false) full = _fetchDeviceFullJson(deviceId)
     if (needModel && !(full?.device instanceof Map)) throw new IllegalArgumentException("Unable to read device configuration before updating; use hub_get_device(mode='configuration') and retry")
     def d = full?.device
@@ -4104,31 +3673,29 @@ private Map _prepareDeviceUpdatePatch(Map original, deviceId, Map suppliedFull =
         if (_deviceFlag(d.linkedAndDisabled) && args.containsKey("label")) throw new IllegalArgumentException("label cannot be edited on a disabled linked device")
         def componentIdentityFields = ["name", "deviceTypeId", "zigbeeId"]
         if (!_deviceFlag(d.linkedDevice)) componentIdentityFields << "deviceNetworkId"
-        if (_deviceFlag(d.isComponent) && componentIdentityFields.any { args.containsKey(it) }) throw new IllegalArgumentException("This component device cannot have its identity or driver edited independently from its parent")
-        if (_deviceFlag(d.linkedDevice) && ["name", "deviceTypeId", "zigbeeId"].any { args.containsKey(it) }) throw new IllegalArgumentException("A linked device cannot have its source name, Zigbee ID or driver edited locally")
+        if (_deviceFlag(d.isComponent) && (componentIdentityFields).any(((this.&_bat529Cb_15d0a4c9_86).curry([args] as Object[])))) throw new IllegalArgumentException("This component device cannot have its identity or driver edited independently from its parent")
+        if (_deviceFlag(d.linkedDevice) && (["name", "deviceTypeId", "zigbeeId"]).any(((this.&_bat529Cb_15d0a4c9_132).curry([args] as Object[])))) throw new IllegalArgumentException("A linked device cannot have its source name, Zigbee ID or driver edited locally")
         if (args.containsKey("zigbeeId") && !d.zigbeeId) throw new IllegalArgumentException("zigbeeId is not editable on a device without a Zigbee ID")
         if (args.containsKey("meshEnabled") && !_deviceFlag(d.meshSelectionEnabled)) throw new IllegalArgumentException("meshEnabled is unavailable: Hub Mesh selection is disabled for this device")
         if (args.containsKey("meshFullSync") && !(_deviceFlag(d.linkedDevice) && _deviceFlag(full.hubMeshRefreshEnabled))) throw new IllegalArgumentException("meshFullSync requires a linked device and Hub Mesh refresh enabled")
         if (args.containsKey("retryEnabled") && !(_deviceFlag(full.commandRetrySelectionEnabled) || _deviceFlag(d.retryAvailable))) throw new IllegalArgumentException("retryEnabled is unavailable for this device; enable native command retry support first")
         if (args.containsKey("dashboardIds")) {
             if (!_deviceFlag(full.hasDashboards) || !(full.dashboards instanceof List)) throw new IllegalArgumentException("dashboardIds is unavailable: no native dashboard assignments are exposed")
-            def known = full.dashboards.collect { it.id?.toString() }
-            if (args.dashboardIds.any { !known.contains(it.toString()) }) throw new IllegalArgumentException("dashboardIds contains an unknown dashboard ID; read configuration options first")
+            def known = (full.dashboards).collect((this.&_bat529Cb_15d0a4c9_64))
+            if ((args.dashboardIds).any(((this.&_bat529Cb_15d0a4c9_102).curry([known] as Object[])))) throw new IllegalArgumentException("dashboardIds contains an unknown dashboard ID; read configuration options first")
         }
         def assistantAvailable = [homeKitEnabled: _deviceFlag(full.homeKitSelectionEnabled),
             amazonAlexaEnabled: _deviceFlag(full.amazonAlexaInstalled) && _deviceFlag(full.amazonAlexaSupported),
             googleHomeEnabled: _deviceFlag(full.googleHomeInstalled) && _deviceFlag(full.googleHomeSupported)]
-        _deviceAssistantProperties().each { property, integration ->
-            if (args.containsKey(property) && !assistantAvailable.get(property)) throw new IllegalArgumentException("${property} is unavailable: install/enable the native ${integration} integration and verify this device is supported")
-        }
-        if (_deviceAssistantProperties().keySet().any { args.containsKey(it) } && !_deviceAssistantProperties().keySet().every { full.containsKey(it) && full.get(it) instanceof Boolean }) {
+        (_deviceAssistantProperties()).each(((this.&_bat529Cb_15d0a4c9_241).curry([args, assistantAvailable] as Object[])))
+        if ((_deviceAssistantProperties().keySet()).any(((this.&_bat529Cb_15d0a4c9_137).curry([args] as Object[])))&& !_deviceAssistantProperties().keySet().every { full.containsKey(it) && full.get(it) instanceof Boolean }) {
             throw new IllegalArgumentException("Unable to read all current assistant assignments before updating; refresh device configuration first")
         }
         if (args.containsKey("deviceTypeId")) {
             def driversText = hubInternalGet("/device/drivers")
             def drivers = driversText ? new groovy.json.JsonSlurper().parseText(driversText)?.drivers : null
             if (!(drivers instanceof List)) throw new IllegalArgumentException("Unable to discover driver IDs from /device/drivers")
-            def driver = drivers.find { it.id?.toString() == args.deviceTypeId.toString() && ((it.type != "dep" && it.category != "Hidden") || it.id?.toString() == d.deviceTypeId?.toString()) }
+            def driver = (drivers).find(((this.&_bat529Cb_15d0a4c9_218).curry([args, d] as Object[])))
             if (!driver) throw new IllegalArgumentException("deviceTypeId is not an available driver ID; read configuration driver options first")
         }
         if (args.containsKey("deviceNetworkId") && _deviceFlag(d.linkedDevice)) {
@@ -4136,7 +3703,7 @@ private Map _prepareDeviceUpdatePatch(Map original, deviceId, Map suppliedFull =
             else {
                 def targetsText = hubInternalGet("/device/accessibleLinkedDevices")
                 def targets = targetsText ? new groovy.json.JsonSlurper().parseText(targetsText)?.devices : null
-                if (!(targets instanceof List) || !targets.any { !_deviceFlag(it.linkedLocally) && "${it.hubId}-${it.deviceId}" == args.deviceNetworkId }) {
+                if (!(targets instanceof List) || !(targets).any(((this.&_bat529Cb_15d0a4c9_185).curry([args] as Object[])))) {
                     throw new IllegalArgumentException("deviceNetworkId is not an available linked-device target; read /device/accessibleLinkedDevices options first")
                 }
             }
@@ -4148,39 +3715,7 @@ private Map _prepareDeviceUpdatePatch(Map original, deviceId, Map suppliedFull =
         def model = _readDevicePreferenceModel(full)
         if (model.writeSafe != true) throw new IllegalArgumentException("Unable to read complete preference definitions/storage before updating; inspect hub_get_device(mode='configuration')")
         def normalized = [:]
-        args.preferences.each { key, setting ->
-            def name = key.toString()
-            def entry = _lookupDevicePreference(model, name)
-            if (!entry) throw new IllegalArgumentException("Unknown preference '${name}'; read hub_get_device(mode='configuration') for declared names")
-            if (entry.type in ["hidden", "paragraph"]) throw new IllegalArgumentException("Preference '${name}' is not an editable input")
-            def type = entry.type in ['bool', 'boolean'] ? 'bool' : entry.type
-            boolean clear = setting instanceof Map && setting.get('clear') == true
-            if (setting instanceof Map) {
-                def suppliedType = setting.type in ['bool', 'boolean'] ? 'bool' : setting.type
-                if ((setting.containsKey('clear') && (!clear || setting.containsKey('value'))) ||
-                    (!clear && !setting.containsKey('value')) ||
-                    (suppliedType != null && suppliedType.toString() != type) ||
-                    setting.keySet().any { !(it in ['type', 'value', 'clear', 'multiple']) }) {
-                    throw new IllegalArgumentException("Preference '${name}' requires its declared type and either a nonblank value or {clear:true}; clear and value cannot be combined")
-                }
-            }
-            if (setting instanceof Map && setting.containsKey('multiple')) {
-                if (clear || type != 'enum' || !(setting.multiple instanceof Boolean)) {
-                    throw new IllegalArgumentException("Preference '${name}' accepts a multiple boolean only with an enum value")
-                }
-                if (entry.multiple != null && setting.multiple != entry.multiple) {
-                    throw new IllegalArgumentException("Preference '${name}' multiple conflicts with its current native metadata")
-                }
-                entry = entry + [multiple: setting.multiple]
-            }
-            if (!clear && type == 'enum' && entry.multiple == null) {
-                throw new IllegalArgumentException("Preference '${name}' has unavailable selection cardinality; check driverSource or previously read metadata and supply multiple:true or multiple:false with the value")
-            }
-            if (clear && _deviceFlag(entry.required)) throw new IllegalArgumentException("Required preference '${name}' cannot be cleared")
-            def raw = setting instanceof Map ? setting.value : setting
-            def value = clear ? null : _normalizedDevicePreferenceValue(entry, raw)
-            normalized.put(name, clear ? [type: type, clear: true, value: null] : [type: type, value: value])
-        }
+        (args.preferences).each(((this.&_bat529Cb_15d0a4c9_267).curry([model, normalized] as Object[])))
         args.preferences = normalized
     }
     if (args.room != null && !(args.room in ["", "none", "null"])) _assertRoomExistsForBypass(args.room)
@@ -4190,15 +3725,11 @@ private Map _prepareDeviceUpdatePatch(Map original, deviceId, Map suppliedFull =
 private void _verifyDevicePreferenceWrites(deviceId, Map preferences, List changes, List errors) {
     def full = _fetchDeviceFullJson(deviceId)
     if (!(full?.device instanceof Map)) {
-        preferences.each { name, setting ->
-            errors << [property: "preference.${name}", stage: "verify", status: "unavailable", error: "Update accepted but could not confirm the preference -- the read-back fetch failed."]
-        }
+        (preferences).each(((this.&_bat529Cb_15d0a4c9_232).curry([errors] as Object[])))
         return
     }
     def model = _readDevicePreferenceModel(full)
-    preferences.each { name, setting ->
-        _verifyDevicePreferenceWrite(deviceId, name.toString(), setting, changes, errors, model)
-    }
+    (preferences).each(((this.&_bat529Cb_15d0a4c9_204).curry([changes, deviceId, errors, model] as Object[])))
 }
 
 private void _verifyDevicePreferenceWrite(deviceId, String name, Map setting, List changes, List errors, Map model = null) {
@@ -4223,28 +3754,7 @@ private void _verifyDevicePreferenceWrite(deviceId, String name, Map setting, Li
 }
 
 private void _applyNativeDeviceDataValues(deviceId, Map values, List changes, List errors) {
-    values.each { key, value ->
-        String stage = 'write'
-        try {
-            def payload = [id: _prefSaveDeviceId(deviceId), method: 'updateDataValue',
-                           args: [[type: 'STRING', value: key], [type: 'STRING', value: value]]]
-            def result = hubInternalPostJson('/device/runmethod', groovy.json.JsonOutput.toJson(payload))
-            if (!(result instanceof Map) || result.success != true) {
-                errors << [property: "dataValue.${key}", stage: stage, error: 'Native data-value update was not accepted; inspect device data before retrying.']
-                return
-            }
-            stage = 'verify'
-            def readback = _fetchDeviceFullJson(deviceId)
-            def data = readback?.device?.data
-            if (data instanceof Map && data.containsKey(key) && data.get(key)?.toString() == value) {
-                changes << [property: "dataValue.${key}", newValue: value]
-            } else {
-                errors << [property: "dataValue.${key}", stage: stage, error: 'Native update accepted but the data value could not be confirmed; inspect device data before retrying.']
-            }
-        } catch (Exception ignored) {
-            errors << [property: "dataValue.${key}", stage: stage, error: 'Native data-value update or verification failed; inspect device data before retrying.']
-        }
-    }
+    (values).each(((this.&_bat529Cb_15d0a4c9_262).curry([changes, deviceId, errors] as Object[])))
 }
 
 private void _applyDevicePreferencePatch(deviceId, Map preferences, List changes, List errors) {
@@ -4255,22 +3765,12 @@ private void _applyDevicePreferencePatch(deviceId, Map preferences, List changes
         try {
             // Validation already limits enum Lists to multiple selections. Their native wire
             // representation is a JSON string; a raw array can collapse to scalar storage.
-            def rows = nativeSettings.collect { name, setting ->
-                def value = setting.clear == true ? '' :
-                    (setting.type == 'enum' && setting.value instanceof List ? groovy.json.JsonOutput.toJson(setting.value) : setting.value)
-                [name: name.toString(), type: setting.type, value: value]
-            }
+            def rows = (nativeSettings).collect((this.&_bat529Cb_15d0a4c9_244))
             def payload = _devicePreferencePanePayload(deviceId, [:], rows)
             stage = 'write'
             def response = hubInternalPostJson('/device/preference/save', groovy.json.JsonOutput.toJson(payload))
             if (response instanceof Map && (response.success == false || response._unparseable == true)) {
-                nativeSettings.each { name, setting ->
-                    errors << [property: "preference.${name}", stage: 'write',
-                        status: response._unparseable == true ? 'unavailable' : 'failed',
-                        error: response._unparseable == true ?
-                            'Preference save returned an unreadable response; inspect the device configuration before retrying.' :
-                            'Native preference save was rejected; inspect the device configuration before retrying.']
-                }
+                (nativeSettings).each(((this.&_bat529Cb_15d0a4c9_256).curry([errors, response] as Object[])))
             } else {
                 saveAccepted = true
             }
@@ -4285,10 +3785,7 @@ private void _applyDevicePreferencePatch(deviceId, Map preferences, List changes
         try {
             _verifyDevicePreferenceWrites(deviceId, nativeSettings, changes, errors)
         } catch (Exception ignored) {
-            nativeSettings.each { name, setting ->
-                errors << [property: "preference.${name}", stage: 'verify', status: 'unavailable',
-                    error: 'Preference update or verification failed; inspect the device configuration before retrying.']
-            }
+            (nativeSettings).each(((this.&_bat529Cb_15d0a4c9_237).curry([errors] as Object[])))
         }
     }
 }
@@ -4315,95 +3812,39 @@ private void _applyExtendedDeviceUpdate(Map args, deviceId, Map full, List chang
             else errors << [property: "retryEnabled", error: "POST accepted but could not confirm retryEnabled; native read-back did not match."]
         } catch (Exception e) { errors << [property: "retryEnabled", error: e.message ?: e.toString()] }
     }
-    def formProperties = _deviceExtendedFormProperties().findAll { args.containsKey(it) }
+    def formProperties = (_deviceExtendedFormProperties()).findAll(((this.&_bat529Cb_15d0a4c9_130).curry([args] as Object[])))
     def linkedIdentity = args.containsKey("deviceNetworkId") && _deviceFlag(full?.device?.linkedDevice)
     if (formProperties || args.containsKey("tags") || linkedIdentity) {
         def overrides = [:]
-        (formProperties + ["label", "name", "deviceNetworkId", "tags"]).unique().each { property ->
-            if (args.containsKey(property)) overrides.put(property, property == "tags" ? args.tags.collect { it.trim() }.findAll { it }.join(",") : args.get(property))
-        }
+        ((formProperties + ["label", "name", "deviceNetworkId", "tags"]).unique()).each(((this.&_bat529Cb_15d0a4c9_236).curry([args, overrides] as Object[])))
         def targets = new LinkedHashMap(overrides)
-        overrides.keySet().each { args.remove(it) }
+        (overrides.keySet()).each(((this.&_bat529Cb_15d0a4c9_59).curry([args] as Object[])))
         try {
             def updated = _postDeviceConfigurationForm(deviceId, overrides, errors)
-            targets.each { property, wanted ->
-                def present = updated?.device instanceof Map && updated.device.containsKey(property)
-                def actual = present ? updated.device.get(property) : null
-                if (property == "dashboardIds") {
-                    present = updated?.dashboards instanceof List
-                    actual = present ? updated.dashboards.findAll { _deviceFlag(it.selected) }.collect { it.id?.toString() }.sort() : null
-                }
-                def expected = property == "dashboardIds" ? wanted.collect { it.toString() }.sort() : wanted
-                def equal = present && (expected instanceof Boolean ? (actual instanceof Boolean || actual?.toString() in ["true", "false"]) && _deviceFlag(actual) == expected : expected instanceof List ? actual == expected : actual?.toString() == expected?.toString())
-                if (property == "tags") equal = present && _normalizedDeviceTags(actual) == _normalizedDeviceTags(wanted)
-                if (present && property in ["label", "notes", "defaultIcon", "tags"] && wanted == "" && actual == null) equal = true
-                if (equal) changes << [property: property, oldValue: full?.device?.get(property), newValue: wanted]
-                else errors << [property: property, error: present ? "POST accepted but ${property} read back as a different value; inspect configuration before retrying." : "POST accepted but could not confirm ${property}; native read-back is unavailable."]
-            }
+            (targets).each(((this.&_bat529Cb_15d0a4c9_263).curry([changes, errors, full, updated] as Object[])))
         } catch (Exception e) {
-            targets.each { property, wanted -> errors << [property: property, error: e.message ?: e.toString()] }
+            (targets).each(((this.&_bat529Cb_15d0a4c9_184).curry([e, errors] as Object[])))
         }
     }
     def assistants = _deviceAssistantProperties()
-    def assistantRequests = assistants.keySet().findAll { args.containsKey(it) }
+    def assistantRequests = (assistants.keySet()).findAll(((this.&_bat529Cb_15d0a4c9_84).curry([args] as Object[])))
     if (assistantRequests) {
         def targets = [:]
-        assistantRequests.each { targets.put(it, args.remove(it)) }
+        (assistantRequests).each(((this.&_bat529Cb_15d0a4c9_112).curry([args, targets] as Object[])))
         try {
             def fresh = _fetchDeviceFullJson(deviceId)
-            if (!(fresh?.device instanceof Map) || !assistants.keySet().every { fresh.containsKey(it) && fresh.get(it) instanceof Boolean }) throw new RuntimeException("Unable to read all current assistant assignments before saving; no assistant update sent")
+            if (!(fresh?.device instanceof Map) || !(assistants.keySet()).every(((this.&_bat529Cb_15d0a4c9_167).curry([fresh] as Object[])))) throw new RuntimeException("Unable to read all current assistant assignments before saving; no assistant update sent")
             def payload = [deviceId: _prefSaveDeviceId(deviceId)]
-            assistants.each { property, integration -> payload.put(property, fresh.get(property)) }
+            (assistants).each(((this.&_bat529Cb_15d0a4c9_168).curry([fresh, payload] as Object[])))
             payload.putAll(targets)
             def response = hubInternalPostJson("/device/updateAssistants", groovy.json.JsonOutput.toJson(payload))
             def readback = _fetchDeviceFullJson(deviceId)
-            targets.each { property, wanted ->
-                def nativeResult = response?.assistants?.get(assistants.get(property))
-                if (nativeResult?.success == false) errors << [property: property, error: "Native assistant update failed: ${nativeResult.reason ?: 'unspecified integration error'}"]
-                else if (response?.success == false && nativeResult?.success != true) errors << [property: property, error: "Native assistant update was rejected without a per-integration success result; inspect the native integration settings."]
-                else if (readback?.containsKey(property) && readback.get(property) instanceof Boolean && readback.get(property) == wanted) changes << [property: property, newValue: wanted]
-                else errors << [property: property, error: "POST accepted but could not confirm ${property}; inspect the native integration settings."]
-            }
+            (targets).each(((this.&_bat529Cb_15d0a4c9_261).curry([assistants, changes, errors, readback, response] as Object[])))
         } catch (Exception e) {
-            targets.each { property, wanted -> errors << [property: property, error: e.message ?: e.toString()] }
+            (targets).each(((this.&_bat529Cb_15d0a4c9_183).curry([e, errors] as Object[])))
         }
     }
-    ["showOnHome", "defaultCurrentState"].each { property ->
-        if (args.containsKey(property)) {
-            def wanted = args.remove(property)
-            try {
-                boolean accepted = true
-                try {
-                    if (property == "showOnHome") {
-                        hubInternalGet("/device/setShowOnHome", [deviceId: deviceId, show: wanted ? "true" : "false"])
-                    } else {
-                        def result = hubInternalGet("/device/setDefaultCurrentState", [id: deviceId, currentState: wanted])
-                        accepted = result?.toString()?.trim()?.toLowerCase() == "true"
-                    }
-                } catch (IllegalStateException guardError) {
-                    throw guardError
-                } catch (Exception unavailable) {
-                    mcpLog("warn", "device", "Native ${property} setter unavailable for device ${deviceId}: ${unavailable.message}; trying preference controls.")
-                    _saveDevicePreferencePaneControls(deviceId, [(property): wanted])
-                }
-                if (!accepted) {
-                    errors << [property: property, error: "Hub did not accept defaultCurrentState; use an attribute name from the device's current states."]
-                    return
-                }
-                def readback = _fetchDeviceFullJson(deviceId)?.device
-                def actual = readback?.get(property)
-                def equal = readback?.containsKey(property) && (wanted instanceof Boolean ?
-                    (actual instanceof Boolean || actual?.toString() in ["true", "false"]) && _deviceFlag(actual) == wanted :
-                    (actual == null ? "" : actual.toString()) == wanted)
-                if (equal) changes << [property: property, newValue: wanted]
-                else if (!(readback instanceof Map) || !readback.containsKey(property)) {
-                    errors << [property: property, error: "POST accepted but could not confirm the change; native read-back is unavailable for ${property}."]
-                } else {
-                    errors << [property: property, error: "POST accepted but ${property} read back as '${actual}' (expected '${wanted}')."]
-                }
-            } catch (Exception e) { errors << [property: property, error: e.message ?: e.toString()] }
-        }
-    }
+    (["showOnHome", "defaultCurrentState"]).each(((this.&_bat529Cb_15d0a4c9_266).curry([args, changes, deviceId, errors] as Object[])))
 }
 
 def toolUpdateDevice(args) {
@@ -4433,10 +3874,7 @@ private Map _toolUpdateDeviceNative(args, deviceId, Map fj) {
 
     // Captured BEFORE the extended-property leg removes its keys from args, so the audit line
     // names every requested property (showOnHome/defaultCurrentState/tags included).
-    def requestedProps = args.keySet().findAll { !(it in ['deviceId', 'bestPracticeKey', 'confirm']) }.collect { key ->
-        def v = args[key]
-        (v instanceof Map || v instanceof List) ? "${key}(${v.size()})".toString() : key.toString()
-    }
+    def requestedProps = ((args.keySet()).findAll((this.&_bat529Cb_15d0a4c9_150))).collect(((this.&_bat529Cb_15d0a4c9_229).curry([args] as Object[])))
     mcpLog("warn", "device", "hub_update_device (native) for '${deviceLabel}' (ID: ${deviceId}), properties: ${requestedProps.join(', ')}")
 
     _applyExtendedDeviceUpdate(args, deviceId, fj, changes, errors)
@@ -4617,9 +4055,9 @@ private Map _assertRoomExistsForBypass(room) {
     } catch (Exception e) {
         throw new IllegalArgumentException("Unable to list rooms to resolve '${room}': ${e.message ?: e.toString()}")
     }
-    def match = rooms?.find { it.name?.toString()?.toLowerCase() == room?.toString()?.toLowerCase() }
+    def match = (rooms)?.find(((this.&_bat529Cb_15d0a4c9_165).curry([room] as Object[])))
     if (match == null) {
-        def names = rooms ? rooms.collect { it.name } : []
+        def names = rooms ? (rooms).collect((this.&_bat529Cb_15d0a4c9_12)): []
         throw new IllegalArgumentException("Room '${room}' not found.${names ? ' Available rooms: ' + names.join(', ') : ''}")
     }
     return match
@@ -4638,17 +4076,13 @@ private void _requireCompleteDeviceFormSource(Map full, deviceId) {
     def required = ["id", "version", "controllerType", "name", "label", "zigbeeId", "maxEvents", "maxStates",
         "spammyThreshold", "deviceNetworkId", "deviceTypeId", "deviceTypeReadableType", "roomId",
         "meshEnabled", "retryEnabled", "meshFullSync", "locationId", "hubId", "groupId", "tags", "defaultIcon", "notes"]
-    def missing = required.findAll { !d.containsKey(it) }
+    def missing = (required).findAll(((this.&_bat529Cb_15d0a4c9_46).curry([d] as Object[])))
     if (missing) throw new RuntimeException("Incomplete /device/fullJson preservation source: missing device fields ${missing.join(', ')}; no form update sent")
     if (d.id == null || d.id.toString() != deviceId.toString()) throw new RuntimeException("Invalid /device/fullJson preservation source: device id does not match; no form update sent")
     if (d.version == null) throw new RuntimeException("Incomplete /device/fullJson preservation source: version is unavailable; no form update sent")
     if (!(full.get("homeKitEnabled") instanceof Boolean)) throw new RuntimeException("Incomplete /device/fullJson preservation source: homeKitEnabled is unavailable or invalid; no form update sent")
     def dashboards = full.get("dashboards")
-    if (!(dashboards instanceof List) || dashboards.any { row ->
-        if (!(row instanceof Map) || !(row.get("selected") instanceof Boolean)) return true
-        def dashboardId = row.get("id")
-        return !(dashboardId instanceof Number) || dashboardId <= 0 || new BigDecimal(dashboardId.toString()).stripTrailingZeros().scale() > 0
-    }) {
+    if (!(dashboards instanceof List) || (dashboards).any((this.&_bat529Cb_15d0a4c9_240))) {
         throw new RuntimeException("Incomplete /device/fullJson preservation source: dashboards assignments are unavailable or invalid; no form update sent")
     }
 }
@@ -4656,14 +4090,14 @@ private void _requireCompleteDeviceFormSource(Map full, deviceId) {
 private List _normalizedDeviceTags(value) {
     if (value == null) return []
     def tags = value instanceof String ? value.split(',').toList() : value
-    if (!(tags instanceof List) || tags.any { !(it instanceof String) }) return null
-    return tags.collect { it.trim() }.findAll { it }
+    if (!(tags instanceof List) || (tags).any((this.&_bat529Cb_15d0a4c9_30))) return null
+    return ((tags).collect((this.&_bat529Cb_15d0a4c9_13))).findAll((this.&_bat529Cb_15d0a4c9_53))
 }
 
 private String _deviceConfigurationFormBody(deviceId, Map fj, Map fieldOverrides) {
     _requireCompleteDeviceFormSource(fj, deviceId)
     def d = fj.device
-    def dashIds = (fj.dashboards ?: []).findAll { it?.selected }.collect { it?.id }
+    def dashIds = (((fj.dashboards ?: [])).findAll((this.&_bat529Cb_15d0a4c9_67))).collect((this.&_bat529Cb_15d0a4c9_136))
     def model = [
         name: d.name, label: d.label, zigbeeId: d.zigbeeId,
         maxEvents: d.maxEvents, maxStates: d.maxStates, spammyThreshold: d.spammyThreshold,
@@ -4678,16 +4112,14 @@ private String _deviceConfigurationFormBody(deviceId, Map fj, Map fieldOverrides
     if (fieldOverrides) model.putAll(fieldOverrides)
     // Native readback verifies omission preserves null for these fields; blanks change stored values.
     // Apply overrides first so explicit empty-string clears and roomId=0 remain in the form.
-    ["groupId", "controllerType", "roomId", "notes", "tags", "zigbeeId", "defaultIcon"].each { key ->
-        if (model.get(key) == null) model.remove(key)
-    }
+    (["groupId", "controllerType", "roomId", "notes", "tags", "zigbeeId", "defaultIcon"]).each(((this.&_bat529Cb_15d0a4c9_214).curry([model] as Object[])))
     def enc = { v ->
         if (v == true) return "on"
         if (v == null) return ""
-        if (v instanceof List) return v.collect { it?.toString() }.join(",")
+        if (v instanceof List) return (v).collect((this.&_bat529Cb_15d0a4c9_15)).join(",")
         return v.toString()
     }
-    return model.collect { k, v -> "${java.net.URLEncoder.encode(k.toString(), 'UTF-8')}=${java.net.URLEncoder.encode(enc(v), 'UTF-8')}" }.join("&")
+    return (model).collect(((this.&_bat529Cb_15d0a4c9_199).curry([enc] as Object[]))).join("&")
 }
 
 private Map _postDeviceConfigurationForm(deviceId, Map fieldOverrides, List errors = null) {
@@ -4720,14 +4152,9 @@ private Map _postDeviceConfigurationForm(deviceId, Map fieldOverrides, List erro
         }
         def recovered = _fetchDeviceFullJson(deviceId)
         if (recovered?.device instanceof Map) updated = recovered
-        restore.each { property, original ->
-            if (!(recovered?.device instanceof Map) || recovered.device.get(property)?.toString() != original.toString()) {
-                recoveryErrors << [property: property, stage: 'restore',
-                    error: "Device-edit form blanked ${property}; native restoration could not be confirmed. Verify and re-set ${property} before retrying."]
-            }
-        }
+        (restore).each(((this.&_bat529Cb_15d0a4c9_250).curry([recovered, recoveryErrors] as Object[])))
     }
-    if (errors == null && recoveryErrors) throw new RuntimeException(recoveryErrors.collect { it.error }.join(' '))
+    if (errors == null && recoveryErrors) throw new RuntimeException((recoveryErrors).collect((this.&_bat529Cb_15d0a4c9_23)).join(' '))
     return updated
 }
 
@@ -4864,7 +4291,7 @@ def toolCreateDevice(args) {
             try {
                 def recoveryErrors = []
                 def vd = _postBypassDeviceModel(newId, [label: wantLabel], recoveryErrors)
-                warnings.addAll(recoveryErrors.collect { it.error })
+                warnings.addAll((recoveryErrors).collect((this.&_bat529Cb_15d0a4c9_27)))
                 if (vd?.label?.toString() == wantLabel) {
                     appliedLabel = wantLabel
                 } else {
@@ -4906,7 +4333,7 @@ def toolCreateDevice(args) {
 // A device this app creates joins its device selection, so the device tools reach it at once.
 private String _selectCreatedDevice(String deviceId) {
     try {
-        def ids = (settings.selectedDevices ?: []).collect { it.id.toString() }
+        def ids = ((settings.selectedDevices ?: [])).collect((this.&_bat529Cb_15d0a4c9_119))
         if (!ids.contains(deviceId)) app.updateSetting("selectedDevices", [type: "capability.*", value: ids + [deviceId]])
         return null
     } catch (Exception e) {
@@ -4925,7 +4352,7 @@ private String _selectCreatedDevice(String deviceId) {
 private Map _createLinkedMeshDevice(String meshHubId, String meshDeviceId) {
     Map beforeJson = _meshJson()
     def beforeList = (beforeJson?.localLinkedDevices instanceof List) ? beforeJson.localLinkedDevices : null
-    def before = (beforeList != null) ? (beforeList.collect { it.id?.toString() } as Set) : null
+    def before = (beforeList != null) ? ((beforeList).collect((this.&_bat529Cb_15d0a4c9_56))as Set) : null
     def availBefore = (beforeJson?.availableLinkedDevices instanceof List) ? beforeJson.availableLinkedDevices : null
 
     // Best-effort resolve of the local proxy row for this source, for DISPLAY only (the id in an
@@ -4935,16 +4362,16 @@ private Map _createLinkedMeshDevice(String meshHubId, String meshDeviceId) {
     // field exists to contradict it, else null. Never used to DECIDE already-linked (see below).
     def resolveLocal = { List rows ->
         if (!(rows instanceof List)) return null
-        def bySrc = rows.findAll { it instanceof Map && it.sourceHubId?.toString() == meshHubId }
+        def bySrc = (rows).findAll(((this.&_bat529Cb_15d0a4c9_152).curry([meshHubId] as Object[])))
         def devKeys = ['sourceDeviceId', 'sourceId', 'deviceId']
-        def byDev = bySrc.findAll { r -> devKeys.any { k -> r.containsKey(k) && r[k]?.toString() == meshDeviceId } }
+        def byDev = (bySrc).findAll(((this.&_bat529Cb_15d0a4c9_178).curry([devKeys, meshDeviceId] as Object[])))
         if (byDev.size() == 1) return byDev[0]
-        if (bySrc.size() == 1 && !devKeys.any { k -> bySrc[0].containsKey(k) }) return bySrc[0]
+        if (bySrc.size() == 1 && !(devKeys).any(((this.&_bat529Cb_15d0a4c9_61).curry([bySrc] as Object[])))) return bySrc[0]
         return null
     }
 
     def srcBefore = (availBefore != null)
-        ? availBefore.find { it.hubId?.toString() == meshHubId && it.deviceId?.toString() == meshDeviceId }
+        ? (availBefore).find(((this.&_bat529Cb_15d0a4c9_179).curry([meshDeviceId, meshHubId] as Object[])))
         : null
     // Already linked is decided ONLY by the offered row's authoritative linkedLocally flag -- NOT by a
     // local-row match: local device rows lack a source-device-id, so a same-hub proxy cannot prove that
@@ -4997,8 +4424,8 @@ private Map _createLinkedMeshDevice(String meshHubId, String meshDeviceId) {
         def after = (j?.localLinkedDevices instanceof List) ? j.localLinkedDevices : null
         def avail = (j?.availableLinkedDevices instanceof List) ? j.availableLinkedDevices : null
         if (newId == null && before != null && after != null) {
-            def added = after.findAll { !before.contains(it.id?.toString()) }
-            def fromSource = added.findAll { it.sourceHubId?.toString() == meshHubId }
+            def added = (after).findAll(((this.&_bat529Cb_15d0a4c9_90).curry([before] as Object[])))
+            def fromSource = (added).findAll(((this.&_bat529Cb_15d0a4c9_104).curry([meshHubId] as Object[])))
             def pick = (fromSource.size() == 1) ? fromSource[0] : (added.size() == 1 ? added[0] : null)
             if (pick != null) { newId = pick.id?.toString(); newName = pick.name?.toString(); newIdFromSource = fromSource.size() == 1 }
         }
@@ -5006,7 +4433,7 @@ private Map _createLinkedMeshDevice(String meshHubId, String meshDeviceId) {
             // The source's own row is authoritative: still present-and-unlinked means the link did
             // NOT take. Its ABSENCE means "took" only when the pair was offered before this call
             // (srcBefore != null) -- otherwise the absence is inconclusive (null), not a false success.
-            def srcRow = avail.find { it.hubId?.toString() == meshHubId && it.deviceId?.toString() == meshDeviceId }
+            def srcRow = (avail).find(((this.&_bat529Cb_15d0a4c9_173).curry([meshDeviceId, meshHubId] as Object[])))
             if (srcRow == null) {
                 linked = (srcBefore != null) ? true : null
             } else {
@@ -5107,17 +4534,7 @@ def toolGetCompatibleDevices(args) {
             .replace("&amp;", "&")
             .replaceAll(/\s+/, " ").trim()
     }
-    def matched = list.findAll { r ->
-        if (brandF && !((r?.brand ?: "").toString().toLowerCase().contains(brandF))) return false
-        if (protoF && !((r?.protocol ?: "").toString().toLowerCase().contains(protoF))) return false
-        if (typeF && !((r?.deviceType ?: "").toString().toLowerCase().contains(typeF))) return false
-        if (q) {
-            // ?: '' on each field so a null doesn't interpolate the literal "null" into the haystack.
-            def hay = "${r?.brand ?: ''} ${r?.name ?: ''} ${r?.productNumber ?: ''} ${r?.deviceType ?: ''} ${r?.driverName ?: ''}".toLowerCase()
-            if (!hay.contains(q)) return false
-        }
-        return true
-    }
+    def matched = (list).findAll(((this.&_bat529Cb_15d0a4c9_259).curry([brandF, protoF, q, typeF] as Object[])))
     def project = { r ->
         def m = [brand: r?.brand, name: r?.name, deviceType: r?.deviceType, productNumber: r?.productNumber,
                  protocol: r?.protocol, driverName: r?.driverName, deviceTypeId: r?.deviceTypeId, id: r?.id]
@@ -5232,7 +4649,7 @@ def toolDeleteDevice(args) {
                         def zwData = new groovy.json.JsonSlurper().parseText(zwResponse)
                         def nodes = zwData?.nodes
                         if (nodes) {
-                            def activeNode = nodes.find { it.deviceId?.toString() == deviceId }
+                            def activeNode = (nodes).find(((this.&_bat529Cb_15d0a4c9_80).curry([deviceId] as Object[])))
                             if (activeNode) {
                                 warnings << "ACTIVE ON Z-WAVE RADIO: Device is node ${activeNode.nodeId} with state '${activeNode.nodeState}'. It should be Z-Wave excluded BEFORE deletion."
                             }
@@ -5254,7 +4671,7 @@ def toolDeleteDevice(args) {
                         def zigData = new groovy.json.JsonSlurper().parseText(zigResponse)
                         def devices = zigData?.devices
                         if (devices) {
-                            def activeDevice = devices.find { it.id?.toString() == deviceId }
+                            def activeDevice = (devices).find(((this.&_bat529Cb_15d0a4c9_69).curry([deviceId] as Object[])))
                             if (activeDevice && activeDevice.active) {
                                 warnings << "ACTIVE ON ZIGBEE RADIO: Device '${activeDevice.name}' is active on the Zigbee mesh. It should be removed via Zigbee BEFORE deletion."
                             }
@@ -5278,7 +4695,7 @@ def toolDeleteDevice(args) {
             // simply did not run, so warn distinctly rather than let an unchecked delete look safe.
             Map meshJson = _meshJson()
             def meshRows = (meshJson?.localLinkedDevices instanceof List) ? meshJson.localLinkedDevices : null
-            def linkedRow = (meshRows != null) ? meshRows.find { it.id?.toString() == deviceId } : null
+            def linkedRow = (meshRows != null) ? (meshRows).find(((this.&_bat529Cb_15d0a4c9_73).curry([deviceId] as Object[]))): null
             if (meshRows == null || linkedRow == null) {
                 warnings << "COULD NOT CHECK which local apps use this linked device (mesh read ${meshRows == null ? 'failed' : 'did not list this device'}); deletion may break apps that reference it. Review hub_get_hub_mesh localLinkedDevices before proceeding."
             } else {
@@ -5316,7 +4733,7 @@ def toolDeleteDevice(args) {
             } catch (Exception e) { /* skip rule */ }
         }
         if (referencingRules) {
-            warnings << "REFERENCED BY ${referencingRules.size()} MCP RULE(S): ${referencingRules.collect { "${it.name} (ID: ${it.id})" }.join(', ')}. These rules WILL BREAK after deletion."
+            warnings << "REFERENCED BY ${referencingRules.size()} MCP RULE(S): ${(referencingRules).collect((this.&_bat529Cb_15d0a4c9_99)).join(', ')}. These rules WILL BREAK after deletion."
         }
     } catch (Exception e) {
         mcpLog("debug", "hub-admin", "Could not check MCP rules for device ${deviceId}: ${e.message}")
@@ -5408,8 +4825,7 @@ def toolCallDeviceSwap(args) {
     def fromBefore = _deviceSwapSnapshot(fromId)
     def toBefore = _deviceSwapSnapshot(toId)
     // Without both identities the outcome cannot be checked, and an unchecked swap cannot be safely retried.
-    def unread = [[fromId, fromBefore], [toId, toBefore]]
-        .findAll { it[1] == null || (it[1].dni == null && it[1].createTime == null) }.collect { it[0] }
+    def unread = (([[fromId, fromBefore], [toId, toBefore]]).findAll((this.&_bat529Cb_15d0a4c9_197))).collect((this.&_bat529Cb_15d0a4c9_208))
     if (unread) {
         return [success: false,
                 error: "Device(s) ${unread.join(', ')} could not be read before the swap, so its outcome could not be verified. Nothing was swapped.".toString(),
@@ -5432,7 +4848,7 @@ def toolCallDeviceSwap(args) {
         // child/component device (verified live on fw 2.5.0.143). Every MCP-created
         // virtual device is a child device of this app, so it never appears.
         def oldDevOptions = _deviceSwapEnumOptions(_deviceSwapFindInput(_rmFetchConfigJson(appId, "mainPage"), "oldDev"))
-        if (!oldDevOptions.any { it.id == fromId }) {
+        if (!(oldDevOptions).any(((this.&_bat529Cb_15d0a4c9_37).curry([fromId] as Object[])))) {
             mcpLog("warn", "device-swap", "from_device_id ${fromId} not among ${oldDevOptions.size()} swappable oldDev option(s) -- closing instance ${appId}")
             _deviceSwapCleanup(appId)
             return [success: false,
@@ -5444,7 +4860,7 @@ def toolCallDeviceSwap(args) {
         def applied = []
         def skipped = []
         _rmWriteSettingOnPage(appId, "mainPage", "oldDev", fromId, applied, null, skipped)
-        def oldDevSkip = skipped.find { it.key == "oldDev" }
+        def oldDevSkip = (skipped).find((this.&_bat529Cb_15d0a4c9_26))
         if (oldDevSkip) {
             _deviceSwapCleanup(appId)
             return [success: false,
@@ -5457,7 +4873,7 @@ def toolCallDeviceSwap(args) {
         // after oldDev lands — this re-fetch IS the compatibility check.
         def cfg = _rmFetchConfigJson(appId, "mainPage")
         def options = _deviceSwapEnumOptions(_deviceSwapFindInput(cfg, "newDev"))
-        if (!options.any { it.id == toId }) {
+        if (!(options).any(((this.&_bat529Cb_15d0a4c9_16).curry([toId] as Object[])))) {
             mcpLog("warn", "device-swap", "to_device_id ${toId} not among ${options.size()} compatible replacement(s) for ${fromId} -- closing instance ${appId}")
             _deviceSwapCleanup(appId)
             return [success: false,
@@ -5470,7 +4886,7 @@ def toolCallDeviceSwap(args) {
         }
 
         _rmWriteSettingOnPage(appId, "mainPage", "newDev", toId, applied, null, skipped)
-        def newDevSkip = skipped.find { it.key == "newDev" }
+        def newDevSkip = (skipped).find((this.&_bat529Cb_15d0a4c9_29))
         if (newDevSkip) {
             _deviceSwapCleanup(appId)
             return [success: false,
@@ -5597,12 +5013,12 @@ def toolCallDeviceReplace(args) {
                 return [success: false, error: "Replacement-options read returned an unexpected (non-list) response.", response: raw?.take(300),
                         note: "Verify old_device_id (from hub_list_devices) and Hub Security credentials; the hub did not return a candidate list."]
             }
-            def allowedIds = _bypassEnabled() ? null : (((selectedDevices ?: []) + (getChildDevices() ?: [])).collect { it.id?.toString() } as Set)
-            def candidates = allowedIds == null ? parsed : parsed.findAll { it instanceof Map && allowedIds.contains(it.id?.toString()) }
-            def options = candidates.collect { [id: it?.id?.toString(), name: it?.name, deviceTypes: it?.deviceTypes] }
+            def allowedIds = _bypassEnabled() ? null : ((((selectedDevices ?: []) + (getChildDevices() ?: []))).collect((this.&_bat529Cb_15d0a4c9_163))as Set)
+            def candidates = allowedIds == null ? parsed : (parsed).findAll(((this.&_bat529Cb_15d0a4c9_153).curry([allowedIds] as Object[])))
+            def options = (candidates).collect((this.&_bat529Cb_15d0a4c9_176))
             def out = [success: true, listOptions: true, oldDeviceId: oldId, options: options, optionCount: options.size(),
                     note: options ? "Pick an option's id as new_device_id, then call again with confirm=true to replace." : "No compatible replacement devices found within current MCP device access."]
-            if (newId) out.compatible = options.any { it.id == newId }
+            if (newId) out.compatible = (options).any(((this.&_bat529Cb_15d0a4c9_17).curry([newId] as Object[])))
             return out
         } catch (Exception e) {
             mcpLogError("device-replace", "getReplacementOptions for ${oldId} failed", e)
@@ -5649,7 +5065,7 @@ private Map _deviceSwapSnapshot(String deviceId) {
         // True when the only app using the device is this server, through its own device selection.
         def selfId = app?.id?.toString()
         boolean onlySelf = dependents == 1 && selfId && (parsed.appsUsing instanceof List) &&
-            (parsed.appsUsing as List).any { it instanceof Map && it.id?.toString() == selfId }
+            ((parsed.appsUsing as List)).any(((this.&_bat529Cb_15d0a4c9_162).curry([selfId] as Object[])))
         def dev = (parsed.device instanceof Map) ? parsed.device : [:]
         return [dependents: dependents, onlySelf: onlySelf, dni: dev.deviceNetworkId?.toString(),
                 createTime: dev.createTime?.toString(), label: dev.label?.toString()]
@@ -5692,11 +5108,11 @@ private List _deviceSwapEnumOptions(Map input) {
     def out = []
     def opts = input?.options
     if (opts instanceof Map) {
-        opts.each { k, v -> out << [id: k?.toString(), label: v?.toString()] }
+        (opts).each(((this.&_bat529Cb_15d0a4c9_140).curry([out] as Object[])))
     } else if (opts instanceof List) {
         for (opt in opts) {
             if (opt instanceof Map) {
-                opt.each { k, v -> out << [id: k?.toString(), label: v?.toString()] }
+                (opt).each(((this.&_bat529Cb_15d0a4c9_139).curry([out] as Object[])))
             }
         }
     }
@@ -6041,4 +5457,1651 @@ def _toolDisplayMeta_partDevices() {
         hub_get_compatible_devices: [title: "Search Compatible Devices", summary: "Search Hubitat's compatible-device catalog for models and pairing/reset instructions."],
         hub_delete_device: [title: "Delete Device", summary: "Permanently delete a device from the hub (no undo)."]
     ]
+}
+
+
+def _bat529Cb_15d0a4c9_1(def it) { it 
+}
+
+def _bat529Cb_15d0a4c9_2(def it) { it 
+}
+
+def _bat529Cb_15d0a4c9_3(def it) { null 
+}
+
+def _bat529Cb_15d0a4c9_4(def it) { null 
+}
+
+def _bat529Cb_15d0a4c9_5(def it) { false 
+}
+
+def _bat529Cb_15d0a4c9_6(def it) { false 
+}
+
+def _bat529Cb_15d0a4c9_7(def it) { false 
+}
+
+def _bat529Cb_15d0a4c9_8(def it) { it?.name 
+}
+
+def _bat529Cb_15d0a4c9_9(def it) { false 
+}
+
+def _bat529Cb_15d0a4c9_10(def it) { it 
+}
+
+def _bat529Cb_15d0a4c9_11(def it) { false 
+}
+
+def _bat529Cb_15d0a4c9_12(def it) { it.name 
+}
+
+def _bat529Cb_15d0a4c9_13(def it) { it.trim() 
+}
+
+def _bat529Cb_15d0a4c9_14(def it) { it != null 
+}
+
+def _bat529Cb_15d0a4c9_15(def it) { it?.toString() 
+}
+
+def _bat529Cb_15d0a4c9_16(def toId, def it) { it.id == toId 
+}
+
+def _bat529Cb_15d0a4c9_17(def newId, def it) { it.id == newId 
+}
+
+def _bat529Cb_15d0a4c9_18(def it) { it?.toString() 
+}
+
+def _bat529Cb_15d0a4c9_19(def it) { it.trim() 
+}
+
+def _bat529Cb_15d0a4c9_20(def it) { it.toString() 
+}
+
+def _bat529Cb_15d0a4c9_21(def it) { it?.toString() 
+}
+
+def _bat529Cb_15d0a4c9_22(def it) { !it.contains("; ") 
+}
+
+def _bat529Cb_15d0a4c9_23(def it) { it.error 
+}
+
+def _bat529Cb_15d0a4c9_24(def it) { it.name 
+}
+
+def _bat529Cb_15d0a4c9_25(def it) { it.name 
+}
+
+def _bat529Cb_15d0a4c9_26(def it) { it.key == "oldDev" 
+}
+
+def _bat529Cb_15d0a4c9_27(def it) { it.error 
+}
+
+def _bat529Cb_15d0a4c9_28(def it) { !(it instanceof Map) 
+}
+
+def _bat529Cb_15d0a4c9_29(def it) { it.key == "newDev" 
+}
+
+def _bat529Cb_15d0a4c9_30(def it) { !(it instanceof String) 
+}
+
+def _bat529Cb_15d0a4c9_31(def it) { it.remove("_at") 
+}
+
+def _bat529Cb_15d0a4c9_32(def it) { it.trim() 
+}
+
+def _bat529Cb_15d0a4c9_33(def it) { it.mcpAuthorized 
+}
+
+def _bat529Cb_15d0a4c9_34(def it) { it.id?.isInteger() 
+}
+
+def _bat529Cb_15d0a4c9_35(def it) { it?.toString() 
+}
+
+def _bat529Cb_15d0a4c9_36(def it) { it.name 
+}
+
+def _bat529Cb_15d0a4c9_37(def fromId, def it) { it.id == fromId 
+}
+
+def _bat529Cb_15d0a4c9_38(def it) { it.success == false 
+}
+
+def _bat529Cb_15d0a4c9_39(def it) { it.name 
+}
+
+def _bat529Cb_15d0a4c9_40(def it) { it.metadataUnavailable 
+}
+
+def _bat529Cb_15d0a4c9_41(def it) { !(it instanceof String) 
+}
+
+def _bat529Cb_15d0a4c9_42(def listedLabel, def it) { !listedLabel(it) 
+}
+
+def _bat529Cb_15d0a4c9_43(def args, def it) { args.containsKey(it) 
+}
+
+def _bat529Cb_15d0a4c9_44(def it) { it.id.toString() 
+}
+
+def _bat529Cb_15d0a4c9_45(def it) { it.success == false 
+}
+
+def _bat529Cb_15d0a4c9_46(def d, def it) { !d.containsKey(it) 
+}
+
+def _bat529Cb_15d0a4c9_47(def it) { it.name 
+}
+
+def _bat529Cb_15d0a4c9_48(def it) { it.name 
+}
+
+def _bat529Cb_15d0a4c9_49(def it) { it.name 
+}
+
+def _bat529Cb_15d0a4c9_50(def it) { it.toString() 
+}
+
+def _bat529Cb_15d0a4c9_51(def it) { it.name 
+}
+
+def _bat529Cb_15d0a4c9_52(def it) { it.id as Integer 
+}
+
+def _bat529Cb_15d0a4c9_53(def it) { it 
+}
+
+def _bat529Cb_15d0a4c9_54(def it) { it.toString() 
+}
+
+def _bat529Cb_15d0a4c9_55(def args, def it) { args.containsKey(it) 
+}
+
+def _bat529Cb_15d0a4c9_56(def it) { it.id?.toString() 
+}
+
+def _bat529Cb_15d0a4c9_57(def detailFields, def it) { detailFields.contains(it) 
+}
+
+def _bat529Cb_15d0a4c9_58(def it) { it.toString() 
+}
+
+def _bat529Cb_15d0a4c9_59(def args, def it) { args.remove(it) 
+}
+
+def _bat529Cb_15d0a4c9_60(def it) { it.name 
+}
+
+def _bat529Cb_15d0a4c9_61(def bySrc, def k) { bySrc[0].containsKey(k) 
+}
+
+def _bat529Cb_15d0a4c9_62(def it) { it.capabilities instanceof List 
+}
+
+def _bat529Cb_15d0a4c9_63(def it) { it.selected == true 
+}
+
+def _bat529Cb_15d0a4c9_64(def it) { it.id?.toString() 
+}
+
+def _bat529Cb_15d0a4c9_65(def it) { it 
+}
+
+def _bat529Cb_15d0a4c9_66(def it) { !(it instanceof String) 
+}
+
+def _bat529Cb_15d0a4c9_67(def it) { it?.selected 
+}
+
+def _bat529Cb_15d0a4c9_68(def it) { !(it in ["id", "mcpManaged"]) 
+}
+
+def _bat529Cb_15d0a4c9_69(def deviceId, def it) { it.id?.toString() == deviceId 
+}
+
+def _bat529Cb_15d0a4c9_70(def k, def v) { k != 'id' && k != 'label' 
+}
+
+def _bat529Cb_15d0a4c9_70(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_70(*__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_71(def command, def it) { it?.name == command 
+}
+
+def _bat529Cb_15d0a4c9_72(def command, def it) { it?.name == command 
+}
+
+def _bat529Cb_15d0a4c9_73(def deviceId, def it) { it.id?.toString() == deviceId 
+}
+
+def _bat529Cb_15d0a4c9_74(def rootKeys, def it) { !rootKeys.contains(it) 
+}
+
+def _bat529Cb_15d0a4c9_75(def rootKeys, def it) { !rootKeys.contains(it) 
+}
+
+def _bat529Cb_15d0a4c9_76(def it) { it?.name?.toString() 
+}
+
+def _bat529Cb_15d0a4c9_77(def it) { it?.name?.toString() 
+}
+
+def _bat529Cb_15d0a4c9_78(def it) { it != null 
+}
+
+def _bat529Cb_15d0a4c9_79(def it) { !(it instanceof Map) || it.id == null 
+}
+
+def _bat529Cb_15d0a4c9_80(def deviceId, def it) { it.deviceId?.toString() == deviceId 
+}
+
+def _bat529Cb_15d0a4c9_81(def it) { it 
+}
+
+def _bat529Cb_15d0a4c9_82(def names, def key) { !names.contains(key) 
+}
+
+def _bat529Cb_15d0a4c9_83(def k, def c) { c > 1 
+}
+
+def _bat529Cb_15d0a4c9_83(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_83(*__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_84(def args, def it) { args.containsKey(it) 
+}
+
+def _bat529Cb_15d0a4c9_85(def name, def it) { it.name == name?.toString() 
+}
+
+def _bat529Cb_15d0a4c9_86(def args, def it) { args.containsKey(it) 
+}
+
+def _bat529Cb_15d0a4c9_87(def it) { !it.containsKey("capabilities") 
+}
+
+def _bat529Cb_15d0a4c9_88(def spineIds, def key, def rec) { !spineIds.contains(key) 
+}
+
+def _bat529Cb_15d0a4c9_88(def spineIds, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_88(spineIds, *__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_89(def it) { _deviceConfigurationPublicValue(it) 
+}
+
+def _bat529Cb_15d0a4c9_90(def before, def it) { !before.contains(it.id?.toString()) 
+}
+
+def _bat529Cb_15d0a4c9_91(def cf, def c) { c?.toLowerCase() == cf 
+}
+
+def _bat529Cb_15d0a4c9_92(def it) { it.id?.toString() 
+}
+
+def _bat529Cb_15d0a4c9_93(def it) { it._nativeRoomUnavailable == true 
+}
+
+def _bat529Cb_15d0a4c9_94(def allowed, def it) { !allowed.contains(it.toString()) 
+}
+
+def _bat529Cb_15d0a4c9_95(def it) { it in ["id", "mcpManaged", "label"] 
+}
+
+def _bat529Cb_15d0a4c9_96(def deviceKeys, def it) { !deviceKeys.contains(it) 
+}
+
+def _bat529Cb_15d0a4c9_97(def it) { _deviceFlag(it.selected) 
+}
+
+def _bat529Cb_15d0a4c9_98(def fields, def it) { fields.contains(it.name) 
+}
+
+def _bat529Cb_15d0a4c9_99(def it) { "${it.name} (ID: ${it.id})" 
+}
+
+def _bat529Cb_15d0a4c9_100(def it) { [name: it] 
+}
+
+def _bat529Cb_15d0a4c9_101(def payload, def key, def value) { payload.put(key, value) 
+}
+
+def _bat529Cb_15d0a4c9_101(def payload, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_101(payload, *__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_102(def known, def it) { !known.contains(it.toString()) 
+}
+
+def _bat529Cb_15d0a4c9_103(def it) { [name: it] 
+}
+
+def _bat529Cb_15d0a4c9_104(def meshHubId, def it) { it.sourceHubId?.toString() == meshHubId 
+}
+
+def _bat529Cb_15d0a4c9_105(def fields, def it) { fields.contains(it.name) 
+}
+
+
+def _bat529Cb_15d0a4c9_107(def it) { it.content.length() 
+}
+
+def _bat529Cb_15d0a4c9_108(def it) { it.content.length() 
+}
+
+def _bat529Cb_15d0a4c9_109(def a, def b) { (b._at ?: 0L) <=> (a._at ?: 0L) 
+}
+
+def _bat529Cb_15d0a4c9_109(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_109(*__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_110(def cap) { cap.name?.toLowerCase() 
+}
+
+def _bat529Cb_15d0a4c9_111(def cap) { cap.name?.toLowerCase() 
+}
+
+def _bat529Cb_15d0a4c9_112(def args, def targets, def it) { targets.put(it, args.remove(it)) 
+}
+
+def _bat529Cb_15d0a4c9_113(def cf, def cap) { cap.name?.toLowerCase() == cf 
+}
+
+def _bat529Cb_15d0a4c9_114(def it) { it != null 
+}
+
+def _bat529Cb_15d0a4c9_115(def it) { it != null 
+}
+
+def _bat529Cb_15d0a4c9_116(def fields, def it) { fields.contains(it.name) 
+}
+
+def _bat529Cb_15d0a4c9_117(def it) { !(it instanceof String) || it.contains(",") 
+}
+
+def _bat529Cb_15d0a4c9_118(def unreadable, def it) { !unreadable.contains(it.id.toString()) 
+}
+
+def _bat529Cb_15d0a4c9_119(def it) { it.id.toString() 
+}
+
+def _bat529Cb_15d0a4c9_120(def it) { (it instanceof Map) ? it.name : it 
+}
+
+def _bat529Cb_15d0a4c9_121(def it) { _mapBypassEventRow(it) 
+}
+
+def _bat529Cb_15d0a4c9_122(def attrNames, def d) { _contextDeviceLine(d, attrNames) 
+}
+
+def _bat529Cb_15d0a4c9_123(def it) { it.id 
+}
+
+def _bat529Cb_15d0a4c9_124(def it) { !(it instanceof Map) || it.id == null 
+}
+
+def _bat529Cb_15d0a4c9_125(def it) { it.deviceId 
+}
+
+def _bat529Cb_15d0a4c9_126(def it) { it instanceof Map && it.key != null 
+}
+
+def _bat529Cb_15d0a4c9_127(def a) { [name: "arg", type: a?.toString()] 
+}
+
+def _bat529Cb_15d0a4c9_128(def names, def row, def index) { names << index.toString() 
+}
+
+def _bat529Cb_15d0a4c9_128(def names, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_128(names, *__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_129(def rec, def it) { rec._nativeUnavailableCollections?.contains(it) 
+}
+
+def _bat529Cb_15d0a4c9_130(def args, def it) { args.containsKey(it) 
+}
+
+def _bat529Cb_15d0a4c9_131(def rec, def it) { rec._nativeUnavailableCollections?.contains(it) 
+}
+
+def _bat529Cb_15d0a4c9_132(def args, def it) { args.containsKey(it) 
+}
+
+def _bat529Cb_15d0a4c9_133(def it) { it.id as Integer 
+}
+
+def _bat529Cb_15d0a4c9_134(def it) { it != null 
+}
+
+def _bat529Cb_15d0a4c9_135(def it) { it != null 
+}
+
+def _bat529Cb_15d0a4c9_136(def it) { it?.id 
+}
+
+def _bat529Cb_15d0a4c9_137(def args, def it) { args.containsKey(it) 
+}
+
+def _bat529Cb_15d0a4c9_138(def listedLabel, def it) { it._nativeLoaded != true && !listedLabel(it) 
+}
+
+def _bat529Cb_15d0a4c9_139(def out, def k, def v) { out << [id: k?.toString(), label: v?.toString()] 
+}
+
+def _bat529Cb_15d0a4c9_139(def out, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_139(out, *__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_140(def out, def k, def v) { out << [id: k?.toString(), label: v?.toString()] 
+}
+
+def _bat529Cb_15d0a4c9_140(def out, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_140(out, *__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_141(def it) { it instanceof String && it 
+}
+
+def _bat529Cb_15d0a4c9_142(def st) { [name: st.name, value: st.value] 
+}
+
+def _bat529Cb_15d0a4c9_143(def it) { !(it in ['type', 'value', 'clear', 'multiple']) 
+}
+
+def _bat529Cb_15d0a4c9_144(def d) { d.roomName?.toString()?.toLowerCase() 
+}
+
+def _bat529Cb_15d0a4c9_145(def copy, def k, def v) { copy.put(k, _deviceConfigurationPublicValue(v, k)) 
+}
+
+def _bat529Cb_15d0a4c9_145(def copy, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_145(copy, *__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_146(def it) { it != null 
+}
+
+def _bat529Cb_15d0a4c9_147(def it) { it != null 
+}
+
+def _bat529Cb_15d0a4c9_148(def lf, def it) { (it.label ?: "").toString().toLowerCase().contains(lf) 
+}
+
+def _bat529Cb_15d0a4c9_149(def meshDeviceId, def r, def k) { r.containsKey(k) && r[k]?.toString() == meshDeviceId 
+}
+
+def _bat529Cb_15d0a4c9_150(def it) { !(it in ['deviceId', 'bestPracticeKey', 'confirm']) 
+}
+
+def _bat529Cb_15d0a4c9_151(def it) { it != null 
+}
+
+def _bat529Cb_15d0a4c9_152(def meshHubId, def it) { it instanceof Map && it.sourceHubId?.toString() == meshHubId 
+}
+
+def _bat529Cb_15d0a4c9_153(def allowedIds, def it) { it instanceof Map && allowedIds.contains(it.id?.toString()) 
+}
+
+def _bat529Cb_15d0a4c9_154(def device, def it) { device._nativeUnavailableCollections?.contains(it) 
+}
+
+def _bat529Cb_15d0a4c9_155(def cf, def dev) { (dev.capabilities).any(((this.&_bat529Cb_15d0a4c9_91).curry([cf] as Object[])))
+}
+
+def _bat529Cb_15d0a4c9_156(def d) { if (d._nativeReadError) d._nativeRoomUnavailable = true 
+}
+
+def _bat529Cb_15d0a4c9_157(def roomFilter, def d) { d.roomName?.toString()?.equalsIgnoreCase(roomFilter) 
+}
+
+def _bat529Cb_15d0a4c9_158(def k, def v) { !(k instanceof String) || !(v instanceof String) 
+}
+
+def _bat529Cb_15d0a4c9_158(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_158(*__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_159(def it) { !(it instanceof String) || !_deviceDetailSections().contains(it) 
+}
+
+def _bat529Cb_15d0a4c9_160(def record, def it) { record._nativeUnavailableCollections.contains(it) 
+}
+
+def _bat529Cb_15d0a4c9_161(def it) { it in ['currentStates', 'capabilities'] 
+}
+
+def _bat529Cb_15d0a4c9_162(def selfId, def it) { it instanceof Map && it.id?.toString() == selfId 
+}
+
+def _bat529Cb_15d0a4c9_163(def it) { it.id?.toString() 
+}
+
+def _bat529Cb_15d0a4c9_164(def it) { now() - (it.value.at as Long) >= 300000L 
+}
+
+def _bat529Cb_15d0a4c9_165(def room, def it) { it.name?.toString()?.toLowerCase() == room?.toString()?.toLowerCase() 
+}
+
+def _bat529Cb_15d0a4c9_166(def it) { it.id?.toString() 
+}
+
+def _bat529Cb_15d0a4c9_167(def fresh, def it) { fresh.containsKey(it) && fresh.get(it) instanceof Boolean 
+}
+
+def _bat529Cb_15d0a4c9_168(def fresh, def payload, def property, def integration) { payload.put(property, fresh.get(property)) 
+}
+
+def _bat529Cb_15d0a4c9_168(def fresh, def payload, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_168(fresh, payload, *__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_169(def a) { (a instanceof Map) ? a.type?.toString() : a?.toString() 
+}
+
+def _bat529Cb_15d0a4c9_170(def authorizedIds, def d) { if (d instanceof Map && d.id != null) authorizedIds.add(d.id.toString()) 
+}
+
+def _bat529Cb_15d0a4c9_171(def p) { (p instanceof Map) ? p.type?.toString() : p?.toString() 
+}
+
+def _bat529Cb_15d0a4c9_172(def it) { it.stateUnavailable || it.capabilitiesUnavailable || it.metadataUnavailable 
+}
+
+def _bat529Cb_15d0a4c9_173(def meshDeviceId, def meshHubId, def it) { it.hubId?.toString() == meshHubId && it.deviceId?.toString() == meshDeviceId 
+}
+
+def _bat529Cb_15d0a4c9_174(def d) { _deviceStatesByName(d).get("switch")?.value?.toString() == "on" 
+}
+
+def _bat529Cb_15d0a4c9_175(def fields, def selected, def row, def index) { if (fields.contains(index.toString())) selected << row 
+}
+
+def _bat529Cb_15d0a4c9_175(def fields, def selected, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_175(fields, selected, *__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_176(def it) { [id: it?.id?.toString(), name: it?.name, deviceTypes: it?.deviceTypes] 
+}
+
+def _bat529Cb_15d0a4c9_177(def it) { it != null 
+}
+
+def _bat529Cb_15d0a4c9_178(def devKeys, def meshDeviceId, def r) { (devKeys).any(((this.&_bat529Cb_15d0a4c9_149).curry([meshDeviceId, r] as Object[])))
+}
+
+def _bat529Cb_15d0a4c9_179(def meshDeviceId, def meshHubId, def it) { it.hubId?.toString() == meshHubId && it.deviceId?.toString() == meshDeviceId 
+}
+
+def _bat529Cb_15d0a4c9_180(def byId, def r) { if (r instanceof Map && r.id != null) byId.put(r.id.toString(), r) 
+}
+
+def _bat529Cb_15d0a4c9_181(def value, def it) { it instanceof String && it.isNumber() && (it as BigDecimal) == (value as BigDecimal) 
+}
+
+def _bat529Cb_15d0a4c9_182(def value, def it) { it instanceof String && it.isNumber() && (it as BigDecimal) == (value as BigDecimal) 
+}
+
+def _bat529Cb_15d0a4c9_183(def e, def errors, def property, def wanted) { errors << [property: property, error: e.message ?: e.toString()] 
+}
+
+def _bat529Cb_15d0a4c9_183(def e, def errors, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_183(e, errors, *__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_184(def e, def errors, def property, def wanted) { errors << [property: property, error: e.message ?: e.toString()] 
+}
+
+def _bat529Cb_15d0a4c9_184(def e, def errors, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_184(e, errors, *__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_185(def args, def it) { !_deviceFlag(it.linkedLocally) && "${it.hubId}-${it.deviceId}" == args.deviceNetworkId 
+}
+
+def _bat529Cb_15d0a4c9_186(def authorizedIds, def it) { def cid = it.id?.toString(); if (cid != null) authorizedIds.add(cid) 
+}
+
+def _bat529Cb_15d0a4c9_187(def d) { (d.capabilities)?.collect((this.&_bat529Cb_15d0a4c9_111))?: [] 
+}
+
+def _bat529Cb_15d0a4c9_188(def args, def it) { args.containsKey(it) 
+}
+
+def _bat529Cb_15d0a4c9_189(def cf, def d) {
+            (d.capabilities)?.any(((this.&_bat529Cb_15d0a4c9_113).curry([cf] as Object[])))
+        
+}
+
+def _bat529Cb_15d0a4c9_190(def byId, def d) { byId.put(d.id.toString(), [id: d.id.toString(), _nativeFilterLabel: d.label]) 
+}
+
+def _bat529Cb_15d0a4c9_191(def args, def it) { args.containsKey(it) 
+}
+
+def _bat529Cb_15d0a4c9_192(def copy, def name, def k, def v) {
+        copy.put(k, v)
+        if (k == 'manufacturer') copy.put('manufacturerName', name)
+    
+}
+
+def _bat529Cb_15d0a4c9_192(def copy, def name, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_192(copy, name, *__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_193(def it) { it.key 
+}
+
+def _bat529Cb_15d0a4c9_194(def d, def row) { row instanceof Map && row.name == d.deviceTypeName && row.namespace == d.deviceTypeNamespace 
+}
+
+def _bat529Cb_15d0a4c9_195(def it) { it._nativeReadError || (it._nativeUnavailableCollections)?.any((this.&_bat529Cb_15d0a4c9_161))
+}
+
+def _bat529Cb_15d0a4c9_196(def it) { !(it instanceof Number) || it < 1 || new BigDecimal(it.toString()).stripTrailingZeros().scale() > 0 
+}
+
+def _bat529Cb_15d0a4c9_197(def it) { it[1] == null || (it[1].dni == null && it[1].createTime == null) 
+}
+
+def _bat529Cb_15d0a4c9_198(def states, def st) {
+        if (st?.name != null && st.value != null) states.put(st.name.toString(), st)
+    
+}
+
+def _bat529Cb_15d0a4c9_199(def enc, def k, def v) { "${java.net.URLEncoder.encode(k.toString(), 'UTF-8')}=${java.net.URLEncoder.encode(enc(v), 'UTF-8')}" 
+}
+
+def _bat529Cb_15d0a4c9_199(def enc, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_199(enc, *__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_200(def commands, def c) {
+            if (c?.name != null) commands << [name: c.name, arguments: _fullJsonCommandArgs(c)]
+        
+}
+
+def _bat529Cb_15d0a4c9_201(def result, def source, def key) {
+        if (source?.containsKey(key)) result.put(key, _deviceConfigurationPublicValue(source.get(key), key))
+    
+}
+
+def _bat529Cb_15d0a4c9_202(def copy, def key, def value) {
+        if (!(key in ['rawValue', 'declared'])) copy.put(key, _deviceConfigurationPublicValue(value))
+    
+}
+
+def _bat529Cb_15d0a4c9_202(def copy, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_202(copy, *__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_203(def values, def key) {
+        key == 'currentStates' ? !(values.get(key) instanceof Map) : !(values.get(key) instanceof List)
+    
+}
+
+def _bat529Cb_15d0a4c9_204(def changes, def deviceId, def errors, def model, def name, def setting) {
+        _verifyDevicePreferenceWrite(deviceId, name.toString(), setting, changes, errors, model)
+    
+}
+
+def _bat529Cb_15d0a4c9_204(def changes, def deviceId, def errors, def model, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_204(changes, deviceId, errors, model, *__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_205(def attrs, def contextAttrs, def name, def st) {
+                if (contextAttrs.contains(name)) attrs.put(name, st.value.toString())
+            
+}
+
+def _bat529Cb_15d0a4c9_205(def attrs, def contextAttrs, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_205(attrs, contextAttrs, *__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_206(def it) { it._nativeLoaded != true || it._nativeReadError == true || _deviceStatesByName(it).get("switch")?.value?.toString() == "on" 
+}
+
+def _bat529Cb_15d0a4c9_207(def fj, def values, def key) {
+        if (fj?.containsKey(key)) values.put(key, fj.get(key))
+    
+}
+
+def _bat529Cb_15d0a4c9_208(def it) { it[0] 
+}
+
+def _bat529Cb_15d0a4c9_209(def it) { [name: it.key.toString(), value: it.value, unit: null] 
+}
+
+def _bat529Cb_15d0a4c9_210(def required, def rec) {
+            rec._nativeReadError == true || (required).any(((this.&_bat529Cb_15d0a4c9_131).curry([rec] as Object[])))
+        
+}
+
+def _bat529Cb_15d0a4c9_211(def entry, def row, def key) {
+            if (row.containsKey(key)) entry.put(key, row.get(key))
+        
+}
+
+def _bat529Cb_15d0a4c9_212(def c) {
+        (c instanceof CharSequence) ? c.toString() : (c?.name?.toString() ?: c?.toString())
+    
+}
+
+def _bat529Cb_15d0a4c9_213(def st) {
+                    [name: st.name, value: st.value == null ? null : st.value.toString(), unit: null]
+                
+}
+
+def _bat529Cb_15d0a4c9_214(def model, def key) {
+        if (model.get(key) == null) model.remove(key)
+    
+}
+
+def _bat529Cb_15d0a4c9_215(def name, def ids) {
+        name == null ? [name: "Room unavailable", roomUnavailable: true, deviceIds: ids] : [name: name, deviceIds: ids]
+    
+}
+
+def _bat529Cb_15d0a4c9_215(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_215(*__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_216(def it) { DEVICE_READ_SNAPSHOTS.remove(it) 
+}
+
+def _bat529Cb_15d0a4c9_217(def deviceId, def use) {
+                    use instanceof Map && use.id != null && deviceId != null && use.id.toString() == deviceId.toString()
+                
+}
+
+def _bat529Cb_15d0a4c9_218(def args, def d, def it) { it.id?.toString() == args.deviceTypeId.toString() && ((it.type != "dep" && it.category != "Hidden") || it.id?.toString() == d.deviceTypeId?.toString()) 
+}
+
+def _bat529Cb_15d0a4c9_219(def it) { it != null 
+}
+
+def _bat529Cb_15d0a4c9_220(def lf, def d) {
+            def lbl = (d.label ?: d._nativeFilterLabel ?: d.name)?.toString()?.toLowerCase()
+            lbl != null && lbl.contains(lf)
+        
+}
+
+def _bat529Cb_15d0a4c9_221(def args, def field) {
+        if (args.containsKey(field) && !(args.get(field) instanceof String)) throw new IllegalArgumentException("${field} must be a string")
+    
+}
+
+def _bat529Cb_15d0a4c9_222(def it) { it.id.toString() 
+}
+
+def _bat529Cb_15d0a4c9_223(def args, def field) {
+        if (args.containsKey(field) && !(args.get(field) instanceof Boolean)) throw new IllegalArgumentException("${field} must be a boolean")
+    
+}
+
+def _bat529Cb_15d0a4c9_224(def byId, def d) {
+        if (d?.id != null) byId.put(d.id.toString(), [id: d.id.toString()])
+    
+}
+
+def _bat529Cb_15d0a4c9_225(def declaredTypes, def out, def v, def i) {
+        def t = (i < declaredTypes.size() && declaredTypes[i]) ? declaredTypes[i] : _inferRunMethodArgType(v)
+        out << [type: t, value: v]
+    
+}
+
+def _bat529Cb_15d0a4c9_225(def declaredTypes, def out, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_225(declaredTypes, out, *__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_226(def r, def record, def key) {
+            if (r.containsKey(key)) record.put(key == 'lastActivity' ? 'lastActivityTime' : key, r.get(key))
+        
+}
+
+def _bat529Cb_15d0a4c9_227(def states, def name, def st) {
+                states << [name: name.toString(), value: _nativeDeviceStateValue(st),
+                           unit: st instanceof Map ? st.unit : null]
+            
+}
+
+def _bat529Cb_15d0a4c9_227(def states, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_227(states, *__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_228(def p) {
+            (p instanceof Map) ? [name: (p.name ?: "arg"), type: (p.type ?: "unknown")?.toString()]
+                               : [name: p?.toString(), type: "unknown"]
+        
+}
+
+def _bat529Cb_15d0a4c9_229(def args, def key) {
+        def v = args[key]
+        (v instanceof Map || v instanceof List) ? "${key}(${v.size()})".toString() : key.toString()
+    
+}
+
+def _bat529Cb_15d0a4c9_230(def byName, def info, def attr) {
+                    def val = byName.get(attr)?.value
+                    if (val != null) info.currentStates[attr] = val
+                
+}
+
+def _bat529Cb_15d0a4c9_231(def metadataUnavailableIds, def device) {
+        if (device._nativeUnavailableCollections?.contains('currentStates') && !metadataUnavailableIds.contains(device.id.toString())) {
+            metadataUnavailableIds << device.id.toString()
+        }
+    
+}
+
+def _bat529Cb_15d0a4c9_232(def errors, def name, def setting) {
+            errors << [property: "preference.${name}", stage: "verify", status: "unavailable", error: "Update accepted but could not confirm the preference -- the read-back fetch failed."]
+        
+}
+
+def _bat529Cb_15d0a4c9_232(def errors, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_232(errors, *__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_233(def v, def i) {
+            if (!(v instanceof String)) {
+                throw new IllegalArgumentException("expectedValues[${i}] must be a string, got: ${_describeValueForError(v)}")
+            }
+        
+}
+
+def _bat529Cb_15d0a4c9_233(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_233(*__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_234(def deviceId, def row) {
+                row.usedBy instanceof List && (row.usedBy).any(((this.&_bat529Cb_15d0a4c9_217).curry([deviceId] as Object[])))
+            
+}
+
+def _bat529Cb_15d0a4c9_235(def v, def i) {
+            if (!(v instanceof String)) {
+                throw new IllegalArgumentException("waitFor.expectedValues[${i}] must be a string, got: ${_describeValueForError(v)}")
+            }
+        
+}
+
+def _bat529Cb_15d0a4c9_235(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_235(*__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_236(def args, def overrides, def property) {
+            if (args.containsKey(property)) overrides.put(property, property == "tags" ? ((args.tags).collect((this.&_bat529Cb_15d0a4c9_19))).findAll((this.&_bat529Cb_15d0a4c9_65)).join(",") : args.get(property))
+        
+}
+
+def _bat529Cb_15d0a4c9_237(def errors, def name, def setting) {
+                errors << [property: "preference.${name}", stage: 'verify', status: 'unavailable',
+                    error: 'Preference update or verification failed; inspect the device configuration before retrying.']
+            
+}
+
+def _bat529Cb_15d0a4c9_237(def errors, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_237(errors, *__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_238(def snapshot, def name, def st) {
+            if (name != null) {
+                def val = _nativeDeviceStateValue(st)
+                def rawDate = (st instanceof Map) ? st.date : null
+                snapshot.put(name, [value: val, timestamp: _formatBypassStateDate(rawDate)])
+            }
+        
+}
+
+def _bat529Cb_15d0a4c9_238(def snapshot, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_238(snapshot, *__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_239(def attributes, def name, def st) {
+            if (name != null) {
+                def dataType = (st instanceof Map) ? st.dataType?.toString() : null
+                def value = _nativeDeviceStateValue(st)
+                attributes << [name: name, dataType: dataType, value: value]
+            }
+        
+}
+
+def _bat529Cb_15d0a4c9_239(def attributes, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_239(attributes, *__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_240(def row) {
+        if (!(row instanceof Map) || !(row.get("selected") instanceof Boolean)) return true
+        def dashboardId = row.get("id")
+        return !(dashboardId instanceof Number) || dashboardId <= 0 || new BigDecimal(dashboardId.toString()).stripTrailingZeros().scale() > 0
+    
+}
+
+def _bat529Cb_15d0a4c9_241(def args, def assistantAvailable, def property, def integration) {
+            if (args.containsKey(property) && !assistantAvailable.get(property)) throw new IllegalArgumentException("${property} is unavailable: install/enable the native ${integration} integration and verify this device is supported")
+        
+}
+
+def _bat529Cb_15d0a4c9_241(def args, def assistantAvailable, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_241(args, assistantAvailable, *__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_242(def labelOnly, def required, def rec) {
+            if (rec._nativeLoaded == true) return false
+            if (labelOnly && rec._nativeFilterLabel instanceof String && rec._nativeFilterLabel) return false
+            rec._nativeSeeded != true || (required).any(((this.&_bat529Cb_15d0a4c9_129).curry([rec] as Object[])))
+        
+}
+
+def _bat529Cb_15d0a4c9_243(def roomIndex, def d) {
+        // A null key keeps unknown membership distinct even from a room named "Room unavailable".
+        def r = d._nativeRoomUnavailable ? null : (d.roomName?.toString() ?: "No room")
+        if (!roomIndex.containsKey(r)) roomIndex.put(r, [])
+        roomIndex.get(r) << d.id.toString()
+    
+}
+
+def _bat529Cb_15d0a4c9_244(def name, def setting) {
+                def value = setting.clear == true ? '' :
+                    (setting.type == 'enum' && setting.value instanceof List ? groovy.json.JsonOutput.toJson(setting.value) : setting.value)
+                [name: name.toString(), type: setting.type, value: value]
+            
+}
+
+def _bat529Cb_15d0a4c9_244(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_244(*__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_245(def coercedIds, def v, def i) {
+            def id = _canonicalDeviceIdArg(v)
+            if (!(id instanceof String) || !id) {
+                throw new IllegalArgumentException("deviceIds[${i}] must be a non-empty string or integral number, got: ${_describeValueForError(v)}")
+            }
+            coercedIds << id
+        
+}
+
+def _bat529Cb_15d0a4c9_245(def coercedIds, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_245(coercedIds, *__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_246(def row) {
+                    def attribute = _deviceConfigurationPublicValue(row)
+                    if (row instanceof Map && _deviceConfigurationSecretKey(row.name)) {
+                        attribute.value = '***redacted (password)***'
+                    }
+                    attribute
+                
+}
+
+def _bat529Cb_15d0a4c9_247(def field, def row) {
+                    if (row instanceof Map && row.hubId != null && row.deviceId != null) {
+                        field.options << [value: "${row.hubId}-${row.deviceId}".toString(),
+                            label: row.label ?: row.name ?: row.deviceId.toString(), disabled: _deviceFlag(row.linkedLocally)]
+                    }
+                
+}
+
+def _bat529Cb_15d0a4c9_248(def deviceIdList, def deviceLabels, def finalValue, def matched, def sawReadError, def i) {
+                    def entry = [
+                        deviceId  : deviceIdList[i],
+                        device    : deviceLabels[i],
+                        finalValue: finalValue[i],
+                        matched   : matched[i]
+                    ]
+                    if (sawReadError[i]) entry.readError = true
+                    entry
+                
+}
+
+def _bat529Cb_15d0a4c9_249(def entry, def limits, def bound) {
+                def token = bound.trim()
+                if (!token || token == '*') limits << null
+                else {
+                    try { limits << new BigDecimal(token) }
+                    catch (Exception ignored) { throw new IllegalArgumentException("Preference '${entry.name}' has an unsupported numeric range; inspect its configuration") }
+                }
+            
+}
+
+def _bat529Cb_15d0a4c9_250(def recovered, def recoveryErrors, def property, def original) {
+            if (!(recovered?.device instanceof Map) || recovered.device.get(property)?.toString() != original.toString()) {
+                recoveryErrors << [property: property, stage: 'restore',
+                    error: "Device-edit form blanked ${property}; native restoration could not be confirmed. Verify and re-set ${property} before retrying."]
+            }
+        
+}
+
+def _bat529Cb_15d0a4c9_250(def recovered, def recoveryErrors, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_250(recovered, recoveryErrors, *__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_251(def linkedDevice, def model, def it) {
+                def entry = _publicDevicePreference(it)
+                entry.writable = !linkedDevice && model.writeSafe == true && entry.writable
+                if (linkedDevice) {
+                    entry.applicable = false
+                    entry.reason = 'Driver preferences cannot be saved on a linked device; edit the source device.'
+                }
+                entry
+            
+}
+
+def _bat529Cb_15d0a4c9_252(def duplicates, def inputs, def model, def row) {
+            if (!(row instanceof Map) || row.name == null) {
+                model.writeSafe = false
+                model.status = 'partial'
+                model.reason = 'Native inputValues contains an unnamed or malformed value.'
+            } else {
+                String key = row.name.toString()
+                if (inputs.containsKey(key)) duplicates << key
+                inputs.put(key, row)
+            }
+        
+}
+
+def _bat529Cb_15d0a4c9_253(def authorizedIds, def capsById, def unavailableCapabilityIds, def d) {
+        def idStr = d.id?.toString()
+        def caps = (d.capabilities instanceof List) ? _capabilityNames(d.capabilities)
+                                                   : (idStr != null ? (capsById.get(idStr) ?: []) : [])
+        def record = [id: idStr, label: d.label, capabilities: caps, mcpAuthorized: idStr != null && authorizedIds.contains(idStr)]
+        if (unavailableCapabilityIds.contains(idStr)) record.capabilitiesUnavailable = true
+        record
+    
+}
+
+def _bat529Cb_15d0a4c9_254(def problems, def scope, def source, def key, def shape) {
+            def nativeValue = source.get(key)
+            boolean valid = nativeValue == null || (shape == 'map' ? nativeValue instanceof Map :
+                shape == 'list' ? nativeValue instanceof List : shape == 'stringOrList' ? nativeValue instanceof String || nativeValue instanceof List :
+                !(nativeValue instanceof Map || nativeValue instanceof List))
+            if (!source.containsKey(key) || !valid) problems << "${scope}.${key}".toString()
+        
+}
+
+def _bat529Cb_15d0a4c9_254(def problems, def scope, def source, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_254(problems, scope, source, *__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_255(def args, def field, def bounds) {
+        if (args.containsKey(field)) {
+            def value = args.get(field)
+            if (!(value instanceof Number) || value < bounds[0] || value > bounds[1] || new BigDecimal(value.toString()).stripTrailingZeros().scale() > 0) {
+                throw new IllegalArgumentException("${field} must be an integer from ${bounds[0]} to ${bounds[1]}")
+            }
+        }
+    
+}
+
+def _bat529Cb_15d0a4c9_255(def args, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_255(args, *__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_256(def errors, def response, def name, def setting) {
+                    errors << [property: "preference.${name}", stage: 'write',
+                        status: response._unparseable == true ? 'unavailable' : 'failed',
+                        error: response._unparseable == true ?
+                            'Preference save returned an unreadable response; inspect the device configuration before retrying.' :
+                            'Native preference save was rejected; inspect the device configuration before retrying.']
+                
+}
+
+def _bat529Cb_15d0a4c9_256(def errors, def response, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_256(errors, response, *__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_257(def deviceIdList, def deviceLabels, def finalValue, def matched, def sawReadError, def i) {
+                        def entry = [
+                            deviceId  : deviceIdList[i],
+                            device    : deviceLabels[i],
+                            finalValue: finalValue[i],
+                            matched   : matched[i]
+                        ]
+                        // A read fault on this device did not block aggregate convergence, but
+                        // its value was unreliable at least once -- surface it.
+                        if (sawReadError[i]) entry.readError = true
+                        entry
+                    
+}
+
+def _bat529Cb_15d0a4c9_258(def d, def fj, def problems, def scope, def definitions) {
+        Map source = scope == 'device' ? d : fj
+        (definitions).each(((this.&_bat529Cb_15d0a4c9_254).curry([problems, scope, source] as Object[])))
+    
+}
+
+def _bat529Cb_15d0a4c9_258(def d, def fj, def problems, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_258(d, fj, problems, *__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_259(def brandF, def protoF, def q, def typeF, def r) {
+        if (brandF && !((r?.brand ?: "").toString().toLowerCase().contains(brandF))) return false
+        if (protoF && !((r?.protocol ?: "").toString().toLowerCase().contains(protoF))) return false
+        if (typeF && !((r?.deviceType ?: "").toString().toLowerCase().contains(typeF))) return false
+        if (q) {
+            // ?: '' on each field so a null doesn't interpolate the literal "null" into the haystack.
+            def hay = "${r?.brand ?: ''} ${r?.name ?: ''} ${r?.productNumber ?: ''} ${r?.deviceType ?: ''} ${r?.driverName ?: ''}".toLowerCase()
+            if (!hay.contains(q)) return false
+        }
+        return true
+    
+}
+
+def _bat529Cb_15d0a4c9_260(def declaredTypes, def param, def index) {
+        if (param == null) return param
+        def declaredType = index < declaredTypes.size() ? declaredTypes[index]?.toString()?.toUpperCase() : null
+        if (declaredType in ['STRING', 'ENUM'] && param instanceof CharSequence) return param.toString()
+        if (param instanceof Map || param instanceof List) return param
+        def s = param.toString()
+        // Numeric conversion
+        try {
+            if (s.isNumber()) {
+                return s.contains(".") ? s.toDouble() : s.toInteger()
+            }
+        } catch (Exception e) {}
+        // JSON object/array string → parse to Map/List
+        if ((s.startsWith("{") || s.startsWith("[")) && s.length() > 1) {
+            try {
+                return new groovy.json.JsonSlurper().parseText(s)
+            } catch (Exception e) {}
+        }
+        return param
+    
+}
+
+def _bat529Cb_15d0a4c9_260(def declaredTypes, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_260(declaredTypes, *__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_261(def assistants, def changes, def errors, def readback, def response, def property, def wanted) {
+                def nativeResult = response?.assistants?.get(assistants.get(property))
+                if (nativeResult?.success == false) errors << [property: property, error: "Native assistant update failed: ${nativeResult.reason ?: 'unspecified integration error'}"]
+                else if (response?.success == false && nativeResult?.success != true) errors << [property: property, error: "Native assistant update was rejected without a per-integration success result; inspect the native integration settings."]
+                else if (readback?.containsKey(property) && readback.get(property) instanceof Boolean && readback.get(property) == wanted) changes << [property: property, newValue: wanted]
+                else errors << [property: property, error: "POST accepted but could not confirm ${property}; inspect the native integration settings."]
+            
+}
+
+def _bat529Cb_15d0a4c9_261(def assistants, def changes, def errors, def readback, def response, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_261(assistants, changes, errors, readback, response, *__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_262(def changes, def deviceId, def errors, def key, def value) {
+        String stage = 'write'
+        try {
+            def payload = [id: _prefSaveDeviceId(deviceId), method: 'updateDataValue',
+                           args: [[type: 'STRING', value: key], [type: 'STRING', value: value]]]
+            def result = hubInternalPostJson('/device/runmethod', groovy.json.JsonOutput.toJson(payload))
+            if (!(result instanceof Map) || result.success != true) {
+                errors << [property: "dataValue.${key}", stage: stage, error: 'Native data-value update was not accepted; inspect device data before retrying.']
+                return
+            }
+            stage = 'verify'
+            def readback = _fetchDeviceFullJson(deviceId)
+            def data = readback?.device?.data
+            if (data instanceof Map && data.containsKey(key) && data.get(key)?.toString() == value) {
+                changes << [property: "dataValue.${key}", newValue: value]
+            } else {
+                errors << [property: "dataValue.${key}", stage: stage, error: 'Native update accepted but the data value could not be confirmed; inspect device data before retrying.']
+            }
+        } catch (Exception ignored) {
+            errors << [property: "dataValue.${key}", stage: stage, error: 'Native data-value update or verification failed; inspect device data before retrying.']
+        }
+    
+}
+
+def _bat529Cb_15d0a4c9_262(def changes, def deviceId, def errors, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_262(changes, deviceId, errors, *__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_263(def changes, def errors, def full, def updated, def property, def wanted) {
+                def present = updated?.device instanceof Map && updated.device.containsKey(property)
+                def actual = present ? updated.device.get(property) : null
+                if (property == "dashboardIds") {
+                    present = updated?.dashboards instanceof List
+                    actual = present ? ((updated.dashboards).findAll((this.&_bat529Cb_15d0a4c9_97))).collect((this.&_bat529Cb_15d0a4c9_166)).sort() : null
+                }
+                def expected = property == "dashboardIds" ? (wanted).collect((this.&_bat529Cb_15d0a4c9_20)).sort() : wanted
+                def equal = present && (expected instanceof Boolean ? (actual instanceof Boolean || actual?.toString() in ["true", "false"]) && _deviceFlag(actual) == expected : expected instanceof List ? actual == expected : actual?.toString() == expected?.toString())
+                if (property == "tags") equal = present && _normalizedDeviceTags(actual) == _normalizedDeviceTags(wanted)
+                if (present && property in ["label", "notes", "defaultIcon", "tags"] && wanted == "" && actual == null) equal = true
+                if (equal) changes << [property: property, oldValue: full?.device?.get(property), newValue: wanted]
+                else errors << [property: property, error: present ? "POST accepted but ${property} read back as a different value; inspect configuration before retrying." : "POST accepted but could not confirm ${property}; native read-back is unavailable."]
+            
+}
+
+def _bat529Cb_15d0a4c9_263(def changes, def errors, def full, def updated, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_263(changes, errors, full, updated, *__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_264(def byId, def record) {
+        if (record._nativeLoaded == true || record._nativeSeeded == true) return
+        def r = byId.get(record.id?.toString())
+        if (!(r instanceof Map)) return
+        if (r.label instanceof String && r.label) record._nativeFilterLabel = r.label
+        // Identity and room ride along whenever the source carries them (a fullJson fallback
+        // keeps a tree-supplied room when it omits the key). A record counts as SEEDED only
+        // when the tree also carried its states -- older firmware lists no currentStates, and
+        // there a consumer that needs state still falls back to a per-device read.
+        (['label', 'roomName', 'disabled', 'lastActivity']).each(((this.&_bat529Cb_15d0a4c9_226).curry([r, record] as Object[])))
+        record.remove('_nativeActivityParsed')
+        if (!r.containsKey('currentStates')) return
+        def states = r.currentStates instanceof List ? ((r.currentStates).findAll((this.&_bat529Cb_15d0a4c9_126))).collect((this.&_bat529Cb_15d0a4c9_209)): null
+        def unavailable = []
+        if (states == null) unavailable << 'currentStates'
+        if (!(r.capabilities instanceof List)) unavailable << 'capabilities'
+        unavailable << 'commands'
+        record.putAll([currentStates: states,
+            capabilities: r.capabilities instanceof List ? (_capabilityNames(r.capabilities)).collect((this.&_bat529Cb_15d0a4c9_103)): null,
+            _nativeUnavailableCollections: unavailable, _nativeSeeded: true])
+    
+}
+
+def _bat529Cb_15d0a4c9_265(def entryDeviceIds, def validEntryKeys, def entry, def i) {
+        if (!(entry instanceof Map)) {
+            throw new IllegalArgumentException("commands[${i}] must be an object with deviceId and command")
+        }
+        // A hub device id is numeric, so a caller that sends it as a JSON number is not wrong --
+        // coerce to the string form every downstream comparison uses instead of rejecting it.
+        def id = _canonicalDeviceIdArg(entry.deviceId)
+        if (!(id instanceof String) || !id.trim()) {
+            throw new IllegalArgumentException("commands[${i}].deviceId is required and must be a non-empty string or integral number (got: ${_describeValueForError(entry.deviceId)})")
+        }
+        if (!(entry.command instanceof String) || !entry.command.trim()) {
+            throw new IllegalArgumentException("commands[${i}].command is required and must be a non-empty string (got: ${_describeValueForError(entry.command)})")
+        }
+        // A String parameters value is passed straight through: normalizeCommandParams repairs the
+        // shape the hub's JSON parser produces when a nested object defeats it.
+        if (entry.parameters != null && !(entry.parameters instanceof List) && !(entry.parameters instanceof String)) {
+            throw new IllegalArgumentException("commands[${i}].parameters must be an array when present (got: ${_describeValueForError(entry.parameters)})")
+        }
+        def unknown = (entry.keySet() - validEntryKeys).sort()
+        if (unknown) {
+            throw new IllegalArgumentException("commands[${i}] has unknown keys: ${unknown.join(', ')}. Valid keys: ${validEntryKeys.sort().join(', ')}")
+        }
+        entryDeviceIds << id
+    
+}
+
+def _bat529Cb_15d0a4c9_265(def entryDeviceIds, def validEntryKeys, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_265(entryDeviceIds, validEntryKeys, *__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_266(def args, def changes, def deviceId, def errors, def property) {
+        if (args.containsKey(property)) {
+            def wanted = args.remove(property)
+            try {
+                boolean accepted = true
+                try {
+                    if (property == "showOnHome") {
+                        hubInternalGet("/device/setShowOnHome", [deviceId: deviceId, show: wanted ? "true" : "false"])
+                    } else {
+                        def result = hubInternalGet("/device/setDefaultCurrentState", [id: deviceId, currentState: wanted])
+                        accepted = result?.toString()?.trim()?.toLowerCase() == "true"
+                    }
+                } catch (IllegalStateException guardError) {
+                    throw guardError
+                } catch (Exception unavailable) {
+                    mcpLog("warn", "device", "Native ${property} setter unavailable for device ${deviceId}: ${unavailable.message}; trying preference controls.")
+                    _saveDevicePreferencePaneControls(deviceId, [(property): wanted])
+                }
+                if (!accepted) {
+                    errors << [property: property, error: "Hub did not accept defaultCurrentState; use an attribute name from the device's current states."]
+                    return
+                }
+                def readback = _fetchDeviceFullJson(deviceId)?.device
+                def actual = readback?.get(property)
+                def equal = readback?.containsKey(property) && (wanted instanceof Boolean ?
+                    (actual instanceof Boolean || actual?.toString() in ["true", "false"]) && _deviceFlag(actual) == wanted :
+                    (actual == null ? "" : actual.toString()) == wanted)
+                if (equal) changes << [property: property, newValue: wanted]
+                else if (!(readback instanceof Map) || !readback.containsKey(property)) {
+                    errors << [property: property, error: "POST accepted but could not confirm the change; native read-back is unavailable for ${property}."]
+                } else {
+                    errors << [property: property, error: "POST accepted but ${property} read back as '${actual}' (expected '${wanted}')."]
+                }
+            } catch (Exception e) { errors << [property: property, error: e.message ?: e.toString()] }
+        }
+    
+}
+
+def _bat529Cb_15d0a4c9_267(def model, def normalized, def key, def setting) {
+            def name = key.toString()
+            def entry = _lookupDevicePreference(model, name)
+            if (!entry) throw new IllegalArgumentException("Unknown preference '${name}'; read hub_get_device(mode='configuration') for declared names")
+            if (entry.type in ["hidden", "paragraph"]) throw new IllegalArgumentException("Preference '${name}' is not an editable input")
+            def type = entry.type in ['bool', 'boolean'] ? 'bool' : entry.type
+            boolean clear = setting instanceof Map && setting.get('clear') == true
+            if (setting instanceof Map) {
+                def suppliedType = setting.type in ['bool', 'boolean'] ? 'bool' : setting.type
+                if ((setting.containsKey('clear') && (!clear || setting.containsKey('value'))) ||
+                    (!clear && !setting.containsKey('value')) ||
+                    (suppliedType != null && suppliedType.toString() != type) ||
+                    (setting.keySet()).any((this.&_bat529Cb_15d0a4c9_143))) {
+                    throw new IllegalArgumentException("Preference '${name}' requires its declared type and either a nonblank value or {clear:true}; clear and value cannot be combined")
+                }
+            }
+            if (setting instanceof Map && setting.containsKey('multiple')) {
+                if (clear || type != 'enum' || !(setting.multiple instanceof Boolean)) {
+                    throw new IllegalArgumentException("Preference '${name}' accepts a multiple boolean only with an enum value")
+                }
+                if (entry.multiple != null && setting.multiple != entry.multiple) {
+                    throw new IllegalArgumentException("Preference '${name}' multiple conflicts with its current native metadata")
+                }
+                entry = entry + [multiple: setting.multiple]
+            }
+            if (!clear && type == 'enum' && entry.multiple == null) {
+                throw new IllegalArgumentException("Preference '${name}' has unavailable selection cardinality; check driverSource or previously read metadata and supply multiple:true or multiple:false with the value")
+            }
+            if (clear && _deviceFlag(entry.required)) throw new IllegalArgumentException("Required preference '${name}' cannot be cleared")
+            def raw = setting instanceof Map ? setting.value : setting
+            def value = clear ? null : _normalizedDevicePreferenceValue(entry, raw)
+            normalized.put(name, clear ? [type: type, clear: true, value: null] : [type: type, value: value])
+        
+}
+
+def _bat529Cb_15d0a4c9_267(def model, def normalized, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_267(model, normalized, *__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_268(def childDeviceIds, def fieldSet, def requiredCollections, def useDetailed, def device) {
+        def deviceIdStr = device.id.toString()
+
+        // Metadata hydration is page-scoped; id is always emitted as the correlation key.
+        def info = [:]
+
+        info.id = deviceIdStr
+        if (fieldSet == null || fieldSet.contains("name")) info.name = device.name
+        if (fieldSet == null || fieldSet.contains("label")) info.label = device.label ?: device._nativeFilterLabel ?: device.name
+        if (fieldSet == null || fieldSet.contains("room")) info.room = device.roomName
+        if (fieldSet == null || fieldSet.contains("disabled")) info.disabled = isDeviceDisabled(device)
+        if (fieldSet == null || fieldSet.contains("deviceNetworkId")) info.deviceNetworkId = safeDni(device)
+        if (fieldSet == null || fieldSet.contains("lastActivity")) {
+            def la = safeLastActivity(device)
+            info.lastActivity = device._nativeActivityUnavailable == true ? "unavailable" : formatLastActivity(la)
+        }
+        if (fieldSet == null || fieldSet.contains("parentDeviceId")) info.parentDeviceId = safeParentDeviceId(device)
+
+        if (childDeviceIds.contains(deviceIdStr)) {
+            if (fieldSet == null || fieldSet.contains("mcpManaged")) info.mcpManaged = true
+        }
+
+        if (useDetailed) {
+            if (fieldSet == null || fieldSet.contains("capabilities")) {
+                info.capabilities = (device.capabilities)?.collect((this.&_bat529Cb_15d0a4c9_49))
+            }
+            if (fieldSet == null || fieldSet.contains("attributes")) {
+                // Reported current states only (fullJson carries no declaration list): an attribute
+                // the driver declares but has never set is absent here, not unsupported.
+                info.attributes = (device.currentStates)?.collect((this.&_bat529Cb_15d0a4c9_142))
+            }
+            if (fieldSet == null || fieldSet.contains("commands")) {
+                info.commands = (device.commands)?.collect((this.&_bat529Cb_15d0a4c9_36))
+            }
+        } else {
+            // Summary mode: populate currentStates only when requested (or when no projection active)
+            if (fieldSet == null || fieldSet.contains("currentStates")) {
+                info.currentStates = [:]
+                def byName = _deviceStatesByName(device)
+                (["switch", "level", "motion", "contact", "temperature", "humidity", "battery"]).each(((this.&_bat529Cb_15d0a4c9_230).curry([byName, info] as Object[])))
+            }
+        }
+        if (device._nativeReadError == true || device._nativeActivityUnavailable == true ||
+            (requiredCollections).any(((this.&_bat529Cb_15d0a4c9_154).curry([device] as Object[])))) info.metadataUnavailable = true
+
+        return info
+    
+}
+
+def _bat529Cb_15d0a4c9_269(def duplicates, def inputs, def model, def names, def row) {
+        if (!(row instanceof Map) || row.name == null || row.type == null) {
+            model.writeSafe = false
+            model.status = 'partial'
+            model.reason = 'Native settings contains an unnamed or malformed declaration.'
+            return
+        }
+        String name = row.name.toString()
+        String type = row.type.toString()
+        if (names.contains(name)) {
+            model.writeSafe = false
+            model.status = 'partial'
+            model.reason = 'Native settings contains duplicate preference names.'
+            model.entries.removeAll { it.name == name }
+            return
+        }
+        names << name
+        if (type in ['paragraph', 'hidden', 'button', 'image']) return
+        def input = inputs.get(name)
+        // Cleared native settings lose their storage identity; inputValues can still prefill the UI default.
+        boolean nativeUnset = row.containsKey('id') && row.get('id') == null &&
+            row.containsKey('deviceId') && row.get('deviceId') == null && row.containsKey('value') && row.get('value') == null
+        boolean present = !nativeUnset && ((input instanceof Map && input.containsKey('inputValue')) || row.containsKey('value'))
+        def raw = nativeUnset ? null : ((input instanceof Map && input.containsKey('inputValue')) ? input.get('inputValue') : row.get('value'))
+        // Unset enum rows lose stored cardinality even when the driver declares multiple:true.
+        Boolean multiple = type == 'enum' && nativeUnset && !_deviceFlag(row.multiple) ? null : _deviceFlag(row.multiple)
+        def normalized = _normalizeDevicePreferenceValue(raw, type, multiple == true)
+        def entry = [name: name, type: type, declared: true, multiple: multiple,
+                     valuePresent: present, valueStatus: present ? 'stored' : 'unset',
+                     rawValue: raw, value: normalized.value]
+        if (multiple == null) {
+            entry.multipleStatus = 'unavailable'
+            entry.multipleReason = 'Native unset enum metadata does not identify single or multiple selection. Check driverSource or previously read metadata and pass an explicit multiple boolean when setting it.'
+        }
+        (['title', 'description', 'options', 'range', 'required']).each(((this.&_bat529Cb_15d0a4c9_211).curry([entry, row] as Object[])))
+        if (row.containsKey('defaultValue')) {
+            def defaultValue = _normalizeDevicePreferenceValue(row.get('defaultValue'), type, multiple == true)
+            entry.defaultValue = defaultValue.valid ? defaultValue.value : row.get('defaultValue')
+        }
+        if (!normalized.valid || duplicates.contains(name)) {
+            model.writeSafe = false
+            entry.valueStatus = duplicates.contains(name) ? 'unknown' : 'invalid'
+            entry.value = null
+            model.status = 'partial'
+            model.reason = 'A stored preference value is ambiguous or does not match its declared type.'
+        }
+        model.entries << entry
+    
+}
+
+def _bat529Cb_15d0a4c9_270(def applicable, def d, def fj, def preferences, def values, def field) {
+        String name = field.name
+        field.source = name in ['homeKitEnabled', 'amazonAlexaEnabled', 'googleHomeEnabled', 'dashboardIds'] ? 'fullJson' : 'fullJson.device'
+        field.valuePresent = values.containsKey(name)
+        if (field.valuePresent) field.value = values.get(name)
+        field.readStatus = field.valuePresent ? 'complete' : 'unavailable'
+        field.applicable = !applicable.containsKey(name) || applicable.get(name)
+        field.writable = !d.isEmpty() && field.applicable
+        if (field.requiresConfirmation) field.requiresBackup = true
+        if (!field.applicable) field.reason = 'This device or installed integration does not expose this edit control.'
+        else if (!field.valuePresent) field.reason = 'The native device response did not supply this current value.'
+        if (name == 'preferences') {
+            field.source = 'fullJson.settings'
+            field.valueReference = 'preferences'
+            field.readStatus = preferences.status
+            field.valuePresent = preferences.status != 'unavailable'
+            field.applicable = !_deviceFlag(d.linkedDevice)
+            field.writable = field.applicable && preferences.writeSafe == true
+            field.remove('reason')
+            if (!field.applicable) field.reason = 'Driver preferences cannot be saved on a linked device; edit the source device.'
+            else if (preferences.reason) field.reason = preferences.reason
+        }
+        if (name == 'room') field.optionsReference = [gateway: 'hub_read_rooms', tool: 'hub_list_rooms', args: [:]]
+        if (name == 'deviceTypeId') field.optionsReference = [gateway: 'hub_read_apps_code', tool: 'hub_list_drivers', args: [include: 'all']]
+        if (name == 'deviceNetworkId' && d.linkedDevice) {
+            field.options = [[value: '0', label: 'Keep current device link']]
+            try {
+                def text = hubInternalGet('/device/accessibleLinkedDevices')
+                def available = text ? new groovy.json.JsonSlurper().parseText(text) : null
+                if (!(available?.devices instanceof List)) throw new IllegalStateException('Unrecognized linked-device choices')
+                (available.devices).each(((this.&_bat529Cb_15d0a4c9_247).curry([field] as Object[])))
+            } catch (Exception ignored) {
+                mcpLog('error', 'device', "Device ${d.id}: /device/accessibleLinkedDevices choices could not be read; retry configuration discovery.")
+                field.optionsStatus = 'unavailable'
+                field.reason = 'Native linked-device choices could not be read; retry configuration discovery before retargeting.'
+            }
+        }
+        if (name == 'dashboardIds') field.options = _deviceConfigurationPublicValue(fj?.dashboards ?: [])
+        if (name == 'defaultCurrentState') field.options = [''] + _fullJsonAttributeNames(fj)
+    
+}
+
+def _bat529Cb_15d0a4c9_271(def d, def deviceId, def fields, def fj, def identity, def result, def section) {
+        def value
+        def keys = []
+        switch (section) {
+            case 'configuration':
+                value = _deviceConfigurationResult(deviceId, identity, fj, fields)
+                break
+            case 'identity':
+                value = _deviceConfigurationProjection(d, ['id', 'deviceId', 'name', 'label', 'displayName',
+                    'deviceNetworkId', 'zigbeeId', 'lanId', 'endpointId', 'network', 'controllerType',
+                    'roomId', 'roomName', 'roomAssigned', 'hubId', 'hubName', 'locationId', 'locationName',
+                    'groupId', 'groupName', 'virtual', 'isComponent', 'disabled', 'status', 'orphan',
+                    'createTime', 'updateTime', 'lastActivityTime', 'version'])
+                value.driver = _deviceConfigurationInfo(fj).driver
+                break
+            case 'attributes':
+                value = _deviceConfigurationProjection(d, ['capabilities', 'currentStates', 'displayAttributes', 'defaultCurrentState'])
+                // Keep the historical key while identifying its native, reported-state coverage.
+                value.attributeCoverage = [source: 'device.currentStates', declarationsComplete: false,
+                    note: 'Unset or cleared attributes can be absent; absence does not establish an unsupported attribute.']
+                if (d.currentStates instanceof Map) value.declaredAttributes = (_nativeReportedDeviceAttributes(d)).collect((this.&_bat529Cb_15d0a4c9_246))
+                break
+            case 'commands':
+                value = _deviceConfigurationPublicValue(fj?.commands)
+                break
+            case 'data':
+                value = _withResolvedManufacturer(_deviceConfigurationPublicValue(d.get('data')))
+                break
+            case 'state':
+                value = _deviceConfigurationPublicValue(fj?.deviceState)
+                break
+            case 'relationships':
+                keys = ['parentApp', 'childDevices', 'hasChildren', 'appsUsing', 'appsUsingCount', 'appsUsingForDialog', 'appsUsingForDialogMore']
+                value = _deviceConfigurationProjection(fj, keys)
+                value.device = _deviceConfigurationProjection(d, ['parentDeviceId', 'parentAppId', 'displayAsChild', 'compatibleDeviceId', 'linkedDevice', 'linkedAndDisabled'])
+                break
+            case 'jobs':
+                value = _deviceConfigurationPublicValue(fj?.scheduledJobs)
+                break
+            case 'integrations':
+                keys = ['amazonAlexaEnabled', 'amazonAlexaInstalled', 'amazonAlexaSupported', 'googleHomeEnabled',
+                    'googleHomeInstalled', 'googleHomeSupported', 'homeKitEnabled', 'homeKitSelectionEnabled',
+                    'dashboards', 'hasDashboards', 'dashboardTypes', 'commandRetrySelectionEnabled', 'hubMeshRefreshEnabled']
+                value = _deviceConfigurationProjection(fj, keys)
+                value.device = _deviceConfigurationProjection(d, ['meshEnabled', 'meshFullSync', 'meshSelectionEnabled',
+                    'retryEnabled', 'retryAvailable', 'homeKitCompatible', 'remoteDeviceUrl', 'linkedDevice',
+                    'linkedAndDisabled', 'linkedLocally', 'ZWave', 'zigbee', 'matter', 'bluetooth'])
+                break
+            case 'metadata':
+                value = _deviceConfigurationProjection(d, ['notes', 'tags', 'maxEvents', 'maxStates', 'spammyThreshold',
+                    'defaultIcon', 'icon', 'showOnHome', 'deviceTypeClassLocation', 'deviceTypePopulated',
+                    'deviceTypeSingleThreaded', 'deviceTypeReadableType', 'deviceTypeType', 'driverType',
+                    'systemDeviceType', 'deviceTypeId', 'deviceTypeName', 'deviceTypeNamespace'])
+                value.ui = _deviceConfigurationProjection(fj, ['showInstructionSearchLink', 'extraBreadcrumb', 'virtualFirst', 'tags'])
+                break
+        }
+        result.sectionRead.put(section, _deviceDetailReadStatus(section, fj, d, value, deviceId))
+        if (fields != null && section != 'configuration') {
+            if (!result.containsKey('availableFields')) result.availableFields = [:]
+            result.availableFields.put(section, _deviceDetailFieldNames(section, value))
+            value = _deviceDetailSelectedFields(section, value, fields)
+        }
+        result.sections.put(section, value)
+    
 }

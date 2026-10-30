@@ -95,7 +95,7 @@ def toolCreateVirtualDevice(args) {
 
     // Auto-generate DNI if not provided, with uniqueness retry
     if (!dni) {
-        def existingDnis = childDevs.collect { it.deviceNetworkId } as Set
+        def existingDnis = (childDevs).collect((this.&_bat529Cb_0153e466_5))as Set
         def attempts = 0
         while (attempts < 5) {
             def timestamp = Long.toString(now(), 16).toUpperCase()
@@ -149,11 +149,7 @@ def toolCreateVirtualDevice(args) {
     def dataChanges = []
     def dataErrors = []
     _applyNativeDeviceDataValues(deviceId, [mcpDriverNamespace: namespace], dataChanges, dataErrors)
-    dataErrors.each { failure ->
-        def warning = "mcpDriverNamespace: ${failure.error}".toString()
-        warnings << warning
-        mcpLog("warn", "device", "Device ${deviceId} was created, but ${warning}")
-    }
+    (dataErrors).each(((this.&_bat529Cb_0153e466_14).curry([deviceId, warnings] as Object[])))
 
     // The child already exists. Keep its identity even when the follow-up native read fails.
     def deviceInfo = [id: deviceId, deviceNetworkId: dni, driverNamespace: namespace,
@@ -166,8 +162,8 @@ def toolCreateVirtualDevice(args) {
             def summary = _getDeviceFromFullJson(deviceId, fullJson)
             deviceInfo.putAll([name: summary.name, label: summary.label,
                 deviceNetworkId: fullJson.device.deviceNetworkId ?: dni,
-                capabilities: summary.capabilities, commands: summary.commands.collect { it.name },
-                attributes: summary.attributes.findAll { it.value != null }.collect { [name: it.name, value: it.value] }])
+                capabilities: summary.capabilities, commands: (summary.commands).collect((this.&_bat529Cb_0153e466_3)),
+                attributes: ((summary.attributes).findAll((this.&_bat529Cb_0153e466_6))).collect((this.&_bat529Cb_0153e466_12))])
         }
     } catch (Exception ignored) {
         warnings << "Native device information could not be interpreted from /device/fullJson/${deviceId}.".toString()
@@ -251,11 +247,9 @@ def toolListVirtualDevices(args) {
             def info = [id: deviceId, name: summary.name, label: summary.label,
                 deviceNetworkId: nativeDevice.deviceNetworkId,
                 driverNamespace: namespace, driverType: typeName, typeName: typeName,
-                capabilities: summary.capabilities, commands: summary.commands.collect { it.name },
+                capabilities: summary.capabilities, commands: (summary.commands).collect((this.&_bat529Cb_0153e466_4)),
                 currentStates: [:]]
-            summary.attributes.each { attr ->
-                if (attr.value != null) info.currentStates[attr.name] = attr.value
-            }
+            (summary.attributes).each(((this.&_bat529Cb_0153e466_13).curry([info] as Object[])))
             if (!namespace || !typeName) {
                 info.warnings = ['Native driver namespace or type metadata is unavailable; no driver identity was inferred.']
             }
@@ -270,13 +264,7 @@ def toolListVirtualDevices(args) {
     def matching = childDevs
     if (filtering) {
         def needle = labelFilter?.toLowerCase()
-        matching = childDevs.collect(readNativeDevice).findAll { info ->
-            // An unreadable child cannot be proved not to match. Keep its identity and error.
-            if (info.success == false) return true
-            boolean labelMatches = !labelFilter || (info.label ?: info.name ?: '').toString().toLowerCase().contains(needle)
-            boolean capabilityMatches = !capabilityFilter || info.capabilities.any { it?.toString()?.equalsIgnoreCase(capabilityFilter) }
-            return labelMatches && capabilityMatches
-        }
+        matching = (childDevs.collect(readNativeDevice)).findAll(((this.&_bat529Cb_0153e466_15).curry([capabilityFilter, labelFilter, needle] as Object[])))
     }
     int total = matching.size()
     if (cursor != null) offset = _parseListCursor(cursor, total, "hub_list_devices(filter='virtual')")
@@ -284,7 +272,7 @@ def toolListVirtualDevices(args) {
     int endIndex = limit > 0 ? (int) Math.min(((long) startIndex) + limit, total) : total
     def selectedPage = matching.subList(startIndex, endIndex)
     def page = filtering ? selectedPage : selectedPage.collect(readNativeDevice)
-    def readFailures = (filtering ? matching : page).findAll { it.success == false }
+    def readFailures = ((filtering ? matching : page)).findAll((this.&_bat529Cb_0153e466_10))
     def result = [
         devices: page,
         count: page.size(),
@@ -297,7 +285,7 @@ def toolListVirtualDevices(args) {
         if (capabilityFilter) result.capabilityFilter = capabilityFilter
     }
     if (readFailures) {
-        boolean hasReadableDevices = (filtering ? matching : page).any { it.success != false }
+        boolean hasReadableDevices = ((filtering ? matching : page)).any((this.&_bat529Cb_0153e466_9))
         result.success = hasReadableDevices
         if (hasReadableDevices) {
             result.partialSuccess = true
@@ -308,11 +296,11 @@ def toolListVirtualDevices(args) {
         }
         result.note = 'Device IDs and counts include unreadable devices. Inspect the failed entries and retry the read.'
         if (filtering) {
-            result.unreadableDeviceIds = readFailures.collect { it.id }
+            result.unreadableDeviceIds = (readFailures).collect((this.&_bat529Cb_0153e466_2))
             result.message = "Found ${total - readFailures.size()} matching MCP-managed virtual devices and ${readFailures.size()} unreadable owned devices whose filter match could not be determined."
         }
     }
-    if (page.any { it.warnings }) {
+    if ((page).any((this.&_bat529Cb_0153e466_1))) {
         result.success = true
         result.partialSuccess = true
     }
@@ -336,7 +324,7 @@ def toolDeleteVirtualDevice(args) {
     def dni = args.deviceNetworkId
     if (!dni) throw new IllegalArgumentException("deviceNetworkId is required")
 
-    def childDevice = getChildDevices()?.find { it.deviceNetworkId == dni }
+    def childDevice = (getChildDevices())?.find(((this.&_bat529Cb_0153e466_8).curry([dni] as Object[])))
     if (!childDevice) {
         throw new IllegalArgumentException("No MCP-managed virtual device found with network ID '${dni}'. Use hub_list_devices(filter='virtual') to see available devices.")
     }
@@ -356,7 +344,7 @@ def toolDeleteVirtualDevice(args) {
     }
 
     // Verify deletion
-    def stillExists = getChildDevices()?.find { it.deviceNetworkId == dni }
+    def stillExists = (getChildDevices())?.find(((this.&_bat529Cb_0153e466_7).curry([dni] as Object[])))
     def verified = !stillExists
 
     mcpLog(verified ? "info" : "warn", "device", "Virtual device delete ${verified ? 'VERIFIED' : 'UNVERIFIED'}: '${deviceLabel}' (DNI: ${dni})")
@@ -418,4 +406,62 @@ def _toolDisplayMeta_partVirtualDevices() {
     return [
         hub_manage_virtual_device: [title: "Manage Virtual Device", summary: "Create or delete an MCP-managed virtual device."]
     ]
+}
+
+
+def _bat529Cb_0153e466_1(def it) { it.warnings 
+}
+
+def _bat529Cb_0153e466_2(def it) { it.id 
+}
+
+def _bat529Cb_0153e466_3(def it) { it.name 
+}
+
+def _bat529Cb_0153e466_4(def it) { it.name 
+}
+
+def _bat529Cb_0153e466_5(def it) { it.deviceNetworkId 
+}
+
+def _bat529Cb_0153e466_6(def it) { it.value != null 
+}
+
+def _bat529Cb_0153e466_7(def dni, def it) { it.deviceNetworkId == dni 
+}
+
+def _bat529Cb_0153e466_8(def dni, def it) { it.deviceNetworkId == dni 
+}
+
+def _bat529Cb_0153e466_9(def it) { it.success != false 
+}
+
+def _bat529Cb_0153e466_10(def it) { it.success == false 
+}
+
+def _bat529Cb_0153e466_11(def capabilityFilter, def it) { it?.toString()?.equalsIgnoreCase(capabilityFilter) 
+}
+
+def _bat529Cb_0153e466_12(def it) { [name: it.name, value: it.value] 
+}
+
+def _bat529Cb_0153e466_13(def info, def attr) {
+                if (attr.value != null) info.currentStates[attr.name] = attr.value
+            
+}
+
+def _bat529Cb_0153e466_14(def deviceId, def warnings, def failure) {
+        def warning = "mcpDriverNamespace: ${failure.error}".toString()
+        warnings << warning
+        mcpLog("warn", "device", "Device ${deviceId} was created, but ${warning}")
+    
+}
+
+def _bat529Cb_0153e466_15(def capabilityFilter, def labelFilter, def needle, def info) {
+            // An unreadable child cannot be proved not to match. Keep its identity and error.
+            if (info.success == false) return true
+            boolean labelMatches = !labelFilter || (info.label ?: info.name ?: '').toString().toLowerCase().contains(needle)
+            boolean capabilityMatches = !capabilityFilter || (info.capabilities).any(((this.&_bat529Cb_0153e466_11).curry([capabilityFilter] as Object[])))
+            return labelMatches && capabilityMatches
+        
 }

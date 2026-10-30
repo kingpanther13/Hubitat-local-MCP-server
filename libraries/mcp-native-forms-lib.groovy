@@ -4,7 +4,7 @@ library(name: "McpNativeFormsLib", namespace: "mcp", author: "kingpanther13", de
 @groovy.transform.Field static final Map NATIVE_FORM_BUSY = new java.util.concurrent.ConcurrentHashMap()
 
 private String _nfEncode(Object value) { java.net.URLEncoder.encode(value == null ? '' : value.toString(), 'UTF-8') }
-private String _nfBody(Map values) { values.collect { key, value -> "${_nfEncode(key)}=${_nfEncode(value)}" }.join('&') }
+private String _nfBody(Map values) { (values).collect((this.&_bat529Cb_82110e0f_14)).join('&') }
 private boolean _nfTrue(Object value) { value == true || value == 'true' }
 // A tag starts with a name, / or !: Rule Machine renders its less-than comparator as a raw '<'.
 private String _nfText(Object value) { _nfEntities(value?.toString()?.replaceAll(/(?s)<\/?[A-Za-z!][^>]*>/, '') ?: '') }
@@ -35,10 +35,8 @@ private Map _nfPost(String path, Map values) {
 }
 
 private List _nfOptions(Object options) {
-    if (options instanceof Map) return options.collect { key, value -> [value: key.toString(), label: _nfText(value)] }
-    if (options instanceof List) return options.collectMany { item ->
-        item instanceof Map ? _nfOptions(item) : [[value: item.toString(), label: _nfText(item)]]
-    }
+    if (options instanceof Map) return (options).collect((this.&_bat529Cb_82110e0f_18))
+    if (options instanceof List) return (options).collectMany((this.&_bat529Cb_82110e0f_29))
     null
 }
 
@@ -60,16 +58,10 @@ private Map _nfLocalNavigation(String html) {
 }
 
 private void _nfNavigationTargets(Object node, List targets) {
-    if (node instanceof List) { node.each { _nfNavigationTargets(it, targets) }; return }
+    if (node instanceof List) { (node).each(((this.&_bat529Cb_82110e0f_8).curry([targets] as Object[]))); return }
     if (!(node instanceof Map)) return
-    if (node.element == 'paragraph') ['title', 'description', 'text'].each { key ->
-        def value = node[key]
-        Map target = value instanceof String ? _nfLocalNavigation(value) : null
-        if (target) targets << target
-    }
-    ['sections', 'input', 'body', 'children'].each { key ->
-        if (node[key] instanceof Map || node[key] instanceof List) _nfNavigationTargets(node[key], targets)
-    }
+    if (node.element == 'paragraph') (['title', 'description', 'text']).each(((this.&_bat529Cb_82110e0f_37).curry([node, targets] as Object[])))
+    (['sections', 'input', 'body', 'children']).each(((this.&_bat529Cb_82110e0f_33).curry([node, targets] as Object[])))
 }
 
 private Map _nfNavigation(Long sourceId, Map model) {
@@ -101,29 +93,7 @@ private void _nfHtml(String html, Map controls, List unsupported) {
             buttons << [name: attrs.name[0..-6], end: inputs.end()]
         } else if (attrs.type != 'hidden') unsupported << 'Custom HTML input'
     }
-    buttons.eachWithIndex { button, index ->
-        String fragment = html.substring(button.end as int, index + 1 < buttons.size() ? buttons[index + 1].end as int : html.length())
-        def click = fragment =~ /(?is)<(a|div|button)\b([^>]*\bonclick\s*=\s*(?:"[^"]*"|'[^']*')[^>]*)>(.*?)<\/\1>/
-        boolean found = false
-        while (click.find() && !found) {
-            Map attrs = _nfAttrs(click.group(2))
-            boolean known = attrs.onclick?.trim() ==~ /buttonClick\(this\)\s*;?\s*(?:return false;?)?/
-            def hidden = fragment =~ /(?is)<input\b[^>]*>/
-            boolean paired = false
-            while (hidden.find()) {
-                Map input = _nfAttrs(hidden.group())
-                if (input.type == 'hidden' && input.name == "settings[${button.name}]") paired = true
-            }
-            if (known && paired) {
-                Map control = [name: button.name, kind: 'button', title: attrs['aria-label'] ?: attrs.title ?: _nfText(click.group(3)), disabled: attrs.containsKey('disabled') || (click.group(2) =~ /(?i)(?:^|\s)disabled(?:\s|$)/).find(),
-                               stateAttribute: attrs['data-stateattribute'], submit_on_change: (attrs.get('class') ?: '').tokenize().contains('submitOnChange')]
-                if (attrs['data-confirm']) control.confirmation = attrs['data-confirm']
-                _nfControl(controls, control)
-                found = true
-            }
-        }
-        if (!found) unsupported << "Unrecognized HTML button: ${button.name}"
-    }
+    (buttons).eachWithIndex(((this.&_bat529Cb_82110e0f_47).curry([buttons, controls, html, unsupported] as Object[])))
     if (html =~ /(?is)<script\b|\bonclick\s*=\s*["'](?!buttonClick\(this\))/) unsupported << 'Custom browser script'
     def links = html =~ /(?is)<a\b([^>]*)>(.*?)<\/a>/
     while (links.find()) {
@@ -136,7 +106,7 @@ private void _nfHtml(String html, Map controls, List unsupported) {
 }
 
 private void _nfControl(Map controls, Map control) {
-    String key = [control.name, control.value ?: '', control.stateAttribute ?: ''].collect { _nfEncode(it) }.join('|')
+    String key = ([control.name, control.value ?: '', control.stateAttribute ?: '']).collect((this.&_bat529Cb_82110e0f_20)).join('|')
     control.control_id = key
     if (controls.containsKey(key) && controls[key] != control) throw new IllegalStateException('Native form contains ambiguous controls')
     controls.put(key, control)
@@ -148,7 +118,7 @@ private void _nfControl(Map controls, Map control) {
 private Object _nfAppValue(Map model, boolean mode) {
     def value = mode ? model.app?.restrictedModes : (model.app?.trueLabel ?: model.app?.label)
     if (!mode) return value
-    (value instanceof Map ? value.keySet() : (value instanceof Collection ? value : (value == null ? [] : [value]))).collect { it.toString() }
+    ((value instanceof Map ? value.keySet() : (value instanceof Collection ? value : (value == null ? [] : [value])))).collect((this.&_bat529Cb_82110e0f_31))
 }
 
 private void _nfAppField(Map fields, Map model, boolean mode, Map node) {
@@ -169,7 +139,7 @@ private Map _nfWire(Map field, String encoded) {
 }
 
 private void _nfWalk(Object node, Map fields, Map controls, List messages, List unsupported, Map model, int position = 0) {
-    if (node instanceof List) { node.eachWithIndex { item, index -> _nfWalk(item, fields, controls, messages, unsupported, model, index) }; return }
+    if (node instanceof List) { (node).eachWithIndex(((this.&_bat529Cb_82110e0f_22).curry([controls, fields, messages, model, unsupported] as Object[]))); return }
     if (!(node instanceof Map)) return
     if (node.element == 'input' && node.name && node.type) {
         String name = node.name.toString()
@@ -182,11 +152,11 @@ private void _nfWalk(Object node, Map fields, Map controls, List messages, List 
             boolean supported = type in ['text', 'textarea', 'password', 'enum', 'mode', 'bool', 'number', 'decimal', 'time', 'email', 'phone'] || device
             Map field = [name: name, title: _nfText(node.title), type: type, multiple: _nfTrue(node.multiple), required: _nfTrue(node.required),
                          submit_on_change: _nfTrue(node.submitOnChange), supported: supported, device: device, disabled: _nfTrue(node.disabled)]
-            ['range', 'min', 'max', 'step', 'description'].each { key -> if (node.containsKey(key)) field[key] = node[key] }
+            (['range', 'min', 'max', 'step', 'description']).each(((this.&_bat529Cb_82110e0f_23).curry([field, node] as Object[])))
             def stored = model.settings instanceof Map ? model.settings.get(name) : null
             boolean exists = model.settings instanceof Map && model.settings.containsKey(name)
             def current = exists ? stored : node.defaultValue
-            if (device && current instanceof Map) current = current.keySet().collect { it.toString() }
+            if (device && current instanceof Map) current = (current.keySet()).collect((this.&_bat529Cb_82110e0f_7))
             if (device && !field.multiple && current instanceof List) current = current ? current[0] : null
             if (type == 'password') field.has_value = current != null && current != ''
             else { field.value = current; field.value_source = exists ? 'stored' : 'default' }
@@ -196,7 +166,7 @@ private void _nfWalk(Object node, Map fields, Map controls, List messages, List 
             field.options = _nfOptions(type == 'mode' ? model.modeMap : node.options)
             if (device) {
                 field.capability = type
-                field.ignore = (node.ignoreDevices instanceof List ? node.ignoreDevices : (node.ignoreDevices?.toString()?.tokenize(',') ?: [])).collect { it.toString() }
+                field.ignore = ((node.ignoreDevices instanceof List ? node.ignoreDevices : (node.ignoreDevices?.toString()?.tokenize(',') ?: []))).collect((this.&_bat529Cb_82110e0f_32))
             }
             if (fields.containsKey(name) && fields[name] != field) throw new IllegalStateException('Native form contains ambiguous fields')
             fields.put(name, field)
@@ -215,12 +185,8 @@ private void _nfWalk(Object node, Map fields, Map controls, List messages, List 
     } else if (node.element && !(node.element in ['paragraph', 'section', 'input'])) {
         unsupported << "Native element: ${node.element}"
     }
-    ['title', 'description', 'text'].each { key ->
-        def value = node[key]
-        if (value instanceof String && value.contains('<')) _nfHtml(value, controls, unsupported)
-        if (node.element == 'paragraph' && value instanceof String && _nfText(value)) messages << _nfText(value)
-    }
-    ['sections', 'input', 'body', 'children'].each { key -> if (node[key] instanceof Map || node[key] instanceof List) _nfWalk(node[key], fields, controls, messages, unsupported, model) }
+    (['title', 'description', 'text']).each(((this.&_bat529Cb_82110e0f_41).curry([controls, messages, node, unsupported] as Object[])))
+    (['sections', 'input', 'body', 'children']).each(((this.&_bat529Cb_82110e0f_35).curry([controls, fields, messages, model, node, unsupported] as Object[])))
 }
 
 // from: the parent page of a sub-page opened directly. A direct render carries no breadcrumb trail,
@@ -231,10 +197,7 @@ private Map _nfContext(Long id, Map model, String from = null) {
     Map fields = [:], controls = [:]
     List messages = [], unsupported = []
     _nfWalk(page, fields, controls, messages, unsupported, model)
-    if (model.defaultFields) [false, true].each { mode ->
-        String name = mode ? 'mode[mode]' : 'label'
-        if (!fields.containsKey(name)) { _nfAppField(fields, model, mode, [:]); fields[name].hub_default = true }
-    }
+    if (model.defaultFields) ([false, true]).each(((this.&_bat529Cb_82110e0f_36).curry([fields, model] as Object[])))
     String trail = model.pageBreadcrumbs && model.pageBreadcrumbs != '%5B%5D' ? model.pageBreadcrumbs.toString() :
         (from ? _nfEncode(groovy.json.JsonOutput.toJson([from])) : '%5B%5D')
     if (page.install || model.doneButton) _nfControl(controls, [name: '_action_update', value: 'Done', kind: 'navigation', title: model.cancelButton ? 'Save' : 'Done'])
@@ -244,8 +207,8 @@ private Map _nfContext(Long id, Map model, String from = null) {
     if (model.cancelButton) _nfControl(controls, [name: '_action_update', value: 'Cancel', kind: 'navigation', title: 'Cancel'])
     if (model.removeButton) unsupported << 'Remove app: use the dedicated native-app deletion tool'
     Map envelope = [id: id.toString(), currentPage: page.name ?: '', pageBreadcrumbs: trail]
-    ['returnPath', 'referrer', 'url', 'formAction'].each { key -> if (model.containsKey(key)) envelope[key] = model[key] }
-    ['nextPage', 'donePage'].each { key -> if (page[key]) envelope[key] = page[key] }
+    (['returnPath', 'referrer', 'url', 'formAction']).each(((this.&_bat529Cb_82110e0f_24).curry([envelope, model] as Object[])))
+    (['nextPage', 'donePage']).each(((this.&_bat529Cb_82110e0f_19).curry([envelope, page] as Object[])))
     if (page.returnPath != null) envelope.returnPath = page.returnPath
     if (page.returnPath == 'list') envelope.referrer = '/installedapp/list?section='
     if (model.app.containsKey('version')) envelope.version = model.app.version
@@ -261,8 +224,8 @@ private String _nfReloadPath(Long id, Map context) {
     def crumbs = new groovy.json.JsonSlurper().parseText(java.net.URLDecoder.decode(context.envelope.pageBreadcrumbs.toString(), 'UTF-8'))
     if (!(crumbs instanceof List)) throw new IllegalStateException('Native breadcrumbs are malformed')
     List pages = crumbs + (context.page.name ? [context.page.name] : [])
-    if (pages.any { !(it instanceof String) || !(it ==~ /[A-Za-z_][A-Za-z0-9_.-]*/) }) throw new IllegalStateException('Native breadcrumbs contain unsupported page names')
-    "/installedapp/configure/json/${id}" + (pages ? '/' + pages.collect { _nfEncode(it) }.join('/') : '')
+    if ((pages).any((this.&_bat529Cb_82110e0f_17))) throw new IllegalStateException('Native breadcrumbs contain unsupported page names')
+    "/installedapp/configure/json/${id}" + (pages ? '/' + (pages).collect((this.&_bat529Cb_82110e0f_1)).join('/') : '')
 }
 
 private void _nfCache(String key, Map context) {
@@ -270,45 +233,36 @@ private void _nfCache(String key, Map context) {
     // except the app's label, which a mode[mode] submit posts again.
     Map cached = [app_id: context.app_id, page: [name: context.page.name], envelope: context.envelope, expires: context.expires,
                   fields: [:], controls: [:], backup: context.backup]
-    context.get('fields').each { name, field ->
-        Map descriptor = field.findAll { k, v -> k in ['name', 'type', 'multiple', 'required', 'supported', 'device', 'disabled', 'present', 'capability', 'ignore', 'range', 'min', 'max', 'step', 'default_value', 'app_field', 'sidecars', 'hub_default'] }
-        descriptor.option_keys = field.options == null ? null : field.options*.value
-        if (field.app_field && name == 'label') descriptor.value = field.value
-        cached.get('fields').put(name, descriptor)
-    }
-    context.controls.each { name, control ->
-        cached.controls.put(name, control.findAll { k, v -> k in ['name', 'value', 'kind', 'stateAttribute', 'submit_on_change', 'params', 'disabled', 'page'] })
-    }
+    (context.get('fields')).each(((this.&_bat529Cb_82110e0f_43).curry([cached] as Object[])))
+    (context.controls).each(((this.&_bat529Cb_82110e0f_38).curry([cached] as Object[])))
     int size = groovy.json.JsonOutput.toJson(cached).getBytes('UTF-8').length
     if (size > 24576) throw new IllegalStateException('Native execution descriptors exceed the 24 KiB per-app context bound')
     cached.bytes = size
     synchronized (NATIVE_FORM_CONTEXTS) {
-        NATIVE_FORM_CONTEXTS.entrySet().findAll { entry -> entry.value.expires < now() && !NATIVE_FORM_BUSY.containsKey(entry.key) }.each { entry -> NATIVE_FORM_CONTEXTS.remove(entry.key) }
-        int total = NATIVE_FORM_CONTEXTS.findAll { k, v -> k != key }.values().sum { it.bytes } ?: 0
+        ((NATIVE_FORM_CONTEXTS.entrySet()).findAll((this.&_bat529Cb_82110e0f_25))).each((this.&_bat529Cb_82110e0f_34))
+        int total = ((NATIVE_FORM_CONTEXTS).findAll(((this.&_bat529Cb_82110e0f_10).curry([key] as Object[]))).values()).sum((this.&_bat529Cb_82110e0f_16))?: 0
         if (total + size > 98304 || (!NATIVE_FORM_CONTEXTS.containsKey(key) && NATIVE_FORM_CONTEXTS.size() >= 8)) throw new IllegalStateException('Native form context capacity reached; inactive caller workflows expire after five minutes')
         NATIVE_FORM_CONTEXTS.put(key, cached)
     }
 }
 
 private List _nfDevices(Map field) {
-    _nrDeviceChoices(field).collect { device ->
-        [value: device.id.toString(), label: _nfText(device.label ?: device.name)]
-    }
+    (_nrDeviceChoices(field)).collect((this.&_bat529Cb_82110e0f_28))
 }
 
 private String _nfValue(Map field, Object value) {
     if (!field.supported || field.disabled || (!field.app_field && field.name =~ /[\[\]\r\n]/)) throw new IllegalArgumentException("Unsupported or disabled native field: ${field.name}")
     // A device input also takes the {id: label} map a configuration read returns.
     if (field.device && value instanceof Map) {
-        List ids = value.keySet().collect { it.toString() }
+        List ids = (value.keySet()).collect((this.&_bat529Cb_82110e0f_5))
         value = field.multiple ? ids : (ids.size() == 1 ? ids[0] : ids)
     }
     Map descriptor = [:] + field
     descriptor.option_keys = field.containsKey('option_keys') ? field.option_keys : (field.options == null ? null : field.options*.value)
     _nrValidateInput(descriptor, value, true)
     List values = value instanceof List ? value : [value]
-    if (field.device) return values.collect { it.toString() }.join(',')
-    if (field.multiple) return groovy.json.JsonOutput.toJson(values.collect { it.toString() })
+    if (field.device) return (values).collect((this.&_bat529Cb_82110e0f_3)).join(',')
+    if (field.multiple) return groovy.json.JsonOutput.toJson((values).collect((this.&_bat529Cb_82110e0f_2)))
     // The classic browser removes markup from visible scalar inputs and escapes any remaining '<'.
     if (!(field.type in ['bool', 'enum', 'mode'])) {
         String text = value.toString(), prior = null
@@ -319,21 +273,8 @@ private String _nfValue(Map field, Object value) {
 }
 
 private Map _nfPublic(Map context, List optionsFor) {
-    List fields = context.get('fields').values().collect { field ->
-        Map result = [:] + field
-        ['device', 'ignore', 'capability', 'present', 'default_value', 'app_field', 'sidecars', 'hub_default'].each { result.remove(it) }
-        if (field.type == 'password') result.redacted = true
-        // The whole-result pass keys on a setting's name, and here the token sits under value.
-        else if (field.name ==~ /(?i)access_?token/ && result.value instanceof CharSequence && result.value && _redactsAccessTokens()) result.value = _accessTokenRedactedMarker()
-        // The same name rule as hub_get_app_config: a free-text apiKey or brokerPassword is a secret too.
-        else if (_appConfigIsSecretSetting(field.name, field.type, result.value)) { result.value = _appConfigRedactedMarker(); result.redacted = true }
-        if (field.device && field.name in optionsFor) result.options = _nfDevices(field)
-        if (field.device) result.options_available = true
-        result
-    }
-    [page: context.page, fields: fields, controls: context.controls.values().collect { control ->
-        control.findAll { key, value -> !(key in ['params', 'stateAttribute']) }
-    }, messages: context.messages, unsupported: context.unsupported]
+    List fields = (context.get('fields').values()).collect(((this.&_bat529Cb_82110e0f_45).curry([optionsFor] as Object[])))
+    [page: context.page, fields: fields, controls: (context.controls.values()).collect((this.&_bat529Cb_82110e0f_30)), messages: context.messages, unsupported: context.unsupported]
 }
 
 // The recovery point a form workflow takes before its first render: Rule Machine rules and Button
@@ -374,12 +315,7 @@ private Map _nfPage(Long id, String page = null) {
 // navigation would leave empty.
 private Map _nfPrepare(Long id, Map context, Map supplied, String activate, String toolName) {
     Map body = [:] + context.envelope
-    supplied.each { name, value ->
-        Map field = context.get('fields').get(name)
-        if (!field && context.controls.values().any { it.kind == 'button' && it.name == name }) throw new IllegalArgumentException("${name} is a button on the current native page, not a field; activate its control_id instead")
-        if (!field) throw new IllegalArgumentException("Field is not present on the current native page: ${name}")
-        body.putAll(_nfWire(field, _nfValue(field, value)))
-    }
+    (supplied).each(((this.&_bat529Cb_82110e0f_42).curry([body, context] as Object[])))
     // The browser posts label with every mode[mode]; a mode post without it puts back the label the hub last persisted.
     Map label = context.get('fields').get('label')
     if (body.containsKey('mode[mode]') && !body.containsKey('label') && label?.app_field && label.present) body.putAll(_nfWire(label, _nfValue(label, label.value)))
@@ -387,18 +323,7 @@ private Map _nfPrepare(Long id, Map context, Map supplied, String activate, Stri
     // The browser posts every input on the page, so an unset input saves its default.
     List defaults = []
     List rejected = []
-    context.get('fields').each { name, field ->
-        if (supplied.containsKey(name) || field.present || !field.containsKey('default_value') || field.disabled || !field.supported) return
-        String encoded
-        try { encoded = _nfValue(field, field.default_value) }
-        catch (IllegalArgumentException refused) {
-            mcpLog('debug', 'rm-native', "${toolName} form: page default of ${name} on app ${id} not posted: ${refused.message}")
-            rejected << [name: name, reason: refused.message]
-            return
-        }
-        defaults << name
-        body.putAll(_nfWire(field, encoded))
-    }
+    (context.get('fields')).each(((this.&_bat529Cb_82110e0f_44).curry([body, defaults, id, rejected, supplied, toolName] as Object[])))
     Map control = null
     String reloadPath = null
     if (activate) {
@@ -410,10 +335,7 @@ private Map _nfPrepare(Long id, Map context, Map supplied, String activate, Stri
         if (control.kind == 'button' && !control.submit_on_change && supplied) throw new IllegalArgumentException('Submit fields separately before a button that reloads the native page')
         if (control.kind == 'button' && !control.submit_on_change) reloadPath = _nfReloadPath(id, context)
         if (control.kind in ['href', 'navigation'] && control.value != 'Cancel') {
-            List missing = context.get('fields').values().findAll { field ->
-                String key = _nfWire(field, '').keySet().first()
-                field.required && !field.disabled && !(body.containsKey(key) ? !(body[key] in ['', '[]']) : field.present)
-            }*.name
+            List missing = (context.get('fields').values()).findAll(((this.&_bat529Cb_82110e0f_40).curry([body] as Object[])))*.name
             if (missing) throw new IllegalArgumentException("Complete required native fields before navigating: ${missing.join(', ')}")
         }
     }
@@ -504,19 +426,11 @@ private void _nfForget(Long id) {
 }
 
 Map toolCallAppForm(Map args, String toolName = 'hub_set_rule') {
-    if (args.keySet().any { !(it in ['app_id', 'steps', 'options_for', 'confirm', 'bestPracticeKey']) } || !args.app_id?.toString()?.isLong() || args.app_id.toString().toLong() < 1) throw new IllegalArgumentException('A positive app_id is required')
+    if ((args.keySet()).any((this.&_bat529Cb_82110e0f_21))|| !args.app_id?.toString()?.isLong() || args.app_id.toString().toLong() < 1) throw new IllegalArgumentException('A positive app_id is required')
     if (!(args.steps instanceof List) || args.steps.size() < 1 || args.steps.size() > 16) throw new IllegalArgumentException('Provide 1 through 16 open/submit steps')
     List optionsFor = args.options_for ?: []
-    if (!(optionsFor instanceof List) || optionsFor.size() > 32 || optionsFor.any { !(it instanceof String) }) throw new IllegalArgumentException('options_for must contain at most 32 field names')
-    args.steps.each { step ->
-        if (!(step instanceof Map) || !(step.kind in ['open', 'submit'])) throw new IllegalArgumentException('Unknown form step')
-        List keys = step.kind == 'open' ? ['kind', 'page', 'from'] : ['kind', 'expect_page', 'fields', 'activate']
-        if (step.keySet().any { !(it in keys) }) throw new IllegalArgumentException('Unknown form step property')
-        if (step.kind == 'open' && step.page != null && (!(step.page instanceof String) || !(step.page ==~ /[A-Za-z_][A-Za-z0-9_.-]*/))) throw new IllegalArgumentException('A registered native page name is required')
-        if (step.kind == 'open' && step.from != null && (step.page == null || !(step.from instanceof String) || !(step.from ==~ /[A-Za-z_][A-Za-z0-9_.-]*/))) throw new IllegalArgumentException('from names the parent page of the opened page and requires page')
-        if (step.kind == 'submit' && (!(step.expect_page instanceof String) || (step.get('fields') != null && !(step.get('fields') instanceof Map)))) throw new IllegalArgumentException('Submit requires expect_page and an optional fields object')
-        if (step.activate != null && !(step.activate instanceof String)) throw new IllegalArgumentException('activate requires a returned control_id string')
-    }
+    if (!(optionsFor instanceof List) || optionsFor.size() > 32 || (optionsFor).any((this.&_bat529Cb_82110e0f_6))) throw new IllegalArgumentException('options_for must contain at most 32 field names')
+    (args.steps).each((this.&_bat529Cb_82110e0f_46))
     requireDestructiveConfirm(args.confirm)
     Long id = args.app_id.toString().toLong()
     _requireUnprotectedAppMutation(id, 'edit native form')
@@ -559,7 +473,7 @@ Map toolCallAppForm(Map args, String toolName = 'hub_set_rule') {
                 if (answer.navigation) navigation = answer.navigation
                 if (answer.created_id != null) createdId = answer.created_id
                 if (answer.created_mismatch) throw new IllegalStateException(answer.created_mismatch)
-                if (answer.label_restored || answer.label_lost) labelOutcome = answer.findAll { k, v -> k in ['label_restored', 'label_lost'] }
+                if (answer.label_restored || answer.label_lost) labelOutcome = (answer).findAll((this.&_bat529Cb_82110e0f_11))
                 if (answer.posted) {
                     defaultsPosted.addAll(plan.defaults)
                     defaultsNotPosted.addAll(plan.rejected)
@@ -587,3 +501,315 @@ Map toolCallAppForm(Map args, String toolName = 'hub_set_rule') {
     } finally { _nfRelease(id) }
 }
 
+
+
+def _bat529Cb_82110e0f_1(def it) { _nfEncode(it) 
+}
+
+def _bat529Cb_82110e0f_2(def it) { it.toString() 
+}
+
+def _bat529Cb_82110e0f_3(def it) { it.toString() 
+}
+
+def _bat529Cb_82110e0f_4(def keys, def it) { !(it in keys) 
+}
+
+def _bat529Cb_82110e0f_5(def it) { it.toString() 
+}
+
+def _bat529Cb_82110e0f_6(def it) { !(it instanceof String) 
+}
+
+def _bat529Cb_82110e0f_7(def it) { it.toString() 
+}
+
+def _bat529Cb_82110e0f_8(def targets, def it) { _nfNavigationTargets(it, targets) 
+}
+
+def _bat529Cb_82110e0f_9(def key, def k, def v) { k != key 
+}
+
+def _bat529Cb_82110e0f_9(def key, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_82110e0f_9(key, *__bat529Tuple)
+}
+
+def _bat529Cb_82110e0f_10(def key, def k, def v) { k != key 
+}
+
+def _bat529Cb_82110e0f_10(def key, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_82110e0f_10(key, *__bat529Tuple)
+}
+
+def _bat529Cb_82110e0f_11(def k, def v) { k in ['label_restored', 'label_lost'] 
+}
+
+def _bat529Cb_82110e0f_11(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_82110e0f_11(*__bat529Tuple)
+}
+
+def _bat529Cb_82110e0f_12(def key, def value) { !(key in ['params', 'stateAttribute']) 
+}
+
+def _bat529Cb_82110e0f_12(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_82110e0f_12(*__bat529Tuple)
+}
+
+def _bat529Cb_82110e0f_13(def name, def it) { it.kind == 'button' && it.name == name 
+}
+
+def _bat529Cb_82110e0f_14(def key, def value) { "${_nfEncode(key)}=${_nfEncode(value)}" 
+}
+
+def _bat529Cb_82110e0f_14(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_82110e0f_14(*__bat529Tuple)
+}
+
+def _bat529Cb_82110e0f_15(def it) { it.bytes 
+}
+
+def _bat529Cb_82110e0f_16(def it) { it.bytes 
+}
+
+def _bat529Cb_82110e0f_17(def it) { !(it instanceof String) || !(it ==~ /[A-Za-z_][A-Za-z0-9_.-]*/) 
+}
+
+def _bat529Cb_82110e0f_18(def key, def value) { [value: key.toString(), label: _nfText(value)] 
+}
+
+def _bat529Cb_82110e0f_18(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_82110e0f_18(*__bat529Tuple)
+}
+
+def _bat529Cb_82110e0f_19(def envelope, def page, def key) { if (page[key]) envelope[key] = page[key] 
+}
+
+def _bat529Cb_82110e0f_20(def it) { _nfEncode(it) 
+}
+
+def _bat529Cb_82110e0f_21(def it) { !(it in ['app_id', 'steps', 'options_for', 'confirm', 'bestPracticeKey']) 
+}
+
+def _bat529Cb_82110e0f_22(def controls, def fields, def messages, def model, def unsupported, def item, def index) { _nfWalk(item, fields, controls, messages, unsupported, model, index) 
+}
+
+def _bat529Cb_82110e0f_22(def controls, def fields, def messages, def model, def unsupported, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_82110e0f_22(controls, fields, messages, model, unsupported, *__bat529Tuple)
+}
+
+def _bat529Cb_82110e0f_23(def field, def node, def key) { if (node.containsKey(key)) field[key] = node[key] 
+}
+
+def _bat529Cb_82110e0f_24(def envelope, def model, def key) { if (model.containsKey(key)) envelope[key] = model[key] 
+}
+
+def _bat529Cb_82110e0f_25(def entry) { entry.value.expires < now() && !NATIVE_FORM_BUSY.containsKey(entry.key) 
+}
+
+def _bat529Cb_82110e0f_26(def k, def v) { k in ['name', 'value', 'kind', 'stateAttribute', 'submit_on_change', 'params', 'disabled', 'page'] 
+}
+
+def _bat529Cb_82110e0f_26(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_82110e0f_26(*__bat529Tuple)
+}
+
+def _bat529Cb_82110e0f_27(def result, def it) { result.remove(it) 
+}
+
+def _bat529Cb_82110e0f_28(def device) {
+        [value: device.id.toString(), label: _nfText(device.label ?: device.name)]
+    
+}
+
+def _bat529Cb_82110e0f_29(def item) {
+        item instanceof Map ? _nfOptions(item) : [[value: item.toString(), label: _nfText(item)]]
+    
+}
+
+def _bat529Cb_82110e0f_30(def control) {
+        (control).findAll((this.&_bat529Cb_82110e0f_12))
+    
+}
+
+def _bat529Cb_82110e0f_31(def it) { it.toString() 
+}
+
+def _bat529Cb_82110e0f_32(def it) { it.toString() 
+}
+
+def _bat529Cb_82110e0f_33(def node, def targets, def key) {
+        if (node[key] instanceof Map || node[key] instanceof List) _nfNavigationTargets(node[key], targets)
+    
+}
+
+def _bat529Cb_82110e0f_34(def entry) { NATIVE_FORM_CONTEXTS.remove(entry.key) 
+}
+
+def _bat529Cb_82110e0f_35(def controls, def fields, def messages, def model, def node, def unsupported, def key) { if (node[key] instanceof Map || node[key] instanceof List) _nfWalk(node[key], fields, controls, messages, unsupported, model) 
+}
+
+def _bat529Cb_82110e0f_36(def fields, def model, def mode) {
+        String name = mode ? 'mode[mode]' : 'label'
+        if (!fields.containsKey(name)) { _nfAppField(fields, model, mode, [:]); fields[name].hub_default = true }
+    
+}
+
+def _bat529Cb_82110e0f_37(def node, def targets, def key) {
+        def value = node[key]
+        Map target = value instanceof String ? _nfLocalNavigation(value) : null
+        if (target) targets << target
+    
+}
+
+def _bat529Cb_82110e0f_38(def cached, def name, def control) {
+        cached.controls.put(name, (control).findAll((this.&_bat529Cb_82110e0f_26)))
+    
+}
+
+def _bat529Cb_82110e0f_38(def cached, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_82110e0f_38(cached, *__bat529Tuple)
+}
+
+def _bat529Cb_82110e0f_39(def k, def v) { k in ['name', 'type', 'multiple', 'required', 'supported', 'device', 'disabled', 'present', 'capability', 'ignore', 'range', 'min', 'max', 'step', 'default_value', 'app_field', 'sidecars', 'hub_default'] 
+}
+
+def _bat529Cb_82110e0f_39(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_82110e0f_39(*__bat529Tuple)
+}
+
+def _bat529Cb_82110e0f_40(def body, def field) {
+                String key = _nfWire(field, '').keySet().first()
+                field.required && !field.disabled && !(body.containsKey(key) ? !(body[key] in ['', '[]']) : field.present)
+            
+}
+
+def _bat529Cb_82110e0f_41(def controls, def messages, def node, def unsupported, def key) {
+        def value = node[key]
+        if (value instanceof String && value.contains('<')) _nfHtml(value, controls, unsupported)
+        if (node.element == 'paragraph' && value instanceof String && _nfText(value)) messages << _nfText(value)
+    
+}
+
+def _bat529Cb_82110e0f_42(def body, def context, def name, def value) {
+        Map field = context.get('fields').get(name)
+        if (!field && (context.controls.values()).any(((this.&_bat529Cb_82110e0f_13).curry([name] as Object[])))) throw new IllegalArgumentException("${name} is a button on the current native page, not a field; activate its control_id instead")
+        if (!field) throw new IllegalArgumentException("Field is not present on the current native page: ${name}")
+        body.putAll(_nfWire(field, _nfValue(field, value)))
+    
+}
+
+def _bat529Cb_82110e0f_42(def body, def context, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_82110e0f_42(body, context, *__bat529Tuple)
+}
+
+def _bat529Cb_82110e0f_43(def cached, def name, def field) {
+        Map descriptor = (field).findAll((this.&_bat529Cb_82110e0f_39))
+        descriptor.option_keys = field.options == null ? null : field.options*.value
+        if (field.app_field && name == 'label') descriptor.value = field.value
+        cached.get('fields').put(name, descriptor)
+    
+}
+
+def _bat529Cb_82110e0f_43(def cached, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_82110e0f_43(cached, *__bat529Tuple)
+}
+
+def _bat529Cb_82110e0f_44(def body, def defaults, def id, def rejected, def supplied, def toolName, def name, def field) {
+        if (supplied.containsKey(name) || field.present || !field.containsKey('default_value') || field.disabled || !field.supported) return
+        String encoded
+        try { encoded = _nfValue(field, field.default_value) }
+        catch (IllegalArgumentException refused) {
+            mcpLog('debug', 'rm-native', "${toolName} form: page default of ${name} on app ${id} not posted: ${refused.message}")
+            rejected << [name: name, reason: refused.message]
+            return
+        }
+        defaults << name
+        body.putAll(_nfWire(field, encoded))
+    
+}
+
+def _bat529Cb_82110e0f_44(def body, def defaults, def id, def rejected, def supplied, def toolName, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_82110e0f_44(body, defaults, id, rejected, supplied, toolName, *__bat529Tuple)
+}
+
+def _bat529Cb_82110e0f_45(def optionsFor, def field) {
+        Map result = [:] + field
+        (['device', 'ignore', 'capability', 'present', 'default_value', 'app_field', 'sidecars', 'hub_default']).each(((this.&_bat529Cb_82110e0f_27).curry([result] as Object[])))
+        if (field.type == 'password') result.redacted = true
+        // The whole-result pass keys on a setting's name, and here the token sits under value.
+        else if (field.name ==~ /(?i)access_?token/ && result.value instanceof CharSequence && result.value && _redactsAccessTokens()) result.value = _accessTokenRedactedMarker()
+        // The same name rule as hub_get_app_config: a free-text apiKey or brokerPassword is a secret too.
+        else if (_appConfigIsSecretSetting(field.name, field.type, result.value)) { result.value = _appConfigRedactedMarker(); result.redacted = true }
+        if (field.device && field.name in optionsFor) result.options = _nfDevices(field)
+        if (field.device) result.options_available = true
+        result
+    
+}
+
+def _bat529Cb_82110e0f_46(def step) {
+        if (!(step instanceof Map) || !(step.kind in ['open', 'submit'])) throw new IllegalArgumentException('Unknown form step')
+        List keys = step.kind == 'open' ? ['kind', 'page', 'from'] : ['kind', 'expect_page', 'fields', 'activate']
+        if ((step.keySet()).any(((this.&_bat529Cb_82110e0f_4).curry([keys] as Object[])))) throw new IllegalArgumentException('Unknown form step property')
+        if (step.kind == 'open' && step.page != null && (!(step.page instanceof String) || !(step.page ==~ /[A-Za-z_][A-Za-z0-9_.-]*/))) throw new IllegalArgumentException('A registered native page name is required')
+        if (step.kind == 'open' && step.from != null && (step.page == null || !(step.from instanceof String) || !(step.from ==~ /[A-Za-z_][A-Za-z0-9_.-]*/))) throw new IllegalArgumentException('from names the parent page of the opened page and requires page')
+        if (step.kind == 'submit' && (!(step.expect_page instanceof String) || (step.get('fields') != null && !(step.get('fields') instanceof Map)))) throw new IllegalArgumentException('Submit requires expect_page and an optional fields object')
+        if (step.activate != null && !(step.activate instanceof String)) throw new IllegalArgumentException('activate requires a returned control_id string')
+    
+}
+
+def _bat529Cb_82110e0f_47(def buttons, def controls, def html, def unsupported, def button, def index) {
+        String fragment = html.substring(button.end as int, index + 1 < buttons.size() ? buttons[index + 1].end as int : html.length())
+        def click = fragment =~ /(?is)<(a|div|button)\b([^>]*\bonclick\s*=\s*(?:"[^"]*"|'[^']*')[^>]*)>(.*?)<\/\1>/
+        boolean found = false
+        while (click.find() && !found) {
+            Map attrs = _nfAttrs(click.group(2))
+            boolean known = attrs.onclick?.trim() ==~ /buttonClick\(this\)\s*;?\s*(?:return false;?)?/
+            def hidden = fragment =~ /(?is)<input\b[^>]*>/
+            boolean paired = false
+            while (hidden.find()) {
+                Map input = _nfAttrs(hidden.group())
+                if (input.type == 'hidden' && input.name == "settings[${button.name}]") paired = true
+            }
+            if (known && paired) {
+                Map control = [name: button.name, kind: 'button', title: attrs['aria-label'] ?: attrs.title ?: _nfText(click.group(3)), disabled: attrs.containsKey('disabled') || (click.group(2) =~ /(?i)(?:^|\s)disabled(?:\s|$)/).find(),
+                               stateAttribute: attrs['data-stateattribute'], submit_on_change: (attrs.get('class') ?: '').tokenize().contains('submitOnChange')]
+                if (attrs['data-confirm']) control.confirmation = attrs['data-confirm']
+                _nfControl(controls, control)
+                found = true
+            }
+        }
+        if (!found) unsupported << "Unrecognized HTML button: ${button.name}"
+    
+}
+
+def _bat529Cb_82110e0f_47(def buttons, def controls, def html, def unsupported, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_82110e0f_47(buttons, controls, html, unsupported, *__bat529Tuple)
+}

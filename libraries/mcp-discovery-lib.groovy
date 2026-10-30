@@ -34,7 +34,7 @@ def toolSearchTools(args) {
             def built = buildToolSearchCorpus(allDefs)
             // Tokenize every corpus entry once, in corpus order, so tokens[i] is the tokenization
             // of corpus[i]. Plain List<List<String>> (sandbox-safe; whole-value single assignment).
-            def tokens = built.collect { bm25Tokenize(_bm25DocText(it)) }
+            def tokens = (built).collect((this.&_bat529Cb_ac505e8e_14))
             TOOL_SEARCH_INDEX.clear()
             TOOL_SEARCH_INDEX.putAll([fingerprint: corpusFp, corpus: built, tokens: tokens])
         }
@@ -75,45 +75,18 @@ def toolSearchTools(args) {
     scores.eachWithIndex { score, idx ->
         if (score > 0) ranked << [index: idx, score: score]
     }
-    ranked.sort { -it.score }
+    (ranked).sort((this.&_bat529Cb_ac505e8e_2))
     // Dedup by tool name: a tool listed in more than one gateway (multi-gateway
     // membership) yields one corpus entry per membership and would otherwise
     // occupy several result slots for the same tool. Keep the highest-scoring
     // entry per tool (ranked is already sorted by descending score).
     def seenSearchNames = [] as Set
-    ranked = ranked.findAll { r ->
-        def nm = visibleCorpus[r.index].name
-        if (seenSearchNames.contains(nm)) return false
-        seenSearchNames << nm
-        return true
-    }
+    ranked = (ranked).findAll(((this.&_bat529Cb_ac505e8e_23).curry([seenSearchNames, visibleCorpus] as Object[])))
     if (ranked.size() > maxResults) ranked = ranked.take(maxResults)
 
     def gatewayConfig = getGatewayConfig()
     def displayMeta = getToolDisplayMeta()
-    def results = ranked.collect { r ->
-        def tool = visibleCorpus[r.index]
-        def entry = [
-            tool: _externalToolName(tool.name as String),
-            description: _withGuideFirst(tool.name as String, tool.description as String),
-            relevance: Math.round(r.score * 100) / 100.0
-        ]
-        // Defensive: a corpus entry can lack a title if a gateway lists a tool name
-        // with no display-meta entry (the rebuild guard above already self-heals the
-        // pre-title cached-corpus case).
-        if (tool.title) entry.title = tool.title
-        if (tool.gateway) {
-            // Keep cached ranking vocabulary stable, but disclose only currently available routing context.
-            def config = gatewayConfig.get(tool.gateway)
-            def intro = _visibleGatewayIntro(tool.gateway, gatewayConfig, searchHideByName, displayMeta)
-            entry.description = _withGuideFirst(tool.name as String, "${config.summaries.get(tool.name) ?: ''} [${intro}]".toString())
-            entry.gateway = _externalToolName(tool.gateway as String)
-            entry.callAs = "Call via ${_externalToolName(tool.gateway as String)}(tool=\"${_externalToolName(tool.name as String)}\", args={...})"
-        } else {
-            entry.callAs = "Call directly: ${_externalToolName(tool.name as String)}({...})"
-        }
-        return entry
-    }
+    def results = (ranked).collect(((this.&_bat529Cb_ac505e8e_29).curry([displayMeta, gatewayConfig, searchHideByName, visibleCorpus] as Object[])))
 
     return [
         query: query,
@@ -196,12 +169,12 @@ private long _fpField(long h, value) {
 // Build a flat list of all tools (core + proxied) with gateway attribution
 private buildToolSearchCorpus(List defs = null) {
     def gatewayConfig = getGatewayConfig()
-    def proxiedNames = gatewayConfig.values().collectMany { it.tools } as Set
+    def proxiedNames = (gatewayConfig.values()).collectMany((this.&_bat529Cb_ac505e8e_12))as Set
     // Strip [[FLAT_TRIM]] marker tokens before BM25 corpus build -- the markers
     // shouldn't show up as searchable tokens, but the wrapped capability lists
     // SHOULD (so hub_search_tools still matches "switch motion contact").
     def allDefs = applyDescriptionTransform(defs ?: getAllToolDefinitions(), false, false)
-    def allDefsMap = allDefs.collectEntries { [(it.name): it] }
+    def allDefsMap = (allDefs).collectEntries((this.&_bat529Cb_ac505e8e_10))
     // Friendly names join the searchable text: a title can add tokens the bare
     // name and description lack, and the tokenizer does not stem.
     def displayMeta = getToolDisplayMeta()
@@ -209,23 +182,10 @@ private buildToolSearchCorpus(List defs = null) {
     def corpus = []
 
     // Core tools (not behind a gateway)
-    allDefs.each { toolDef ->
-        if (!proxiedNames.contains(toolDef.name)) {
-            def params = toolDef.inputSchema?.properties?.keySet()?.join(" ") ?: ""
-            corpus << [name: toolDef.name, title: displayMeta[toolDef.name]?.title, description: toolDef.description?.replaceAll(/\n+/, ' ')?.trim(), params: params, gateway: null]
-        }
-    }
+    (allDefs).each(((this.&_bat529Cb_ac505e8e_25).curry([corpus, displayMeta, proxiedNames] as Object[])))
 
     // Gateway sub-tools (with search hints for synonym matching)
-    gatewayConfig.each { gwName, config ->
-        config.tools.each { toolName ->
-            def summary = config.summaries[toolName] ?: ""
-            def hints = config.searchHints?."${toolName}" ?: ""
-            def fullDef = allDefsMap[toolName]
-            def params = fullDef?.inputSchema?.properties?.keySet()?.join(" ") ?: ""
-            corpus << [name: toolName, title: displayMeta[toolName]?.title, description: "${summary} [${config.description}]", params: params, hints: hints, gateway: gwName]
-        }
-    }
+    (gatewayConfig).each(((this.&_bat529Cb_ac505e8e_27).curry([allDefsMap, corpus, displayMeta] as Object[])))
 
     return corpus
 }
@@ -233,7 +193,7 @@ private buildToolSearchCorpus(List defs = null) {
 // BM25 tokenizer: lowercase, split on non-alphanumeric, drop tokens < 2 chars
 private bm25Tokenize(String text) {
     if (!text) return []
-    return text.toLowerCase().split(/[^a-z0-9]+/).findAll { it.length() > 1 }
+    return (text.toLowerCase().split(/[^a-z0-9]+/)).findAll((this.&_bat529Cb_ac505e8e_15))
 }
 
 // BM25 Okapi scoring
@@ -251,44 +211,18 @@ private bm25Score(List<List<String>> docTokens, List<String> queryTokens) {
     if (n == 0) return []
 
     // Document lengths and average
-    def docLengths = docTokens.collect { it.size() }
+    def docLengths = (docTokens).collect((this.&_bat529Cb_ac505e8e_4))
     def avgDl = docLengths.sum() / (double) n
     if (avgDl == 0) return new double[n] as List
 
     // Document frequency: how many docs contain each token. Preserve the token
     // namespace while using Map methods to avoid sandbox property resolution.
     def df = [:]
-    docTokens.each { tokens ->
-        tokens.toSet().each { token ->
-            def k = _bm25Key(token)
-            df.put(k, (df.get(k) ?: 0) + 1)
-        }
-    }
+    (docTokens).each(((this.&_bat529Cb_ac505e8e_22).curry([df] as Object[])))
 
     // Score each document
     def scores = new double[n]
-    docTokens.eachWithIndex { tokens, docIdx ->
-        // Term frequency for this doc
-        def tf = [:]
-        tokens.each { t -> def k = _bm25Key(t); tf.put(k, (tf.get(k) ?: 0) + 1) }
-
-        def dl = docLengths[docIdx]
-        double score = 0.0
-
-        queryTokens.each { rawQt ->
-            def qt = _bm25Key(rawQt)
-            def termFreq = tf.get(qt) ?: 0
-            if (termFreq > 0) {
-                def docFreq = df.get(qt) ?: 0
-                def idf = Math.log((n - docFreq + 0.5) / (docFreq + 0.5) + 1.0)
-                def num = termFreq * (k1 + 1)
-                def den = termFreq + k1 * (1 - b + b * dl / avgDl)
-                score += idf * num / den
-            }
-        }
-
-        scores[docIdx] = score
-    }
+    (docTokens).eachWithIndex(((this.&_bat529Cb_ac505e8e_28).curry([avgDl, b, df, docLengths, k1, n, queryTokens, scores] as Object[])))
 
     return scores as List
 }
@@ -332,21 +266,19 @@ def toolGetToolGuide(section, cursor = null, Map apiDocs = null) {
             success: false,
             error: "Unknown section: ${section}",
             availableSections: sections.keySet().toList(),
-            availableSubSections: subSections.collectEntries { k, v -> [(k): v.keySet().toList()] }
-        ]
+            availableSubSections: (subSections).collectEntries((this.&_bat529Cb_ac505e8e_19))]
     }
 
     // Full guide. It does not fit one response and never has (issue #392), so this pages instead
     // of tripping the size guard -- the caller gets real content plus the whole key space to
     // narrow with, and nextCursor when it wants the rest. Keys are served per section only.
     def fullGuide = "Acknowledgment keys are published only when a single section is read.\n\n" +
-        sections.collect { k, v -> v }.join("\n\n---\n\n")
+        (sections).collect((this.&_bat529Cb_ac505e8e_3)).join("\n\n---\n\n")
     def result = [
         success: true,
         section: "full",
         availableSections: sections.keySet().toList(),
-        availableSubSections: subSections.collectEntries { k, v -> [(k): v.keySet().toList()] }
-    ]
+        availableSubSections: (subSections).collectEntries((this.&_bat529Cb_ac505e8e_17))]
     return _withGuidePage(result, fullGuide, cursor, fullGuidePageChars())
 }
 
@@ -355,7 +287,7 @@ private Map _platformApiSearch(String query, cursor) {
     // documentation), served from /developer-docs. A search downloads and parses the whole index
     // (several MB) on every call and returns only ranked matches, 25 per page; a class page returns
     // its methods 40 per page. `methods` is read with Map.get: the sandbox blocks it as a property.
-    def terms = query.toLowerCase().split(/\s+/).findAll { it }
+    def terms = (query.toLowerCase().split(/\s+/)).findAll((this.&_bat529Cb_ac505e8e_11))
     if (!terms) throw new IllegalArgumentException("platform_api_search needs at least one word, e.g. 'eventsBetween' or 'hub variable'.")
     def index
     try {
@@ -376,7 +308,7 @@ private Map _platformApiSearch(String query, cursor) {
         // Apps, drivers and shared APIs outrank the many protocol (Z-Wave/Zigbee/Matter) pages.
         int sectionBoost = (pg.section == "protocols") ? 0 : 3
         String pageText = "${pg.id} ${pg.label} ${pg.className} ${pg.topic}".toLowerCase()
-        if (terms.every { pageText.contains(it) }) {
+        if ((terms).every(((this.&_bat529Cb_ac505e8e_8).curry([pageText] as Object[])))) {
             hits << [score: 3 + sectionBoost, pageId: pg.id, className: pg.className, label: pg.label, section: pg.section, kind: "page", usage: pg.usage]
         }
         def pgMethods = pg.get("methods")
@@ -385,21 +317,21 @@ private Map _platformApiSearch(String query, cursor) {
             String name = (m.name ?: "").toString()
             String lname = name.toLowerCase()
             String text = "${name} ${m.signature} ${m.summary} ${pg.className} ${pg.label}".toLowerCase()
-            if (!terms.every { text.contains(it) }) return
+            if (!(terms).every(((this.&_bat529Cb_ac505e8e_6).curry([text] as Object[])))) return
             // An exact method-name term ranks first, then a name holding every term.
             int score = sectionBoost
-            if (terms.any { it == lname }) score += 4
-            else if (terms.every { lname.contains(it) }) score += 2
+            if ((terms).any(((this.&_bat529Cb_ac505e8e_1).curry([lname] as Object[])))) score += 4
+            else if ((terms).every(((this.&_bat529Cb_ac505e8e_7).curry([lname] as Object[])))) score += 2
             hits << [score: score, pageId: pg.id, className: pg.className, label: pg.label, section: pg.section, kind: m.kind ?: "method",
                      name: name, signature: m.signature, summary: m.summary?.toString()?.take(400)]
         }
     }
     (index.guides instanceof List ? index.guides : []).each { g ->
-        if (g instanceof Map && terms.every { "${g.title} ${g.summary}".toLowerCase().contains(it) }) {
+        if (g instanceof Map && (terms).every(((this.&_bat529Cb_ac505e8e_16).curry([g] as Object[])))) {
             hits << [score: 1, kind: "guide", label: g.title, summary: g.summary, url: g.url]
         }
     }
-    hits = hits.sort { -(it.score as int) }.collect { h -> h.findAll { k, v -> k != "score" && v != null } }
+    hits = ((hits).sort((this.&_bat529Cb_ac505e8e_5))).collect((this.&_bat529Cb_ac505e8e_20))
     def paged = _paginateList(hits, cursor != null ? cursor : "", 25, "hub_get_tool_guide")
     def out = [success: true, platformApiSearch: query, contentRevision: index.contentRevision, total: hits.size(), matches: paged.page]
     out.note = hits ? "Open a class with hub_get_tool_guide(platform_api_page=<pageId>) for full method descriptions. Methods the sandbox restricts to system apps are not marked; probe before relying on one." :
@@ -423,12 +355,7 @@ private Map _platformApiPage(String pageId, cursor) {
     if (!(pgMethods instanceof List)) return [success: false, error: "API documentation page '${pageId}' has an unexpected shape."]
     // A description past 20,000 characters is cut (descriptionTruncated), so a single-method page stays
     // near the ~60 KB budget.
-    def methods = pgMethods.findAll { it instanceof Map }.collect { m ->
-        def text = (m.descriptionMarkdown ?: m.summary)?.toString()?.trim()
-        def entry = [kind: m.kind, name: m.name, signature: m.signature, description: text?.take(20000)]
-        if (text && text.length() > 20000) entry.descriptionTruncated = true
-        entry
-    }
+    def methods = ((pgMethods).findAll((this.&_bat529Cb_ac505e8e_9))).collect((this.&_bat529Cb_ac505e8e_24))
     // 40 methods a page, fewer when their descriptions would push a page past ~60 KB.
     def pageCursor = (cursor != null) ? cursor : ""
     def paged = _paginateList(methods, pageCursor, 40, "hub_get_tool_guide")
@@ -511,4 +438,199 @@ def _toolDisplayMeta_partDiscovery() {
         hub_get_tool_guide: [title: "Get Tool Guide", summary: "Deep-reference guide for MCP tool topics, plus search of the hub's own Groovy API documentation."],
         hub_search_tools: [title: "Search Tools", summary: "Search all MCP tools by natural-language query."]
     ]
+}
+
+
+def _bat529Cb_ac505e8e_1(def lname, def it) { it == lname 
+}
+
+def _bat529Cb_ac505e8e_2(def it) { -it.score 
+}
+
+def _bat529Cb_ac505e8e_3(def k, def v) { v 
+}
+
+def _bat529Cb_ac505e8e_3(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ac505e8e_3(*__bat529Tuple)
+}
+
+def _bat529Cb_ac505e8e_4(def it) { it.size() 
+}
+
+def _bat529Cb_ac505e8e_5(def it) { -(it.score as int) 
+}
+
+def _bat529Cb_ac505e8e_6(def text, def it) { text.contains(it) 
+}
+
+def _bat529Cb_ac505e8e_7(def lname, def it) { lname.contains(it) 
+}
+
+def _bat529Cb_ac505e8e_8(def pageText, def it) { pageText.contains(it) 
+}
+
+def _bat529Cb_ac505e8e_9(def it) { it instanceof Map 
+}
+
+def _bat529Cb_ac505e8e_10(def it) { [(it.name): it] 
+}
+
+def _bat529Cb_ac505e8e_11(def it) { it 
+}
+
+def _bat529Cb_ac505e8e_12(def it) { it.tools 
+}
+
+def _bat529Cb_ac505e8e_13(def k, def v) { k != "score" && v != null 
+}
+
+def _bat529Cb_ac505e8e_13(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ac505e8e_13(*__bat529Tuple)
+}
+
+def _bat529Cb_ac505e8e_14(def it) { bm25Tokenize(_bm25DocText(it)) 
+}
+
+def _bat529Cb_ac505e8e_15(def it) { it.length() > 1 
+}
+
+def _bat529Cb_ac505e8e_16(def g, def it) { "${g.title} ${g.summary}".toLowerCase().contains(it) 
+}
+
+def _bat529Cb_ac505e8e_17(def k, def v) { [(k): v.keySet().toList()] 
+}
+
+def _bat529Cb_ac505e8e_17(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ac505e8e_17(*__bat529Tuple)
+}
+
+def _bat529Cb_ac505e8e_18(def tf, def t) { def k = _bm25Key(t); tf.put(k, (tf.get(k) ?: 0) + 1) 
+}
+
+def _bat529Cb_ac505e8e_19(def k, def v) { [(k): v.keySet().toList()] 
+}
+
+def _bat529Cb_ac505e8e_19(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ac505e8e_19(*__bat529Tuple)
+}
+
+def _bat529Cb_ac505e8e_20(def h) { (h).findAll((this.&_bat529Cb_ac505e8e_13))
+}
+
+def _bat529Cb_ac505e8e_21(def df, def token) {
+            def k = _bm25Key(token)
+            df.put(k, (df.get(k) ?: 0) + 1)
+        
+}
+
+def _bat529Cb_ac505e8e_22(def df, def tokens) {
+        (tokens.toSet()).each(((this.&_bat529Cb_ac505e8e_21).curry([df] as Object[])))
+    
+}
+
+def _bat529Cb_ac505e8e_23(def seenSearchNames, def visibleCorpus, def r) {
+        def nm = visibleCorpus[r.index].name
+        if (seenSearchNames.contains(nm)) return false
+        seenSearchNames << nm
+        return true
+    
+}
+
+def _bat529Cb_ac505e8e_24(def m) {
+        def text = (m.descriptionMarkdown ?: m.summary)?.toString()?.trim()
+        def entry = [kind: m.kind, name: m.name, signature: m.signature, description: text?.take(20000)]
+        if (text && text.length() > 20000) entry.descriptionTruncated = true
+        entry
+    
+}
+
+def _bat529Cb_ac505e8e_25(def corpus, def displayMeta, def proxiedNames, def toolDef) {
+        if (!proxiedNames.contains(toolDef.name)) {
+            def params = toolDef.inputSchema?.properties?.keySet()?.join(" ") ?: ""
+            corpus << [name: toolDef.name, title: displayMeta[toolDef.name]?.title, description: toolDef.description?.replaceAll(/\n+/, ' ')?.trim(), params: params, gateway: null]
+        }
+    
+}
+
+def _bat529Cb_ac505e8e_26(def allDefsMap, def config, def corpus, def displayMeta, def gwName, def toolName) {
+            def summary = config.summaries[toolName] ?: ""
+            def hints = config.searchHints?."${toolName}" ?: ""
+            def fullDef = allDefsMap[toolName]
+            def params = fullDef?.inputSchema?.properties?.keySet()?.join(" ") ?: ""
+            corpus << [name: toolName, title: displayMeta[toolName]?.title, description: "${summary} [${config.description}]", params: params, hints: hints, gateway: gwName]
+        
+}
+
+def _bat529Cb_ac505e8e_27(def allDefsMap, def corpus, def displayMeta, def gwName, def config) {
+        (config.tools).each(((this.&_bat529Cb_ac505e8e_26).curry([allDefsMap, config, corpus, displayMeta, gwName] as Object[])))
+    
+}
+
+def _bat529Cb_ac505e8e_27(def allDefsMap, def corpus, def displayMeta, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ac505e8e_27(allDefsMap, corpus, displayMeta, *__bat529Tuple)
+}
+
+def _bat529Cb_ac505e8e_28(def avgDl, def b, def df, def docLengths, def k1, def n, def queryTokens, def scores, def tokens, def docIdx) {
+        // Term frequency for this doc
+        def tf = [:]
+        (tokens).each(((this.&_bat529Cb_ac505e8e_18).curry([tf] as Object[])))
+
+        def dl = docLengths[docIdx]
+        double score = 0.0
+
+        queryTokens.each { rawQt ->
+            def qt = _bm25Key(rawQt)
+            def termFreq = tf.get(qt) ?: 0
+            if (termFreq > 0) {
+                def docFreq = df.get(qt) ?: 0
+                def idf = Math.log((n - docFreq + 0.5) / (docFreq + 0.5) + 1.0)
+                def num = termFreq * (k1 + 1)
+                def den = termFreq + k1 * (1 - b + b * dl / avgDl)
+                score += idf * num / den
+            }
+        }
+
+        scores[docIdx] = score
+    
+}
+
+def _bat529Cb_ac505e8e_28(def avgDl, def b, def df, def docLengths, def k1, def n, def queryTokens, def scores, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ac505e8e_28(avgDl, b, df, docLengths, k1, n, queryTokens, scores, *__bat529Tuple)
+}
+
+def _bat529Cb_ac505e8e_29(def displayMeta, def gatewayConfig, def searchHideByName, def visibleCorpus, def r) {
+        def tool = visibleCorpus[r.index]
+        def entry = [
+            tool: _externalToolName(tool.name as String),
+            description: _withGuideFirst(tool.name as String, tool.description as String),
+            relevance: Math.round(r.score * 100) / 100.0
+        ]
+        // Defensive: a corpus entry can lack a title if a gateway lists a tool name
+        // with no display-meta entry (the rebuild guard above already self-heals the
+        // pre-title cached-corpus case).
+        if (tool.title) entry.title = tool.title
+        if (tool.gateway) {
+            // Keep cached ranking vocabulary stable, but disclose only currently available routing context.
+            def config = gatewayConfig.get(tool.gateway)
+            def intro = _visibleGatewayIntro(tool.gateway, gatewayConfig, searchHideByName, displayMeta)
+            entry.description = _withGuideFirst(tool.name as String, "${config.summaries.get(tool.name) ?: ''} [${intro}]".toString())
+            entry.gateway = _externalToolName(tool.gateway as String)
+            entry.callAs = "Call via ${_externalToolName(tool.gateway as String)}(tool=\"${_externalToolName(tool.name as String)}\", args={...})"
+        } else {
+            entry.callAs = "Call directly: ${_externalToolName(tool.name as String)}({...})"
+        }
+        return entry
+    
 }

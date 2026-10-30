@@ -541,7 +541,7 @@ private void _saveClientToken(String id, Map entry) {
 // What the hub currently accepts (getAccessTokens() reads this same list).
 private List<String> _liveAccessTokens() {
     def raw = state.accessToken?.toString()
-    return raw ? raw.split(",").collect { it.trim() }.findAll { it } : []
+    return raw ? ((raw.split(",")).collect((this.&_bat529Cb_ad9a62cb_12))).findAll((this.&_bat529Cb_ad9a62cb_73)): []
 }
 
 // The hub's revoke cuts the token out of the comma-joined list and leaves an empty entry behind
@@ -565,8 +565,7 @@ private boolean _retiredWithinTtl(retiredAt, long nowMs) {
 private void _retireAccessToken(String token) {
     if (!token) return
     long at = now()
-    def kept = (state.retiredTokenHashes instanceof Map ? state.retiredTokenHashes : [:])
-        .findAll { h, t -> _retiredWithinTtl(t, at) }
+    def kept = ((state.retiredTokenHashes instanceof Map ? state.retiredTokenHashes : [:])).findAll(((this.&_bat529Cb_ad9a62cb_176).curry([at] as Object[])))
     kept.put(_mrtrSha256(token), at)
     state.retiredTokenHashes = kept
 }
@@ -680,18 +679,14 @@ private Set _installedAppTargetTools() {
 private boolean _targetsThisApp(Map args) {
     String self = app?.id?.toString()
     if (!self || args == null) return false
-    return ["appId", "app_id", "sourceAppId", "ruleId", "rule_id", "parent_id"].any { key ->
-        def target = args.get(key)
-        def ids = (target instanceof Collection) ? target : [target]
-        ids.any { it?.toString() == self }
-    }
+    return (["appId", "app_id", "sourceAppId", "ruleId", "rule_id", "parent_id"]).any(((this.&_bat529Cb_ad9a62cb_212).curry([args, self] as Object[])))
 }
 
 // Client-token lifecycle shared by the token page buttons and hub_update_mcp_settings(clientToken).
 // Each returns [success: true, ...] or [success: false, error: <text for the page or the caller>].
 Map _createClientToken(String rawLabel) {
     String label = rawLabel?.trim()
-    if (!label || label.length() > 40 || label.contains(",") || _clientTokens().values().any { it?.label == label }) {
+    if (!label || label.length() > 40 || label.contains(",") || (_clientTokens().values()).any(((this.&_bat529Cb_ad9a62cb_68).curry([label] as Object[])))) {
         String named = label ? " ('${label}' is not)" : ""
         return [success: false, error: "No token created: the client name must be 1-40 characters, contain no comma, and not already be used${named}."]
     }
@@ -731,9 +726,7 @@ Map _revokeClientToken(String id) {
     if (!revoked) return [success: false, error: "'${client.label}' was not revoked: its token is still in the hub's token list. Try Revoke again."]
     _retireAccessToken(client.token)
     _saveClientToken(id, null)
-    ["clientTools", "clientRead", "clientWrite", "clientLocal", "clientCloud", "clientToolNumber"].each {
-        app.removeSetting("${it}_${id}".toString())
-    }
+    (["clientTools", "clientRead", "clientWrite", "clientLocal", "clientCloud", "clientToolNumber"]).each(((this.&_bat529Cb_ad9a62cb_189).curry([id] as Object[])))
     mcpLog("warn", "server", "MCP client token revoked for '${client.label}'")
     return [success: true, clientId: id, label: client.label]
 }
@@ -746,7 +739,7 @@ Map _rotateClientToken(String id) {
     String fresh = null
     try {
         resetSpecificAccessToken(client.token)
-        fresh = _liveAccessTokens().find { !before.contains(it) }
+        fresh = (_liveAccessTokens()).find(((this.&_bat529Cb_ad9a62cb_58).curry([before] as Object[])))
     } catch (Exception e) {
         mcpLogError("server", "resetSpecificAccessToken failed for client '${client.label}'", e)
     }
@@ -759,21 +752,13 @@ Map _rotateClientToken(String id) {
 
 // Tokens the hub accepts that are neither the main token nor any client's (see _resolveCaller).
 List<String> _untrackedAccessTokens() {
-    def known = ([_primaryAccessToken()] + _clientTokens().values().collect { it?.token }) as Set
-    return _liveAccessTokens().findAll { !known.contains(it) }
+    def known = ([_primaryAccessToken()] + (_clientTokens().values()).collect((this.&_bat529Cb_ad9a62cb_40))) as Set
+    return (_liveAccessTokens()).findAll(((this.&_bat529Cb_ad9a62cb_71).curry([known] as Object[])))
 }
 
 Map _revokeUntrackedAccessTokens() {
     def untracked = _untrackedAccessTokens()
-    untracked.each { token ->
-        try {
-            revokeSpecificAccessToken(token)
-            _compactAccessTokenList()
-            _retireAccessToken(token)
-        } catch (Exception e) {
-            mcpLogError("server", "revokeSpecificAccessToken failed for an untracked token", e)
-        }
-    }
+    (untracked).each((this.&_bat529Cb_ad9a62cb_229))
     def left = _untrackedAccessTokens()
     if (untracked) mcpLog("warn", "server", "Revoked ${untracked.size() - left.size()} untracked access token(s)")
     return left ? [success: false, error: "${left.size()} untracked token(s) are still in the hub's token list. Try again."] : [success: true, revoked: untracked.size()]
@@ -792,7 +777,7 @@ Map _clientAccessView(String id) {
 // Throws IllegalArgumentException before anything is written.
 Map _clientAccessWrites(String id, Map access) {
     def writes = [:]
-    def unknown = access.keySet().findAll { !(it in ["tools", "read", "write", "local", "cloud", "toolNumber"]) }
+    def unknown = (access.keySet()).findAll((this.&_bat529Cb_ad9a62cb_157))
     if (unknown) throw new IllegalArgumentException("Unknown clientToken.access keys: ${unknown.sort()}. Allowed: tools, read, write, local, cloud, toolNumber.")
     if (access.containsKey("tools")) {
         def grantable = _grantableToolOptions().keySet()
@@ -800,23 +785,17 @@ Map _clientAccessWrites(String id, Map access) {
         if (tools == "all") {
             writes["clientTools_${id}".toString()] = [type: "enum", value: grantable as List]
         } else if (tools instanceof Collection) {
-            def names = tools.collect { it.toString() }.findAll { !_alwaysGrantedToolNames().contains(it) }
-            def mainOnly = names.findAll { _ungrantableToolNames().contains(it) }
+            def names = ((tools).collect((this.&_bat529Cb_ad9a62cb_7))).findAll((this.&_bat529Cb_ad9a62cb_141))
+            def mainOnly = (names).findAll((this.&_bat529Cb_ad9a62cb_87))
             if (mainOnly) throw new IllegalArgumentException("These tools work only with the main token and cannot be granted: ${mainOnly.sort()}.")
-            def bad = names.findAll { !grantable.contains(it) }
+            def bad = (names).findAll(((this.&_bat529Cb_ad9a62cb_26).curry([grantable] as Object[])))
             if (bad) throw new IllegalArgumentException("Unknown tool names in clientToken.access.tools: ${bad.sort()}.")
             writes["clientTools_${id}".toString()] = [type: "enum", value: names.unique()]
         } else {
             throw new IllegalArgumentException("clientToken.access.tools must be a list of tool names or \"all\".")
         }
     }
-    ["read": "clientRead", "write": "clientWrite", "local": "clientLocal", "cloud": "clientCloud"].each { key, setting ->
-        if (!access.containsKey(key)) return
-        def value = access.get(key)
-        if (value instanceof String && value in ["true", "false"]) value = (value == "true")
-        if (!(value instanceof Boolean)) throw new IllegalArgumentException("clientToken.access.${key} must be true or false.")
-        writes["${setting}_${id}".toString()] = [type: "bool", value: value]
-    }
+    (["read": "clientRead", "write": "clientWrite", "local": "clientLocal", "cloud": "clientCloud"]).each(((this.&_bat529Cb_ad9a62cb_240).curry([access, id, writes] as Object[])))
     if (access.containsKey("toolNumber")) {
         String number = access.toolNumber?.toString()
         if (!(number in ["main", "none"] || number ==~ /^[0-9]$/)) throw new IllegalArgumentException("clientToken.access.toolNumber must be \"main\", \"none\" or a digit 0-9.")
@@ -832,9 +811,9 @@ private void _selectAllClientTools(String id) {
 private Map _grantableToolOptions() {
     def meta = getToolDisplayMeta()
     def skip = _ungrantableToolNames() + _alwaysGrantedToolNames()
-    def names = getAllToolDefinitions().collect { it.name as String }.findAll { !skip.contains(it) }
-    def labelled = names.collectEntries { [(it): "${meta[it]?.title ?: it} (${it})".toString()] }
-    return labelled.sort { a, b -> a.value <=> b.value }
+    def names = ((getAllToolDefinitions()).collect((this.&_bat529Cb_ad9a62cb_75))).findAll(((this.&_bat529Cb_ad9a62cb_144).curry([skip] as Object[])))
+    def labelled = (names).collectEntries(((this.&_bat529Cb_ad9a62cb_133).curry([meta] as Object[])))
+    return (labelled).sort((this.&_bat529Cb_ad9a62cb_36))
 }
 
 // settings keys must be real Strings: a GString key misses the map lookup.
@@ -850,7 +829,7 @@ Set _clientAllowedTools(String id) {
     if (picked instanceof Collection) pickedList = picked
     else if (picked) pickedList = [picked]
     else pickedList = []
-    Set allowed = pickedList.collect { it.toString() } as Set
+    Set allowed = (pickedList).collect((this.&_bat529Cb_ad9a62cb_16))as Set
     allowed.addAll(_alwaysGrantedToolNames())
     allowed.removeAll(_ungrantableToolNames())
     return allowed
@@ -876,7 +855,7 @@ String _clientToolDenial(String toolName, args = null) {
     if (gateway != null) {
         // Only the client's own settings: a gateway the main-page gates hide keeps their message.
         def clientHidden = _clientHiddenTools()
-        if ((gateway.tools ?: []).any { !clientHidden.contains(it) }) return null
+        if (((gateway.tools ?: [])).any(((this.&_bat529Cb_ad9a62cb_94).curry([clientHidden] as Object[])))) return null
         return "${ext} has no tools enabled for ${who}. Ask the hub owner to enable them under Per-client access tokens in the MCP Rule Server app."
     }
     if (_ungrantableToolNames().contains(toolName)) {
@@ -906,10 +885,7 @@ private Set _clientHiddenTools() {
     def readOnly = getReadOnlyToolNames()
     boolean noRead = !_clientAllows(id, "clientRead")
     boolean noWrite = !_clientAllows(id, "clientWrite")
-    return _toolCatalogIndexes().names.findAll { name ->
-        !allowed.contains(name) || (!always.contains(name) &&
-            (name == "hub_set_rule" ? (noRead && noWrite) : (readOnly.contains(name) ? noRead : noWrite)))
-    } as Set
+    return (_toolCatalogIndexes().names).findAll(((this.&_bat529Cb_ad9a62cb_206).curry([allowed, always, noRead, noWrite, readOnly] as Object[])))as Set
 }
 
 Map _clientAccessInfo() {
@@ -919,7 +895,7 @@ Map _clientAccessInfo() {
     return [client: callerClient.label,
             readEnabled: _clientAllows(id, "clientRead"), writeEnabled: _clientAllows(id, "clientWrite"),
             localAccessEnabled: _clientAllows(id, "clientLocal"), cloudAccessEnabled: _clientAllows(id, "clientCloud"),
-            tools: _clientAllowedTools(id).findAll { !hidden.contains(it) }.collect { _externalToolName(it as String) }.sort()]
+            tools: ((_clientAllowedTools(id)).findAll(((this.&_bat529Cb_ad9a62cb_93).curry([hidden] as Object[])))).collect((this.&_bat529Cb_ad9a62cb_158)).sort()]
 }
 
 // The token the hub authenticated this request with, in the hub's own order: a String
@@ -949,7 +925,7 @@ def _resolveCaller() {
     if (_isRetiredAccessToken(token)) {
         return _callerRefusal(401, "Unauthorized: this access token was revoked or rotated. Copy the current URL from the MCP Rule Server app on the hub.")
     }
-    def match = clients.find { cid, c -> c instanceof Map && c.token == token }
+    def match = (clients).find(((this.&_bat529Cb_ad9a62cb_111).curry([token] as Object[])))
     if (match == null) {
         if (token != _primaryAccessToken() && _liveAccessTokens().contains(token)) {
             return _callerRefusal(401, "Unauthorized: this access token belongs to no client. Revoke untracked tokens under Per-client access tokens in the MCP Rule Server app on the hub.")
@@ -1121,13 +1097,8 @@ def buildOverrideOptions() {
     def displayMeta = getToolDisplayMeta()
     def readOnlyNames = getReadOnlyToolNames()
     def gwConfig = getGatewayConfig()
-    def gateways = gwConfig.keySet().sort().collectEntries { gwName ->
-        def pureRead = gwConfig[gwName].tools.every { readOnlyNames.contains(it) }
-        [(gwName): overrideOptionLabel(gwName, displayMeta[gwName], pureRead)]
-    }
-    def tools = getAllToolDefinitions()*.name.findAll { !gwConfig.containsKey(it) }.sort().collectEntries { toolName ->
-        [(toolName): overrideOptionLabel(toolName, displayMeta[toolName], readOnlyNames.contains(toolName))]
-    }
+    def gateways = (gwConfig.keySet().sort()).collectEntries(((this.&_bat529Cb_ad9a62cb_205).curry([displayMeta, gwConfig, readOnlyNames] as Object[])))
+    def tools = ((getAllToolDefinitions()*.name).findAll(((this.&_bat529Cb_ad9a62cb_119).curry([gwConfig] as Object[]))).sort()).collectEntries(((this.&_bat529Cb_ad9a62cb_204).curry([displayMeta, readOnlyNames] as Object[])))
     return [gateways: gateways, tools: tools]
 }
 
@@ -1192,7 +1163,7 @@ def appButtonHandler(btn) {
 }
 
 def getChildAppById(appId) {
-    return getChildApps()?.find { it.id.toString() == appId?.toString() }
+    return (getChildApps())?.find(((this.&_bat529Cb_ad9a62cb_105).curry([appId] as Object[])))
 }
 
 // ==================== APP LIFECYCLE ====================
@@ -1284,9 +1255,7 @@ def uninstalled() {
     // anymore. Diff against our tracked set (NOT removeAllInUseGlobalVar) so we
     // only clear registrations this app made. Idempotent, mirrors the
     // _refreshHubVarInUseRegistrations try/catch pattern.
-    ((atomicState.inUseHubVars ?: []) as List).each { name ->
-        try { removeInUseGlobalVar(name) } catch (Exception e) { /* idempotent */ }
-    }
+    (((atomicState.inUseHubVars ?: []) as List)).each((this.&_bat529Cb_ad9a62cb_183))
     atomicState.remove('inUseHubVars')
 
     // Drop the variable subscriptions and the daily checkForUpdate schedule.
@@ -1301,7 +1270,7 @@ private String _protectedAppId(value) {
 
 private Set<String> _protectedAppSelection(value) {
     def values = value instanceof Collection ? value : (value == null ? [] : [value])
-    return values.collect { _protectedAppId(it) }.findAll { it != null } as Set
+    return ((values).collect((this.&_bat529Cb_ad9a62cb_18))).findAll((this.&_bat529Cb_ad9a62cb_106))as Set
 }
 
 private Set<String> _protectedAppIds(boolean applyUiSelection = false) {
@@ -1342,19 +1311,11 @@ private Map _protectedAppChoices() {
     def selected = _protectedAppIds()
     def options = [:]
     def apps = _collectLiveApps()
-    (apps ?: [:]).each { id, details ->
-        String key = _protectedAppId(id)
-        if (key) {
-            String label = stripAppConfigHtml(details.name) ?: 'Installed app'
-            options.put(key, "${label} (ID ${key})".toString())
-        }
-    }
+    ((apps ?: [:])).each(((this.&_bat529Cb_ad9a62cb_220).curry([options] as Object[])))
     String selfId = _protectedAppId(app?.id)
     if (selfId && !options.containsKey(selfId)) options.put(selfId, "${app?.label ?: 'MCP Rule Server'} (ID ${selfId})".toString())
-    selected.each { id ->
-        if (!options.containsKey(id)) options.put(id, "Unavailable app (ID ${id})".toString())
-    }
-    return [options: options.sort { a, b -> a.value.toString().compareToIgnoreCase(b.value.toString()) },
+    (selected).each(((this.&_bat529Cb_ad9a62cb_173).curry([options] as Object[])))
+    return [options: (options).sort((this.&_bat529Cb_ad9a62cb_142)),
             inventoryUnavailable: apps == null]
 }
 
@@ -1637,7 +1598,7 @@ def handleMcpRequest() {
     String headerVersion = _requestHeader("MCP-Protocol-Version")
     boolean bodyCarriesRequest = false
     if (requestBody instanceof List) {
-        bodyCarriesRequest = requestBody.any { it instanceof Map && it?.id != null }
+        bodyCarriesRequest = (requestBody).any((this.&_bat529Cb_ad9a62cb_90))
     } else if (requestBody instanceof Map) {
         bodyCarriesRequest = requestBody.id != null
     }
@@ -1681,7 +1642,7 @@ def handleMcpRequest() {
             // {__preserialized: <json string>} sentinel on the single-message fast path;
             // unwrap any such element back to a parsed object here so a sentinel can never
             // leak into the batch JSON array (the rare batch tools/call accepts a re-parse).
-            response = requestBody.collect { msg -> processJsonRpcMessage(msg) }.findAll { it != null }.collect { _unwrapPreserialized(it) }
+            response = (((requestBody).collect((this.&_bat529Cb_ad9a62cb_97))).findAll((this.&_bat529Cb_ad9a62cb_135))).collect((this.&_bat529Cb_ad9a62cb_170))
         }
     } else {
         response = processJsonRpcMessage(requestBody)
@@ -1759,7 +1720,7 @@ def _requestHeader(String name) {
         }
         _noteHeadersReadable(true)
         String wanted = name?.toLowerCase()
-        def hit = headers.find { k, v -> k?.toString()?.toLowerCase() == wanted }
+        def hit = (headers).find(((this.&_bat529Cb_ad9a62cb_110).curry([wanted] as Object[])))
         if (hit == null) return null
         def value = hit.value
         if (value instanceof List) value = value.isEmpty() ? null : value[0]
@@ -1858,11 +1819,7 @@ def _configuredExtraOriginHosts() {
     try {
         def raw = settings.additionalAllowedOrigins?.toString()
         if (!raw?.trim()) return []
-        return raw.split(",").collect { entry ->
-            def e = entry?.trim()
-            if (!e) return null
-            e.contains("://") ? _originHost(e) : _authorityHost(e)
-        }.findAll { it }
+        return ((raw.split(",")).collect((this.&_bat529Cb_ad9a62cb_193))).findAll((this.&_bat529Cb_ad9a62cb_198))
     } catch (Exception ignored) {
         return []
     }
@@ -2044,9 +2001,9 @@ def mcpClientIdentity() {
         def messages = (body instanceof List) ? body : [body]
         // A batch is one client on one connection, so the first valid message that names itself
         // speaks for the whole POST; a malformed envelope or a notification names nobody.
-        def valid = messages.findAll { _mcpClientValidMessage(it) }
+        def valid = (messages).findAll((this.&_bat529Cb_ad9a62cb_52))
         if (!valid) return [client: null]
-        def chosen = valid.find { _mcpClientInfoFrom(it) != null } ?: valid[0]
+        def chosen = (valid).find((this.&_bat529Cb_ad9a62cb_44))?: valid[0]
         def params = (chosen.params instanceof Map) ? chosen.params : [:]
         def info = _mcpClientInfoFrom(chosen)
         String name = info == null ? null : _mcpClientString(info["name"])
@@ -2257,7 +2214,7 @@ def supportedProtocolVersions() {
 // handshake in favour of per-request metadata -- so a client that reaches it is speaking
 // the old era by construction and must never be handed a modern version to cache.
 def initializeProtocolVersions() {
-    supportedProtocolVersions().findAll { !_modernEraVersion(it) }
+    (supportedProtocolVersions()).findAll((this.&_bat529Cb_ad9a62cb_108))
 }
 // Newest revision `initialize` will negotiate -- what a client that omits (or
 // requests an unknown, or requests a modern-era) protocolVersion negotiates down to.
@@ -2378,7 +2335,7 @@ private Map _externalizeToolEntry(Map tool) {
     Map result = tool + [name: _externalToolName(tool.name as String)]
     def subEnum = tool.inputSchema?.properties?.tool?.enum
     if (subEnum instanceof List) {
-        Map renamed = (subEnum as List).collectEntries { [(it): _externalToolName(it as String)] }
+        Map renamed = ((subEnum as List)).collectEntries((this.&_bat529Cb_ad9a62cb_128))
         String description = tool.description as String
         renamed.each { internalName, externalName ->
             description = description.replace("- ${internalName}:".toString(), "- ${externalName}:".toString())
@@ -2425,7 +2382,7 @@ def handleToolsList(msg) {
     // -- that is opt-in and the size guard's "suggestion" hints already point
     // callers at it when needed.
     def all = getToolDefinitions()
-    if (_hubToolNumber() != null) all = all.collect { _externalizeToolEntry(it as Map) }
+    if (_hubToolNumber() != null) all = (all).collect((this.&_bat529Cb_ad9a62cb_53))
     // CacheableResult (SEP-2549): tools/list results carry the ttlMs freshness
     // hint plus cacheScope. Scope is "private" -- the endpoint is authenticated by
     // a per-install OAuth token and the catalog it returns is shaped by that
@@ -2489,15 +2446,7 @@ def _resourceCatalog() {
         ]
     }
     if (!hidden.contains("hub_get_tool_guide")) {
-        getToolGuideSections().each { section, text ->
-            entries << [
-                uri: "${_guideResourceUriPrefix()}${section}".toString(),
-                name: "guide-${section}".toString(),
-                title: "Tool Guide: ${section}".toString(),
-                description: "The '${section}' section of the MCP tool guide (same content as hub_get_tool_guide(section='${section}')).".toString(),
-                mimeType: "text/markdown"
-            ]
-        }
+        (getToolGuideSections()).each(((this.&_bat529Cb_ad9a62cb_238).curry([entries] as Object[])))
     }
     return entries
 }
@@ -2918,7 +2867,7 @@ private void _writeAuditLog(Map audit, String phase, Map extra) {
         details.target = audit.target ?: [:]
         details.putAll(extra ?: [:])
         if (details.error != null) details.error = details.error.toString().take(200)
-        String target = (audit.target ?: [:]).collect { k, v -> "${k}=${v}" }.join(",")
+        String target = ((audit.target ?: [:])).collect((this.&_bat529Cb_ad9a62cb_81)).join(",")
         String rpc = audit.rpcId != null ? audit.rpcId : "none"
         String message
         if (phase == "refused") {
@@ -2953,8 +2902,8 @@ private Map _writeTargetSummary(String leaf, String outer, args) {
             if (v instanceof CharSequence || v instanceof Number || v instanceof Boolean) {
                 target.put(key, v.toString().take(80))
             } else if (v instanceof List && !v.isEmpty() &&
-                    v.every { it instanceof CharSequence || it instanceof Number || it instanceof Boolean }) {
-                String joined = v.take(5).collect { it.toString().take(80) }.join(",")
+                    (v).every((this.&_bat529Cb_ad9a62cb_150))) {
+                String joined = (v.take(5)).collect((this.&_bat529Cb_ad9a62cb_30)).join(",")
                 target.put(key, (v.size() > 5 ? "${joined},+${v.size() - 5} more" : joined).toString())
             }
         }
@@ -3301,36 +3250,16 @@ private boolean _writeExecutionLiveLocked(executionId) {
 private void _writeSweepRequestsLocked() {
     long at = now()
     long graceMs = _writeLeaseMs()
-    def expired = WRITE_REQUEST_LEASES.findAll { k, v ->
-        if (!(v instanceof Map) || v.expiresAt == null) return true
-        long exp = v.expiresAt as Long
-        if (exp > at) return false
-        return !(_writeExecutionLiveLocked(k) && at < exp + graceMs)
-    }.collect { it.key }
-    expired.each { k ->
-        WRITE_REQUEST_LEASES.remove(k)
-        LIVE_WRITE_EXECUTIONS.remove(k?.toString())
-    }
+    def expired = ((WRITE_REQUEST_LEASES).findAll(((this.&_bat529Cb_ad9a62cb_222).curry([at, graceMs] as Object[])))).collect((this.&_bat529Cb_ad9a62cb_226))
+    (expired).each((this.&_bat529Cb_ad9a62cb_169))
 }
 
 private List _activeWritesLocked() {
     _packageSweepMarkerLocked()
     long at = now()
     def active = []
-    _writeStateMapLocked("mrtrRequests").values().each { rec ->
-        if (rec instanceof Map && rec.status == "active" &&
-                !_mrtrReadTools().contains(rec.leafTool?.toString()) &&
-                (_writeExecutionLiveLocked(rec.claimId) ||
-                 (rec.expiresAt != null && (rec.expiresAt as Long) > at))) {
-            active << [tool: rec.leafTool, startedAt: rec.startedAt, transport: "mrtr"]
-        }
-    }
-    WRITE_REQUEST_LEASES.each { leaseId, rec ->
-        if (rec instanceof Map && (_writeExecutionLiveLocked(leaseId) ||
-                (rec.expiresAt != null && (rec.expiresAt as Long) > at))) {
-            active << [tool: rec.tool, startedAt: rec.startedAt, transport: rec.transport]
-        }
-    }
+    (_writeStateMapLocked("mrtrRequests").values()).each(((this.&_bat529Cb_ad9a62cb_236).curry([active, at] as Object[])))
+    (WRITE_REQUEST_LEASES).each(((this.&_bat529Cb_ad9a62cb_228).curry([active, at] as Object[])))
     // hub_update_package deliberately returns before its scheduled worker finishes.
     // Keep that background write in the same global cap until its worker clears
     // the marker, exact terminal evidence exists, or the locked sweep proves its
@@ -3341,7 +3270,7 @@ private List _activeWritesLocked() {
         long startedAt = packageMarker.startedAt as Long
         active << [tool: "hub_update_package", startedAt: startedAt, transport: "background"]
     }
-    return active.sort { a, b -> (a.startedAt ?: 0L) <=> (b.startedAt ?: 0L) }
+    return (active).sort((this.&_bat529Cb_ad9a62cb_118))
 }
 
 private Map _writeCapacityRefusalLocked() {
@@ -3367,7 +3296,7 @@ def _activeWrites() {
         _writeSweepRequestsLocked()
         active = _activeWritesLocked()
     }
-    cleanup.each { _mrtrCleanupRecord(it as Map) }
+    (cleanup).each((this.&_bat529Cb_ad9a62cb_39))
     return active
 }
 
@@ -3393,7 +3322,7 @@ def _writeReserveRequest(toolName, String transport) {
             outcome = [accepted: true, leaseId: leaseId]
         }
     }
-    cleanup.each { _mrtrCleanupRecord(it as Map) }
+    (cleanup).each((this.&_bat529Cb_ad9a62cb_48))
     return outcome
 }
 
@@ -3432,10 +3361,10 @@ private def _mrtrLeafArguments(String outerTool, String leafTool, Map outerArgs)
 // budget clock and minus the import payload, at both the gateway and the leaf level.
 private Map _mrtrCheckpointArguments(Map executionArgs) {
     Map next = _mrtrCopyMap(executionArgs ?: [:])
-    ["__reqT0", "jsonContent"].each { next.remove(it) }
+    (["__reqT0", "jsonContent"]).each(((this.&_bat529Cb_ad9a62cb_72).curry([next] as Object[])))
     if (next.args instanceof Map) {
         Map leaf = _mrtrCopyMap(next.args as Map)
-        ["__reqT0", "jsonContent"].each { leaf.remove(it) }
+        (["__reqT0", "jsonContent"]).each(((this.&_bat529Cb_ad9a62cb_70).curry([leaf] as Object[])))
         next.args = leaf
     }
     return next
@@ -3513,13 +3442,10 @@ private String _mrtrSha256(String value) {
 private def _mrtrCanonicalArgs(value) {
     if (value instanceof Map) {
         def canonical = [:]
-        value.entrySet().toList().sort { a, b -> a.key.toString() <=> b.key.toString() }.each { entry ->
-            String key = entry.key.toString()
-            canonical.put(key, _mrtrCanonicalArgs(entry.value))
-        }
+        ((value.entrySet().toList()).sort((this.&_bat529Cb_ad9a62cb_137))).each(((this.&_bat529Cb_ad9a62cb_203).curry([canonical] as Object[])))
         return canonical
     }
-    if (value instanceof List) return value.collect { _mrtrCanonicalArgs(it) }
+    if (value instanceof List) return (value).collect((this.&_bat529Cb_ad9a62cb_21))
     return value
 }
 
@@ -3711,16 +3637,7 @@ def runMrtrCleanup() {
         }
         _mrtrPublishCleanupCheckLocked(hint)
     }
-    cleanup.each { Map expired ->
-        // Only an active record reaches here, and only when nothing was executing it: the
-        // client never continued and the server's own continuation did not run it either.
-        if (expired.nextArguments instanceof Map || expired.checkpoint instanceof Map) {
-            int committed = ((expired.rounds ?: 0) as Integer)
-            mcpLog("warn", "mrtr", "${expired.leafTool}: requestState ${expired.stateId ?: '?'} expired without being resumed; " +
-                "${committed} slice(s) had committed and the remaining work did not run. Inspect the target before repeating.")
-        }
-        _mrtrCleanupRecord(expired)
-    }
+    (cleanup).each((this.&_bat529Cb_ad9a62cb_244))
 }
 
 // Eviction must be durable before publishing the cache or releasing helper ownership.
@@ -3765,23 +3682,12 @@ private Map _mrtrRecoverTerminalEvidenceLocked(String stateId, Map rec) {
 // Caller holds WRITE_RESERVATION_LOCK.
 private void _mrtrSweepTerminalEvidenceLocked() {
     long at = now()
-    MRTR_TERMINAL_EVIDENCE.entrySet().findAll { entry ->
-        !(entry.value instanceof Map) || entry.value.expiresAt == null ||
-            (entry.value.expiresAt as Long) <= at
-    }.collect { it.key }.each { MRTR_TERMINAL_EVIDENCE.remove(it) }
+    (((MRTR_TERMINAL_EVIDENCE.entrySet()).findAll(((this.&_bat529Cb_ad9a62cb_197).curry([at] as Object[])))).collect((this.&_bat529Cb_ad9a62cb_200))).each((this.&_bat529Cb_ad9a62cb_215))
     if (MRTR_TERMINAL_EVIDENCE.size() <= _mrtrMaxRecords()) return
     def durableIds = _writeStateMapLocked("mrtrRequests").keySet() as Set
-    def removable = MRTR_TERMINAL_EVIDENCE.entrySet().findAll {
-        !durableIds.contains(it.key)
-    }.sort { a, b ->
-        long av = (a.value?.expiresAt ?: 0L) as Long
-        long bv = (b.value?.expiresAt ?: 0L) as Long
-        av <=> bv
-    }
+    def removable = ((MRTR_TERMINAL_EVIDENCE.entrySet()).findAll(((this.&_bat529Cb_ad9a62cb_147).curry([durableIds] as Object[])))).sort((this.&_bat529Cb_ad9a62cb_208))
     int removeCount = MRTR_TERMINAL_EVIDENCE.size() - _mrtrMaxRecords()
-    removable.take(Math.min(removeCount, removable.size())).each {
-        MRTR_TERMINAL_EVIDENCE.remove(it.key)
-    }
+    (removable.take(Math.min(removeCount, removable.size()))).each((this.&_bat529Cb_ad9a62cb_167))
 }
 
 // MRTR_WORK_ITEMS hands a claimed slice's arguments to its scheduled worker, and was
@@ -3795,20 +3701,8 @@ private void _mrtrSweepTerminalEvidenceLocked() {
 private void _mrtrSweepWorkItemsLocked() {
     if (MRTR_WORK_ITEMS.isEmpty()) return
     def stored = _writeStateMapLocked("mrtrRequests")
-    def dead = MRTR_WORK_ITEMS.findAll { k, v ->
-        if (!(v instanceof Map)) return true
-        // An executing worker owns its item; never reap under it, or the slice loses the
-        // arguments it is mid-way through applying.
-        if (v.started == true && _writeExecutionLiveLocked(k)) return false
-        def rec = stored.get(v.stateId?.toString())
-        if (!(rec instanceof Map) || rec.status != "active") return true
-        // Match on claim IDENTITY, not just the record: the item exists to feed ONE claim, so
-        // once the record has moved on to a later claim this item is garbage no matter how
-        // young it looks. An age ceiling can't see that -- it would hold a full copy of the
-        // call arguments for the whole window on every superseded claim.
-        return rec.claimId?.toString() != k?.toString()
-    }.collect { it.key }
-    dead.each { MRTR_WORK_ITEMS.remove(it) }
+    def dead = ((MRTR_WORK_ITEMS).findAll(((this.&_bat529Cb_ad9a62cb_248).curry([stored] as Object[])))).collect((this.&_bat529Cb_ad9a62cb_249))
+    (dead).each((this.&_bat529Cb_ad9a62cb_23))
 }
 
 // Returns expired active records whose external helper resources must be
@@ -3823,33 +3717,11 @@ private List _mrtrSweepLocked() {
     // worker. Expiring it would lose its terminal result and admit an overlapping write.
     def kept = [:]
     def cleanup = []
-    stored.each { k, v ->
-        def recovered = _mrtrRecoverTerminalEvidenceLocked(k?.toString(),
-            v instanceof Map ? v as Map : null)
-        if (recovered instanceof Map) v = recovered
-        boolean executing = v instanceof Map && v.status == "active" &&
-            _writeExecutionLiveLocked(v.claimId)
-        if (v instanceof Map && (executing ||
-                (v.expiresAt != null && (v.expiresAt as Long) > at))) {
-            kept.put(k, v)
-        } else if (v instanceof Map && v.status == "active") {
-            cleanup << (([:] + (v as Map)) + [stateId: k?.toString()])
-        }
-    }
+    (stored).each(((this.&_bat529Cb_ad9a62cb_242).curry([at, cleanup, kept] as Object[])))
     // Reads and writes are capped as separate pools here too, so read traffic can never
     // push a write's replayable terminal out and a write backlog never evicts a read.
     Set readSet = _mrtrReadTools()
-    [true, false].each { boolean readClass ->
-        int cap = readClass ? _mrtrMaxReadRecords() : _mrtrMaxRecords()
-        def sameClass = kept.entrySet().findAll { readSet.contains(it.value?.leafTool?.toString()) == readClass }
-        if (sameClass.size() <= cap) return
-        def removable = sameClass.findAll { it.value?.status != "active" }.sort { a, b ->
-            long av = (a.value?.updatedAt ?: a.value?.startedAt ?: 0L) as Long
-            long bv = (b.value?.updatedAt ?: b.value?.startedAt ?: 0L) as Long
-            av <=> bv
-        }
-        removable.take(Math.min(removable.size(), sameClass.size() - cap)).each { kept.remove(it.key) }
-    }
+    ([true, false]).each(((this.&_bat529Cb_ad9a62cb_243).curry([kept, readSet] as Object[])))
     if (kept.size() != stored.size()) {
         _mrtrSetLocked(kept)
     }
@@ -3907,20 +3779,16 @@ private boolean _mrtrMakeRoomLocked(boolean readLeaf = false) {
     def stored = _writeStateMapLocked("mrtrRequests")
     Set readSet = _mrtrReadTools()
     int cap = readLeaf ? _mrtrMaxReadRecords() : _mrtrMaxRecords()
-    def sameClass = stored.entrySet().findAll { readSet.contains(it.value?.leafTool?.toString()) == readLeaf }
+    def sameClass = (stored.entrySet()).findAll(((this.&_bat529Cb_ad9a62cb_152).curry([readLeaf, readSet] as Object[])))
     if (sameClass.size() < cap) return true
-    def removable = sameClass.findAll { it.value?.status != "active" }.sort { a, b ->
-        long av = (a.value?.updatedAt ?: a.value?.startedAt ?: 0L) as Long
-        long bv = (b.value?.updatedAt ?: b.value?.startedAt ?: 0L) as Long
-        av <=> bv
-    }
+    def removable = ((sameClass).findAll((this.&_bat529Cb_ad9a62cb_62))).sort((this.&_bat529Cb_ad9a62cb_213))
     if (removable.isEmpty()) return false
     def kept = [:]
     kept.putAll(stored)
     int removeCount = Math.max(1, sameClass.size() - cap + 1)
-    removable.take(Math.min(removeCount, removable.size())).each { kept.remove(it.key) }
+    (removable.take(Math.min(removeCount, removable.size()))).each(((this.&_bat529Cb_ad9a62cb_143).curry([kept] as Object[])))
     _mrtrSetLocked(kept)
-    return kept.count { k, v -> readSet.contains(v?.leafTool?.toString()) == readLeaf } < cap
+    return (kept).count(((this.&_bat529Cb_ad9a62cb_131).curry([readLeaf, readSet] as Object[])))< cap
 }
 
 // Duplicate detection, global write capacity, storage capacity, and record
@@ -3968,7 +3836,7 @@ def _mrtrReserve(outerTool, leafTool, Map binding, String readSnapshotId = null)
             }
         }
     }
-    cleanup.each { _mrtrCleanupRecord(it as Map) }
+    (cleanup).each((this.&_bat529Cb_ad9a62cb_41))
     return outcome
 }
 
@@ -4016,7 +3884,7 @@ def _mrtrClaim(String stateId, outerTool, leafTool, Map binding) {
             }
         }
     }
-    cleanup.each { _mrtrCleanupRecord(it as Map) }
+    (cleanup).each((this.&_bat529Cb_ad9a62cb_45))
     if (validationError != null) throw new IllegalArgumentException(validationError)
     if (outcome == null) throw new IllegalArgumentException("Invalid or expired requestState")
     return outcome
@@ -4216,7 +4084,7 @@ private Map _mrtrCommitSlice(String stateId, Map rec, Map claim, Map executionAr
                 def banked = cappedBank.results
                 capped.results = banked
                 capped.ruleIds = cappedBank.ruleIds
-                def cappedFailed = banked.findAll { it instanceof Map && it.success != true }
+                def cappedFailed = (banked).findAll((this.&_bat529Cb_ad9a62cb_99))
                 if (!cappedFailed.isEmpty()) {
                     capped.failedRuleIds = (cappedFailed*.ruleId - [null]).unique()
                 }
@@ -4239,14 +4107,14 @@ private Map _mrtrCommitSlice(String stateId, Map rec, Map claim, Map executionAr
                 // success is therefore enough to make this batch some-actioned-some-not, whereas
                 // at the ordinary terminal nothing is left unreached and a mixed row set is the
                 // only way to be partial.
-                capped.partial = banked.any { it instanceof Map && it.success == true }
+                capped.partial = (banked).any((this.&_bat529Cb_ad9a62cb_84))
                 // Name the re-issue set explicitly. The un-done work at the cap is
                 // failedRuleIds UNION remainingRuleIds -- exactly what the continuation would
                 // have re-queued -- and note is the field an agent reads for its next move.
                 // Left generic, it leads to re-issuing only the un-reached ids and stranding
                 // the failed ones, which is what the leaf's own note exists to prevent.
-                def reissue = (((capped.failedRuleIds ?: []) as List) +
-                               ((capped.remainingRuleIds ?: []) as List)).unique { it?.toString() }
+                def reissue = ((((capped.failedRuleIds ?: []) as List) +
+                               ((capped.remainingRuleIds ?: []) as List))).unique((this.&_bat529Cb_ad9a62cb_181))
                 if (!reissue.isEmpty()) {
                     capped.note = "The completed slices remain committed. Re-issue ${reissue} " +
                         "to finish: that is the failed rules plus the ones never reached. " +
@@ -4329,7 +4197,7 @@ private def _mrtrAggregateTerminal(Map rec, result) {
                 out.remove("rmAction")
                 out.remove("error")
             }
-            def failed = out.results.findAll { it instanceof Map && it.success != true }
+            def failed = (out.results).findAll((this.&_bat529Cb_ad9a62cb_112))
             out.success = out.success == true && failed.isEmpty()
             // Deliberately NOT OR-ing aggregate.anyPartial: a call_rule slice sets partial on a
             // bare budget pause, and remainingRuleIds -- the only thing that makes this kind
@@ -4340,7 +4208,7 @@ private def _mrtrAggregateTerminal(Map rec, result) {
             // all-FAILED batch is a failure, not a partial one.
             out.partial = !failed.isEmpty() && failed.size() < out.results.size()
             if (!failed.isEmpty()) {
-                out.failedRuleIds = failed.collect { it.ruleId }.findAll { it != null }.unique()
+                out.failedRuleIds = ((failed).collect((this.&_bat529Cb_ad9a62cb_2))).findAll((this.&_bat529Cb_ad9a62cb_69)).unique()
                 if (!out.error) out.error = "One or more rule operations failed; inspect results[]."
             }
             out.remove("remainingRuleIds")
@@ -4351,7 +4219,7 @@ private def _mrtrAggregateTerminal(Map rec, result) {
             out.put(driverField, ((aggregate.get(driverField) instanceof List) ? aggregate.get(driverField) : []) +
                 ((out.get(driverField) instanceof List) ? out.get(driverField) : []))
             int driverCount = out.get(driverField).size()
-            int driverSucceeded = out.get(driverField).count { it?.success == true }
+            int driverSucceeded = (out.get(driverField)).count((this.&_bat529Cb_ad9a62cb_61))
             out.success = out.success == true && driverSucceeded == driverCount
             String driverVerb = driverField == "installs" ? "installed" : "updated"
             out.message = out.success ? "All ${driverCount} driver(s) ${driverVerb} successfully." :
@@ -4554,35 +4422,8 @@ def _mrtrRecentOperations(int limit = 10) {
     synchronized (WRITE_RESERVATION_LOCK) { stored = [:] + _writeStateMapLocked("mrtrRequests") }
     Set writes = _mrtrWriteTools()
     List rows = []
-    stored.each { k, v ->
-        if (!(v instanceof Map)) return
-        Map rec = v as Map
-        String leaf = rec.leafTool?.toString()
-        if (!writes.contains(leaf)) return
-        // A client sees only its own writes; the main token sees every write and who made it.
-        if (callerClient != null && rec.client?.toString() != callerClient.id.toString()) return
-        String status = rec.status?.toString()
-        String phase
-        if (status == "terminal") {
-            phase = rec.terminalIsError == true ? "finished_with_error" : "finished"
-        } else if (status == "active") {
-            phase = (rec.claimId != null) ? "running" : "paused_resuming"
-        } else {
-            phase = status ?: "unknown"
-        }
-        Map row = [tool: leaf, status: phase, startedAt: rec.startedAt,
-                   updatedAt: rec.updatedAt ?: rec.startedAt, slices: (rec.rounds ?: 0)]
-        if (callerClient == null && rec.clientLabel) row.client = rec.clientLabel
-        if (status == "terminal" && rec.terminalResult instanceof Map) {
-            Map result = rec.terminalResult as Map
-            ["success", "appId", "ruleId", "rule_id", "newAppId", "deviceId", "driverId", "error"].each {
-                if (result.containsKey(it)) row.put(it, result.get(it))
-            }
-            if (result.device instanceof Map && result.device.id != null) row.deviceId = result.device.id
-        }
-        rows << row
-    }
-    rows.sort { a, b -> ((b.updatedAt ?: 0L) as Long) <=> ((a.updatedAt ?: 0L) as Long) }
+    (stored).each(((this.&_bat529Cb_ad9a62cb_253).curry([rows, writes] as Object[])))
+    (rows).sort((this.&_bat529Cb_ad9a62cb_145))
     return rows.take(limit)
 }
 
@@ -4777,7 +4618,7 @@ private List _mrtrRuleResultRows(result) {
     if (result.ruleId == null) return []
     def envelopeOnly = ["ruleIds", "remainingRuleIds", "failedRuleIds", "results",
                         "partial", "mrtr", "status", "tool", "isError"] as Set
-    def row = (result as Map).findAll { k, v -> !envelopeOnly.contains(k?.toString()) }
+    def row = ((result as Map)).findAll(((this.&_bat529Cb_ad9a62cb_121).curry([envelopeOnly] as Object[])))
     row.success = result.success == true
     return [row]
 }
@@ -4823,7 +4664,7 @@ private Map _mrtrBankRuleResults(Map aggregate, resultLike) {
     // terminal keeps its top-level ruleId, so the drift would strip a legitimately single-rule
     // envelope's field. Both test layers already normalize with toString/str before comparing.
     return [results: _mrtrCollapseRuleResults(prior + _mrtrRuleResultRows(resultLike)),
-            ruleIds: (priorIds + roundIds).unique { it?.toString() }]
+            ruleIds: ((priorIds + roundIds)).unique((this.&_bat529Cb_ad9a62cb_51))]
 }
 
 // A rule that failed in an earlier slice is RE-QUEUED for retry alongside the remaining
@@ -4835,14 +4676,7 @@ private Map _mrtrBankRuleResults(Map aggregate, resultLike) {
 private List _mrtrCollapseRuleResults(List entries) {
     def lastByRule = [:]
     def unkeyed = []
-    (entries ?: []).each { entry ->
-        def rid = (entry instanceof Map) ? entry.ruleId : null
-        if (rid == null) {
-            unkeyed << entry
-        } else {
-            lastByRule.put(rid.toString(), entry)
-        }
-    }
+    ((entries ?: [])).each(((this.&_bat529Cb_ad9a62cb_209).curry([lastByRule, unkeyed] as Object[])))
     return lastByRule.values().toList() + unkeyed
 }
 
@@ -4865,14 +4699,11 @@ private void _mrtrCleanupRecord(Map rec) {
 private def _publicToolResultValue(value, boolean backupMetadata = false) {
     if (value instanceof Map) {
         def copy = new LinkedHashMap()
-        (value as Map).each { key, child ->
-            if (backupMetadata && key?.toString() == "brokenBefore") return
-            copy.put(key, _publicToolResultValue(child, key?.toString() == "backup"))
-        }
+        ((value as Map)).each(((this.&_bat529Cb_ad9a62cb_202).curry([backupMetadata, copy] as Object[])))
         return copy
     }
     if (value instanceof List) {
-        return (value as List).collect { child -> _publicToolResultValue(child, false) }
+        return ((value as List)).collect((this.&_bat529Cb_ad9a62cb_122))
     }
     return value
 }
@@ -4897,8 +4728,8 @@ private def _publicToolResultValue(value, boolean backupMetadata = false) {
 // directly and never reach this function.
 private boolean _isProtocolValidation(String message) {
     String txt = (message ?: '').toString()
-    return ["Unknown tool", "Unknown gateway", "Cannot call a gateway", "Gateway arg",
-            "Invalid or expired requestState", "requestState does not match"].any { txt.startsWith(it) }
+    return (["Unknown tool", "Unknown gateway", "Cannot call a gateway", "Gateway arg",
+            "Invalid or expired requestState", "requestState does not match"]).any(((this.&_bat529Cb_ad9a62cb_195).curry([txt] as Object[])))
 }
 
 // Structured context for a dispatch-level log line. The failing call's appId rides along so a
@@ -4977,7 +4808,7 @@ private def _renderToolResult(id, toolName, reactiveToolName, args, result, bool
     // ChatGPT shows `{}` for any result whose JSON text has a top-level `content` key, while every
     // other client reads it (issue #565). Only its requests get the renamed key.
     if (rendered instanceof Map && rendered.containsKey("content") && _openAiClientRequest()) {
-        rendered = rendered.collectEntries { k, v -> [(k == "content" ? "contentText" : k): v] }
+        rendered = (rendered).collectEntries((this.&_bat529Cb_ad9a62cb_130))
     }
     String jsonText
     try {
@@ -5031,16 +4862,9 @@ private boolean _redactsAccessTokens() { settings.redactAccessTokens == true || 
 private def _redactAccessTokens(value) {
     String marker = _accessTokenRedactedMarker()
     if (value instanceof Map) {
-        return value.collectEntries { k, v ->
-            // clientTokens (per-client tokens: id -> [label, token]): mask each token, keep the name.
-            if (k?.toString() == "clientTokens" && v instanceof Map) {
-                return [(k): v.collectEntries { id, c -> [(id): (c instanceof Map) ? c + [token: marker] : marker] }]
-            }
-            boolean tokenKey = k?.toString() ==~ /(?i)access_?token/
-            [(k): (tokenKey && v instanceof CharSequence) ? marker : _redactAccessTokens(v)]
-        }
+        return (value).collectEntries(((this.&_bat529Cb_ad9a62cb_241).curry([marker] as Object[])))
     }
-    if (value instanceof List) return value.collect { _redactAccessTokens(it) }
+    if (value instanceof List) return (value).collect((this.&_bat529Cb_ad9a62cb_24))
     if (value instanceof CharSequence) {
         String text = value.toString()
         boolean clientTokens = text.contains("clientTokens")
@@ -5176,9 +5000,9 @@ private def _toolMetadataGet(String key) {
 }
 
 private def _immutableToolMetadata(value) {
-    if (value instanceof Map) return value.collectEntries { k, v -> [(k): _immutableToolMetadata(v)] }.asImmutable()
-    if (value instanceof Set) return (value.collect { _immutableToolMetadata(it) } as Set).asImmutable()
-    if (value instanceof List) return value.collect { _immutableToolMetadata(it) }.asImmutable()
+    if (value instanceof Map) return (value).collectEntries((this.&_bat529Cb_ad9a62cb_114)).asImmutable()
+    if (value instanceof Set) return ((value).collect((this.&_bat529Cb_ad9a62cb_34))as Set).asImmutable()
+    if (value instanceof List) return (value).collect((this.&_bat529Cb_ad9a62cb_29)).asImmutable()
     return value
 }
 
@@ -5218,12 +5042,9 @@ def _cleanupRetiredToolState() {
         def retryAt = RETIRED_TOOL_STATE_RETRY_AT.get(appKey)
         if (retryAt != null && (retryAt as Long) > now()) return
         try {
-            ['toolSearchCorpus', 'toolSearchTokens', 'toolSearchCorpusVersion',
+            (['toolSearchCorpus', 'toolSearchTokens', 'toolSearchCorpusVersion',
              'toolSearchCorpusFingerprint', 'requiredParamsByTool',
-             'requiredParamsByToolFingerprint', 'predClearPending'].each { key ->
-                if (atomicState.containsKey(key)) atomicState.remove(key)
-                if (state.containsKey(key)) state.remove(key)
-            }
+             'requiredParamsByToolFingerprint', 'predClearPending']).each((this.&_bat529Cb_ad9a62cb_233))
             RETIRED_TOOL_STATE_CLEANED.add(appKey)
             RETIRED_TOOL_STATE_RETRY_AT.remove(appKey)
         } catch (Exception e) {
@@ -5750,11 +5571,9 @@ def getCustomEngineMode() {
 // disabled gateway (so shared tools disabled via a gateway are gone everywhere).
 def getEffectiveDisabledTools() {
     def out = [] as Set
-    (settings.disabled_tools ?: []).each { out << (it as String) }
+    ((settings.disabled_tools ?: [])).each(((this.&_bat529Cb_ad9a62cb_107).curry([out] as Object[])))
     def gwConfig = getGatewayConfig()
-    (settings.disabled_gateways ?: []).each { gw ->
-        gwConfig[gw]?.tools?.each { out << (it as String) }
-    }
+    ((settings.disabled_gateways ?: [])).each(((this.&_bat529Cb_ad9a62cb_166).curry([gwConfig, out] as Object[])))
     return out
 }
 
@@ -5768,16 +5587,14 @@ def getHiddenToolNames() {
     // Masters default ON: only an explicit `== false` hides a class.
     if (settings.enableRead == false) hide.addAll(readOnly)
     if (settings.enableWrite == false) {
-        _toolCatalogIndexes().names.each {
-            if (!readOnly.contains(it) && !(it == "hub_set_rule" && settings.enableRead != false)) hide << it
-        }
+        (_toolCatalogIndexes().names).each(((this.&_bat529Cb_ad9a62cb_185).curry([hide, readOnly] as Object[])))
     }
     // Legacy custom-rule engine visibility.
     def mode = getCustomEngineMode()
     if (mode == "off") {
-        ["hub_get_custom_rule", "hub_create_custom_rule", "hub_update_custom_rule", "hub_delete_custom_rule", "hub_test_custom_rule", "hub_export_custom_rule", "hub_import_custom_rule", "hub_clone_custom_rule"].each { hide << it }
+        (["hub_get_custom_rule", "hub_create_custom_rule", "hub_update_custom_rule", "hub_delete_custom_rule", "hub_test_custom_rule", "hub_export_custom_rule", "hub_import_custom_rule", "hub_clone_custom_rule"]).each(((this.&_bat529Cb_ad9a62cb_207).curry([hide] as Object[])))
     } else if (mode == "readonly") {
-        ["hub_create_custom_rule", "hub_delete_custom_rule", "hub_export_custom_rule", "hub_import_custom_rule", "hub_clone_custom_rule"].each { hide << it }
+        (["hub_create_custom_rule", "hub_delete_custom_rule", "hub_export_custom_rule", "hub_import_custom_rule", "hub_clone_custom_rule"]).each(((this.&_bat529Cb_ad9a62cb_184).curry([hide] as Object[])))
     }
     // Developer-Mode-only tools: catalog-hidden ENTIRELY when Developer Mode is off
     // (stricter than the runtime-refusal the older dev tools use), so a low-context
@@ -5933,7 +5750,7 @@ def getToolDisplayMeta() {
     // this file keeps only the gateway entries (gateway membership is cross-domain
     // and lives in getGatewayConfig).
     def meta = [:]
-    [_toolDisplayMeta_partNativeDocuments(), _toolDisplayMeta_partNativeRM(),
+    ([_toolDisplayMeta_partNativeDocuments(), _toolDisplayMeta_partNativeRM(),
      _toolDisplayMeta_partRooms(),
      _toolDisplayMeta_partBundles(),
      _toolDisplayMeta_partVisualRules(),
@@ -5951,7 +5768,7 @@ def getToolDisplayMeta() {
      _toolDisplayMeta_partSelfAdmin(),
      _toolDisplayMeta_partAppCloner(),
      _toolDisplayMeta_partDiscovery(),
-     _toolDisplayMeta_partDashboards()].each { meta.putAll(it) }
+     _toolDisplayMeta_partDashboards()]).each(((this.&_bat529Cb_ad9a62cb_247).curry([meta] as Object[])))
     meta.putAll([
         // Gateways
         hub_read_apps_code: [title: "Read Apps and Code", summary: "Read-only: apps, drivers, libraries, source code, backups, and HPM packages."],
@@ -6024,13 +5841,13 @@ def annotationsForGateway(List visibleSubTools, Set readOnlyNames, Set idempoten
             "annotationsForGateway requires at least one visible sub-tool"
         )
     }
-    def anyWrite = visibleSubTools.any { !readOnlyNames.contains(it) }
+    def anyWrite = (visibleSubTools).any(((this.&_bat529Cb_ad9a62cb_67).curry([readOnlyNames] as Object[])))
     def ann = [readOnlyHint: !anyWrite]
     if (anyWrite) {
         ann.destructiveHint = true
     }
-    ann.idempotentHint = visibleSubTools.every { idempotentNames.contains(it) }
-    ann.openWorldHint = visibleSubTools.any { openWorldNames.contains(it) }
+    ann.idempotentHint = (visibleSubTools).every(((this.&_bat529Cb_ad9a62cb_86).curry([idempotentNames] as Object[])))
+    ann.openWorldHint = (visibleSubTools).any(((this.&_bat529Cb_ad9a62cb_66).curry([openWorldNames] as Object[])))
     return ann
 }
 
@@ -6053,27 +5870,19 @@ def handleGateway(gatewayName, toolName, toolArgs, reqT0 = null, boolean bpsChec
         // does not apply per-tool here, only the per-response cap). The transform also
         // prefixes write leaves with the guide-first sentence.
         def hidden = getHiddenToolNames()
-        def visibleSubTools = config.tools.findAll { !hidden.contains(it) }
-        def defMap = applyDescriptionTransform(getAllToolDefinitions(), false)
-            .collectEntries { [(it.name): it] }
+        def visibleSubTools = (config.tools).findAll(((this.&_bat529Cb_ad9a62cb_32).curry([hidden] as Object[])))
+        def defMap = (applyDescriptionTransform(getAllToolDefinitions(), false)).collectEntries((this.&_bat529Cb_ad9a62cb_161))
         def displayMeta = getToolDisplayMeta()
 
         return [
             gateway: _externalToolName(gatewayName as String),
             mode: "catalog",
             message: "Call again with tool='<name>' and args={...} to execute a tool.",
-            tools: visibleSubTools.collect { name ->
-                def d = defMap[name]
-                def entry = [name: _externalToolName(name as String), description: d?.description, inputSchema: d?.inputSchema]
-                def title = displayMeta[name]?.title
-                if (title) entry.title = title as String
-                entry
-            }
-        ]
+            tools: (visibleSubTools).collect(((this.&_bat529Cb_ad9a62cb_231).curry([defMap, displayMeta] as Object[])))]
     }
 
     if (!config.tools.contains(toolName)) {
-        throw new IllegalArgumentException("Unknown tool '${_externalToolName(toolName as String)}' in ${_externalToolName(gatewayName as String)}. Available: ${config.tools.collect { _externalToolName(it as String) }.join(', ')}")
+        throw new IllegalArgumentException("Unknown tool '${_externalToolName(toolName as String)}' in ${_externalToolName(gatewayName as String)}. Available: ${(config.tools).collect((this.&_bat529Cb_ad9a62cb_91)).join(', ')}")
     }
 
     // Defensive: unreachable with current configs — gateway names and tool
@@ -6134,7 +5943,7 @@ def handleGateway(gatewayName, toolName, toolArgs, reqT0 = null, boolean bpsChec
     // build fresh definitions for their descriptions.
     def required = requiredParamsByTool()[toolName]
     if (required) {
-        def missing = required.findAll { !safeArgs.containsKey(it) }
+        def missing = (required).findAll(((this.&_bat529Cb_ad9a62cb_46).curry([safeArgs] as Object[])))
         // A sub-tool hidden by the masters / custom-engine mode / dev-mode / #114
         // overrides must fall through to executeTool's canonical refusal -- returning
         // the missing-param hint here would leak the full parameter schema of a tool
@@ -6145,17 +5954,10 @@ def handleGateway(gatewayName, toolName, toolArgs, reqT0 = null, boolean bpsChec
             // Missing-param hint only (rare path): rebuild the full catalog here so
             // param descriptions are available. Strip [[FLAT_TRIM]] marker tokens --
             // this error is a client-visible surface where markers would leak.
-            def defMap = applyDescriptionTransform(getAllToolDefinitions(), false)
-                .collectEntries { [(it.name): it] }
+            def defMap = (applyDescriptionTransform(getAllToolDefinitions(), false)).collectEntries((this.&_bat529Cb_ad9a62cb_163))
             def toolDef = defMap[toolName]
             def props = toolDef?.inputSchema?.properties ?: [:]
-            def paramList = props.collect { pName, pDef ->
-                def req = required.contains(pName) ? "REQUIRED" : "optional"
-                def hint = "  ${pName} (${pDef.type ?: 'any'}, ${req})"
-                if (pDef.enum) hint += " — one of: ${pDef.enum.join(', ')}"
-                else if (pDef.description) hint += " — ${pDef.description}"
-                hint
-            }.join("\n")
+            def paramList = (props).collect(((this.&_bat529Cb_ad9a62cb_232).curry([required] as Object[]))).join("\n")
             def paramWord = (missing.size() == 1) ? "parameter" : "parameters"
             // Throw rather than hand-build a result: _renderValidationError gives the gateway
             // and flat calls the SAME error shape for the same mistake (issue #319). The full
@@ -6242,15 +6044,7 @@ def stripFlatTrim(String text, boolean dropContent) {
 
 // guideFirst=false only for the search corpus, so the shared sentence does not skew BM25 ranking.
 def applyDescriptionTransform(List tools, boolean dropContent, boolean guideFirst = true) {
-    tools.each { tool ->
-        // CharSequence, not String: gateway entries build their description as a GString.
-        if (tool?.description instanceof CharSequence) {
-            String description = stripFlatTrim(tool.description.toString(), dropContent)
-            tool.description = guideFirst ?
-                _withGuideFirst(tool.name as String, description, tool.inputSchema?.properties?.tool?.enum) : description
-        }
-        _stripFlatTrimDeep(tool?.inputSchema, dropContent)
-    }
+    (tools).each(((this.&_bat529Cb_ad9a62cb_239).curry([dropContent, guideFirst] as Object[])))
     return tools
 }
 
@@ -6265,7 +6059,7 @@ boolean _isWriteSurface(String name, visibleSubTools = null) {
     def gateway = getGatewayConfig().get(name)
     if (gateway != null) {
         List subTools = (visibleSubTools instanceof List) ? visibleSubTools : gateway.tools
-        return subTools.any { !readOnly.contains(it) }
+        return (subTools).any(((this.&_bat529Cb_ad9a62cb_19).curry([readOnly] as Object[])))
     }
     return !readOnly.contains(name)
 }
@@ -6283,7 +6077,7 @@ String _withGuideFirst(String name, String description, visibleSubTools = null) 
 // schema shape, so the recursion is cheap and runs once per catalog build.
 private void _stripFlatTrimDeep(Object node, boolean dropContent) {
     if (node instanceof List) {
-        node.each { _stripFlatTrimDeep(it, dropContent) }
+        (node).each(((this.&_bat529Cb_ad9a62cb_59).curry([dropContent] as Object[])))
         return
     }
     if (!(node instanceof Map)) return
@@ -6291,23 +6085,16 @@ private void _stripFlatTrimDeep(Object node, boolean dropContent) {
     if (m.description instanceof String) {
         m.description = stripFlatTrim(m.description as String, dropContent)
     }
-    m.each { k, v ->
-        if (k != 'description' && (v instanceof Map || v instanceof List)) {
-            _stripFlatTrimDeep(v, dropContent)
-        }
-    }
+    (m).each(((this.&_bat529Cb_ad9a62cb_187).curry([dropContent] as Object[])))
 }
 
 private String _visibleGatewayIntro(String gatewayName, Map gatewayConfig, Set hidden, Map displayMeta) {
     def config = gatewayConfig.get(gatewayName)
     String description = config.description?.toString() ?: ''
-    boolean narrowed = config.tools.any { hidden.contains(it) }
+    boolean narrowed = (config.tools).any(((this.&_bat529Cb_ad9a62cb_22).curry([hidden] as Object[])))
     if (!narrowed) {
         // An unchanged read gateway can still promise writes through another gateway.
-        narrowed = description.findAll(/hub_[a-z0-9_]+/).any { reference ->
-            def referencedGateway = gatewayConfig.get(reference)
-            referencedGateway ? referencedGateway.tools.any { hidden.contains(it) } : hidden.contains(reference)
-        }
+        narrowed = (description.findAll(/hub_[a-z0-9_]+/)).any(((this.&_bat529Cb_ad9a62cb_214).curry([gatewayConfig, hidden] as Object[])))
     }
     if (narrowed) {
         return "${displayMeta.get(gatewayName)?.title ?: gatewayName} gateway.".toString()
@@ -6338,10 +6125,10 @@ def getToolDefinitions() {
     // is dropped because it only helps navigate gateway-hidden tools.
     if (settings.useGateways == false) {
         def all = getAllToolDefinitions()
-        def filtered = all.findAll { it.name != 'hub_search_tools' && !hideByName.contains(it.name) }
+        def filtered = (all).findAll(((this.&_bat529Cb_ad9a62cb_132).curry([hideByName] as Object[])))
         // Loud guard: if hub_search_tools is ever renamed/removed, the prose ("hub_search_tools is
         // hidden in flat mode") becomes a lie and the filter silently no-ops. Fail visibly.
-        if (!all.any { it.name == 'hub_search_tools' }) {
+        if (!(all).any((this.&_bat529Cb_ad9a62cb_25))) {
             throw new IllegalStateException(
                 "Flat-mode filter expected to drop 'hub_search_tools' but it was not found in " +
                 "getAllToolDefinitions(). Update getToolDefinitions() if the tool was renamed."
@@ -6352,48 +6139,21 @@ def getToolDefinitions() {
         // same cap is why the client-error hint is not appended to flat leaf descriptions:
         // it rides in the server instructions here, while gateway mode carries it inline.
         def transformed = applyDescriptionTransform(filtered, true)
-        return transformed.collect { tool ->
-            def base = tool
-            base + [annotations: annotationsForLeaf(tool.name as String, readOnlyNames, displayMeta, idempotentNames, openWorldNames)]
-        }
+        return (transformed).collect(((this.&_bat529Cb_ad9a62cb_201).curry([displayMeta, idempotentNames, openWorldNames, readOnlyNames] as Object[])))
     }
 
     def gatewayConfig = getGatewayConfig()
-    def proxiedNames = gatewayConfig.values().collectMany { it.tools } as Set
+    def proxiedNames = (gatewayConfig.values()).collectMany((this.&_bat529Cb_ad9a62cb_55))as Set
 
     // Base tools: all tools NOT behind a gateway, minus any hidden by toggles.
-    def baseTools = getAllToolDefinitions().findAll {
-        !proxiedNames.contains(it.name) && !hideByName.contains(it.name)
-    }
+    def baseTools = (getAllToolDefinitions()).findAll(((this.&_bat529Cb_ad9a62cb_165).curry([hideByName, proxiedNames] as Object[])))
 
     // Gateway tools: one tool per gateway, with sub-tool list filtered through
     // the same hideByName the base-tool path uses. Sharing the filter means a
     // toggle that hides a tool hides it on every surface (base + gateway sub-tool
     // + flat-mode entry) with no chance of the two lists drifting. If a gateway
     // ends up with zero remaining sub-tools, drop the gateway entry entirely.
-    def gatewayTools = gatewayConfig.collectMany { gwName, config ->
-        def visibleSubTools = config.tools.findAll { !hideByName.contains(it) }
-        if (!visibleSubTools) return []
-        def catalog = visibleSubTools.collect { toolName ->
-            "- ${toolName}: ${config.summaries[toolName]}"
-        }.join("\n")
-        def intro = _visibleGatewayIntro(gwName, gatewayConfig, hideByName, displayMeta)
-        [[
-            name: gwName,
-            description: "${intro}\n\nCall with no args to see full parameter schemas. Call with tool='<name>' and args={...} to execute.\n\nAvailable tools:\n${catalog}",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    tool: [type: "string", description: "Tool to execute. Omit to see full schemas for all tools in this group.", enum: visibleSubTools],
-                    args: [type: "object", description: "Arguments for the tool. Call with just tool name first to see required parameters."]
-                ]
-            ],
-            // Gateway entries get their friendly name from the same display-meta
-            // map as the leaves; map-add keeps title first in the wire payload.
-            annotations: (displayMeta[gwName]?.title ? [title: displayMeta[gwName].title as String] : [:]) +
-                annotationsForGateway(visibleSubTools, readOnlyNames, idempotentNames, openWorldNames)
-        ]]
-    }
+    def gatewayTools = (gatewayConfig).collectMany(((this.&_bat529Cb_ad9a62cb_252).curry([displayMeta, gatewayConfig, hideByName, idempotentNames, openWorldNames, readOnlyNames] as Object[])))
 
     // Gateway-mode tools/list returns the gateway entries (short prose + sub-tool
     // summaries) plus any base tools. The transform strips [[FLAT_TRIM]] marker
@@ -6403,19 +6163,7 @@ def getToolDefinitions() {
     Set writeLeaves = _mrtrWriteTools()
     // Built per request, never cached: the hint names recentWrites only for a modern-era caller.
     boolean modern = _modernEraRequest() as boolean
-    return transformed.collect { tool ->
-        String name = tool.name as String
-        // The enum is visibleSubTools (hideByName already applied), not config.tools:
-        // a gateway whose write leaves are all toggled off advertises no write surface.
-        boolean hinted = writeLeaves.contains(name) ||
-            (gatewayConfig.containsKey(name) &&
-                (tool.inputSchema?.properties?.tool?.enum ?: []).any { writeLeaves.contains(it) })
-        def withHint = hinted ? _withWriteRecoveryHint(tool, modern) : tool
-        // Gateways already carry complete annotations from above. Check readOnlyHint,
-        // not just the map: a leaf with only a title still needs its canonical hints.
-        if (withHint.annotations?.containsKey('readOnlyHint')) return withHint
-        withHint + [annotations: (withHint.annotations ?: [:]) + annotationsForLeaf(name, readOnlyNames, displayMeta, idempotentNames, openWorldNames)]
-    }
+    return (transformed).collect(((this.&_bat529Cb_ad9a62cb_251).curry([displayMeta, gatewayConfig, idempotentNames, modern, openWorldNames, readOnlyNames, writeLeaves] as Object[])))
 }
 
 private Map _withWriteRecoveryHint(Map tool, boolean modern) {
@@ -6437,12 +6185,7 @@ private Map _toolCatalogIndexes() {
     if (cached != null) return cached as Map
     def required = [:]
     def names = [] as Set
-    getAllToolDefinitions().each { tool ->
-        String name = tool.name as String
-        names << name
-        def req = tool?.inputSchema?.required
-        if (req instanceof List && !req.isEmpty()) required.put(name, req.collect { it as String })
-    }
+    (getAllToolDefinitions()).each(((this.&_bat529Cb_ad9a62cb_218).curry([names, required] as Object[])))
     return _toolMetadataPut("catalogIndexes", [required: required, names: names]) as Map
 }
 
@@ -6817,7 +6560,7 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
                 // Filter the hint against the live flat catalog so we don't recommend tools
                 // that other settings (Read/Write masters or Custom Rule Engine) have also hidden.
                 def visibleNames = getToolDefinitions()*.name as Set
-                def subTools = (getGatewayConfig()[toolName]?.tools ?: []).findAll { visibleNames.contains(it) }
+                def subTools = ((getGatewayConfig()[toolName]?.tools ?: [])).findAll(((this.&_bat529Cb_ad9a62cb_138).curry([visibleNames] as Object[])))
                 def hint = subTools
                     ? "Call the underlying tool directly: ${subTools.collect(this.&_externalToolName).join(', ')}. Refresh tools/list to see the flat catalog."
                     : "All sub-tools of this gateway are also disabled by other server toggles (Read/Write masters or Custom Rule Engine). Enable those toggles or refresh tools/list."
@@ -6951,25 +6694,19 @@ def normalizeTrigger(trigger) {
 }
 
 def normalizeRuleOperators(args) {
-    args.triggers?.each { trigger ->
-        if (trigger.operator) trigger.operator = normalizeOperator(trigger.operator)
-    }
-    args.conditions?.each { condition ->
-        if (condition.operator) condition.operator = normalizeOperator(condition.operator)
-    }
-    args.actions?.each { action ->
-        normalizeActionOperators(action)
-    }
+    (args.triggers)?.each((this.&_bat529Cb_ad9a62cb_174))
+    (args.conditions)?.each((this.&_bat529Cb_ad9a62cb_179))
+    (args.actions)?.each((this.&_bat529Cb_ad9a62cb_129))
 }
 
 // Recursively normalize operators in actions (handles nested if_then_else and repeat)
 def normalizeActionOperators(action) {
     if (action.type == "if_then_else") {
         if (action.condition?.operator) action.condition.operator = normalizeOperator(action.condition.operator)
-        action.thenActions?.each { normalizeActionOperators(it) }
-        action.elseActions?.each { normalizeActionOperators(it) }
+        (action.thenActions)?.each((this.&_bat529Cb_ad9a62cb_96))
+        (action.elseActions)?.each((this.&_bat529Cb_ad9a62cb_95))
     } else if (action.type == "repeat") {
-        action.actions?.each { normalizeActionOperators(it) }
+        (action.actions)?.each((this.&_bat529Cb_ad9a62cb_76))
     }
 }
 
@@ -7046,9 +6783,7 @@ def validateTrigger(trigger) {
                 if (!(trigger.deviceIds instanceof List) || trigger.deviceIds.size() == 0) {
                     throw new IllegalArgumentException("device_event trigger deviceIds must be a non-empty list")
                 }
-                trigger.deviceIds.each { devId ->
-                    if (!findDevice(devId)) throw new IllegalArgumentException("Device not found: ${devId}")
-                }
+                (trigger.deviceIds).each((this.&_bat529Cb_ad9a62cb_190))
                 // Validate matchMode if present
                 if (trigger.matchMode && !["any", "all"].contains(trigger.matchMode)) {
                     throw new IllegalArgumentException("device_event trigger matchMode must be 'any' or 'all' (got '${trigger.matchMode}')")
@@ -7193,11 +6928,7 @@ def validateCondition(condition) {
             if (!condition.days) throw new IllegalArgumentException("days_of_week condition requires days array")
             // Validate day names
             def validDays = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
-            condition.days.each { day ->
-                if (!validDays.contains(day)) {
-                    throw new IllegalArgumentException("days_of_week condition: Invalid day '${day}'. Valid days: ${validDays.join(', ')}")
-                }
-            }
+            (condition.days).each(((this.&_bat529Cb_ad9a62cb_216).curry([validDays] as Object[])))
             break
         case "sun_position":
             if (!condition.position) throw new IllegalArgumentException("sun_position condition requires position (up/down)")
@@ -7260,7 +6991,7 @@ def validateAction(action) {
             if (!action.command) throw new IllegalArgumentException("device_command action requires command")
             def device = findDevice(action.deviceId)
             if (!device) throw new IllegalArgumentException("Device not found: ${action.deviceId}")
-            def supportedCommands = device.supportedCommands?.collect { it.name }
+            def supportedCommands = (device.supportedCommands)?.collect((this.&_bat529Cb_ad9a62cb_31))
             if (!supportedCommands?.contains(action.command)) {
                 throw new IllegalArgumentException("Device ${device.label} does not support command: ${action.command}")
             }
@@ -7281,7 +7012,7 @@ def validateAction(action) {
             break
         case "set_mode":
             if (!action.mode) throw new IllegalArgumentException("set_mode action requires mode")
-            def validModes = location.modes?.collect { it.name }
+            def validModes = (location.modes)?.collect((this.&_bat529Cb_ad9a62cb_10))
             if (validModes && !validModes.contains(action.mode)) {
                 throw new IllegalArgumentException("set_mode: invalid mode '${action.mode}'. Valid modes: ${validModes.join(', ')}")
             }
@@ -7301,8 +7032,8 @@ def validateAction(action) {
             if (!action.condition) throw new IllegalArgumentException("if_then_else action requires condition")
             if (!action.thenActions) throw new IllegalArgumentException("if_then_else action requires thenActions")
             validateCondition(action.condition)
-            action.thenActions.each { validateAction(it) }
-            action.elseActions?.each { validateAction(it) }
+            (action.thenActions).each((this.&_bat529Cb_ad9a62cb_47))
+            (action.elseActions)?.each((this.&_bat529Cb_ad9a62cb_50))
             break
         case "cancel_delayed":
             break
@@ -7311,7 +7042,7 @@ def validateAction(action) {
             if (repeatTimes == null) throw new IllegalArgumentException("repeat action requires times (or count)")
             if (repeatTimes < 1) throw new IllegalArgumentException("repeat action: times must be at least 1")
             if (!action.actions) throw new IllegalArgumentException("repeat action requires actions")
-            action.actions.each { validateAction(it) }
+            (action.actions).each((this.&_bat529Cb_ad9a62cb_27))
             break
         case "stop":
             break
@@ -7438,9 +7169,9 @@ def validateAction(action) {
 def findDevice(deviceId) {
     if (!deviceId) return null
     // Search selected devices first, then MCP-managed child devices (virtual devices)
-    def device = settings.selectedDevices?.find { it.id.toString() == deviceId.toString() }
+    def device = (settings.selectedDevices)?.find(((this.&_bat529Cb_ad9a62cb_124).curry([deviceId] as Object[])))
     if (!device) {
-        device = getChildDevices()?.find { it.id.toString() == deviceId.toString() }
+        device = (getChildDevices())?.find(((this.&_bat529Cb_ad9a62cb_117).curry([deviceId] as Object[])))
     }
     return device
 }
@@ -7506,7 +7237,7 @@ private List _flattenHub2DeviceTree(nodes, List acc = null) {
         // node, container or leaf).
         if (!(data instanceof Map) || data.id == null) { malformed = true; return }
         def record = [id: data.id, label: data.name]
-        ['lastActivity', 'roomId', 'roomName', 'disabled', 'currentStates'].each { key -> if (data.containsKey(key)) record.put(key, data.get(key)) }
+        (['lastActivity', 'roomId', 'roomName', 'disabled', 'currentStates']).each(((this.&_bat529Cb_ad9a62cb_180).curry([data, record] as Object[])))
         acc << record
         // Propagate the child frame's verdict: it returns null when IT saw a malformed node, and
         // discarding that let a bad node nested under a valid parent produce a short list that
@@ -7775,7 +7506,7 @@ private _hubRequest(String method, String path, Map opts = [:]) {
     if (opts.followRedirects != null) params.followRedirects = opts.followRedirects
     def headers = [:]
     if (opts.keepAlive) headers["Connection"] = "keep-alive"
-    if (cookie || opts.cookie) headers["Cookie"] = [cookie, opts.cookie].findAll { it }.join("; ")
+    if (cookie || opts.cookie) headers["Cookie"] = ([cookie, opts.cookie]).findAll((this.&_bat529Cb_ad9a62cb_14)).join("; ")
     if (headers) params.headers = headers
     if (opts.body != null) params.body = opts.body
 
@@ -7797,9 +7528,9 @@ private _hubRequest(String method, String path, Map opts = [:]) {
             // The session the hub opened for this request (name=value), for a follow-up in that session.
             def sc = null
             try { sc = resp.headers?."Set-Cookie" } catch (Exception ignored) { sc = null }
-            def cookies = (sc instanceof List ? sc : (sc != null ? [sc] : [])).collect { it.toString().replaceFirst(/^(?i)set-cookie:\s*/, "").split(';')[0] }
+            def cookies = ((sc instanceof List ? sc : (sc != null ? [sc] : []))).collect((this.&_bat529Cb_ad9a62cb_178))
             // The hub's own session cookie is HUBSESSION; another cookie may come first.
-            if (cookies) result.setCookie = cookies.find { it.startsWith("HUBSESSION=") } ?: cookies[0]
+            if (cookies) result.setCookie = (cookies).find((this.&_bat529Cb_ad9a62cb_38))?: cookies[0]
             readError = null
         } else if (readError == null) {
             result = bodyText
@@ -8324,7 +8055,7 @@ Map _backupUrlTarget(String url) {
     def m = url =~ /(?i)^https?:\/\/([a-z0-9.-]+)(?::(\d{1,5}))?(\/[^?#]*)?(?:[?#].*)?$/
     if (url.contains("\\") || !m.matches()) return null
     String host = m.group(1).toLowerCase().replaceAll(/\.$/, "")
-    boolean numeric = host.tokenize(".").every { it ==~ /0x[0-9a-f]*|\d+/ }
+    boolean numeric = (host.tokenize(".")).every((this.&_bat529Cb_ad9a62cb_79))
     boolean self = host == "localhost" || host.endsWith(".localhost") ||
         (numeric && (host.startsWith("127.") || host.startsWith("0."))) || host == location?.hub?.localIP?.toString()
     if (!self) return [self: false, host: host, numeric: numeric]
@@ -8385,7 +8116,7 @@ Map _fetchCappedBackup(String url, long cap) {
 
 private Map _fetchCappedLocalFile(String fileName, long cap) {
     def listed
-    try { listed = _fileManagerRootFiles().find { it.name == fileName } }
+    try { listed = (_fileManagerRootFiles()).find(((this.&_bat529Cb_ad9a62cb_77).curry([fileName] as Object[])))}
     catch (Exception e) { return [error: "could not read the File Manager listing: ${e.message}"] }
     if (listed == null) return [error: "this hub's File Manager has no file named '${fileName}'."]
     if (listed.size == null) return [error: "the File Manager listing gives no size for '${fileName}', so it was not read."]
@@ -8465,7 +8196,7 @@ def requireDestructiveConfirm(Boolean confirmParam) {
         state.lastBackupTimestamp = listEpoch   // cache so later gated calls skip the list read
         return
     }
-    def lastKnown = [state.lastBackupTimestamp, listEpoch].findAll { it != null }.max()
+    def lastKnown = ([state.lastBackupTimestamp, listEpoch]).findAll((this.&_bat529Cb_ad9a62cb_102)).max()
     throw new IllegalArgumentException("BACKUP REQUIRED: No hub backup found within the last 24 hours (checked this app's record and the hub's local backup list). You MUST call hub_create_backup FIRST and verify it succeeds before using this tool. Last backup: ${lastKnown ? formatTimestamp(lastKnown) : 'Never'}")
 }
 
@@ -8613,9 +8344,7 @@ Map _itemBackupManifest() {
             }
             ITEM_BACKUP_MANIFESTS.put(owner, new LinkedHashMap(loaded))
         }
-        return (ITEM_BACKUP_MANIFESTS[owner] as Map).collectEntries { key, entry ->
-            [(key): entry instanceof Map ? new LinkedHashMap(entry) : entry]
-        }
+        return ((ITEM_BACKUP_MANIFESTS[owner] as Map)).collectEntries((this.&_bat529Cb_ad9a62cb_186))
     }
 }
 
@@ -8633,7 +8362,7 @@ Map _itemBackupIndexUnavailableResult(Throwable error) {
 // listing fails or a listed file cannot be read: rebuilding then would replace an index
 // that exists. Specs replace this method and _writeItemBackupIndexStore with an in-memory store.
 String _readItemBackupIndexStore() {
-    if (!_fileManagerRootFiles().any { it.name == ITEM_BACKUP_INDEX_FILE }) return null
+    if (!(_fileManagerRootFiles()).any((this.&_bat529Cb_ad9a62cb_115))) return null
     String failure = null
     for (int attempt = 1; attempt <= 3; attempt++) {
         if (attempt > 1) pauseExecution(500)
@@ -8684,7 +8413,7 @@ private Map _loadItemBackupIndex(String owner) {
     }
     if (atomicState.containsKey("itemBackupManifest")) {
         Map merged = new LinkedHashMap(index ?: [:])
-        ((atomicState.itemBackupManifest ?: [:]) as Map).each { k, v -> if (!merged.containsKey(k)) merged.put(k, v) }
+        (((atomicState.itemBackupManifest ?: [:]) as Map)).each(((this.&_bat529Cb_ad9a62cb_164).curry([merged] as Object[])))
         ITEM_BACKUP_LEGACY_PENDING.add(owner)
         try {
             _writeItemBackupIndexStore(_itemBackupIndexJson(merged))
@@ -8751,12 +8480,7 @@ private Map _rebuildItemBackupIndex() {
     // Newest file of an item keeps the key restore and reuse look up; older copies get a
     // suffixed key so they stay listed, restorable and under retention.
     Map rebuilt = new LinkedHashMap()
-    found.sort { a, b -> (b.entry.timestamp as Long) <=> (a.entry.timestamp as Long) }.each { item ->
-        String key = item.base
-        int n = 1
-        while (rebuilt.containsKey(key)) key = "${item.base}_${n++}".toString()
-        rebuilt.put(key, item.entry)
-    }
+    ((found).sort((this.&_bat529Cb_ad9a62cb_140))).each(((this.&_bat529Cb_ad9a62cb_225).curry([rebuilt] as Object[])))
     if (unsized) mcpLog("warn", "hub-admin", "Backup index rebuild: ${unsized} adopted backup file(s) have no size in the File Manager listing and count 0 bytes against the backup storage budget")
     mcpLog("info", "hub-admin", "Rebuilt the backup index from File Manager: ${rebuilt.size()} backup file(s) indexed")
     return rebuilt
@@ -8777,9 +8501,7 @@ List _fileManagerRootFiles() {
     }
     if (!(files instanceof List)) throw new IllegalStateException("/hub/fileManager/json returned an unrecognised shape")
     Closure asLong = { v -> v != null && v.toString().isLong() ? v.toString().toLong() : null }
-    return (files as List).findAll { !(it instanceof Map) || it.type != "dir" }.collect { f ->
-        f instanceof Map ? [name: f.name?.toString(), size: asLong(f.size), date: asLong(f.date)] : [name: f.toString(), size: null, date: null]
-    }.findAll { it.name }
+    return ((((files as List)).findAll((this.&_bat529Cb_ad9a62cb_120))).collect(((this.&_bat529Cb_ad9a62cb_211).curry([asLong] as Object[])))).findAll((this.&_bat529Cb_ad9a62cb_219))
 }
 
 private void _commitItemBackupManifest(Map manifest) {
@@ -8789,9 +8511,7 @@ private void _commitItemBackupManifest(Map manifest) {
     _writeItemBackupIndexStore(_itemBackupIndexJson(manifest))
     _finishLegacyItemBackupMigration(owner)
     // Detach entries on the way in as well, so no caller keeps a handle into the shared view.
-    ITEM_BACKUP_MANIFESTS.put(owner, manifest.collectEntries { key, entry ->
-        [(key): entry instanceof Map ? new LinkedHashMap(entry) : entry]
-    })
+    ITEM_BACKUP_MANIFESTS.put(owner, (manifest).collectEntries((this.&_bat529Cb_ad9a62cb_171)))
 }
 
 // The reusable within-the-hour baseline for key, or null when a fresh backup is
@@ -8807,7 +8527,7 @@ Map _reusableItemBackup(Map manifest, String key, String label) {
 private String _itemBackupFileName(String preferred) {
     // Replacing a published file before committing its new entry destroys rollback
     // material if publication fails. First-time backups keep the familiar filename.
-    if (!_itemBackupManifest().values().any { it?.fileName?.toString() == preferred }) return preferred
+    if (!(_itemBackupManifest().values()).any(((this.&_bat529Cb_ad9a62cb_127).curry([preferred] as Object[])))) return preferred
     int dot = preferred.lastIndexOf('.')
     return preferred.substring(0, dot) + "-${java.util.UUID.randomUUID()}" + preferred.substring(dot)
 }
@@ -8851,18 +8571,15 @@ void _publishItemBackup(String key, Map entry, String protectedKey = null) {
         manifest.put(key, entry)
         // An unrecovered pending-deletion marker cannot authorize reuse; publication
         // purges the leftovers; their files are removed best-effort below.
-        manifest.keySet().findAll { it != key && it != protectedKey && manifest[it]?.deletePending }.each { manifest.remove(it) }
+        ((manifest.keySet()).findAll(((this.&_bat529Cb_ad9a62cb_155).curry([key, manifest, protectedKey] as Object[])))).each(((this.&_bat529Cb_ad9a62cb_172).curry([manifest] as Object[])))
         List victims = _itemBackupRetentionVictims(manifest, [key, protectedKey])
-        victims.each { manifest.remove(it) }
+        (victims).each(((this.&_bat529Cb_ad9a62cb_15).curry([manifest] as Object[])))
         if (victims) mcpLog("info", "hub-admin", "Backup retention evicted ${victims.size()} backup(s) while publishing ${key}: ${victims.join(', ')}")
         _commitItemBackupManifest(manifest)
-        Set retainedFiles = manifest.values().collect { it?.fileName?.toString() } as Set
+        Set retainedFiles = (manifest.values()).collect((this.&_bat529Cb_ad9a62cb_89))as Set
         // Unlink durably first; an optional file-delete failure leaves an orphan,
         // never a retained entry whose rollback file was deleted before publication.
-        previous.values().collect { it?.fileName?.toString() }.findAll { it && !retainedFiles.contains(it) }.unique().each { file ->
-            try { deleteHubFile(file) }
-            catch (Exception e) { mcpLog("error", "hub-admin", "Backup manifest committed but old file '${file}' could not be deleted: ${e.message}; no backup references it, remove it from Settings > File Manager if it is still present") }
-        }
+        (((previous.values()).collect((this.&_bat529Cb_ad9a62cb_88))).findAll(((this.&_bat529Cb_ad9a62cb_159).curry([retainedFiles] as Object[]))).unique()).each((this.&_bat529Cb_ad9a62cb_234))
     }
 }
 
@@ -8877,15 +8594,10 @@ List _itemBackupRetentionVictims(Map manifest, Collection keepKeys) {
     if (used <= budget) return victims
     Closure stamp = { k -> def t = manifest[k]?.timestamp; t instanceof Number ? (t as Long) : 0L }
     Map newest = [:]
-    manifest.each { k, v ->
-        if (v?.deletePending) return
-        String item = "${v?.type}:${v?.ruleId != null ? v.ruleId : v?.id}".toString()
-        if (!newest.containsKey(item) || stamp(k) > stamp(newest.get(item))) newest.put(item, k)
-    }
+    (manifest).each(((this.&_bat529Cb_ad9a62cb_217).curry([newest, stamp] as Object[])))
     Set kept = new HashSet(keepKeys)
     kept.addAll(newest.values())
-    List candidates = manifest.keySet().findAll { !kept.contains(it) && !manifest[it]?.deletePending }
-        .sort { a, b -> stamp(a) <=> stamp(b) }
+    List candidates = ((manifest.keySet()).findAll(((this.&_bat529Cb_ad9a62cb_134).curry([kept, manifest] as Object[])))).sort(((this.&_bat529Cb_ad9a62cb_177).curry([stamp] as Object[])))
     for (k in candidates) {
         if (used <= budget) break
         victims << k
@@ -8945,12 +8657,10 @@ List unlinkItemBackupManifestFile(String fileName, String exactKey = null) {
     if (!fileName) return []
     synchronized (ITEM_BACKUP_MANIFESTS) {
         Map manifest = _itemBackupManifest()
-        List removed = manifest.findAll { key, entry ->
-            (exactKey == null || key?.toString() == exactKey) && entry?.fileName?.toString() == fileName
-        }.keySet().toList()
-        removed.each { manifest.remove(it) }
+        List removed = (manifest).findAll(((this.&_bat529Cb_ad9a62cb_182).curry([exactKey, fileName] as Object[]))).keySet().toList()
+        (removed).each(((this.&_bat529Cb_ad9a62cb_13).curry([manifest] as Object[])))
         if (removed) _commitItemBackupManifest(manifest)
-        return removed.collect { it.toString() }
+        return (removed).collect((this.&_bat529Cb_ad9a62cb_8))
     }
 }
 
@@ -8959,10 +8669,10 @@ List unlinkItemBackupManifestFile(String fileName, String exactKey = null) {
 private Map _deleteHubFileAndUnlinkBackups(String fileName) {
     return _withBackupLock("delete file ${fileName}") {
         Map previous = _itemBackupManifest()
-        List keys = previous.findAll { key, entry -> entry?.fileName?.toString() == fileName }.keySet().toList()
+        List keys = (previous).findAll(((this.&_bat529Cb_ad9a62cb_125).curry([fileName] as Object[]))).keySet().toList()
         if (keys) {
             Map pending = new LinkedHashMap(previous)
-            keys.each { key -> pending.put(key, previous.get(key) + [deletePending: true]) }
+            (keys).each(((this.&_bat529Cb_ad9a62cb_136).curry([pending, previous] as Object[])))
             _commitItemBackupManifest(pending)
         }
         try { deleteHubFile(fileName) }
@@ -8988,7 +8698,7 @@ private Map _deleteHubFileAndUnlinkBackups(String fileName) {
         catch (Exception cleanupError) {
             mcpLog("error", "hub-admin", "File '${fileName}' deleted but backup metadata cleanup failed: ${cleanupError.message}")
             return [partial: true, fileDeleted: true, manifestCleanupPending: true,
-                    pendingBackupKeys: keys.collect { it.toString() },
+                    pendingBackupKeys: (keys).collect((this.&_bat529Cb_ad9a62cb_6)),
                     manifestCleanupError: cleanupError.message,
                     note: keys
                         ? "The file is already deleted; do not repeat the deletion. Its durable deletePending entries cannot be reused as baselines and are purged by the next backup publication."
@@ -9199,31 +8909,13 @@ private List _fetchDebugLogHistory(Map buffer, String generation, String fetchId
     def rows = text ? new groovy.json.JsonSlurper().parseText(text) : null
     if (!(rows instanceof List)) throw new IllegalStateException("Unexpected native log history response")
     def recovered = [:]
-    rows.each { row ->
-        def parsed = _parseHubLogLine(row?.toString())
-        if (parsed?.sourceId != null && (parsed.type != "app" || parsed.sourceId != buffer.appId)) return
-        String message = parsed?.message ?: ""
-        int marker = message.indexOf("[MCP1] ")
-        if (marker >= 0) {
-            def envelope
-            try {
-                envelope = new groovy.json.JsonSlurper().parseText(message.substring(marker + 7))
-            } catch (Exception ignored) {
-                // A native line may have been truncated by the hub's own log retention.
-                envelope = null
-            }
-            if (envelope instanceof Map && envelope.appId == buffer.appId &&
-                envelope.generation == generation && envelope.id && envelope.entry instanceof Map) {
-                recovered.put(envelope.id, _debugLogRecord(envelope.entry, envelope.id.toString()))
-            }
-        }
-    }
+    (rows).each(((this.&_bat529Cb_ad9a62cb_250).curry([buffer, generation, recovered] as Object[])))
     synchronized (buffer) {
         // A clear during the HTTP read establishes a new generation; old rows stay excluded.
         if (buffer.generation == generation && (fetchId == null || buffer.fetchId == fetchId)) {
-            buffer.entries.each { recovered.put(it.id, it) }
+            (buffer.entries).each(((this.&_bat529Cb_ad9a62cb_56).curry([recovered] as Object[])))
             buffer.entries = []
-            recovered.values().each { _appendDebugLogRecord(buffer, it) }
+            (recovered.values()).each(((this.&_bat529Cb_ad9a62cb_104).curry([buffer] as Object[])))
             buffer.hydrated = true
             buffer.remove("fetchError")
         }
@@ -9232,7 +8924,7 @@ private List _fetchDebugLogHistory(Map buffer, String generation, String fetchId
 }
 
 private List _debugLogSnapshot(Map buffer) {
-    return new groovy.json.JsonSlurper().parseText(groovy.json.JsonOutput.toJson(buffer.entries.collect { it.entry }))
+    return new groovy.json.JsonSlurper().parseText(groovy.json.JsonOutput.toJson((buffer.entries).collect((this.&_bat529Cb_ad9a62cb_11))))
 }
 
 def getDebugLogReadResult(Map args = [:]) {
@@ -9318,7 +9010,7 @@ def mcpLog(String level, String component, String message, String ruleId = null,
 // records call it; the audit records skip the threshold so they exist at the default level.
 private void _mcpLogRecord(Map buffer, String level, String component, String message, String ruleId, Map extraData) {
     def raw = [timestamp: now(), level: level, component: component, message: message, ruleId: ruleId]
-    ["duration", "ruleName", "details", "stackTrace"].each { key -> if (extraData?.get(key)) raw[key] = extraData[key] }
+    (["duration", "ruleName", "details", "stackTrace"]).each(((this.&_bat529Cb_ad9a62cb_168).curry([extraData, raw] as Object[])))
     if (callerClient != null) raw.client = callerClient.label
     def record = _debugLogRecord(raw, java.util.UUID.randomUUID().toString())
     synchronized (buffer) {
@@ -9363,8 +9055,8 @@ def _typeName(v) {
 Integer _compareVersions(String a, String b) {
     def pat = ~/^\d+(\.\d+)*$/
     if (!(a?.trim() ==~ pat) || !(b?.trim() ==~ pat)) return null
-    def x = a.trim().tokenize('.').collect { it as long }
-    def y = b.trim().tokenize('.').collect { it as long }
+    def x = (a.trim().tokenize('.')).collect((this.&_bat529Cb_ad9a62cb_33))
+    def y = (b.trim().tokenize('.')).collect((this.&_bat529Cb_ad9a62cb_35))
     for (int i = 0; i < Math.max(x.size(), y.size()); i++) {
         long l = i < x.size() ? x[i] : 0L
         long r = i < y.size() ? y[i] : 0L
@@ -9398,7 +9090,7 @@ def _exceptionStack(Throwable e) {
         def trace = getStackTrace(e)
         if (trace) return trace.toString().take(2000)
     } catch (Exception ignored) { }
-    return ("${e.class.name}: ${e.message}\n" + (e.getStackTrace()?.take(5)?.collect { it.toString() }?.join("\n") ?: "")).toString()
+    return ("${e.class.name}: ${e.message}\n" + ((e.getStackTrace()?.take(5))?.collect((this.&_bat529Cb_ad9a62cb_83))?.join("\n") ?: "")).toString()
 }
 
 // ==================== ROOM MANAGEMENT ====================
@@ -9537,9 +9229,7 @@ private Integer _discoverParentAppId(String appType) {
     def commitUnverified = false
     if (parentNode?.id == null) {
         // systemAppTypes identifies built-ins; its entries do not carry a namespace.
-        def matches = _appTypeEnrichment().builtIn.findAll {
-            it.name == parentTypeName
-        }
+        def matches = (_appTypeEnrichment().builtIn).findAll(((this.&_bat529Cb_ad9a62cb_146).curry([parentTypeName] as Object[])))
         if (matches.size() != 1 || !(matches[0].id?.toString() ==~ /[1-9][0-9]*/)) {
             throw new IllegalArgumentException("Cannot bootstrap '${parentTypeName}': built-in catalog must contain one matching app type with a positive id (found ${matches.size()}).")
         }
@@ -9809,13 +9499,13 @@ def _rmWriteSettingOnPage(Integer appId, String pageName, String key, Object val
     // (already-set multi-enum re-applied) match cleanly via valueLanded.
     def newValueStr
     if (value instanceof List) {
-        newValueStr = ((value as List).collect { it?.toString() }.findAll { it != null } as List).sort().join(",")
+        newValueStr = ((((value as List)).collect((this.&_bat529Cb_ad9a62cb_28))).findAll((this.&_bat529Cb_ad9a62cb_116))as List).sort().join(",")
     } else {
         newValueStr = value?.toString()
     }
     def afterValueNorm = afterValueStr
     if (afterValueStr && value instanceof List && afterValueStr.contains(",")) {
-        afterValueNorm = afterValueStr.split(",").collect { it.trim() }.findAll { it }.sort().join(",")
+        afterValueNorm = ((afterValueStr.split(",")).collect((this.&_bat529Cb_ad9a62cb_42))).findAll((this.&_bat529Cb_ad9a62cb_103)).sort().join(",")
     }
     def schemaShifted = (beforeKeys != afterKeys) || (beforeValueStr != afterValueStr)
     def valueLanded = (newValueStr != null) && (afterValueNorm == newValueStr)
@@ -9866,11 +9556,11 @@ def _rmWriteSettingOnPage(Integer appId, String pageName, String key, Object val
     // cleanly against newValueStr (which is also sorted-comma-joined for Lists).
     def settingsValueNorm
     if (settingsValue instanceof List) {
-        settingsValueNorm = ((settingsValue as List).collect { it?.toString() }.findAll { it != null } as List).sort().join(",")
+        settingsValueNorm = ((((settingsValue as List)).collect((this.&_bat529Cb_ad9a62cb_64))).findAll((this.&_bat529Cb_ad9a62cb_123))as List).sort().join(",")
     } else if (settingsValue != null) {
         def settingsValueStr = settingsValue.toString()
         if (value instanceof List && settingsValueStr.contains(",")) {
-            settingsValueNorm = settingsValueStr.split(",").collect { it.trim() }.findAll { it }.sort().join(",")
+            settingsValueNorm = ((settingsValueStr.split(",")).collect((this.&_bat529Cb_ad9a62cb_57))).findAll((this.&_bat529Cb_ad9a62cb_113)).sort().join(",")
         } else {
             settingsValueNorm = settingsValueStr
         }
@@ -10058,7 +9748,7 @@ private Map _ruleCompiledState(Integer appId) {
         try { gp = new groovy.json.JsonSlurper().parseText(graphText) }
         catch (Exception e) { gp = null; if (readError == null) readError = "ruleBuilder20Json response was not JSON: ${e.message}" }
         if (gp instanceof Map && gp.success != false) {
-            def ve = (gp.validationErrors ?: []).collect { it?.toString() }
+            def ve = ((gp.validationErrors ?: [])).collect((this.&_bat529Cb_ad9a62cb_85))
             return [ruleFormat: "vrb-graph", broken: !ve.isEmpty(), validationErrors: ve, endpoint: "ruleBuilder20Json",
                     paused: gp.rulePaused instanceof Boolean ? gp.rulePaused : null,
                     label: _vrbBareName(gp.name, gp.rulePaused == true)]
@@ -10105,53 +9795,8 @@ private Map _ruleCompiledState(Integer appId) {
 private List _rmStructuralIssuesFromSequence(List<Map> sequence) {
     def issues = []
     def stack = []
-    sequence.each { entry ->
-        def idx = entry?.idx
-        def aType = entry?.actType?.toString()
-        def sType = entry?.actSubType?.toString()
-        if (entry?.partial == true || (aType in ["condActs", "repeatActs"] && (sType == null || sType == ""))) {
-            issues << ("action ${idx} is in a partial-commit state (actType set, actSubType missing) — likely from an interrupted wizard write where the actType landed but the actSubType did not. The walker treats this as an opaque block boundary; restore from a recent backup or inspect and finish the native editor via hub_set_rule(operation='form').".toString())
-            return
-        }
-        if (aType == "condActs") {
-            if (sType == "getIfThen") {
-                stack << [kind: "if", openIdx: idx]
-            } else if (sType == "getElseIf" || sType == "getElse") {
-                if (stack.isEmpty() || stack[-1].kind != "if") {
-                    issues << ("action ${idx} (${sType == 'getElse' ? 'ELSE' : 'ELSE-IF'}) is outside any IF block — orphaned branch keyword".toString())
-                }
-            } else if (sType == "getEndIf") {
-                if (stack.isEmpty()) {
-                    issues << ("action ${idx} (END-IF) has no matching IF — orphaned closer (too many END-IFs)".toString())
-                } else if (stack[-1].kind != "if") {
-                    def open = stack[-1]
-                    issues << ("action ${idx} (END-IF) closes a Repeat block opened at action ${open.openIdx} — mismatched block closer".toString())
-                    stack.removeAt(stack.size() - 1)
-                } else {
-                    stack.removeAt(stack.size() - 1)
-                }
-            }
-        } else if (aType == "repeatActs") {
-            if (sType == "getRepeat" || sType == "getWhile") {
-                stack << [kind: "repeat", openIdx: idx]
-            } else if (sType == "getStopRepeat") {
-                if (stack.isEmpty()) {
-                    issues << ("action ${idx} (End Repeat) has no matching Repeat — orphaned closer".toString())
-                } else if (stack[-1].kind != "repeat") {
-                    def open = stack[-1]
-                    issues << ("action ${idx} (End Repeat) closes an IF block opened at action ${open.openIdx} — mismatched block closer".toString())
-                    stack.removeAt(stack.size() - 1)
-                } else {
-                    stack.removeAt(stack.size() - 1)
-                }
-            }
-        }
-    }
-    stack.each { open ->
-        def label = open.kind == "if" ? "IF" : "Repeat"
-        def closer = open.kind == "if" ? "END-IF" : "End-Repeat"
-        issues << ("action ${open.openIdx} (${label}) opened a block that was never closed — rule is missing an ${closer}".toString())
-    }
+    (sequence).each(((this.&_bat529Cb_ad9a62cb_255).curry([issues, stack] as Object[])))
+    (stack).each(((this.&_bat529Cb_ad9a62cb_227).curry([issues] as Object[])))
     issues
 }
 
@@ -10224,10 +9869,7 @@ List _rmOrderedActionIndices(Integer appId) {
  */
 private TreeSet _rmScannedActionIndices(Map settingsByName) {
     def scanned = [] as TreeSet
-    settingsByName?.keySet()?.each { name ->
-        def m = name?.toString() =~ /^act(?:Type|SubType)\.(\d+)$/
-        if (m.matches()) scanned << ((m[0] as List)[1] as Integer)
-    }
+    (settingsByName?.keySet())?.each(((this.&_bat529Cb_ad9a62cb_196).curry([scanned] as Object[])))
     return scanned
 }
 
@@ -10244,17 +9886,7 @@ private TreeSet _rmScannedActionIndices(Map settingsByName) {
 private List _rmStructuralSequenceFromSettings(Map settingsByName, Set excludeIndices = ([] as Set), List orderedIndices = null) {
     def indices = (orderedIndices != null) ? orderedIndices : (_rmScannedActionIndices(settingsByName) as List)
     def sequence = []
-    indices.each { idx ->
-        if (excludeIndices.contains(idx)) return
-        def aType = _rmActionSettingText(settingsByName, "actType", idx)
-        def sType = _rmActionSettingText(settingsByName, "actSubType", idx)
-        // RM's UI writes no actType on ELSE / ELSE-IF / END-IF -- infer it or the walker sees a leaf.
-        if (aType == null && sType != null) aType = _rmActTypeForStructuralSubType(sType)
-        def entry = [idx: idx, actType: aType, actSubType: sType]
-        // The reverse half-pair is an add-action half-commit, not a leaf; mark it for the walker.
-        if (aType in ["condActs", "repeatActs"] && sType == null) entry.partial = true
-        sequence << entry
-    }
+    (indices).each(((this.&_bat529Cb_ad9a62cb_245).curry([excludeIndices, sequence, settingsByName] as Object[])))
     sequence
 }
 
@@ -10271,13 +9903,7 @@ private List _rmOrphanedActionRows(Map settingsByName, List orderedIndices) {
     def inRule = orderedIndices as Set
     def scanned = _rmScannedActionIndices(settingsByName)
     def out = []
-    scanned.each { idx ->
-        if (inRule.contains(idx)) return
-        def aType = _rmActionSettingText(settingsByName, "actType", idx)
-        def sType = _rmActionSettingText(settingsByName, "actSubType", idx)
-        if (aType == null && sType == null) return
-        out << ("action ${idx} (actType=${aType ?: 'none'}, actSubType=${sType ?: 'none'}) is present in settings but is NOT one of the rule's actions \u2014 leftover state from an interrupted write or a removed action. It does not run and does not affect block structure; the next add may REUSE index ${idx} (RM reopens a never-closed action editor pre-filled with these leftover fields) rather than allocate above it \u2014 remove the row first if a clean slot matters.".toString())
-    }
+    (scanned).each(((this.&_bat529Cb_ad9a62cb_246).curry([inRule, out, settingsByName] as Object[])))
     out
 }
 
@@ -10289,7 +9915,7 @@ private List _rmOrphanedActionRows(Map settingsByName, List orderedIndices) {
  */
 private Map _rmFetchSettingsByName(Integer appId) {
     def status = _rmFetchStatusJson(appId)
-    (status?.appSettings ?: []).collectEntries { [(it?.name?.toString()): it] }
+    ((status?.appSettings ?: [])).collectEntries((this.&_bat529Cb_ad9a62cb_126))
 }
 
 /**
@@ -10493,18 +10119,8 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
             // paragraphs-array format. Live on fw 2.5.0.143 a deleted-trigger rule's direct
             // /configure/json puts '**Broken Trigger**' in the body-element format, which a
             // paragraphs-only scan misses.
-            def paragraphTexts = (cfg?.configPage?.sections ?: []).collectMany { sect ->
-                def fromBody = (sect?.body ?: [])
-                    .findAll { b -> b instanceof Map && (b.element == "paragraph" || b.element == "href") }
-                    .collect { it.description?.toString() ?: "" }
-                def fromParagraphs = (sect?.paragraphs ?: []).collect { it?.toString() ?: "" }
-                fromBody + fromParagraphs
-            }
-            paragraphTexts.each { text ->
-                ["**Broken Trigger**", "**Broken Action**", "**Broken Condition**"].each { marker ->
-                    if (text.contains(marker)) brokenMarkers << marker
-                }
-            }
+            def paragraphTexts = ((cfg?.configPage?.sections ?: [])).collectMany((this.&_bat529Cb_ad9a62cb_235))
+            (paragraphTexts).each(((this.&_bat529Cb_ad9a62cb_210).curry([brokenMarkers] as Object[])))
             if (brokenMarkers) {
                 issues << "broken markers in render: ${brokenMarkers.unique().join(', ')}".toString()
             }
@@ -10513,14 +10129,7 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
             // says is multi.
             def settingsByName = _rmFetchSettingsByName(appId)
             def schema = _rmCollectInputSchema(cfg?.configPage)
-            schema.each { name, meta ->
-                if (meta?.multiple == true) {
-                    def rec = settingsByName.get(name)
-                    if (rec != null && rec.multiple != true) {
-                        multipleFlagPoison << name.toString()
-                    }
-                }
-            }
+            (schema).each(((this.&_bat529Cb_ad9a62cb_230).curry([multipleFlagPoison, settingsByName] as Object[])))
             if (multipleFlagPoison) {
                 issues << "multiple-flag poison on settings: ${multipleFlagPoison.join(', ')} — re-POST with the 3-field group to recover".toString()
             }
@@ -10581,7 +10190,7 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
     // instance would slip through a string-set delta. Callers comparing two health verdicts
     // (the replace restore gate) use this count map to detect a NEW broken instance.
     def brokenMarkerCounts = [:]
-    brokenMarkers.each { m -> brokenMarkerCounts.put(m, (brokenMarkerCounts.get(m) ?: 0) + 1) }
+    (brokenMarkers).each(((this.&_bat529Cb_ad9a62cb_154).curry([brokenMarkerCounts] as Object[])))
 
     // Stable report shape (backward-compatible with the pre-#254 contract): the RM detection
     // arrays are always present so existing consumers can read them unconditionally. The new
@@ -10681,44 +10290,7 @@ private List _rmPageHrefs(Map configPage) {
 // Returns [[name, title, problem], ...]; empty when the UI would submit.
 private List _uiNavigationViolations(Map schema, Map values) {
     def problems = []
-    schema?.each { rawName, meta ->
-        def name = rawName.toString()
-        if (meta?.disabled == true || meta?.type == "button") return
-        // The page pre-fills an unset input with its defaultValue, so navigation and Done see it alike.
-        def v = _uiValueOrDefault(values?.get(name), meta as Map)
-        def empty = _uiValueIsEmpty(v, meta as Map)
-        def title = _uiPlainTitle(meta?.title) ?: name
-        if (empty) {
-            if (meta?.required == true) problems << [name: name, title: title, problem: "required but empty"]
-            return
-        }
-        def t = meta?.type?.toString()
-        if (t in ["number", "decimal"]) {
-            def n
-            try { n = new BigDecimal(v.toString().trim()) }
-            catch (Exception notNumber) {
-                problems << [name: name, title: title, problem: "'${v}' is not a number".toString()]
-                return
-            }
-            def bounds = _uiRangeBounds(meta?.range)
-            def min = bounds != null ? bounds.min : (t == "number" ? BigDecimal.ZERO : null)
-            if (min != null && n < min) problems << [name: name, title: title, problem: "${v} is below the minimum ${min}".toString()]
-            if (bounds?.max != null && n > bounds.max) problems << [name: name, title: title, problem: "${v} is above the maximum ${bounds.max}".toString()]
-            def step = (t == "number") ? BigDecimal.ONE : new BigDecimal("0.01")
-            def base = min ?: BigDecimal.ZERO
-            // BigDecimal.remainder, not %: Groovy 2.4's % does not support BigDecimal operands.
-            if ((n - base).remainder(step).compareTo(BigDecimal.ZERO) != 0) {
-                problems << [name: name, title: title, problem: (t == "number" ? "${v} is not a whole number" : "${v} has more than two decimal places").toString()]
-            }
-        } else if (meta?.pattern) {
-            def matched
-            try { matched = (v.toString() ==~ meta.pattern.toString()) }
-            catch (Exception badPattern) { matched = true }
-            if (!matched) problems << [name: name, title: title, problem: "'${v}' does not match the required format".toString()]
-        } else if (t == "email" && !(v.toString() ==~ _uiEmailPattern())) {
-            problems << [name: name, title: title, problem: "'${v}' is not a valid email address".toString()]
-        }
-    }
+    (schema)?.each(((this.&_bat529Cb_ad9a62cb_254).curry([problems, values] as Object[])))
     return problems
 }
 
@@ -10741,7 +10313,7 @@ private _uiValueOrDefault(v, Map meta) {
 // zero length, so required text holding "null", "[]" or "  " passes, as in the browser.
 private boolean _uiValueIsEmpty(v, Map meta = null) {
     if (v == null) return true
-    if (v instanceof Collection) return v.findAll { it != null && it.toString().trim() }.isEmpty()
+    if (v instanceof Collection) return (v).findAll((this.&_bat529Cb_ad9a62cb_54)).isEmpty()
     if (v instanceof Map) return v.isEmpty()
     def t = meta?.type?.toString()
     if (t != null && t != "enum" && !_isDevicePickerType(t)) {
@@ -10760,11 +10332,11 @@ private boolean _isDevicePickerType(type) {
 // A device picker value as the id list the update endpoint takes. configure/json renders it as an
 // {id: label} Map, and statusJson can carry it as the List's text ("[728]" or "[728, 730]").
 private _devicePickerIds(v) {
-    if (v instanceof Map) return v.keySet().collect { it?.toString() }
+    if (v instanceof Map) return (v.keySet()).collect((this.&_bat529Cb_ad9a62cb_17))
     if (v instanceof CharSequence) {
         def s = v.toString().trim()
         if (s.startsWith("[") && s.endsWith("]")) {
-            return s.substring(1, s.length() - 1).split(",").collect { it.trim().replaceAll(/^"|"$/, "") }.findAll { it }
+            return ((s.substring(1, s.length() - 1).split(",")).collect((this.&_bat529Cb_ad9a62cb_149))).findAll((this.&_bat529Cb_ad9a62cb_160))
         }
     }
     return v
@@ -10791,7 +10363,7 @@ private String _uiPlainTitle(title) {
 private void _requireUiNavigationValid(Integer appId, String action, Map schema, Map values) {
     def problems = _uiNavigationViolations(schema, values)
     if (!problems) return
-    def detail = problems.collect { "${it.name} (${it.title}): ${it.problem}" }.join("; ")
+    def detail = (problems).collect((this.&_bat529Cb_ad9a62cb_109)).join("; ")
     throw new IllegalStateException("Hubitat's app page would refuse ${action} on app ${appId}: ${detail}. " +
         "The UI blocks this submit until these are fixed (required fields are the ones marked *). " +
         "Write the missing values first, or deselect the option that revealed them, then retry.")
@@ -10825,63 +10397,7 @@ private void _requireUiNavigationValid(Integer appId, String action, Map schema,
  */
 private Map _rmBuildSettingsBody(Integer appId, Map settingsMap, Map schema) {
     def body = [id: appId.toString()]
-    settingsMap.each { rawKey, rawVal ->
-        def key = rawKey.toString()
-        def meta = schema?."${key}"
-        def typeHint = meta?.type
-        def isDevicePicker = _isDevicePickerType(typeHint)
-        def isEnum = typeHint == "enum"
-        // ALWAYS trust the schema's multiple flag. The earlier code coerced
-        // isMulti=true whenever value was a List for capability.* fields,
-        // which broke single-device pickers (e.g. pushButton.1 schema says
-        // multiple=false; passing deviceIds=["288"] flipped it to true and
-        // mismatch crashed RM's render with the opaque "Command 'hasCapability'
-        // is not supported" error). Verified live.
-        def isMulti = meta?.multiple == true
-
-        // Serialize value: branch by input type for multi-value writes.
-        // Capability multi: CSV ("8,9"). Enum multi: JSON-array ('["X","Y"]').
-        // Everything else: toString.
-        def serialized
-        // The update endpoint takes a device picker's ids; sent as a map's or list's text
-        // ("[9:Lamp]", "[728]") the hub answers 500.
-        def val = isDevicePicker ? _devicePickerIds(rawVal) : rawVal
-        if (val instanceof List) {
-            if (isEnum) {
-                serialized = groovy.json.JsonOutput.toJson(val.collect { it?.toString() }.findAll { it != null })
-            } else {
-                serialized = val.collect { it?.toString() }.findAll { it != null }.join(",")
-            }
-        } else if (val == null) {
-            serialized = ""
-        } else {
-            serialized = val.toString()
-        }
-        body["settings[${key}]".toString()] = serialized
-
-        // Sidecar fields. `.type` always needed for non-bool inputs so the
-        // hub knows how to marshal the update; `.multiple` MUST always be
-        // explicit (true OR false) — verified live from the UI's
-        // capture of a button-push action: omitting `.multiple=false` on
-        // non-multi capability writes triggered RM's "Command 'hasCapability'
-        // is not supported" render error on doActPage. The render path RM
-        // takes for capability fields differs based on whether .multiple is
-        // present, and the path it falls into without it is buggy for some
-        // capabilities (button.pushableButton among them).
-        if (typeHint) {
-            body["${key}.type".toString()] = typeHint
-        }
-        body["${key}.multiple".toString()] = isMulti ? "true" : "false"
-
-        // For device-picker writes the UI also emits `deviceList=<keyname>`
-        // — a marker telling RM which form field is the device list being
-        // modified. Without it, certain capabilities (notably
-        // capability.pushableButton on button.push actions) fall into a
-        // render path that errors with hasCapability not supported.
-        if (isDevicePicker) {
-            body["deviceList".toString()] = key
-        }
-    }
+    (settingsMap).each(((this.&_bat529Cb_ad9a62cb_256).curry([body, schema] as Object[])))
     return body
 }
 
@@ -10901,16 +10417,7 @@ private Map _rmBuildSettingsBody(Integer appId, Map settingsMap, Map schema) {
 // reconstructed as a List of id strings so _rmBuildSettingsBody
 // serializes them as the CSV the form expects.
 private Map _rmLiveSettingsFromStatus(Map status) {
-    return (status?.appSettings ?: []).collectEntries { s ->
-        def v = s?.value
-        if (v == null) {
-            def ids = (s?.deviceIdsForDeviceList instanceof List && s.deviceIdsForDeviceList) ?
-                s.deviceIdsForDeviceList :
-                ((s?.deviceList instanceof Map && s.deviceList) ? s.deviceList.keySet().toList() : null)
-            if (ids) v = ids.collect { it.toString() }
-        }
-        [(s?.name?.toString()): v]
-    }
+    return ((status?.appSettings ?: [])).collectEntries((this.&_bat529Cb_ad9a62cb_237))
 }
 
 /**
@@ -10925,19 +10432,9 @@ private Map _rmLiveSettingsFromStatus(Map status) {
  */
 private void _rmVerifyMultipleFlags(Integer appId, Map schema, List<String> touchedNames, boolean includeRecoveryAdvice = true) {
     def status = _rmFetchStatusJson(appId)
-    def live = (status?.appSettings ?: []).collectEntries { s ->
-        [(s?.name?.toString()): s]
-    }
+    def live = ((status?.appSettings ?: [])).collectEntries((this.&_bat529Cb_ad9a62cb_153))
     def poisoned = []
-    touchedNames.each { name ->
-        def declared = schema?."${name}"
-        if (declared?.multiple == true) {
-            def rec = live?."${name}"
-            if (rec != null && rec.multiple != true) {
-                poisoned << name
-            }
-        }
-    }
+    (touchedNames).each(((this.&_bat529Cb_ad9a62cb_224).curry([live, poisoned, schema] as Object[])))
     if (poisoned) {
         def settingWord = (poisoned.size() == 1) ? "setting" : "settings"
         throw new IllegalStateException(
@@ -10975,7 +10472,7 @@ Map _rmUpdateAppSettings(Integer appId, Map settingsMap, Map schema = null, Map 
     def body = _rmBuildSettingsBody(appId, settingsMap, schema)
     def resp = _rmPostSettings(appId, body, cache)
 
-    def touched = settingsMap.keySet().collect { it.toString() }
+    def touched = (settingsMap.keySet()).collect((this.&_bat529Cb_ad9a62cb_49))
     try {
         _rmVerifyMultipleFlags(appId, schema, touched)
     } catch (IllegalStateException divergence) {
@@ -11069,10 +10566,7 @@ Set _bpsGatedSections() {
     if (cached != null) return cached as Set
     def readOnly = getReadOnlyToolNames()
     Set gated = ['best_practice_reference'] as Set
-    _toolCatalogIndexes().names.each { name ->
-        def section = readOnly.contains(name) ? null : _guideSectionForTool(name)
-        if (section) gated << section
-    }
+    (_toolCatalogIndexes().names).each(((this.&_bat529Cb_ad9a62cb_191).curry([gated, readOnly] as Object[])))
     return _toolMetadataPut("bpsGatedSections", gated) as Set
 }
 
@@ -11083,13 +10577,11 @@ String _guideSectionServed(String key, String body) {
     def registry = getToolGuideSubSections()
     List lines = []
     if (gated.contains(key)) lines << "Acknowledgment key: ${hubBpsGuideKey(key)}".toString()
-    def parent = registry.keySet().find { registry[it].containsKey(key) }
+    def parent = (registry.keySet()).find(((this.&_bat529Cb_ad9a62cb_92).curry([key, registry] as Object[])))
     if (parent && gated.contains(parent)) lines << "Acknowledgment key (${parent}): ${hubBpsGuideKey(parent as String)}".toString()
     def subs = registry[key]
     if (subs instanceof Map) {
-        subs.keySet().each { sub ->
-            if (gated.contains(sub)) lines << "Acknowledgment key (${sub}): ${hubBpsGuideKey(sub as String)}".toString()
-        }
+        (subs.keySet()).each(((this.&_bat529Cb_ad9a62cb_188).curry([gated, lines] as Object[])))
     }
     if (!lines) return body
     String dropped = "If your client drops it, put it inside an `args` object on the call instead."
@@ -12656,19 +12148,1541 @@ def paginateGuideContent(content, cursor, int pageChars = guidePageChars()) {
 // unknown-section error instead of a plausible empty success.
 def guideSubSectionLookup(subKey) {
     def registry = getToolGuideSubSections()
-    def parentKey = registry.keySet().find { registry[it].containsKey(subKey) }
+    def parentKey = (registry.keySet()).find(((this.&_bat529Cb_ad9a62cb_101).curry([registry, subKey] as Object[])))
     if (!parentKey) return null
     def prefixes = registry[parentKey][subKey]
     def blocks = guideSectionBlocks(getToolGuideSections()[parentKey])
     def mine = []
-    blocks.eachWithIndex { block, idx ->
+    (blocks).eachWithIndex(((this.&_bat529Cb_ad9a62cb_223).curry([mine, prefixes] as Object[])))
+    if (!mine) return null
+    return [parent: parentKey, content: mine.join("\n")]
+}
+
+
+def _bat529Cb_ad9a62cb_1(def it) { it as String 
+}
+
+def _bat529Cb_ad9a62cb_2(def it) { it.ruleId 
+}
+
+def _bat529Cb_ad9a62cb_3(def it) { it.toString() 
+}
+
+def _bat529Cb_ad9a62cb_4(def it) { it?.toString() 
+}
+
+def _bat529Cb_ad9a62cb_5(def it) { it?.toString() 
+}
+
+def _bat529Cb_ad9a62cb_6(def it) { it.toString() 
+}
+
+def _bat529Cb_ad9a62cb_7(def it) { it.toString() 
+}
+
+def _bat529Cb_ad9a62cb_8(def it) { it.toString() 
+}
+
+def _bat529Cb_ad9a62cb_9(def self, def it) { it?.toString() == self 
+}
+
+def _bat529Cb_ad9a62cb_10(def it) { it.name 
+}
+
+def _bat529Cb_ad9a62cb_11(def it) { it.entry 
+}
+
+def _bat529Cb_ad9a62cb_12(def it) { it.trim() 
+}
+
+def _bat529Cb_ad9a62cb_13(def manifest, def it) { manifest.remove(it) 
+}
+
+def _bat529Cb_ad9a62cb_14(def it) { it 
+}
+
+def _bat529Cb_ad9a62cb_15(def manifest, def it) { manifest.remove(it) 
+}
+
+def _bat529Cb_ad9a62cb_16(def it) { it.toString() 
+}
+
+def _bat529Cb_ad9a62cb_17(def it) { it?.toString() 
+}
+
+def _bat529Cb_ad9a62cb_18(def it) { _protectedAppId(it) 
+}
+
+def _bat529Cb_ad9a62cb_19(def readOnly, def it) { !readOnly.contains(it) 
+}
+
+def _bat529Cb_ad9a62cb_20(def heading, def it) { heading.startsWith(it) 
+}
+
+def _bat529Cb_ad9a62cb_21(def it) { _mrtrCanonicalArgs(it) 
+}
+
+def _bat529Cb_ad9a62cb_22(def hidden, def it) { hidden.contains(it) 
+}
+
+def _bat529Cb_ad9a62cb_23(def it) { MRTR_WORK_ITEMS.remove(it) 
+}
+
+def _bat529Cb_ad9a62cb_24(def it) { _redactAccessTokens(it) 
+}
+
+def _bat529Cb_ad9a62cb_25(def it) { it.name == 'hub_search_tools' 
+}
+
+def _bat529Cb_ad9a62cb_26(def grantable, def it) { !grantable.contains(it) 
+}
+
+def _bat529Cb_ad9a62cb_27(def it) { validateAction(it) 
+}
+
+def _bat529Cb_ad9a62cb_28(def it) { it?.toString() 
+}
+
+def _bat529Cb_ad9a62cb_29(def it) { _immutableToolMetadata(it) 
+}
+
+def _bat529Cb_ad9a62cb_30(def it) { it.toString().take(80) 
+}
+
+def _bat529Cb_ad9a62cb_31(def it) { it.name 
+}
+
+def _bat529Cb_ad9a62cb_32(def hidden, def it) { !hidden.contains(it) 
+}
+
+def _bat529Cb_ad9a62cb_33(def it) { it as long 
+}
+
+def _bat529Cb_ad9a62cb_34(def it) { _immutableToolMetadata(it) 
+}
+
+def _bat529Cb_ad9a62cb_35(def it) { it as long 
+}
+
+def _bat529Cb_ad9a62cb_36(def a, def b) { a.value <=> b.value 
+}
+
+def _bat529Cb_ad9a62cb_36(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_36(*__bat529Tuple)
+}
+
+def _bat529Cb_ad9a62cb_37(def it) { it.startsWith("HUBSESSION=") 
+}
+
+def _bat529Cb_ad9a62cb_38(def it) { it.startsWith("HUBSESSION=") 
+}
+
+def _bat529Cb_ad9a62cb_39(def it) { _mrtrCleanupRecord(it as Map) 
+}
+
+def _bat529Cb_ad9a62cb_40(def it) { it?.token 
+}
+
+def _bat529Cb_ad9a62cb_41(def it) { _mrtrCleanupRecord(it as Map) 
+}
+
+def _bat529Cb_ad9a62cb_42(def it) { it.trim() 
+}
+
+def _bat529Cb_ad9a62cb_43(def it) { _mcpClientInfoFrom(it) != null 
+}
+
+def _bat529Cb_ad9a62cb_44(def it) { _mcpClientInfoFrom(it) != null 
+}
+
+def _bat529Cb_ad9a62cb_45(def it) { _mrtrCleanupRecord(it as Map) 
+}
+
+def _bat529Cb_ad9a62cb_46(def safeArgs, def it) { !safeArgs.containsKey(it) 
+}
+
+def _bat529Cb_ad9a62cb_47(def it) { validateAction(it) 
+}
+
+def _bat529Cb_ad9a62cb_48(def it) { _mrtrCleanupRecord(it as Map) 
+}
+
+def _bat529Cb_ad9a62cb_49(def it) { it.toString() 
+}
+
+def _bat529Cb_ad9a62cb_50(def it) { validateAction(it) 
+}
+
+def _bat529Cb_ad9a62cb_51(def it) { it?.toString() 
+}
+
+def _bat529Cb_ad9a62cb_52(def it) { _mcpClientValidMessage(it) 
+}
+
+def _bat529Cb_ad9a62cb_53(def it) { _externalizeToolEntry(it as Map) 
+}
+
+def _bat529Cb_ad9a62cb_54(def it) { it != null && it.toString().trim() 
+}
+
+def _bat529Cb_ad9a62cb_55(def it) { it.tools 
+}
+
+def _bat529Cb_ad9a62cb_56(def recovered, def it) { recovered.put(it.id, it) 
+}
+
+def _bat529Cb_ad9a62cb_57(def it) { it.trim() 
+}
+
+def _bat529Cb_ad9a62cb_58(def before, def it) { !before.contains(it) 
+}
+
+def _bat529Cb_ad9a62cb_59(def dropContent, def it) { _stripFlatTrimDeep(it, dropContent) 
+}
+
+def _bat529Cb_ad9a62cb_60(def hideByName, def it) { !hideByName.contains(it) 
+}
+
+def _bat529Cb_ad9a62cb_61(def it) { it?.success == true 
+}
+
+def _bat529Cb_ad9a62cb_62(def it) { it.value?.status != "active" 
+}
+
+def _bat529Cb_ad9a62cb_63(def it) { it.value?.status != "active" 
+}
+
+def _bat529Cb_ad9a62cb_64(def it) { it?.toString() 
+}
+
+def _bat529Cb_ad9a62cb_65(def out, def it) { out << (it as String) 
+}
+
+def _bat529Cb_ad9a62cb_66(def openWorldNames, def it) { openWorldNames.contains(it) 
+}
+
+def _bat529Cb_ad9a62cb_67(def readOnlyNames, def it) { !readOnlyNames.contains(it) 
+}
+
+def _bat529Cb_ad9a62cb_68(def label, def it) { it?.label == label 
+}
+
+def _bat529Cb_ad9a62cb_69(def it) { it != null 
+}
+
+def _bat529Cb_ad9a62cb_70(def leaf, def it) { leaf.remove(it) 
+}
+
+def _bat529Cb_ad9a62cb_71(def known, def it) { !known.contains(it) 
+}
+
+def _bat529Cb_ad9a62cb_72(def next, def it) { next.remove(it) 
+}
+
+def _bat529Cb_ad9a62cb_73(def it) { it 
+}
+
+def _bat529Cb_ad9a62cb_74(def hidden, def it) { hidden.contains(it) 
+}
+
+def _bat529Cb_ad9a62cb_75(def it) { it.name as String 
+}
+
+def _bat529Cb_ad9a62cb_76(def it) { normalizeActionOperators(it) 
+}
+
+def _bat529Cb_ad9a62cb_77(def fileName, def it) { it.name == fileName 
+}
+
+def _bat529Cb_ad9a62cb_78(def it) { it != null 
+}
+
+def _bat529Cb_ad9a62cb_79(def it) { it ==~ /0x[0-9a-f]*|\d+/ 
+}
+
+def _bat529Cb_ad9a62cb_80(def it) { it != null 
+}
+
+def _bat529Cb_ad9a62cb_81(def k, def v) { "${k}=${v}" 
+}
+
+def _bat529Cb_ad9a62cb_81(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_81(*__bat529Tuple)
+}
+
+def _bat529Cb_ad9a62cb_82(def it) { it.toString() 
+}
+
+def _bat529Cb_ad9a62cb_83(def it) { it.toString() 
+}
+
+def _bat529Cb_ad9a62cb_84(def it) { it instanceof Map && it.success == true 
+}
+
+def _bat529Cb_ad9a62cb_85(def it) { it?.toString() 
+}
+
+def _bat529Cb_ad9a62cb_86(def idempotentNames, def it) { idempotentNames.contains(it) 
+}
+
+def _bat529Cb_ad9a62cb_87(def it) { _ungrantableToolNames().contains(it) 
+}
+
+def _bat529Cb_ad9a62cb_88(def it) { it?.fileName?.toString() 
+}
+
+def _bat529Cb_ad9a62cb_89(def it) { it?.fileName?.toString() 
+}
+
+def _bat529Cb_ad9a62cb_90(def it) { it instanceof Map && it?.id != null 
+}
+
+def _bat529Cb_ad9a62cb_91(def it) { _externalToolName(it as String) 
+}
+
+def _bat529Cb_ad9a62cb_92(def key, def registry, def it) { registry[it].containsKey(key) 
+}
+
+def _bat529Cb_ad9a62cb_93(def hidden, def it) { !hidden.contains(it) 
+}
+
+def _bat529Cb_ad9a62cb_94(def clientHidden, def it) { !clientHidden.contains(it) 
+}
+
+def _bat529Cb_ad9a62cb_95(def it) { normalizeActionOperators(it) 
+}
+
+def _bat529Cb_ad9a62cb_96(def it) { normalizeActionOperators(it) 
+}
+
+def _bat529Cb_ad9a62cb_97(def msg) { processJsonRpcMessage(msg) 
+}
+
+def _bat529Cb_ad9a62cb_98(def it) { it?.toString() ?: "" 
+}
+
+def _bat529Cb_ad9a62cb_99(def it) { it instanceof Map && it.success != true 
+}
+
+def _bat529Cb_ad9a62cb_100(def readOnlyNames, def it) { readOnlyNames.contains(it) 
+}
+
+def _bat529Cb_ad9a62cb_101(def registry, def subKey, def it) { registry[it].containsKey(subKey) 
+}
+
+def _bat529Cb_ad9a62cb_102(def it) { it != null 
+}
+
+def _bat529Cb_ad9a62cb_103(def it) { it 
+}
+
+def _bat529Cb_ad9a62cb_104(def buffer, def it) { _appendDebugLogRecord(buffer, it) 
+}
+
+def _bat529Cb_ad9a62cb_105(def appId, def it) { it.id.toString() == appId?.toString() 
+}
+
+def _bat529Cb_ad9a62cb_106(def it) { it != null 
+}
+
+def _bat529Cb_ad9a62cb_107(def out, def it) { out << (it as String) 
+}
+
+def _bat529Cb_ad9a62cb_108(def it) { !_modernEraVersion(it) 
+}
+
+def _bat529Cb_ad9a62cb_109(def it) { "${it.name} (${it.title}): ${it.problem}" 
+}
+
+def _bat529Cb_ad9a62cb_110(def wanted, def k, def v) { k?.toString()?.toLowerCase() == wanted 
+}
+
+def _bat529Cb_ad9a62cb_110(def wanted, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_110(wanted, *__bat529Tuple)
+}
+
+def _bat529Cb_ad9a62cb_111(def token, def cid, def c) { c instanceof Map && c.token == token 
+}
+
+def _bat529Cb_ad9a62cb_111(def token, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_111(token, *__bat529Tuple)
+}
+
+def _bat529Cb_ad9a62cb_112(def it) { it instanceof Map && it.success != true 
+}
+
+def _bat529Cb_ad9a62cb_113(def it) { it 
+}
+
+def _bat529Cb_ad9a62cb_114(def k, def v) { [(k): _immutableToolMetadata(v)] 
+}
+
+def _bat529Cb_ad9a62cb_114(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_114(*__bat529Tuple)
+}
+
+def _bat529Cb_ad9a62cb_115(def it) { it.name == ITEM_BACKUP_INDEX_FILE 
+}
+
+def _bat529Cb_ad9a62cb_116(def it) { it != null 
+}
+
+def _bat529Cb_ad9a62cb_117(def deviceId, def it) { it.id.toString() == deviceId.toString() 
+}
+
+def _bat529Cb_ad9a62cb_118(def a, def b) { (a.startedAt ?: 0L) <=> (b.startedAt ?: 0L) 
+}
+
+def _bat529Cb_ad9a62cb_118(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_118(*__bat529Tuple)
+}
+
+def _bat529Cb_ad9a62cb_119(def gwConfig, def it) { !gwConfig.containsKey(it) 
+}
+
+def _bat529Cb_ad9a62cb_120(def it) { !(it instanceof Map) || it.type != "dir" 
+}
+
+def _bat529Cb_ad9a62cb_121(def envelopeOnly, def k, def v) { !envelopeOnly.contains(k?.toString()) 
+}
+
+def _bat529Cb_ad9a62cb_121(def envelopeOnly, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_121(envelopeOnly, *__bat529Tuple)
+}
+
+def _bat529Cb_ad9a62cb_122(def child) { _publicToolResultValue(child, false) 
+}
+
+def _bat529Cb_ad9a62cb_123(def it) { it != null 
+}
+
+def _bat529Cb_ad9a62cb_124(def deviceId, def it) { it.id.toString() == deviceId.toString() 
+}
+
+def _bat529Cb_ad9a62cb_125(def fileName, def key, def entry) { entry?.fileName?.toString() == fileName 
+}
+
+def _bat529Cb_ad9a62cb_125(def fileName, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_125(fileName, *__bat529Tuple)
+}
+
+def _bat529Cb_ad9a62cb_126(def it) { [(it?.name?.toString()): it] 
+}
+
+def _bat529Cb_ad9a62cb_127(def preferred, def it) { it?.fileName?.toString() == preferred 
+}
+
+def _bat529Cb_ad9a62cb_128(def it) { [(it): _externalToolName(it as String)] 
+}
+
+def _bat529Cb_ad9a62cb_129(def action) {
+        normalizeActionOperators(action)
+    
+}
+
+def _bat529Cb_ad9a62cb_130(def k, def v) { [(k == "content" ? "contentText" : k): v] 
+}
+
+def _bat529Cb_ad9a62cb_130(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_130(*__bat529Tuple)
+}
+
+def _bat529Cb_ad9a62cb_131(def readLeaf, def readSet, def k, def v) { readSet.contains(v?.leafTool?.toString()) == readLeaf 
+}
+
+def _bat529Cb_ad9a62cb_131(def readLeaf, def readSet, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_131(readLeaf, readSet, *__bat529Tuple)
+}
+
+def _bat529Cb_ad9a62cb_132(def hideByName, def it) { it.name != 'hub_search_tools' && !hideByName.contains(it.name) 
+}
+
+def _bat529Cb_ad9a62cb_133(def meta, def it) { [(it): "${meta[it]?.title ?: it} (${it})".toString()] 
+}
+
+def _bat529Cb_ad9a62cb_134(def kept, def manifest, def it) { !kept.contains(it) && !manifest[it]?.deletePending 
+}
+
+def _bat529Cb_ad9a62cb_135(def it) { it != null 
+}
+
+def _bat529Cb_ad9a62cb_136(def pending, def previous, def key) { pending.put(key, previous.get(key) + [deletePending: true]) 
+}
+
+def _bat529Cb_ad9a62cb_137(def a, def b) { a.key.toString() <=> b.key.toString() 
+}
+
+def _bat529Cb_ad9a62cb_137(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_137(*__bat529Tuple)
+}
+
+def _bat529Cb_ad9a62cb_138(def visibleNames, def it) { visibleNames.contains(it) 
+}
+
+def _bat529Cb_ad9a62cb_139(def writeLeaves, def it) { writeLeaves.contains(it) 
+}
+
+def _bat529Cb_ad9a62cb_140(def a, def b) { (b.entry.timestamp as Long) <=> (a.entry.timestamp as Long) 
+}
+
+def _bat529Cb_ad9a62cb_140(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_140(*__bat529Tuple)
+}
+
+def _bat529Cb_ad9a62cb_141(def it) { !_alwaysGrantedToolNames().contains(it) 
+}
+
+def _bat529Cb_ad9a62cb_142(def a, def b) { a.value.toString().compareToIgnoreCase(b.value.toString()) 
+}
+
+def _bat529Cb_ad9a62cb_142(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_142(*__bat529Tuple)
+}
+
+def _bat529Cb_ad9a62cb_143(def kept, def it) { kept.remove(it.key) 
+}
+
+def _bat529Cb_ad9a62cb_144(def skip, def it) { !skip.contains(it) 
+}
+
+def _bat529Cb_ad9a62cb_145(def a, def b) { ((b.updatedAt ?: 0L) as Long) <=> ((a.updatedAt ?: 0L) as Long) 
+}
+
+def _bat529Cb_ad9a62cb_145(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_145(*__bat529Tuple)
+}
+
+def _bat529Cb_ad9a62cb_146(def parentTypeName, def it) {
+            it.name == parentTypeName
+        
+}
+
+def _bat529Cb_ad9a62cb_147(def durableIds, def it) {
+        !durableIds.contains(it.key)
+    
+}
+
+def _bat529Cb_ad9a62cb_148(def marker, def id, def c) { [(id): (c instanceof Map) ? c + [token: marker] : marker] 
+}
+
+def _bat529Cb_ad9a62cb_148(def marker, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_148(marker, *__bat529Tuple)
+}
+
+def _bat529Cb_ad9a62cb_149(def it) { it.trim().replaceAll(/^"|"$/, "") 
+}
+
+def _bat529Cb_ad9a62cb_150(def it) { it instanceof CharSequence || it instanceof Number || it instanceof Boolean 
+}
+
+def _bat529Cb_ad9a62cb_151(def readClass, def readSet, def it) { readSet.contains(it.value?.leafTool?.toString()) == readClass 
+}
+
+def _bat529Cb_ad9a62cb_152(def readLeaf, def readSet, def it) { readSet.contains(it.value?.leafTool?.toString()) == readLeaf 
+}
+
+def _bat529Cb_ad9a62cb_153(def s) {
+        [(s?.name?.toString()): s]
+    
+}
+
+def _bat529Cb_ad9a62cb_154(def brokenMarkerCounts, def m) { brokenMarkerCounts.put(m, (brokenMarkerCounts.get(m) ?: 0) + 1) 
+}
+
+def _bat529Cb_ad9a62cb_155(def key, def manifest, def protectedKey, def it) { it != key && it != protectedKey && manifest[it]?.deletePending 
+}
+
+def _bat529Cb_ad9a62cb_156(def kept, def it) { kept.remove(it.key) 
+}
+
+def _bat529Cb_ad9a62cb_157(def it) { !(it in ["tools", "read", "write", "local", "cloud", "toolNumber"]) 
+}
+
+def _bat529Cb_ad9a62cb_158(def it) { _externalToolName(it as String) 
+}
+
+def _bat529Cb_ad9a62cb_159(def retainedFiles, def it) { it && !retainedFiles.contains(it) 
+}
+
+def _bat529Cb_ad9a62cb_160(def it) { it 
+}
+
+def _bat529Cb_ad9a62cb_161(def it) { [(it.name): it] 
+}
+
+def _bat529Cb_ad9a62cb_162(def config, def toolName) {
+            "- ${toolName}: ${config.summaries[toolName]}"
+        
+}
+
+def _bat529Cb_ad9a62cb_163(def it) { [(it.name): it] 
+}
+
+def _bat529Cb_ad9a62cb_164(def merged, def k, def v) { if (!merged.containsKey(k)) merged.put(k, v) 
+}
+
+def _bat529Cb_ad9a62cb_164(def merged, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_164(merged, *__bat529Tuple)
+}
+
+def _bat529Cb_ad9a62cb_165(def hideByName, def proxiedNames, def it) {
+        !proxiedNames.contains(it.name) && !hideByName.contains(it.name)
+    
+}
+
+def _bat529Cb_ad9a62cb_166(def gwConfig, def out, def gw) {
+        (gwConfig[gw]?.tools)?.each(((this.&_bat529Cb_ad9a62cb_65).curry([out] as Object[])))
+    
+}
+
+def _bat529Cb_ad9a62cb_167(def it) {
+        MRTR_TERMINAL_EVIDENCE.remove(it.key)
+    
+}
+
+def _bat529Cb_ad9a62cb_168(def extraData, def raw, def key) { if (extraData?.get(key)) raw[key] = extraData[key] 
+}
+
+def _bat529Cb_ad9a62cb_169(def k) {
+        WRITE_REQUEST_LEASES.remove(k)
+        LIVE_WRITE_EXECUTIONS.remove(k?.toString())
+    
+}
+
+def _bat529Cb_ad9a62cb_170(def it) { _unwrapPreserialized(it) 
+}
+
+def _bat529Cb_ad9a62cb_171(def key, def entry) {
+        [(key): entry instanceof Map ? new LinkedHashMap(entry) : entry]
+    
+}
+
+def _bat529Cb_ad9a62cb_171(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_171(*__bat529Tuple)
+}
+
+def _bat529Cb_ad9a62cb_172(def manifest, def it) { manifest.remove(it) 
+}
+
+def _bat529Cb_ad9a62cb_173(def options, def id) {
+        if (!options.containsKey(id)) options.put(id, "Unavailable app (ID ${id})".toString())
+    
+}
+
+def _bat529Cb_ad9a62cb_174(def trigger) {
+        if (trigger.operator) trigger.operator = normalizeOperator(trigger.operator)
+    
+}
+
+def _bat529Cb_ad9a62cb_175(def b) { b instanceof Map && (b.element == "paragraph" || b.element == "href") 
+}
+
+def _bat529Cb_ad9a62cb_176(def at, def h, def t) { _retiredWithinTtl(t, at) 
+}
+
+def _bat529Cb_ad9a62cb_176(def at, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_176(at, *__bat529Tuple)
+}
+
+def _bat529Cb_ad9a62cb_177(def stamp, def a, def b) { stamp(a) <=> stamp(b) 
+}
+
+def _bat529Cb_ad9a62cb_177(def stamp, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_177(stamp, *__bat529Tuple)
+}
+
+def _bat529Cb_ad9a62cb_178(def it) { it.toString().replaceFirst(/^(?i)set-cookie:\s*/, "").split(';')[0] 
+}
+
+def _bat529Cb_ad9a62cb_179(def condition) {
+        if (condition.operator) condition.operator = normalizeOperator(condition.operator)
+    
+}
+
+def _bat529Cb_ad9a62cb_180(def data, def record, def key) { if (data.containsKey(key)) record.put(key, data.get(key)) 
+}
+
+def _bat529Cb_ad9a62cb_181(def it) { it?.toString() 
+}
+
+def _bat529Cb_ad9a62cb_182(def exactKey, def fileName, def key, def entry) {
+            (exactKey == null || key?.toString() == exactKey) && entry?.fileName?.toString() == fileName
+        
+}
+
+def _bat529Cb_ad9a62cb_182(def exactKey, def fileName, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_182(exactKey, fileName, *__bat529Tuple)
+}
+
+def _bat529Cb_ad9a62cb_183(def name) {
+        try { removeInUseGlobalVar(name) } catch (Exception e) { /* idempotent */ }
+    
+}
+
+def _bat529Cb_ad9a62cb_184(def hide, def it) { hide << it 
+}
+
+def _bat529Cb_ad9a62cb_185(def hide, def readOnly, def it) {
+            if (!readOnly.contains(it) && !(it == "hub_set_rule" && settings.enableRead != false)) hide << it
+        
+}
+
+def _bat529Cb_ad9a62cb_186(def key, def entry) {
+            [(key): entry instanceof Map ? new LinkedHashMap(entry) : entry]
+        
+}
+
+def _bat529Cb_ad9a62cb_186(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_186(*__bat529Tuple)
+}
+
+def _bat529Cb_ad9a62cb_187(def dropContent, def k, def v) {
+        if (k != 'description' && (v instanceof Map || v instanceof List)) {
+            _stripFlatTrimDeep(v, dropContent)
+        }
+    
+}
+
+def _bat529Cb_ad9a62cb_187(def dropContent, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_187(dropContent, *__bat529Tuple)
+}
+
+def _bat529Cb_ad9a62cb_188(def gated, def lines, def sub) {
+            if (gated.contains(sub)) lines << "Acknowledgment key (${sub}): ${hubBpsGuideKey(sub as String)}".toString()
+        
+}
+
+def _bat529Cb_ad9a62cb_189(def id, def it) {
+        app.removeSetting("${it}_${id}".toString())
+    
+}
+
+def _bat529Cb_ad9a62cb_190(def devId) {
+                    if (!findDevice(devId)) throw new IllegalArgumentException("Device not found: ${devId}")
+                
+}
+
+def _bat529Cb_ad9a62cb_191(def gated, def readOnly, def name) {
+        def section = readOnly.contains(name) ? null : _guideSectionForTool(name)
+        if (section) gated << section
+    
+}
+
+def _bat529Cb_ad9a62cb_192(def brokenMarkers, def text, def marker) {
+                    if (text.contains(marker)) brokenMarkers << marker
+                
+}
+
+def _bat529Cb_ad9a62cb_193(def entry) {
+            def e = entry?.trim()
+            if (!e) return null
+            e.contains("://") ? _originHost(e) : _authorityHost(e)
+        
+}
+
+def _bat529Cb_ad9a62cb_194(def result, def row, def it) {
+                if (result.containsKey(it)) row.put(it, result.get(it))
+            
+}
+
+def _bat529Cb_ad9a62cb_195(def txt, def it) { txt.startsWith(it) 
+}
+
+def _bat529Cb_ad9a62cb_196(def scanned, def name) {
+        def m = name?.toString() =~ /^act(?:Type|SubType)\.(\d+)$/
+        if (m.matches()) scanned << ((m[0] as List)[1] as Integer)
+    
+}
+
+def _bat529Cb_ad9a62cb_197(def at, def entry) {
+        !(entry.value instanceof Map) || entry.value.expiresAt == null ||
+            (entry.value.expiresAt as Long) <= at
+    
+}
+
+def _bat529Cb_ad9a62cb_198(def it) { it 
+}
+
+def _bat529Cb_ad9a62cb_199(def it) { it.description?.toString() ?: "" 
+}
+
+def _bat529Cb_ad9a62cb_200(def it) { it.key 
+}
+
+def _bat529Cb_ad9a62cb_201(def displayMeta, def idempotentNames, def openWorldNames, def readOnlyNames, def tool) {
+            def base = tool
+            base + [annotations: annotationsForLeaf(tool.name as String, readOnlyNames, displayMeta, idempotentNames, openWorldNames)]
+        
+}
+
+def _bat529Cb_ad9a62cb_202(def backupMetadata, def copy, def key, def child) {
+            if (backupMetadata && key?.toString() == "brokenBefore") return
+            copy.put(key, _publicToolResultValue(child, key?.toString() == "backup"))
+        
+}
+
+def _bat529Cb_ad9a62cb_202(def backupMetadata, def copy, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_202(backupMetadata, copy, *__bat529Tuple)
+}
+
+def _bat529Cb_ad9a62cb_203(def canonical, def entry) {
+            String key = entry.key.toString()
+            canonical.put(key, _mrtrCanonicalArgs(entry.value))
+        
+}
+
+def _bat529Cb_ad9a62cb_204(def displayMeta, def readOnlyNames, def toolName) {
+        [(toolName): overrideOptionLabel(toolName, displayMeta[toolName], readOnlyNames.contains(toolName))]
+    
+}
+
+def _bat529Cb_ad9a62cb_205(def displayMeta, def gwConfig, def readOnlyNames, def gwName) {
+        def pureRead = (gwConfig[gwName].tools).every(((this.&_bat529Cb_ad9a62cb_100).curry([readOnlyNames] as Object[])))
+        [(gwName): overrideOptionLabel(gwName, displayMeta[gwName], pureRead)]
+    
+}
+
+def _bat529Cb_ad9a62cb_206(def allowed, def always, def noRead, def noWrite, def readOnly, def name) {
+        !allowed.contains(name) || (!always.contains(name) &&
+            (name == "hub_set_rule" ? (noRead && noWrite) : (readOnly.contains(name) ? noRead : noWrite)))
+    
+}
+
+def _bat529Cb_ad9a62cb_207(def hide, def it) { hide << it 
+}
+
+def _bat529Cb_ad9a62cb_208(def a, def b) {
+        long av = (a.value?.expiresAt ?: 0L) as Long
+        long bv = (b.value?.expiresAt ?: 0L) as Long
+        av <=> bv
+    
+}
+
+def _bat529Cb_ad9a62cb_208(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_208(*__bat529Tuple)
+}
+
+def _bat529Cb_ad9a62cb_209(def lastByRule, def unkeyed, def entry) {
+        def rid = (entry instanceof Map) ? entry.ruleId : null
+        if (rid == null) {
+            unkeyed << entry
+        } else {
+            lastByRule.put(rid.toString(), entry)
+        }
+    
+}
+
+def _bat529Cb_ad9a62cb_210(def brokenMarkers, def text) {
+                (["**Broken Trigger**", "**Broken Action**", "**Broken Condition**"]).each(((this.&_bat529Cb_ad9a62cb_192).curry([brokenMarkers, text] as Object[])))
+            
+}
+
+def _bat529Cb_ad9a62cb_211(def asLong, def f) {
+        f instanceof Map ? [name: f.name?.toString(), size: asLong(f.size), date: asLong(f.date)] : [name: f.toString(), size: null, date: null]
+    
+}
+
+def _bat529Cb_ad9a62cb_212(def args, def self, def key) {
+        def target = args.get(key)
+        def ids = (target instanceof Collection) ? target : [target]
+        (ids).any(((this.&_bat529Cb_ad9a62cb_9).curry([self] as Object[])))
+    
+}
+
+def _bat529Cb_ad9a62cb_213(def a, def b) {
+        long av = (a.value?.updatedAt ?: a.value?.startedAt ?: 0L) as Long
+        long bv = (b.value?.updatedAt ?: b.value?.startedAt ?: 0L) as Long
+        av <=> bv
+    
+}
+
+def _bat529Cb_ad9a62cb_213(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_213(*__bat529Tuple)
+}
+
+def _bat529Cb_ad9a62cb_214(def gatewayConfig, def hidden, def reference) {
+            def referencedGateway = gatewayConfig.get(reference)
+            referencedGateway ? (referencedGateway.tools).any(((this.&_bat529Cb_ad9a62cb_74).curry([hidden] as Object[]))): hidden.contains(reference)
+        
+}
+
+def _bat529Cb_ad9a62cb_215(def it) { MRTR_TERMINAL_EVIDENCE.remove(it) 
+}
+
+def _bat529Cb_ad9a62cb_216(def validDays, def day) {
+                if (!validDays.contains(day)) {
+                    throw new IllegalArgumentException("days_of_week condition: Invalid day '${day}'. Valid days: ${validDays.join(', ')}")
+                }
+            
+}
+
+def _bat529Cb_ad9a62cb_217(def newest, def stamp, def k, def v) {
+        if (v?.deletePending) return
+        String item = "${v?.type}:${v?.ruleId != null ? v.ruleId : v?.id}".toString()
+        if (!newest.containsKey(item) || stamp(k) > stamp(newest.get(item))) newest.put(item, k)
+    
+}
+
+def _bat529Cb_ad9a62cb_217(def newest, def stamp, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_217(newest, stamp, *__bat529Tuple)
+}
+
+def _bat529Cb_ad9a62cb_218(def names, def required, def tool) {
+        String name = tool.name as String
+        names << name
+        def req = tool?.inputSchema?.required
+        if (req instanceof List && !req.isEmpty()) required.put(name, (req).collect((this.&_bat529Cb_ad9a62cb_1)))
+    
+}
+
+def _bat529Cb_ad9a62cb_219(def it) { it.name 
+}
+
+def _bat529Cb_ad9a62cb_220(def options, def id, def details) {
+        String key = _protectedAppId(id)
+        if (key) {
+            String label = stripAppConfigHtml(details.name) ?: 'Installed app'
+            options.put(key, "${label} (ID ${key})".toString())
+        }
+    
+}
+
+def _bat529Cb_ad9a62cb_220(def options, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_220(options, *__bat529Tuple)
+}
+
+def _bat529Cb_ad9a62cb_221(def a, def b) {
+            long av = (a.value?.updatedAt ?: a.value?.startedAt ?: 0L) as Long
+            long bv = (b.value?.updatedAt ?: b.value?.startedAt ?: 0L) as Long
+            av <=> bv
+        
+}
+
+def _bat529Cb_ad9a62cb_221(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_221(*__bat529Tuple)
+}
+
+def _bat529Cb_ad9a62cb_222(def at, def graceMs, def k, def v) {
+        if (!(v instanceof Map) || v.expiresAt == null) return true
+        long exp = v.expiresAt as Long
+        if (exp > at) return false
+        return !(_writeExecutionLiveLocked(k) && at < exp + graceMs)
+    
+}
+
+def _bat529Cb_ad9a62cb_222(def at, def graceMs, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_222(at, graceMs, *__bat529Tuple)
+}
+
+def _bat529Cb_ad9a62cb_223(def mine, def prefixes, def block, def idx) {
         if (idx == 0) {
             if (!prefixes) mine << block
             return
         }
         def heading = block.split("\n", -1)[0].substring(4)
-        if (prefixes.any { heading.startsWith(it) }) mine << block
-    }
-    if (!mine) return null
-    return [parent: parentKey, content: mine.join("\n")]
+        if ((prefixes).any(((this.&_bat529Cb_ad9a62cb_20).curry([heading] as Object[])))) mine << block
+    
+}
+
+def _bat529Cb_ad9a62cb_223(def mine, def prefixes, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_223(mine, prefixes, *__bat529Tuple)
+}
+
+def _bat529Cb_ad9a62cb_224(def live, def poisoned, def schema, def name) {
+        def declared = schema?."${name}"
+        if (declared?.multiple == true) {
+            def rec = live?."${name}"
+            if (rec != null && rec.multiple != true) {
+                poisoned << name
+            }
+        }
+    
+}
+
+def _bat529Cb_ad9a62cb_225(def rebuilt, def item) {
+        String key = item.base
+        int n = 1
+        while (rebuilt.containsKey(key)) key = "${item.base}_${n++}".toString()
+        rebuilt.put(key, item.entry)
+    
+}
+
+def _bat529Cb_ad9a62cb_226(def it) { it.key 
+}
+
+def _bat529Cb_ad9a62cb_227(def issues, def open) {
+        def label = open.kind == "if" ? "IF" : "Repeat"
+        def closer = open.kind == "if" ? "END-IF" : "End-Repeat"
+        issues << ("action ${open.openIdx} (${label}) opened a block that was never closed — rule is missing an ${closer}".toString())
+    
+}
+
+def _bat529Cb_ad9a62cb_228(def active, def at, def leaseId, def rec) {
+        if (rec instanceof Map && (_writeExecutionLiveLocked(leaseId) ||
+                (rec.expiresAt != null && (rec.expiresAt as Long) > at))) {
+            active << [tool: rec.tool, startedAt: rec.startedAt, transport: rec.transport]
+        }
+    
+}
+
+def _bat529Cb_ad9a62cb_228(def active, def at, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_228(active, at, *__bat529Tuple)
+}
+
+def _bat529Cb_ad9a62cb_229(def token) {
+        try {
+            revokeSpecificAccessToken(token)
+            _compactAccessTokenList()
+            _retireAccessToken(token)
+        } catch (Exception e) {
+            mcpLogError("server", "revokeSpecificAccessToken failed for an untracked token", e)
+        }
+    
+}
+
+def _bat529Cb_ad9a62cb_230(def multipleFlagPoison, def settingsByName, def name, def meta) {
+                if (meta?.multiple == true) {
+                    def rec = settingsByName.get(name)
+                    if (rec != null && rec.multiple != true) {
+                        multipleFlagPoison << name.toString()
+                    }
+                }
+            
+}
+
+def _bat529Cb_ad9a62cb_230(def multipleFlagPoison, def settingsByName, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_230(multipleFlagPoison, settingsByName, *__bat529Tuple)
+}
+
+def _bat529Cb_ad9a62cb_231(def defMap, def displayMeta, def name) {
+                def d = defMap[name]
+                def entry = [name: _externalToolName(name as String), description: d?.description, inputSchema: d?.inputSchema]
+                def title = displayMeta[name]?.title
+                if (title) entry.title = title as String
+                entry
+            
+}
+
+def _bat529Cb_ad9a62cb_232(def required, def pName, def pDef) {
+                def req = required.contains(pName) ? "REQUIRED" : "optional"
+                def hint = "  ${pName} (${pDef.type ?: 'any'}, ${req})"
+                if (pDef.enum) hint += " — one of: ${pDef.enum.join(', ')}"
+                else if (pDef.description) hint += " — ${pDef.description}"
+                hint
+            
+}
+
+def _bat529Cb_ad9a62cb_232(def required, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_232(required, *__bat529Tuple)
+}
+
+def _bat529Cb_ad9a62cb_233(def key) {
+                if (atomicState.containsKey(key)) atomicState.remove(key)
+                if (state.containsKey(key)) state.remove(key)
+            
+}
+
+def _bat529Cb_ad9a62cb_234(def file) {
+            try { deleteHubFile(file) }
+            catch (Exception e) { mcpLog("error", "hub-admin", "Backup manifest committed but old file '${file}' could not be deleted: ${e.message}; no backup references it, remove it from Settings > File Manager if it is still present") }
+        
+}
+
+def _bat529Cb_ad9a62cb_235(def sect) {
+                def fromBody = (((sect?.body ?: [])).findAll((this.&_bat529Cb_ad9a62cb_175))).collect((this.&_bat529Cb_ad9a62cb_199))
+                def fromParagraphs = ((sect?.paragraphs ?: [])).collect((this.&_bat529Cb_ad9a62cb_98))
+                fromBody + fromParagraphs
+            
+}
+
+def _bat529Cb_ad9a62cb_236(def active, def at, def rec) {
+        if (rec instanceof Map && rec.status == "active" &&
+                !_mrtrReadTools().contains(rec.leafTool?.toString()) &&
+                (_writeExecutionLiveLocked(rec.claimId) ||
+                 (rec.expiresAt != null && (rec.expiresAt as Long) > at))) {
+            active << [tool: rec.leafTool, startedAt: rec.startedAt, transport: "mrtr"]
+        }
+    
+}
+
+def _bat529Cb_ad9a62cb_237(def s) {
+        def v = s?.value
+        if (v == null) {
+            def ids = (s?.deviceIdsForDeviceList instanceof List && s.deviceIdsForDeviceList) ?
+                s.deviceIdsForDeviceList :
+                ((s?.deviceList instanceof Map && s.deviceList) ? s.deviceList.keySet().toList() : null)
+            if (ids) v = (ids).collect((this.&_bat529Cb_ad9a62cb_3))
+        }
+        [(s?.name?.toString()): v]
+    
+}
+
+def _bat529Cb_ad9a62cb_238(def entries, def section, def text) {
+            entries << [
+                uri: "${_guideResourceUriPrefix()}${section}".toString(),
+                name: "guide-${section}".toString(),
+                title: "Tool Guide: ${section}".toString(),
+                description: "The '${section}' section of the MCP tool guide (same content as hub_get_tool_guide(section='${section}')).".toString(),
+                mimeType: "text/markdown"
+            ]
+        
+}
+
+def _bat529Cb_ad9a62cb_238(def entries, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_238(entries, *__bat529Tuple)
+}
+
+def _bat529Cb_ad9a62cb_239(def dropContent, def guideFirst, def tool) {
+        // CharSequence, not String: gateway entries build their description as a GString.
+        if (tool?.description instanceof CharSequence) {
+            String description = stripFlatTrim(tool.description.toString(), dropContent)
+            tool.description = guideFirst ?
+                _withGuideFirst(tool.name as String, description, tool.inputSchema?.properties?.tool?.enum) : description
+        }
+        _stripFlatTrimDeep(tool?.inputSchema, dropContent)
+    
+}
+
+def _bat529Cb_ad9a62cb_240(def access, def id, def writes, def key, def setting) {
+        if (!access.containsKey(key)) return
+        def value = access.get(key)
+        if (value instanceof String && value in ["true", "false"]) value = (value == "true")
+        if (!(value instanceof Boolean)) throw new IllegalArgumentException("clientToken.access.${key} must be true or false.")
+        writes["${setting}_${id}".toString()] = [type: "bool", value: value]
+    
+}
+
+def _bat529Cb_ad9a62cb_240(def access, def id, def writes, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_240(access, id, writes, *__bat529Tuple)
+}
+
+def _bat529Cb_ad9a62cb_241(def marker, def k, def v) {
+            // clientTokens (per-client tokens: id -> [label, token]): mask each token, keep the name.
+            if (k?.toString() == "clientTokens" && v instanceof Map) {
+                return [(k): (v).collectEntries(((this.&_bat529Cb_ad9a62cb_148).curry([marker] as Object[])))]
+            }
+            boolean tokenKey = k?.toString() ==~ /(?i)access_?token/
+            [(k): (tokenKey && v instanceof CharSequence) ? marker : _redactAccessTokens(v)]
+        
+}
+
+def _bat529Cb_ad9a62cb_241(def marker, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_241(marker, *__bat529Tuple)
+}
+
+def _bat529Cb_ad9a62cb_242(def at, def cleanup, def kept, def k, def v) {
+        def recovered = _mrtrRecoverTerminalEvidenceLocked(k?.toString(),
+            v instanceof Map ? v as Map : null)
+        if (recovered instanceof Map) v = recovered
+        boolean executing = v instanceof Map && v.status == "active" &&
+            _writeExecutionLiveLocked(v.claimId)
+        if (v instanceof Map && (executing ||
+                (v.expiresAt != null && (v.expiresAt as Long) > at))) {
+            kept.put(k, v)
+        } else if (v instanceof Map && v.status == "active") {
+            cleanup << (([:] + (v as Map)) + [stateId: k?.toString()])
+        }
+    
+}
+
+def _bat529Cb_ad9a62cb_242(def at, def cleanup, def kept, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_242(at, cleanup, kept, *__bat529Tuple)
+}
+
+def _bat529Cb_ad9a62cb_243(def kept, def readSet, boolean readClass) {
+        int cap = readClass ? _mrtrMaxReadRecords() : _mrtrMaxRecords()
+        def sameClass = (kept.entrySet()).findAll(((this.&_bat529Cb_ad9a62cb_151).curry([readClass, readSet] as Object[])))
+        if (sameClass.size() <= cap) return
+        def removable = ((sameClass).findAll((this.&_bat529Cb_ad9a62cb_63))).sort((this.&_bat529Cb_ad9a62cb_221))
+        (removable.take(Math.min(removable.size(), sameClass.size() - cap))).each(((this.&_bat529Cb_ad9a62cb_156).curry([kept] as Object[])))
+    
+}
+
+def _bat529Cb_ad9a62cb_244(Map expired) {
+        // Only an active record reaches here, and only when nothing was executing it: the
+        // client never continued and the server's own continuation did not run it either.
+        if (expired.nextArguments instanceof Map || expired.checkpoint instanceof Map) {
+            int committed = ((expired.rounds ?: 0) as Integer)
+            mcpLog("warn", "mrtr", "${expired.leafTool}: requestState ${expired.stateId ?: '?'} expired without being resumed; " +
+                "${committed} slice(s) had committed and the remaining work did not run. Inspect the target before repeating.")
+        }
+        _mrtrCleanupRecord(expired)
+    
+}
+
+def _bat529Cb_ad9a62cb_245(def excludeIndices, def sequence, def settingsByName, def idx) {
+        if (excludeIndices.contains(idx)) return
+        def aType = _rmActionSettingText(settingsByName, "actType", idx)
+        def sType = _rmActionSettingText(settingsByName, "actSubType", idx)
+        // RM's UI writes no actType on ELSE / ELSE-IF / END-IF -- infer it or the walker sees a leaf.
+        if (aType == null && sType != null) aType = _rmActTypeForStructuralSubType(sType)
+        def entry = [idx: idx, actType: aType, actSubType: sType]
+        // The reverse half-pair is an add-action half-commit, not a leaf; mark it for the walker.
+        if (aType in ["condActs", "repeatActs"] && sType == null) entry.partial = true
+        sequence << entry
+    
+}
+
+def _bat529Cb_ad9a62cb_246(def inRule, def out, def settingsByName, def idx) {
+        if (inRule.contains(idx)) return
+        def aType = _rmActionSettingText(settingsByName, "actType", idx)
+        def sType = _rmActionSettingText(settingsByName, "actSubType", idx)
+        if (aType == null && sType == null) return
+        out << ("action ${idx} (actType=${aType ?: 'none'}, actSubType=${sType ?: 'none'}) is present in settings but is NOT one of the rule's actions \u2014 leftover state from an interrupted write or a removed action. It does not run and does not affect block structure; the next add may REUSE index ${idx} (RM reopens a never-closed action editor pre-filled with these leftover fields) rather than allocate above it \u2014 remove the row first if a clean slot matters.".toString())
+    
+}
+
+def _bat529Cb_ad9a62cb_247(def meta, def it) { meta.putAll(it) 
+}
+
+def _bat529Cb_ad9a62cb_248(def stored, def k, def v) {
+        if (!(v instanceof Map)) return true
+        // An executing worker owns its item; never reap under it, or the slice loses the
+        // arguments it is mid-way through applying.
+        if (v.started == true && _writeExecutionLiveLocked(k)) return false
+        def rec = stored.get(v.stateId?.toString())
+        if (!(rec instanceof Map) || rec.status != "active") return true
+        // Match on claim IDENTITY, not just the record: the item exists to feed ONE claim, so
+        // once the record has moved on to a later claim this item is garbage no matter how
+        // young it looks. An age ceiling can't see that -- it would hold a full copy of the
+        // call arguments for the whole window on every superseded claim.
+        return rec.claimId?.toString() != k?.toString()
+    
+}
+
+def _bat529Cb_ad9a62cb_248(def stored, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_248(stored, *__bat529Tuple)
+}
+
+def _bat529Cb_ad9a62cb_249(def it) { it.key 
+}
+
+def _bat529Cb_ad9a62cb_250(def buffer, def generation, def recovered, def row) {
+        def parsed = _parseHubLogLine(row?.toString())
+        if (parsed?.sourceId != null && (parsed.type != "app" || parsed.sourceId != buffer.appId)) return
+        String message = parsed?.message ?: ""
+        int marker = message.indexOf("[MCP1] ")
+        if (marker >= 0) {
+            def envelope
+            try {
+                envelope = new groovy.json.JsonSlurper().parseText(message.substring(marker + 7))
+            } catch (Exception ignored) {
+                // A native line may have been truncated by the hub's own log retention.
+                envelope = null
+            }
+            if (envelope instanceof Map && envelope.appId == buffer.appId &&
+                envelope.generation == generation && envelope.id && envelope.entry instanceof Map) {
+                recovered.put(envelope.id, _debugLogRecord(envelope.entry, envelope.id.toString()))
+            }
+        }
+    
+}
+
+def _bat529Cb_ad9a62cb_251(def displayMeta, def gatewayConfig, def idempotentNames, def modern, def openWorldNames, def readOnlyNames, def writeLeaves, def tool) {
+        String name = tool.name as String
+        // The enum is visibleSubTools (hideByName already applied), not config.tools:
+        // a gateway whose write leaves are all toggled off advertises no write surface.
+        boolean hinted = writeLeaves.contains(name) ||
+            (gatewayConfig.containsKey(name) &&
+                ((tool.inputSchema?.properties?.tool?.enum ?: [])).any(((this.&_bat529Cb_ad9a62cb_139).curry([writeLeaves] as Object[]))))
+        def withHint = hinted ? _withWriteRecoveryHint(tool, modern) : tool
+        // Gateways already carry complete annotations from above. Check readOnlyHint,
+        // not just the map: a leaf with only a title still needs its canonical hints.
+        if (withHint.annotations?.containsKey('readOnlyHint')) return withHint
+        withHint + [annotations: (withHint.annotations ?: [:]) + annotationsForLeaf(name, readOnlyNames, displayMeta, idempotentNames, openWorldNames)]
+    
+}
+
+def _bat529Cb_ad9a62cb_252(def displayMeta, def gatewayConfig, def hideByName, def idempotentNames, def openWorldNames, def readOnlyNames, def gwName, def config) {
+        def visibleSubTools = (config.tools).findAll(((this.&_bat529Cb_ad9a62cb_60).curry([hideByName] as Object[])))
+        if (!visibleSubTools) return []
+        def catalog = (visibleSubTools).collect(((this.&_bat529Cb_ad9a62cb_162).curry([config] as Object[]))).join("\n")
+        def intro = _visibleGatewayIntro(gwName, gatewayConfig, hideByName, displayMeta)
+        [[
+            name: gwName,
+            description: "${intro}\n\nCall with no args to see full parameter schemas. Call with tool='<name>' and args={...} to execute.\n\nAvailable tools:\n${catalog}",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    tool: [type: "string", description: "Tool to execute. Omit to see full schemas for all tools in this group.", enum: visibleSubTools],
+                    args: [type: "object", description: "Arguments for the tool. Call with just tool name first to see required parameters."]
+                ]
+            ],
+            // Gateway entries get their friendly name from the same display-meta
+            // map as the leaves; map-add keeps title first in the wire payload.
+            annotations: (displayMeta[gwName]?.title ? [title: displayMeta[gwName].title as String] : [:]) +
+                annotationsForGateway(visibleSubTools, readOnlyNames, idempotentNames, openWorldNames)
+        ]]
+    
+}
+
+def _bat529Cb_ad9a62cb_252(def displayMeta, def gatewayConfig, def hideByName, def idempotentNames, def openWorldNames, def readOnlyNames, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_252(displayMeta, gatewayConfig, hideByName, idempotentNames, openWorldNames, readOnlyNames, *__bat529Tuple)
+}
+
+def _bat529Cb_ad9a62cb_253(def rows, def writes, def k, def v) {
+        if (!(v instanceof Map)) return
+        Map rec = v as Map
+        String leaf = rec.leafTool?.toString()
+        if (!writes.contains(leaf)) return
+        // A client sees only its own writes; the main token sees every write and who made it.
+        if (callerClient != null && rec.client?.toString() != callerClient.id.toString()) return
+        String status = rec.status?.toString()
+        String phase
+        if (status == "terminal") {
+            phase = rec.terminalIsError == true ? "finished_with_error" : "finished"
+        } else if (status == "active") {
+            phase = (rec.claimId != null) ? "running" : "paused_resuming"
+        } else {
+            phase = status ?: "unknown"
+        }
+        Map row = [tool: leaf, status: phase, startedAt: rec.startedAt,
+                   updatedAt: rec.updatedAt ?: rec.startedAt, slices: (rec.rounds ?: 0)]
+        if (callerClient == null && rec.clientLabel) row.client = rec.clientLabel
+        if (status == "terminal" && rec.terminalResult instanceof Map) {
+            Map result = rec.terminalResult as Map
+            (["success", "appId", "ruleId", "rule_id", "newAppId", "deviceId", "driverId", "error"]).each(((this.&_bat529Cb_ad9a62cb_194).curry([result, row] as Object[])))
+            if (result.device instanceof Map && result.device.id != null) row.deviceId = result.device.id
+        }
+        rows << row
+    
+}
+
+def _bat529Cb_ad9a62cb_253(def rows, def writes, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_253(rows, writes, *__bat529Tuple)
+}
+
+def _bat529Cb_ad9a62cb_254(def problems, def values, def rawName, def meta) {
+        def name = rawName.toString()
+        if (meta?.disabled == true || meta?.type == "button") return
+        // The page pre-fills an unset input with its defaultValue, so navigation and Done see it alike.
+        def v = _uiValueOrDefault(values?.get(name), meta as Map)
+        def empty = _uiValueIsEmpty(v, meta as Map)
+        def title = _uiPlainTitle(meta?.title) ?: name
+        if (empty) {
+            if (meta?.required == true) problems << [name: name, title: title, problem: "required but empty"]
+            return
+        }
+        def t = meta?.type?.toString()
+        if (t in ["number", "decimal"]) {
+            def n
+            try { n = new BigDecimal(v.toString().trim()) }
+            catch (Exception notNumber) {
+                problems << [name: name, title: title, problem: "'${v}' is not a number".toString()]
+                return
+            }
+            def bounds = _uiRangeBounds(meta?.range)
+            def min = bounds != null ? bounds.min : (t == "number" ? BigDecimal.ZERO : null)
+            if (min != null && n < min) problems << [name: name, title: title, problem: "${v} is below the minimum ${min}".toString()]
+            if (bounds?.max != null && n > bounds.max) problems << [name: name, title: title, problem: "${v} is above the maximum ${bounds.max}".toString()]
+            def step = (t == "number") ? BigDecimal.ONE : new BigDecimal("0.01")
+            def base = min ?: BigDecimal.ZERO
+            // BigDecimal.remainder, not %: Groovy 2.4's % does not support BigDecimal operands.
+            if ((n - base).remainder(step).compareTo(BigDecimal.ZERO) != 0) {
+                problems << [name: name, title: title, problem: (t == "number" ? "${v} is not a whole number" : "${v} has more than two decimal places").toString()]
+            }
+        } else if (meta?.pattern) {
+            def matched
+            try { matched = (v.toString() ==~ meta.pattern.toString()) }
+            catch (Exception badPattern) { matched = true }
+            if (!matched) problems << [name: name, title: title, problem: "'${v}' does not match the required format".toString()]
+        } else if (t == "email" && !(v.toString() ==~ _uiEmailPattern())) {
+            problems << [name: name, title: title, problem: "'${v}' is not a valid email address".toString()]
+        }
+    
+}
+
+def _bat529Cb_ad9a62cb_254(def problems, def values, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_254(problems, values, *__bat529Tuple)
+}
+
+def _bat529Cb_ad9a62cb_255(def issues, def stack, def entry) {
+        def idx = entry?.idx
+        def aType = entry?.actType?.toString()
+        def sType = entry?.actSubType?.toString()
+        if (entry?.partial == true || (aType in ["condActs", "repeatActs"] && (sType == null || sType == ""))) {
+            issues << ("action ${idx} is in a partial-commit state (actType set, actSubType missing) — likely from an interrupted wizard write where the actType landed but the actSubType did not. The walker treats this as an opaque block boundary; restore from a recent backup or inspect and finish the native editor via hub_set_rule(operation='form').".toString())
+            return
+        }
+        if (aType == "condActs") {
+            if (sType == "getIfThen") {
+                stack << [kind: "if", openIdx: idx]
+            } else if (sType == "getElseIf" || sType == "getElse") {
+                if (stack.isEmpty() || stack[-1].kind != "if") {
+                    issues << ("action ${idx} (${sType == 'getElse' ? 'ELSE' : 'ELSE-IF'}) is outside any IF block — orphaned branch keyword".toString())
+                }
+            } else if (sType == "getEndIf") {
+                if (stack.isEmpty()) {
+                    issues << ("action ${idx} (END-IF) has no matching IF — orphaned closer (too many END-IFs)".toString())
+                } else if (stack[-1].kind != "if") {
+                    def open = stack[-1]
+                    issues << ("action ${idx} (END-IF) closes a Repeat block opened at action ${open.openIdx} — mismatched block closer".toString())
+                    stack.removeAt(stack.size() - 1)
+                } else {
+                    stack.removeAt(stack.size() - 1)
+                }
+            }
+        } else if (aType == "repeatActs") {
+            if (sType == "getRepeat" || sType == "getWhile") {
+                stack << [kind: "repeat", openIdx: idx]
+            } else if (sType == "getStopRepeat") {
+                if (stack.isEmpty()) {
+                    issues << ("action ${idx} (End Repeat) has no matching Repeat — orphaned closer".toString())
+                } else if (stack[-1].kind != "repeat") {
+                    def open = stack[-1]
+                    issues << ("action ${idx} (End Repeat) closes an IF block opened at action ${open.openIdx} — mismatched block closer".toString())
+                    stack.removeAt(stack.size() - 1)
+                } else {
+                    stack.removeAt(stack.size() - 1)
+                }
+            }
+        }
+    
+}
+
+def _bat529Cb_ad9a62cb_256(def body, def schema, def rawKey, def rawVal) {
+        def key = rawKey.toString()
+        def meta = schema?."${key}"
+        def typeHint = meta?.type
+        def isDevicePicker = _isDevicePickerType(typeHint)
+        def isEnum = typeHint == "enum"
+        // ALWAYS trust the schema's multiple flag. The earlier code coerced
+        // isMulti=true whenever value was a List for capability.* fields,
+        // which broke single-device pickers (e.g. pushButton.1 schema says
+        // multiple=false; passing deviceIds=["288"] flipped it to true and
+        // mismatch crashed RM's render with the opaque "Command 'hasCapability'
+        // is not supported" error). Verified live.
+        def isMulti = meta?.multiple == true
+
+        // Serialize value: branch by input type for multi-value writes.
+        // Capability multi: CSV ("8,9"). Enum multi: JSON-array ('["X","Y"]').
+        // Everything else: toString.
+        def serialized
+        // The update endpoint takes a device picker's ids; sent as a map's or list's text
+        // ("[9:Lamp]", "[728]") the hub answers 500.
+        def val = isDevicePicker ? _devicePickerIds(rawVal) : rawVal
+        if (val instanceof List) {
+            if (isEnum) {
+                serialized = groovy.json.JsonOutput.toJson(((val).collect((this.&_bat529Cb_ad9a62cb_4))).findAll((this.&_bat529Cb_ad9a62cb_80)))
+            } else {
+                serialized = ((val).collect((this.&_bat529Cb_ad9a62cb_5))).findAll((this.&_bat529Cb_ad9a62cb_78)).join(",")
+            }
+        } else if (val == null) {
+            serialized = ""
+        } else {
+            serialized = val.toString()
+        }
+        body["settings[${key}]".toString()] = serialized
+
+        // Sidecar fields. `.type` always needed for non-bool inputs so the
+        // hub knows how to marshal the update; `.multiple` MUST always be
+        // explicit (true OR false) — verified live from the UI's
+        // capture of a button-push action: omitting `.multiple=false` on
+        // non-multi capability writes triggered RM's "Command 'hasCapability'
+        // is not supported" render error on doActPage. The render path RM
+        // takes for capability fields differs based on whether .multiple is
+        // present, and the path it falls into without it is buggy for some
+        // capabilities (button.pushableButton among them).
+        if (typeHint) {
+            body["${key}.type".toString()] = typeHint
+        }
+        body["${key}.multiple".toString()] = isMulti ? "true" : "false"
+
+        // For device-picker writes the UI also emits `deviceList=<keyname>`
+        // — a marker telling RM which form field is the device list being
+        // modified. Without it, certain capabilities (notably
+        // capability.pushableButton on button.push actions) fall into a
+        // render path that errors with hasCapability not supported.
+        if (isDevicePicker) {
+            body["deviceList".toString()] = key
+        }
+    
+}
+
+def _bat529Cb_ad9a62cb_256(def body, def schema, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_256(body, schema, *__bat529Tuple)
 }

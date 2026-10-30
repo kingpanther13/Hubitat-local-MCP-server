@@ -49,9 +49,7 @@ private Map _vrbFetchGraph(Integer appId) {
     if (parsed.ruleApps instanceof List) {
         // The hub decorates these labels with the same HTML it uses on the apps list
         // ("<span style='color:red'>*BROKEN*</span>"); strip it like every other label read.
-        out.ruleApps = parsed.ruleApps.collect { app ->
-            (app instanceof Map && app.label != null) ? (app + [label: stripAppConfigHtml(app.label)]) : app
-        }
+        out.ruleApps = (parsed.ruleApps).collect((this.&_bat529Cb_c0a86baf_46))
     } else if (parsed.ruleApps != null) {
         out.ruleApps = parsed.ruleApps
     }
@@ -131,11 +129,10 @@ private Map _vrbParentNode(boolean allowMissing = false) {
     if (!text) throw new IllegalStateException("Empty response from /hub2/appsList")
     def parsed = new groovy.json.JsonSlurper().parseText(text)
     if (allowMissing && (!(parsed instanceof Map) || !(parsed.apps instanceof List) ||
-            !parsed.apps.every { it instanceof Map && it.data instanceof Map &&
-                (it.data.id?.toString() ==~ /[1-9][0-9]*/) && it.data.type instanceof String && it.data.type })) {
+            !(parsed.apps).every((this.&_bat529Cb_c0a86baf_49)))) {
         throw new IllegalStateException("Cannot verify Visual Rules Builder parent: the app inventory is malformed.")
     }
-    def parent = (parsed?.apps ?: []).find { it?.data?.type == "Visual Rules Builder" }
+    def parent = ((parsed?.apps ?: [])).find((this.&_bat529Cb_c0a86baf_21))
     if (parent == null && !allowMissing) {
         throw new IllegalStateException("The Visual Rules Builder parent app is not installed on this hub. Install it via Apps -> Add Built-In App -> Visual Rules Builder, then retry.")
     }
@@ -147,32 +144,13 @@ private List _vrbListRules() {
     // The appsList name is raw, and a paused rule's ends with the hub's exact " <span class='text-red'>(Paused)</span>":
     // only that marks it paused and only it is removed (hub_get_visual_rule has the authoritative
     // rulePaused). paused/disabled are omitted when a null name or an absent data.disabled leaves them unknown.
-    return (parent.children ?: []).findAll { it?.data?.id != null }.collect {
-        def rawName = it.data.name?.toString()
-        def decoration = / <span class=['"]text-red['"]>\(Paused\)<\/span>$/
-        boolean decorated = rawName != null && (rawName =~ decoration).find()
-        def cleanName = decorated ? rawName.replaceFirst(decoration, "") : rawName
-        def disabledRaw = it.data.disabled
-        def entry = [appId: it.data.id, name: cleanName]
-        // The hub types each child "Visual Rule Builder 1.0" / "... 2.0" -- the only place the
-        // rule's serialization is visible without a per-rule read. Omitted when unparseable
-        // (older firmware reported the bare family name).
-        def versionMatch = (it.data.type?.toString() ?: "") =~ /(\d+\.\d+)\s*$/
-        if (versionMatch.find()) entry.version = versionMatch.group(1)
-        if (disabledRaw != null) entry.disabled = (disabledRaw == true)
-        if (cleanName != null) {
-            entry.paused = decorated
-        } else {
-            mcpLog("warn", "vrb", "_vrbListRules: rule ${it.data.id} has no readable name in /hub2/appsList; name null, paused undeterminable")
-        }
-        entry
-    }
+    return (((parent.children ?: [])).findAll((this.&_bat529Cb_c0a86baf_12))).collect((this.&_bat529Cb_c0a86baf_61))
 }
 
 // A named helper avoids null closure parameters. Stock Groovy handles that AST shape;
 // its behavior under the hub-specific transform remains unproven.
 private List _vrbNewChildIds(Collection before) {
-    return (_vrbParentNode().children ?: []).collect { it?.data?.id?.toString() }.findAll { it && !before.contains(it) }
+    return (((_vrbParentNode().children ?: [])).collect((this.&_bat529Cb_c0a86baf_22))).findAll(((this.&_bat529Cb_c0a86baf_38).curry([before] as Object[])))
 }
 
 private Map _vrbCreateChild(String version) {
@@ -201,7 +179,7 @@ private Map _vrbCreateChild(String version) {
         def parent = checkProtection ? checkedParent : _vrbParentNode()
         if (parent == null) throw new IllegalStateException("The Visual Rules Builder parent is not installed yet")
         parentSeen = true
-        before = ((parent.children ?: []).collect { it?.data?.id?.toString() }.findAll { it }) as Set
+        before = (((parent.children ?: [])).collect((this.&_bat529Cb_c0a86baf_15))).findAll((this.&_bat529Cb_c0a86baf_26))as Set
         def path = "/installedapp/createchild/hubitat/Visual Rule Builder ${version}/parent/${parent.data.id}".toString()
         def resp = hubInternalGetRaw(path)
         // A Groovy Matcher coerces to boolean by calling find(), so test it exactly once.
@@ -463,12 +441,7 @@ private Map _vrb2NodeFromDialog(Map node, String typeKey) {
     // description/deviceIds/predefinedColor; the classic serialization adds index/type/result,
     // which are list bookkeeping rather than rule data.
     def config = [:]
-    node.each { k, v ->
-        def key = k?.toString()
-        if (key == null) return
-        if (key in [typeKey, "id", "kind", "config", "description", "deviceIds", "predefinedColor", "index", "type", "result"]) return
-        config.put(key, v)
-    }
+    (node).each(((this.&_bat529Cb_c0a86baf_56).curry([config, typeKey] as Object[])))
     def out = [type: node.get(typeKey), config: config]
     if (node.id != null && node.id.toString().trim()) out.id = node.id.toString()
     return out
@@ -506,7 +479,7 @@ private List _vrb2EditorList(def raw, String typeKey, String label) {
     if (raw == null) return []
     if (!(raw instanceof List)) throw new IllegalArgumentException("${label} must be an array.")
     def out = []
-    raw.eachWithIndex { item, i -> out << _vrb2EditorItem(item, typeKey, "${label}[${i}]") }
+    (raw).eachWithIndex(((this.&_bat529Cb_c0a86baf_30).curry([label, out, typeKey] as Object[])))
     return out
 }
 
@@ -521,12 +494,7 @@ private String _vrb2UniqueId(String base, Set used) {
 }
 
 private void _vrb2AssignIds(List items, String prefix, Set used) {
-    items.eachWithIndex { item, i ->
-        if (item.id == null || !item.id.toString().trim()) {
-            item.id = _vrb2UniqueId("${prefix}-${i + 1}".toString(), used)
-        }
-        used << item.id.toString()
-    }
+    (items).eachWithIndex(((this.&_bat529Cb_c0a86baf_52).curry([prefix, used] as Object[])))
 }
 
 private void _vrb2ChainEdges(List edges, String from, String port, List chain, String terminal) {
@@ -535,10 +503,7 @@ private void _vrb2ChainEdges(List edges, String from, String port, List chain, S
     // still gets its own edge so the decision port is not left dangling.
     if (!chain.isEmpty()) {
         edges << [from: from, to: chain[0].id, port: port]
-        chain.eachWithIndex { item, i ->
-            def to = (i + 1 < chain.size()) ? chain[i + 1].id : terminal
-            if (to != null) edges << [from: item.id, to: to, port: "next"]
-        }
+        (chain).eachWithIndex(((this.&_bat529Cb_c0a86baf_51).curry([chain, edges, terminal] as Object[])))
     } else if (terminal != null) {
         edges << [from: from, to: terminal, port: port]
     }
@@ -554,7 +519,7 @@ private Map _vrb2Compose(Map editor) {
     if (editor == null) throw new IllegalArgumentException("The editor definition must be a JSON object.")
     // A typo such as `conditons` must not silently become "no conditions" (an unconditional
     // rule that reports verified:true). The key set is closed, so refuse anything outside it.
-    def unknownKeys = editor.keySet().collect { it.toString() }.findAll { !(it in _vrb2EditorKeys()) }
+    def unknownKeys = ((editor.keySet()).collect((this.&_bat529Cb_c0a86baf_6))).findAll((this.&_bat529Cb_c0a86baf_28))
     if (unknownKeys) {
         throw new IllegalArgumentException("Unknown editor key(s): ${unknownKeys.join(', ')}. The editor form takes only ${_vrb2EditorKeys().join(', ')}.")
     }
@@ -574,9 +539,7 @@ private Map _vrb2Compose(Map editor) {
     // Register every caller-supplied id BEFORE generating any, so a generated id can never
     // collide with an explicit one that appears later in the document.
     def used = [] as Set
-    [triggers, conditions, thenActions, elseActions, commonActions].each { list ->
-        list.each { if (it.id != null) used << it.id.toString() }
-    }
+    ([triggers, conditions, thenActions, elseActions, commonActions]).each(((this.&_bat529Cb_c0a86baf_45).curry([used] as Object[])))
     _vrb2AssignIds(triggers, "trigger", used)
     _vrb2AssignIds(conditions, "condition", used)
     _vrb2AssignIds(thenActions, "then", used)
@@ -599,21 +562,21 @@ private Map _vrb2Compose(Map editor) {
     }
 
     def nodes = []
-    triggers.each { nodes << [id: it.id, kind: "trigger", type: it.type, config: it.config] }
+    (triggers).each(((this.&_bat529Cb_c0a86baf_32).curry([nodes] as Object[])))
     nodes << [id: triggerMergeId, kind: "merge", type: "triggerMerge", config: [:]]
     nodes << [id: decisionId, kind: "decision", type: decisionType,
-              config: [conditions: conditions.collect { [id: it.id, type: it.type, config: it.config] }]]
-    thenActions.each { nodes << [id: it.id, kind: "action", type: it.type, config: it.config] }
-    elseActions.each { nodes << [id: it.id, kind: "action", type: it.type, config: it.config] }
+              config: [conditions: (conditions).collect((this.&_bat529Cb_c0a86baf_19))]]
+    (thenActions).each(((this.&_bat529Cb_c0a86baf_34).curry([nodes] as Object[])))
+    (elseActions).each(((this.&_bat529Cb_c0a86baf_35).curry([nodes] as Object[])))
 
     def edges = []
-    triggers.each { edges << [from: it.id, to: triggerMergeId, port: "next"] }
+    (triggers).each(((this.&_bat529Cb_c0a86baf_24).curry([edges, triggerMergeId] as Object[])))
     edges << [from: triggerMergeId, to: decisionId, port: "next"]
     _vrb2ChainEdges(edges, decisionId, "true", thenActions, branchMergeId)
     _vrb2ChainEdges(edges, decisionId, "false", elseActions, branchMergeId)
     if (branchMergeId != null) {
         nodes << [id: branchMergeId, kind: "merge", type: "branchMerge", config: [:]]
-        commonActions.each { nodes << [id: it.id, kind: "action", type: it.type, config: it.config] }
+        (commonActions).each(((this.&_bat529Cb_c0a86baf_37).curry([nodes] as Object[])))
         _vrb2ChainEdges(edges, branchMergeId, "next", commonActions, null)
     }
     return [version: 1, nodes: nodes, edges: edges]
@@ -650,10 +613,10 @@ private Map _vrb2Decompose(Map graph) {
         throw new IllegalArgumentException("The rule is not a Visual Rule Builder 2.0 schema version 1 document.")
     }
     def byId = [:]
-    graph.nodes.each { if (it instanceof Map && it.id != null) byId.put(it.id.toString(), it) }
-    def triggerMerge = graph.nodes.find { it instanceof Map && it.kind == "merge" && it.type == "triggerMerge" }
-    def decision = graph.nodes.find { it instanceof Map && it.kind == "decision" && (it.type == null || it.type in ["all", "any"]) }
-    def branchMerge = graph.nodes.find { it instanceof Map && it.kind == "merge" && it.type == "branchMerge" }
+    (graph.nodes).each(((this.&_bat529Cb_c0a86baf_36).curry([byId] as Object[])))
+    def triggerMerge = (graph.nodes).find((this.&_bat529Cb_c0a86baf_33))
+    def decision = (graph.nodes).find((this.&_bat529Cb_c0a86baf_40))
+    def branchMerge = (graph.nodes).find((this.&_bat529Cb_c0a86baf_31))
     if (triggerMerge == null || decision == null) {
         throw new IllegalArgumentException("The rule must contain a trigger merge and an AND/OR decision.")
     }
@@ -662,15 +625,11 @@ private Map _vrb2Decompose(Map graph) {
         throw new IllegalArgumentException("An OR decision must contain at least one condition.")
     }
     def nextMap = [:]
-    graph.edges.each {
-        if (it instanceof Map && it.from != null && it.port != null) {
-            nextMap["${it.from}:${it.port}".toString()] = it.to?.toString()
-        }
-    }
+    (graph.edges).each(((this.&_bat529Cb_c0a86baf_50).curry([nextMap] as Object[])))
     def branchMergeId = branchMerge?.id?.toString()
     def structureIds = [triggerMerge: triggerMerge.id, decision: decision.id]
     if (branchMergeId != null) structureIds.branchMerge = branchMergeId
-    return [triggers: graph.nodes.findAll { it instanceof Map && it.kind == "trigger" },
+    return [triggers: (graph.nodes).findAll((this.&_bat529Cb_c0a86baf_17)),
             conditions: conditions,
             decisionType: decision.type ?: "all",
             thenActions: _vrb2WalkChain(byId, nextMap, nextMap["${decision.id}:true".toString()], branchMergeId),
@@ -723,50 +682,19 @@ private List _vrb2Validate(Map graph) {
     if (!(graph.nodes instanceof List)) errors << "Rule 'nodes' must be an array."
     if (!(graph.edges instanceof List)) errors << "Rule 'edges' must be an array."
     if (!(graph.nodes instanceof List) || !(graph.edges instanceof List)) {
-        return errors.collect { it.toString() }
+        return (errors).collect((this.&_bat529Cb_c0a86baf_2))
     }
 
     def kinds = [:]
     def types = [:]
     def ids = [] as Set
-    graph.nodes.eachWithIndex { node, i ->
-        if (!(node instanceof Map)) { errors << "Node at index ${i} must be an object."; return }
-        def rawId = node.id
-        def id = rawId?.toString()
-        if (!(rawId instanceof CharSequence) || !id.trim()) {
-            errors << "Node at index ${i} must have a nonblank string id."
-            return
-        }
-        if (ids.contains(id)) { errors << "Duplicate node id '${id}'."; return }
-        ids << id
-        def kind = node.kind?.toString()
-        if (!(kind in ["trigger", "merge", "decision", "action"])) {
-            errors << "Node '${id}' has unsupported kind '${node.kind}'."
-        } else {
-            kinds.put(id, kind)
-        }
-        if (!(node.config instanceof Map)) errors << "Node '${id}' config must be an object."
-        def type = node.type?.toString()
-        types.put(id, type)
-        // Trigger/action type NAMES are not pre-flighted: firmware extends the catalog, and a
-        // rule drawn in the hub UI with a type this build does not know must still round-trip.
-        // _vrb2CatalogWarnings reports them; the hub validator is the oracle. The SHAPE is ours
-        // though: a missing, non-string or blank type can never be valid.
-        if ((kind == "trigger" || kind == "action") && !((node.type instanceof CharSequence) && type.trim())) {
-            errors << "Node '${id}' must have a nonblank string type."
-        }
-        if (kind == "merge" && !(type in ["triggerMerge", "branchMerge"])) {
-            errors << "Merge node '${id}' has unsupported type '${node.type}'."
-        } else if (kind == "decision" && node.type != null && !(type in ["all", "any"])) {
-            errors << "Decision node '${id}' has unsupported type '${node.type}'."
-        }
-    }
+    (graph.nodes).eachWithIndex(((this.&_bat529Cb_c0a86baf_62).curry([errors, ids, kinds, types] as Object[])))
 
     def idList = ids as List
-    def triggerIds = idList.findAll { kinds.get(it) == "trigger" }
-    def triggerMergeIds = idList.findAll { kinds.get(it) == "merge" && types.get(it) == "triggerMerge" }
-    def branchMergeIds = idList.findAll { kinds.get(it) == "merge" && types.get(it) == "branchMerge" }
-    def decisionIds = idList.findAll { kinds.get(it) == "decision" }
+    def triggerIds = (idList).findAll(((this.&_bat529Cb_c0a86baf_7).curry([kinds] as Object[])))
+    def triggerMergeIds = (idList).findAll(((this.&_bat529Cb_c0a86baf_27).curry([kinds, types] as Object[])))
+    def branchMergeIds = (idList).findAll(((this.&_bat529Cb_c0a86baf_25).curry([kinds, types] as Object[])))
+    def decisionIds = (idList).findAll(((this.&_bat529Cb_c0a86baf_9).curry([kinds] as Object[])))
     if (triggerIds.isEmpty()) errors << "Rule must contain at least one trigger node."
     if (triggerMergeIds.size() != 1) errors << "Rule must contain exactly one triggerMerge node."
     if (decisionIds.size() != 1) errors << "Rule must contain exactly one decision node."
@@ -774,7 +702,7 @@ private List _vrb2Validate(Map graph) {
 
     if (decisionIds.size() == 1) {
         def decisionId = decisionIds[0]
-        def decisionNode = graph.nodes.find { it instanceof Map && it.id?.toString() == decisionId }
+        def decisionNode = (graph.nodes).find(((this.&_bat529Cb_c0a86baf_23).curry([decisionId] as Object[])))
         def rawConditions = (decisionNode.config instanceof Map) ? decisionNode.config.conditions : null
         if (rawConditions != null && !(rawConditions instanceof List)) {
             errors << "Node '${decisionId}' config.conditions must be an array."
@@ -784,71 +712,19 @@ private List _vrb2Validate(Map graph) {
                 errors << "An 'any' decision must contain at least one condition."
             }
             def conditionIds = [] as Set
-            conditions.eachWithIndex { cond, i ->
-                if (!(cond instanceof Map)) { errors << "Condition at index ${i} must be an object."; return }
-                def cid = cond.id?.toString()
-                if (!(cond.id instanceof CharSequence) || !cid.trim()) {
-                    errors << "Condition at index ${i} must have a nonblank string id."
-                    return
-                }
-                if (conditionIds.contains(cid)) { errors << "Duplicate condition id '${cid}'."; return }
-                conditionIds << cid
-                if (!((cond.type instanceof CharSequence) && cond.type.toString().trim())) {
-                    errors << "Condition '${cid}' must have a nonblank string type."
-                }
-                if (!(cond.config instanceof Map)) errors << "Condition '${cid}' config must be an object."
-            }
+            (conditions).eachWithIndex(((this.&_bat529Cb_c0a86baf_60).curry([conditionIds, errors] as Object[])))
         }
     }
 
     def seenEdges = [] as Set
     def usedPorts = [] as Set
     def nextMap = [:]
-    graph.edges.eachWithIndex { edge, i ->
-        if (!(edge instanceof Map)) { errors << "Edge at index ${i} must be an object."; return }
-        // Endpoints and ports are STRINGS on the wire; a numeric `from` that merely prints like a
-        // node id would pass a stringified comparison here and then be stored as an inactive draft.
-        if (!(edge.from instanceof CharSequence) || !(edge.to instanceof CharSequence) || !(edge.port instanceof CharSequence)) {
-            errors << "Edge at index ${i} must have string 'from', 'to' and 'port' values."
-            return
-        }
-        def from = edge.from.toString()
-        def to = edge.to.toString()
-        def port = edge.port.toString()
-        if (!from.trim() || !to.trim() || !port.trim()) {
-            errors << "Edge at index ${i} must have nonblank 'from', 'to' and 'port' strings."
-            return
-        }
-        if (!ids.contains(from)) { errors << "Edge at index ${i} references unknown node '${from}'."; return }
-        if (!ids.contains(to)) { errors << "Edge at index ${i} references unknown node '${to}'."; return }
-        def edgeKey = "${from}|${to}|${port}".toString()
-        if (seenEdges.contains(edgeKey)) {
-            errors << "Duplicate edge '${from}' -> '${to}' on port '${port}'."
-            return
-        }
-        seenEdges << edgeKey
-        def allowed = (kinds.get(from) == "decision") ? ["true", "false"] : ["next"]
-        if (kinds.get(from) != null && !(port in allowed)) {
-            errors << "Edge from '${from}' has invalid port '${port}' (expected ${allowed.join(' or ')})."
-            return
-        }
-        def portKey = "${from}|${port}".toString()
-        if (usedPorts.contains(portKey)) {
-            errors << "Node '${from}' has more than one outgoing edge on port '${port}'."
-            return
-        }
-        usedPorts << portKey
-        nextMap["${from}:${port}".toString()] = to
-    }
+    (graph.edges).eachWithIndex(((this.&_bat529Cb_c0a86baf_63).curry([errors, ids, kinds, nextMap, seenEdges, usedPorts] as Object[])))
 
     if (triggerMergeIds.size() == 1 && decisionIds.size() == 1) {
         def triggerMergeId = triggerMergeIds[0]
         def decisionId = decisionIds[0]
-        triggerIds.each { tid ->
-            if (nextMap["${tid}:next".toString()] != triggerMergeId) {
-                errors << "Trigger node '${tid}' must connect to the triggerMerge node '${triggerMergeId}'."
-            }
-        }
+        (triggerIds).each(((this.&_bat529Cb_c0a86baf_54).curry([errors, nextMap, triggerMergeId] as Object[])))
         if (nextMap["${triggerMergeId}:next".toString()] != decisionId) {
             errors << "The triggerMerge node must connect to the decision node."
         }
@@ -868,10 +744,10 @@ private List _vrb2Validate(Map graph) {
         // leaves its downstream nodes unvisited, and reporting those as disconnected would send
         // the author adding edges instead of fixing the one real problem.
         if (chainErrors.isEmpty() && branchMergeIds.size() <= 1) {
-            idList.findAll { !visited.contains(it) }.each { errors << "Node '${it}' is not connected to the rule's flow." }
+            ((idList).findAll(((this.&_bat529Cb_c0a86baf_5).curry([visited] as Object[])))).each(((this.&_bat529Cb_c0a86baf_39).curry([errors] as Object[])))
         }
     }
-    return errors.collect { it.toString() }.unique()
+    return (errors).collect((this.&_bat529Cb_c0a86baf_1)).unique()
 }
 
 // The one place the surface labels live: _vrb2UnknownTypes reports them, _vrb2TypeNames keys on
@@ -888,17 +764,7 @@ private List _vrb2UnknownTypes(Map graph) {
     // [where, id, type] for every trigger/action/condition whose type is outside this build's catalogs.
     def out = []
     if (!(graph?.nodes instanceof List)) return out
-    graph.nodes.each { node ->
-        if (!(node instanceof Map)) return
-        def type = node.type?.toString()
-        if (node.kind == "trigger" && !(type in _vrb2TriggerTypes())) out << [where: _vrb2Where("trigger"), id: node.id?.toString(), type: type]
-        else if (node.kind == "action" && !(type in _vrb2ActionTypes())) out << [where: _vrb2Where("action"), id: node.id?.toString(), type: type]
-        else if (node.kind == "decision" && node.config instanceof Map && node.config.conditions instanceof List) {
-            node.config.conditions.each { cond ->
-                if (cond instanceof Map && !(cond.type?.toString() in _vrb2ConditionTypes())) out << [where: _vrb2Where("condition"), id: cond.id?.toString(), type: cond.type?.toString()]
-            }
-        }
-    }
+    (graph.nodes).each(((this.&_bat529Cb_c0a86baf_59).curry([out] as Object[])))
     return out
 }
 
@@ -908,21 +774,15 @@ private Set _vrb2TypeNames(def graph) {
     // not vouch for the same name used as a TRIGGER.
     def names = [] as Set
     if (!(graph instanceof Map) || !(graph.nodes instanceof List)) return names
-    graph.nodes.each { node ->
-        if (!(node instanceof Map)) return
-        if (node.kind in ["trigger", "action"] && node.type != null) names << _vrb2TypeKey(_vrb2Where(node.kind.toString()), node.type.toString())
-        if (node.kind == "decision" && node.config instanceof Map && node.config.conditions instanceof List) {
-            node.config.conditions.each { if (it instanceof Map && it.type != null) names << _vrb2TypeKey(_vrb2Where("condition"), it.type.toString()) }
-        }
-    }
+    (graph.nodes).each(((this.&_bat529Cb_c0a86baf_58).curry([names] as Object[])))
     return names
 }
 
 private List _vrb2CatalogWarnings(Map graph) {
     // Advisory findings the hub will adjudicate: type names outside this build's catalogs (newer
     // firmware may know them) and a rule with no action anywhere (valid, but does nothing).
-    def warnings = _vrb2UnknownTypes(graph).collect { "${it.where} '${it.id}' has type '${it.type}', which this build does not know; the hub will validate it.".toString() }
-    if (graph?.nodes instanceof List && !graph.nodes.any { it instanceof Map && it.kind == "action" }) {
+    def warnings = (_vrb2UnknownTypes(graph)).collect((this.&_bat529Cb_c0a86baf_47))
+    if (graph?.nodes instanceof List && !(graph.nodes).any((this.&_bat529Cb_c0a86baf_16))) {
         warnings << "The rule has no action on any branch; it will activate but do nothing."
     }
     return warnings
@@ -937,7 +797,7 @@ private Map _vrbClassicToGraph(Map classic, List warnings = null) {
     // Classic nodes carry a per-list `index`; the arrays are observed in index order, but honour
     // the field when every node has one so a translation can never reorder the user's actions.
     def ordered = { List nodes ->
-        (nodes.every { it instanceof Map && it.index instanceof Number }) ? nodes.sort(false) { (it.index as Number).intValue() } : nodes
+        (nodes).every((this.&_bat529Cb_c0a86baf_18))? (nodes).sort(false, (this.&_bat529Cb_c0a86baf_11)): nodes
     }
     // The 1.0 builder's "click to edit" placeholders (its isWhenNodeCondition predicate names
     // sampleCondition; sampleTrigger is its sibling) can persist in a half-built rule. They carry
@@ -947,15 +807,15 @@ private Map _vrbClassicToGraph(Map classic, List warnings = null) {
     // `sample` ACTION placeholder is a 2.0 type the hub accepts as a no-op and is kept.
     def placeholders = ["sampleTrigger", "sampleCondition"]
     def allWhen = ordered((classic?.whenNodes ?: []) as List)
-    def whenNodes = allWhen.findAll { !(it instanceof Map && it.triggerType?.toString() in placeholders) }
+    def whenNodes = (allWhen).findAll(((this.&_bat529Cb_c0a86baf_29).curry([placeholders] as Object[])))
     if (whenNodes.size() != allWhen.size() && warnings != null) {
         warnings << "Dropped ${allWhen.size() - whenNodes.size()} unfinished 1.0 builder placeholder row(s) (sampleTrigger/sampleCondition) from the translation; the 2.0 validator does not accept them.".toString()
     }
     def conditionTypes = _vrb2ConditionTypes()
     def isCondition = { node -> node instanceof Map && (node.triggerType?.toString() in conditionTypes) }
     return _vrb2Compose([
-        triggers: whenNodes.findAll { !isCondition(it) },
-        conditions: whenNodes.findAll { isCondition(it) },
+        triggers: (whenNodes).findAll(((this.&_bat529Cb_c0a86baf_4).curry([isCondition] as Object[]))),
+        conditions: (whenNodes).findAll(((this.&_bat529Cb_c0a86baf_3).curry([isCondition] as Object[]))),
         decisionType: "all",
         thenActions: ordered((classic?.thenNodes ?: []) as List),
         elseActions: ordered((classic?.elseNodes ?: []) as List),
@@ -973,15 +833,9 @@ private void _vrbValidateClassicShape(Map definition) {
     // (and ignored -- the top-level name/paused arguments govern) so a classic read can be fed
     // straight back, which is exactly what the format-mismatch note tells the caller to do.
     def readEnvelope = ["promptHistory", "name", "rawName", "rulePaused", "success", "appId", "format"]
-    def unknownKeys = definition.keySet().collect { it.toString() }.findAll { !(it in ["whenNodes", "thenNodes", "elseNodes"] + readEnvelope) }
+    def unknownKeys = ((definition.keySet()).collect((this.&_bat529Cb_c0a86baf_8))).findAll(((this.&_bat529Cb_c0a86baf_41).curry([readEnvelope] as Object[])))
     if (unknownKeys) throw new IllegalArgumentException("Unknown classic key(s): ${unknownKeys.join(', ')}. A classic definition takes only whenNodes, thenNodes, elseNodes (the keys a hub_get_visual_rule read adds around them are ignored).")
-    ["whenNodes", "thenNodes", "elseNodes"].each { key ->
-        if (definition[key] == null) return
-        if (!(definition[key] instanceof List)) throw new IllegalArgumentException("definition.${key} must be an array of node objects.")
-        definition[key].eachWithIndex { node, i ->
-            if (!(node instanceof Map)) throw new IllegalArgumentException("definition.${key}[${i}] must be a node object.")
-        }
-    }
+    (["whenNodes", "thenNodes", "elseNodes"]).each(((this.&_bat529Cb_c0a86baf_57).curry([definition] as Object[])))
 }
 
 private String _vrbPreflightMessage(List validationErrors) {
@@ -1057,8 +911,8 @@ private Map _vrbFormatMismatchRefusal(Integer appId, String definitionFormat, St
 private String _vrbDetectDefinitionFormat(Map definition) {
     def looksGraph = definition.containsKey("nodes") || definition.containsKey("edges")
     def looksClassic = definition.containsKey("whenNodes") || definition.containsKey("thenNodes") || definition.containsKey("elseNodes")
-    def looksEditor = ["triggers", "conditions", "decisionType", "thenActions", "elseActions", "commonActions"].any { definition.containsKey(it) }
-    if ([looksGraph, looksClassic, looksEditor].count { it } > 1) {
+    def looksEditor = (["triggers", "conditions", "decisionType", "thenActions", "elseActions", "commonActions"]).any(((this.&_bat529Cb_c0a86baf_42).curry([definition] as Object[])))
+    if (([looksGraph, looksClassic, looksEditor]).count((this.&_bat529Cb_c0a86baf_10))> 1) {
         throw new IllegalArgumentException("definition mixes graph keys (nodes/edges), classic keys (whenNodes/thenNodes/elseNodes) and/or editor keys (triggers/conditions/decisionType/thenActions/elseActions/commonActions) -- supply exactly one shape. See hub_get_tool_guide(section='visual_rule_reference').")
     }
     if (looksGraph) return "graph"
@@ -1317,10 +1171,10 @@ private Map _toolSetVisualRuleImpl(args) {
             // hub accepted with a newer CONDITION type would present here as a trigger and be
             // refused about a type it demonstrably uses. For translated input any surface the rule
             // already uses vouches for the bare name; graph/editor input keeps the per-surface check.
-            def bareKnown = resolved.translatedFrom == "classic" ? (knownToRule.collect { it.substring(it.indexOf('|') + 1) } as Set) : ([] as Set)
-            def newUnknown = _vrb2UnknownTypes(resolved.definition).findAll { !(_vrb2TypeKey(it.where, it.type) in knownToRule) && !(it.type in bareKnown) }
+            def bareKnown = resolved.translatedFrom == "classic" ? ((knownToRule).collect((this.&_bat529Cb_c0a86baf_14))as Set) : ([] as Set)
+            def newUnknown = (_vrb2UnknownTypes(resolved.definition)).findAll(((this.&_bat529Cb_c0a86baf_43).curry([bareKnown, knownToRule] as Object[])))
             if (newUnknown) {
-                throw new IllegalArgumentException("Refusing to edit rule ${appId}: " + newUnknown.collect { "${it.where} '${it.id}' has type '${it.type}'" }.join("; ") +
+                throw new IllegalArgumentException("Refusing to edit rule ${appId}: " + (newUnknown).collect((this.&_bat529Cb_c0a86baf_20)).join("; ") +
                         " -- this build does not know that type and the rule does not use it today, so saving would stop a running rule as an inactive draft. Check the spelling against hub_get_tool_guide(section='visual_rule_reference'); a type the hub already accepted for this rule is allowed.")
             }
         }
@@ -1472,9 +1326,7 @@ private Map _vrbApplySave(Integer appId, String format, String name, Map definit
             // containsKey is enough: _vrbSaveGraphMeta sets these only when the hub sent a
             // non-null value. (Unlike the read-back merge below, where a present EMPTY list is
             // itself the answer and must not be collapsed by a truthiness test.)
-            ["storedSuccessfully", "activatedSuccessfully", "storageError", "activationError", "validationIssues", "revision", "referencedDeviceIds"].each { k ->
-                if (saved.containsKey(k)) failed[k] = saved[k]
-            }
+            (["storedSuccessfully", "activatedSuccessfully", "storageError", "activationError", "validationIssues", "revision", "referencedDeviceIds"]).each(((this.&_bat529Cb_c0a86baf_53).curry([failed, saved] as Object[])))
             return failed
         }
         savedMeta = saved
@@ -2082,4 +1934,390 @@ def _toolDisplayMeta_partVisualRules() {
         hub_set_visual_rule: [title: "Author Visual Rule", summary: "Create or edit a Visual Rules Builder rule, including rename and pause/resume."],
         hub_delete_visual_rule: [title: "Delete Visual Rule", summary: "Delete a Visual Rules Builder rule, returning its definition for recovery."]
     ]
+}
+
+
+def _bat529Cb_c0a86baf_1(def it) { it.toString() 
+}
+
+def _bat529Cb_c0a86baf_2(def it) { it.toString() 
+}
+
+def _bat529Cb_c0a86baf_3(def isCondition, def it) { isCondition(it) 
+}
+
+def _bat529Cb_c0a86baf_4(def isCondition, def it) { !isCondition(it) 
+}
+
+def _bat529Cb_c0a86baf_5(def visited, def it) { !visited.contains(it) 
+}
+
+def _bat529Cb_c0a86baf_6(def it) { it.toString() 
+}
+
+def _bat529Cb_c0a86baf_7(def kinds, def it) { kinds.get(it) == "trigger" 
+}
+
+def _bat529Cb_c0a86baf_8(def it) { it.toString() 
+}
+
+def _bat529Cb_c0a86baf_9(def kinds, def it) { kinds.get(it) == "decision" 
+}
+
+def _bat529Cb_c0a86baf_10(def it) { it 
+}
+
+def _bat529Cb_c0a86baf_11(def it) { (it.index as Number).intValue() 
+}
+
+def _bat529Cb_c0a86baf_12(def it) { it?.data?.id != null 
+}
+
+def _bat529Cb_c0a86baf_13(def used, def it) { if (it.id != null) used << it.id.toString() 
+}
+
+def _bat529Cb_c0a86baf_14(def it) { it.substring(it.indexOf('|') + 1) 
+}
+
+def _bat529Cb_c0a86baf_15(def it) { it?.data?.id?.toString() 
+}
+
+def _bat529Cb_c0a86baf_16(def it) { it instanceof Map && it.kind == "action" 
+}
+
+def _bat529Cb_c0a86baf_17(def it) { it instanceof Map && it.kind == "trigger" 
+}
+
+def _bat529Cb_c0a86baf_18(def it) { it instanceof Map && it.index instanceof Number 
+}
+
+def _bat529Cb_c0a86baf_19(def it) { [id: it.id, type: it.type, config: it.config] 
+}
+
+def _bat529Cb_c0a86baf_20(def it) { "${it.where} '${it.id}' has type '${it.type}'" 
+}
+
+def _bat529Cb_c0a86baf_21(def it) { it?.data?.type == "Visual Rules Builder" 
+}
+
+def _bat529Cb_c0a86baf_22(def it) { it?.data?.id?.toString() 
+}
+
+def _bat529Cb_c0a86baf_23(def decisionId, def it) { it instanceof Map && it.id?.toString() == decisionId 
+}
+
+def _bat529Cb_c0a86baf_24(def edges, def triggerMergeId, def it) { edges << [from: it.id, to: triggerMergeId, port: "next"] 
+}
+
+def _bat529Cb_c0a86baf_25(def kinds, def types, def it) { kinds.get(it) == "merge" && types.get(it) == "branchMerge" 
+}
+
+def _bat529Cb_c0a86baf_26(def it) { it 
+}
+
+def _bat529Cb_c0a86baf_27(def kinds, def types, def it) { kinds.get(it) == "merge" && types.get(it) == "triggerMerge" 
+}
+
+def _bat529Cb_c0a86baf_28(def it) { !(it in _vrb2EditorKeys()) 
+}
+
+def _bat529Cb_c0a86baf_29(def placeholders, def it) { !(it instanceof Map && it.triggerType?.toString() in placeholders) 
+}
+
+def _bat529Cb_c0a86baf_30(def label, def out, def typeKey, def item, def i) { out << _vrb2EditorItem(item, typeKey, "${label}[${i}]") 
+}
+
+def _bat529Cb_c0a86baf_30(def label, def out, def typeKey, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_c0a86baf_30(label, out, typeKey, *__bat529Tuple)
+}
+
+def _bat529Cb_c0a86baf_31(def it) { it instanceof Map && it.kind == "merge" && it.type == "branchMerge" 
+}
+
+def _bat529Cb_c0a86baf_32(def nodes, def it) { nodes << [id: it.id, kind: "trigger", type: it.type, config: it.config] 
+}
+
+def _bat529Cb_c0a86baf_33(def it) { it instanceof Map && it.kind == "merge" && it.type == "triggerMerge" 
+}
+
+def _bat529Cb_c0a86baf_34(def nodes, def it) { nodes << [id: it.id, kind: "action", type: it.type, config: it.config] 
+}
+
+def _bat529Cb_c0a86baf_35(def nodes, def it) { nodes << [id: it.id, kind: "action", type: it.type, config: it.config] 
+}
+
+def _bat529Cb_c0a86baf_36(def byId, def it) { if (it instanceof Map && it.id != null) byId.put(it.id.toString(), it) 
+}
+
+def _bat529Cb_c0a86baf_37(def nodes, def it) { nodes << [id: it.id, kind: "action", type: it.type, config: it.config] 
+}
+
+def _bat529Cb_c0a86baf_38(def before, def it) { it && !before.contains(it) 
+}
+
+def _bat529Cb_c0a86baf_39(def errors, def it) { errors << "Node '${it}' is not connected to the rule's flow." 
+}
+
+def _bat529Cb_c0a86baf_40(def it) { it instanceof Map && it.kind == "decision" && (it.type == null || it.type in ["all", "any"]) 
+}
+
+def _bat529Cb_c0a86baf_41(def readEnvelope, def it) { !(it in ["whenNodes", "thenNodes", "elseNodes"] + readEnvelope) 
+}
+
+def _bat529Cb_c0a86baf_42(def definition, def it) { definition.containsKey(it) 
+}
+
+def _bat529Cb_c0a86baf_43(def bareKnown, def knownToRule, def it) { !(_vrb2TypeKey(it.where, it.type) in knownToRule) && !(it.type in bareKnown) 
+}
+
+def _bat529Cb_c0a86baf_44(def names, def it) { if (it instanceof Map && it.type != null) names << _vrb2TypeKey(_vrb2Where("condition"), it.type.toString()) 
+}
+
+def _bat529Cb_c0a86baf_45(def used, def list) {
+        (list).each(((this.&_bat529Cb_c0a86baf_13).curry([used] as Object[])))
+    
+}
+
+def _bat529Cb_c0a86baf_46(def app) {
+            (app instanceof Map && app.label != null) ? (app + [label: stripAppConfigHtml(app.label)]) : app
+        
+}
+
+def _bat529Cb_c0a86baf_47(def it) { "${it.where} '${it.id}' has type '${it.type}', which this build does not know; the hub will validate it.".toString() 
+}
+
+def _bat529Cb_c0a86baf_48(def key, def node, def i) {
+            if (!(node instanceof Map)) throw new IllegalArgumentException("definition.${key}[${i}] must be a node object.")
+        
+}
+
+def _bat529Cb_c0a86baf_48(def key, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_c0a86baf_48(key, *__bat529Tuple)
+}
+
+def _bat529Cb_c0a86baf_49(def it) { it instanceof Map && it.data instanceof Map &&
+                (it.data.id?.toString() ==~ /[1-9][0-9]*/) && it.data.type instanceof String && it.data.type 
+}
+
+def _bat529Cb_c0a86baf_50(def nextMap, def it) {
+        if (it instanceof Map && it.from != null && it.port != null) {
+            nextMap["${it.from}:${it.port}".toString()] = it.to?.toString()
+        }
+    
+}
+
+def _bat529Cb_c0a86baf_51(def chain, def edges, def terminal, def item, def i) {
+            def to = (i + 1 < chain.size()) ? chain[i + 1].id : terminal
+            if (to != null) edges << [from: item.id, to: to, port: "next"]
+        
+}
+
+def _bat529Cb_c0a86baf_51(def chain, def edges, def terminal, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_c0a86baf_51(chain, edges, terminal, *__bat529Tuple)
+}
+
+def _bat529Cb_c0a86baf_52(def prefix, def used, def item, def i) {
+        if (item.id == null || !item.id.toString().trim()) {
+            item.id = _vrb2UniqueId("${prefix}-${i + 1}".toString(), used)
+        }
+        used << item.id.toString()
+    
+}
+
+def _bat529Cb_c0a86baf_52(def prefix, def used, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_c0a86baf_52(prefix, used, *__bat529Tuple)
+}
+
+def _bat529Cb_c0a86baf_53(def failed, def saved, def k) {
+                if (saved.containsKey(k)) failed[k] = saved[k]
+            
+}
+
+def _bat529Cb_c0a86baf_54(def errors, def nextMap, def triggerMergeId, def tid) {
+            if (nextMap["${tid}:next".toString()] != triggerMergeId) {
+                errors << "Trigger node '${tid}' must connect to the triggerMerge node '${triggerMergeId}'."
+            }
+        
+}
+
+def _bat529Cb_c0a86baf_55(def out, def cond) {
+                if (cond instanceof Map && !(cond.type?.toString() in _vrb2ConditionTypes())) out << [where: _vrb2Where("condition"), id: cond.id?.toString(), type: cond.type?.toString()]
+            
+}
+
+def _bat529Cb_c0a86baf_56(def config, def typeKey, def k, def v) {
+        def key = k?.toString()
+        if (key == null) return
+        if (key in [typeKey, "id", "kind", "config", "description", "deviceIds", "predefinedColor", "index", "type", "result"]) return
+        config.put(key, v)
+    
+}
+
+def _bat529Cb_c0a86baf_56(def config, def typeKey, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_c0a86baf_56(config, typeKey, *__bat529Tuple)
+}
+
+def _bat529Cb_c0a86baf_57(def definition, def key) {
+        if (definition[key] == null) return
+        if (!(definition[key] instanceof List)) throw new IllegalArgumentException("definition.${key} must be an array of node objects.")
+        (definition[key]).eachWithIndex(((this.&_bat529Cb_c0a86baf_48).curry([key] as Object[])))
+    
+}
+
+def _bat529Cb_c0a86baf_58(def names, def node) {
+        if (!(node instanceof Map)) return
+        if (node.kind in ["trigger", "action"] && node.type != null) names << _vrb2TypeKey(_vrb2Where(node.kind.toString()), node.type.toString())
+        if (node.kind == "decision" && node.config instanceof Map && node.config.conditions instanceof List) {
+            (node.config.conditions).each(((this.&_bat529Cb_c0a86baf_44).curry([names] as Object[])))
+        }
+    
+}
+
+def _bat529Cb_c0a86baf_59(def out, def node) {
+        if (!(node instanceof Map)) return
+        def type = node.type?.toString()
+        if (node.kind == "trigger" && !(type in _vrb2TriggerTypes())) out << [where: _vrb2Where("trigger"), id: node.id?.toString(), type: type]
+        else if (node.kind == "action" && !(type in _vrb2ActionTypes())) out << [where: _vrb2Where("action"), id: node.id?.toString(), type: type]
+        else if (node.kind == "decision" && node.config instanceof Map && node.config.conditions instanceof List) {
+            (node.config.conditions).each(((this.&_bat529Cb_c0a86baf_55).curry([out] as Object[])))
+        }
+    
+}
+
+def _bat529Cb_c0a86baf_60(def conditionIds, def errors, def cond, def i) {
+                if (!(cond instanceof Map)) { errors << "Condition at index ${i} must be an object."; return }
+                def cid = cond.id?.toString()
+                if (!(cond.id instanceof CharSequence) || !cid.trim()) {
+                    errors << "Condition at index ${i} must have a nonblank string id."
+                    return
+                }
+                if (conditionIds.contains(cid)) { errors << "Duplicate condition id '${cid}'."; return }
+                conditionIds << cid
+                if (!((cond.type instanceof CharSequence) && cond.type.toString().trim())) {
+                    errors << "Condition '${cid}' must have a nonblank string type."
+                }
+                if (!(cond.config instanceof Map)) errors << "Condition '${cid}' config must be an object."
+            
+}
+
+def _bat529Cb_c0a86baf_60(def conditionIds, def errors, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_c0a86baf_60(conditionIds, errors, *__bat529Tuple)
+}
+
+def _bat529Cb_c0a86baf_61(def it) {
+        def rawName = it.data.name?.toString()
+        def decoration = / <span class=['"]text-red['"]>\(Paused\)<\/span>$/
+        boolean decorated = rawName != null && (rawName =~ decoration).find()
+        def cleanName = decorated ? rawName.replaceFirst(decoration, "") : rawName
+        def disabledRaw = it.data.disabled
+        def entry = [appId: it.data.id, name: cleanName]
+        // The hub types each child "Visual Rule Builder 1.0" / "... 2.0" -- the only place the
+        // rule's serialization is visible without a per-rule read. Omitted when unparseable
+        // (older firmware reported the bare family name).
+        def versionMatch = (it.data.type?.toString() ?: "") =~ /(\d+\.\d+)\s*$/
+        if (versionMatch.find()) entry.version = versionMatch.group(1)
+        if (disabledRaw != null) entry.disabled = (disabledRaw == true)
+        if (cleanName != null) {
+            entry.paused = decorated
+        } else {
+            mcpLog("warn", "vrb", "_vrbListRules: rule ${it.data.id} has no readable name in /hub2/appsList; name null, paused undeterminable")
+        }
+        entry
+    
+}
+
+def _bat529Cb_c0a86baf_62(def errors, def ids, def kinds, def types, def node, def i) {
+        if (!(node instanceof Map)) { errors << "Node at index ${i} must be an object."; return }
+        def rawId = node.id
+        def id = rawId?.toString()
+        if (!(rawId instanceof CharSequence) || !id.trim()) {
+            errors << "Node at index ${i} must have a nonblank string id."
+            return
+        }
+        if (ids.contains(id)) { errors << "Duplicate node id '${id}'."; return }
+        ids << id
+        def kind = node.kind?.toString()
+        if (!(kind in ["trigger", "merge", "decision", "action"])) {
+            errors << "Node '${id}' has unsupported kind '${node.kind}'."
+        } else {
+            kinds.put(id, kind)
+        }
+        if (!(node.config instanceof Map)) errors << "Node '${id}' config must be an object."
+        def type = node.type?.toString()
+        types.put(id, type)
+        // Trigger/action type NAMES are not pre-flighted: firmware extends the catalog, and a
+        // rule drawn in the hub UI with a type this build does not know must still round-trip.
+        // _vrb2CatalogWarnings reports them; the hub validator is the oracle. The SHAPE is ours
+        // though: a missing, non-string or blank type can never be valid.
+        if ((kind == "trigger" || kind == "action") && !((node.type instanceof CharSequence) && type.trim())) {
+            errors << "Node '${id}' must have a nonblank string type."
+        }
+        if (kind == "merge" && !(type in ["triggerMerge", "branchMerge"])) {
+            errors << "Merge node '${id}' has unsupported type '${node.type}'."
+        } else if (kind == "decision" && node.type != null && !(type in ["all", "any"])) {
+            errors << "Decision node '${id}' has unsupported type '${node.type}'."
+        }
+    
+}
+
+def _bat529Cb_c0a86baf_62(def errors, def ids, def kinds, def types, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_c0a86baf_62(errors, ids, kinds, types, *__bat529Tuple)
+}
+
+def _bat529Cb_c0a86baf_63(def errors, def ids, def kinds, def nextMap, def seenEdges, def usedPorts, def edge, def i) {
+        if (!(edge instanceof Map)) { errors << "Edge at index ${i} must be an object."; return }
+        // Endpoints and ports are STRINGS on the wire; a numeric `from` that merely prints like a
+        // node id would pass a stringified comparison here and then be stored as an inactive draft.
+        if (!(edge.from instanceof CharSequence) || !(edge.to instanceof CharSequence) || !(edge.port instanceof CharSequence)) {
+            errors << "Edge at index ${i} must have string 'from', 'to' and 'port' values."
+            return
+        }
+        def from = edge.from.toString()
+        def to = edge.to.toString()
+        def port = edge.port.toString()
+        if (!from.trim() || !to.trim() || !port.trim()) {
+            errors << "Edge at index ${i} must have nonblank 'from', 'to' and 'port' strings."
+            return
+        }
+        if (!ids.contains(from)) { errors << "Edge at index ${i} references unknown node '${from}'."; return }
+        if (!ids.contains(to)) { errors << "Edge at index ${i} references unknown node '${to}'."; return }
+        def edgeKey = "${from}|${to}|${port}".toString()
+        if (seenEdges.contains(edgeKey)) {
+            errors << "Duplicate edge '${from}' -> '${to}' on port '${port}'."
+            return
+        }
+        seenEdges << edgeKey
+        def allowed = (kinds.get(from) == "decision") ? ["true", "false"] : ["next"]
+        if (kinds.get(from) != null && !(port in allowed)) {
+            errors << "Edge from '${from}' has invalid port '${port}' (expected ${allowed.join(' or ')})."
+            return
+        }
+        def portKey = "${from}|${port}".toString()
+        if (usedPorts.contains(portKey)) {
+            errors << "Node '${from}' has more than one outgoing edge on port '${port}'."
+            return
+        }
+        usedPorts << portKey
+        nextMap["${from}:${port}".toString()] = to
+    
+}
+
+def _bat529Cb_c0a86baf_63(def errors, def ids, def kinds, def nextMap, def seenEdges, def usedPorts, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_c0a86baf_63(errors, ids, kinds, nextMap, seenEdges, usedPorts, *__bat529Tuple)
 }

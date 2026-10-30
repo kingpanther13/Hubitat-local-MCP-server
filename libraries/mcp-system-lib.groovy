@@ -44,7 +44,7 @@ def _platformUpdateFromHub2(hub2) {
     // getLatestAvailablePlatformVersion() names the newest release; only a newer one is an update
     // (a beta hub can run ahead of it).
     if (pa == null) {
-        def item = (alerts.alertItems instanceof List) ? alerts.alertItems.find { it instanceof Map && it.key == "PLATFORM_UPDATE_AVAILABLE" } : null
+        def item = (alerts.alertItems instanceof List) ? (alerts.alertItems).find((this.&_bat529Cb_523e098a_19)): null
         if (item != null) return [available: true, currentVersion: current, availableVersion: item.version?.toString()]
         def latest = null
         try { latest = getLatestAvailablePlatformVersion()?.toString() } catch (Exception e) {
@@ -85,12 +85,12 @@ def _healthAlertsFromHub2(hub2) {
     alerts.remove("platformUpdateAvailable"); alerts.remove("platformUpdateVersion")
     def out = [safeMode: hub2.safeMode == true]
     if (alerts.alertItems instanceof List) {
-        def items = (alerts.alertItems as List).findAll { it instanceof Map && it.key }
-        out.active = items.collect { it.key.toString() }.unique().sort()
+        def items = ((alerts.alertItems as List)).findAll((this.&_bat529Cb_523e098a_14))
+        out.active = (items).collect((this.&_bat529Cb_523e098a_3)).unique().sort()
         // The handle hub_set_system_settings(dismissAlert) takes. Messages lose the hub's link markup.
-        out.items = items.collect { [key: it.key, message: stripAppConfigHtml(it.message), version: it.version, dismissible: it.dismissible == true] }
+        out.items = (items).collect((this.&_bat529Cb_523e098a_22))
     } else {
-        out.active = alerts.findAll { k, v -> v == true }.collect { k, v -> k.toString() }.sort()
+        out.active = ((alerts).findAll((this.&_bat529Cb_523e098a_5))).collect((this.&_bat529Cb_523e098a_16)).sort()
     }
     out.details = alerts
     return out
@@ -240,14 +240,14 @@ def toolGetHubInfo(args = null) {
     info.mcpClient = mcpClientIdentity()
     // Every device the MCP tools reach: the selected devices plus the MCP-managed virtual devices,
     // or with the allowlist bypassed every device in the hub's device tree.
-    def reachable = ((settings.selectedDevices ?: []) + (getChildDevices() ?: [])).collect { it?.id?.toString() }.findAll { it } as Set
+    def reachable = ((((settings.selectedDevices ?: []) + (getChildDevices() ?: []))).collect((this.&_bat529Cb_523e098a_20))).findAll((this.&_bat529Cb_523e098a_21))as Set
     if (_bypassEnabled()) {
         info.deviceAllowlistBypassed = true
         try {
             def tree = new groovy.json.JsonSlurper().parseText(hubInternalGet("/hub2/devicesList") ?: "{}")
             def records = _flattenHub2DeviceTree(tree instanceof Map ? tree.devices : null)
             if (!(records instanceof List)) throw new IllegalStateException("the device tree was not a list")
-            records.each { r -> if (r?.id != null) reachable << r.id.toString() }
+            (records).each(((this.&_bat529Cb_523e098a_15).curry([reachable] as Object[])))
         } catch (Exception e) {
             info.mcpDeviceCountNote = "The allowlist is bypassed, so every hub device is reachable, but the hub's device list could not be read (${e.message}); the count covers the selected and MCP-managed devices only.".toString()
         }
@@ -551,7 +551,7 @@ private _validateNetworkArgs(network) {
         throw new IllegalArgumentException("network must be an object, e.g. {ipMode:'static', address, netmask, gateway, nameserver} or {ipMode:'dhcp'} or {ethernetAutoneg:true} or {wifiSsid, wifiPassword}.")
     }
     def known = ["ipMode", "address", "netmask", "gateway", "nameserver", "useDNSFallover", "ethernetAutoneg", "wifiSsid", "wifiPassword"]
-    def unknown = network.keySet().findAll { !(it in known) }
+    def unknown = (network.keySet()).findAll(((this.&_bat529Cb_523e098a_9).curry([known] as Object[])))
     if (unknown) throw new IllegalArgumentException("Unknown network field(s): ${unknown.join(', ')}. Valid: ${known.join(', ')}.")
     if (network.isEmpty()) {
         throw new IllegalArgumentException("network is empty -- provide at least one of: ${known.join(', ')}.")
@@ -562,7 +562,7 @@ private _validateNetworkArgs(network) {
             throw new IllegalArgumentException("network.ipMode must be 'dhcp' or 'static', got: ${network.ipMode}")
         }
         if (mode == "static") {
-            def missing = ["address", "netmask", "gateway"].findAll { !network.get(it) }
+            def missing = (["address", "netmask", "gateway"]).findAll(((this.&_bat529Cb_523e098a_12).curry([network] as Object[])))
             if (missing) throw new IllegalArgumentException("network.ipMode='static' requires ${missing.join(', ')} (address, netmask, gateway are all required for a static IP).")
         }
     }
@@ -997,7 +997,7 @@ def toolUpdateHubMesh(args) {
 
 def toolGetModes() {
     def currentMode = location.mode
-    def modes = location.modes?.collect { [id: it.id.toString(), name: it.name] }
+    def modes = (location.modes)?.collect((this.&_bat529Cb_523e098a_13))
     def modeManager = null
     // Enrich with per-mode icon + Mode Manager state from the HTTP surface (the SDK exposes
     // neither). Best-effort: fall back to the SDK list if /modes/json can't be read.
@@ -1006,7 +1006,7 @@ def toolGetModes() {
         def parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
         if (parsed instanceof Map) {
             if (parsed.modes instanceof List) {
-                modes = parsed.modes.collect { [id: it?.id?.toString(), name: it?.name, icon: it?.icon] }
+                modes = (parsed.modes).collect((this.&_bat529Cb_523e098a_17))
             }
             // Only surface modeManager when the payload actually carries it -- a Map that lacks the
             // manager keys (an error envelope, or a firmware shape change) must NOT yield an all-null
@@ -1037,7 +1037,7 @@ def toolGetModes() {
 private _resolveModeId(idOrName) {
     def s = idOrName?.toString()?.trim()
     if (!s) return null
-    def m = location.modes?.find { it?.id?.toString() == s || it?.name?.equalsIgnoreCase(s) }
+    def m = (location.modes)?.find(((this.&_bat529Cb_523e098a_18).curry([s] as Object[])))
     return m ? m.id : null
 }
 
@@ -1053,7 +1053,7 @@ def toolManageMode(args) {
             // The hub's answer carries no id; the location's own mode list does, with no extra request.
             if (created.success == true) {
                 // By name only: a numeric name could also match another mode's id.
-                def newId = location.modes?.find { it?.name?.equalsIgnoreCase(name) }?.id
+                def newId = (location.modes)?.find(((this.&_bat529Cb_523e098a_10).curry([name] as Object[])))?.id
                 if (newId != null) { created.modeId = newId.toString(); created.name = name }
                 else created.note = "Created; its id was not in this request's mode list yet -- read it with hub_list_modes."
             }
@@ -1114,9 +1114,9 @@ private _modeDelete(modeId) {
 
 private _modeActivate(String modeName) {
     if (!modeName) throw new IllegalArgumentException("mode (the mode name to activate) is required")
-    def mode = location.modes?.find { it.name.equalsIgnoreCase(modeName) }
+    def mode = (location.modes)?.find(((this.&_bat529Cb_523e098a_11).curry([modeName] as Object[])))
     if (!mode) {
-        def available = location.modes?.collect { it.name }
+        def available = (location.modes)?.collect((this.&_bat529Cb_523e098a_4))
         throw new IllegalArgumentException("Mode '${modeName}' not found. Available: ${available}")
     }
     def previousMode = location.mode
@@ -1253,8 +1253,8 @@ private Map _readHubNetworkSettings() {
 
     // Normalize a DNS list the hub may send as an array OR a comma/space-joined string into a clean list.
     def dnsList = { v ->
-        if (v instanceof List) return v.collect { it?.toString() }.findAll { it }
-        if (v instanceof String && v.trim()) return v.split(/[,\s]+/).findAll { it }.toList()
+        if (v instanceof List) return ((v).collect((this.&_bat529Cb_523e098a_1))).findAll((this.&_bat529Cb_523e098a_8))
+        if (v instanceof String && v.trim()) return (v.split(/[,\s]+/)).findAll((this.&_bat529Cb_523e098a_2)).toList()
         return []
     }
 
@@ -1313,11 +1313,7 @@ def toolSetHsm(armCommand) {
 
 def toolRebootHub(args) {
     // A non-boolean option would reboot without it, so it is refused before the reboot.
-    ["rebuildDatabase", "purgeLogs"].each { String opt ->
-        if (args[opt] != null && !(args[opt] instanceof Boolean)) {
-            throw new IllegalArgumentException("${opt} must be true or false (got '${args[opt]}')")
-        }
-    }
+    (["rebuildDatabase", "purgeLogs"]).each(((this.&_bat529Cb_523e098a_23).curry([args] as Object[])))
     requireDestructiveConfirm(args.confirm)
 
     boolean rebuildDatabase = args.rebuildDatabase == true
@@ -1396,8 +1392,8 @@ def isNewerVersion(String remote, String local) {
         return false
     }
     try {
-        def remoteParts = remote.tokenize('.').collect { it as int }
-        def localParts = local.tokenize('.').collect { it as int }
+        def remoteParts = (remote.tokenize('.')).collect((this.&_bat529Cb_523e098a_7))
+        def localParts = (local.tokenize('.')).collect((this.&_bat529Cb_523e098a_6))
         def maxLen = Math.max(remoteParts.size(), localParts.size())
         for (int i = 0; i < maxLen; i++) {
             def r = i < remoteParts.size() ? remoteParts[i] : 0
@@ -1798,4 +1794,90 @@ def _toolDisplayMeta_partSystem() {
         hub_reboot: [title: "Reboot Hub", summary: "Reboot the hub (1-3 minutes of downtime)."],
         hub_shutdown: [title: "Shut Down Hub", summary: "Power the hub off; a physical restart is required afterwards."]
     ]
+}
+
+
+def _bat529Cb_523e098a_1(def it) { it?.toString() 
+}
+
+def _bat529Cb_523e098a_2(def it) { it 
+}
+
+def _bat529Cb_523e098a_3(def it) { it.key.toString() 
+}
+
+def _bat529Cb_523e098a_4(def it) { it.name 
+}
+
+def _bat529Cb_523e098a_5(def k, def v) { v == true 
+}
+
+def _bat529Cb_523e098a_5(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_523e098a_5(*__bat529Tuple)
+}
+
+def _bat529Cb_523e098a_6(def it) { it as int 
+}
+
+def _bat529Cb_523e098a_7(def it) { it as int 
+}
+
+def _bat529Cb_523e098a_8(def it) { it 
+}
+
+def _bat529Cb_523e098a_9(def known, def it) { !(it in known) 
+}
+
+def _bat529Cb_523e098a_10(def name, def it) { it?.name?.equalsIgnoreCase(name) 
+}
+
+def _bat529Cb_523e098a_11(def modeName, def it) { it.name.equalsIgnoreCase(modeName) 
+}
+
+def _bat529Cb_523e098a_12(def network, def it) { !network.get(it) 
+}
+
+def _bat529Cb_523e098a_13(def it) { [id: it.id.toString(), name: it.name] 
+}
+
+def _bat529Cb_523e098a_14(def it) { it instanceof Map && it.key 
+}
+
+def _bat529Cb_523e098a_15(def reachable, def r) { if (r?.id != null) reachable << r.id.toString() 
+}
+
+def _bat529Cb_523e098a_16(def k, def v) { k.toString() 
+}
+
+def _bat529Cb_523e098a_16(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_523e098a_16(*__bat529Tuple)
+}
+
+def _bat529Cb_523e098a_17(def it) { [id: it?.id?.toString(), name: it?.name, icon: it?.icon] 
+}
+
+def _bat529Cb_523e098a_18(def s, def it) { it?.id?.toString() == s || it?.name?.equalsIgnoreCase(s) 
+}
+
+def _bat529Cb_523e098a_19(def it) { it instanceof Map && it.key == "PLATFORM_UPDATE_AVAILABLE" 
+}
+
+def _bat529Cb_523e098a_20(def it) { it?.id?.toString() 
+}
+
+def _bat529Cb_523e098a_21(def it) { it 
+}
+
+def _bat529Cb_523e098a_22(def it) { [key: it.key, message: stripAppConfigHtml(it.message), version: it.version, dismissible: it.dismissible == true] 
+}
+
+def _bat529Cb_523e098a_23(def args, String opt) {
+        if (args[opt] != null && !(args[opt] instanceof Boolean)) {
+            throw new IllegalArgumentException("${opt} must be true or false (got '${args[opt]}')")
+        }
+    
 }

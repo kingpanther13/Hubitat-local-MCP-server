@@ -35,10 +35,10 @@ def toolListHubApps(args) {
                     def types = []
                     // Community (user-installed) code definitions: system/isBuiltIn=false,
                     // menu looked up from the appsList catalog (null when undeclared/unlisted).
-                    parsed.each { t -> if (t instanceof Map) types << _projectAppType(t, false, enrich) }
+                    (parsed).each(((this.&_bat529Cb_3ac884d1_17).curry([enrich, types] as Object[])))
                     // Built-in types never appear in the code registry; append them so a caller
                     // can answer "community vs built-in" over ALL app types in one call.
-                    enrich.builtIn.each { t -> if (t instanceof Map) types << _projectAppType(t, true, enrich) }
+                    (enrich.builtIn).each(((this.&_bat529Cb_3ac884d1_20).curry([enrich, types] as Object[])))
                     result.apps = types
                     result.count = types.size()
                     result.source = "hub_api"
@@ -59,9 +59,7 @@ def toolListHubApps(args) {
         mcpLog("warn", "hub-admin", "hub_list_apps API call failed: ${e.message}")
         // Fallback: return MCP child apps as the only apps we can enumerate
         def childApps = getChildApps()
-        result.apps = childApps?.collect { ca ->
-            [id: ca.id.toString(), name: ca.getSetting("ruleName") ?: ca.label ?: "Unknown", type: "MCP Rule"]
-        } ?: []
+        result.apps = (childApps)?.collect((this.&_bat529Cb_3ac884d1_24))?: []
         result.count = result.apps.size()
         result.source = "mcp_only"
         result.note = "Hub internal API unavailable (${e.message}). Showing only MCP Rule Server apps. This may require Hub Security credentials or a firmware update."
@@ -105,17 +103,8 @@ def _appTypeEnrichment() {
             if (parsed.systemAppTypes instanceof List) catalog += parsed.systemAppTypes
             else notes << "built-in (system) app types are omitted this call"
             if (notes) out.note = "/hub2/appsList did not return a usable list this call; " + notes.join("; ") + "."
-            catalog.each { e ->
-                if (e instanceof Map) {
-                    if (e.id != null) out.menuById[e.id.toString()] = e.menu
-                    if (e.namespace != null && e.name != null) {
-                        def ns = e.namespace.toString()
-                        if (!out.menuByNsName.containsKey(ns)) out.menuByNsName[ns] = [:]
-                        out.menuByNsName[ns][e.name.toString()] = e.menu
-                    }
-                }
-            }
-            if (parsed.systemAppTypes instanceof List) out.builtIn = parsed.systemAppTypes.findAll { it instanceof Map }
+            (catalog).each(((this.&_bat529Cb_3ac884d1_33).curry([out] as Object[])))
+            if (parsed.systemAppTypes instanceof List) out.builtIn = (parsed.systemAppTypes).findAll((this.&_bat529Cb_3ac884d1_6))
         } else {
             out.note = "Built-in vs community split and menu tab unavailable this call: /hub2/appsList returned an unexpected shape. Community app types are listed without a menu tab."
         }
@@ -155,7 +144,7 @@ private List _nameFiltered(List rows, filter) {
     // Rows whose name contains the filter, ignoring case and the hub's HTML (a list's own names).
     String f = filter?.toString()?.trim()?.toLowerCase()
     if (!f) return rows
-    return rows.findAll { it instanceof Map && (stripAppConfigHtml(it.name) ?: "").toLowerCase().contains(f) }
+    return (rows).findAll(((this.&_bat529Cb_3ac884d1_21).curry([f] as Object[])))
 }
 
 def toolListHubDrivers(args) {
@@ -176,12 +165,7 @@ def toolListHubDrivers(args) {
             def parsed = responseText ? new groovy.json.JsonSlurper().parseText(responseText) : null
             if (parsed?.drivers instanceof List) {
                 def projected = []
-                parsed.drivers.each { d ->
-                    if (d?.type == "dep" || d?.category == "Hidden") return
-                    def nm = d?.name?.toString() ?: ""
-                    def bucket = (d?.type == "usr") ? "user" : (nm.startsWith("Virtual") ? "virtual" : "system")
-                    projected << [id: d?.id?.toString(), name: nm, namespace: d?.namespace, bucket: bucket]
-                }
+                (parsed.drivers).each(((this.&_bat529Cb_3ac884d1_30).curry([projected] as Object[])))
                 result.drivers = projected
                 result.count = projected.size()
                 result.source = "hub_api"
@@ -259,14 +243,12 @@ def toolListLibraries(args) {
                 if (parsed instanceof List) {
                     // Project to summaries -- omit each library's `source` (full Groovy) to keep
                     // the list lean; read source via hub_get_source(type='library', id=N).
-                    result.libraries = parsed.collect { lib ->
-                        [id: lib.id?.toString(), name: lib.name, namespace: lib.namespace, version: lib.version]
-                    }
+                    result.libraries = (parsed).collect((this.&_bat529Cb_3ac884d1_25))
                     result.count = result.libraries.size()
                     result.source = "hub_api"
                     // A library with no id can't be chained into hub_get_source -- surface it in a
                     // note instead of silently shipping an unusable row under the hub_api all-clear.
-                    def noId = result.libraries.count { it.id == null }
+                    def noId = (result.libraries).count((this.&_bat529Cb_3ac884d1_2))
                     if (noId > 0) {
                         result.note = "${noId} librar${noId == 1 ? 'y' : 'ies'} returned by the hub had no id and cannot be read via hub_get_source (possible firmware shape change)."
                     }
@@ -412,7 +394,7 @@ private stripOptionsHtml(options) {
         for (entry in options) {
             if (entry instanceof Map) {
                 def cleaned = [:]
-                entry.each { k, v -> cleaned.put(k, (v instanceof String) ? stripAppConfigHtml(v) : v) }
+                (entry).each(((this.&_bat529Cb_3ac884d1_18).curry([cleaned] as Object[])))
                 out << cleaned
             } else {
                 out << entry
@@ -422,7 +404,7 @@ private stripOptionsHtml(options) {
     }
     if (options instanceof Map) {
         def cleaned = [:]
-        options.each { k, v -> cleaned.put(k, (v instanceof String) ? stripAppConfigHtml(v) : v) }
+        (options).each(((this.&_bat529Cb_3ac884d1_19).curry([cleaned] as Object[])))
         return cleaned
     }
     return options
@@ -661,10 +643,7 @@ def toolGetAppConfig(args) {
             // closed: withhold the map rather than return it partly redacted.
             Map settingTypes = _appConfigSettingTypes(appIdStr as Integer)
             // A value the types do not cover and no safe rule classifies is the same gap: fail closed.
-            List untyped = settingTypes == null ? [] : rawSettings.findAll { k, v ->
-                String key = k?.toString()
-                !passwordInputNames.contains(key) && !settingTypes.containsKey(key) && !_appConfigEmptyValue(v) && !(v instanceof Boolean) && !_appConfigSecretName(key)
-            }.keySet().collect { it.toString() }
+            List untyped = settingTypes == null ? [] : ((rawSettings).findAll(((this.&_bat529Cb_3ac884d1_26).curry([passwordInputNames, settingTypes] as Object[]))).keySet()).collect((this.&_bat529Cb_3ac884d1_28))
             if (settingTypes == null) {
                 result.settingsNote = "Raw settings withheld: the app's setting types could not be read from /installedapp/statusJson/${appIdStr}, so password values could not be identified for redaction. Retry; the config page above is unaffected.".toString()
             } else if (untyped) {
@@ -672,11 +651,7 @@ def toolGetAppConfig(args) {
                 result.settingsNote = "Raw settings withheld: /installedapp/statusJson/${appIdStr} carries no type for ${untyped.take(5).join(', ')}${untyped.size() > 5 ? " and ${untyped.size() - 5} more" : ''}, so a password among them could not be told apart. Retry; the config page above is unaffected.".toString()
             } else {
                 def redacted = [:]
-                rawSettings.each { k, v ->
-                    String key = k?.toString()
-                    String type = passwordInputNames.contains(key) ? "password" : settingTypes.get(key)
-                    redacted.put(k, _appConfigIsSecretSetting(key, type, v) ? redactedPw : v)
-                }
+                (rawSettings).each(((this.&_bat529Cb_3ac884d1_27).curry([passwordInputNames, redacted, redactedPw, settingTypes] as Object[])))
                 result.settings = redacted
                 result.settingsRedactionNote = "Secret values read ${redactedPw}: every setting the hub types as a password, on any page of the app, plus free-text settings whose names look like credentials (password, passwd, pwd, pass, passphrase, passcode, secret, token, API/access/private key, credential, psk, PIN, or a lock, user, access or alarm code). OAuth accessToken settings follow the Hide access tokens setting instead. Empty values are shown as-is. The secret itself is never returned; read or change it in the Hubitat UI.".toString()
             }
@@ -748,7 +723,7 @@ private boolean _appConfigSecretName(name) {
     if (!(lower.contains("pass") || lower.contains("pwd") || lower.contains("secret") || lower.contains("token") ||
           lower.contains("key") || lower.contains("credential") || lower.contains("psk") || lower.contains("pin") || lower.contains("code"))) return false
     String spaced = raw.replaceAll(/([a-z0-9])([A-Z])/, '$1 $2').replaceAll(/([A-Z]+)([A-Z][a-z])/, '$1 $2')
-    List words = spaced.toLowerCase().split(/[^a-z]+/).findAll { part -> part }
+    List words = (spaced.toLowerCase().split(/[^a-z]+/)).findAll((this.&_bat529Cb_3ac884d1_10))
     Set metadata = ["count", "counter", "cnt", "expiry", "expires", "expire", "expired", "expiration", "time",
                     "timestamp", "date", "length", "len", "type", "enabled", "enable", "set", "required", "url",
                     "uri", "endpoint", "timeout", "interval", "mode", "policy", "hint", "label", "name"] as Set
@@ -988,7 +963,7 @@ private Map _submitAppDoneForm(Integer instanceId, String pageName, boolean requ
     // number bounds, patterns); refuse the same way. No POST is issued, so nothing is committed.
     def uiProblems = _uiNavigationViolations(schema, settingsMap)
     if (uiProblems) {
-        def detail = uiProblems.collect { "${it.name} (${it.title}): ${it.problem}" }.join("; ")
+        def detail = (uiProblems).collect((this.&_bat529Cb_3ac884d1_11)).join("; ")
         return [status: null, page: page, submitted: false, uiBlocked: true,
                 uiReason: "Hubitat's app page would refuse Done on page '${page}': ${detail}. Set these values first (required fields are the ones marked *), then retry.".toString(),
                 liveSettingsUnavailable: liveSettingsUnavailable, shapeRejections: shapeRejections]
@@ -999,19 +974,7 @@ private Map _submitAppDoneForm(Integer instanceId, String pageName, boolean requ
     body._action_update = "Done"
     body.pageBreadcrumbs = _rmPageBreadcrumbs(instanceId, page, "[]")
     // Per-type sidecars the form-encoded UI emits (matches _rmSubmitMainPageDone).
-    schema.each { name, meta ->
-        def t = meta?.type?.toString()
-        if (meta?.multiple != true) {
-            body["${name}.multiple".toString()] = "false"
-        }
-        if (t == "bool") {
-            body["checkbox[${name}]".toString()] = "on"
-        } else if (t == "time") {
-            body["hours[${name}]".toString()] = ""
-            body["minutes[${name}]".toString()] = ""
-            body["amPm[${name}]".toString()] = "AM"
-        }
-    }
+    (schema).each(((this.&_bat529Cb_3ac884d1_32).curry([body] as Object[])))
     if (cfg?.app?.version != null) body.version = cfg.app.version.toString()
     // Fields the classic "Done" form also submits (_rmSubmitMainPageDone sends them too); the
     // hub's update handler 500s without these (verified live). The UI's referrer/url fields are
@@ -1034,7 +997,7 @@ private Map _submitAppDoneForm(Integer instanceId, String pageName, boolean requ
 boolean _isSimpleSettingValue(v) {
     if (v instanceof Map) return false
     if (v instanceof List) {
-        return v.every { it == null || it instanceof CharSequence || it instanceof Number || it instanceof Boolean }
+        return (v).every((this.&_bat529Cb_3ac884d1_22))
     }
     return (v instanceof CharSequence || v instanceof Number || v instanceof Boolean)
 }
@@ -1220,7 +1183,7 @@ private Map toolInstallItem(String type, args) {
             }
         }
 
-        def successCount = itemResults.count { it.success == true }
+        def successCount = (itemResults).count((this.&_bat529Cb_3ac884d1_3))
         mcpLog("info", "hub-admin", "Bulk install_${type}: ${successCount}/${itemResults.size()} succeeded")
         return [
             success: allSucceeded,
@@ -1242,7 +1205,7 @@ private Map toolInstallItemSingle(String type, args) {
     // Mutual exclusion: surface a clear error rather than silently picking one.
     def sourceCode = null
     def sourceMode = null
-    def modesSet = [args.sourceFile, args.source, args.importUrl].count { it }
+    def modesSet = ([args.sourceFile, args.source, args.importUrl]).count((this.&_bat529Cb_3ac884d1_9))
     if (modesSet > 1) {
         throw new IllegalArgumentException("Provide exactly one of 'source' (inline), 'sourceFile' (File Manager filename), or 'importUrl' (URL the hub will fetch).")
     }
@@ -1390,7 +1353,7 @@ private _itemRowVersion(String type, itemId) {
     try {
         def txt = type == "driver" ? hubInternalGet("/driver/list/data", null, 30) : hubInternalGet("/app/list/all/data", null, 30)
         def rows = txt ? new groovy.json.JsonSlurper().parseText(txt) : null
-        def row = (rows instanceof List) ? rows.find { it instanceof Map && it.id?.toString() == itemId?.toString() } : null
+        def row = (rows instanceof List) ? (rows).find(((this.&_bat529Cb_3ac884d1_16).curry([itemId] as Object[]))): null
         return (row instanceof Map) ? row.version : null
     } catch (Exception e) {
         mcpLog("warn", "hub-admin", "Could not read ${type} ${itemId} version: ${e.message}")
@@ -1471,7 +1434,7 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args, Map packa
     // mutex matches toolInstallItemSingle's strict check -- tool schemas advertise
     // these as mutually exclusive, so the API boundary must reject the combination
     // rather than silently picking one via if/else precedence.
-    def modesSet = [args.resave, args.sourceFile, args.source, args.importUrl].count { it }
+    def modesSet = ([args.resave, args.sourceFile, args.source, args.importUrl]).count((this.&_bat529Cb_3ac884d1_13))
     if (modesSet == 0) {
         throw new IllegalArgumentException("One of 'source', 'sourceFile', 'importUrl', or 'resave' is required")
     }
@@ -1924,7 +1887,7 @@ def _toolUpdateAppCode(args, Map packageWorkerContext) {
     requireDestructiveConfirm(args.confirm)
     if (!args.appId) throw new IllegalArgumentException("appId is required")
 
-    def hasSourceMode = [args.resave, args.sourceFile, args.source, args.importUrl].count { it } > 0
+    def hasSourceMode = ([args.resave, args.sourceFile, args.source, args.importUrl]).count((this.&_bat529Cb_3ac884d1_15))> 0
     def result
     if (hasSourceMode) {
         result = toolUpdateItemCodeInner("app", "appId", args, packageWorkerContext)   // gate already fired above
@@ -2122,7 +2085,7 @@ def toolUpdateDriverCode(args) {
             }
         }
 
-        def successCount = itemResults.count { it.success == true }
+        def successCount = (itemResults).count((this.&_bat529Cb_3ac884d1_4))
         mcpLog("info", "hub-admin", "Bulk hub_update_driver: ${successCount}/${itemResults.size()} succeeded")
         return [
             success: allSucceeded,
@@ -2351,7 +2314,7 @@ def toolInstallLibrary(args) {
     // Resolve source: exactly one of sourceFile / source / importUrl
     def sourceCode = null
     def sourceMode = null
-    def modesSet = [args.sourceFile, args.source, args.importUrl].count { it }
+    def modesSet = ([args.sourceFile, args.source, args.importUrl]).count((this.&_bat529Cb_3ac884d1_8))
     if (modesSet > 1) {
         throw new IllegalArgumentException("Provide exactly one of 'source', 'sourceFile', or 'importUrl'")
     }
@@ -2448,7 +2411,7 @@ def toolInstallLibrary(args) {
                     lastBackup: formatTimestamp(state.lastBackupTimestamp)
                 ]
             }
-            def found = (libraries instanceof List) && libraries.any { it.id?.toString() == newLibraryId }
+            def found = (libraries instanceof List) && (libraries).any(((this.&_bat529Cb_3ac884d1_7).curry([newLibraryId] as Object[])))
             if (!found) {
                 mcpLog("warn", "hub-admin", "Library ID ${newLibraryId} not found in post-install library list")
                 return [
@@ -2496,7 +2459,7 @@ def toolUpdateLibraryCode(args) {
     def sourceCode = null
     def sourceMode = null
     def freshVersion = null
-    def modesSet = [args.resave, args.sourceFile, args.source, args.importUrl].count { it }
+    def modesSet = ([args.resave, args.sourceFile, args.source, args.importUrl]).count((this.&_bat529Cb_3ac884d1_14))
     if (modesSet > 1) {
         throw new IllegalArgumentException("Provide exactly one of 'source', 'sourceFile', 'importUrl', or 'resave'")
     }
@@ -2791,21 +2754,7 @@ def toolListInstalledApps(args) {
         }
         apps.each { a -> recurse(a, null) }
 
-        def filtered = flat.findAll { entry ->
-            switch (filter) {
-                case "all": return true
-                case "builtin": return !entry.user
-                case "user": return entry.user
-                case "disabled": return entry.disabled
-                case "parents": return entry.hasChildren
-                case "children": return entry.parentId != null
-                default:
-                    // Whitelist-validated above; reaching here means validFilters and this
-                    // switch have drifted. Throw rather than return an over-broad result,
-                    // so the mismatch is visible instead of silently shipping stale data.
-                    throw new IllegalStateException("filter branch missing for '${filter}' -- validFilters and switch have drifted")
-            }
-        }
+        def filtered = (flat).findAll(((this.&_bat529Cb_3ac884d1_34).curry([filter] as Object[])))
 
         if (args?.nameFilter) filtered = _nameFiltered(filtered, args.nameFilter)
         def paged = _paginateList(filtered, cursor, 50, "hub_list_apps")
@@ -2846,13 +2795,7 @@ def _platformAppsUsingDevice(String deviceId) {
     try {
         def apps = getAppsUsingDevice(deviceId as Long)
         if (!(apps instanceof List)) return null
-        return apps.findAll { it != null }.collect { a ->
-            def disabled = null
-            try { disabled = a.disabled } catch (Exception ignored) { }
-            def trueLabel = null
-            try { trueLabel = a.trueLabel } catch (Exception ignored) { }
-            [id: a.id, name: a.name, label: a.label, trueLabel: trueLabel, disabled: disabled == true]
-        }
+        return ((apps).findAll((this.&_bat529Cb_3ac884d1_1))).collect((this.&_bat529Cb_3ac884d1_29))
     } catch (Exception e) {
         mcpLog(_hubFirmwareBefore("2.5.2") ? "debug" : "warn", "installed-apps", "getAppsUsingDevice(${deviceId}) unavailable: ${e.message}")
         return null
@@ -2907,21 +2850,13 @@ def toolGetDeviceInUseBy(args) {
             count = appsUsing.size()
         }
 
-        def appsUsingList = appsUsing.collect { a ->
-            [
-                id: a?.id,
-                name: a?.name,         // app type name (e.g. "Room Lights", "Rule-5.1")
-                label: a?.label,       // user-visible label, may include HTML decoration
-                trueLabel: a?.trueLabel,  // label stripped of HTML (null if same as label)
-                disabled: a?.disabled == true
-            ]
-        }
+        def appsUsingList = (appsUsing).collect((this.&_bat529Cb_3ac884d1_31))
         // The platform's getAppsUsingDevice() (firmware 2.5.2) also reports apps the device page
         // leaves out of appsUsing, such as Easy Mobile Dashboards; add those it alone returns.
         boolean countMismatch = (count != appsUsingList.size())
-        def seen = appsUsingList.collect { it.id?.toString() } as Set
+        def seen = (appsUsingList).collect((this.&_bat529Cb_3ac884d1_5))as Set
         def platformApps = _platformAppsUsingDevice(deviceId)
-        def extra = (platformApps ?: []).findAll { !seen.contains(it.id?.toString()) }
+        def extra = ((platformApps ?: [])).findAll(((this.&_bat529Cb_3ac884d1_12).curry([seen] as Object[])))
         if (extra) {
             appsUsingList.addAll(extra)
             count = Math.max(count as int, appsUsingList.size())
@@ -3301,4 +3236,204 @@ def _toolDisplayMeta_partCodeManagement() {
         hub_list_device_dependents: [title: "List Device Dependents", summary: "Find all apps that reference a device."],
         hub_get_app_config: [title: "Get App Configuration", summary: "Read an installed app's configuration page."]
     ]
+}
+
+
+def _bat529Cb_3ac884d1_1(def it) { it != null 
+}
+
+def _bat529Cb_3ac884d1_2(def it) { it.id == null 
+}
+
+def _bat529Cb_3ac884d1_3(def it) { it.success == true 
+}
+
+def _bat529Cb_3ac884d1_4(def it) { it.success == true 
+}
+
+def _bat529Cb_3ac884d1_5(def it) { it.id?.toString() 
+}
+
+def _bat529Cb_3ac884d1_6(def it) { it instanceof Map 
+}
+
+def _bat529Cb_3ac884d1_7(def newLibraryId, def it) { it.id?.toString() == newLibraryId 
+}
+
+def _bat529Cb_3ac884d1_8(def it) { it 
+}
+
+def _bat529Cb_3ac884d1_9(def it) { it 
+}
+
+def _bat529Cb_3ac884d1_10(def part) { part 
+}
+
+def _bat529Cb_3ac884d1_11(def it) { "${it.name} (${it.title}): ${it.problem}" 
+}
+
+def _bat529Cb_3ac884d1_12(def seen, def it) { !seen.contains(it.id?.toString()) 
+}
+
+def _bat529Cb_3ac884d1_13(def it) { it 
+}
+
+def _bat529Cb_3ac884d1_14(def it) { it 
+}
+
+def _bat529Cb_3ac884d1_15(def it) { it 
+}
+
+def _bat529Cb_3ac884d1_16(def itemId, def it) { it instanceof Map && it.id?.toString() == itemId?.toString() 
+}
+
+def _bat529Cb_3ac884d1_17(def enrich, def types, def t) { if (t instanceof Map) types << _projectAppType(t, false, enrich) 
+}
+
+def _bat529Cb_3ac884d1_18(def cleaned, def k, def v) { cleaned.put(k, (v instanceof String) ? stripAppConfigHtml(v) : v) 
+}
+
+def _bat529Cb_3ac884d1_18(def cleaned, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_3ac884d1_18(cleaned, *__bat529Tuple)
+}
+
+def _bat529Cb_3ac884d1_19(def cleaned, def k, def v) { cleaned.put(k, (v instanceof String) ? stripAppConfigHtml(v) : v) 
+}
+
+def _bat529Cb_3ac884d1_19(def cleaned, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_3ac884d1_19(cleaned, *__bat529Tuple)
+}
+
+def _bat529Cb_3ac884d1_20(def enrich, def types, def t) { if (t instanceof Map) types << _projectAppType(t, true, enrich) 
+}
+
+def _bat529Cb_3ac884d1_21(def f, def it) { it instanceof Map && (stripAppConfigHtml(it.name) ?: "").toLowerCase().contains(f) 
+}
+
+def _bat529Cb_3ac884d1_22(def it) { it == null || it instanceof CharSequence || it instanceof Number || it instanceof Boolean 
+}
+
+def _bat529Cb_3ac884d1_23(def ca) {
+            [id: ca.id.toString(), name: ca.getSetting("ruleName") ?: ca.label ?: "Unknown", type: "MCP Rule"]
+        
+}
+
+def _bat529Cb_3ac884d1_24(def ca) {
+            [id: ca.id.toString(), name: ca.getSetting("ruleName") ?: ca.label ?: "Unknown", type: "MCP Rule"]
+        
+}
+
+def _bat529Cb_3ac884d1_25(def lib) {
+                        [id: lib.id?.toString(), name: lib.name, namespace: lib.namespace, version: lib.version]
+                    
+}
+
+def _bat529Cb_3ac884d1_26(def passwordInputNames, def settingTypes, def k, def v) {
+                String key = k?.toString()
+                !passwordInputNames.contains(key) && !settingTypes.containsKey(key) && !_appConfigEmptyValue(v) && !(v instanceof Boolean) && !_appConfigSecretName(key)
+            
+}
+
+def _bat529Cb_3ac884d1_26(def passwordInputNames, def settingTypes, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_3ac884d1_26(passwordInputNames, settingTypes, *__bat529Tuple)
+}
+
+def _bat529Cb_3ac884d1_27(def passwordInputNames, def redacted, def redactedPw, def settingTypes, def k, def v) {
+                    String key = k?.toString()
+                    String type = passwordInputNames.contains(key) ? "password" : settingTypes.get(key)
+                    redacted.put(k, _appConfigIsSecretSetting(key, type, v) ? redactedPw : v)
+                
+}
+
+def _bat529Cb_3ac884d1_27(def passwordInputNames, def redacted, def redactedPw, def settingTypes, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_3ac884d1_27(passwordInputNames, redacted, redactedPw, settingTypes, *__bat529Tuple)
+}
+
+def _bat529Cb_3ac884d1_28(def it) { it.toString() 
+}
+
+def _bat529Cb_3ac884d1_29(def a) {
+            def disabled = null
+            try { disabled = a.disabled } catch (Exception ignored) { }
+            def trueLabel = null
+            try { trueLabel = a.trueLabel } catch (Exception ignored) { }
+            [id: a.id, name: a.name, label: a.label, trueLabel: trueLabel, disabled: disabled == true]
+        
+}
+
+def _bat529Cb_3ac884d1_30(def projected, def d) {
+                    if (d?.type == "dep" || d?.category == "Hidden") return
+                    def nm = d?.name?.toString() ?: ""
+                    def bucket = (d?.type == "usr") ? "user" : (nm.startsWith("Virtual") ? "virtual" : "system")
+                    projected << [id: d?.id?.toString(), name: nm, namespace: d?.namespace, bucket: bucket]
+                
+}
+
+def _bat529Cb_3ac884d1_31(def a) {
+            [
+                id: a?.id,
+                name: a?.name,         // app type name (e.g. "Room Lights", "Rule-5.1")
+                label: a?.label,       // user-visible label, may include HTML decoration
+                trueLabel: a?.trueLabel,  // label stripped of HTML (null if same as label)
+                disabled: a?.disabled == true
+            ]
+        
+}
+
+def _bat529Cb_3ac884d1_32(def body, def name, def meta) {
+        def t = meta?.type?.toString()
+        if (meta?.multiple != true) {
+            body["${name}.multiple".toString()] = "false"
+        }
+        if (t == "bool") {
+            body["checkbox[${name}]".toString()] = "on"
+        } else if (t == "time") {
+            body["hours[${name}]".toString()] = ""
+            body["minutes[${name}]".toString()] = ""
+            body["amPm[${name}]".toString()] = "AM"
+        }
+    
+}
+
+def _bat529Cb_3ac884d1_32(def body, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_3ac884d1_32(body, *__bat529Tuple)
+}
+
+def _bat529Cb_3ac884d1_33(def out, def e) {
+                if (e instanceof Map) {
+                    if (e.id != null) out.menuById[e.id.toString()] = e.menu
+                    if (e.namespace != null && e.name != null) {
+                        def ns = e.namespace.toString()
+                        if (!out.menuByNsName.containsKey(ns)) out.menuByNsName[ns] = [:]
+                        out.menuByNsName[ns][e.name.toString()] = e.menu
+                    }
+                }
+            
+}
+
+def _bat529Cb_3ac884d1_34(def filter, def entry) {
+            switch (filter) {
+                case "all": return true
+                case "builtin": return !entry.user
+                case "user": return entry.user
+                case "disabled": return entry.disabled
+                case "parents": return entry.hasChildren
+                case "children": return entry.parentId != null
+                default:
+                    // Whitelist-validated above; reaching here means validFilters and this
+                    // switch have drifted. Throw rather than return an over-broad result,
+                    // so the mismatch is visible instead of silently shipping stale data.
+                    throw new IllegalStateException("filter branch missing for '${filter}' -- validFilters and switch have drifted")
+            }
+        
 }

@@ -25,35 +25,13 @@ private Boolean _ndNativeFlag(Map health, String name) {
 private List _ndSettings(Long id) {
     def response = _ndJson(hubInternalGet("/installedapp/settings/${id}"))
     if (!(response instanceof Map) || !(response.settings instanceof List)) throw new IllegalStateException('Native settings are unavailable')
-    response.settings.collect { row ->
-        if (!(row instanceof Map) || !(row.name instanceof String)) throw new IllegalStateException('Unexpected native setting row')
-        boolean secret = row.type == 'password' || _appConfigIsSecretSetting(row.name, row.type, row.value)
-        def setting = [name: row.name, type: row.type, multiple: row.multiple, value: secret ? null : row.value, device_ids: row.deviceList instanceof Map ? row.deviceList.keySet().collect { it.toString() }.sort() : null]
-        if (secret) setting.redacted = true
-        setting
-    }
+    (response.settings).collect((this.&_bat529Cb_18d8bae2_52))
 }
 
 private List _ndBlockIssues(List order, Map actions) {
     def issues = []
     def blocks = []
-    order.each { id ->
-        def action = _nmEntry(actions, id.toString())
-        if (!(action instanceof Map)) issues << 'Native action order references a missing action'
-        else {
-            if (action.method == 'getIfThen') blocks << 'if'
-            else if (action.method in ['getRepeat', 'getWhile', 'getUntil', 'getRepeatWhile']) blocks << 'repeat'
-            else if (action.method in ['getElse', 'getElseIf']) {
-                if (!blocks || blocks.last() != 'if') issues << 'Native ELSE has no matching IF'
-            } else if (action.method == 'getEndIf') {
-                if (!blocks || blocks.last() != 'if') issues << 'Native END-IF has no matching IF'
-                else blocks.remove(blocks.size() - 1)
-            } else if (action.method == 'getEndRepeat') {
-                if (!blocks || blocks.last() != 'repeat') issues << 'Native END-REP has no matching REPEAT'
-                else blocks.remove(blocks.size() - 1)
-            }
-        }
-    }
+    (order).each(((this.&_bat529Cb_18d8bae2_54).curry([actions, blocks, issues] as Object[])))
     if (blocks.contains('if')) issues << 'Native IF block has no END-IF'
     if (blocks.contains('repeat')) issues << 'Native REPEAT block has no END-REP'
     issues
@@ -67,31 +45,22 @@ private List _ndStructuralIssues(Map nativeState, boolean requiredEnabled) {
     def expressionIds = []
     def issues = _ndBlockIssues(order, actions)
     if (nativeState.inIf == true) issues << 'Native editor has an unfinished IF block'
-    order.each { id ->
-        def action = _nmEntry(actions, id.toString())
-        if (action instanceof Map && action.rule != null) expressionIds << action.rule.toString()
-    }
+    (order).each(((this.&_bat529Cb_18d8bae2_45).curry([actions, expressionIds] as Object[])))
     if (requiredEnabled) expressionIds << '0'
-    expressionIds.unique().each { id ->
-        def tokens = _nmEntry(expressions, id)
-        try {
-            if (!(tokens instanceof List)) throw new IllegalArgumentException('Missing native expression')
-            _nmTokens(tokens, conditions)
-        } catch (Exception failure) { issues << "Native expression ${id}: ${failure.message}".toString() }
-    }
+    (expressionIds.unique()).each(((this.&_bat529Cb_18d8bae2_51).curry([conditions, expressions, issues] as Object[])))
     issues
 }
 
 private List _ndPageIssues(Object node) {
     def issues = []
-    if (node instanceof List) node.each { child -> issues.addAll(_ndPageIssues(child)) }
+    if (node instanceof List) (node).each(((this.&_bat529Cb_18d8bae2_24).curry([issues] as Object[])))
     else if (node instanceof Map) {
         if ((node.type ?: node.element) in ['paragraph', 'href']) {
             def description = node.description?.toString() ?: ''
             if (description =~ /(?is)<span\b[^>]*color\s*:\s*red[^>]*>[^<]*\*\*Broken [^*]+\*\*/) issues << 'Native editor reports a broken condition, trigger or action'
         }
         if (node.error || node.errors) issues << 'Native editor returned an error'
-        ['sections', 'body', 'children'].each { key -> if (node.get(key) != null) issues.addAll(_ndPageIssues(node.get(key))) }
+        (['sections', 'body', 'children']).each(((this.&_bat529Cb_18d8bae2_39).curry([issues, node] as Object[])))
     }
     issues
 }
@@ -108,7 +77,7 @@ Map toolGetRuleDocument(Map args) {
     Long id = _ndId(args.rule_id)
     def allowed = ['actions', 'conditions', 'triggers', 'expressions', 'variables', 'settings']
     def sections = args.sections == null ? allowed : args.sections
-    if (!(sections instanceof List) || sections.any { !(it in allowed) }) throw new IllegalArgumentException('Unknown document section')
+    if (!(sections instanceof List) || (sections).any(((this.&_bat529Cb_18d8bae2_2).curry([allowed] as Object[])))) throw new IllegalArgumentException('Unknown document section')
     boolean paged = args.containsKey('cursor') || args.containsKey('limit')
     if (paged && sections.size() != 1) throw new IllegalArgumentException('Paged reads require exactly one section')
     def cursor = args.containsKey('cursor') ? args.cursor : ''
@@ -125,9 +94,7 @@ Map toolGetRuleDocument(Map args) {
         if (health instanceof Map) document.validation.structuralIssues = _ndStructuralIssues(nativeState + health, requiredEnabled)
         document.nativeHealth = health instanceof Map && health.broken instanceof Boolean ? [available: true, broken: health.broken, stopped: _ndNativeFlag(health, 'stopped'), paused: _ndNativeFlag(health, 'paused')] : [available: false]
     } catch (Exception failure) { document.nativeHealth = [available: false, error: failure.message?.toString()] }
-    if ('actions' in sections) document.actions = (nativeState.actionList instanceof List ? nativeState.actionList : []).collect { actionId ->
-        [id: actionId.toString(), value: nativeState.actions instanceof Map ? _nmEntry(nativeState.actions, actionId.toString()) : null]
-    }
+    if ('actions' in sections) document.actions = ((nativeState.actionList instanceof List ? nativeState.actionList : [])).collect(((this.&_bat529Cb_18d8bae2_47).curry([nativeState] as Object[])))
     if ('conditions' in sections) document.conditions = nativeState.capabsfalse instanceof Map ? nativeState.capabsfalse : [:]
     if ('triggers' in sections) document.triggers = nativeState.capabstrue instanceof Map ? nativeState.capabstrue : [:]
     if ('expressions' in sections) document.expressions = nativeState.eval instanceof Map ? nativeState.eval : [:]
@@ -136,8 +103,8 @@ Map toolGetRuleDocument(Map args) {
     if (paged) {
         String section = sections[0]
         def complete = document.get(section)
-        List rows = complete instanceof Map ? complete.entrySet().toList().sort { a, b -> a.key.toString() <=> b.key.toString() } :
-            (section == 'settings' ? complete.sort { a, b -> a.name <=> b.name } : complete)
+        List rows = complete instanceof Map ? (complete.entrySet().toList()).sort((this.&_bat529Cb_18d8bae2_31)):
+            (section == 'settings' ? (complete).sort((this.&_bat529Cb_18d8bae2_13)): complete)
         int total = rows.size()
         int start = _parseListCursor(cursor, total, 'hub_set_rule')
         int end = Math.min(start + limit.toInteger(), total)
@@ -147,7 +114,7 @@ Map toolGetRuleDocument(Map args) {
         int budget = _responseSizeLimitBytes() - 1024
         while (true) {
             List selected = rows.subList(start, end)
-            document.put(section, complete instanceof Map ? selected.collectEntries { entry -> [(entry.key): entry.value] } : selected)
+            document.put(section, complete instanceof Map ? (selected).collectEntries((this.&_bat529Cb_18d8bae2_26)): selected)
             document.nextCursor = end < total ? end.toString() : null
             def envelope = jsonRpcResult(0, [content: [[type: 'text', text: groovy.json.JsonOutput.toJson(document)]]])
             if (groovy.json.JsonOutput.toJson(envelope).getBytes('UTF-8').length <= budget) break
@@ -160,11 +127,7 @@ Map toolGetRuleDocument(Map args) {
 
 private List _ndChanges(Object changes, boolean allowEmpty = false) {
     if (!(changes instanceof List) || (!allowEmpty && changes.isEmpty()) || changes.size() > 100) throw new IllegalArgumentException(allowEmpty ? 'changes must contain between 0 and 100 changes' : 'changes must contain between 1 and 100 changes')
-    changes.eachWithIndex { change, index ->
-        // Every check here depends only on the arguments: a refusal names its row and fires before any write.
-        try { _ndValidateChange(change) }
-        catch (IllegalArgumentException failure) { throw new IllegalArgumentException("changes[${index}]: ${failure.message}".toString()) }
-    }
+    (changes).eachWithIndex((this.&_bat529Cb_18d8bae2_50))
     changes
 }
 
@@ -172,20 +135,16 @@ private List _ndChanges(Object changes, boolean allowEmpty = false) {
 // placeholder, none repeated once it is filled in, and none naming the row's own selector inputs.
 private void _ndValidateFields(Object fields, List selectors, String selectorMessage) {
     if (!(fields instanceof List)) throw new IllegalArgumentException('Native typed fields are required')
-    fields.each { row ->
-        if (!(row instanceof Map) || !(row.name instanceof String) || !row.name.contains('#')) throw new IllegalArgumentException('Invalid native typed field: its name must contain #')
-        _nrCheckSettingRow(row)
-        _nrValidateScalar(row, row.value)
-    }
-    List names = fields.collect { it.name.replace('#', '1') }
+    (fields).each((this.&_bat529Cb_18d8bae2_49))
+    List names = (fields).collect((this.&_bat529Cb_18d8bae2_12))
     if (names.unique(false).size() != names.size()) throw new IllegalArgumentException('Native inputs must not be repeated')
-    if (names.any { it in selectors }) throw new IllegalArgumentException(selectorMessage)
+    if ((names).any(((this.&_bat529Cb_18d8bae2_1).curry([selectors] as Object[])))) throw new IllegalArgumentException(selectorMessage)
 }
 
 private void _ndValidateChange(Object change) {
-    if (!(change instanceof Map) || change.keySet().any { !(it in ['part', 'value']) } || !(change.value instanceof Map)) throw new IllegalArgumentException('Each change requires part and value')
+    if (!(change instanceof Map) || (change.keySet()).any((this.&_bat529Cb_18d8bae2_18))|| !(change.value instanceof Map)) throw new IllegalArgumentException('Each change requires part and value')
     def value = change.value
-    if (!ND_CHANGE_KEYS.containsKey(change.part) || value.keySet().any { !(it in ND_CHANGE_KEYS.get(change.part)) }) throw new IllegalArgumentException('Unknown change part or field')
+    if (!ND_CHANGE_KEYS.containsKey(change.part) || (value.keySet()).any(((this.&_bat529Cb_18d8bae2_25).curry([change] as Object[])))) throw new IllegalArgumentException('Unknown change part or field')
     if (value.containsKey('id') && (value.id == null || !value.id.toString().isInteger() || value.id.toString().toInteger() < (change.part == 'expression' ? 0 : 1))) throw new IllegalArgumentException('Invalid native row ID')
     if (change.part in ['condition', 'trigger']) {
         if (!(value.capability instanceof String) || !value.capability.trim()) throw new IllegalArgumentException('Native capability is required')
@@ -202,25 +161,20 @@ private void _ndValidateChange(Object change) {
         }
         if (value.subtype == 'getWaitEvents') {
             if (!(value.events instanceof List) || !value.events || value.events.size() > 16) throw new IllegalArgumentException('Wait events require between 1 and 16 events')
-            value.events.eachWithIndex { event, index ->
-                try {
-                    if (!(event instanceof Map) || event.keySet().any { !(it in ['capability', 'fields']) } || !(event.capability instanceof String) || !event.capability.trim()) throw new IllegalArgumentException('Wait events require a capability and typed fields')
-                    _ndValidateFields(event.get('fields'), ['tCapab1'], 'Wait fields must not repeat selectors or native inputs')
-                } catch (IllegalArgumentException failure) { throw new IllegalArgumentException("events[${index}]: ${failure.message}".toString()) }
-            }
+            (value.events).eachWithIndex((this.&_bat529Cb_18d8bae2_53))
         } else if (value.containsKey('events')) throw new IllegalArgumentException('Only wait-event actions accept events')
     }
     if (change.part == 'expression' && (!value.containsKey('id') || !(value.tokens instanceof List) || !value.tokens)) throw new IllegalArgumentException('Expression ID and tokens are required')
     if (change.part == 'delete' && (!(value.part in ['action', 'condition', 'trigger']) || !value.containsKey('id'))) throw new IllegalArgumentException('Deletion requires a native collection and ID')
     if (change.part == 'order') {
-        if (!(value.ids instanceof List) || value.ids.any { it == null || !it.toString().isInteger() || it.toString().toInteger() <= 0 } || value.ids.collect { it.toString() }.unique(false).size() != value.ids.size()) throw new IllegalArgumentException('Ordering requires unique positive native action IDs')
+        if (!(value.ids instanceof List) || (value.ids).any((this.&_bat529Cb_18d8bae2_34))|| (value.ids).collect((this.&_bat529Cb_18d8bae2_4)).unique(false).size() != value.ids.size()) throw new IllegalArgumentException('Ordering requires unique positive native action IDs')
     }
     if (change.part == 'required' && (!(value.tokens instanceof List) || !value.tokens)) throw new IllegalArgumentException('Required expression tokens are required')
     if (change.part == 'terminator' && !(value.subtype in ND_TERMINATOR_METHODS.keySet())) throw new IllegalArgumentException('Unsupported terminator')
     def tokens = change.part in ['expression', 'required'] ? value.tokens : (change.part == 'action' ? value.expression : null)
     if (tokens instanceof List) {
         def operands = [:]
-        tokens.each { token -> if (token != null && token.toString().isInteger() && token.toString().toInteger() > 0) operands.put(token.toString(), 'condition') }
+        (tokens).each(((this.&_bat529Cb_18d8bae2_41).curry([operands] as Object[])))
         _nmTokens(tokens, operands)
     }
     if (change.part == 'variable') {
@@ -266,14 +220,14 @@ private void _ndPreflight(Long id, List changes) {
     Map before = id == null ? [:] : _nrState(id)
     Map conditions = before.capabsfalse instanceof Map ? [:] + before.capabsfalse : [:]
     Map triggers = before.capabstrue instanceof Map ? [:] + before.capabstrue : [:]
-    Map expressions = before.eval instanceof Map ? before.eval.collectEntries { key, value -> [(key.toString()): value] } : [:]
-    List actionOrder = before.actionList instanceof List ? before.actionList.collect { it.toString() } : []
-    Map projectedActions = before.actions instanceof Map ? before.actions.collectEntries { key, value -> [(key.toString()): value] } : [:]
+    Map expressions = before.eval instanceof Map ? (before.eval).collectEntries((this.&_bat529Cb_18d8bae2_27)): [:]
+    List actionOrder = before.actionList instanceof List ? (before.actionList).collect((this.&_bat529Cb_18d8bae2_11)): []
+    Map projectedActions = before.actions instanceof Map ? (before.actions).collectEntries((this.&_bat529Cb_18d8bae2_28)): [:]
     List projectedOrder = new ArrayList(actionOrder)
-    List projectedPredicate = before.predCapabs instanceof List ? before.predCapabs.collect { it?.toString() } : []
+    List projectedPredicate = before.predCapabs instanceof List ? (before.predCapabs).collect((this.&_bat529Cb_18d8bae2_14)): []
     Map rows = [action: [ids: (actionOrder + projectedActions.keySet()) as Set, added: 0, deleted: [] as Set, predicted: [] as Set],
-                condition: [ids: conditions.keySet().collect { it.toString() } as Set, added: 0, deleted: [] as Set, predicted: [] as Set],
-                trigger: [ids: triggers.keySet().collect { it.toString() } as Set, added: 0, deleted: [] as Set, predicted: [] as Set]]
+                condition: [ids: (conditions.keySet()).collect((this.&_bat529Cb_18d8bae2_15))as Set, added: 0, deleted: [] as Set, predicted: [] as Set],
+                trigger: [ids: (triggers.keySet()).collect((this.&_bat529Cb_18d8bae2_10))as Set, added: 0, deleted: [] as Set, predicted: [] as Set]]
     Map counters = [condition: _ndCounter(before.ndx), action: _ndCounter(before.actNdx)]
     // A rule's first Required Expression advances ndx by one (live); later ones leave it.
     boolean hasRequired = expressions.get('0') instanceof List && !expressions.get('0').isEmpty()
@@ -292,7 +246,7 @@ private void _ndPreflight(Long id, List changes) {
             // Every condition an expression or a simple conditional action names must be in the batch's view.
             List named = change.part in ['expression', 'required'] ? value.tokens :
                 (change.part == 'action' ? (value.expression instanceof List ? value.expression : []) + (value.containsKey('condition') ? [value.condition] : []) : [])
-            named.findAll { it != null && it.toString().isInteger() }.each { token -> _ndKnownRow(rows.condition, token.toString(), 'Expression references an unknown condition') }
+            ((named).findAll((this.&_bat529Cb_18d8bae2_23))).each(((this.&_bat529Cb_18d8bae2_43).curry([rows] as Object[])))
             if (change.part == 'variable') {
                 if (locals == null) {
                     def fresh = _nrHandle(id).getAllLocalVars()
@@ -326,7 +280,7 @@ private void _ndPreflight(Long id, List changes) {
             }
             if (change.part == 'order') {
                 if (appendedActions) throw new IllegalArgumentException('Action order cannot follow new actions in the same batch; add the actions first and order them in a later call')
-                List requested = value.ids.collect { it.toString() }
+                List requested = (value.ids).collect((this.&_bat529Cb_18d8bae2_3))
                 if (requested.sort(false) != actionOrder.sort(false)) throw new IllegalArgumentException('Action order must be an exact permutation of existing action IDs')
                 actionOrder = requested
                 projectedOrder = new ArrayList(requested)
@@ -334,36 +288,32 @@ private void _ndPreflight(Long id, List changes) {
             if (change.part == 'delete' && value.part == 'action') {
                 String target = value.id.toString()
                 _ndDropRow(rows.action, target, 'Native action does not exist')
-                projectedOrder = projectedOrder.findAll { it != target }
+                projectedOrder = (projectedOrder).findAll(((this.&_bat529Cb_18d8bae2_8).curry([target] as Object[])))
                 projectedActions.remove(target)
-                actionOrder = actionOrder.findAll { it != target }
+                actionOrder = (actionOrder).findAll(((this.&_bat529Cb_18d8bae2_5).curry([target] as Object[])))
             }
             if (change.part == 'required' && !hasRequired) { counters.put('condition', (counters.get('condition') as int) + 1); hasRequired = true }
             if (change.part in ['expression', 'required']) {
                 String evalId = change.part == 'required' ? '0' : value.id.toString()
                 expressions.put(evalId, value.tokens)
                 // The newest write to an eval entry wins: an action edited earlier in the batch reads its expression from here.
-                projectedActions.each { key, action ->
-                    if (action instanceof Map && action.containsKey('tokens') && action.rule?.toString() == evalId) projectedActions.put(key, action.findAll { it.key != 'tokens' })
-                }
-                if (change.part == 'required') projectedPredicate = value.tokens.findAll { it?.toString()?.isInteger() }.collect { it.toString() }
+                (projectedActions).each(((this.&_bat529Cb_18d8bae2_48).curry([evalId, projectedActions] as Object[])))
+                if (change.part == 'required') projectedPredicate = ((value.tokens).findAll((this.&_bat529Cb_18d8bae2_19))).collect((this.&_bat529Cb_18d8bae2_30))
             }
             if (change.part == 'delete' && value.part == 'condition') {
                 String target = value.id.toString()
                 _ndKnownRow(rows.condition, target, 'Native row does not exist')
                 // Only the Required Expression and the live actions' own expressions count: Rule Machine
                 // keeps the eval entry of a deleted IF, and an edited IF carries its new tokens.
-                List live = [expressions.get('0')] + projectedActions.values().findAll { it instanceof Map }.collect { action ->
-                    action.tokens instanceof List ? action.tokens : (action.rule != null ? expressions.get(action.rule.toString()) : null)
-                }
-                boolean referenced = live.any { tokens -> tokens instanceof List && tokens.any { it?.toString() == target } }
-                referenced = referenced || projectedPredicate.any { it == target }
-                referenced = referenced || projectedActions.values().any { it instanceof Map && it.cond?.toString() == target }
+                List live = [expressions.get('0')] + ((projectedActions.values()).findAll((this.&_bat529Cb_18d8bae2_20))).collect(((this.&_bat529Cb_18d8bae2_46).curry([expressions] as Object[])))
+                boolean referenced = (live).any(((this.&_bat529Cb_18d8bae2_33).curry([target] as Object[])))
+                referenced = referenced || (projectedPredicate).any(((this.&_bat529Cb_18d8bae2_7).curry([target] as Object[])))
+                referenced = referenced || (projectedActions.values()).any(((this.&_bat529Cb_18d8bae2_32).curry([target] as Object[])))
                 if (referenced) throw new IllegalArgumentException('Referenced native conditions must be detached before deletion')
                 if (id != null) {
                     // A Conditional Trigger binds its condition through a condTrig setting, not the compiled state.
                     if (inventory == null) inventory = _nmSettingsInventory(id)
-                    if (inventory.any { name, setting -> name.startsWith('condTrig.') && setting.value?.toString() == target }) throw new IllegalArgumentException('Referenced trigger conditions must be detached before deletion')
+                    if ((inventory).any(((this.&_bat529Cb_18d8bae2_38).curry([target] as Object[])))) throw new IllegalArgumentException('Referenced trigger conditions must be detached before deletion')
                 }
                 _ndDropRow(rows.condition, target, 'Native row does not exist')
             }
@@ -413,7 +363,7 @@ private Map _ndApply(Long id, List changes, boolean created) {
                     error: outcome?.error?.toString() ?: "Native ${change.part} change did not verify".toString(), note: _ndFailureNote(landed, created)]
             }
         }
-        ['selectTriggers', pages.actions, pages.primary].unique().each { page -> _ndRender(id, page) }
+        (['selectTriggers', pages.actions, pages.primary].unique()).each(((this.&_bat529Cb_18d8bae2_35).curry([id] as Object[])))
         def health = _ndRuleHealth(id)
         Map renderedState = _nrState(id) + (health instanceof Map ? health : [:])
         def structuralIssues = _ndStructuralIssues(renderedState, _nrHandle(id).getSetting('useST') == true)
@@ -450,7 +400,7 @@ private Map _ndApply(Long id, List changes, boolean created) {
         if (!(subscriptions instanceof List) || !(jobs instanceof List)) throw new IllegalStateException('Native activation status is malformed')
         if (stopped && (jobs || subscriptions)) throw new IllegalStateException('Stopped native rule retained jobs or subscriptions')
         def persistedState = _nrState(id)
-        def actualTriggers = persistedState.capabstrue instanceof Map ? persistedState.capabstrue.findAll { key, value -> key.toString().isInteger() && key.toString().toInteger() > 0 && value?.toString()?.trim() } : [:]
+        def actualTriggers = persistedState.capabstrue instanceof Map ? (persistedState.capabstrue).findAll((this.&_bat529Cb_18d8bae2_40)): [:]
         def requiredTokens = persistedState.eval instanceof Map ? _nmEntry(persistedState.eval, '0') : null
         // Native Done evaluates expression 0 into stPrimed before removing trigger subscriptions.
         boolean suppressed = !stopped && !paused && _nrHandle(id).getSetting('useST') == true &&
@@ -492,7 +442,7 @@ Map toolUpdateRuleDocument(Map args) {
         attempted = true
         _ndApply(id, changes, false) + [backup: backup]
     } finally {
-        if (attempted) NATIVE_FORM_CONTEXTS.entrySet().findAll { entry -> entry.value.app_id?.toString() == id.toString() }.each { entry -> NATIVE_FORM_CONTEXTS.remove(entry.key, entry.value) }
+        if (attempted) ((NATIVE_FORM_CONTEXTS.entrySet()).findAll(((this.&_bat529Cb_18d8bae2_37).curry([id] as Object[])))).each((this.&_bat529Cb_18d8bae2_44))
         NATIVE_FORM_BUSY.remove(appKey)
     }
 }
@@ -575,19 +525,19 @@ private void _ndValidateSchema(Object value, Map schema, String path, boolean co
         schema.type == 'integer' ? value instanceof Number && value.toString().isLong() : true
     if (!valid || (schema.enum != null && !(value in schema.enum))) throw new IllegalArgumentException("Invalid ${path}")
     if (schema.type == 'object') {
-        if (schema.additionalProperties == false && value.keySet().any { !schema.properties.containsKey(it) }) throw new IllegalArgumentException("Unknown ${path} property")
-        if (complete && schema.required?.any { !value.containsKey(it) }) throw new IllegalArgumentException("Missing required ${path} property")
-        value.each { key, item -> if (schema.properties?.containsKey(key)) _ndValidateSchema(item, schema.properties.get(key), "${path}.${key}".toString(), complete) }
+        if (schema.additionalProperties == false && (value.keySet()).any(((this.&_bat529Cb_18d8bae2_21).curry([schema] as Object[])))) throw new IllegalArgumentException("Unknown ${path} property")
+        if (complete && (schema.required)?.any(((this.&_bat529Cb_18d8bae2_16).curry([value] as Object[])))) throw new IllegalArgumentException("Missing required ${path} property")
+        (value).each(((this.&_bat529Cb_18d8bae2_42).curry([complete, path, schema] as Object[])))
     } else if (schema.type == 'array') {
         if ((schema.minItems != null && value.size() < schema.minItems) || (schema.maxItems != null && value.size() > schema.maxItems)) throw new IllegalArgumentException("Invalid ${path} length")
-        value.each { item -> _ndValidateSchema(item, schema.items, path, complete) }
+        (value).each(((this.&_bat529Cb_18d8bae2_29).curry([complete, path, schema] as Object[])))
     } else if (schema.type == 'string') {
         if ((schema.minLength != null && value.trim().size() < schema.minLength) || (schema.maxLength != null && value.size() > schema.maxLength)) throw new IllegalArgumentException("Invalid ${path} length")
     } else if (schema.minimum != null && value < schema.minimum) throw new IllegalArgumentException("Invalid ${path}")
 }
 
 Map toolSetRule(Map request) {
-    if (request.keySet().any { !(it in ['operation', 'rule_id', 'args', 'confirm', 'bestPracticeKey']) }) throw new IllegalArgumentException('Unknown hub_set_rule property')
+    if ((request.keySet()).any((this.&_bat529Cb_18d8bae2_36))) throw new IllegalArgumentException('Unknown hub_set_rule property')
     if (request.containsKey('confirm') && !(request.confirm instanceof Boolean)) throw new IllegalArgumentException('confirm must be boolean')
     if (request.containsKey('rule_id')) _ndValidateSchema(request.rule_id, [type: 'integer', minimum: 1], 'rule_id', true)
     if (request.containsKey('args') && !(request.args instanceof Map)) throw new IllegalArgumentException('args must be an object')
@@ -666,4 +616,277 @@ Submit with {kind:"submit",expect_page:"last returned page",fields:{"native fiel
 A batch holds 1 through 16 steps, each using the form the step before it returned, so dependent fields require another submit after they appear. A button handler runs before its step's fields are saved, as in the browser: submit the fields it needs in an earlier step. A button without submitOnChange reloads and needs a separate field submission.
 
 The context expires after five minutes or an app reload and keeps no field values, messages or option labels; limits are 24 KiB of descriptors per app, 96 KiB in all, and eight caller workflows. Opening another app replaces only that caller's context; reopen the previous app before submitting it again. expect_page guards the caller's latest context, not edits in a browser, so avoid editing concurrently. After an error, completed operations stay and the last can be uncertain: inspect the app and reopen instead of replaying buttons. Terminal navigation closes the context without following redirects; a local link or script navigation to the same app or its direct child returns navigated_app_id and navigated_page with closed:true, to open separately. No script is evaluated: app JavaScript, custom HTML inputs, uploads, external links and other unsupported browser controls are listed in unsupported. Success means the native form operation returned, not that the app's intended runtime behavior was independently verified.'''
+}
+
+
+def _bat529Cb_18d8bae2_1(def selectors, def it) { it in selectors 
+}
+
+def _bat529Cb_18d8bae2_2(def allowed, def it) { !(it in allowed) 
+}
+
+def _bat529Cb_18d8bae2_3(def it) { it.toString() 
+}
+
+def _bat529Cb_18d8bae2_4(def it) { it.toString() 
+}
+
+def _bat529Cb_18d8bae2_5(def target, def it) { it != target 
+}
+
+def _bat529Cb_18d8bae2_6(def it) { it.key != 'tokens' 
+}
+
+def _bat529Cb_18d8bae2_7(def target, def it) { it == target 
+}
+
+def _bat529Cb_18d8bae2_8(def target, def it) { it != target 
+}
+
+def _bat529Cb_18d8bae2_9(def target, def it) { it?.toString() == target 
+}
+
+def _bat529Cb_18d8bae2_10(def it) { it.toString() 
+}
+
+def _bat529Cb_18d8bae2_11(def it) { it.toString() 
+}
+
+def _bat529Cb_18d8bae2_12(def it) { it.name.replace('#', '1') 
+}
+
+def _bat529Cb_18d8bae2_13(def a, def b) { a.name <=> b.name 
+}
+
+def _bat529Cb_18d8bae2_13(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_18d8bae2_13(*__bat529Tuple)
+}
+
+def _bat529Cb_18d8bae2_14(def it) { it?.toString() 
+}
+
+def _bat529Cb_18d8bae2_15(def it) { it.toString() 
+}
+
+def _bat529Cb_18d8bae2_16(def value, def it) { !value.containsKey(it) 
+}
+
+def _bat529Cb_18d8bae2_17(def it) { it.toString() 
+}
+
+def _bat529Cb_18d8bae2_18(def it) { !(it in ['part', 'value']) 
+}
+
+def _bat529Cb_18d8bae2_19(def it) { it?.toString()?.isInteger() 
+}
+
+def _bat529Cb_18d8bae2_20(def it) { it instanceof Map 
+}
+
+def _bat529Cb_18d8bae2_21(def schema, def it) { !schema.properties.containsKey(it) 
+}
+
+def _bat529Cb_18d8bae2_22(def it) { !(it in ['capability', 'fields']) 
+}
+
+def _bat529Cb_18d8bae2_23(def it) { it != null && it.toString().isInteger() 
+}
+
+def _bat529Cb_18d8bae2_24(def issues, def child) { issues.addAll(_ndPageIssues(child)) 
+}
+
+def _bat529Cb_18d8bae2_25(def change, def it) { !(it in ND_CHANGE_KEYS.get(change.part)) 
+}
+
+def _bat529Cb_18d8bae2_26(def entry) { [(entry.key): entry.value] 
+}
+
+def _bat529Cb_18d8bae2_27(def key, def value) { [(key.toString()): value] 
+}
+
+def _bat529Cb_18d8bae2_27(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_18d8bae2_27(*__bat529Tuple)
+}
+
+def _bat529Cb_18d8bae2_28(def key, def value) { [(key.toString()): value] 
+}
+
+def _bat529Cb_18d8bae2_28(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_18d8bae2_28(*__bat529Tuple)
+}
+
+def _bat529Cb_18d8bae2_29(def complete, def path, def schema, def item) { _ndValidateSchema(item, schema.items, path, complete) 
+}
+
+def _bat529Cb_18d8bae2_30(def it) { it.toString() 
+}
+
+def _bat529Cb_18d8bae2_31(def a, def b) { a.key.toString() <=> b.key.toString() 
+}
+
+def _bat529Cb_18d8bae2_31(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_18d8bae2_31(*__bat529Tuple)
+}
+
+def _bat529Cb_18d8bae2_32(def target, def it) { it instanceof Map && it.cond?.toString() == target 
+}
+
+def _bat529Cb_18d8bae2_33(def target, def tokens) { tokens instanceof List && (tokens).any(((this.&_bat529Cb_18d8bae2_9).curry([target] as Object[])))
+}
+
+def _bat529Cb_18d8bae2_34(def it) { it == null || !it.toString().isInteger() || it.toString().toInteger() <= 0 
+}
+
+def _bat529Cb_18d8bae2_35(def id, def page) { _ndRender(id, page) 
+}
+
+def _bat529Cb_18d8bae2_36(def it) { !(it in ['operation', 'rule_id', 'args', 'confirm', 'bestPracticeKey']) 
+}
+
+def _bat529Cb_18d8bae2_37(def id, def entry) { entry.value.app_id?.toString() == id.toString() 
+}
+
+def _bat529Cb_18d8bae2_38(def target, def name, def setting) { name.startsWith('condTrig.') && setting.value?.toString() == target 
+}
+
+def _bat529Cb_18d8bae2_38(def target, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_18d8bae2_38(target, *__bat529Tuple)
+}
+
+def _bat529Cb_18d8bae2_39(def issues, def node, def key) { if (node.get(key) != null) issues.addAll(_ndPageIssues(node.get(key))) 
+}
+
+def _bat529Cb_18d8bae2_40(def key, def value) { key.toString().isInteger() && key.toString().toInteger() > 0 && value?.toString()?.trim() 
+}
+
+def _bat529Cb_18d8bae2_40(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_18d8bae2_40(*__bat529Tuple)
+}
+
+def _bat529Cb_18d8bae2_41(def operands, def token) { if (token != null && token.toString().isInteger() && token.toString().toInteger() > 0) operands.put(token.toString(), 'condition') 
+}
+
+def _bat529Cb_18d8bae2_42(def complete, def path, def schema, def key, def item) { if (schema.properties?.containsKey(key)) _ndValidateSchema(item, schema.properties.get(key), "${path}.${key}".toString(), complete) 
+}
+
+def _bat529Cb_18d8bae2_42(def complete, def path, def schema, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_18d8bae2_42(complete, path, schema, *__bat529Tuple)
+}
+
+def _bat529Cb_18d8bae2_43(def rows, def token) { _ndKnownRow(rows.condition, token.toString(), 'Expression references an unknown condition') 
+}
+
+def _bat529Cb_18d8bae2_44(def entry) { NATIVE_FORM_CONTEXTS.remove(entry.key, entry.value) 
+}
+
+def _bat529Cb_18d8bae2_45(def actions, def expressionIds, def id) {
+        def action = _nmEntry(actions, id.toString())
+        if (action instanceof Map && action.rule != null) expressionIds << action.rule.toString()
+    
+}
+
+def _bat529Cb_18d8bae2_46(def expressions, def action) {
+                    action.tokens instanceof List ? action.tokens : (action.rule != null ? expressions.get(action.rule.toString()) : null)
+                
+}
+
+def _bat529Cb_18d8bae2_47(def nativeState, def actionId) {
+        [id: actionId.toString(), value: nativeState.actions instanceof Map ? _nmEntry(nativeState.actions, actionId.toString()) : null]
+    
+}
+
+def _bat529Cb_18d8bae2_48(def evalId, def projectedActions, def key, def action) {
+                    if (action instanceof Map && action.containsKey('tokens') && action.rule?.toString() == evalId) projectedActions.put(key, (action).findAll((this.&_bat529Cb_18d8bae2_6)))
+                
+}
+
+def _bat529Cb_18d8bae2_48(def evalId, def projectedActions, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_18d8bae2_48(evalId, projectedActions, *__bat529Tuple)
+}
+
+def _bat529Cb_18d8bae2_49(def row) {
+        if (!(row instanceof Map) || !(row.name instanceof String) || !row.name.contains('#')) throw new IllegalArgumentException('Invalid native typed field: its name must contain #')
+        _nrCheckSettingRow(row)
+        _nrValidateScalar(row, row.value)
+    
+}
+
+def _bat529Cb_18d8bae2_50(def change, def index) {
+        // Every check here depends only on the arguments: a refusal names its row and fires before any write.
+        try { _ndValidateChange(change) }
+        catch (IllegalArgumentException failure) { throw new IllegalArgumentException("changes[${index}]: ${failure.message}".toString()) }
+    
+}
+
+def _bat529Cb_18d8bae2_50(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_18d8bae2_50(*__bat529Tuple)
+}
+
+def _bat529Cb_18d8bae2_51(def conditions, def expressions, def issues, def id) {
+        def tokens = _nmEntry(expressions, id)
+        try {
+            if (!(tokens instanceof List)) throw new IllegalArgumentException('Missing native expression')
+            _nmTokens(tokens, conditions)
+        } catch (Exception failure) { issues << "Native expression ${id}: ${failure.message}".toString() }
+    
+}
+
+def _bat529Cb_18d8bae2_52(def row) {
+        if (!(row instanceof Map) || !(row.name instanceof String)) throw new IllegalStateException('Unexpected native setting row')
+        boolean secret = row.type == 'password' || _appConfigIsSecretSetting(row.name, row.type, row.value)
+        def setting = [name: row.name, type: row.type, multiple: row.multiple, value: secret ? null : row.value, device_ids: row.deviceList instanceof Map ? (row.deviceList.keySet()).collect((this.&_bat529Cb_18d8bae2_17)).sort() : null]
+        if (secret) setting.redacted = true
+        setting
+    
+}
+
+def _bat529Cb_18d8bae2_53(def event, def index) {
+                try {
+                    if (!(event instanceof Map) || (event.keySet()).any((this.&_bat529Cb_18d8bae2_22))|| !(event.capability instanceof String) || !event.capability.trim()) throw new IllegalArgumentException('Wait events require a capability and typed fields')
+                    _ndValidateFields(event.get('fields'), ['tCapab1'], 'Wait fields must not repeat selectors or native inputs')
+                } catch (IllegalArgumentException failure) { throw new IllegalArgumentException("events[${index}]: ${failure.message}".toString()) }
+            
+}
+
+def _bat529Cb_18d8bae2_53(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_18d8bae2_53(*__bat529Tuple)
+}
+
+def _bat529Cb_18d8bae2_54(def actions, def blocks, def issues, def id) {
+        def action = _nmEntry(actions, id.toString())
+        if (!(action instanceof Map)) issues << 'Native action order references a missing action'
+        else {
+            if (action.method == 'getIfThen') blocks << 'if'
+            else if (action.method in ['getRepeat', 'getWhile', 'getUntil', 'getRepeatWhile']) blocks << 'repeat'
+            else if (action.method in ['getElse', 'getElseIf']) {
+                if (!blocks || blocks.last() != 'if') issues << 'Native ELSE has no matching IF'
+            } else if (action.method == 'getEndIf') {
+                if (!blocks || blocks.last() != 'if') issues << 'Native END-IF has no matching IF'
+                else blocks.remove(blocks.size() - 1)
+            } else if (action.method == 'getEndRepeat') {
+                if (!blocks || blocks.last() != 'repeat') issues << 'Native END-REP has no matching REPEAT'
+                else blocks.remove(blocks.size() - 1)
+            }
+        }
+    
 }

@@ -64,33 +64,7 @@ private _listSourceItemBackups(args) {
         ]
     }
 
-    def backupList = manifest.collect { key, entry ->
-        def base = [
-            backupKey: key,
-            deletePending: entry.deletePending == true,
-            type: entry.type,
-            id: entry.id,
-            fileName: entry.fileName,
-            timestampEpoch: entry.timestamp ?: 0,
-            timestamp: formatTimestamp(entry.timestamp),
-            age: formatAge(entry.timestamp),
-            sourceLength: entry.sourceLength ?: 0,
-            sizeBytes: _itemBackupEntryBytes(entry),
-            directDownload: "http://<HUB_IP>/local/${entry.fileName}"
-        ]
-        // App/driver entries carry version + sourceLength; rm-rule entries
-        // carry reason + appLabel. Surface the right metadata per type so
-        // the response stays informative without forcing callers to know
-        // what missing fields mean.
-        if (entry.type == "rm-rule") {
-            base.ruleId = entry.ruleId
-            base.appLabel = entry.appLabel
-            base.reason = entry.reason
-        } else {
-            base.version = entry.version
-        }
-        return base
-    }.sort { a, b -> (b.timestampEpoch <=> a.timestampEpoch) } // Newest first
+    def backupList = ((manifest).collect((this.&_bat529Cb_8f5ba462_13))).sort((this.&_bat529Cb_8f5ba462_14))
 
     // Always paged: an unpaged listing of a full storage budget outgrows what the cloud relay delivers.
     def cursor = args?.cursor
@@ -105,7 +79,7 @@ private _listSourceItemBackups(args) {
         howToRestore: "Use 'hub_restore_backup' with a backupKey to restore apps/drivers via MCP. For library backups, use 'hub_update_library' with sourceFile mode instead. Or download the .groovy file from File Manager and paste it into Apps Code / Drivers Code / Libraries code manually.",
         manualRestore: "Go to Hubitat > Settings > File Manager to see backup files. Download a file, then go to Apps Code (or Drivers Code, or FOR DEVELOPERS > Libraries code) > select the item > paste the source > click Save."
     ]
-    if (backupList.any { it.deletePending }) {
+    if ((backupList).any((this.&_bat529Cb_8f5ba462_1))) {
         result.deletePendingNote = "Entries with deletePending=true record an incomplete deletion. If the file is still readable, hub_get_backup or hub_restore_backup can clear the marker and recover the backup. Recover promptly: the next backup publication purges unprotected pending entries and attempts to delete their files, even if still readable. Pending entries cannot be reused as baselines."
     }
     if (paged.nextCursor != null) {
@@ -433,7 +407,7 @@ private Map _toolRestoreSourceBackup(args) {
     // exception path can stash too.
     boolean isSelfRestore = false
     if (entry.type == "app") {
-        def selfIds = [app?.id?.toString(), _resolveSelfAppClassId()?.toString()].findAll { it != null }
+        def selfIds = ([app?.id?.toString(), _resolveSelfAppClassId()?.toString()]).findAll((this.&_bat529Cb_8f5ba462_10))
         isSelfRestore = selfIds.contains(entry.id?.toString())
     }
 
@@ -564,7 +538,7 @@ private Map _restoreRuleSnapshotFile(Map args) {
     if (args.preserveRuleId == false) throw new IllegalArgumentException('sourceFile restores the existing original rule; preserveRuleId must be true or omitted')
     String fileName = args.sourceFile
     def indexed
-    try { indexed = _itemBackupManifest().find { key, entry -> entry.fileName == fileName } }
+    try { indexed = (_itemBackupManifest()).find(((this.&_bat529Cb_8f5ba462_9).curry([fileName] as Object[])))}
     catch (Exception e) {
         // Nothing has been read or changed yet, so the caller gets the index's own structured result.
         Map unavailable = _itemBackupIndexUnavailableResult(e)
@@ -970,7 +944,7 @@ private void _validateNetworkBackupArgs(spec) {
         throw new IllegalArgumentException("networkBackup must be an object with at least one of enabled, networkPath, username, password.")
     }
     def known = ["enabled", "networkPath", "username", "password"]
-    def unknown = spec.keySet().findAll { !(it in known) }
+    def unknown = (spec.keySet()).findAll(((this.&_bat529Cb_8f5ba462_3).curry([known] as Object[])))
     if (unknown) throw new IllegalArgumentException("Unknown networkBackup field(s): ${unknown.join(', ')}. Valid: ${known.join(', ')}.")
     if (spec.containsKey("enabled") && !(spec.enabled instanceof Boolean)) throw new IllegalArgumentException("networkBackup.enabled must be true or false.")
 }
@@ -1097,11 +1071,7 @@ private _listHubBackups(boolean wantLocal, boolean wantCloud) {
             def parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : []
             // fullBackup entries (.tar.gz: database + File Manager + radio data) are listed with the
             // database-only .lzf ones but restore only through Hubitat's full-restore flow.
-            out.local = (parsed instanceof List) ? parsed.collect {
-                [name: it.name, createTime: it.createTime, createTimeOrig: it.createTimeOrig, size: it.fileSize != null ? it.fileSize : it.size,
-                 fullBackup: it.fullBackup == true, hasZWave: it.hasZWave == true, hasZigbee: it.hasZigbee == true,
-                 platformVersion: it.platformVersion]
-            } : []
+            out.local = (parsed instanceof List) ? (parsed).collect((this.&_bat529Cb_8f5ba462_12)): []
         } catch (Exception e) { mcpLogError("hub-admin", "list local hub backups failed", e); out.errors << "local: ${e.message}" }
     }
     if (wantCloud) {
@@ -1109,7 +1079,7 @@ private _listHubBackups(boolean wantLocal, boolean wantCloud) {
             def raw = hubInternalGet("/hub2/cloudBackups", [force: false])
             def parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : [:]
             def list = (parsed instanceof Map) ? (parsed.backups ?: []) : []
-            out.cloud = list.collect { [path: it.path, createTime: it.createTime, hubVersion: it.hubVersion, hubName: it.hubName] }
+            out.cloud = (list).collect((this.&_bat529Cb_8f5ba462_11))
         } catch (Exception e) { mcpLogError("hub-admin", "list cloud hub backups failed", e); out.errors << "cloud: ${e.message}" }
     }
     return out
@@ -1124,7 +1094,7 @@ private Map _localBackupSize(String fileName) {
         mcpLog("warn", "hub-admin", "local backup list unreadable (${e.message})")
     }
     if (!(parsed instanceof List)) return [reason: "unreadable"]
-    def entry = parsed.find { it instanceof Map && it.name?.toString() == fileName }
+    def entry = (parsed).find(((this.&_bat529Cb_8f5ba462_6).curry([fileName] as Object[])))
     if (entry == null) return [reason: "notListed"]
     Long size = _parseSizeBytes(entry.fileSize ?: entry.size)
     return (size != null) ? [size: size] : [reason: "sizeUnknown"]
@@ -1139,7 +1109,7 @@ private Map _cloudBackupSize(String path) {
         mcpLog("warn", "hub-admin", "cloud backup list unreadable (${e.message})")
     }
     if (!(parsed instanceof Map) || !(parsed.backups instanceof List)) return [reason: "unreadable"]
-    def entry = parsed.backups.find { it instanceof Map && it.path?.toString() == path }
+    def entry = (parsed.backups).find(((this.&_bat529Cb_8f5ba462_8).curry([path] as Object[])))
     if (entry == null) return [reason: "notListed"]
     Long size = _parseSizeBytes(entry.fileSize)
     return (size != null) ? [size: size] : [reason: "sizeUnknown"]
@@ -1165,7 +1135,7 @@ private boolean _isFullLocalHubBackup(String fileName) {
     try {
         def raw = hubInternalGet("/hub2/localBackups")
         def parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
-        def entry = (parsed instanceof List) ? parsed.find { it instanceof Map && it.name?.toString() == fileName } : null
+        def entry = (parsed instanceof List) ? (parsed).find(((this.&_bat529Cb_8f5ba462_7).curry([fileName] as Object[]))): null
         if (entry != null) return entry.fullBackup == true
     } catch (Exception e) {
         mcpLog("warn", "hub-admin", "_isFullLocalHubBackup: local backup list unreadable (${e.message}); deciding from the file name")
@@ -1179,12 +1149,12 @@ private Map _fullRestoreOptions(opts) {
     if (opts != null && !(opts instanceof Map)) throw new IllegalArgumentException("fullRestore must be an object: {restoreZigbee, restoreZwave, restoreFiles, deleteExistingFiles, allowZwaveFirmwareMismatch} (all booleans, default false).")
     def known = ["restoreZigbee", "restoreZwave", "restoreFiles", "deleteExistingFiles", "allowZwaveFirmwareMismatch"]
     def m = (opts ?: [:]) as Map
-    def unknown = m.keySet().findAll { !(it in known) }
+    def unknown = (m.keySet()).findAll(((this.&_bat529Cb_8f5ba462_2).curry([known] as Object[])))
     if (unknown) throw new IllegalArgumentException("Unknown fullRestore field(s): ${unknown.join(', ')}. Valid: ${known.join(', ')}.")
-    def notBool = m.findAll { k, v -> v != null && !(v instanceof Boolean) }.keySet()
+    def notBool = (m).findAll((this.&_bat529Cb_8f5ba462_5)).keySet()
     if (notBool) throw new IllegalArgumentException("fullRestore field(s) ${notBool.join(', ')} must be true or false.")
     if (m.deleteExistingFiles == true && m.restoreFiles != true) throw new IllegalArgumentException("fullRestore.deleteExistingFiles applies only with restoreFiles=true.")
-    return known.collectEntries { k -> [(k): m.get(k) == true] }
+    return (known).collectEntries(((this.&_bat529Cb_8f5ba462_4).curry([m] as Object[])))
 }
 
 // Full restore as the 2.5.2 UI runs it: multipart-upload the .tar.gz to /hub2/uploadFullLocalBackup,
@@ -1573,4 +1543,101 @@ def _toolDisplayMeta_partItemBackups() {
         hub_get_backup: [title: "Get Code Backup", summary: "Read source code from a backup."],
         hub_restore_backup: [title: "Restore Backup", summary: "Restore a code/rule backup, or (by scope) the whole hub database."]
     ]
+}
+
+
+def _bat529Cb_8f5ba462_1(def it) { it.deletePending 
+}
+
+def _bat529Cb_8f5ba462_2(def known, def it) { !(it in known) 
+}
+
+def _bat529Cb_8f5ba462_3(def known, def it) { !(it in known) 
+}
+
+def _bat529Cb_8f5ba462_4(def m, def k) { [(k): m.get(k) == true] 
+}
+
+def _bat529Cb_8f5ba462_5(def k, def v) { v != null && !(v instanceof Boolean) 
+}
+
+def _bat529Cb_8f5ba462_5(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_8f5ba462_5(*__bat529Tuple)
+}
+
+def _bat529Cb_8f5ba462_6(def fileName, def it) { it instanceof Map && it.name?.toString() == fileName 
+}
+
+def _bat529Cb_8f5ba462_7(def fileName, def it) { it instanceof Map && it.name?.toString() == fileName 
+}
+
+def _bat529Cb_8f5ba462_8(def path, def it) { it instanceof Map && it.path?.toString() == path 
+}
+
+def _bat529Cb_8f5ba462_9(def fileName, def key, def entry) { entry.fileName == fileName 
+}
+
+def _bat529Cb_8f5ba462_9(def fileName, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_8f5ba462_9(fileName, *__bat529Tuple)
+}
+
+def _bat529Cb_8f5ba462_10(def it) { it != null 
+}
+
+def _bat529Cb_8f5ba462_11(def it) { [path: it.path, createTime: it.createTime, hubVersion: it.hubVersion, hubName: it.hubName] 
+}
+
+def _bat529Cb_8f5ba462_12(def it) {
+                [name: it.name, createTime: it.createTime, createTimeOrig: it.createTimeOrig, size: it.fileSize != null ? it.fileSize : it.size,
+                 fullBackup: it.fullBackup == true, hasZWave: it.hasZWave == true, hasZigbee: it.hasZigbee == true,
+                 platformVersion: it.platformVersion]
+            
+}
+
+def _bat529Cb_8f5ba462_13(def key, def entry) {
+        def base = [
+            backupKey: key,
+            deletePending: entry.deletePending == true,
+            type: entry.type,
+            id: entry.id,
+            fileName: entry.fileName,
+            timestampEpoch: entry.timestamp ?: 0,
+            timestamp: formatTimestamp(entry.timestamp),
+            age: formatAge(entry.timestamp),
+            sourceLength: entry.sourceLength ?: 0,
+            sizeBytes: _itemBackupEntryBytes(entry),
+            directDownload: "http://<HUB_IP>/local/${entry.fileName}"
+        ]
+        // App/driver entries carry version + sourceLength; rm-rule entries
+        // carry reason + appLabel. Surface the right metadata per type so
+        // the response stays informative without forcing callers to know
+        // what missing fields mean.
+        if (entry.type == "rm-rule") {
+            base.ruleId = entry.ruleId
+            base.appLabel = entry.appLabel
+            base.reason = entry.reason
+        } else {
+            base.version = entry.version
+        }
+        return base
+    
+}
+
+def _bat529Cb_8f5ba462_13(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_8f5ba462_13(*__bat529Tuple)
+}
+
+def _bat529Cb_8f5ba462_14(def a, def b) { (b.timestampEpoch <=> a.timestampEpoch) 
+}
+
+def _bat529Cb_8f5ba462_14(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_8f5ba462_14(*__bat529Tuple)
 }

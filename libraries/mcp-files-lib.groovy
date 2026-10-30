@@ -10,7 +10,7 @@ private String _filesFoldCase(value) {
 private List _filesApplyListFilters(List fileList, String filterLower) {
     def out = fileList
     if (filterLower) {
-        out = out.findAll { _filesFoldCase(it?.name)?.contains(filterLower) }
+        out = (out).findAll(((this.&_bat529Cb_f7f9d965_8).curry([filterLower] as Object[])))
     }
     return out
 }
@@ -42,7 +42,7 @@ private Map _filesPruneBackupCopies(String fileName, String keepName = null) {
     List parts = _filesBackupNameParts(fileName)
     def copyPattern = ~("^" + java.util.regex.Pattern.quote(parts[0]) + "_backup_(\\d{8}-\\d{6})(-\\d{3})?" + java.util.regex.Pattern.quote(parts[1]) + "\$")
     List names
-    try { names = _fileManagerRootFiles().collect { it.name } }
+    try { names = (_fileManagerRootFiles()).collect((this.&_bat529Cb_f7f9d965_3))}
     catch (Exception e) {
         mcpLog("warn", "file-manager", "Could not list File Manager to prune old backup copies of '${fileName}': ${e.message}")
         return [removed: [], warning: "Old backup copies of '${fileName}' were not pruned: the File Manager listing failed (${e.message}). More than ${FILE_BACKUP_COPIES} copies may remain.".toString()]
@@ -53,19 +53,11 @@ private Map _filesPruneBackupCopies(String fileName, String keepName = null) {
         m.matches() ? (m.group(1) + (m.group(2) ?: "-000")) : ""
     }
     boolean keepingNew = keepName != null && names.contains(keepName)
-    List copies = names.findAll { it ==~ copyPattern && it != keepName }
-    List stale = copies.sort { a, b -> age(b) <=> age(a) }.drop(FILE_BACKUP_COPIES - (keepingNew ? 1 : 0))
+    List copies = (names).findAll(((this.&_bat529Cb_f7f9d965_6).curry([copyPattern, keepName] as Object[])))
+    List stale = (copies).sort(((this.&_bat529Cb_f7f9d965_2).curry([age] as Object[]))).drop(FILE_BACKUP_COPIES - (keepingNew ? 1 : 0))
     List removed = []
     List failed = []
-    stale.each { name ->
-        try {
-            deleteHubFile(name)
-            removed << name
-        } catch (Exception e) {
-            failed << name
-            mcpLog("warn", "file-manager", "Could not delete old backup copy '${name}': ${e.message}")
-        }
-    }
+    (stale).each(((this.&_bat529Cb_f7f9d965_9).curry([failed, removed] as Object[])))
     if (removed) mcpLog("info", "file-manager", "Removed ${removed.size()} old backup copies of '${fileName}' (keeping the newest ${FILE_BACKUP_COPIES})")
     String warning = failed ? "Could not delete old backup copies ${failed} of '${fileName}'; more than ${FILE_BACKUP_COPIES} copies remain.".toString() : null
     return [removed: removed, warning: warning]
@@ -88,7 +80,7 @@ def toolListFiles(args = null) {
     def filterText = args?.filter?.toString()?.trim()
     def filterLower = _filesFoldCase(filterText)
     def folder = args?.folder?.toString()?.trim()?.replaceAll(/^\/+|\/+$/, "")
-    if (folder && (!(folder ==~ /[A-Za-z0-9_.\/ -]+/) || folder.split("/").any { it == ".." || it == "." || it == "" })) {
+    if (folder && (!(folder ==~ /[A-Za-z0-9_.\/ -]+/) || (folder.split("/")).any((this.&_bat529Cb_f7f9d965_7)))) {
         throw new IllegalArgumentException("folder must be a relative File Manager folder path such as 'webcore' (letters, digits, space, dot, underscore, hyphen, '/' between parts; no '..').")
     }
     if (folder && _hubFirmwareBefore("2.5.2")) throw new IllegalArgumentException("folder needs firmware 2.5.2 or later; older File Manager has no subfolders.")
@@ -127,40 +119,17 @@ def toolListFiles(args = null) {
 
         if (parsed instanceof List) {
             // Direct list response: [{name: "file.txt", size: 123}, ...]
-            fileList = parsed.collect { f ->
-                def name = (f instanceof Map) ? (f.name ?: f.toString()) : f.toString()
-                def entry = [name: name, directDownload: "http://<HUB_IP>/local/${prefix}${name}"]
-                if (f instanceof Map) {
-                    if (f.size != null) entry.size = f.size
-                    if (f.date) entry.lastModified = f.date
-                }
-                return entry
-            }
+            fileList = (parsed).collect(((this.&_bat529Cb_f7f9d965_10).curry([prefix] as Object[])))
         } else if (parsed instanceof Map) {
             // Object response: {files: [...]} or {type: [...]}
             // An empty folder answers files:[]; only a shape without the key falls back to its values.
             def files = parsed.containsKey("files") ? parsed.get("files") : parsed.values()?.flatten()
             if (files instanceof List) {
-                fileList = files.collect { f ->
-                    def name = (f instanceof Map) ? (f.name ?: f.toString()) : f.toString()
-                    def entry = [name: name]
-                    if (f instanceof Map) {
-                        // Firmware 2.5.2 lists subfolders (type "dir") beside files and flags files a
-                        // full backup leaves out (backupIncluded:false, past its 100 MiB limit).
-                        if (f.type) entry.type = f.type
-                        if (f.type != "dir") entry.directDownload = "http://<HUB_IP>/local/${prefix}${name}"
-                        if (f.size != null && f.type != "dir") entry.size = f.size
-                        if (f.date) entry.lastModified = f.date
-                        if (f.backupIncluded != null) entry.backupIncluded = f.backupIncluded
-                    } else {
-                        entry.directDownload = "http://<HUB_IP>/local/${prefix}${name}"
-                    }
-                    return entry
-                }
+                fileList = (files).collect(((this.&_bat529Cb_f7f9d965_11).curry([prefix] as Object[])))
             }
         }
 
-        fileList = fileList.sort { a, b -> (a.name <=> b.name) }
+        fileList = (fileList).sort((this.&_bat529Cb_f7f9d965_5))
 
         // Shape-drift diagnostic: a non-empty parsed response that yielded zero files is almost
         // always a firmware shape change (new top-level key, files nested deeper, etc.); an
@@ -198,7 +167,7 @@ def toolListFiles(args = null) {
             def matcher = responseText =~ /(?i)href=["']?\/local\/([^"'\s>]+)/
             while (matcher.find()) {
                 def name = java.net.URLDecoder.decode(matcher.group(1), "UTF-8")
-                if (!fileList.any { it.name == name }) {
+                if (!(fileList).any(((this.&_bat529Cb_f7f9d965_1).curry([name] as Object[])))) {
                     fileList << [name: name, directDownload: "http://<HUB_IP>/local/${name}"]
                 }
             }
@@ -207,7 +176,7 @@ def toolListFiles(args = null) {
         }
 
         if (fileList) {
-            fileList = fileList.sort { a, b -> (a.name <=> b.name) }
+            fileList = (fileList).sort((this.&_bat529Cb_f7f9d965_4))
             fileList = _filesApplyListFilters(fileList, filterLower)
             mcpLog("info", "file-manager", "Listed ${fileList.size()}${filterLower ? ' matching' : ''} files from File Manager HTML page")
             def pagedHtml = _paginateList(fileList, cursor, 100, "hub_list_files")
@@ -516,4 +485,87 @@ def _toolDisplayMeta_partFiles() {
         hub_write_file: [title: "Write File", summary: "Create or update a File Manager file (auto-backs up existing)."],
         hub_delete_file: [title: "Delete File", summary: "Delete a File Manager file (auto-backs up first)."]
     ]
+}
+
+
+def _bat529Cb_f7f9d965_1(def name, def it) { it.name == name 
+}
+
+def _bat529Cb_f7f9d965_2(def age, def a, def b) { age(b) <=> age(a) 
+}
+
+def _bat529Cb_f7f9d965_2(def age, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_f7f9d965_2(age, *__bat529Tuple)
+}
+
+def _bat529Cb_f7f9d965_3(def it) { it.name 
+}
+
+def _bat529Cb_f7f9d965_4(def a, def b) { (a.name <=> b.name) 
+}
+
+def _bat529Cb_f7f9d965_4(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_f7f9d965_4(*__bat529Tuple)
+}
+
+def _bat529Cb_f7f9d965_5(def a, def b) { (a.name <=> b.name) 
+}
+
+def _bat529Cb_f7f9d965_5(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_f7f9d965_5(*__bat529Tuple)
+}
+
+def _bat529Cb_f7f9d965_6(def copyPattern, def keepName, def it) { it ==~ copyPattern && it != keepName 
+}
+
+def _bat529Cb_f7f9d965_7(def it) { it == ".." || it == "." || it == "" 
+}
+
+def _bat529Cb_f7f9d965_8(def filterLower, def it) { _filesFoldCase(it?.name)?.contains(filterLower) 
+}
+
+def _bat529Cb_f7f9d965_9(def failed, def removed, def name) {
+        try {
+            deleteHubFile(name)
+            removed << name
+        } catch (Exception e) {
+            failed << name
+            mcpLog("warn", "file-manager", "Could not delete old backup copy '${name}': ${e.message}")
+        }
+    
+}
+
+def _bat529Cb_f7f9d965_10(def prefix, def f) {
+                def name = (f instanceof Map) ? (f.name ?: f.toString()) : f.toString()
+                def entry = [name: name, directDownload: "http://<HUB_IP>/local/${prefix}${name}"]
+                if (f instanceof Map) {
+                    if (f.size != null) entry.size = f.size
+                    if (f.date) entry.lastModified = f.date
+                }
+                return entry
+            
+}
+
+def _bat529Cb_f7f9d965_11(def prefix, def f) {
+                    def name = (f instanceof Map) ? (f.name ?: f.toString()) : f.toString()
+                    def entry = [name: name]
+                    if (f instanceof Map) {
+                        // Firmware 2.5.2 lists subfolders (type "dir") beside files and flags files a
+                        // full backup leaves out (backupIncluded:false, past its 100 MiB limit).
+                        if (f.type) entry.type = f.type
+                        if (f.type != "dir") entry.directDownload = "http://<HUB_IP>/local/${prefix}${name}"
+                        if (f.size != null && f.type != "dir") entry.size = f.size
+                        if (f.date) entry.lastModified = f.date
+                        if (f.backupIncluded != null) entry.backupIncluded = f.backupIncluded
+                    } else {
+                        entry.directDownload = "http://<HUB_IP>/local/${prefix}${name}"
+                    }
+                    return entry
+                
 }

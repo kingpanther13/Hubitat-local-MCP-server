@@ -252,12 +252,7 @@ private Set _rmValidRuleIds() {
     // App tree unreadable: membership is unverifiable (combined is unfiltered).
     if (!collected.treeReadable) return null
     def ids = [] as Set
-    collected.combined.each { id, entry ->
-        def idInt
-        try { idInt = (id instanceof Number) ? id.intValue() : id.toString().toInteger() }
-        catch (Exception ignored) { idInt = null }
-        if (idInt != null) ids << idInt
-    }
+    (collected.combined).each(((this.&_bat529Cb_4076886b_142).curry([ids] as Object[])))
     return ids
 }
 
@@ -277,23 +272,19 @@ def toolListRmRules(args) {
     // Enrich each rule with its live enabled/paused/stopped/disabled status from the
     // /hub2/appsList tree (issue #359). When the tree was unreadable the rules are
     // returned unfiltered and carry no node data, so status is "unknown".
-    combined.values().each { entry -> _rmAnnotateRuleStatus(entry, treeReadable, liveApps) }
+    (combined.values()).each(((this.&_bat529Cb_4076886b_94).curry([liveApps, treeReadable] as Object[])))
 
     // combined.values() returns a Collection view in some Groovy versions; materialize
     // as a concrete List via toList() so subList in _paginateList is safe.
-    def rules = combined.values().sort { it.label ?: "" }.toList()
+    def rules = (combined.values()).sort((this.&_bat529Cb_4076886b_15)).toList()
     def labelFilter = args?.labelFilter?.toString()?.toLowerCase()
-    if (labelFilter) rules = rules.findAll { (it.label ?: "").toString().toLowerCase().contains(labelFilter) }
+    if (labelFilter) rules = (rules).findAll(((this.&_bat529Cb_4076886b_87).curry([labelFilter] as Object[])))
 
     def cursor = args?.cursor
     def paged = _paginateList(rules, cursor, 50, "hub_list_rules")
     def result = [
         // Labels and names leave as the user typed them: the hub stores "Heat On <67" as "Heat On &lt;67".
-        rules: paged.page.collect { r ->
-            def clean = [:] + r
-            ["label", "name"].each { k -> if (clean[k] instanceof CharSequence) clean[k] = stripAppConfigHtml(clean[k]) }
-            clean
-        },
+        rules: (paged.page).collect((this.&_bat529Cb_4076886b_138)),
         count: paged.page.size()
     ]
     if (cursor != null) {
@@ -514,22 +505,13 @@ private Map _rmRuleIdListArg(Object raw) {
     def rawList = (raw instanceof List) ? raw : [raw]
     if (rawList.isEmpty()) throw new IllegalArgumentException("ruleId array must not be empty")
     List<Integer> ids = []
-    rawList.each { id ->
-        // _rmCoerceRuleId, not normalizeRuleId: a JSON-number 400.7 would silently
-        // TRUNCATE to rule 400 via toInteger() -- and then PASS the existence
-        // check below, pausing the wrong rule with full confidence.
-        def n = _rmCoerceRuleId(id)
-        if (n == null) {
-            throw new IllegalArgumentException("ruleId '${id}' is not an integer-valued rule id. Use hub_list_rules to find valid ids.")
-        }
-        if (!ids.contains(n)) ids << n
-    }
+    (rawList).each(((this.&_bat529Cb_4076886b_154).curry([ids] as Object[])))
     Boolean verified = null
     if (ids.size() > 1) {
         def valid = _rmValidRuleIds()
         if (valid != null) {
             verified = true
-            def unknown = ids.findAll { !valid.contains(it) }
+            def unknown = (ids).findAll(((this.&_bat529Cb_4076886b_6).curry([valid] as Object[])))
             if (unknown) {
                 throw new IllegalArgumentException("ruleId array contains id(s) that are not existing RM rules: ${unknown.join(', ')}. Nothing was dispatched. Verify ids via hub_list_rules and re-issue the batch.")
             }
@@ -558,7 +540,7 @@ def toolRunRmRule(args) {
     if (args?.ruleId == null) throw new IllegalArgumentException("ruleId is required")
     def idArg = _rmRuleIdListArg(args.ruleId)
     List<Integer> ruleIds = idArg.ids
-    ruleIds.each { _requireUnprotectedAppMutation(it, "change rule runtime") }
+    (ruleIds).each((this.&_bat529Cb_4076886b_77))
     def action = args?.action ?: "rule"
 
     // start/stop route through the stopRule button click (a toggle on
@@ -589,13 +571,13 @@ def toolRunRmRule(args) {
         for (int i = 0; i < ruleIds.size(); i++) {
             if (i > 0 && _timeBudgetExceeded(args?.__reqT0 as Long)) {
                 budgetPaused = true
-                remaining = ruleIds.subList(i, ruleIds.size()).collect { it }
+                remaining = (ruleIds.subList(i, ruleIds.size())).collect((this.&_bat529Cb_4076886b_37))
                 break
             }
             results << perRule(ruleIds[i])
         }
         List failed = []
-        results.eachWithIndex { r, i -> if (r?.success != true) failed << ruleIds[i] }
+        (results).eachWithIndex(((this.&_bat529Cb_4076886b_84).curry([failed, ruleIds] as Object[])))
         def out = [
             success: failed.isEmpty() && !budgetPaused,
             partial: budgetPaused || (!failed.isEmpty() && failed.size() < results.size()),
@@ -680,7 +662,7 @@ private Map _rmToggleStopped(Integer ruleId, String action) {
 // Booleans in appState entries as the real `true`/`false` value, but
 // occasionally as the string "true"/"false" -- treat both equivalently.
 private Boolean _readAppStateBoolean(Map status, String name, Boolean fallback) {
-    def entry = (status?.appState ?: []).find { it?.name == name }
+    def entry = ((status?.appState ?: [])).find(((this.&_bat529Cb_4076886b_38).curry([name] as Object[])))
     if (entry == null) return fallback
     def v = entry.value
     if (v instanceof Boolean) return v
@@ -707,7 +689,7 @@ private Boolean _readAppStateBoolean(Map status, String name, Boolean fallback) 
 // String by some firmware versions -- returned as-is without coercion.
 private Object _rmGetStateEditAct(Integer appId) {
     def status = _rmFetchStatusJson(appId)
-    def entry = (status?.appState ?: []).find { it?.name?.toString() == "editAct" }
+    def entry = ((status?.appState ?: [])).find((this.&_bat529Cb_4076886b_68))
     return entry?.value
 }
 
@@ -724,7 +706,7 @@ def toolSetRulePaused(args) {
     else throw new IllegalArgumentException("paused must be boolean true/false (got: ${args.paused})")
     def idArg = _rmRuleIdListArg(args.ruleId)
     List<Integer> ruleIds = idArg.ids
-    ruleIds.each { _requireUnprotectedAppMutation(it, "change rule runtime") }
+    (ruleIds).each((this.&_bat529Cb_4076886b_75))
     def result = paused ? sendRmAction(ruleIds, "pauseRule", "hub_set_rule_paused")
                         : sendRmAction(ruleIds, "resumeRule", "hub_set_rule_paused")
     // idsVerified: true = every id existence-checked before dispatch; false = the
@@ -765,7 +747,7 @@ def toolSetRmRuleBoolean(args) {
     }
     def rmAction = resolved ? "setRuleBooleanTrue" : "setRuleBooleanFalse"
     def idArg = _rmRuleIdListArg(args.ruleId)
-    idArg.ids.each { _requireUnprotectedAppMutation(it, "set rule private boolean") }
+    (idArg.ids).each((this.&_bat529Cb_4076886b_88))
     def result = sendRmAction(idArg.ids as List, rmAction, "hub_set_rule_private_boolean value=${resolved}")
     if (result instanceof Map && idArg.idsVerified != null) result.idsVerified = idArg.idsVerified
     return result
@@ -884,13 +866,7 @@ private Integer _rmCoerceRuleId(Object id) {
 private List _rmCollectTriggerIndices(Integer appId) {
     def status = _rmFetchStatusJson(appId)
     def out = []
-    (status?.appSettings ?: []).each { s ->
-        def n = s?.name?.toString()
-        if (n) {
-            def m = (n =~ /^tCapab(\d+)$/)
-            if (m.matches()) out << (m[0][1] as Integer)
-        }
-    }
+    ((status?.appSettings ?: [])).each(((this.&_bat529Cb_4076886b_139).curry([out] as Object[])))
     return out
 }
 
@@ -904,16 +880,7 @@ private List _rmCollectTriggerIndices(Integer appId) {
 private List _rmActionIndicesFromSettings(Map status) {
     def out = []
     def seen = [] as Set
-    (status?.appSettings ?: []).each { s ->
-        def n = s?.name?.toString()
-        if (n) {
-            def m = (n =~ /^act(?:Type|SubType)\.(\d+)$/)
-            if (m.matches()) {
-                def idx = (m[0][1] as Integer)
-                if (seen.add(idx)) out << idx
-            }
-        }
-    }
+    ((status?.appSettings ?: [])).each(((this.&_bat529Cb_4076886b_147).curry([out, seen] as Object[])))
     return out
 }
 
@@ -923,14 +890,7 @@ private List _rmActionIndicesFromSettings(Map status) {
 // actionList never listed still occupies its index, and ignoring it leaves a permanent orphan.
 private List _rmLiveActionIndicesFromSettings(Map status) {
     def live = [:]
-    (status?.appSettings ?: []).each { s ->
-        def n = s?.name?.toString()
-        if (!n) return
-        def m = (n =~ /^act(?:Type|SubType)\.(\d+)$/)
-        if (!m.matches()) return
-        def idx = (m[0][1] as Integer)
-        if (s?.value?.toString()?.trim()) live.put(idx, true)
-    }
+    ((status?.appSettings ?: [])).each(((this.&_bat529Cb_4076886b_146).curry([live] as Object[])))
     return live.keySet().sort()
 }
 
@@ -979,7 +939,7 @@ void _rmRejectDisabledAppEdit(Integer appId, String opName) {
 Map _rmDeleteAction(Integer appId, Integer actionIdx, boolean skipStructuralCheck = false) {
     // One statusJson read serves all three pre-flight checks below.
     def status = _rmFetchStatusJson(appId)
-    def settingsByName = (status?.appSettings ?: []).collectEntries { [(it?.name?.toString()): it] }
+    def settingsByName = ((status?.appSettings ?: [])).collectEntries((this.&_bat529Cb_4076886b_81))
     // Existence check reads SETTINGS, not the compiled action list: a row that
     // was written but never baked exists only here, and refusing to delete it
     // would strand it. The status fetch above is reused.
@@ -990,7 +950,7 @@ Map _rmDeleteAction(Integer appId, Integer actionIdx, boolean skipStructuralChec
     // Pre-flight: if state.editAct is set, RM will silently no-op the delAct
     // click. Detect and fail immediately with a descriptive error rather than
     // burning 10s of retries and surfacing a confusing timeout message.
-    def editActEntry = (status?.appState ?: []).find { it?.name?.toString() == "editAct" }
+    def editActEntry = ((status?.appState ?: [])).find((this.&_bat529Cb_4076886b_67))
     def stuckEditAct = editActEntry?.value
     if (stuckEditAct != null) {
         throw new IllegalStateException("removeAction(${actionIdx}) blocked: rule ${appId} has state.editAct=${stuckEditAct} set from a prior interrupted action edit. RM 5.1 silently no-ops delAct clicks until this clears. Recovery options: (a) wait ~60s and retry (RM's stale-state timeout -- UNVERIFIED for this marker: an artificially-set editAct observed live did NOT clear after 5+ minutes); (b) open the rule in the Hubitat UI and finish or cancel the open action editor. Verified live on fw 2.5.1.135: cancelBtn/cancelAct clicks, updateRule, and an in-place hub_restore_backup do NOT clear a stuck editAct (restore-in-place rewrites settings, not app state) -- if (a) and (b) fail, delete the rule, then hub_restore_backup(scope='source', backupKey='<a recent rm-rule snapshot for this rule>', confirm=true), which RECREATES it with fresh state.")
@@ -1374,11 +1334,7 @@ private void _rmSubmitSubPageDone(Integer appId, String page, String parentPage,
     def status = _rmFetchStatusJson(appId)
     def liveSettings = _rmLiveSettingsFromStatus(status)
     def settingsMap = [:]
-    schema.each { name, meta ->
-        def v = _uiValueOrDefault(liveSettings.get(name), meta)
-        if (v == null) v = ""
-        settingsMap.put(name, v)
-    }
+    (schema).each(((this.&_bat529Cb_4076886b_133).curry([liveSettings, settingsMap] as Object[])))
     // The UI refuses this Done until the page passes its own checks; so does the tool.
     _requireUiNavigationValid(appId, "Done on page '${page}'".toString(), schema, settingsMap)
     def body = _rmBuildSettingsBody(appId, settingsMap, schema)
@@ -1398,19 +1354,7 @@ private void _rmSubmitSubPageDone(Integer appId, String page, String parentPage,
     //   - bool: checkbox[X] = "on" (HTML checkbox marker, always sent)
     //   - time: hours[X], minutes[X], amPm[X] (empty defaults; the time
     //     value rides in settings[X] as "HH:mm")
-    schema.each { name, meta ->
-        def t = meta?.type?.toString()
-        if (meta?.multiple != true) {
-            body["${name}.multiple".toString()] = "false"
-        }
-        if (t == "bool") {
-            body["checkbox[${name}]".toString()] = "on"
-        } else if (t == "time") {
-            body["hours[${name}]".toString()] = ""
-            body["minutes[${name}]".toString()] = ""
-            body["amPm[${name}]".toString()] = "AM"
-        }
-    }
+    (schema).each(((this.&_bat529Cb_4076886b_152).curry([body] as Object[])))
     if (cfg?.app?.version != null) body.version = cfg.app.version.toString()
     // A Done-POST failure propagates (hubInternalPostForm throws on a real failure): whether a failed
     // Done fails the operation depends on that operation.
@@ -1457,11 +1401,7 @@ Map _rmSubmitMainPageDone(Integer appId) {
     }
     def liveSettings = _rmLiveSettingsFromStatus(status)
     def settingsMap = [:]
-    schema.each { name, meta ->
-        def v = _uiValueOrDefault(liveSettings.get(name), meta)
-        if (v == null) v = ""
-        settingsMap.put(name, v)
-    }
+    (schema).each(((this.&_bat529Cb_4076886b_132).curry([liveSettings, settingsMap] as Object[])))
     try {
         _requireUiNavigationValid(appId, "Done on page '${commitPage}'".toString(), schema, settingsMap)
     } catch (IllegalStateException uiBlocked) {
@@ -1473,19 +1413,7 @@ Map _rmSubmitMainPageDone(Integer appId) {
     body.currentPage = commitPage
     body._action_update = "Done"
     body.pageBreadcrumbs = _rmPageBreadcrumbs(appId, commitPage, "[]")
-    schema.each { name, meta ->
-        def t = meta?.type?.toString()
-        if (meta?.multiple != true) {
-            body["${name}.multiple".toString()] = "false"
-        }
-        if (t == "bool") {
-            body["checkbox[${name}]".toString()] = "on"
-        } else if (t == "time") {
-            body["hours[${name}]".toString()] = ""
-            body["minutes[${name}]".toString()] = ""
-            body["amPm[${name}]".toString()] = "AM"
-        }
-    }
+    (schema).each(((this.&_bat529Cb_4076886b_153).curry([body] as Object[])))
     if (cfg?.app?.version != null) body.version = cfg.app.version.toString()
     // The classic Done form always submits these; without them the hub's
     // update handler 500s on standalone classic apps (verified live on
@@ -1517,7 +1445,7 @@ private Map _rmWriteSubPageField(Integer appId, String page, String parentPage, 
     // accumulator (cond-builder, etc.) and breaks multi-step flows that
     // use sub-expressions. Detect "no real params" via all-null values
     // and use a plain GET in that case.
-    def hasRealParams = (hrefParams != null) && hrefParams.values().any { it != null }
+    def hasRealParams = (hrefParams != null) && (hrefParams.values()).any((this.&_bat529Cb_4076886b_12))
     def cfg
     if (hasRealParams) {
         def navResp = _rmNavigateToPage(appId, parentPage ?: page, page, hrefIndex, hrefName, hrefParams, cache)
@@ -1606,13 +1534,13 @@ private Map _rmWriteSubPageField(Integer appId, String page, String parentPage, 
     // and a no-op re-write of a stable list would wrongly route to skipped.
     def newValueStr
     if (value instanceof List) {
-        newValueStr = ((value as List).collect { it?.toString() }.findAll { it != null } as List).sort().join(",")
+        newValueStr = ((((value as List)).collect((this.&_bat529Cb_4076886b_17))).findAll((this.&_bat529Cb_4076886b_66))as List).sort().join(",")
     } else {
         newValueStr = value?.toString()
     }
     def afterValueNorm = afterValueStr
     if (afterValueStr && value instanceof List && afterValueStr.contains(",")) {
-        afterValueNorm = afterValueStr.split(",").collect { it.trim() }.findAll { it }.sort().join(",")
+        afterValueNorm = ((afterValueStr.split(",")).collect((this.&_bat529Cb_4076886b_30))).findAll((this.&_bat529Cb_4076886b_55)).sort().join(",")
     }
     def schemaShifted = (beforeKeys != afterKeys) || (beforeValueStr != afterValueStr)
     def valueLanded = (newValueStr != null) && (afterValueNorm == newValueStr)
@@ -1647,11 +1575,11 @@ private Map _rmWriteSubPageField(Integer appId, String page, String parentPage, 
     def settingsValue = afterCfg?.settings?."${key}"
     def settingsValueNorm
     if (settingsValue instanceof List) {
-        settingsValueNorm = ((settingsValue as List).collect { it?.toString() }.findAll { it != null } as List).sort().join(",")
+        settingsValueNorm = ((((settingsValue as List)).collect((this.&_bat529Cb_4076886b_40))).findAll((this.&_bat529Cb_4076886b_79))as List).sort().join(",")
     } else if (settingsValue != null) {
         def settingsValueStr = settingsValue.toString()
         if (value instanceof List && settingsValueStr.contains(",")) {
-            settingsValueNorm = settingsValueStr.split(",").collect { it.trim() }.findAll { it }.sort().join(",")
+            settingsValueNorm = ((settingsValueStr.split(",")).collect((this.&_bat529Cb_4076886b_36))).findAll((this.&_bat529Cb_4076886b_64)).sort().join(",")
         } else {
             settingsValueNorm = settingsValueStr
         }
@@ -1667,7 +1595,7 @@ private String _rmRetentionSuffix(Map backup) {
 
 private boolean _rmIsCommittedRETell(Set names, boolean requireStopOnST = false) {
     if (names == null) return false
-    def hasNewCondSelector = names.contains("cond") || names.any { it.startsWith("rCapab_") }
+    def hasNewCondSelector = names.contains("cond") || (names).any((this.&_bat529Cb_4076886b_11))
     def base = names.contains("cancelST") && names.contains("editST")
     if (requireStopOnST) base = base && names.contains("stopOnST")
     return base && !hasNewCondSelector
@@ -1675,16 +1603,7 @@ private boolean _rmIsCommittedRETell(Set names, boolean requireStopOnST = false)
 
 
 private def _rmRecentRuleBackup(Map mfst, Integer ruleId, long nowMs) {
-    return mfst.findAll { key, value ->
-        if (!(value instanceof Map) || value.deletePending || value.type?.toString() != "rm-rule") return false
-        def savedRuleId = value.ruleId != null ? value.ruleId : value.id
-        if (savedRuleId?.toString() != ruleId?.toString()) return false
-        Long savedAt = null
-        try { savedAt = value.timestamp as Long } catch (Exception ignored) { }
-        if (savedAt == null) return false
-        long age = nowMs - savedAt
-        return age >= 0L && age < 60L * 60L * 1000L
-    }.max { a, b -> (a.value.timestamp as Long) <=> (b.value.timestamp as Long) }
+    return ((mfst).findAll(((this.&_bat529Cb_4076886b_155).curry([nowMs, ruleId] as Object[])))).max((this.&_bat529Cb_4076886b_158))
 }
 
 private String _rmCaptureRuleExport(Integer ruleId) {
@@ -1696,18 +1615,18 @@ private String _rmCaptureRuleExport(Integer ruleId) {
 private Map _rmDecodeRuleExport(Integer ruleId, Object raw) {
     if (!(raw instanceof String) || !raw) throw new IllegalStateException('Native recovery export is unavailable')
     def payload = new groovy.json.JsonSlurper().parseText(raw)
-    def identity = payload instanceof Map && payload.appReplacements instanceof Map ? payload.appReplacements.find { key, value -> key.toString() == ruleId.toString() }?.value : null
-    def data = payload instanceof Map && payload.appData instanceof Map ? payload.appData.find { key, value -> key.toString() == ruleId.toString() }?.value : null
+    def identity = payload instanceof Map && payload.appReplacements instanceof Map ? (payload.appReplacements).find(((this.&_bat529Cb_4076886b_89).curry([ruleId] as Object[])))?.value : null
+    def data = payload instanceof Map && payload.appData instanceof Map ? (payload.appData).find(((this.&_bat529Cb_4076886b_78).curry([ruleId] as Object[])))?.value : null
     if (!(identity instanceof Map) || identity.appTypeNamespace != 'hubitat' || !(identity.appTypeName in ['Rule-5.1', 'Button Rule-5.1']) ||
         !identity.parentAppInstalledAppId?.toString()?.isLong() || identity.parentAppInstalledAppId.toString().toLong() <= 0L ||
         !(payload.deviceReplacements instanceof Map) || !(data instanceof Map) || !(data.state instanceof Map) ||
-        ['actions', 'capabstrue', 'capabsfalse', 'eval'].any { data.state.get(it) != null && !(data.state.get(it) instanceof Map) } ||
+        (['actions', 'capabstrue', 'capabsfalse', 'eval']).any(((this.&_bat529Cb_4076886b_123).curry([data] as Object[])))||
         (data.state.actionList != null && !(data.state.actionList instanceof List)) ||
-        data.state.keySet().any { !(it instanceof String) || !it } ||
-        ['stopped', 'paused'].any { data.state.containsKey(it) && !(data.state.get(it) instanceof Boolean) } ||
+        (data.state.keySet()).any((this.&_bat529Cb_4076886b_54))||
+        (['stopped', 'paused']).any(((this.&_bat529Cb_4076886b_106).curry([data] as Object[])))||
         !(data.appSettings instanceof List) || !(data.subscriptions instanceof List) ||
-        data.appSettings.any { !(it instanceof Map) || !(it.name instanceof String) || !it.name || !(it.type instanceof String) || !it.type } ||
-        data.appSettings.collect { it.name }.unique().size() != data.appSettings.size()) {
+        (data.appSettings).any((this.&_bat529Cb_4076886b_128))||
+        (data.appSettings).collect((this.&_bat529Cb_4076886b_8)).unique().size() != data.appSettings.size()) {
         throw new IllegalStateException('Native recovery export does not identify a complete supported native rule configuration')
     }
     _rmNativeSettingPlan(data.appSettings)
@@ -1724,19 +1643,9 @@ Map _rmBackupRuleSnapshot(Integer ruleId, String reason, boolean requireNativeEx
 // names returned, so a restore can leave the live value alone or ask for it to be re-entered.
 private Set _rmRedactSnapshotPasswords(Map config, Map status) {
     Set names = [] as Set
-    if (status?.appSettings instanceof List) status.appSettings.each { row ->
-        if (row instanceof Map && row.name && (row.type?.toString() == 'password' || _appConfigIsSecretSetting(row.name, row.type, row.value))) { names << row.name.toString(); row.value = null }
-    }
-    (config?.configPage?.sections ?: []).each { section ->
-        (section instanceof Map && section.input instanceof List ? section.input : []).each { input ->
-            if (input instanceof Map && input.name && (input.type?.toString() == 'password' || input.name.toString() in names ||
-                    _appConfigIsSecretSetting(input.name, input.type, input.value != null ? input.value : input.defaultValue))) {
-                names << input.name.toString()
-                ['value', 'defaultValue'].each { key -> if (input.containsKey(key)) input.put(key, null) }
-            }
-        }
-    }
-    if (config?.settings instanceof Map) names.each { config.settings.remove(it) }
+    if (status?.appSettings instanceof List) (status.appSettings).each(((this.&_bat529Cb_4076886b_141).curry([names] as Object[])))
+    ((config?.configPage?.sections ?: [])).each(((this.&_bat529Cb_4076886b_157).curry([names] as Object[])))
+    if (config?.settings instanceof Map) (names).each(((this.&_bat529Cb_4076886b_13).curry([config] as Object[])))
     names
 }
 
@@ -1759,21 +1668,18 @@ private Map _rmBuildNativeEditSnapshot(Integer ruleId, String reason, String cap
     Set redacted = [] as Set
     String nativeExport = _rmRedactExportSecrets(capturedExport, redacted)
     Map payload = new groovy.json.JsonSlurper().parseText(nativeExport) as Map
-    Map identity = payload.appReplacements.find { key, value -> key.toString() == ruleId.toString() }.value as Map
-    Map data = payload.appData.find { key, value -> key.toString() == ruleId.toString() }.value as Map
+    Map identity = (payload.appReplacements).find(((this.&_bat529Cb_4076886b_90).curry([ruleId] as Object[]))).value as Map
+    Map data = (payload.appData).find(((this.&_bat529Cb_4076886b_76).curry([ruleId] as Object[]))).value as Map
     Map savedSettings = [:]
-    List settingRows = data.appSettings.collect { row ->
-        if (!(row.name in redacted)) savedSettings.put(row.name, row.deviceList instanceof Map && row.deviceList ? row.deviceList : row.value)
-        [:] + row + [deviceIdsForDeviceList: row.deviceList instanceof Map ? row.deviceList.keySet().collect { it.toString() } : []]
-    }
+    List settingRows = (data.appSettings).collect(((this.&_bat529Cb_4076886b_149).curry([redacted, savedSettings] as Object[])))
     Map config = [app: [id: ruleId, label: identity.appLabel, trueLabel: identity.appLabel,
         appType: [name: identity.appTypeName, namespace: identity.appTypeNamespace]], settings: savedSettings,
-        configPage: [name: identity.appTypeName == 'Button Rule-5.1' ? 'selectActions' : 'mainPage', sections: [[input: settingRows.collect { row -> [element: 'input', name: row.name, type: row.type, multiple: row.multiple == true] }]]]]
+        configPage: [name: identity.appTypeName == 'Button Rule-5.1' ? 'selectActions' : 'mainPage', sections: [[input: (settingRows).collect((this.&_bat529Cb_4076886b_117))]]]]
     long capturedAt = now()
     Map snapshot = [schemaVersion: 1, captureFormat: 'native-rule-edit-v1', ruleId: ruleId, appId: ruleId, appType: 'rule_machine', reason: reason,
         timestamp: capturedAt, timestampIso: formatTimestamp(capturedAt), appLabel: stripAppConfigHtml(identity.appLabel),
         nativeExport: nativeExport, configJson: config,
-        statusJson: [appSettings: settingRows, appState: data.state.collect { key, value -> [name: key, value: value] }]]
+        statusJson: [appSettings: settingRows, appState: (data.state).collect((this.&_bat529Cb_4076886b_56))]]
     if (redacted) snapshot.redactedSettings = redacted.toList().sort()
     [snapshot: snapshot, config: config]
 }
@@ -1831,8 +1737,8 @@ private Map _rmBuildRuleSnapshot(Integer ruleId, String reason, String activePag
         def bare = versioned.matches() ? (versioned[0] as List)[1].toString() : null
         // Exact match outranks the stripped one, and the first hit wins -- a `.each` that kept
         // assigning would let the last registry entry override an earlier exact match.
-        def exactKey = _appTypeRegistry().find { typeKey, reg -> reg.appName == name }?.key
-        def bareKey = (exactKey == null && bare != null) ? _appTypeRegistry().find { typeKey, reg -> reg.appName == bare }?.key : null
+        def exactKey = (_appTypeRegistry()).find(((this.&_bat529Cb_4076886b_59).curry([name] as Object[])))?.key
+        def bareKey = (exactKey == null && bare != null) ? (_appTypeRegistry()).find(((this.&_bat529Cb_4076886b_58).curry([bare] as Object[])))?.key : null
         // Any other app (user, community, or a built-in type the registry lacks) is recorded as such,
         // so a restore never rebuilds it as a Rule Machine rule.
         detectedAppType = exactKey ?: bareKey ?: (name ==~ /Rule-[0-9.]+/ ? "rule_machine" : "app")
@@ -1921,7 +1827,7 @@ private Map _rmBuildRuleSnapshot(Integer ruleId, String reason, String activePag
     if (detectedAppType == "rule_machine" && config != null && (configAppName?.toString() ==~ /Rule-[0-9.]+/)) {
         // Rule Machine only (restore imports it as a rule). The cloner renders no export for a rule with a
         // committed Required Expression (live, fw 2.5.2.129).
-        def evalState = (status?.appState instanceof List) ? (status.appState as List).find { it instanceof Map && it.name == "eval" }?.value : null
+        def evalState = (status?.appState instanceof List) ? ((status.appState as List)).find((this.&_bat529Cb_4076886b_73))?.value : null
         if (evalState instanceof Map && (evalState as Map)["0"] instanceof List && !((evalState as Map)["0"] as List).isEmpty()) {
             snapshot.nativeExportSkipped = "the rule has a Required Expression, which Hubitat's App Cloner does not export"
         } else {
@@ -2043,14 +1949,10 @@ private Map _rmReadLocalVarsMap(Integer appId) {
         }
         return [ok: true, vars: [:]]
     }
-    def raw = (appState ?: []).find { it?.name?.toString() == "allLocalVars" }?.value
+    def raw = ((appState ?: [])).find((this.&_bat529Cb_4076886b_62))?.value
     // A running rule updates lv_<name>; allLocalVars only catches up when the rule's page renders.
     def live = [:]
-    (appState ?: []).each { e ->
-        def n = e?.name?.toString()
-        // Local names can be sandbox property names such as fields; use Map.put for arbitrary keys.
-        if (n?.startsWith("lv_") && e.value instanceof Map) live.put(n.substring(3), e.value)
-    }
+    ((appState ?: [])).each(((this.&_bat529Cb_4076886b_144).curry([live] as Object[])))
     return [ok: true, vars: (raw instanceof Map) ? raw : [:], live: live]
 }
 
@@ -2077,24 +1979,14 @@ private Map _rmReadLocalVarsMap(Integer appId) {
 private boolean _rmConfigHasBrokenMarkers(config) {
     if (!(config instanceof Map)) return false
     def sections = config?.configPage?.sections ?: []
-    def texts = (sections as List).collectMany { sect ->
-        def fromBody = (sect?.body ?: [])
-            .findAll { b -> b instanceof Map && (b.element == "paragraph" || b.element == "href") }
-            .collect { it.description?.toString() ?: "" }
-        def fromParagraphs = (sect?.paragraphs ?: []).collect { it?.toString() ?: "" }
-        fromBody + fromParagraphs
-    }
-    return texts.any { text ->
-        ["**Broken Trigger**", "**Broken Action**", "**Broken Condition**"].any { text.contains(it) }
-    }
+    def texts = ((sections as List)).collectMany((this.&_bat529Cb_4076886b_151))
+    return (texts).any((this.&_bat529Cb_4076886b_125))
 }
 
 
 Set _rmCollectPageInputNames(Integer appId, String pageName, Map cache = null) {
     def cfg = _rmFetchConfigJson(appId, pageName, cache)
-    return (cfg?.configPage?.sections ?: []).collectMany { sec ->
-        (sec?.input ?: []).collect { it?.name?.toString() }
-    }.findAll { it } as Set
+    return (((cfg?.configPage?.sections ?: [])).collectMany((this.&_bat529Cb_4076886b_122))).findAll((this.&_bat529Cb_4076886b_130))as Set
 }
 
 
@@ -2113,7 +2005,7 @@ private boolean _rmTokensEqual(List a, List b) {
 
 // Condition ids in a token list (numeric tokens).
 private List _rmTokenConditionIds(List toks) {
-    return (toks ?: []).findAll { _rmTokenValue(it)?.isInteger() }.collect { _rmTokenValue(it) as Integer }
+    return (((toks ?: [])).findAll((this.&_bat529Cb_4076886b_45))).collect((this.&_bat529Cb_4076886b_103))
 }
 
 // Click a token-editor / STPage button and render STPage so the click takes effect. Returns the
@@ -2124,8 +2016,7 @@ private Map _rmTokClick(Integer appId, String name, String stateAttr, Map cache 
 }
 
 private Set _rmPageInputNames(Map cfg) {
-    return ((cfg?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
-        .collect { it?.name?.toString() }.findAll { it }) as Set
+    return ((((cfg?.configPage?.sections ?: [])).collectMany((this.&_bat529Cb_4076886b_74))).collect((this.&_bat529Cb_4076886b_114))).findAll((this.&_bat529Cb_4076886b_124))as Set
 }
 
 // Open the token editor on a rule with a committed Required Expression. Throws when it does not
@@ -2152,19 +2043,16 @@ private void _rmTokLeaveEditor(Integer appId, Map cache = null) {
 // condition form is left open for the caller to walk.
 private void _rmTokInsert(Integer appId, int position, String value, Closure writeST, Map hrefParams, Map cache = null) {
     def cfg = _rmTokClick(appId, position.toString(), "insertTok", cache)
-    def field = (cfg?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
-        .find { it?.name?.toString()?.startsWith("newToken") }
+    def field = (((cfg?.configPage?.sections ?: [])).collectMany((this.&_bat529Cb_4076886b_65))).find((this.&_bat529Cb_4076886b_126))
     if (!field) {
         throw new IllegalStateException("the token editor did not offer a new token at position ${position} (STPage shows ${_rmPageInputNames(cfg).sort().join(', ')})")
     }
     // The picker's option VALUES (an operator / paren, a condition id, or `*`), whatever container
     // the page uses for them.
     def opts = field.options
-    def offered = (opts instanceof Map) ? opts.keySet().collect { it?.toString() } :
-        ((opts instanceof List) ? opts.collectMany { o ->
-            (o instanceof Map) ? (o.containsKey("value") ? [o.value?.toString()] : o.keySet().collect { it?.toString() }) : [o?.toString()]
-        } : [])
-    offered = offered.findAll { it }
+    def offered = (opts instanceof Map) ? (opts.keySet()).collect((this.&_bat529Cb_4076886b_16)):
+        ((opts instanceof List) ? (opts).collectMany((this.&_bat529Cb_4076886b_134)): [])
+    offered = (offered).findAll((this.&_bat529Cb_4076886b_1))
     if (offered && !offered.contains(value)) {
         throw new IllegalStateException("token '${value}' is not offered by the expression editor (offered: ${offered.join(', ')})")
     }
@@ -2184,10 +2072,8 @@ List _rmDeleteExpressionConditions(Integer appId, Collection ids) {
         mcpLog("warn", "rm-native", "not removing conditions ${ids} from app ${appId}: its expressions could not be read")
         return []
     }
-    def inUse = ((st.eval instanceof Map) ? (st.eval as Map).values() : []).collectMany { v ->
-        (v instanceof List) ? _rmTokenConditionIds(v as List).collect { it.toString() } : []
-    } as Set
-    ids = ids.findAll { !inUse.contains(it.toString()) }
+    def inUse = (((st.eval instanceof Map) ? (st.eval as Map).values() : [])).collectMany((this.&_bat529Cb_4076886b_136))as Set
+    ids = (ids).findAll(((this.&_bat529Cb_4076886b_32).curry([inUse] as Object[])))
     if (!ids) return []
     // RM ignores deleteCon until Manage Conditions is opened from STPage the way the UI does (pred:true).
     try {
@@ -2195,18 +2081,11 @@ List _rmDeleteExpressionConditions(Integer appId, Collection ids) {
     } catch (Exception navExc) {
         mcpLog("warn", "rm-native", "Required Expression edit: opening Manage Conditions on app ${appId} failed (${navExc.message})")
     }
-    ids.each { id ->
-        try {
-            _rmClickAppButton(appId, id.toString(), "deleteCon", "selectConditions", null)
-            _rmFetchConfigJson(appId, "selectConditions")
-        } catch (Exception e) {
-            mcpLog("warn", "rm-native", "Required Expression edit: removing condition ${id} from app ${appId} failed (${e.message})")
-        }
-    }
+    (ids).each(((this.&_bat529Cb_4076886b_150).curry([appId] as Object[])))
     def remaining
     try { remaining = _rmFetchSettingsByName(appId)?.keySet() as Set } catch (Exception e) { remaining = null }
     if (remaining == null) return []
-    return ids.findAll { !remaining.contains("rCapab_${it}".toString()) }.collect { it as Integer }
+    return (ids.findAll { !remaining.contains("rCapab_${it}".toString()) }).collect((this.&_bat529Cb_4076886b_95))
 }
 
 // Set the committed Required Expression to exactly `target` (condition ids already in the rule's
@@ -2230,7 +2109,7 @@ private Map _rmTokSetExpression(Integer appId, List target) {
         }
         // The target goes in front first and only the tokens after it are deleted, so the expression
         // is never empty if a click fails part way.
-        target.eachWithIndex { tok, i -> _rmTokInsert(appId, i, _rmTokenValue(tok), writeST, hrefParams, cache) }
+        (target).eachWithIndex(((this.&_bat529Cb_4076886b_113).curry([appId, cache, hrefParams, writeST] as Object[])))
         for (int guard = 0; guard < 60; guard++) {
             def live = _rmRequiredTokens(appId)
             if (live == null) throw new IllegalStateException("the rule's expression state could not be read")
@@ -2253,10 +2132,7 @@ private Map _rmTokSetExpression(Integer appId, List target) {
 // terms: a failure while switching, a post-commit failure, and the patches[] batch end.
 private Map _rmConditionTexts(Map state) {
     def out = [:]
-    if (state?.get("capabsfalse") instanceof Map) (state.get("capabsfalse") as Map).each { id, txt ->
-        out.put(id?.toString(), txt?.toString()?.replaceAll(/\(\s*<[A-Za-z][^>]*>[^()]*<\/[A-Za-z]+>\s*\)/, "")
-            ?.replaceAll(/<\/?[A-Za-z!][^>]*>/, "")?.replaceAll(/\s+/, " ")?.trim())
-    }
+    if (state?.get("capabsfalse") instanceof Map) ((state.get("capabsfalse") as Map)).each(((this.&_bat529Cb_4076886b_143).curry([out] as Object[])))
     return out
 }
 
@@ -2267,20 +2143,17 @@ Map _rmReconcileRuleStructure(Integer appId, Map snapshot) {
     def appState = snapshot?.statusJson?.appState
     if (!(appState instanceof List)) return [:]
     def snap = [:]
-    appState.each { if (it instanceof Map && it.name != null) snap.put(it.name.toString(), it.value) }
-    if (!["capabstrue", "capabsfalse", "actionList"].any { snap.containsKey(it) }) return [:]
-    def trigs = { Map st -> (st?.capabstrue instanceof Map) ? (st.capabstrue as Map).keySet().collect { it.toString() } : [] }
-    def conds = { Map st -> (st?.capabsfalse instanceof Map) ? (st.capabsfalse as Map).keySet().collect { it.toString() } : [] }
-    def acts = { Map st -> (st?.actionList instanceof List) ? (st.actionList as List).collect { it.toString() } : [] }
+    (appState).each(((this.&_bat529Cb_4076886b_104).curry([snap] as Object[])))
+    if (!(["capabstrue", "capabsfalse", "actionList"]).any(((this.&_bat529Cb_4076886b_72).curry([snap] as Object[])))) return [:]
+    def trigs = { Map st -> (st?.capabstrue instanceof Map) ? ((st.capabstrue as Map).keySet()).collect((this.&_bat529Cb_4076886b_48)): [] }
+    def conds = { Map st -> (st?.capabsfalse instanceof Map) ? ((st.capabsfalse as Map).keySet()).collect((this.&_bat529Cb_4076886b_51)): [] }
+    def acts = { Map st -> (st?.actionList instanceof List) ? ((st.actionList as List)).collect((this.&_bat529Cb_4076886b_39)): [] }
     def live = _rmReadRuleState(appId)
     if (live == null) return [structureRestored: false, structureError: "the rule's triggers and actions could not be read after the restore"]
 
     def removed = [triggers: [], actions: [], conditions: []]
     def failures = []
-    (trigs(live) - trigs(snap)).each { idx ->
-        try { _rmRemoveTrigger(appId, idx as Integer); removed.triggers << idx }
-        catch (Exception e) { failures << "trigger ${idx} (${e.message})".toString() }
-    }
+    ((trigs(live) - trigs(snap))).each(((this.&_bat529Cb_4076886b_140).curry([appId, failures, removed] as Object[])))
     // Rows go one at a time, last first, so a removal never shifts a row still to go. The per-row
     // balance refusal would block each half of an extra IF/END-IF pair, so balance is
     // checked once for the whole set and the per-row check skipped only when the set leaves the
@@ -2291,8 +2164,8 @@ Map _rmReconcileRuleStructure(Integer appId, Map snapshot) {
         try {
             def ordered = _rmOrderedActionIndices(appId)
             if (ordered != null) {
-                def byName = (_rmFetchStatusJson(appId)?.appSettings ?: []).collectEntries { [(it?.name?.toString()): it] }
-                def removing = extraActs.collect { it as Integer } as Set
+                def byName = ((_rmFetchStatusJson(appId)?.appSettings ?: [])).collectEntries((this.&_bat529Cb_4076886b_99))
+                def removing = (extraActs).collect((this.&_bat529Cb_4076886b_7))as Set
                 def issuesNow = _rmStructuralIssuesFromSequence(_rmStructuralSequenceFromSettings(byName, ([] as Set), ordered))
                 def after = _rmStructuralIssuesFromSequence(_rmStructuralSequenceFromSettings(byName, removing, ordered))
                 setBalanced = (after - issuesNow).isEmpty()
@@ -2312,7 +2185,7 @@ Map _rmReconcileRuleStructure(Integer appId, Map snapshot) {
         try {
             def ordered = _rmOrderedActionIndices(appId)
             if (ordered != null) {
-                def byName = (_rmFetchStatusJson(appId)?.appSettings ?: []).collectEntries { [(it?.name?.toString()): it] }
+                def byName = ((_rmFetchStatusJson(appId)?.appSettings ?: [])).collectEntries((this.&_bat529Cb_4076886b_101))
                 blockIssues = _rmStructuralIssuesFromSequence(_rmStructuralSequenceFromSettings(byName, ([] as Set), ordered))
             }
         } catch (Exception e) {
@@ -2320,18 +2193,16 @@ Map _rmReconcileRuleStructure(Integer appId, Map snapshot) {
         }
     }
     // Conditions any expression uses (the Required Expression or an action's IF) stay.
-    def inExpr = ((live.eval instanceof Map) ? (live.eval as Map).values() : []).collectMany { v ->
-        (v instanceof List) ? _rmTokenConditionIds(v as List).collect { it.toString() } : []
-    }
+    def inExpr = (((live.eval instanceof Map) ? (live.eval as Map).values() : [])).collectMany((this.&_bat529Cb_4076886b_137))
     def extraConds = conds(live) - conds(snap) - inExpr
-    if (extraConds) removed.conditions = _rmDeleteExpressionConditions(appId, extraConds.collect { it as Integer }).collect { it as Integer }
+    if (extraConds) removed.conditions = (_rmDeleteExpressionConditions(appId, (extraConds).collect((this.&_bat529Cb_4076886b_9)))).collect((this.&_bat529Cb_4076886b_105))
     // Actions the backup also has go back to its order, one move up at a time.
     boolean moved = false
     String orderError = null
     def wantOrder = acts(snap)
     for (int p = 0; wantOrder.size() > 1 && p < wantOrder.size() && !orderError; p++) {
         def current = null
-        try { current = _rmOrderedActionIndices(appId)?.collect { it.toString() }?.findAll { wantOrder.contains(it) } } catch (Exception e) {
+        try { current = ((_rmOrderedActionIndices(appId))?.collect((this.&_bat529Cb_4076886b_46)))?.findAll(((this.&_bat529Cb_4076886b_100).curry([wantOrder] as Object[])))} catch (Exception e) {
             mcpLog("warn", "rm-native", "restore: reading the action order of app ${appId} failed (${e.message})")
         }
         if (current == null) { orderError = "the action order could not be read"; break }
@@ -2362,19 +2233,19 @@ Map _rmReconcileRuleStructure(Integer appId, Map snapshot) {
     def extraActsLeft = acts(after) - acts(snap)
     def extraLeft = conds(after) - conds(snap) - inExpr
     if (missingTrigs) {
-        out.missingTriggers = missingTrigs.collect { [index: it, text: snapTrigText.get(it)?.toString()] }
-        problems << "the backup's trigger(s) ${missingTrigs.collect { snapTrigText.get(it) ?: it }.join('; ')} are not on the rule".toString()
+        out.missingTriggers = (missingTrigs).collect(((this.&_bat529Cb_4076886b_82).curry([snapTrigText] as Object[])))
+        problems << "the backup's trigger(s) ${(missingTrigs).collect(((this.&_bat529Cb_4076886b_43).curry([snapTrigText] as Object[]))).join('; ')} are not on the rule".toString()
     }
     if (missingActs) {
         out.missingActions = missingActs
         problems << "the backup's action row(s) ${missingActs.join(', ')} are not on the rule".toString()
     }
     if (extraTrigs || extraActsLeft || extraLeft) {
-        out.extraRemaining = [triggers: extraTrigs, actions: extraActsLeft, conditions: extraLeft].findAll { k, v -> v }
+        out.extraRemaining = ([triggers: extraTrigs, actions: extraActsLeft, conditions: extraLeft]).findAll((this.&_bat529Cb_4076886b_97))
         problems << "items the backup did not have could not be removed (${failures ? failures.join('; ') : out.extraRemaining})".toString()
     }
-    def liveOrder = acts(after).findAll { wantOrder.contains(it) }
-    if (liveOrder != wantOrder.findAll { liveOrder.contains(it) }) {
+    def liveOrder = (acts(after)).findAll(((this.&_bat529Cb_4076886b_33).curry([wantOrder] as Object[])))
+    if (liveOrder != (wantOrder).findAll(((this.&_bat529Cb_4076886b_27).curry([liveOrder] as Object[])))) {
         out.actionOrder = [live: acts(after), backup: wantOrder]
         problems << "the actions run in the order ${acts(after)}, not the backup's ${wantOrder}${orderError ? ' (' + orderError + ')' : ''}".toString()
     }
@@ -2394,10 +2265,7 @@ Map _rmReconcileRuleStructure(Integer appId, Map snapshot) {
 }
 
 private List _rmRenderExpression(List toks, Map texts) {
-    return (toks ?: []).collect { t ->
-        def v = _rmTokenValue(t)
-        (v?.isInteger()) ? (texts?.get(v) ?: "#${v}".toString()) : v
-    }
+    return ((toks ?: [])).collect(((this.&_bat529Cb_4076886b_129).curry([texts] as Object[])))
 }
 
 Map _rmReadRuleState(Integer appId) {
@@ -2427,11 +2295,11 @@ private Integer _rmReplayConditionSlot(Integer appId, Map srcSettings, int srcId
     Integer newIdx = null
     def written = [] as Set
     for (int iter = 0; iter < 30; iter++) {
-        def inputs = (_rmFetchConfigJson(appId, "STPage", cache)?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
+        def inputs = ((_rmFetchConfigJson(appId, "STPage", cache)?.configPage?.sections ?: [])).collectMany((this.&_bat529Cb_4076886b_111))
         if (newIdx == null) {
-            def rc = inputs.find { it?.name?.toString()?.startsWith("rCapab_") }
+            def rc = (inputs).find((this.&_bat529Cb_4076886b_52))
             def m = rc ? (rc.name.toString() =~ /^rCapab_(\d+)$/) : null
-            if (!m || !m.matches()) throw new IllegalStateException("no new condition slot opened (STPage shows ${inputs.collect { it?.name }.findAll { it }.join(', ')})")
+            if (!m || !m.matches()) throw new IllegalStateException("no new condition slot opened (STPage shows ${((inputs).collect((this.&_bat529Cb_4076886b_2))).findAll((this.&_bat529Cb_4076886b_22)).join(', ')})")
             newIdx = (m[0] as List)[1] as Integer
         }
         def next = null
@@ -2444,7 +2312,7 @@ private Integer _rmReplayConditionSlot(Integer appId, Map srcSettings, int srcId
             def srcKey = "${(nm[0] as List)[1]}${(nm[0] as List)[2]}${srcIdx}".toString()
             def v = srcSettings.get(srcKey)
             if (v == null || v == "" || (v instanceof Collection && v.isEmpty()) || (v instanceof Map && v.isEmpty())) continue
-            def want = (v instanceof Map) ? (v as Map).keySet().collect { it?.toString() } : v
+            def want = (v instanceof Map) ? ((v as Map).keySet()).collect((this.&_bat529Cb_4076886b_34)): v
             // A field that already holds the saved value (a reused slot) needs no write.
             if (inp.value != null && _rmReplayValueMatches(inp.value, want)) { written << name; continue }
             next = name
@@ -2457,20 +2325,20 @@ private Integer _rmReplayConditionSlot(Integer appId, Map srcSettings, int srcId
             written << next
             continue
         }
-        if (inputs.any { it?.name?.toString() == "hasAll" }) {
+        if ((inputs).any((this.&_bat529Cb_4076886b_35))) {
             _rmClickAppButton(appId, "hasAll", null, "STPage", cache)
             _rmFetchConfigJson(appId, "STPage", cache)
             return newIdx
         }
-        throw new IllegalStateException("the restored condition (from slot ${srcIdx}) could not be completed; STPage shows ${inputs.collect { it?.name }.findAll { it }.join(', ')}")
+        throw new IllegalStateException("the restored condition (from slot ${srcIdx}) could not be completed; STPage shows ${((inputs).collect((this.&_bat529Cb_4076886b_3))).findAll((this.&_bat529Cb_4076886b_21)).join(', ')}")
     }
     throw new IllegalStateException("the restored condition (from slot ${srcIdx}) did not complete within the wizard step limit")
 }
 
 private boolean _rmReplayValueMatches(Object current, Object want) {
     def norm = { o ->
-        if (o instanceof Map) return (o as Map).keySet().collect { it?.toString() }.sort()
-        if (o instanceof Collection) return (o as Collection).collect { it?.toString() }.sort()
+        if (o instanceof Map) return ((o as Map).keySet()).collect((this.&_bat529Cb_4076886b_31)).sort()
+        if (o instanceof Collection) return ((o as Collection)).collect((this.&_bat529Cb_4076886b_25)).sort()
         return [o?.toString()]
     }
     return norm(current) == norm(want)
@@ -2478,24 +2346,14 @@ private boolean _rmReplayValueMatches(Object current, Object want) {
 
 // Device ids the snapshot's condition settings (for condIds) name that no longer exist on the hub.
 List _rmExpressionDeadDevices(Map snapshot, List condIds) {
-    def ids = (condIds ?: []).collect { it.toString() } as Set
+    def ids = ((condIds ?: [])).collect((this.&_bat529Cb_4076886b_20))as Set
     if (!ids) return []
     def settings = (snapshot?.configJson?.settings ?: [:]) as Map
-    def recs = (snapshot?.statusJson?.appSettings ?: []).findAll { it instanceof Map }.collectEntries { [(it.name?.toString()): it] }
+    def recs = (((snapshot?.statusJson?.appSettings ?: [])).findAll((this.&_bat529Cb_4076886b_71))).collectEntries((this.&_bat529Cb_4076886b_119))
     def devices = [] as LinkedHashSet
-    ((settings.keySet().collect { it.toString() }) + recs.keySet()).unique().each { String name ->
-        // Condition settings end in _<id> (rDev_3); trigger settings (tDev3) share the digits but not the underscore.
-        def m = name =~ /^[A-Za-z]+_(\d+)$/
-        if (!m.matches() || !ids.contains((m[0] as List)[1].toString())) return
-        def rec = recs.get(name)
-        def v = settings.get(name)
-        // A picker the status read does not list is known by its {id: label} value.
-        if (!(rec ? _isDevicePickerType(rec.type?.toString()) : v instanceof Map)) return
-        def list = (rec?.deviceIdsForDeviceList instanceof List && rec.deviceIdsForDeviceList) ? rec.deviceIdsForDeviceList : _devicePickerIds(v)
-        (list instanceof List ? list : []).each { devices << it.toString() }
-    }
+    (((settings.keySet()).collect((this.&_bat529Cb_4076886b_29))+ recs.keySet()).unique()).each(((this.&_bat529Cb_4076886b_159).curry([devices, ids, recs, settings] as Object[])))
     def cache = [:]
-    return devices.findAll { _rmDeviceGone(it, cache) }.toList()
+    return (devices).findAll(((this.&_bat529Cb_4076886b_26).curry([cache] as Object[]))).toList()
 }
 
 // Make the rule's Required Expression match a backup snapshot. Returns [:] when the snapshot carries
@@ -2508,7 +2366,7 @@ Map _rmRestoreRequiredExpression(Integer appId, Map snapshot) {
     def appState = snapshot?.statusJson?.appState
     if (!(appState instanceof List)) return [:]
     def snapState = [:]
-    appState.each { if (it instanceof Map && it.name != null) snapState.put(it.name.toString(), it.value) }
+    (appState).each(((this.&_bat529Cb_4076886b_108).curry([snapState] as Object[])))
     def snapSettings = (snapshot?.configJson?.settings ?: [:]) as Map
     if (!snapState.containsKey("eval") && !snapSettings.containsKey("useST")) return [:]
     def snapTokens = (snapState.eval instanceof Map && (snapState.eval as Map)["0"] instanceof List) ? new ArrayList((snapState.eval as Map)["0"] as List) : []
@@ -2588,7 +2446,7 @@ Map _rmRestoreRequiredExpression(Integer appId, Map snapshot) {
             // append. With an old expression present, everything appends after it.
             def prefix = liveCommitted ? [] : (firstCond > 0 ? snapTokens[0..<firstCond] : [])
             def rest = liveCommitted ? snapTokens : snapTokens.subList(firstCond + 1, snapTokens.size())
-            prefix.eachWithIndex { tok, i -> _rmTokInsert(appId, i, _rmTokenValue(tok), writeST, hrefParams, cache) }
+            (prefix).eachWithIndex(((this.&_bat529Cb_4076886b_112).curry([appId, cache, hrefParams, writeST] as Object[])))
             int position = oldCount + builtCount + prefix.size()
             rest.each { tok ->
                 def v = _rmTokenValue(tok)
@@ -2609,7 +2467,7 @@ Map _rmRestoreRequiredExpression(Integer appId, Map snapshot) {
             if (appendedRendered != snapRendered) {
                 throw new IllegalStateException("the rebuilt expression reads '${appendedRendered.join(' ')}', not the snapshot's '${snapRendered.join(' ')}'")
             }
-            oldCount.times { _rmTokClick(appId, "0", "deleteToken", cache) }
+            (oldCount).times(((this.&_bat529Cb_4076886b_63).curry([appId, cache] as Object[])))
             _rmTokLeaveEditor(appId, cache)
             _rmClickAppButton(appId, "updateRule")
         }
@@ -2655,7 +2513,7 @@ Map _rmRestoreRequiredExpression(Integer appId, Map snapshot) {
                 trimmed = _rmTokSetExpression(appId, baseTokens).restored == true
             }
             def after = _rmReadRuleState(appId)
-            if (after != null) created = (_rmConditionTexts(after).keySet() - poolBefore).findAll { !keep.contains(it) }.collect { it.isInteger() ? (it as Integer) : it }
+            if (after != null) created = (((_rmConditionTexts(after).keySet() - poolBefore)).findAll(((this.&_bat529Cb_4076886b_85).curry([keep] as Object[])))).collect((this.&_bat529Cb_4076886b_127))
             if (trimmed && created) removed = _rmDeleteExpressionConditions(appId, created)
         } catch (Exception cleanupExc) {
             mcpLog("error", "rm-native", "restore: backing out of the failed rebuild on app ${appId} failed (${cleanupExc.message})")
@@ -2684,7 +2542,7 @@ Map _rmRestoreRequiredExpression(Integer appId, Map snapshot) {
 private void _rmForgetDeletedParent(Integer appId) {
     def ids = atomicState.parentAppIds
     if (ids instanceof Map) {
-        def remaining = ids.findAll { key, value -> value?.toString() != appId.toString() }
+        def remaining = (ids).findAll(((this.&_bat529Cb_4076886b_69).curry([appId] as Object[])))
         if (remaining.size() != ids.size()) atomicState.parentAppIds = remaining
     }
 }
@@ -2829,7 +2687,7 @@ def toolListRuleLocalVariables(args) {
             value: (live instanceof Map && live.containsKey("value")) ? live.value : (lvMeta instanceof Map ? lvMeta?.value : null)
         ]
     }
-    localVariables = localVariables.sort { it.name }
+    localVariables = (localVariables).sort((this.&_bat529Cb_4076886b_4))
     return [appId: appId, localVariables: localVariables, total: localVariables.size()]
 }
 
@@ -2933,7 +2791,7 @@ private Map _rmBackupBeforeEditLocked(Integer ruleId, String reason, String acti
 }
 
 
-private List _naCreateTypes() { _appTypeRegistry().keySet().findAll { it != 'visual_rule' }.toList() }
+private List _naCreateTypes() { (_appTypeRegistry().keySet()).findAll((this.&_bat529Cb_4076886b_53)).toList() }
 
 private Map _naOperationSchema(String operation) {
     if (operation == 'create') return [type: 'object', additionalProperties: false, properties: [
@@ -2946,7 +2804,7 @@ private Map _naOperationSchema(String operation) {
 }
 
 Map toolSetNativeApp(Map request) {
-    if (request.keySet().any { !(it in ['operation', 'app_id', 'args', 'confirm', 'bestPracticeKey']) }) throw new IllegalArgumentException('Unknown hub_set_native_app property; use operation, app_id, args and confirm')
+    if ((request.keySet()).any((this.&_bat529Cb_4076886b_102))) throw new IllegalArgumentException('Unknown hub_set_native_app property; use operation, app_id, args and confirm')
     if (request.containsKey('confirm') && !(request.confirm instanceof Boolean)) throw new IllegalArgumentException('confirm must be boolean')
     if (request.containsKey('app_id')) _ndValidateSchema(request.app_id, [type: 'integer', minimum: 1], 'app_id', true)
     if (request.containsKey('args') && !(request.args instanceof Map)) throw new IllegalArgumentException('args must be an object')
@@ -2984,12 +2842,12 @@ Map toolSetNativeApp(Map request) {
 private void _naValidateCreate(Map args) {
     List buttonKeys = ['controller_id', 'button_number', 'event']
     if (args.app_type == 'button_rule') {
-        List missing = buttonKeys.findAll { !args.containsKey(it) }
+        List missing = (buttonKeys).findAll(((this.&_bat529Cb_4076886b_28).curry([args] as Object[])))
         if (missing) throw new IllegalArgumentException("button_rule requires ${missing.join(', ')}".toString())
-        List extra = ['name', 'fields'].findAll { args.containsKey(it) }
+        List extra = (['name', 'fields']).findAll(((this.&_bat529Cb_4076886b_42).curry([args] as Object[])))
         if (extra) throw new IllegalArgumentException("button_rule takes no ${extra.join(' or ')}: it is created through its Button Controller, then edited with hub_set_rule".toString())
     } else {
-        List stray = buttonKeys.findAll { args.containsKey(it) }
+        List stray = (buttonKeys).findAll(((this.&_bat529Cb_4076886b_24).curry([args] as Object[])))
         if (stray) throw new IllegalArgumentException("${stray.join(', ')} apply only to app_type button_rule".toString())
         if (args.containsKey('fields') && !args.get('fields')) throw new IllegalArgumentException('fields must name at least one input; omit it to create the app with its page defaults')
     }
@@ -3002,7 +2860,7 @@ private void _naValidateUpdate(Map args) {
 
 // The page's own Done as the browser posts it: _action_update on a page that installs the app,
 // _action_previous on a sub-page. Null when the page renders no Done.
-private String _naDone(Map context) { ['_action_update|Done|', '_action_previous|Done|', '_action_done|Done|'].find { context.controls.containsKey(it) } }
+private String _naDone(Map context) { (['_action_update|Done|', '_action_previous|Done|', '_action_done|Done|']).find(((this.&_bat529Cb_4076886b_118).curry([context] as Object[])))}
 
 // Sets the fields and presses the page's Done as the browser does. A submitOnChange input posts the
 // page as soon as it changes, and the Done is pressed on the page that post renders, so the inputs it
@@ -3016,11 +2874,11 @@ private Map _naSave(Long id, Map context, Map supplied, String from, boolean exi
     Map page = context
     Map pending = supplied
     boolean changed = false
-    List revealing = supplied.keySet().findAll { context.get('fields').get(it)?.submit_on_change }.collect { it.toString() }
+    List revealing = ((supplied.keySet()).findAll(((this.&_bat529Cb_4076886b_83).curry([context] as Object[])))).collect((this.&_bat529Cb_4076886b_109))
     if (_naDone(context) && revealing) {
         Map change = _nfPrepare(id, page, pending, null, 'hub_set_native_app')
         Map answer = _nfExecute(id, change)
-        label = answer.findAll { k, v -> k in ['label_restored', 'label_lost'] }
+        label = (answer).findAll((this.&_bat529Cb_4076886b_61))
         changed = true
         posted.addAll(change.defaults)
         rejected.addAll(change.rejected)
@@ -3037,7 +2895,7 @@ private Map _naSave(Long id, Map context, Map supplied, String from, boolean exi
     }
     Map answer = (pending || done) ? _nfExecute(id, plan) : null
     if (answer?.posted) { posted.addAll(plan.defaults); rejected.addAll(plan.rejected) }
-    if (answer?.label_restored || answer?.label_lost) label = answer.findAll { k, v -> k in ['label_restored', 'label_lost'] }
+    if (answer?.label_restored || answer?.label_lost) label = (answer).findAll((this.&_bat529Cb_4076886b_60))
     [answer: answer, done: done, page: page.page.name?.toString(), committed: done == '_action_update|Done|' && answer?.model?.location != null,
      wrote: changed || answer?.posted == true, posted: posted, rejected: rejected] + label
 }
@@ -3058,12 +2916,12 @@ private void _naLabelResult(Map result, Map saved, List notes) {
 // A written value as the hub stores it: device ids, sorted lists, and the browser's text cleanup.
 private Object _naComparable(Map field, Object value, boolean written) {
     if (value == null || value == '' || (value instanceof Collection && value.isEmpty())) return null
-    if (field.device) return (value instanceof Map ? value.keySet().toList() : (value instanceof List ? value : [value])).collect { it.toString() }.sort()
+    if (field.device) return ((value instanceof Map ? value.keySet().toList() : (value instanceof List ? value : [value]))).collect((this.&_bat529Cb_4076886b_120)).sort()
     if (written && !field.multiple && !(field.type in ['bool', 'enum', 'mode', 'number', 'decimal', 'time'])) return _nfValue(field, value)
     try { return _nrComparableSetting(field.type, value) }
     catch (Exception unreadable) {
         mcpLog('debug', 'rm-native', "hub_set_native_app read-back: ${field.name} compared as text (${unreadable.message})")
-        return value instanceof List ? value.collect { it.toString() }.sort() : value.toString()
+        return value instanceof List ? (value).collect((this.&_bat529Cb_4076886b_5)).sort() : value.toString()
     }
 }
 
@@ -3074,11 +2932,7 @@ private Object _naComparable(Map field, Object value, boolean written) {
 private Map _naReadBack(Long id, Map page, Map written, String pageName = null) {
     Map model = pageName ? _nfPage(id, pageName) : _nfPage(id)
     Map stored = model.settings instanceof Map ? model.settings : [:]
-    List notLanded = written.keySet().findAll { name ->
-        Map field = page.get('fields').get(name)
-        def value = field.app_field ? _nfAppValue(model, field.name == 'mode[mode]') : stored.get(name)
-        _naComparable(field, value, false) != _naComparable(field, written.get(name), true)
-    }.collect { it.toString() }
+    List notLanded = ((written.keySet()).findAll(((this.&_bat529Cb_4076886b_145).curry([model, page, stored, written] as Object[])))).collect((this.&_bat529Cb_4076886b_148))
     Map rendered = null
     if (notLanded) {
         try { rendered = _nfContext(id, model) }
@@ -3138,7 +2992,7 @@ private Map _naCreate(Map args) {
     String type = args.app_type
     Map reg = _appTypeRegistry()[type]
     String name = args.name?.toString()?.trim() ?: null
-    String twice = name && args.get('fields') instanceof Map ? ['origLabel', 'name', 'label'].find { args.get('fields').containsKey(it) } : null
+    String twice = name && args.get('fields') instanceof Map ? (['origLabel', 'name', 'label']).find(((this.&_bat529Cb_4076886b_80).curry([args] as Object[]))): null
     if (twice) throw new IllegalArgumentException("Pass the label once, as name or as fields.${twice}".toString())
     Long parentId = _discoverParentAppId(type) as Long
     _requireUnprotectedAppMutation(parentId, 'create a child app under')
@@ -3162,10 +3016,10 @@ private Map _naCreate(Map args) {
                 return [success: false, app_type: type, error: "The ${reg.parentTypeName} app recorded for this type no longer exists. Nothing was created.".toString(),
                         note: "Retry: the next create finds or installs the ${reg.parentTypeName} app again.${guide}".toString()]
             }
-            Map create = parent.controls.values().find { it.kind == 'create_child' && it.value == reg.appName }
+            Map create = (parent.controls.values()).find(((this.&_bat529Cb_4076886b_92).curry([reg] as Object[])))
             if (!create) {
                 // The parent may have been installed for this call, so the refusal is a result.
-                List offered = parent.controls.values().findAll { it.kind == 'create_child' }*.value
+                List offered = (parent.controls.values()).findAll((this.&_bat529Cb_4076886b_57))*.value
                 return [success: false, app_type: type, error: "The ${reg.parentTypeName} page offers no control that creates ${reg.appName}; it offers ${offered ?: 'none'}. Nothing was created.".toString(),
                         note: "Open the ${reg.parentTypeName} app with operation:'form' to see what it offers.${guide}".toString()]
             }
@@ -3200,7 +3054,7 @@ private Map _naCreate(Map args) {
         catch (IllegalArgumentException refused) {
             // Only an input the first post revealed can be refused here: that post saved the page, but
             // the Done never ran, so the app is removed like any other refused create.
-            List revealing = supplied.keySet().findAll { child.get('fields').get(it)?.submit_on_change }.collect { it.toString() }
+            List revealing = (supplied.keySet().findAll { child.get('fields').get(it)?.submit_on_change }).collect((this.&_bat529Cb_4076886b_107))
             return _naRefusedCreate(type, childId, refused.message, guide,
                 "create without ${revealing.join(', ')} and finish it with update or form".toString())
         } catch (Exception failure) {
@@ -3213,7 +3067,7 @@ private Map _naCreate(Map args) {
             List asks = []
             try {
                 Map model = saved.answer?.model?.configPage instanceof Map ? saved.answer.model : _nfPage(childId)
-                asks = _nfContext(childId, model).get('fields').values().findAll { it.required && !it.present && !it.disabled }*.name
+                asks = (_nfContext(childId, model).get('fields').values()).findAll((this.&_bat529Cb_4076886b_110))*.name
             } catch (Exception unreadable) {
                 mcpLog('warn', 'rm-native', "hub_set_native_app create: reading what the refused page of app ${childId} asks for failed: ${unreadable.message}")
             }
@@ -3227,12 +3081,12 @@ private Map _naCreate(Map args) {
         try { back = _naReadBack(childId, child, written) }
         catch (Exception failure) {
             mcpLogError('rm-native', "hub_set_native_app create: reading back new app ${childId} failed", failure)
-            return [success: false, app_type: type, app_id: childId, fields_unverified: written.keySet().collect { it.toString() },
+            return [success: false, app_type: type, app_id: childId, fields_unverified: (written.keySet()).collect((this.&_bat529Cb_4076886b_19)),
                     error: "App ${childId} was saved, but reading it back failed: ${failure.message}".toString(),
                     note: "Check it with hub_get_app_config(appId=${childId}, includeSettings=true) before changing it; do not create it again.${guide}".toString()] + report
         }
         Map result = [success: back.not_landed.isEmpty(), app_id: childId, app_type: type, label: back.model.app?.label?.toString(),
-                      fields_applied: written.keySet().collect { it.toString() } - back.not_landed - back.consumed] + report
+                      fields_applied: (written.keySet()).collect((this.&_bat529Cb_4076886b_23))- back.not_landed - back.consumed] + report
         if (back.consumed) result.fields_consumed = back.consumed
         List notes = [type == 'rule_machine' ?
             "Created Rule Machine rule ${childId}. Author its triggers and actions with hub_set_rule(operation:'update', rule_id:${childId}, args:{changes:[...]}, confirm:true)." :
@@ -3258,7 +3112,7 @@ private Map _naCreate(Map args) {
     } finally { _nfForget(parentId); _nfRelease(parentId) }
 }
 
-private Map _naSetBut(Map context, String name) { context.controls.values().find { it.kind == 'button' && it.stateAttribute == 'setBut' && it.name == name } }
+private Map _naSetBut(Map context, String name) { (context.controls.values()).find(((this.&_bat529Cb_4076886b_115).curry([name] as Object[])))}
 
 // The Button Controller's own flow: Add Button, choose the number, then its "Create Button Rule"
 // control for that event, which opens the new rule.
@@ -3285,22 +3139,22 @@ private Map _naCreateButtonRule(Map args) {
         Map context = _nfContext(controllerId, _nfPage(controllerId))
         Map setBut = _naSetBut(context, wanted)
         if (!setBut) {
-            List defined = context.controls.values().findAll { it.kind == 'button' && it.stateAttribute == 'setBut' && it.name.toString().startsWith("${number} ") }*.name
+            List defined = (context.controls.values()).findAll(((this.&_bat529Cb_4076886b_131).curry([number] as Object[])))*.name
             if (defined) throw new IllegalArgumentException("Button ${number} on controller ${controllerId} offers no rule to create for ${event}; it offers ${defined}. That event may already have a rule.".toString())
-            Map add = context.controls.values().find { it.kind == 'button' && it.stateAttribute == 'addBut' }
+            Map add = (context.controls.values()).find((this.&_bat529Cb_4076886b_93))
             if (!add) throw new IllegalArgumentException("Button Controller ${controllerId} renders no Add Button control. Assign its button device first: hub_set_native_app(operation:'update', app_id:${controllerId}, args:{fields:{buttonDev:['<device id>']}}, confirm:true).".toString())
             attempted = true
             context = _nfContext(controllerId, _nfExecute(controllerId, _nfPrepare(controllerId, context, [:], add.control_id, 'hub_set_native_app')).model)
             List offered = context.get('fields').newBut?.options*.value
             if (!(number.toString() in offered)) {
                 // The page's own Cancel leaves add-button mode; a fresh render confirms the controller is as before.
-                Map cancel = context.controls.values().find { it.kind == 'button' && it.name == 'cancelBtn' }
+                Map cancel = (context.controls.values()).find((this.&_bat529Cb_4076886b_86))
                 if (!cancel) throw new IllegalStateException("The Add Button picker does not offer button ${number} and the page renders no Cancel".toString())
                 _nfExecute(controllerId, _nfPrepare(controllerId, context, [:], cancel.control_id, 'hub_set_native_app'))
                 Map after = _nfContext(controllerId, _nfPage(controllerId))
                 String refusal = "The controller's Add Button picker offers buttons ${offered ?: 'none'}, not ${number}; a button already defined is not offered again."
                 if (after.get('fields').containsKey('newBut')) throw new IllegalStateException("${refusal} Its Cancel was pressed, but the controller still renders the Add Button picker".toString())
-                if (!after.controls.values().any { it.kind == 'button' && it.stateAttribute == 'addBut' }) {
+                if (!(after.controls.values()).any((this.&_bat529Cb_4076886b_91))) {
                     throw new IllegalStateException("${refusal} Its Cancel was pressed, but the controller no longer renders its Add Button".toString())
                 }
                 return [success: false, app_type: 'button_rule', controller_id: controllerId, button_number: number, event: event, backup: backup,
@@ -3406,12 +3260,12 @@ private Map _naUpdate(Long id, Map args) {
         try { back = _naReadBack(id, context, fields, subPage ? page : null) }
         catch (Exception failure) {
             mcpLogError('rm-native', "hub_set_native_app update: reading back app ${id} failed", failure)
-            return [success: false, app_id: id, fields_unverified: fields.keySet().collect { it.toString() }, backup: backup,
+            return [success: false, app_id: id, fields_unverified: (fields.keySet()).collect((this.&_bat529Cb_4076886b_14)), backup: backup,
                     error: "App ${id} was updated, but reading it back failed: ${failure.message}".toString(),
                     note: ((uncommitted ? uncommitted + ' ' : '') + "Check it with hub_get_app_config(appId=${id}, includeSettings=true) before changing it again.${guide}").toString()] + report
         }
         Map result = [success: back.not_landed.isEmpty() && !refused, app_id: id] + (refused ? [error: uncommitted] : [:]) +
-            [fields_applied: fields.keySet().collect { it.toString() } - back.not_landed - back.consumed, backup: backup] + report
+            [fields_applied: (fields.keySet()).collect((this.&_bat529Cb_4076886b_18))- back.not_landed - back.consumed, backup: backup] + report
         List notes = []
         if (back.not_landed) {
             result.fields_not_landed = back.not_landed
@@ -3498,4 +3352,756 @@ Each update first takes a recovery point, before it renders any page: an exact e
 ### form
 
 operation:"form" with args:{steps:[...],options_for?} runs the native form engine on any enabled classic app. Steps, control IDs, validation and limits are those of Native Rule Forms in set_rule_reference. While pre-edit backups are on (the default), a workflow takes the same recovery point as update before its first render. Protected and disabled apps are refused. A create_child control works only for built-in child app types.'''
+}
+
+
+def _bat529Cb_4076886b_1(def it) { it 
+}
+
+def _bat529Cb_4076886b_2(def it) { it?.name 
+}
+
+def _bat529Cb_4076886b_3(def it) { it?.name 
+}
+
+def _bat529Cb_4076886b_4(def it) { it.name 
+}
+
+def _bat529Cb_4076886b_5(def it) { it.toString() 
+}
+
+def _bat529Cb_4076886b_6(def valid, def it) { !valid.contains(it) 
+}
+
+def _bat529Cb_4076886b_7(def it) { it as Integer 
+}
+
+def _bat529Cb_4076886b_8(def it) { it.name 
+}
+
+def _bat529Cb_4076886b_9(def it) { it as Integer 
+}
+
+def _bat529Cb_4076886b_10(def it) { it?.toString() 
+}
+
+def _bat529Cb_4076886b_11(def it) { it.startsWith("rCapab_") 
+}
+
+def _bat529Cb_4076886b_12(def it) { it != null 
+}
+
+def _bat529Cb_4076886b_13(def config, def it) { config.settings.remove(it) 
+}
+
+def _bat529Cb_4076886b_14(def it) { it.toString() 
+}
+
+def _bat529Cb_4076886b_15(def it) { it.label ?: "" 
+}
+
+def _bat529Cb_4076886b_16(def it) { it?.toString() 
+}
+
+def _bat529Cb_4076886b_17(def it) { it?.toString() 
+}
+
+def _bat529Cb_4076886b_18(def it) { it.toString() 
+}
+
+def _bat529Cb_4076886b_19(def it) { it.toString() 
+}
+
+def _bat529Cb_4076886b_20(def it) { it.toString() 
+}
+
+def _bat529Cb_4076886b_21(def it) { it 
+}
+
+def _bat529Cb_4076886b_22(def it) { it 
+}
+
+def _bat529Cb_4076886b_23(def it) { it.toString() 
+}
+
+def _bat529Cb_4076886b_24(def args, def it) { args.containsKey(it) 
+}
+
+def _bat529Cb_4076886b_25(def it) { it?.toString() 
+}
+
+def _bat529Cb_4076886b_26(def cache, def it) { _rmDeviceGone(it, cache) 
+}
+
+def _bat529Cb_4076886b_27(def liveOrder, def it) { liveOrder.contains(it) 
+}
+
+def _bat529Cb_4076886b_28(def args, def it) { !args.containsKey(it) 
+}
+
+def _bat529Cb_4076886b_29(def it) { it.toString() 
+}
+
+def _bat529Cb_4076886b_30(def it) { it.trim() 
+}
+
+def _bat529Cb_4076886b_31(def it) { it?.toString() 
+}
+
+def _bat529Cb_4076886b_32(def inUse, def it) { !inUse.contains(it.toString()) 
+}
+
+def _bat529Cb_4076886b_33(def wantOrder, def it) { wantOrder.contains(it) 
+}
+
+def _bat529Cb_4076886b_34(def it) { it?.toString() 
+}
+
+def _bat529Cb_4076886b_35(def it) { it?.name?.toString() == "hasAll" 
+}
+
+def _bat529Cb_4076886b_36(def it) { it.trim() 
+}
+
+def _bat529Cb_4076886b_37(def it) { it 
+}
+
+def _bat529Cb_4076886b_38(def name, def it) { it?.name == name 
+}
+
+def _bat529Cb_4076886b_39(def it) { it.toString() 
+}
+
+def _bat529Cb_4076886b_40(def it) { it?.toString() 
+}
+
+def _bat529Cb_4076886b_41(def it) { it.toString() 
+}
+
+def _bat529Cb_4076886b_42(def args, def it) { args.containsKey(it) 
+}
+
+def _bat529Cb_4076886b_43(def snapTrigText, def it) { snapTrigText.get(it) ?: it 
+}
+
+def _bat529Cb_4076886b_44(def it) { it?.name?.toString() 
+}
+
+def _bat529Cb_4076886b_45(def it) { _rmTokenValue(it)?.isInteger() 
+}
+
+def _bat529Cb_4076886b_46(def it) { it.toString() 
+}
+
+def _bat529Cb_4076886b_47(def it) { it?.toString() ?: "" 
+}
+
+def _bat529Cb_4076886b_48(def it) { it.toString() 
+}
+
+def _bat529Cb_4076886b_49(def it) { it.toString() 
+}
+
+def _bat529Cb_4076886b_50(def it) { it.toString() 
+}
+
+def _bat529Cb_4076886b_51(def it) { it.toString() 
+}
+
+def _bat529Cb_4076886b_52(def it) { it?.name?.toString()?.startsWith("rCapab_") 
+}
+
+def _bat529Cb_4076886b_53(def it) { it != 'visual_rule' 
+}
+
+def _bat529Cb_4076886b_54(def it) { !(it instanceof String) || !it 
+}
+
+def _bat529Cb_4076886b_55(def it) { it 
+}
+
+def _bat529Cb_4076886b_56(def key, def value) { [name: key, value: value] 
+}
+
+def _bat529Cb_4076886b_56(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_56(*__bat529Tuple)
+}
+
+def _bat529Cb_4076886b_57(def it) { it.kind == 'create_child' 
+}
+
+def _bat529Cb_4076886b_58(def bare, def typeKey, def reg) { reg.appName == bare 
+}
+
+def _bat529Cb_4076886b_58(def bare, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_58(bare, *__bat529Tuple)
+}
+
+def _bat529Cb_4076886b_59(def name, def typeKey, def reg) { reg.appName == name 
+}
+
+def _bat529Cb_4076886b_59(def name, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_59(name, *__bat529Tuple)
+}
+
+def _bat529Cb_4076886b_60(def k, def v) { k in ['label_restored', 'label_lost'] 
+}
+
+def _bat529Cb_4076886b_60(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_60(*__bat529Tuple)
+}
+
+def _bat529Cb_4076886b_61(def k, def v) { k in ['label_restored', 'label_lost'] 
+}
+
+def _bat529Cb_4076886b_61(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_61(*__bat529Tuple)
+}
+
+def _bat529Cb_4076886b_62(def it) { it?.name?.toString() == "allLocalVars" 
+}
+
+def _bat529Cb_4076886b_63(def appId, def cache, def it) { _rmTokClick(appId, "0", "deleteToken", cache) 
+}
+
+def _bat529Cb_4076886b_64(def it) { it 
+}
+
+def _bat529Cb_4076886b_65(def it) { it?.input ?: [] 
+}
+
+def _bat529Cb_4076886b_66(def it) { it != null 
+}
+
+def _bat529Cb_4076886b_67(def it) { it?.name?.toString() == "editAct" 
+}
+
+def _bat529Cb_4076886b_68(def it) { it?.name?.toString() == "editAct" 
+}
+
+def _bat529Cb_4076886b_69(def appId, def key, def value) { value?.toString() != appId.toString() 
+}
+
+def _bat529Cb_4076886b_69(def appId, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_69(appId, *__bat529Tuple)
+}
+
+def _bat529Cb_4076886b_70(def devices, def it) { devices << it.toString() 
+}
+
+def _bat529Cb_4076886b_71(def it) { it instanceof Map 
+}
+
+def _bat529Cb_4076886b_72(def snap, def it) { snap.containsKey(it) 
+}
+
+def _bat529Cb_4076886b_73(def it) { it instanceof Map && it.name == "eval" 
+}
+
+def _bat529Cb_4076886b_74(def it) { it?.input ?: [] 
+}
+
+def _bat529Cb_4076886b_75(def it) { _requireUnprotectedAppMutation(it, "change rule runtime") 
+}
+
+def _bat529Cb_4076886b_76(def ruleId, def key, def value) { key.toString() == ruleId.toString() 
+}
+
+def _bat529Cb_4076886b_76(def ruleId, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_76(ruleId, *__bat529Tuple)
+}
+
+def _bat529Cb_4076886b_77(def it) { _requireUnprotectedAppMutation(it, "change rule runtime") 
+}
+
+def _bat529Cb_4076886b_78(def ruleId, def key, def value) { key.toString() == ruleId.toString() 
+}
+
+def _bat529Cb_4076886b_78(def ruleId, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_78(ruleId, *__bat529Tuple)
+}
+
+def _bat529Cb_4076886b_79(def it) { it != null 
+}
+
+def _bat529Cb_4076886b_80(def args, def it) { args.get('fields').containsKey(it) 
+}
+
+def _bat529Cb_4076886b_81(def it) { [(it?.name?.toString()): it] 
+}
+
+def _bat529Cb_4076886b_82(def snapTrigText, def it) { [index: it, text: snapTrigText.get(it)?.toString()] 
+}
+
+def _bat529Cb_4076886b_83(def context, def it) { context.get('fields').get(it)?.submit_on_change 
+}
+
+def _bat529Cb_4076886b_84(def failed, def ruleIds, def r, def i) { if (r?.success != true) failed << ruleIds[i] 
+}
+
+def _bat529Cb_4076886b_84(def failed, def ruleIds, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_84(failed, ruleIds, *__bat529Tuple)
+}
+
+def _bat529Cb_4076886b_85(def keep, def it) { !keep.contains(it) 
+}
+
+def _bat529Cb_4076886b_86(def it) { it.kind == 'button' && it.name == 'cancelBtn' 
+}
+
+def _bat529Cb_4076886b_87(def labelFilter, def it) { (it.label ?: "").toString().toLowerCase().contains(labelFilter) 
+}
+
+def _bat529Cb_4076886b_88(def it) { _requireUnprotectedAppMutation(it, "set rule private boolean") 
+}
+
+def _bat529Cb_4076886b_89(def ruleId, def key, def value) { key.toString() == ruleId.toString() 
+}
+
+def _bat529Cb_4076886b_89(def ruleId, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_89(ruleId, *__bat529Tuple)
+}
+
+def _bat529Cb_4076886b_90(def ruleId, def key, def value) { key.toString() == ruleId.toString() 
+}
+
+def _bat529Cb_4076886b_90(def ruleId, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_90(ruleId, *__bat529Tuple)
+}
+
+def _bat529Cb_4076886b_91(def it) { it.kind == 'button' && it.stateAttribute == 'addBut' 
+}
+
+def _bat529Cb_4076886b_92(def reg, def it) { it.kind == 'create_child' && it.value == reg.appName 
+}
+
+def _bat529Cb_4076886b_93(def it) { it.kind == 'button' && it.stateAttribute == 'addBut' 
+}
+
+def _bat529Cb_4076886b_94(def liveApps, def treeReadable, def entry) { _rmAnnotateRuleStatus(entry, treeReadable, liveApps) 
+}
+
+def _bat529Cb_4076886b_95(def it) { it as Integer 
+}
+
+def _bat529Cb_4076886b_96(def input, def key) { if (input.containsKey(key)) input.put(key, null) 
+}
+
+def _bat529Cb_4076886b_97(def k, def v) { v 
+}
+
+def _bat529Cb_4076886b_97(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_97(*__bat529Tuple)
+}
+
+def _bat529Cb_4076886b_98(def text, def it) { text.contains(it) 
+}
+
+def _bat529Cb_4076886b_99(def it) { [(it?.name?.toString()): it] 
+}
+
+def _bat529Cb_4076886b_100(def wantOrder, def it) { wantOrder.contains(it) 
+}
+
+def _bat529Cb_4076886b_101(def it) { [(it?.name?.toString()): it] 
+}
+
+def _bat529Cb_4076886b_102(def it) { !(it in ['operation', 'app_id', 'args', 'confirm', 'bestPracticeKey']) 
+}
+
+def _bat529Cb_4076886b_103(def it) { _rmTokenValue(it) as Integer 
+}
+
+def _bat529Cb_4076886b_104(def snap, def it) { if (it instanceof Map && it.name != null) snap.put(it.name.toString(), it.value) 
+}
+
+def _bat529Cb_4076886b_105(def it) { it as Integer 
+}
+
+def _bat529Cb_4076886b_106(def data, def it) { data.state.containsKey(it) && !(data.state.get(it) instanceof Boolean) 
+}
+
+def _bat529Cb_4076886b_107(def it) { it.toString() 
+}
+
+def _bat529Cb_4076886b_108(def snapState, def it) { if (it instanceof Map && it.name != null) snapState.put(it.name.toString(), it.value) 
+}
+
+def _bat529Cb_4076886b_109(def it) { it.toString() 
+}
+
+def _bat529Cb_4076886b_110(def it) { it.required && !it.present && !it.disabled 
+}
+
+def _bat529Cb_4076886b_111(def it) { it?.input ?: [] 
+}
+
+def _bat529Cb_4076886b_112(def appId, def cache, def hrefParams, def writeST, def tok, def i) { _rmTokInsert(appId, i, _rmTokenValue(tok), writeST, hrefParams, cache) 
+}
+
+def _bat529Cb_4076886b_112(def appId, def cache, def hrefParams, def writeST, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_112(appId, cache, hrefParams, writeST, *__bat529Tuple)
+}
+
+def _bat529Cb_4076886b_113(def appId, def cache, def hrefParams, def writeST, def tok, def i) { _rmTokInsert(appId, i, _rmTokenValue(tok), writeST, hrefParams, cache) 
+}
+
+def _bat529Cb_4076886b_113(def appId, def cache, def hrefParams, def writeST, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_113(appId, cache, hrefParams, writeST, *__bat529Tuple)
+}
+
+def _bat529Cb_4076886b_114(def it) { it?.name?.toString() 
+}
+
+def _bat529Cb_4076886b_115(def name, def it) { it.kind == 'button' && it.stateAttribute == 'setBut' && it.name == name 
+}
+
+def _bat529Cb_4076886b_116(def clean, def k) { if (clean[k] instanceof CharSequence) clean[k] = stripAppConfigHtml(clean[k]) 
+}
+
+def _bat529Cb_4076886b_117(def row) { [element: 'input', name: row.name, type: row.type, multiple: row.multiple == true] 
+}
+
+def _bat529Cb_4076886b_118(def context, def it) { context.controls.containsKey(it) 
+}
+
+def _bat529Cb_4076886b_119(def it) { [(it.name?.toString()): it] 
+}
+
+def _bat529Cb_4076886b_120(def it) { it.toString() 
+}
+
+def _bat529Cb_4076886b_121(def b) { b instanceof Map && (b.element == "paragraph" || b.element == "href") 
+}
+
+def _bat529Cb_4076886b_122(def sec) {
+        ((sec?.input ?: [])).collect((this.&_bat529Cb_4076886b_44))
+    
+}
+
+def _bat529Cb_4076886b_123(def data, def it) { data.state.get(it) != null && !(data.state.get(it) instanceof Map) 
+}
+
+def _bat529Cb_4076886b_124(def it) { it 
+}
+
+def _bat529Cb_4076886b_125(def text) {
+        (["**Broken Trigger**", "**Broken Action**", "**Broken Condition**"]).any(((this.&_bat529Cb_4076886b_98).curry([text] as Object[])))
+    
+}
+
+def _bat529Cb_4076886b_126(def it) { it?.name?.toString()?.startsWith("newToken") 
+}
+
+def _bat529Cb_4076886b_127(def it) { it.isInteger() ? (it as Integer) : it 
+}
+
+def _bat529Cb_4076886b_128(def it) { !(it instanceof Map) || !(it.name instanceof String) || !it.name || !(it.type instanceof String) || !it.type 
+}
+
+def _bat529Cb_4076886b_129(def texts, def t) {
+        def v = _rmTokenValue(t)
+        (v?.isInteger()) ? (texts?.get(v) ?: "#${v}".toString()) : v
+    
+}
+
+def _bat529Cb_4076886b_130(def it) { it 
+}
+
+def _bat529Cb_4076886b_131(def number, def it) { it.kind == 'button' && it.stateAttribute == 'setBut' && it.name.toString().startsWith("${number} ") 
+}
+
+def _bat529Cb_4076886b_132(def liveSettings, def settingsMap, def name, def meta) {
+        def v = _uiValueOrDefault(liveSettings.get(name), meta)
+        if (v == null) v = ""
+        settingsMap.put(name, v)
+    
+}
+
+def _bat529Cb_4076886b_132(def liveSettings, def settingsMap, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_132(liveSettings, settingsMap, *__bat529Tuple)
+}
+
+def _bat529Cb_4076886b_133(def liveSettings, def settingsMap, def name, def meta) {
+        def v = _uiValueOrDefault(liveSettings.get(name), meta)
+        if (v == null) v = ""
+        settingsMap.put(name, v)
+    
+}
+
+def _bat529Cb_4076886b_133(def liveSettings, def settingsMap, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_133(liveSettings, settingsMap, *__bat529Tuple)
+}
+
+def _bat529Cb_4076886b_134(def o) {
+            (o instanceof Map) ? (o.containsKey("value") ? [o.value?.toString()] : (o.keySet()).collect((this.&_bat529Cb_4076886b_10))) : [o?.toString()]
+        
+}
+
+def _bat529Cb_4076886b_135(def it) { it.description?.toString() ?: "" 
+}
+
+def _bat529Cb_4076886b_136(def v) {
+        (v instanceof List) ? (_rmTokenConditionIds(v as List)).collect((this.&_bat529Cb_4076886b_50)): []
+    
+}
+
+def _bat529Cb_4076886b_137(def v) {
+        (v instanceof List) ? (_rmTokenConditionIds(v as List)).collect((this.&_bat529Cb_4076886b_49)): []
+    
+}
+
+def _bat529Cb_4076886b_138(def r) {
+            def clean = [:] + r
+            (["label", "name"]).each(((this.&_bat529Cb_4076886b_116).curry([clean] as Object[])))
+            clean
+        
+}
+
+def _bat529Cb_4076886b_139(def out, def s) {
+        def n = s?.name?.toString()
+        if (n) {
+            def m = (n =~ /^tCapab(\d+)$/)
+            if (m.matches()) out << (m[0][1] as Integer)
+        }
+    
+}
+
+def _bat529Cb_4076886b_140(def appId, def failures, def removed, def idx) {
+        try { _rmRemoveTrigger(appId, idx as Integer); removed.triggers << idx }
+        catch (Exception e) { failures << "trigger ${idx} (${e.message})".toString() }
+    
+}
+
+def _bat529Cb_4076886b_141(def names, def row) {
+        if (row instanceof Map && row.name && (row.type?.toString() == 'password' || _appConfigIsSecretSetting(row.name, row.type, row.value))) { names << row.name.toString(); row.value = null }
+    
+}
+
+def _bat529Cb_4076886b_142(def ids, def id, def entry) {
+        def idInt
+        try { idInt = (id instanceof Number) ? id.intValue() : id.toString().toInteger() }
+        catch (Exception ignored) { idInt = null }
+        if (idInt != null) ids << idInt
+    
+}
+
+def _bat529Cb_4076886b_142(def ids, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_142(ids, *__bat529Tuple)
+}
+
+def _bat529Cb_4076886b_143(def out, def id, def txt) {
+        out.put(id?.toString(), txt?.toString()?.replaceAll(/\(\s*<[A-Za-z][^>]*>[^()]*<\/[A-Za-z]+>\s*\)/, "")
+            ?.replaceAll(/<\/?[A-Za-z!][^>]*>/, "")?.replaceAll(/\s+/, " ")?.trim())
+    
+}
+
+def _bat529Cb_4076886b_143(def out, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_143(out, *__bat529Tuple)
+}
+
+def _bat529Cb_4076886b_144(def live, def e) {
+        def n = e?.name?.toString()
+        // Local names can be sandbox property names such as fields; use Map.put for arbitrary keys.
+        if (n?.startsWith("lv_") && e.value instanceof Map) live.put(n.substring(3), e.value)
+    
+}
+
+def _bat529Cb_4076886b_145(def model, def page, def stored, def written, def name) {
+        Map field = page.get('fields').get(name)
+        def value = field.app_field ? _nfAppValue(model, field.name == 'mode[mode]') : stored.get(name)
+        _naComparable(field, value, false) != _naComparable(field, written.get(name), true)
+    
+}
+
+def _bat529Cb_4076886b_146(def live, def s) {
+        def n = s?.name?.toString()
+        if (!n) return
+        def m = (n =~ /^act(?:Type|SubType)\.(\d+)$/)
+        if (!m.matches()) return
+        def idx = (m[0][1] as Integer)
+        if (s?.value?.toString()?.trim()) live.put(idx, true)
+    
+}
+
+def _bat529Cb_4076886b_147(def out, def seen, def s) {
+        def n = s?.name?.toString()
+        if (n) {
+            def m = (n =~ /^act(?:Type|SubType)\.(\d+)$/)
+            if (m.matches()) {
+                def idx = (m[0][1] as Integer)
+                if (seen.add(idx)) out << idx
+            }
+        }
+    
+}
+
+def _bat529Cb_4076886b_148(def it) { it.toString() 
+}
+
+def _bat529Cb_4076886b_149(def redacted, def savedSettings, def row) {
+        if (!(row.name in redacted)) savedSettings.put(row.name, row.deviceList instanceof Map && row.deviceList ? row.deviceList : row.value)
+        [:] + row + [deviceIdsForDeviceList: row.deviceList instanceof Map ? (row.deviceList.keySet()).collect((this.&_bat529Cb_4076886b_41)): []]
+    
+}
+
+def _bat529Cb_4076886b_150(def appId, def id) {
+        try {
+            _rmClickAppButton(appId, id.toString(), "deleteCon", "selectConditions", null)
+            _rmFetchConfigJson(appId, "selectConditions")
+        } catch (Exception e) {
+            mcpLog("warn", "rm-native", "Required Expression edit: removing condition ${id} from app ${appId} failed (${e.message})")
+        }
+    
+}
+
+def _bat529Cb_4076886b_151(def sect) {
+        def fromBody = (((sect?.body ?: [])).findAll((this.&_bat529Cb_4076886b_121))).collect((this.&_bat529Cb_4076886b_135))
+        def fromParagraphs = ((sect?.paragraphs ?: [])).collect((this.&_bat529Cb_4076886b_47))
+        fromBody + fromParagraphs
+    
+}
+
+def _bat529Cb_4076886b_152(def body, def name, def meta) {
+        def t = meta?.type?.toString()
+        if (meta?.multiple != true) {
+            body["${name}.multiple".toString()] = "false"
+        }
+        if (t == "bool") {
+            body["checkbox[${name}]".toString()] = "on"
+        } else if (t == "time") {
+            body["hours[${name}]".toString()] = ""
+            body["minutes[${name}]".toString()] = ""
+            body["amPm[${name}]".toString()] = "AM"
+        }
+    
+}
+
+def _bat529Cb_4076886b_152(def body, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_152(body, *__bat529Tuple)
+}
+
+def _bat529Cb_4076886b_153(def body, def name, def meta) {
+        def t = meta?.type?.toString()
+        if (meta?.multiple != true) {
+            body["${name}.multiple".toString()] = "false"
+        }
+        if (t == "bool") {
+            body["checkbox[${name}]".toString()] = "on"
+        } else if (t == "time") {
+            body["hours[${name}]".toString()] = ""
+            body["minutes[${name}]".toString()] = ""
+            body["amPm[${name}]".toString()] = "AM"
+        }
+    
+}
+
+def _bat529Cb_4076886b_153(def body, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_153(body, *__bat529Tuple)
+}
+
+def _bat529Cb_4076886b_154(def ids, def id) {
+        // _rmCoerceRuleId, not normalizeRuleId: a JSON-number 400.7 would silently
+        // TRUNCATE to rule 400 via toInteger() -- and then PASS the existence
+        // check below, pausing the wrong rule with full confidence.
+        def n = _rmCoerceRuleId(id)
+        if (n == null) {
+            throw new IllegalArgumentException("ruleId '${id}' is not an integer-valued rule id. Use hub_list_rules to find valid ids.")
+        }
+        if (!ids.contains(n)) ids << n
+    
+}
+
+def _bat529Cb_4076886b_155(def nowMs, def ruleId, def key, def value) {
+        if (!(value instanceof Map) || value.deletePending || value.type?.toString() != "rm-rule") return false
+        def savedRuleId = value.ruleId != null ? value.ruleId : value.id
+        if (savedRuleId?.toString() != ruleId?.toString()) return false
+        Long savedAt = null
+        try { savedAt = value.timestamp as Long } catch (Exception ignored) { }
+        if (savedAt == null) return false
+        long age = nowMs - savedAt
+        return age >= 0L && age < 60L * 60L * 1000L
+    
+}
+
+def _bat529Cb_4076886b_155(def nowMs, def ruleId, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_155(nowMs, ruleId, *__bat529Tuple)
+}
+
+def _bat529Cb_4076886b_156(def names, def input) {
+            if (input instanceof Map && input.name && (input.type?.toString() == 'password' || input.name.toString() in names ||
+                    _appConfigIsSecretSetting(input.name, input.type, input.value != null ? input.value : input.defaultValue))) {
+                names << input.name.toString()
+                (['value', 'defaultValue']).each(((this.&_bat529Cb_4076886b_96).curry([input] as Object[])))
+            }
+        
+}
+
+def _bat529Cb_4076886b_157(def names, def section) {
+        ((section instanceof Map && section.input instanceof List ? section.input : [])).each(((this.&_bat529Cb_4076886b_156).curry([names] as Object[])))
+    
+}
+
+def _bat529Cb_4076886b_158(def a, def b) { (a.value.timestamp as Long) <=> (b.value.timestamp as Long) 
+}
+
+def _bat529Cb_4076886b_158(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_158(*__bat529Tuple)
+}
+
+def _bat529Cb_4076886b_159(def devices, def ids, def recs, def settings, String name) {
+        // Condition settings end in _<id> (rDev_3); trigger settings (tDev3) share the digits but not the underscore.
+        def m = name =~ /^[A-Za-z]+_(\d+)$/
+        if (!m.matches() || !ids.contains((m[0] as List)[1].toString())) return
+        def rec = recs.get(name)
+        def v = settings.get(name)
+        // A picker the status read does not list is known by its {id: label} value.
+        if (!(rec ? _isDevicePickerType(rec.type?.toString()) : v instanceof Map)) return
+        def list = (rec?.deviceIdsForDeviceList instanceof List && rec.deviceIdsForDeviceList) ? rec.deviceIdsForDeviceList : _devicePickerIds(v)
+        ((list instanceof List ? list : [])).each(((this.&_bat529Cb_4076886b_70).curry([devices] as Object[])))
+    
 }
