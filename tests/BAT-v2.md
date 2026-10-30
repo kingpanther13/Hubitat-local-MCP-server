@@ -122,7 +122,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `hub_list_devices` with `format='context'` (one call). Answer is built from the returned `summary` text (mode header + per-device lines) rather than iterating `detailed=true` pages or per-device reads.
+**Expected**: Calls `hub_list_devices` with `format='context'` (one call). Answer is built from the returned `summary` text (mode header + per-device lines) rather than iterating `format='detailed'` pages or per-device reads.
 
 ```json
 {

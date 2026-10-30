@@ -56,7 +56,7 @@ The `state` snapshot returned by the single-device form of `hub_call_device_comm
 
 ### Virtual Devices
 
-MCP can create and delete virtual devices (switches, sensors, buttons, dimmers, etc.) via `hub_manage_virtual_device` (a core tool, always visible) using `action="create"` or `action="delete"`. For create, provide exactly ONE of `deviceType` (a built-in virtual driver name) or `customDriver={namespace, name}` (a user-installed driver — discover values via `hub_read_apps_code(tool="hub_list_drivers")`). See `hub_get_tool_guide(section='virtual_devices')` for the built-in type list and response shapes. Created devices are automatically accessible without manual selection. Use `hub_list_devices` with `filter='virtual'` to see MCP-managed virtual devices. Do not use `hub_delete_device` for MCP-managed virtual devices.
+MCP can create and delete virtual devices (switches, sensors, buttons, dimmers, etc.) via `hub_manage_virtual_device` (a core tool, always visible) using `action="create"` or `action="delete"`. For create, provide exactly ONE of `deviceType` (a built-in virtual driver name) or `customDriver={namespace, name}` (a user-installed driver — discover values via `hub_read_apps_code(tool="hub_list_drivers")`). See `hub_get_tool_guide(section='virtual_devices')` for the built-in type list and response shapes. Created devices are automatically accessible without manual selection. Use `hub_list_devices` with `scope='owned'` to see MCP-managed virtual devices. Do not use `hub_delete_device` for MCP-managed virtual devices.
 
 ## Automation Rules
 
@@ -124,7 +124,7 @@ Each domain has its own gateway pair — call the gateway with no args for its s
 
 - Use the default `hub_list_devices` summary first (one Devices-page read, no per-device cost); page `format='detailed'` with `limit`/`cursor` in batches of 20-30
 - Use `labelFilter` (substring) and `capabilityFilter` (exact capability name) for server-side narrowing -- far cheaper than fetching all devices and filtering client-side
-- `format='ids'` returns a flat integer array (cheapest shape); `fields=[...]` projects only named fields; only `attributes`/`commands` cost a per-device read
+- `format='ids'` returns `{deviceIds, count, total}` (cheapest shape, pages with `limit`/`cursor`); `fields=[...]` projects only named fields; only `attributes`/`commands` cost a per-device read
 - `hub_list_device_events` default limit 10, max recommended 50
 - `hub_get_logs`: 100 log lines by default, `limit: 0` for all; page with `cursor`/`pageSize` and narrow with filters
 - Make tool calls sequentially, not in parallel (hub is single-threaded)

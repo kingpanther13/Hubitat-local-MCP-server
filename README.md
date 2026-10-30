@@ -281,7 +281,7 @@ The server has 115 tools total. To keep the MCP `tools/list` manageable, **13 co
 
 | Tool | Description |
 |------|-------------|
-| `hub_manage_virtual_device` | Create or delete an MCP-managed virtual device (`action`: "create", "delete") -- supports built-in `deviceType` OR `customDriver={namespace, name}` (Write master). To list MCP-managed virtual devices with states, use `hub_list_devices` with `filter='virtual'`. |
+| `hub_manage_virtual_device` | Create or delete an MCP-managed virtual device (`action`: "create", "delete") -- supports built-in `deviceType` OR `customDriver={namespace, name}` (Write master). To list MCP-managed virtual devices with states, use `hub_list_devices` with `scope='owned'`. |
 
 </details>
 
