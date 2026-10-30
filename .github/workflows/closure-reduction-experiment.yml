@@ -2,7 +2,6 @@ name: Closure Reduction Experiment
 on:
   push:
     branches: [experiment/529-main-closures]
-    paths: [experiments/closure-loops/**, experiments/catalog-json/**, .github/workflows/closure-reduction-experiment.yml]
 permissions:
   contents: read
 jobs:
