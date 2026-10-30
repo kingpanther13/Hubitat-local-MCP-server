@@ -139,10 +139,10 @@ private Map _listDevicesOptions(Map args) {
     String format = args.format ?: "summary"
     List fields = args.get("fields") ?: null
     if (scope == "all") {
+        List identity = ["id", "label", "name", "driver", "room", "roomId", "protocol", "disabled", "parentDeviceId", "source", "linked", "capabilities"]
         if (!(format in ["summary", "ids"])) throw new IllegalArgumentException("scope='all' supports format 'summary' or 'ids' only")
-        if (stateFilter || args.staleHours != null || since != null || args.attributeNames != null ||
-            fields?.any { it in ["currentStates", "attributes", "commands"] }) {
-            throw new IllegalArgumentException("scope='all' lists identity only; state filters need scope='authorized'")
+        if (stateFilter || args.staleHours != null || since != null || args.attributeNames != null || fields?.any { !(it in identity) }) {
+            throw new IllegalArgumentException("scope='all' lists identity only (fields: ${identity.join(', ')}); states need scope='authorized'")
         }
     }
     if (args.attributeNames != null && !(format in ["summary", "context"])) {
@@ -363,7 +363,7 @@ private Map _listDeviceRecord(Map rec, Map opts, List attrNames, Map caps, Set c
 }
 
 private _listStateValue(String name, value, boolean redact) {
-    return redact && _deviceConfigurationSecretKey(name) ? _appConfigRedactedMarker() : value
+    return redact ? _devicePublicAttributeValue(name, value) : value
 }
 
 private Map _emptyDeviceList(String format, String message) {
@@ -4596,16 +4596,16 @@ def _getAllToolDefinitions_partDevices() {
                 properties: [
                     scope: [type: "string", enum: ["authorized", "all", "owned"], description: "all = every hub device; owned = this app's virtual devices"],
                     format: [type: "string", enum: ["summary", "detailed", "ids", "context"], description: "detailed adds attributes, commands"],
-                    labelFilter: [type: "string"],
-                    capabilityFilter: [type: "string", description: "e.g. Switch"],
-                    roomFilter: [type: "string"],
+                    labelFilter: [type: "string", description: "Label substring"],
+                    capabilityFilter: [type: "string", description: "Exact capability, e.g. Switch"],
+                    roomFilter: [type: "string", description: "Exact room name"],
                     disabled: [type: "boolean", description: "true = only disabled"],
                     staleHours: [type: "number", description: "Inactive this many hours"],
                     changedSince: [type: ["string", "integer"], description: "Active since: epoch ms or ISO-8601 with offset"],
                     stateFilter: [type: "object", description: "e.g. {\"switch\":\"on\"}"],
-                    attributeNames: [type: "array", items: [type: "string"]],
-                    fields: [type: "array", items: [type: "string"]],
-                    limit: [type: "integer"],
+                    attributeNames: [type: "array", items: [type: "string"], description: "Attributes to show in currentStates and context lines"],
+                    fields: [type: "array", items: [type: "string"], description: "Record fields to return (names in the guide)"],
+                    limit: [type: "integer", description: "Page size; omit for all"],
                     cursor: [type: "string", description: "\"\" first, then nextCursor"]
                 ]
             ]
