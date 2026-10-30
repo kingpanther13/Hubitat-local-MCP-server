@@ -4801,14 +4801,14 @@ If no exact device match: suggest similar devices and get user confirmation befo
         ],
         [
             name: "hub_list_device_events",
-            description: """Event history for one device (deviceId), the events one installed app or rule emitted (appId), or with neither the location and hub events (mode, HSM, hub variables, reboots, low memory). Device rows carry producedBy (what caused the event) and triggered (the apps it fired).[[FLAT_TRIM]] attribute 'command-on' shows who sent a command. Without hoursBack, since, until or attribute, a device call returns its most recent events. Location rows carry kind 'location' or 'hub'.[[/FLAT_TRIM]]""",
+            description: """Event history for one device (deviceId), the events one installed app or rule emitted (appId), or with neither the location and hub events (mode, HSM, hub variables, reboots, low memory).[[FLAT_TRIM]] Device rows carry producedBy (what caused the event) and triggered (the apps it fired); attribute 'command-on' shows who sent a command. Without hoursBack, since, until or attribute, a device call returns its most recent events. Location rows carry kind 'location' or 'hub'.[[/FLAT_TRIM]]""",
             inputSchema: [
                 type: "object",
                 properties: [
                     deviceId: [type: ["string", "integer"], description: "Exclusive with appId; omit both for location and hub events"],
                     appId: [type: "integer", description: "Installed app or rule; exclusive with deviceId"],
                     hoursBack: [type: "integer", description: "Max 168; ignored with since"],
-                    since: [type: ["string", "integer"], description: "Window start (exclusive): ISO-8601 with offset, e.g. 2026-06-23T10:00:00.000-0600, or epoch ms"],
+                    since: [type: ["string", "integer"], description: "Window start (exclusive): ISO-8601 with offset or epoch ms"],
                     until: [type: ["string", "integer"], description: "Window end (inclusive), same formats"],
                     attribute: [type: "string", description: "Device attribute, e.g. switch; location: mode, hsmStatus, hsmAlert or a hub-variable name"],
                     limit: [type: "integer", description: "Default 10 recent, 100 for a window; max 500", default: 10]
