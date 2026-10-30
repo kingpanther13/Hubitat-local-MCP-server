@@ -11055,7 +11055,7 @@ private boolean _deviceConfigurationSecretKey(key) {
     String normalized = key?.toString()?.toLowerCase()?.replaceAll(/[^a-z0-9]/, '') ?: ''
     return normalized.contains('password') || normalized.contains('token') || normalized.contains('secret') ||
         normalized.contains('credential') || normalized.contains('apikey') || normalized.contains('privatekey') ||
-        normalized.contains('accesskey') || normalized in ['psk', 'psw']
+        normalized.contains('accesskey') || normalized in ['psk', 'psw'] || _appConfigSecretName(key)
 }
 private _deviceConfigurationPublicValue(value, key = '') {
     if (!_redactsCredentials()) return value
@@ -11437,7 +11437,7 @@ private Map _deviceExpandedResult(deviceId, Map identity, Map fj, String mode, s
                     note: 'Unset or cleared attributes can be absent; absence does not establish an unsupported attribute.']
                 if (d.currentStates instanceof Map) value.declaredAttributes = _nativeReportedDeviceAttributes(d).collect { row ->
                     def attribute = _deviceConfigurationPublicValue(row)
-                    if (row instanceof Map && _deviceConfigurationSecretKey(row.name)) {
+                    if (row instanceof Map && _redactsCredentials() && _deviceConfigurationSecretKey(row.name)) {
                         attribute.value = '***redacted (password)***'
                     }
                     attribute
@@ -12826,12 +12826,13 @@ private boolean _deviceEditInteger(value, Map spec) {
 }
 private void _checkDeviceEditValue(String field, Map spec, value) {
     String bad = null
-    if (spec.type == 'string' && !(value instanceof String)) bad = 'must be a string'
+    if (field == 'room' && !(value instanceof String) && !_deviceEditInteger(value, [:])) bad = 'must be a room name or id'
+    else if (spec.type == 'string' && field != 'room' && !(value instanceof String)) bad = 'must be a string'
     else if (spec.type == 'boolean' && !(value instanceof Boolean)) bad = 'must be a boolean'
     else if (spec.type == 'integer' && !_deviceEditInteger(value, spec)) bad = spec.maximum ? "must be an integer from ${spec.minimum} to ${spec.maximum}" : "must be a positive integer"
     else if (field == 'tags' && (!(value instanceof List) || value.any { !(it instanceof String) || it.contains(',') })) bad = 'must be an array of strings without commas'
     else if (field == 'dashboardIds' && (!(value instanceof List) || value.any { !_deviceEditInteger(it, [:]) })) bad = 'must be an array of dashboard IDs'
-    else if (field == 'dataValues' && (!(value instanceof Map) || value.any { k, v -> !(v instanceof String) })) bad = 'must be an object of string values'
+    else if (field == 'dataValues' && (!(value instanceof Map) || !value || value.any { k, v -> !k?.toString()?.trim() || !(v instanceof String) })) bad = 'must be a non-empty object of string values keyed by data name'
     else if (field in ['name', 'deviceNetworkId'] && !value.trim()) bad = 'cannot be empty'
     if (bad) throw new IllegalArgumentException("${field} ${bad}")
 }
@@ -12941,7 +12942,7 @@ private Map _planDeviceEdit(Map fj, Map fields, Map preferences = [:]) {
         String unavailable = _deviceEditUnavailable(name, fj)
         if (unavailable) throw new IllegalArgumentException("${name} cannot be changed: ${unavailable}")
         if (name == 'room') {
-            def room = value == '' ? [id: 0, name: null] : _resolveDeviceRoom(value)
+            def room = value == '' ? [id: 0, name: null] : _resolveDeviceRoom(value.toString())
             send.roomId = room.id
             send.roomName = room.name
         } else if (name == 'defaultCurrentState' && value) {
@@ -12983,7 +12984,7 @@ private Map _resolveDeviceRoom(String room) {
     } catch (Exception e) {
         throw new IllegalArgumentException("Unable to list rooms to resolve '${room}': ${e.message ?: e.toString()}")
     }
-    def match = rooms?.find { it.id?.toString() == room || it.name?.toString()?.toLowerCase() == room.toLowerCase() }
+    def match = rooms?.find { it.name?.toString()?.toLowerCase() == room.toLowerCase() } ?: rooms?.find { it.id?.toString() == room }
     if (match == null) {
         def names = rooms ? rooms.collect { it.name } : []
         throw new IllegalArgumentException("Room '${room}' not found.${names ? ' Available rooms: ' + names.join(', ') : ''}")
@@ -13007,6 +13008,10 @@ def toolUpdateDevice(args) {
         def spec = specs[field.key]
         if (spec == null) throw new IllegalArgumentException("Unknown field '${field.key}'; hub_get_device(mode='configuration') lists the editable fields")
         _checkDeviceEditValue(field.key, spec, field.value)
+    }
+    fields = fields.collectEntries { k, v ->
+        [(k): specs[k].type == 'integer' ? new BigDecimal(v.toString()).toBigInteger() :
+              k == 'dashboardIds' ? v.collect { new BigDecimal(it.toString()).toBigInteger() } : v]
     }
     if (fields.keySet().any { specs[it].confirm }) requireDestructiveConfirm(args.confirm)
     _requireDeviceToolAccess(deviceId)
@@ -13080,7 +13085,7 @@ private Map _applyDeviceEdit(deviceId, Map fj, Map fields, Map send, Map prefere
             for (item in wanted) {
                 if (actual instanceof Map && actual.get(item.key)?.toString() == item.value) {
                     if (d.data instanceof Map && d.data.get(item.key)?.toString() == item.value) unchanged << "dataValue.${item.key}".toString()
-                    else changes << [property: "dataValue.${item.key}", newValue: item.value]
+                    else changes << [property: "dataValue.${item.key}", newValue: _deviceConfigurationPublicValue(item.value, item.key)]
                 }
                 else errors << [property: "dataValue.${item.key}", error: "Saved, but the data value reads back as ${groovy.json.JsonOutput.toJson(_deviceConfigurationPublicValue(actual.get(item.key), item.key))}; inspect device data before retrying."]
             }
@@ -13088,8 +13093,9 @@ private Map _applyDeviceEdit(deviceId, Map fj, Map fields, Map send, Map prefere
         }
         if (name == 'room') wanted = send.roomName
         boolean matches = _deviceEditValuesMatch(name, wanted, actual)
-        if (name == 'deviceNetworkId' && wanted == '0' && _deviceFlag(d.linkedDevice)) matches = actual == d.deviceNetworkId
-        if (matches && _deviceEditReadable(name, fj) && _deviceEditValuesMatch(name, wanted, _deviceEditCurrentValue(name, fj))) {
+        boolean keepLink = name == 'deviceNetworkId' && wanted == '0' && _deviceFlag(d.linkedDevice)
+        if (keepLink) matches = actual == d.deviceNetworkId
+        if (matches && (keepLink || _deviceEditReadable(name, fj) && _deviceEditValuesMatch(name, wanted, _deviceEditCurrentValue(name, fj)))) {
             unchanged << name
         } else if (matches) {
             changes << [property: name, oldValue: _deviceConfigurationPublicValue(_deviceEditCurrentValue(name, fj), name),
@@ -14196,7 +14202,7 @@ Default: most-recent events for a device (deviceId + optional limit). Device eve
         ],
         [
             name: "hub_update_device",
-            description: """Change a device's settings the way its device page saves them: Device Info fields, driver preferences, assistant sharing and enabled state. Read hub_get_device(mode='configuration') first; its editableFields and preferences give each name's type, options, current value and whether this device offers it. Only change devices the user asked about. Fields marked requiresConfirmation (driver, network or Zigbee ID, dashboards, Hub Mesh, assistants) need confirm=true and a backup under 24 hours old. Saving preferences, showOnHome, defaultCurrentState or retryEnabled runs the driver's updated(). The result lists each change and error from one read-back; inspect it before retrying.""",
+            description: """Change a device's settings the way its device page saves them: Device Info fields, driver preferences, assistant sharing and enabled state. Pre-flight: read hub_get_tool_guide(section='update_device') and hub_get_device(mode='configuration'); its editableFields and preferences give each name's type, options, current value and whether this device offers it. Only change devices the user asked about. Fields marked requiresConfirmation (driver, network or Zigbee ID, dashboards, Hub Mesh, assistants) need confirm=true and a backup under 24 hours old. Saving preferences, showOnHome, defaultCurrentState or retryEnabled runs the driver's updated(). The result lists each change and error from one read-back; inspect it before retrying.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -17456,6 +17462,8 @@ private boolean _appConfigSecretName(name) {
     Set hardwarePins = ["led", "gpio", "relay", "io", "digital", "analog", "data", "output", "input", "sensor", "pwm", "signal", "button",
                         "power", "reset", "enable", "interrupt", "irq", "clock", "clk", "sda", "scl", "tx", "rx", "servo", "motor", "trigger", "echo"] as Set
     boolean qualified = words.any { it in pinQualifiers }
+    Set boardPins = ["led", "gpio", "relay", "pwm", "servo", "motor", "sda", "scl", "clk", "clock", "irq", "analog", "digital", "tx", "rx", "io"] as Set
+    Set statusCodes = ["status", "error", "result", "response", "reason", "fault", "event", "state", "zip", "postal", "country", "area"] as Set
     for (int idx = 0; idx < words.size(); idx++) {
         String w = words[idx]
         String prev = idx > 0 ? words[idx - 1] : null
@@ -17466,8 +17474,8 @@ private boolean _appConfigSecretName(name) {
             w.endsWith("token") || w.endsWith("tokens") || w.startsWith("credential") || w == "psk" ||
             (w == "pass" && prev != "by" && (next == null || next in ["word", "phrase", "code", "key"])) ||
             (keyQualifiers.contains(w) && (next == "key" || next == "keys")) ||
-            (w in ["pin", "pins", "pincode", "pincodes"] && (qualified || !(prev in hardwarePins))) ||
-            (w in ["code", "codes"] && (qualified || prev in ["pin", "pins"])) ||
+            (w in ["pin", "pins", "pincode", "pincodes"] && (qualified ? !(prev in boardPins) : !(prev in hardwarePins))) ||
+            (w in ["code", "codes"] && !(prev in statusCodes) && (qualified || prev in ["pin", "pins"])) ||
             _appConfigQualifiedSuffix(w, pinQualifiers)
         if (!hit) continue
         boolean twoWords = ((next == "key" || next == "keys") && keyQualifiers.contains(w)) || (w in ["pin", "pins"] && next in ["code", "codes"])
@@ -27087,7 +27095,7 @@ private void _nfWalk(Object node, Map fields, Map controls, List messages, List 
             if (device && current instanceof Map) current = current.keySet().collect { it.toString() }
             if (device && !field.multiple && current instanceof List) current = current ? current[0] : null
             if (type == 'password') field.has_value = current != null && current != ''
-            else { field.value = current; field.value_source = exists ? 'stored' : 'default' }
+            if (type != 'password' || (exists && !_redactsCredentials())) { field.value = current; field.value_source = exists ? 'stored' : 'default' }
             if (!exists && type != 'password' && current != null && current != '' && !(current instanceof Collection && current.isEmpty())) field.default_value = current
             field.present = exists && current != null && current != '' && (!(current instanceof Collection) || !current.empty)
             field.options = _nfOptions(type == 'mode' ? model.modeMap : node.options)
@@ -31528,7 +31536,7 @@ def getGatewayConfig() {
                 hub_get_device_attribute: "Read one attribute's value, or block-poll one OR several devices (deviceIds + mode any/all) until it reaches expectedValue/expectedValues. Args: deviceId | deviceIds (max 20), mode? (any/all), attribute, expectedValue?, expectedValues?, timeoutMs?, pollIntervalMs?, comparator?, stableForMs?",
                 hub_list_device_events: "Recent device events, a time-windowed history, an absolute bookmark (since) with an optional end (until), per-app events (appId), or location and hub events (reboots, low memory). Args: deviceId?, appId?, hoursBack?, since?, until?, attribute?, limit?",
                 hub_get_hub_mesh: "Read Hub Mesh (hub-to-hub device/variable sharing on the LAN): enabled state, peer hubs, shared/linked devices + hub variables, sync interval, mode-following hub. Args: include_token?",
-                hub_update_hub_mesh: "Change Hub Mesh settings (enable/disable needs a hub reboot; per-device sharing is hub_update_device meshEnabled). Args: enabled?, full_refresh_interval? (0/120/300/3600), mode_hub_id? ('none'=local modes), peer_hub_id?+peer_token?"
+                hub_update_hub_mesh: "Change Hub Mesh settings (enable/disable needs a hub reboot; per-device sharing is hub_update_device fields.meshEnabled). Args: enabled?, full_refresh_interval? (0/120/300/3600), mode_hub_id? ('none'=local modes), peer_hub_id?+peer_token?"
             ],
             searchHints: [
                 hub_call_device_command: "send command control turn on off set level dim lock unlock device run batch multiple several devices mixed commands ad hoc one call",
@@ -35583,7 +35591,7 @@ PATCH-like write over Hub Mesh's hub-level settings; every parameter optional, v
 - `mode_hub_id` → `/device/followModes/<hubId|none>`; a peer `hubId` from `hub_get_hub_mesh` `peers[]`, or `'none'` for local modes.
 - `peer_hub_id` + `peer_token` (TOGETHER) → `POST /device/setHubMeshToken`; stores that peer's mesh token here, needed when the peer has UI login security. Read the token on the PEER via its own `hub_get_hub_mesh(include_token=true)`. An all-digits `peer_hub_id` is sent as a JSON number, matching the hub UI's wire format.
 
-Peer hubs are auto-discovered on the LAN — there is no "add peer" write; enabling mesh on both hubs is what makes them peers. Per-DEVICE sharing is `hub_update_device` (`meshEnabled`), not this tool; `meshFullSync` there applies to a LINKED device (with Hub Mesh refresh enabled), keeping the local proxy synced on the periodic refresh.
+Peer hubs are auto-discovered on the LAN — there is no "add peer" write; enabling mesh on both hubs is what makes them peers. Per-DEVICE sharing is `hub_update_device` (`fields.meshEnabled`), not this tool; `fields.meshFullSync` there applies to a LINKED device (with Hub Mesh refresh enabled), keeping the local proxy synced on the periodic refresh.
 
 ### Per-device and per-variable Hub Mesh linking & sharing
 
