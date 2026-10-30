@@ -3178,7 +3178,8 @@ class TestRunner:
                 refused = _tool_error_payload(exc)
             # Bypass ON reaches native metadata; OFF refuses at the selection gate.
             error = str(refused.get("error", "")) if isinstance(refused, dict) else ""
-            assert isinstance(refused, dict) and refused.get("success") is False and (
+            assert isinstance(refused, dict) and refused.get("success") is False \
+                and refused.get("source") != "location" and (
                     error == "Device metadata fetch failed (/device/fullJson/0)"
                     or error == "Device not found: 0" or error.startswith("Device not found: 0 ")), \
                 f"supplied zero must be validated as a device ID: {supplied_id!r} -> {refused}"
@@ -3193,8 +3194,13 @@ class TestRunner:
         assert isinstance(fut, dict) and fut.get("count") == 0 and fut.get("events") == [], \
             f"future since should yield an empty list, not: {fut}"
 
-        # Location and hub events are hub_get_logs tabs (covered by test_get_logs_location_and_hub_events).
-        self._expect_tool_refusal("hub_list_device_events", {"hoursBack": 1}, "hub_get_logs(mode='locationEvents')")
+        # Location mode also carries the hub's own events (reboots, low memory, startup), each row
+        # tagged with its kind; the hub events read must not fail.
+        loc = self.client.call_tool("hub_list_device_events", {"hoursBack": 168, "limit": 50})
+        assert isinstance(loc, dict) and loc.get("source") == "location" and "hubEventsError" not in loc, \
+            f"location events must include the hub events: {loc}"
+        assert all(e.get("kind") in ("location", "hub") for e in loc.get("events") or []), \
+            f"every location-mode row must say its kind: {loc.get('events')}"
 
         # Read the scaffold's history (relative/hoursBack mode). Also pins the
         # relative-mode envelope: sinceMode=relative, echoes hoursBack not since.

@@ -102,10 +102,9 @@ def test_event_bookmark_reaches_history_after_expected_zero_refusals(refusal):
         assert params["name"] == "hub_read_devices"
         args = params["arguments"]["args"]
         calls.append(args)
-        if "deviceId" not in args and "appId" not in args:
-            return _raw_tool_body({"success": False, "isError": True, "error": (
-                "Pass deviceId or appId. For mode, HSM and hub-variable events use hub_get_logs(mode='locationEvents'); "
-                "for reboots and low memory use hub_get_logs(mode='hubEvents').")}, is_error=True)
+        if "deviceId" not in args:
+            return _raw_tool_body({"source": "location", "count": 1,
+                                   "events": [{"name": "systemStart", "kind": "hub", "date": dates[0]}]})
         if args["deviceId"] in (0, "0"):
             return _raw_tool_body({"success": False, "isError": True, "error": refusal}, is_error=True)
         assert str(args["deviceId"]) == "42"

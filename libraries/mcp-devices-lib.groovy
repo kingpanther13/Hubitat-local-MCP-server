@@ -2894,9 +2894,6 @@ def _resolveSinceWindow(args, hoursBack) {
 }
 
 def toolGetDeviceHistory(args) {
-    if (args.deviceId == null && args.appId == null) {
-        throw new IllegalArgumentException("Pass deviceId or appId. For mode, HSM and hub-variable events use hub_get_logs(mode='locationEvents'); for reboots and low memory use hub_get_logs(mode='hubEvents').")
-    }
     def hoursBack = Math.min(args.hoursBack ?: 24, 168)
     def limit = Math.min(args.limit ?: 100, 500)
     def attributeFilter = args.attribute
@@ -2913,7 +2910,7 @@ def toolGetDeviceHistory(args) {
     // App-scope branch: events an installed app/rule emitted, read from the same
     // endpoint the admin UI's per-app Events page uses. The endpoint takes no
     // query params and its row cap is server-side, so attribute/hoursBack/limit
-    // are applied client-side exactly like the device branch below -- limit
+    // are applied client-side exactly like the location branch below -- limit
     // enforced while collecting so an oversized event store can't balloon the
     // response. Rows carry {name, value, descriptionText, date}.
     if (args.appId != null) {
@@ -2944,7 +2941,7 @@ def toolGetDeviceHistory(args) {
         for (evt in appRows) {
             if (!(evt instanceof Map)) continue
             if (attributeFilter && evt.name != attributeFilter) continue
-            // Strictly-after window, mirroring the device branch: drop events at or
+            // Strictly-after window, mirroring the location branch: drop events at or
             // before sinceDate when the date parses (so re-passing a returned `date`
             // as `since` never replays that same event); keep rows whose date doesn't
             // parse (don't silently lose history), counting them so the caller can see
@@ -2988,6 +2985,108 @@ def toolGetDeviceHistory(args) {
         return appResult
     }
 
+    // Location-scope branch: when deviceId is omitted, return location history
+    // (mode / HSM / hub-variable / sunrise-sunset / system events). There is NO
+    // Groovy accessor for this -- neither location.eventsSince(Date, Map) nor
+    // getLocationEventsSince(Date) exist on the hub (both NoSuchMethod live). The
+    // hub's own Logs page reads it from /logs/eventsJson (per the hub2 frontend),
+    // so we hit the same endpoint and parse it. Each row is
+    // {name, value, unit, descriptionText, isStateChange, type, date(ISO+offset)}.
+    if (args.deviceId == null) {
+        def rawJson
+        try {
+            rawJson = hubInternalGet("/logs/eventsJson")
+        } catch (Exception e) {
+            mcpLogError("monitoring", "/logs/eventsJson fetch failed", e)
+            return [success: false, error: "Location event history fetch failed: ${e.message}", source: "location",
+                    note: "Likely a transient hub blip (the same endpoint feeds the hub's Logs page) -- retry."]
+        }
+        def rows
+        try {
+            def parsed = new groovy.json.JsonSlurper().parseText(rawJson?.toString() ?: "[]")
+            rows = (parsed instanceof List) ? parsed : []
+        } catch (Exception e) {
+            mcpLogError("monitoring", "/logs/eventsJson parse failed", e)
+            return [success: false, error: "Location event history parse failed: ${e.message}", source: "location",
+                    note: "Retry; if persistent, firmware may have changed the /logs/eventsJson format -- report with hub_report_issue."]
+        }
+
+        // The Logs page's Hub events tab (/hub/eventsJson: reboots, lowMemory, startup) shares
+        // the row shape; those rows are merged in newest first and carry kind:'hub'. A failed
+        // read of it leaves the location events intact and says so.
+        def hubRows = []
+        String hubEventsError = null
+        try {
+            String hubText = hubInternalGet("/hub/eventsJson")?.toString()
+            def parsedHub = hubText?.trim() ? new groovy.json.JsonSlurper().parseText(hubText) : null
+            if (parsedHub == null) hubEventsError = "the hub returned an empty response"
+            else if (parsedHub instanceof List) hubRows = parsedHub
+            else hubEventsError = "the hub events list was not a JSON array"
+        } catch (Exception e) {
+            hubEventsError = (e.message ?: e.toString()).take(200)
+        }
+
+        def locResults = []
+        def timeFilterUnparseable = 0
+        def addRows = { List source, String kind ->
+            for (evt in source) {
+                if (!(evt instanceof Map)) continue
+                if (attributeFilter && evt.name != attributeFilter) continue
+                // Strictly-after window: drop events at or before sinceDate when the
+                // ISO+offset date parses (so re-passing a returned `date` as `since` never
+                // replays that same event); keep rows whose date doesn't parse (don't
+                // silently lose history), counting them. The numeric offset (e.g. -0400)
+                // parses via the 'Z' pattern.
+                def evtDate = null
+                try { evtDate = Date.parse("yyyy-MM-dd'T'HH:mm:ss.SSSZ", evt.date?.toString()) }
+                catch (Exception ignored) { timeFilterUnparseable++ }
+                if (evtDate != null && !evtDate.after(sinceDate)) continue
+                if (untilDate != null && evtDate != null && evtDate.after(untilDate)) continue
+                locResults << [
+                    name: evt.name,
+                    value: evt.value,
+                    unit: evt.unit,
+                    description: evt.descriptionText,
+                    date: evt.date,
+                    type: evt.type,
+                    isStateChange: evt.isStateChange,
+                    kind: kind,
+                    _at: evtDate?.time
+                ]
+            }
+        }
+        addRows(rows, "location")
+        int hubCount = locResults.size()
+        addRows(hubRows, "hub")
+        hubCount = locResults.size() - hubCount
+        if (hubCount > 0) locResults = locResults.sort { a, b -> (b._at ?: 0L) <=> (a._at ?: 0L) }
+        locResults.each { it.remove("_at") }
+        int matchedCount = locResults.size()
+        if (matchedCount > limit) locResults = locResults.take(limit)
+
+        mcpLog("info", "monitoring", "Retrieved ${locResults.size()} location history event${locResults.size() == 1 ? '' : 's'} (${sinceMode} window since ${sinceDate.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ")}) from /logs/eventsJson")
+        def locResult = [
+            source: "location",
+            attributeFilter: attributeFilter,
+            events: locResults,
+            count: locResults.size(),
+            sinceMode: sinceMode,
+            sinceTimestamp: sinceDate.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ")
+        ]
+        if (sinceMode == "relative") locResult.hoursBack = effectiveHoursBack
+        else locResult.since = sinceEcho
+        if (untilEcho) locResult.untilTimestamp = untilEcho
+        if (matchedCount > locResults.size()) {
+            locResult.truncated = true
+            locResult.matchedCount = matchedCount
+        }
+        // Mirror the hub-log path: surface rows that escaped the always-active
+        // time window because their date would not parse.
+        if (timeFilterUnparseable > 0) locResult.timeFilterUnparseable = timeFilterUnparseable
+        if (hubEventsError != null) locResult.hubEventsError = "Hub events (reboots, low memory) could not be read: ${hubEventsError}".toString()
+        return locResult
+    }
+
     def deviceId = _canonicalDeviceIdArg(args.deviceId)
     if (deviceId == null) {
         throw new IllegalArgumentException("deviceId must be a non-empty string or integral number (got: ${_describeValueForError(args.deviceId)})")
@@ -3012,7 +3111,7 @@ private Map _deviceHistoryBypass(args, Map fj, sinceDate, sinceMode, effectiveHo
     for (evt in rows) {
         if (!(evt instanceof Map)) continue
         if (attributeFilter && evt.name != attributeFilter) continue
-        // Strictly-after window, mirroring the app branch: drop events at or before
+        // Strictly-after window, mirroring the app/location branches: drop events at or before
         // sinceDate when the ISO+offset date parses; keep (and count) rows whose date doesn't.
         def evtDate = null
         try { evtDate = Date.parse("yyyy-MM-dd'T'HH:mm:ss.SSSZ", evt.date?.toString()) }
@@ -4702,16 +4801,16 @@ If no exact device match: suggest similar devices and get user confirmation befo
         ],
         [
             name: "hub_list_device_events",
-            description: """Event history for one device (deviceId) or the events one installed app or rule emitted (appId). Device rows carry producedBy (what caused the event) and triggered (the apps it fired).[[FLAT_TRIM]] attribute 'command-on' shows who sent a command. Without hoursBack, since, until or attribute, a device call returns its most recent events.[[/FLAT_TRIM]]""",
+            description: """Event history for one device (deviceId), the events one installed app or rule emitted (appId), or with neither the location and hub events (mode, HSM, hub variables, reboots, low memory). Device rows carry producedBy (what caused the event) and triggered (the apps it fired).[[FLAT_TRIM]] attribute 'command-on' shows who sent a command. Without hoursBack, since, until or attribute, a device call returns its most recent events. Location rows carry kind 'location' or 'hub'.[[/FLAT_TRIM]]""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    deviceId: [type: ["string", "integer"], description: "Exclusive with appId"],
+                    deviceId: [type: ["string", "integer"], description: "Exclusive with appId; omit both for location and hub events"],
                     appId: [type: "integer", description: "Installed app or rule; exclusive with deviceId"],
                     hoursBack: [type: "integer", description: "Max 168; ignored with since"],
                     since: [type: ["string", "integer"], description: "Window start (exclusive): ISO-8601 with offset, e.g. 2026-06-23T10:00:00.000-0600, or epoch ms"],
                     until: [type: ["string", "integer"], description: "Window end (inclusive), same formats"],
-                    attribute: [type: "string", description: "Device attribute, e.g. switch"],
+                    attribute: [type: "string", description: "Device attribute, e.g. switch; location: mode, hsmStatus, hsmAlert or a hub-variable name"],
                     limit: [type: "integer", description: "Default 10 recent, 100 for a window; max 500", default: 10]
                 ]
             ]
@@ -4842,7 +4941,7 @@ def _toolDisplayMeta_partDevices() {
         hub_list_devices: [title: "List Devices", summary: "List devices from the hub's Devices page with state filters, projection, a house snapshot and paging."],
         hub_get_device: [title: "Get Device Details", summary: "Inspect a device summary, configuration and preferences, or detailed information by section."],
         hub_get_device_attribute: [title: "Get Device Attribute", summary: "Read one attribute value, optionally waiting until it matches an expected value."],
-        hub_list_device_events: [title: "List Device Events", summary: "Recent events for a device, or the events an installed app emitted."],
+        hub_list_device_events: [title: "List Device Events", summary: "Recent events for a device or app, or location and hub events when neither is given."],
         hub_call_device_command: [title: "Send Device Command", summary: "Send a command like on, off, or setLevel to one device, or up to 20 in one call."],
         hub_call_device_swap: [title: "Swap Device", summary: "Exchange two devices' identities so the apps on one run on the other's hardware."],
         hub_call_device_replace: [title: "Replace Device Hardware", summary: "Re-point a device to replacement hardware, keeping its id and all references."],
