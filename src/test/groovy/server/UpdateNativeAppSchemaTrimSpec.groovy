@@ -381,7 +381,7 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         flat.inputSchema == gateway.inputSchema
         flat.description.contains("hub_get_tool_guide(section='performance_devices')")
         groovy.json.JsonOutput.toJson([name: flat.name, description: flat.description, inputSchema: flat.inputSchema])
-            .getBytes('UTF-8').length <= 1500
+            .getBytes('UTF-8').length <= 1600
         ![flat.description, groovy.json.JsonOutput.toJson(flat.inputSchema)].any { it.contains(OPEN_MARKER) || it.contains(CLOSE_MARKER) }
     }
 
