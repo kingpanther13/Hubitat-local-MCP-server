@@ -199,7 +199,7 @@ def toolGetDashboard(args) {
             if (!full.name) full.name = match.name
             return full
         }
-        return match + [partial: true, note: "Only id + name could be read (the dashboard's config page was unreadable); tile/device/pin fields are unavailable, not defaulted. Retry hub_get_dashboard."]
+        return match + (_bat529EmbeddedCatalogRead(['["m",[["partial",true],["note","Only id + name could be read (the dashboard\'s config page was unreadable); tile/device/pin fields are unavailable, not defaulted. Retry hub_get_dashboard."]]]']) as Map)
     }
     return match
 }
@@ -253,12 +253,12 @@ private Map _legacyLayoutPost(String id, String accessToken, Map layout) {
 private Map _getLegacyDashboard(String id, Map match) {
     def probe = _legacyDashboardProbe(id)
     if (probe == null || probe.legacy != true) {
-        return match + [partial: true, note: "Listed as a legacy dashboard but its status page was unreadable; layout unavailable (not empty). Retry hub_get_dashboard."]
+        return match + (_bat529EmbeddedCatalogRead(['["m",[["partial",true],["note","Listed as a legacy dashboard but its status page was unreadable; layout unavailable (not empty). Retry hub_get_dashboard."]]]']) as Map)
     }
     def out = [id: id, name: (probe.label ?: match.name), type: "legacy"]
     if (probe.deviceIds != null) out.deviceIds = probe.deviceIds
     if (!probe.accessToken) {
-        return out + [partial: true, note: "The dashboard's access token could not be read from its app state, so its layout endpoint is unreachable. Open the dashboard app page once and retry."]
+        return out + (_bat529EmbeddedCatalogRead(['["m",[["partial",true],["note","The dashboard\'s access token could not be read from its app state, so its layout endpoint is unreachable. Open the dashboard app page once and retry."]]]']) as Map)
     }
     def layout = null
     try { layout = _legacyLayoutFetch(id, probe.accessToken) } catch (Exception e) {
@@ -489,7 +489,7 @@ def toolUpdateDashboard(args) {
     if (probe.legacy == true) {
         return _updateLegacyDashboard(updateId, probe, args)
     }
-    def legacyOnlyArgs = ["layout", "setOptions", "addTiles", "updateTiles", "removeTileIds"].findAll { args.get(it) != null }
+    def legacyOnlyArgs = (_bat529EmbeddedCatalogRead(['["l",["layout","setOptions","addTiles","updateTiles","removeTileIds"]]']) as List).findAll { args.get(it) != null }
     if (legacyOnlyArgs) {
         throw new IllegalArgumentException("${legacyOnlyArgs.join(', ')} appl${legacyOnlyArgs.size() == 1 ? 'ies' : 'y'} only to legacy Hubitat® Dashboards; dashboard ${updateId} is an Easy Dashboard. Easy updates replace the config wholesale: pass name, deviceIds, and options (read hub_get_dashboard first).")
     }
@@ -1070,7 +1070,7 @@ def _bat529Cb_298d4999_44(def probe, def tiles, def warnings, def spec) {
 def toolListRooms(args = null) {
     def rooms = getRooms()
     if (!rooms) {
-        return [rooms: [], count: 0, message: "No rooms configured on this hub."]
+        return (_bat529EmbeddedCatalogRead(['["m",[["rooms",["l",[]]],["count",0],["message","No rooms configured on this hub."]]]']) as Map)
     }
     def roomList = (((rooms).findAll((this.&_bat529Cb_cfcfe2bd_4))).collect((this.&_bat529Cb_cfcfe2bd_28))).sort((this.&_bat529Cb_cfcfe2bd_29))
     def cursor = args?.cursor
@@ -1356,7 +1356,7 @@ def _bat529Cb_cfcfe2bd_31(def allDevices, def devices, def devId) {
 }
 private Map _parseBundleContent(String content) {
     if (!content) return null
-    def out = [apps: [], drivers: [], libraries: []]
+    def out = (_bat529EmbeddedCatalogRead(['["m",[["apps",["l",[]]],["drivers",["l",[]]],["libraries",["l",[]]]]]']) as Map)
     boolean matched = false
     ["apps", "drivers", "libraries"].each { key ->
         def token = "${key} ["
@@ -1646,9 +1646,7 @@ def _readOnlyToolNames_partBundles() {
     ]
 }
 def _idempotentWriteToolNames_partBundles() {
-    return [
-        "hub_install_bundle", "hub_delete_bundle", "hub_export_bundle"
-    ]
+    return (_bat529EmbeddedCatalogRead(['["l",["hub_install_bundle","hub_delete_bundle","hub_export_bundle"]]']) as List)
 }
 def _openWorldToolNames_partBundles() {
     return [
@@ -1958,9 +1956,7 @@ private String _vrbTryCleanupShell(Integer appId) {
     }
 }
 private List _vrb2TriggerTypes() {
-    return ["timeOfDay", "sunriseSunset", "motion", "contact", "presence", "acceleration",
-            "water", "smoke", "co", "alarm", "temperature", "humidity", "illuminance",
-            "power", "switch", "button", "lock", "shock", "systemMode"]
+    return (_bat529EmbeddedCatalogRead(['["l",["timeOfDay","sunriseSunset","motion","contact","presence","acceleration","water","smoke","co","alarm","temperature","humidity","illuminance","power","switch","button","lock","shock","systemMode"]]']) as List)
 }
 private List _vrb2ConditionTypes() {
     return (_bat529EmbeddedCatalogRead(['["l",["timeIsBetween","daysOfWeek","motionCondition","contactCondition","presenceCondition","accelerationCondition","waterCondition","smokeCondition","coCondition","temperatureCondition","humidityCondition","illuminanceCondition","powerCondition","switchCondition","lockCondition","thermostatModeCondition","systemModeCondition"]]']) as List)
@@ -2026,7 +2022,7 @@ private void _vrb2ChainEdges(List edges, String from, String port, List chain, S
     }
 }
 private List _vrb2EditorKeys() {
-    return ["triggers", "conditions", "decisionType", "thenActions", "elseActions", "commonActions", "structureIds"]
+    return (_bat529EmbeddedCatalogRead(['["l",["triggers","conditions","decisionType","thenActions","elseActions","commonActions","structureIds"]]']) as List)
 }
 private Map _vrb2Compose(Map editor) {
     if (editor == null) throw new IllegalArgumentException("The editor definition must be a JSON object.")
@@ -2269,7 +2265,7 @@ private Map _vrbClassicToGraph(Map classic, List warnings = null) {
 }
 private void _vrbValidateClassicShape(Map definition) {
     if (definition == null) throw new IllegalArgumentException("definition must be a JSON object.")
-    def readEnvelope = ["promptHistory", "name", "rawName", "rulePaused", "success", "appId", "format"]
+    def readEnvelope = (_bat529EmbeddedCatalogRead(['["l",["promptHistory","name","rawName","rulePaused","success","appId","format"]]']) as List)
     def unknownKeys = ((definition.keySet()).collect((this.&_bat529Cb_c0a86baf_8))).findAll(((this.&_bat529Cb_c0a86baf_41).curry([readEnvelope] as Object[])))
     if (unknownKeys) throw new IllegalArgumentException("Unknown classic key(s): ${unknownKeys.join(', ')}. A classic definition takes only whenNodes, thenNodes, elseNodes (the keys a hub_get_visual_rule read adds around them are ignored).")
     (["whenNodes", "thenNodes", "elseNodes"]).each(((this.&_bat529Cb_c0a86baf_57).curry([definition] as Object[])))
@@ -3464,12 +3460,7 @@ def toolListFiles(args = null) {
         }
     }
     if (!responseText) {
-        return [
-            files: [],
-            total: 0,
-            message: "File Manager API not available on this firmware. Use Hubitat > Settings > File Manager to view files.",
-            manualAccess: "Go to Hubitat > Settings > File Manager to view files in the web UI."
-        ]
+        return (_bat529EmbeddedCatalogRead(['["m",[["files",["l",[]]],["total",0],["message","File Manager API not available on this firmware. Use Hubitat > Settings > File Manager to view files."],["manualAccess","Go to Hubitat > Settings > File Manager to view files in the web UI."]]]']) as Map)
     }
     try {
         def parsed = new groovy.json.JsonSlurper().parseText(responseText)
@@ -3813,7 +3804,7 @@ def toolListItemBackups(args = null) {
         def sched = _readHubBackupSchedule()
         if (!_hubFirmwareBefore("2.5.2")) {
             if (sched.ok && sched.schedule?.hasFullLocalBackup == false) {
-                hubSections.networkBackup = [available: false, note: "Network-share backups come with the Full Local Backup subscription, which this hub does not have."]
+                hubSections.networkBackup = (_bat529EmbeddedCatalogRead(['["m",[["available",false],["note","Network-share backups come with the Full Local Backup subscription, which this hub does not have."]]]']) as Map)
             } else {
                 def netCfg = _readNetworkBackupSettings()
                 hubSections.networkBackup = netCfg.ok ? netCfg.settings : [error: netCfg.error]
@@ -3828,7 +3819,7 @@ def toolListItemBackups(args = null) {
     }
     if (scope == "source") return _listSourceItemBackups(args)
     if (!(scope in ["source", "all"])) {
-        return ([scope: scope] + hubSections + [note: "Whole-hub database backups. Restore via hub_restore_backup (scope=hub_local|hub_cloud); delete via hub_delete_backup."])
+        return ([scope: scope] + hubSections + (_bat529EmbeddedCatalogRead(['["m",[["note","Whole-hub database backups. Restore via hub_restore_backup (scope=hub_local|hub_cloud); delete via hub_delete_backup."]]]']) as Map))
     }
     return ([scope: scope] + _listSourceItemBackups(args) + hubSections)
 }
@@ -3880,7 +3871,7 @@ private Map _healPendingItemBackup(String backupKey, Map entry) {
         Map manifest = _itemBackupManifest()
         Map current = manifest[backupKey]
         if (!(current instanceof Map) || current.fileName?.toString() != entry.fileName?.toString()) {
-            return [success: false, error: "The indexed backup changed; refresh hub_list_backups and retry."]
+            return (_bat529EmbeddedCatalogRead(['["m",[["success",false],["error","The indexed backup changed; refresh hub_list_backups and retry."]]]']) as Map)
         }
         byte[] bytes = null
         try { bytes = downloadHubFile(current.fileName.toString()) }
@@ -3889,7 +3880,7 @@ private Map _healPendingItemBackup(String backupKey, Map entry) {
             return [success: false, error: "File verification failed: ${probeErr.message}. Check File Manager and retry."]
         }
         if (bytes == null || bytes.length == 0) {
-            return [success: false, error: "The file is missing or empty. Check File Manager or choose another backup."]
+            return (_bat529EmbeddedCatalogRead(['["m",[["success",false],["error","The file is missing or empty. Check File Manager or choose another backup."]]]']) as Map)
         }
         current.remove("deletePending")
         try { _commitItemBackupManifest(manifest) }
@@ -4459,7 +4450,7 @@ def backupResponseSink(response, data) {
     } catch (Exception ignored) { }
 }
 private _setHubBackupSchedule(Map schedule) {
-    if (schedule == null) return [success: false, error: "schedule object is required"]
+    if (schedule == null) return (_bat529EmbeddedCatalogRead(['["m",[["success",false],["error","schedule object is required"]]]']) as Map)
     def cur = [:]
     try {
         def raw = hubInternalGet("/hub2/backup/json")
@@ -4511,7 +4502,7 @@ private Map _readHubBackupSchedule() {
         def raw = hubInternalGet("/hub2/backup/json")
         def parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
         if (!(parsed instanceof Map)) {
-            return [ok: false, error: "schedule: the hub did not return a readable backup schedule (/hub2/backup/json)"]
+            return (_bat529EmbeddedCatalogRead(['["m",[["ok",false],["error","schedule: the hub did not return a readable backup schedule (/hub2/backup/json)"]]]']) as Map)
         }
         cur = parsed
     } catch (Exception e) {
@@ -4549,7 +4540,7 @@ private Map _readNetworkBackupSettings() {
     try {
         def raw = hubInternalGet("/hub2/networkBackup/settings")
         def parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
-        if (!(parsed instanceof Map)) return [ok: false, error: "networkBackup: the hub did not return readable settings (/hub2/networkBackup/settings)"]
+        if (!(parsed instanceof Map)) return (_bat529EmbeddedCatalogRead(['["m",[["ok",false],["error","networkBackup: the hub did not return readable settings (/hub2/networkBackup/settings)"]]]']) as Map)
         return [ok: true, raw: parsed, settings: [enabled: parsed.enabled == true, networkPath: parsed.networkPath ?: null,
                                                    username: parsed.username ?: null, passwordSet: (parsed.password ? true : false)]]
     } catch (Exception e) {
@@ -4732,7 +4723,7 @@ private boolean _isFullLocalHubBackup(String fileName) {
 }
 private Map _fullRestoreOptions(opts) {
     if (opts != null && !(opts instanceof Map)) throw new IllegalArgumentException("fullRestore must be an object: {restoreZigbee, restoreZwave, restoreFiles, deleteExistingFiles, allowZwaveFirmwareMismatch} (all booleans, default false).")
-    def known = ["restoreZigbee", "restoreZwave", "restoreFiles", "deleteExistingFiles", "allowZwaveFirmwareMismatch"]
+    def known = (_bat529EmbeddedCatalogRead(['["l",["restoreZigbee","restoreZwave","restoreFiles","deleteExistingFiles","allowZwaveFirmwareMismatch"]]']) as List)
     def m = (opts ?: [:]) as Map
     def unknown = (m.keySet()).findAll(((this.&_bat529Cb_8f5ba462_2).curry([known] as Object[])))
     if (unknown) throw new IllegalArgumentException("Unknown fullRestore field(s): ${unknown.join(', ')}. Valid: ${known.join(', ')}.")
@@ -5195,7 +5186,7 @@ def toolGenerateBugReport(args) {
     if (history.status == "in_progress") {
         if (!retainedErrors) return history + [tool: "hub_report_issue"]
         logLoading = true
-        history = [error: "Native MCP log history is still loading; retained errors are included in the report.", retryable: true]
+        history = (_bat529EmbeddedCatalogRead(['["m",[["error","Native MCP log history is still loading; retained errors are included in the report."],["retryable",true]]]']) as Map)
     }
     def allEntries = ((history.entries ?: [])).findAll((this.&_bat529Cb_1fa286f7_19))
     def anchor = _bugReportResolveAnchor(args, allEntries)
@@ -5459,17 +5450,17 @@ private List _bugReportMissingContext(args, String issueType, Map client, String
         missing << [field: "llmClient", ask: "Confirm with the user that '${_mcpClientString(args.llmClient)}' is the host app they run: the server could not identify the client (${why}), so an inferred value must not stand.".toString()]
     }
     if (blank(args.llmModel)) {
-        missing << [field: "llmModel", ask: "Ask the user which model is in use (Claude Opus 5, Sonnet 5, GPT-5, ...) and pass it as llmModel -- do not guess."]
+        missing << (_bat529EmbeddedCatalogRead(['["m",[["field","llmModel"],["ask","Ask the user which model is in use (Claude Opus 5, Sonnet 5, GPT-5, ...) and pass it as llmModel -- do not guess."]]]']) as Map)
     }
     if (issueType in ["bug", "agent_behavior"]) {
         if (blank(args.stepsToReproduce)) {
-            missing << [field: "stepsToReproduce", ask: "Write the exact sequence that reproduces the failure and pass it as stepsToReproduce."]
+            missing << (_bat529EmbeddedCatalogRead(['["m",[["field","stepsToReproduce"],["ask","Write the exact sequence that reproduces the failure and pass it as stepsToReproduce."]]]']) as Map)
         }
         if (blank(args.verbatimToolCalls)) {
-            missing << [field: "verbatimToolCalls", ask: "Copy the exact failing tool call(s) and the raw response text out of the transcript and pass them as verbatimToolCalls."]
+            missing << (_bat529EmbeddedCatalogRead(['["m",[["field","verbatimToolCalls"],["ask","Copy the exact failing tool call(s) and the raw response text out of the transcript and pass them as verbatimToolCalls."]]]']) as Map)
         }
         if (blank(args.clientLogs)) {
-            missing << [field: "clientLogs", ask: "Collect the MCP client host's own log lines for the failure window and pass them as clientLogs."]
+            missing << (_bat529EmbeddedCatalogRead(['["m",[["field","clientLogs"],["ask","Collect the MCP client host\'s own log lines for the failure window and pass them as clientLogs."]]]']) as Map)
         }
     }
     return missing
@@ -5550,7 +5541,7 @@ private Map _bugReportRuleInfo(args) {
     }
 }
 private String _bugReportSuggestedTitle(args, String issueType) {
-    def prefix = ["bug": "[bug]", "enhancement": "[feature]", "agent_behavior": "[agent-behavior]"][issueType]
+    def prefix = (_bat529EmbeddedCatalogRead(['["m",[["bug","[bug]"],["enhancement","[feature]"],["agent_behavior","[agent-behavior]"]]]']) as Map)[issueType]
     def toolCtx = _mcpClientString(args.failingTool)
     def userTitle = _bugReportScrubSecrets(args.title?.toString()?.trim()) ?: "Issue report"
     def body = toolCtx ? "${toolCtx}: ${userTitle}" : userTitle
@@ -5558,8 +5549,8 @@ private String _bugReportSuggestedTitle(args, String issueType) {
     return full.length() > 140 ? (full.take(137) + "...") : full
 }
 private String _bugReportSubmitUrl(String issueType, String suggestedTitle, Map env, args) {
-    def template = ["bug": "bug_report.yml", "enhancement": "enhancement.yml", "agent_behavior": "agent_behavior.yml"][issueType]
-    def templateLabel = ["bug": "bug", "enhancement": "enhancement", "agent_behavior": "agent-behavior"][issueType]
+    def template = (_bat529EmbeddedCatalogRead(['["m",[["bug","bug_report.yml"],["enhancement","enhancement.yml"],["agent_behavior","agent_behavior.yml"]]]']) as Map)[issueType]
+    def templateLabel = (_bat529EmbeddedCatalogRead(['["m",[["bug","bug"],["enhancement","enhancement"],["agent_behavior","agent-behavior"]]]']) as Map)[issueType]
     def base = "https://github.com/kingpanther13/Hubitat-local-MCP-server/issues/new"
     def encodedTitle = URLEncoder.encode(suggestedTitle ?: "", "UTF-8")
     def encField = { value -> URLEncoder.encode((value ?: "").toString().take(120), "UTF-8") }
@@ -5594,7 +5585,7 @@ private String _bugReportBuildMarkdown(Map params) {
     def env = params.env
     def ruleInfo = params.ruleInfo
     def scopedLogs = params.scopedLogs
-    def heading = ["bug": "Bug Report", "enhancement": "Feature Request", "agent_behavior": "Agent-Behavior Report"][issueType]
+    def heading = (_bat529EmbeddedCatalogRead(['["m",[["bug","Bug Report"],["enhancement","Feature Request"],["agent_behavior","Agent-Behavior Report"]]]']) as Map)[issueType]
     def expectedActualHeader = issueType == "enhancement" ? "## Request" : (issueType == "agent_behavior" ? "## Agent Behavior" : "## Bug Description")
     def relevantLines = (scopedLogs.relevant).collect((this.&_bat529Cb_1fa286f7_15))
     def otherLines = scopedLogs.includedUnrelated ? (scopedLogs.other).collect((this.&_bat529Cb_1fa286f7_12)): []
@@ -5896,7 +5887,7 @@ private void _attachRadioIncludes(result, args) {
 private Map _zigbeeDeviceActivity() {
     def raw = _radioGetSafe("/hub/zigbee/getDevicesJson")
     if (!(raw instanceof Map) || !(raw.devices instanceof List)) {
-        return (raw instanceof Map && raw.error) ? raw : [error: "/hub/zigbee/getDevicesJson returned an unexpected shape."]
+        return (raw instanceof Map && raw.error) ? raw : (_bat529EmbeddedCatalogRead(['["m",[["error","/hub/zigbee/getDevicesJson returned an unexpected shape."]]]']) as Map)
     }
     long nowMs = now()
     def devices = (((raw.devices).findAll((this.&_bat529Cb_7399a956_9))).collect(((this.&_bat529Cb_7399a956_45).curry([nowMs] as Object[])))).sort((this.&_bat529Cb_7399a956_46))
@@ -6249,7 +6240,7 @@ def runNativeLogFetch(Map job = [:]) {
     }
 }
 private Map _logsModeArgs() {
-    List shared = ["pattern", "patterns", "patternMode", "limit", "cursor", "pageSize"]
+    List shared = (_bat529EmbeddedCatalogRead(['["l",["pattern","patterns","patternMode","limit","cursor","pageSize"]]']) as List)
     return [
         past: shared + ["level", "deviceId", "appId", "since", "until"],
         devices: shared + ["deviceId", "sortBy"],
@@ -6445,8 +6436,7 @@ def toolGetHubLogs(args) {
             results.put(m, r)
         }
         if (pending) {
-            return [status: "in_progress", tool: "hub_get_logs", retryable: true,
-                    note: "Some tabs are still loading on the hub. Continue with requestState, or repeat the same call on a legacy client."]
+            return (_bat529EmbeddedCatalogRead(['["m",[["status","in_progress"],["tool","hub_get_logs"],["retryable",true],["note","Some tabs are still loading on the hub. Continue with requestState, or repeat the same call on a legacy client."]]]']) as Map)
         }
         Map out = [modes: results]
         List shared = results.values().findAll(this.&_logsHasFetchSnapshot)
@@ -6480,7 +6470,7 @@ def toolGetHubLogs(args) {
     }
     List rows
     Map result = [mode: mode]
-    Map logsJsonTables = [devices: "deviceStats", apps: "appStats", scheduledJobs: "jobs", runningJobs: "runningJobs", hubActions: "hubCommands"]
+    Map logsJsonTables = (_bat529EmbeddedCatalogRead(['["m",[["devices","deviceStats"],["apps","appStats"],["scheduledJobs","jobs"],["runningJobs","runningJobs"],["hubActions","hubCommands"]]]']) as Map)
     if (logsJsonTables.containsKey(mode)) {
         def snap
         try {
@@ -6498,7 +6488,7 @@ def toolGetHubLogs(args) {
         if (mode == "apps") result.summary = [appsUptime: data.appsUptime, totalAppsRuntime: data.totalAppsRuntime, appPct: data.appPct]
         result.snapshot = _logsJsonProvenance(data)
     } else {
-        String path = [cloudCalls: "/logs/cloudCalls/json", locationEvents: "/logs/eventsJson", hubEvents: "/hub/eventsJson"][mode]
+        String path = (_bat529EmbeddedCatalogRead(['["m",[["cloudCalls","/logs/cloudCalls/json"],["locationEvents","/logs/eventsJson"],["hubEvents","/hub/eventsJson"]]]']) as Map)[mode]
         def parsed
         try {
             def text = hubInternalGet(path, null, 30)
@@ -6600,8 +6590,7 @@ private Map _pastLogs(Map args, Map query) {
     try {
         def snapshot = _nativeLogSnapshot(scope, args)
         if (snapshot.state == "pending") {
-            return [status: "in_progress", tool: "hub_get_logs", retryable: true,
-                    note: "Native log history is still loading. Continue with requestState, or repeat the same call on a legacy client."]
+            return (_bat529EmbeddedCatalogRead(['["m",[["status","in_progress"],["tool","hub_get_logs"],["retryable",true],["note","Native log history is still loading. Continue with requestState, or repeat the same call on a legacy client."]]]']) as Map)
         }
         responseText = snapshot.text
         fetchedAt = snapshot.fetchedAt
@@ -6636,7 +6625,7 @@ private Map _pastLogs(Map args, Map query) {
         }
         entries << entry
     }
-    Map out = [mode: "past"] + _logsPage("past", entries, query + [patterns: [single: null, list: []], since: null, until: null, deviceId: null, appId: null])
+    Map out = [mode: "past"] + _logsPage("past", entries, query + (_bat529EmbeddedCatalogRead(['["m",[["patterns",["m",[["single",null],["list",["l",[]]]]]],["since",null],["until",null],["deviceId",null],["appId",null]]]']) as Map))
     out.total = rows.size()
     if (unparseable > 0) out.timeFilterUnparseable = unparseable
     if (fetchedAt != null) out.snapshot = [fetchedAt: fetchedAt, ageMs: Math.max(0L, now() - (fetchedAt as Long))]
@@ -6994,7 +6983,7 @@ def toolGetMemoryHistory(args) {
     def limit = args.limit != null ? args.limit : 100
     def rawText = hubInternalGet("/hub/advanced/freeOSMemoryHistory")
     if (!rawText) {
-        return [entries: [], summary: [message: "No memory history data available"]]
+        return (_bat529EmbeddedCatalogRead(['["m",[["entries",["l",[]]],["summary",["m",[["message","No memory history data available"]]]]]]']) as Map)
     }
     def lines = rawText.trim().split("\n")
     def allEntries = []
@@ -7095,7 +7084,7 @@ private Map _deviceHealthInventory() {
     boolean bypass = _bypassEnabled()
     def allowedIds = (((settings.selectedDevices ?: []) + (getChildDevices() ?: []))).collect((this.&_bat529Cb_7399a956_31))as Set
     if (!bypass && !allowedIds) {
-        return [devices: [], message: "No devices selected for MCP access and no MCP-managed virtual devices"]
+        return (_bat529EmbeddedCatalogRead(['["m",[["devices",["l",[]]],["message","No devices selected for MCP access and no MCP-managed virtual devices"]]]']) as Map)
     }
     def text = hubInternalGet("/hub2/devicesList")
     def parsed = new groovy.json.JsonSlurper().parseText(text ?: "{}")
@@ -7375,12 +7364,10 @@ def toolSetZigbee(args) {
             def rebuildCur = cur.rebuildNetworkOnReboot
             def pingCur = cur.inactiveDevicePingEnabled
             if (args.rebuild_on_reboot == null && !(rebuildCur instanceof Boolean)) {
-                return [success: false, error: "Could not read the current rebuild-on-reboot setting to preserve it.",
-                        note: "Pass rebuild_on_reboot explicitly, or read hub_get_radio_details(radio='zigbee') first."]
+                return (_bat529EmbeddedCatalogRead(['["m",[["success",false],["error","Could not read the current rebuild-on-reboot setting to preserve it."],["note","Pass rebuild_on_reboot explicitly, or read hub_get_radio_details(radio=\'zigbee\') first."]]]']) as Map)
             }
             if (args.ping_inactive == null && !(pingCur instanceof Boolean)) {
-                return [success: false, error: "Could not read the current ping-inactive setting to preserve it.",
-                        note: "Pass ping_inactive explicitly, or read hub_get_radio_details(radio='zigbee') first."]
+                return (_bat529EmbeddedCatalogRead(['["m",[["success",false],["error","Could not read the current ping-inactive setting to preserve it."],["note","Pass ping_inactive explicitly, or read hub_get_radio_details(radio=\'zigbee\') first."]]]']) as Map)
             }
             boolean rebuild = (args.rebuild_on_reboot != null) ? (args.rebuild_on_reboot == true) : (rebuildCur == true)
             boolean ping = (args.ping_inactive != null) ? (args.ping_inactive == true) : (pingCur == true)
@@ -7421,7 +7408,7 @@ def toolCallZwave(args) {
     def action = args.action?.toString()
     if (!action) throw new IllegalArgumentException("action is required. See hub_get_tool_guide for the full action list.")
     def nodeId = args.node_id?.toString()?.trim()
-    def needsNode = action in ["repair_node", "node_refresh", "node_rediscover", "node_reinitialize", "node_remove", "node_replace"]
+    def needsNode = action in (_bat529EmbeddedCatalogRead(['["l",["repair_node","node_refresh","node_rediscover","node_reinitialize","node_remove","node_replace"]]']) as List)
     if (needsNode && !nodeId) {
         throw new IllegalArgumentException("node_id is required for action '${action}'.")
     }
@@ -7568,7 +7555,7 @@ def toolCallZwave(args) {
                 }
                 def lrKeys = args.security_keys.long_range ?: [:]
                 def mainKeys = (args.security_keys).findAll((this.&_bat529Cb_7399a956_16))
-                _zwValidateNetworkKeys(mainKeys, ["S0_Legacy", "S2_Unauthenticated", "S2_Authenticated", "S2_AccessControl"], "security_keys")
+                _zwValidateNetworkKeys(mainKeys, (_bat529EmbeddedCatalogRead(['["l",["S0_Legacy","S2_Unauthenticated","S2_Authenticated","S2_AccessControl"]]']) as List), "security_keys")
                 _zwValidateNetworkKeys(lrKeys, ["S2_Authenticated", "S2_AccessControl"], "security_keys.long_range")
                 def keyBody = [securityKeys: _zwNormalizeKeys(mainKeys), securityKeysLongRange: _zwNormalizeKeys(lrKeys)]
                 resp = _radioPost("/hub/zwave/localBackup/securityKeys/${URLEncoder.encode(args.import_id.toString(), 'UTF-8')}", groovy.json.JsonOutput.toJson(keyBody))
@@ -7589,7 +7576,7 @@ def toolCallZwave(args) {
         throw iae
     } catch (Exception e) {
         mcpLogError("hub-admin", "hub_call_zwave action '${action}' failed", e)
-        def zwJsOnly = action in ["reinterview", "link_test_start", "link_test_stop", "cc_command", "local_backup_create", "local_backup_download", "local_backup_import", "local_backup_keys"]
+        def zwJsOnly = action in (_bat529EmbeddedCatalogRead(['["l",["reinterview","link_test_start","link_test_stop","cc_command","local_backup_create","local_backup_download","local_backup_import","local_backup_keys"]]']) as List)
         def note = "Check Hub Security credentials and that the radio is enabled."
         if (zwJsOnly) {
             def details = _radioGetSafe("/hub/zwaveDetails/json")
@@ -8023,7 +8010,7 @@ def deleteCapturedState(stateId) {
     synchronized (store) {
         Map entries = _captureEntriesLocked(store)
         String id = stateId?.toString()
-        if (!entries) return [success: false, message: "No captured states exist"]
+        if (!entries) return (_bat529EmbeddedCatalogRead(['["m",[["success",false],["message","No captured states exist"]]]']) as Map)
         if (!entries.containsKey(id)) return [success: false, message: "Captured state '${stateId}' not found"]
         entries.remove(id)
         return [success: true, message: "Captured state '${stateId}' deleted", remaining: entries.size()]
@@ -8072,19 +8059,19 @@ def _getAllToolDefinitions_partDiagnostics() {
                 type: "object",
                 properties: [
                     mode: [anyOf: [[type: "string", enum: _logsModeArgs().keySet() as List], [type: "array", items: [type: "string", enum: _logsModeArgs().keySet() as List]]], default: "past", description: "A Logs page tab, or a list of them. past = log history; devices/apps = runtime stats; locationEvents = mode, HSM and variable changes; hubEvents = reboots and low memory; mcp = this app's own log; status = its level."],
-                    level: [type: "string", enum: ["trace", "debug", "info", "warn", "error", "all"], description: "past and mcp."],
-                    deviceId: [type: "string", description: "Numeric device id to scope past logs, stats or jobs to."],
-                    appId: [type: "string", description: "Numeric app id, the same way."],
-                    pattern: [type: "string", description: "Case-insensitive regex over the row's name, and its message, methodName, descriptionText or value where it has one."],
-                    patterns: [type: "array", items: [type: "string"], description: "More regexes, combined by patternMode."],
-                    patternMode: [type: "string", enum: ["any", "all"], description: "Default any."],
-                    since: [type: ["string", "integer"], description: "past and events: rows after this time, so a returned time never repeats. '30m', '2h', '7d', a time as rows show it (no zone = hub time), ISO-8601 with a zone, or epoch ms."],
-                    until: [type: ["string", "integer"], description: "Rows at or before this time."],
-                    sortBy: [type: "string", enum: ["pct", "count", "total", "stateSize", "name"], description: "devices and apps; default pct (% busy)."],
+                    level: (_bat529EmbeddedCatalogRead(['["m",[["type","string"],["enum",["l",["trace","debug","info","warn","error","all"]]],["description","past and mcp."]]]']) as Map),
+                    deviceId: (_bat529EmbeddedCatalogRead(['["m",[["type","string"],["description","Numeric device id to scope past logs, stats or jobs to."]]]']) as Map),
+                    appId: (_bat529EmbeddedCatalogRead(['["m",[["type","string"],["description","Numeric app id, the same way."]]]']) as Map),
+                    pattern: (_bat529EmbeddedCatalogRead(['["m",[["type","string"],["description","Case-insensitive regex over the row\'s name, and its message, methodName, descriptionText or value where it has one."]]]']) as Map),
+                    patterns: (_bat529EmbeddedCatalogRead(['["m",[["type","array"],["items",["m",[["type","string"]]]],["description","More regexes, combined by patternMode."]]]']) as Map),
+                    patternMode: (_bat529EmbeddedCatalogRead(['["m",[["type","string"],["enum",["l",["any","all"]]],["description","Default any."]]]']) as Map),
+                    since: (_bat529EmbeddedCatalogRead(['["m",[["type",["l",["string","integer"]]],["description","past and events: rows after this time, so a returned time never repeats. \'30m\', \'2h\', \'7d\', a time as rows show it (no zone = hub time), ISO-8601 with a zone, or epoch ms."]]]']) as Map),
+                    until: (_bat529EmbeddedCatalogRead(['["m",[["type",["l",["string","integer"]]],["description","Rows at or before this time."]]]']) as Map),
+                    sortBy: (_bat529EmbeddedCatalogRead(['["m",[["type","string"],["enum",["l",["pct","count","total","stateSize","name"]]],["description","devices and apps; default pct (% busy)."]]]']) as Map),
                     limit: [type: "integer", description: "Max rows; 0 = all."],
-                    component: [type: "string", description: "mcp: component substring."],
-                    ruleId: [type: "string", description: "mcp: custom rule id."],
-                    cursor: [type: "string", description: "\"\" for the first page, then nextCursor."],
+                    component: (_bat529EmbeddedCatalogRead(['["m",[["type","string"],["description","mcp: component substring."]]]']) as Map),
+                    ruleId: (_bat529EmbeddedCatalogRead(['["m",[["type","string"],["description","mcp: custom rule id."]]]']) as Map),
+                    cursor: (_bat529EmbeddedCatalogRead(['["m",[["type","string"],["description","\\"\\" for the first page, then nextCursor."]]]']) as Map),
                     pageSize: [type: "integer", description: "Rows per page, 1-100."]
                 ]
             ]
@@ -8107,18 +8094,10 @@ def _getAllToolDefinitions_partDiagnostics() {
     return defs()
 }
 def _readOnlyToolNames_partDiagnostics() {
-    return [
-        "hub_list_captured_states",
-        "hub_get_logs", "hub_get_memory_history", "hub_get_radio_details",
-        "hub_get_metrics",
-        "hub_get_device_health"
-    ]
+    return (_bat529EmbeddedCatalogRead(['["l",["hub_list_captured_states","hub_get_logs","hub_get_memory_history","hub_get_radio_details","hub_get_metrics","hub_get_device_health"]]']) as List)
 }
 def _idempotentWriteToolNames_partDiagnostics() {
-    return [
-        "hub_delete_captured_state", "hub_delete_logs",
-        "hub_set_zwave", "hub_set_zigbee"
-    ]
+    return (_bat529EmbeddedCatalogRead(['["l",["hub_delete_captured_state","hub_delete_logs","hub_set_zwave","hub_set_zigbee"]]']) as List)
 }
 def _openWorldToolNames_partDiagnostics() {
     return [
@@ -8489,9 +8468,9 @@ private Map _hubSubscriptions() {
         if (_hubFirmwareBefore("2.5.2")) out.note = "Subscription status needs firmware 2.5.2 or later."
         return out
     }
-    if (!(raw instanceof Map)) return [error: "/hub/subscriptions/json returned an unexpected shape."]
+    if (!(raw instanceof Map)) return (_bat529EmbeddedCatalogRead(['["m",[["error","/hub/subscriptions/json returned an unexpected shape."]]]']) as Map)
     def out = [:]
-    ["hubProtect", "remoteAdmin", "cloudBackup", "fullLocalBackup"].each { k ->
+    (_bat529EmbeddedCatalogRead(['["l",["hubProtect","remoteAdmin","cloudBackup","fullLocalBackup"]]']) as List).each { k ->
         def v = raw[k]
         if (v instanceof Map) out[k] = [active: v.isActive == true, pendingCancellation: v.pendingCancellation == true, endsAt: v.end_ts, trialAvailable: v.trialAvailable == true]
     }
@@ -8690,7 +8669,7 @@ def toolGetHubInfo(args = null) {
 }
 def toolSetSystemSettings(args) {
     args = args ?: [:]
-    def locationFields = ["hubName", "timeZone", "latitude", "longitude", "zipCode", "temperatureScale"]
+    def locationFields = (_bat529EmbeddedCatalogRead(['["l",["hubName","timeZone","latitude","longitude","zipCode","temperatureScale"]]']) as List)
     def settable = locationFields + ["darkMode", "network", "dismissAlert"]
     if (!settable.any { args.containsKey(it) }) {
         throw new IllegalArgumentException("Provide at least one field to change: ${settable.join(', ')}. All are optional; pass only what changes.")
@@ -8719,8 +8698,7 @@ def toolSetSystemSettings(args) {
                     applied: [], note: "Nothing was changed. Verify the hub is reachable and retry."]
         }
         if (!(cur instanceof Map)) {
-            return [success: false, error: "Unexpected /hub/details/json response; cannot safely merge.",
-                    applied: [], note: "Nothing was changed."]
+            return (_bat529EmbeddedCatalogRead(['["m",[["success",false],["error","Unexpected /hub/details/json response; cannot safely merge."],["applied",["l",[]]],["note","Nothing was changed."]]]']) as Map)
         }
         def payload = [
             name:             args.containsKey("hubName")          ? args.hubName          : cur.hubName,
@@ -8788,7 +8766,7 @@ private _validateNetworkArgs(network) {
     if (!(network instanceof Map)) {
         throw new IllegalArgumentException("network must be an object, e.g. {ipMode:'static', address, netmask, gateway, nameserver} or {ipMode:'dhcp'} or {ethernetAutoneg:true} or {wifiSsid, wifiPassword}.")
     }
-    def known = ["ipMode", "address", "netmask", "gateway", "nameserver", "useDNSFallover", "ethernetAutoneg", "wifiSsid", "wifiPassword"]
+    def known = (_bat529EmbeddedCatalogRead(['["l",["ipMode","address","netmask","gateway","nameserver","useDNSFallover","ethernetAutoneg","wifiSsid","wifiPassword"]]']) as List)
     def unknown = (network.keySet()).findAll(((this.&_bat529Cb_523e098a_9).curry([known] as Object[])))
     if (unknown) throw new IllegalArgumentException("Unknown network field(s): ${unknown.join(', ')}. Valid: ${known.join(', ')}.")
     if (network.isEmpty()) {
@@ -8979,7 +8957,7 @@ def toolGetHubMesh(args = null) {
 }
 def toolUpdateHubMesh(args) {
     args = args ?: [:]
-    def settable = ["enabled", "full_refresh_interval", "mode_hub_id", "peer_hub_id", "peer_token"]
+    def settable = (_bat529EmbeddedCatalogRead(['["l",["enabled","full_refresh_interval","mode_hub_id","peer_hub_id","peer_token"]]']) as List)
     if (!settable.any { args.containsKey(it) }) {
         throw new IllegalArgumentException(
             "Provide at least one field to change: ${settable.join(', ')}. All are optional; pass only what changes. " +
@@ -9300,9 +9278,7 @@ private Map _readHubNetworkSettings() {
     }
     if (!(parsed instanceof Map)) {
         mcpLog("warn", "server", "hub_get_info includeNetwork: /hub2/networkConfiguration parsed to a non-object shape")
-        return [success: false,
-                error: "Unexpected /hub2/networkConfiguration response; it parsed as JSON but not as an object.",
-                note: "The endpoint returned an unrecognized shape. See hub_get_tool_guide(section='hub_admin_write_system')."]
+        return (_bat529EmbeddedCatalogRead(['["m",[["success",false],["error","Unexpected /hub2/networkConfiguration response; it parsed as JSON but not as an object."],["note","The endpoint returned an unrecognized shape. See hub_get_tool_guide(section=\'hub_admin_write_system\')."]]]']) as Map)
     }
     def knownKeys = (_bat529EmbeddedCatalogRead(['["l",["usingStaticIP","lanAddr","wlanAddr","dnsServers","staticIP","staticGateway","staticSubnetMask","staticNameServers","dhcpNameServers","useDNSFallover","lanAutoneg","hasEthernet","hasWiFi","wifiNetwork","wifiDriversInstalled","restartBonjourOnSchedule","hubVersion"]]']) as List)
     if (!knownKeys.any { parsed.containsKey(it) }) {
@@ -9462,11 +9438,7 @@ def checkForUpdate() {
 }
 def doUpdateCheck() {
     try {
-        def params = [
-            uri: "https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server/main/packageManifest.json",
-            contentType: "application/json",
-            timeout: 30
-        ]
+        def params = (_bat529EmbeddedCatalogRead(['["m",[["uri","https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server/main/packageManifest.json"],["contentType","application/json"],["timeout",30]]]']) as Map)
         asynchttpGet("handleUpdateCheckResponse", params)
         return true
     } catch (Exception e) {
@@ -9552,9 +9524,9 @@ private Map _parseFirmwareCheck(rawText) {
             out.remove("accountEmails")
             return out
         }
-        return [parseError: "The update check did not answer with a JSON object."]
+        return (_bat529EmbeddedCatalogRead(['["m",[["parseError","The update check did not answer with a JSON object."]]]']) as Map)
     } catch (Exception ignored) {
-        return [parseError: "The update check's answer could not be parsed as JSON."]
+        return (_bat529EmbeddedCatalogRead(['["m",[["parseError","The update check\'s answer could not be parsed as JSON."]]]']) as Map)
     }
 }
 def _getAllToolDefinitions_partSystem() {
@@ -9573,10 +9545,10 @@ def _getAllToolDefinitions_partSystem() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    enabled: [type: "boolean", description: "Hub Mesh on/off. ⚠️ Needs a hub reboot to take effect."],
+                    enabled: (_bat529EmbeddedCatalogRead(['["m",[["type","boolean"],["description","Hub Mesh on/off. \\u26a0\\ufe0f Needs a hub reboot to take effect."]]]']) as Map),
                     full_refresh_interval: [type: "integer", enum: _meshRefreshIntervals(), description: "Full-sync interval in seconds; 0 = never."],
-                    mode_hub_id: [type: "string", description: "Peer hubId whose modes to follow, or 'none' for local modes.[[FLAT_TRIM]] From hub_get_hub_mesh peers[].hubId.[[/FLAT_TRIM]]"],
-                    peer_hub_id: [type: "string", description: "Peer hubId whose mesh token is stored here; send with peer_token.[[FLAT_TRIM]] A UUID (or legacy numeric id) from hub_get_hub_mesh peers[].hubId.[[/FLAT_TRIM]]"],
+                    mode_hub_id: (_bat529EmbeddedCatalogRead(['["m",[["type","string"],["description","Peer hubId whose modes to follow, or \'none\' for local modes.[[FLAT_TRIM]] From hub_get_hub_mesh peers[].hubId.[[/FLAT_TRIM]]"]]]']) as Map),
+                    peer_hub_id: (_bat529EmbeddedCatalogRead(['["m",[["type","string"],["description","Peer hubId whose mesh token is stored here; send with peer_token.[[FLAT_TRIM]] A UUID (or legacy numeric id) from hub_get_hub_mesh peers[].hubId.[[/FLAT_TRIM]]"]]]']) as Map),
                     peer_token: [type: "string", description: "That peer's mesh token; send with peer_hub_id.[[FLAT_TRIM]] Read it on the peer via hub_get_hub_mesh(include_token=true); needed when the peer has UI login security.[[/FLAT_TRIM]]"]
                 ]
             ]
@@ -9588,15 +9560,10 @@ def _getAllToolDefinitions_partSystem() {
     return defs()
 }
 def _readOnlyToolNames_partSystem() {
-    return [
-        "hub_get_info", "hub_list_modes", "hub_get_hsm_status", "hub_get_hub_mesh"
-    ]
+    return (_bat529EmbeddedCatalogRead(['["l",["hub_get_info","hub_list_modes","hub_get_hsm_status","hub_get_hub_mesh"]]']) as List)
 }
 def _idempotentWriteToolNames_partSystem() {
-    return [
-        "hub_set_hsm", "hub_set_mode_manager",
-        "hub_update_hub_mesh"
-    ]
+    return (_bat529EmbeddedCatalogRead(['["l",["hub_set_hsm","hub_set_mode_manager","hub_update_hub_mesh"]]']) as List)
 }
 def _openWorldToolNames_partSystem() {
     return [
@@ -10047,9 +10014,7 @@ def _validateListDeviceStateArgTypes(roomFilter, onlyOn, changedSince, attribute
     }
 }
 private List _contextAttributeNames() {
-    ["switch", "level", "motion", "contact", "presence", "lock", "temperature", "humidity",
-     "illuminance", "battery", "power", "energy", "thermostatMode", "thermostatOperatingState",
-     "heatingSetpoint", "coolingSetpoint", "speed", "position", "valve", "water", "smoke"]
+    (_bat529EmbeddedCatalogRead(['["l",["switch","level","motion","contact","presence","lock","temperature","humidity","illuminance","battery","power","energy","thermostatMode","thermostatOperatingState","heatingSetpoint","coolingSetpoint","speed","position","valve","water","smoke"]]']) as List)
 }
 private List _contextHeaderLines() {
     def header = ["Mode: ${location.mode ?: 'unknown'}".toString()]
@@ -10130,8 +10095,7 @@ private int _hydrateNativeInventory(List records, List requiredCollections, bool
             def fj = _fetchDeviceFullJson(record.id)
             if (!(fj?.device instanceof Map)) {
                 if (!allowPartial) throw new IllegalStateException("Native device metadata is unavailable for device ${record.id}; no SDK fallback was used.")
-                record.putAll([_nativeLoaded: true, _nativeReadError: true,
-                    _nativeUnavailableCollections: ['currentStates', 'capabilities', 'commands']])
+                record.putAll((_bat529EmbeddedCatalogRead(['["m",[["_nativeLoaded",true],["_nativeReadError",true],["_nativeUnavailableCollections",["l",["currentStates","capabilities","commands"]]]]]']) as Map))
                 continue
             }
             def d = fj.device
@@ -10178,7 +10142,7 @@ private int _loadContextResourcePopulation(List records, Map inventory = null) {
             }
         } else {
             unread++
-            record.putAll([_nativeReadError: true, _nativeUnavailableCollections: ['currentStates', 'capabilities', 'commands']])
+            record.putAll((_bat529EmbeddedCatalogRead(['["m",[["_nativeReadError",true],["_nativeUnavailableCollections",["l",["currentStates","capabilities","commands"]]]]]']) as Map))
         }
     }
     if (unread) mcpLog("warn", "device", "context resource: ${unread} device(s) not covered by the bulk inventory exceeded the per-device read cap (${_contextResourcePerDeviceFetchCap()}); reported with state unavailable.")
@@ -10327,7 +10291,7 @@ private Map _fetchAllHubDeviceRecords(String logCategory, String logPrefix) {
         spine = _flattenHub2DeviceTree(parsed instanceof Map ? parsed.devices : null)
         if (!(spine instanceof List)) {
             mcpLog("warn", logCategory, "${logPrefix}: /hub2/devicesList returned an unexpected shape")
-            spineFailure = [source: "/hub2/devicesList", capabilities: false, records: null, failure: "shape"]
+            spineFailure = (_bat529EmbeddedCatalogRead(['["m",[["source","/hub2/devicesList"],["capabilities",false],["records",null],["failure","shape"]]]']) as Map)
             spine = null
         }
     } catch (Exception e) {
@@ -10442,8 +10406,7 @@ private Map _listAllHubDevices(offset, limit, labelFilter, capabilityFilter, for
     }
     def raw = inventory.records
     if (!(raw instanceof List) || (raw).any((this.&_bat529Cb_15d0a4c9_79))) {
-        return [success: false, isError: true, error: "Native device inventory contained an invalid record.",
-                note: "Retry after checking hub firmware; an incomplete device list was not returned."]
+        return (_bat529EmbeddedCatalogRead(['["m",[["success",false],["isError",true],["error","Native device inventory contained an invalid record."],["note","Retry after checking hub firmware; an incomplete device list was not returned."]]]']) as Map)
     }
     def sourceEndpoint = inventory.source
     def capabilitiesComplete = inventory.capabilities && (raw).every((this.&_bat529Cb_15d0a4c9_62))
@@ -10701,10 +10664,9 @@ private Map _normalizeDevicePreferenceValue(raw, String type, boolean multiple =
 private Map _readDevicePreferenceModel(Map fullJson) {
     def definitions = fullJson?.get('settings')
     if (!(definitions instanceof List)) {
-        return [status: 'unavailable', source: 'settings', entries: [],
-                reason: 'Native device details did not contain a recognized top-level settings array.']
+        return (_bat529EmbeddedCatalogRead(['["m",[["status","unavailable"],["source","settings"],["entries",["l",[]]],["reason","Native device details did not contain a recognized top-level settings array."]]]']) as Map)
     }
-    def model = [status: 'complete', source: 'settings', entries: [], writeSafe: true]
+    def model = (_bat529EmbeddedCatalogRead(['["m",[["status","complete"],["source","settings"],["entries",["l",[]]],["writeSafe",true]]]']) as Map)
     def inputs = [:]
     def duplicates = []
     def rawInputs = fullJson.get('inputValues')
@@ -10802,9 +10764,7 @@ private List _deviceConfigurationFieldDefinitions() {
 }
 private List _deviceConfigurationEditableFields(Map fj, Map preferences) {
     Map d = (fj?.device instanceof Map) ? fj.device : [:]
-    def values = _deviceConfigurationProjection(d, ['label', 'name', 'deviceNetworkId', 'showOnHome',
-        'defaultCurrentState', 'deviceTypeId', 'zigbeeId', 'notes', 'defaultIcon', 'maxEvents', 'maxStates',
-        'spammyThreshold', 'meshEnabled', 'retryEnabled', 'meshFullSync'])
+    def values = _deviceConfigurationProjection(d, (_bat529EmbeddedCatalogRead(['["l",["label","name","deviceNetworkId","showOnHome","defaultCurrentState","deviceTypeId","zigbeeId","notes","defaultIcon","maxEvents","maxStates","spammyThreshold","meshEnabled","retryEnabled","meshFullSync"]]']) as List))
     if (d.containsKey('roomName')) values.room = d.roomName
     if (d.containsKey('disabled')) {
         def disabled = _normalizeDevicePreferenceValue(d.disabled, 'bool')
@@ -10836,7 +10796,7 @@ private List _deviceConfigurationEditableFields(Map fj, Map preferences) {
     return fields
 }
 private Map _deviceConfigurationDriverSource(Map d, deviceId) {
-    def lookup = [gateway: 'hub_read_apps_code', tool: 'hub_list_drivers', args: [include: 'user']]
+    def lookup = (_bat529EmbeddedCatalogRead(['["m",[["gateway","hub_read_apps_code"],["tool","hub_list_drivers"],["args",["m",[["include","user"]]]]]]']) as Map)
     if (d.systemDeviceType == true || (d.driverType ?: d.deviceTypeType) in ['sys', 'system']) {
         return [status: 'unavailable', reason: 'Built-in driver source is not exposed by the user driver-code endpoint.', lookup: lookup]
     }
@@ -10949,7 +10909,7 @@ private _fullJsonCommandArgs(c) {
     return null
 }
 private List _deviceDetailSections() {
-    return ['configuration', 'identity', 'attributes', 'commands', 'data', 'state', 'relationships', 'jobs', 'integrations', 'metadata']
+    return (_bat529EmbeddedCatalogRead(['["l",["configuration","identity","attributes","commands","data","state","relationships","jobs","integrations","metadata"]]']) as List)
 }
 private Map _deviceDetailSourceCoverage(Map fj) {
     def rootKeys = (_bat529EmbeddedCatalogRead(['["l",["device","settings","inputValues","commands","deviceState","scheduledJobs","parentApp","childDevices","hasChildren","appsUsing","appsUsingCount","appsUsingForDialog","appsUsingForDialogMore","amazonAlexaEnabled","amazonAlexaInstalled","amazonAlexaSupported","googleHomeEnabled","googleHomeInstalled","googleHomeSupported","homeKitEnabled","homeKitSelectionEnabled","dashboards","hasDashboards","dashboardTypes","commandRetrySelectionEnabled","hubMeshRefreshEnabled","showInstructionSearchLink","extraBreadcrumb","virtualFirst","tags"]]']) as List)
@@ -10958,12 +10918,11 @@ private Map _deviceDetailSourceCoverage(Map fj) {
     def unknownDevice = fj?.device instanceof Map ? (fj.device.keySet()).findAll(((this.&_bat529Cb_15d0a4c9_96).curry([deviceKeys] as Object[]))).toList() : []
     return [status: fj?.device instanceof Map ? (unknownRoot || unknownDevice ? 'partial' : 'complete') : 'unavailable',
             unmappedRootFields: unknownRoot, unmappedDeviceFields: unknownDevice,
-            representedSeparately: [settings: 'configuration.preferences', inputValues: 'configuration.preferences',
-                                   'device.dataJson': 'data (parsed native data map; raw duplicate omitted)']]
+            representedSeparately: (_bat529EmbeddedCatalogRead(['["m",[["settings","configuration.preferences"],["inputValues","configuration.preferences"],["device.dataJson","data (parsed native data map; raw duplicate omitted)"]]]']) as Map)]
 }
 private Map _deviceDetailReadStatus(String section, Map fj, Map d, value, deviceId) {
     def status = [status: 'complete', source: "/device/fullJson/${deviceId}".toString()]
-    if (d.isEmpty()) return status + [status: 'unavailable', reason: 'Native device details could not be fetched or recognized.']
+    if (d.isEmpty()) return status + (_bat529EmbeddedCatalogRead(['["m",[["status","unavailable"],["reason","Native device details could not be fetched or recognized."]]]']) as Map)
     if (section == 'configuration') {
         return status + [status: value.preferenceRead.status] + (value.preferenceRead.reason ? [reason: value.preferenceRead.reason] : [:])
     }
@@ -11400,8 +11359,7 @@ private Map _fireBypassCommand(deviceId, command, List params, Map fullJson) {
     def args = _buildRunMethodArgs(command, params, fullJson)
     def body = groovy.json.JsonOutput.toJson([id: _runMethodDeviceId(deviceId), method: command, args: args])
     def resp
-    def unknownOutcome = [success: false, isError: true, outcomeUnknown: true,
-        note: "The command may already have executed. Inspect device state and events before deciding whether to repeat it; do not automatically replay non-idempotent commands."]
+    def unknownOutcome = (_bat529EmbeddedCatalogRead(['["m",[["success",false],["isError",true],["outcomeUnknown",true],["note","The command may already have executed. Inspect device state and events before deciding whether to repeat it; do not automatically replay non-idempotent commands."]]]']) as Map)
     try {
         resp = hubInternalPostJson("/device/runmethod", body)
     } catch (Exception e) {
@@ -12250,11 +12208,10 @@ private Map _devicePreferencePanePayload(deviceId, Map overrides = [:], List pre
     return payload
 }
 private List _deviceExtendedFormProperties() {
-    return ["deviceTypeId", "zigbeeId", "notes", "maxEvents", "maxStates", "spammyThreshold",
-        "defaultIcon", "dashboardIds", "meshEnabled", "retryEnabled", "meshFullSync"]
+    return (_bat529EmbeddedCatalogRead(['["l",["deviceTypeId","zigbeeId","notes","maxEvents","maxStates","spammyThreshold","defaultIcon","dashboardIds","meshEnabled","retryEnabled","meshFullSync"]]']) as List)
 }
 private Map _deviceAssistantProperties() {
-    return [homeKitEnabled: "homeKit", amazonAlexaEnabled: "amazonAlexa", googleHomeEnabled: "googleHome"]
+    return (_bat529EmbeddedCatalogRead(['["m",[["homeKitEnabled","homeKit"],["amazonAlexaEnabled","amazonAlexa"],["googleHomeEnabled","googleHome"]]]']) as Map)
 }
 private boolean _deviceFlag(value) {
     return value == true || value?.toString() == "true"
@@ -12310,7 +12267,7 @@ private Map _prepareDeviceUpdatePatch(Map original, deviceId, Map suppliedFull =
     def args = new LinkedHashMap(original)
     def allowed = ["deviceId", "bestPracticeKey", "label", "name", "deviceNetworkId", "room", "enabled", "dataValues", "preferences", "showOnHome", "defaultCurrentState", "tags", "confirm"] + _deviceExtendedFormProperties() + _deviceAssistantProperties().keySet().toList()
     if ((args.keySet()).any(((this.&_bat529Cb_15d0a4c9_94).curry([allowed] as Object[])))) throw new IllegalArgumentException("Unknown device update property; read hub_get_device(mode='configuration') for supported fields")
-    def stringFields = ["label", "name", "deviceNetworkId", "room", "defaultCurrentState", "zigbeeId", "notes", "defaultIcon"]
+    def stringFields = (_bat529EmbeddedCatalogRead(['["l",["label","name","deviceNetworkId","room","defaultCurrentState","zigbeeId","notes","defaultIcon"]]']) as List)
     (stringFields).each(((this.&_bat529Cb_15d0a4c9_221).curry([args] as Object[])))
     def booleanFields = ["enabled", "showOnHome", "meshEnabled", "retryEnabled", "meshFullSync", "confirm"] + _deviceAssistantProperties().keySet().toList()
     (booleanFields).each(((this.&_bat529Cb_15d0a4c9_223).curry([args] as Object[])))
@@ -12473,7 +12430,7 @@ private void _applyExtendedDeviceUpdate(Map args, deviceId, Map full, List chang
             _saveDevicePreferencePaneControls(deviceId, [commandRetry: wanted])
             def readback = _fetchDeviceFullJson(deviceId)?.device
             if (readback?.retryEnabled instanceof Boolean && readback.retryEnabled == wanted) changes << [property: "retryEnabled", newValue: wanted]
-            else errors << [property: "retryEnabled", error: "POST accepted but could not confirm retryEnabled; native read-back did not match."]
+            else errors << (_bat529EmbeddedCatalogRead(['["m",[["property","retryEnabled"],["error","POST accepted but could not confirm retryEnabled; native read-back did not match."]]]']) as Map)
         } catch (Exception e) { errors << [property: "retryEnabled", error: e.message ?: e.toString()] }
     }
     def formProperties = (_deviceExtendedFormProperties()).findAll(((this.&_bat529Cb_15d0a4c9_130).curry([args] as Object[])))
@@ -12550,7 +12507,7 @@ private Map _toolUpdateDeviceNative(args, deviceId, Map fj) {
                 usedForm = true
             }
             if (!accepted) {
-                errors << [property: "label", error: "Hub did not accept the label update; inspect the native device details before retrying."]
+                errors << (_bat529EmbeddedCatalogRead(['["m",[["property","label"],["error","Hub did not accept the label update; inspect the native device details before retrying."]]]']) as Map)
             } else {
                 if (!usedForm) readback = _fetchDeviceFullJson(deviceId)?.device
                 if (readback?.containsKey("label") && (readback.label == null ? "" : readback.label.toString()) == wanted) {
@@ -12603,10 +12560,10 @@ private Map _toolUpdateDeviceNative(args, deviceId, Map fj) {
             if (args.room == "" || args.room == "none" || args.room == "null") {
                 def vd = _postBypassDeviceModel(deviceId, [roomId: 0], errors)
                 if (vd == null) {
-                    errors << [property: "room", error: "POST accepted but the read-back to confirm the unassign failed (/device/fullJson)."]
+                    errors << (_bat529EmbeddedCatalogRead(['["m",[["property","room"],["error","POST accepted but the read-back to confirm the unassign failed (/device/fullJson)."]]]']) as Map)
                 } else if (!vd.containsKey('roomName') ||
                     (vd.roomName != null && !(vd.roomName instanceof String))) {
-                    errors << [property: "room", error: "POST accepted but roomName is unavailable or invalid; the unassign could not be confirmed."]
+                    errors << (_bat529EmbeddedCatalogRead(['["m",[["property","room"],["error","POST accepted but roomName is unavailable or invalid; the unassign could not be confirmed."]]]']) as Map)
                 } else if (vd.roomName == null || vd.roomName == '') {
                     changes << [property: "room", oldValue: d.roomName ?: "none", newValue: "none"]
                 } else {
@@ -12619,7 +12576,7 @@ private Map _toolUpdateDeviceNative(args, deviceId, Map fj) {
                 if (r?.toString()?.trim()?.toLowerCase() == "true") {
                     def vd = _fetchDeviceFullJson(deviceId)?.device
                     if (vd == null) {
-                        errors << [property: "room", error: "POST accepted but could not confirm the room change -- the read-back fetch failed."]
+                        errors << (_bat529EmbeddedCatalogRead(['["m",[["property","room"],["error","POST accepted but could not confirm the room change -- the read-back fetch failed."]]]']) as Map)
                     } else if (vd.roomName?.toString() == canonicalName) {
                         changes << [property: "room", oldValue: d.roomName ?: "none", newValue: canonicalName]
                     } else {
@@ -12638,7 +12595,7 @@ private Map _toolUpdateDeviceNative(args, deviceId, Map fj) {
             hubInternalPostJson("/device/disable", groovy.json.JsonOutput.toJson([id: _prefSaveDeviceId(deviceId), disable: !args.enabled]))
             def res = _confirmDisabledFlip(deviceId, !args.enabled)
             if (res.fetchFailed) {
-                errors << [property: "enabled", error: "POST accepted but could not confirm the change -- the read-back fetch failed."]
+                errors << (_bat529EmbeddedCatalogRead(['["m",[["property","enabled"],["error","POST accepted but could not confirm the change -- the read-back fetch failed."]]]']) as Map)
             } else if (res.ok) {
                 changes << [property: "enabled", newValue: args.enabled]
             } else {
@@ -12801,8 +12758,7 @@ def toolCreateDevice(args) {
         def catalogText = hubInternalGet('/device/drivers')
         def catalog = catalogText ? new groovy.json.JsonSlurper().parseText(catalogText) : null
         if (!(catalog instanceof Map) || !(catalog.drivers instanceof List)) {
-            return [success: false, isError: true, error: 'The native driver catalog is unavailable or invalid; no device create request sent.',
-                    note: "Verify the deviceTypeId via hub_list_drivers(include='all')."]
+            return (_bat529EmbeddedCatalogRead(['["m",[["success",false],["isError",true],["error","The native driver catalog is unavailable or invalid; no device create request sent."],["note","Verify the deviceTypeId via hub_list_drivers(include=\'all\')."]]]']) as Map)
         }
         def matches = catalog.drivers.findAll { row -> row instanceof Map && row.id?.toString() == typeId }
         if (matches.size() != 1 || !(matches[0].type in ['sys', 'usr'])) {
@@ -12811,8 +12767,7 @@ def toolCreateDevice(args) {
         }
         driverType = matches[0].type.toString()
     } catch (Exception e) {
-        return [success: false, isError: true, error: 'Hub call failed reading the driver catalog; no device create request sent.',
-                note: "Verify the deviceTypeId via hub_list_drivers(include='all')."]
+        return (_bat529EmbeddedCatalogRead(['["m",[["success",false],["isError",true],["error","Hub call failed reading the driver catalog; no device create request sent."],["note","Verify the deviceTypeId via hub_list_drivers(include=\'all\')."]]]']) as Map)
     }
     def resp
     try {
@@ -12938,7 +12893,7 @@ private Map _createLinkedMeshDevice(String meshHubId, String meshDeviceId) {
             message: "Hub Mesh device shared by hub ${meshHubId} was already linked here${existing ? " as local device ${existing.id}" : ''}.",
             note: "This is a local proxy for a device on the peer hub; unlink it (local only) with hub_delete_device. Read all linked devices via hub_get_hub_mesh."
         ]
-        if (existing == null) already.warnings = ["Already linked, but could not resolve the existing local id from hub_get_hub_mesh localLinkedDevices. Find it with hub_get_hub_mesh."]
+        if (existing == null) already.warnings = (_bat529EmbeddedCatalogRead(['["l",["Already linked, but could not resolve the existing local id from hub_get_hub_mesh localLinkedDevices. Find it with hub_get_hub_mesh."]]']) as List)
         return already
     }
     if (availBefore != null && srcBefore == null) {
@@ -13043,7 +12998,7 @@ def toolGetCompatibleDevices(args) {
                 note: "This is Hubitat's static compatibility catalog; it needs hub connectivity."]
     }
     if (!(list instanceof List)) {
-        return [success: false, error: "Unexpected response shape from /hub/compatibleDevices.", devices: []]
+        return (_bat529EmbeddedCatalogRead(['["m",[["success",false],["error","Unexpected response shape from /hub/compatibleDevices."],["devices",["l",[]]]]]']) as Map)
     }
     def stripHtml = { s ->
         if (s == null) return null
@@ -13565,7 +13520,7 @@ def _getAllToolDefinitions_partDevices() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    deviceId: [type: "string", description: "Device ID from hub_list_devices, e.g. \"42\""],
+                    deviceId: (_bat529EmbeddedCatalogRead(['["m",[["type","string"],["description","Device ID from hub_list_devices, e.g. \\"42\\""]]]']) as Map),
                     mode: (_bat529EmbeddedCatalogRead(['["m",[["type","string"],["enum",["l",["summary","configuration","details"]]],["default","summary"],["description","summary: concise capabilities/attributes/commands; configuration: valid editable fields and preference definitions/current values; details: all available information in selectable sections."]]]']) as Map),
                     sections: [type: "array", items: [type: "string", enum: _deviceDetailSections()],
                                description: "details mode only: non-empty section selection. Omit for all sections.[[FLAT_TRIM]] Large histories remain reachable through read-tool references.[[/FLAT_TRIM]]"],
@@ -13588,10 +13543,7 @@ def _getAllToolDefinitions_partDevices() {
     return defs()
 }
 def _readOnlyToolNames_partDevices() {
-    return [
-        "hub_list_devices", "hub_get_device", "hub_get_device_attribute", "hub_list_device_events",
-        "hub_get_compatible_devices"
-    ]
+    return (_bat529EmbeddedCatalogRead(['["l",["hub_list_devices","hub_get_device","hub_get_device_attribute","hub_list_device_events","hub_get_compatible_devices"]]']) as List)
 }
 def _idempotentWriteToolNames_partDevices() {
     return [
@@ -14759,10 +14711,10 @@ def _bat529Cb_15d0a4c9_270(def applicable, def d, def fj, def preferences, def v
             if (!field.applicable) field.reason = 'Driver preferences cannot be saved on a linked device; edit the source device.'
             else if (preferences.reason) field.reason = preferences.reason
         }
-        if (name == 'room') field.optionsReference = [gateway: 'hub_read_rooms', tool: 'hub_list_rooms', args: [:]]
-        if (name == 'deviceTypeId') field.optionsReference = [gateway: 'hub_read_apps_code', tool: 'hub_list_drivers', args: [include: 'all']]
+        if (name == 'room') field.optionsReference = (_bat529EmbeddedCatalogRead(['["m",[["gateway","hub_read_rooms"],["tool","hub_list_rooms"],["args",["m",[]]]]]']) as Map)
+        if (name == 'deviceTypeId') field.optionsReference = (_bat529EmbeddedCatalogRead(['["m",[["gateway","hub_read_apps_code"],["tool","hub_list_drivers"],["args",["m",[["include","all"]]]]]]']) as Map)
         if (name == 'deviceNetworkId' && d.linkedDevice) {
-            field.options = [[value: '0', label: 'Keep current device link']]
+            field.options = (_bat529EmbeddedCatalogRead(['["l",[["m",[["value","0"],["label","Keep current device link"]]]]]']) as List)
             try {
                 def text = hubInternalGet('/device/accessibleLinkedDevices')
                 def available = text ? new groovy.json.JsonSlurper().parseText(text) : null
@@ -14789,9 +14741,8 @@ def _bat529Cb_15d0a4c9_271(def d, def deviceId, def fields, def fj, def identity
                 value.driver = _deviceConfigurationInfo(fj).driver
                 break
             case 'attributes':
-                value = _deviceConfigurationProjection(d, ['capabilities', 'currentStates', 'displayAttributes', 'defaultCurrentState'])
-                value.attributeCoverage = [source: 'device.currentStates', declarationsComplete: false,
-                    note: 'Unset or cleared attributes can be absent; absence does not establish an unsupported attribute.']
+                value = _deviceConfigurationProjection(d, (_bat529EmbeddedCatalogRead(['["l",["capabilities","currentStates","displayAttributes","defaultCurrentState"]]']) as List))
+                value.attributeCoverage = (_bat529EmbeddedCatalogRead(['["m",[["source","device.currentStates"],["declarationsComplete",false],["note","Unset or cleared attributes can be absent; absence does not establish an unsupported attribute."]]]']) as Map)
                 if (d.currentStates instanceof Map) value.declaredAttributes = (_nativeReportedDeviceAttributes(d)).collect((this.&_bat529Cb_15d0a4c9_246))
                 break
             case 'commands':
@@ -14804,9 +14755,9 @@ def _bat529Cb_15d0a4c9_271(def d, def deviceId, def fields, def fj, def identity
                 value = _deviceConfigurationPublicValue(fj?.deviceState)
                 break
             case 'relationships':
-                keys = ['parentApp', 'childDevices', 'hasChildren', 'appsUsing', 'appsUsingCount', 'appsUsingForDialog', 'appsUsingForDialogMore']
+                keys = (_bat529EmbeddedCatalogRead(['["l",["parentApp","childDevices","hasChildren","appsUsing","appsUsingCount","appsUsingForDialog","appsUsingForDialogMore"]]']) as List)
                 value = _deviceConfigurationProjection(fj, keys)
-                value.device = _deviceConfigurationProjection(d, ['parentDeviceId', 'parentAppId', 'displayAsChild', 'compatibleDeviceId', 'linkedDevice', 'linkedAndDisabled'])
+                value.device = _deviceConfigurationProjection(d, (_bat529EmbeddedCatalogRead(['["l",["parentDeviceId","parentAppId","displayAsChild","compatibleDeviceId","linkedDevice","linkedAndDisabled"]]']) as List))
                 break
             case 'jobs':
                 value = _deviceConfigurationPublicValue(fj?.scheduledJobs)
@@ -14814,13 +14765,11 @@ def _bat529Cb_15d0a4c9_271(def d, def deviceId, def fields, def fj, def identity
             case 'integrations':
                 keys = (_bat529EmbeddedCatalogRead(['["l",["amazonAlexaEnabled","amazonAlexaInstalled","amazonAlexaSupported","googleHomeEnabled","googleHomeInstalled","googleHomeSupported","homeKitEnabled","homeKitSelectionEnabled","dashboards","hasDashboards","dashboardTypes","commandRetrySelectionEnabled","hubMeshRefreshEnabled"]]']) as List)
                 value = _deviceConfigurationProjection(fj, keys)
-                value.device = _deviceConfigurationProjection(d, ['meshEnabled', 'meshFullSync', 'meshSelectionEnabled',
-                    'retryEnabled', 'retryAvailable', 'homeKitCompatible', 'remoteDeviceUrl', 'linkedDevice',
-                    'linkedAndDisabled', 'linkedLocally', 'ZWave', 'zigbee', 'matter', 'bluetooth'])
+                value.device = _deviceConfigurationProjection(d, (_bat529EmbeddedCatalogRead(['["l",["meshEnabled","meshFullSync","meshSelectionEnabled","retryEnabled","retryAvailable","homeKitCompatible","remoteDeviceUrl","linkedDevice","linkedAndDisabled","linkedLocally","ZWave","zigbee","matter","bluetooth"]]']) as List))
                 break
             case 'metadata':
                 value = _deviceConfigurationProjection(d, (_bat529EmbeddedCatalogRead(['["l",["notes","tags","maxEvents","maxStates","spammyThreshold","defaultIcon","icon","showOnHome","deviceTypeClassLocation","deviceTypePopulated","deviceTypeSingleThreaded","deviceTypeReadableType","deviceTypeType","driverType","systemDeviceType","deviceTypeId","deviceTypeName","deviceTypeNamespace"]]']) as List))
-                value.ui = _deviceConfigurationProjection(fj, ['showInstructionSearchLink', 'extraBreadcrumb', 'virtualFirst', 'tags'])
+                value.ui = _deviceConfigurationProjection(fj, (_bat529EmbeddedCatalogRead(['["l",["showInstructionSearchLink","extraBreadcrumb","virtualFirst","tags"]]']) as List))
                 break
         }
         result.sectionRead.put(section, _deviceDetailReadStatus(section, fj, d, value, deviceId))
@@ -15008,12 +14957,7 @@ def toolListVirtualDevices(args) {
     if (offset < 0) offset = 0
     if (!childDevs) {
         if (cursor != null) _parseListCursor(cursor, 0, "hub_list_devices(filter='virtual')")
-        def empty = [
-            devices: [],
-            count: 0,
-            total: 0,
-            message: "No MCP-managed virtual devices found. Use hub_manage_virtual_device(action=\"create\") to create one."
-        ]
+        def empty = (_bat529EmbeddedCatalogRead(['["m",[["devices",["l",[]]],["count",0],["total",0],["message","No MCP-managed virtual devices found. Use hub_manage_virtual_device(action=\\"create\\") to create one."]]]']) as Map)
         if (limit > 0) {
             empty.offset = 0
             empty.limit = limit
@@ -15042,7 +14986,7 @@ def toolListVirtualDevices(args) {
                 currentStates: [:]]
             (summary.attributes).each(((this.&_bat529Cb_0153e466_13).curry([info] as Object[])))
             if (!namespace || !typeName) {
-                info.warnings = ['Native driver namespace or type metadata is unavailable; no driver identity was inferred.']
+                info.warnings = (_bat529EmbeddedCatalogRead(['["l",["Native driver namespace or type metadata is unavailable; no driver identity was inferred."]]']) as List)
             }
             return info
         } catch (Exception ignored) {
@@ -15079,7 +15023,7 @@ def toolListVirtualDevices(args) {
         result.success = hasReadableDevices
         if (hasReadableDevices) {
             result.partialSuccess = true
-            result.warnings = ['Native information could not be read for one or more MCP-managed virtual devices.']
+            result.warnings = (_bat529EmbeddedCatalogRead(['["l",["Native information could not be read for one or more MCP-managed virtual devices."]]']) as List)
         } else {
             result.isError = true
             result.error = 'Native information could not be read for any requested MCP-managed virtual devices.'
@@ -15149,13 +15093,13 @@ action="delete": provide the target deviceNetworkId.
             inputSchema: [
                 type: "object",
                 properties: [
-                    action: [type: "string", description: "Operation to perform", enum: ["create", "delete"]],
+                    action: (_bat529EmbeddedCatalogRead(['["m",[["type","string"],["description","Operation to perform"],["enum",["l",["create","delete"]]]]]']) as Map),
                     deviceType: [type: "string", description: "Built-in virtual driver type for create; mutually exclusive with customDriver.",
                         enum: getSupportedVirtualDeviceTypes()],
                     customDriver: (_bat529EmbeddedCatalogRead(['["m",[["type","object"],["description","User-installed custom driver for create; mutually exclusive with deviceType."],["properties",["m",[["namespace",["m",[["type","string"],["description","Driver namespace (e.g., \'level99-vesync\')."]]]],["name",["m",[["type","string"],["description","Driver type name as registered on the hub (e.g., \'Levoit Classic 200S Humidifier\')."]]]]]]],["required",["l",["namespace","name"]]]]]']) as Map),
-                    deviceLabel: [type: "string", description: "Display label (required for create)"],
-                    deviceNetworkId: [type: "string", description: "Device network ID; auto-generated on create when omitted, REQUIRED for delete (find via hub_list_devices(filter='virtual'))."],
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true to confirm the operation."],
+                    deviceLabel: (_bat529EmbeddedCatalogRead(['["m",[["type","string"],["description","Display label (required for create)"]]]']) as Map),
+                    deviceNetworkId: (_bat529EmbeddedCatalogRead(['["m",[["type","string"],["description","Device network ID; auto-generated on create when omitted, REQUIRED for delete (find via hub_list_devices(filter=\'virtual\'))."]]]']) as Map),
+                    confirm: (_bat529EmbeddedCatalogRead(['["m",[["type","boolean"],["description","REQUIRED: Must be true to confirm the operation."]]]']) as Map),
                     args: [type: "object"]
                 ],
                 required: ["action", "confirm"]
@@ -15164,9 +15108,7 @@ action="delete": provide the target deviceNetworkId.
     ]
 }
 def _toolDisplayMeta_partVirtualDevices() {
-    return [
-        hub_manage_virtual_device: [title: "Manage Virtual Device", summary: "Create or delete an MCP-managed virtual device."]
-    ]
+    return (_bat529EmbeddedCatalogRead(['["m",[["hub_manage_virtual_device",["m",[["title","Manage Virtual Device"],["summary","Create or delete an MCP-managed virtual device."]]]]]]']) as Map)
 }
 def _bat529Cb_0153e466_1(def it) { it.warnings
 }
@@ -15353,8 +15295,7 @@ def toolListVariables(args = null) {
     }
     def ruleVariables = (state.ruleVariables)?.collect((this.&_bat529Cb_b8585dac_27))?: []
     if (args?.type != null) {
-        def hubType = [number: "integer", integer: "integer", decimal: "bigdecimal", bigdecimal: "bigdecimal", string: "string",
-                       boolean: "boolean", datetime: "datetime"].get(args.type.toString().toLowerCase())
+        def hubType = (_bat529EmbeddedCatalogRead(['["m",[["number","integer"],["integer","integer"],["decimal","bigdecimal"],["bigdecimal","bigdecimal"],["string","string"],["boolean","boolean"],["datetime","datetime"]]]']) as Map).get(args.type.toString().toLowerCase())
         if (hubType == null) throw new IllegalArgumentException("type must be one of Number, Decimal, String, Boolean, DateTime (or the stored integer, bigdecimal, string, boolean, datetime).")
         hubVariables = (hubVariables).findAll(((this.&_bat529Cb_b8585dac_18).curry([hubType] as Object[])))
         ruleVariables = []
@@ -15651,7 +15592,7 @@ private Map _createLinkedMeshVariable(String meshHubId, String meshName) {
             message: "Hub Mesh variable '${meshName}' shared by hub ${meshHubId} was already linked here${existing ? " as '${existing.name}'" : ''}.",
             note: "This is a local mirror of a variable on the peer hub. Read all linked variables via hub_get_hub_mesh."
         ]
-        if (existing == null) already.warnings = ["Already linked, but the local mirror name did not resolve from hub_get_hub_mesh localLinkedHubVariables; the returned name is the bare source name and may not identify the mirror. Verify it with hub_get_hub_mesh."]
+        if (existing == null) already.warnings = (_bat529EmbeddedCatalogRead(['["l",["Already linked, but the local mirror name did not resolve from hub_get_hub_mesh localLinkedHubVariables; the returned name is the bare source name and may not identify the mirror. Verify it with hub_get_hub_mesh."]]']) as List)
         return already
     }
     if (availBefore != null && !sourceWasOffered) {
@@ -15835,7 +15776,7 @@ private Map _createOneVariable(Integer appId, String name, String type, value) {
     def skipped = []
     String dtValue = (type == "DateTime") ? _dateTimeVariableValue(name, value) : null
     if (appId == null) {
-        def nativeType = [Number: "integer", Decimal: "bigdecimal", String: "string", Boolean: "boolean", DateTime: "datetime"][type]
+        def nativeType = (_bat529EmbeddedCatalogRead(['["m",[["Number","integer"],["Decimal","bigdecimal"],["String","string"],["Boolean","boolean"],["DateTime","datetime"]]]']) as Map)[type]
         def body = [name: name, type: nativeType, value: dtValue ?: value.toString()]
         if (dtValue != null) { body.mode = "datetime"; body.date = dtValue.take(10); body.time = dtValue.substring(11, 16) }
         _hubVarsNativePost("create", body)
@@ -15881,7 +15822,7 @@ private Map _createOneVariable(Integer appId, String name, String type, value) {
         }
     }
     if (appId == null && created != null) {
-        def expectedType = [Number: "integer", Decimal: "bigdecimal", String: "string", Boolean: "boolean", DateTime: "datetime"][type]
+        def expectedType = (_bat529EmbeddedCatalogRead(['["m",[["Number","integer"],["Decimal","bigdecimal"],["String","string"],["Boolean","boolean"],["DateTime","datetime"]]]']) as Map)[type]
         boolean matches = created.type?.toString()?.toLowerCase() == expectedType
         if (dtValue == null) {
             if (type in ["Number", "Decimal"]) {
@@ -16516,14 +16457,10 @@ def _getAllToolDefinitions_partVariables() {
     return defs()
 }
 def _readOnlyToolNames_partVariables() {
-    return [
-        "hub_list_variables", "hub_get_variable", "hub_list_variable_changes"
-    ]
+    return (_bat529EmbeddedCatalogRead(['["l",["hub_list_variables","hub_get_variable","hub_list_variable_changes"]]']) as List)
 }
 def _idempotentWriteToolNames_partVariables() {
-    return [
-        "hub_delete_variable", "hub_create_connector", "hub_delete_connector"
-    ]
+    return (_bat529EmbeddedCatalogRead(['["l",["hub_delete_variable","hub_create_connector","hub_delete_connector"]]']) as List)
 }
 def _toolDisplayMeta_partVariables() {
     return (_bat529EmbeddedCatalogRead(['["m",[["hub_list_variables",["m",[["title","List Variables"],["summary","List hub and rule-engine variables, optionally only hub variables of one type."]]]],["hub_get_variable",["m",[["title","Get Variable"],["summary","Get a variable\'s value and metadata (optionally the apps that reference it)."]]]],["hub_set_variable",["m",[["title","Set Variable"],["summary","Set an existing variable\'s value or atomically add to a numeric hub variable."]]]],["hub_create_variable",["m",[["title","Create Variable"],["summary","Create a new hub variable."]]]],["hub_delete_variable",["m",[["title","Delete Variable"],["summary","Permanently delete a hub variable and any connector it has."]]]],["hub_create_connector",["m",[["title","Create Variable Connector"],["summary","Create a virtual-device connector for a hub variable."]]]],["hub_delete_connector",["m",[["title","Delete Variable Connector"],["summary","Remove a hub variable\'s connector device."]]]],["hub_list_variable_changes",["m",[["title","List Variable Changes"],["summary","Recent hub-variable changes from the retained 200-entry history."]]]]]]']) as Map)
@@ -16854,9 +16791,7 @@ def toolTestRule(ruleId) {
 }
 private String findRuleAppRedirect(ruleId, String verb) {
     if (settings.enableRead == false) return null
-    def ruleTypeFragments = [
-        "rule machine", "rule-5", "rule-4", "room light", "basic rules", "visual rule"
-    ]
+    def ruleTypeFragments = (_bat529EmbeddedCatalogRead(['["l",["rule machine","rule-5","rule-4","room light","basic rules","visual rule"]]']) as List)
     def rmTypeFragments = ["rule machine", "rule-5", "rule-4"]
     def idStr = ruleId?.toString()?.trim()
     if (!idStr || !idStr.isInteger()) return null
@@ -17353,7 +17288,7 @@ def toolListHubApps(args) {
     return result
 }
 def _appTypeEnrichment() {
-    def out = [menuById: [:], menuByNsName: [:], builtIn: [], note: null]
+    def out = (_bat529EmbeddedCatalogRead(['["m",[["menuById",["m",[]]],["menuByNsName",["m",[]]],["builtIn",["l",[]]],["note",null]]]']) as Map)
     try {
         def txt = hubInternalGet("/hub2/appsList")
         def parsed = txt ? new groovy.json.JsonSlurper().parseText(txt) : null
@@ -18198,7 +18133,7 @@ private Map toolInstallItem(String type, args) {
                 return [success: allSucceeded, status: "in_progress", installs: itemResults,
                         installsRemaining: args.installs.subList(idx, args.installs.size()),
                         lastBackup: formatTimestamp(state.lastBackupTimestamp),
-                        resume: [note: "Completed driver installs are retained. Continue with only installsRemaining; do not repeat completed installs."]]
+                        resume: (_bat529EmbeddedCatalogRead(['["m",[["note","Completed driver installs are retained. Continue with only installsRemaining; do not repeat completed installs."]]]']) as Map)]
             }
             def item = args.installs[idx]
             if (!(item instanceof Map) || (item.source == null && item.sourceFile == null && item.importUrl == null)) {
@@ -18669,7 +18604,7 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args, Map packa
                 if (triggerId == null || triggerId < 1) {
                     successResult.triggerUpdated = args.triggerUpdated
                     successResult.updatedFired = false
-                    successResult.repairHints = ["triggerUpdated must be a positive integer (instance appId). The code save succeeded; lifecycle was NOT refreshed."]
+                    successResult.repairHints = (_bat529EmbeddedCatalogRead(['["l",["triggerUpdated must be a positive integer (instance appId). The code save succeeded; lifecycle was NOT refreshed."]]']) as List)
                     return successResult
                 }
                 successResult.triggerUpdated = triggerId
@@ -18849,8 +18784,7 @@ private Map _updateAppOAuth(appId, oauth) {
                     note: "That is not a hub OAuth answer -- an HTML body here is typically the Hub Security login page, so check the MCP app's Hub Security credentials (and that the hub is not mid-reboot). This says nothing about whether the app's source declares OAuth."]
         }
         if (!respText) {
-            return [success: false, error: "/app/updateOAuth returned an empty body",
-                    note: "The request reached the hub but produced no answer -- retry; if it persists, check Hub Security credentials."]
+            return (_bat529EmbeddedCatalogRead(['["m",[["success",false],["error","/app/updateOAuth returned an empty body"],["note","The request reached the hub but produced no answer -- retry; if it persists, check Hub Security credentials."]]]']) as Map)
         }
         return [success: false, error: "/app/updateOAuth did not report success", response: respText?.take(300),
                 note: "The app's source must declare OAuth (an oauth block + mappings) before it can be enabled."]
@@ -18890,7 +18824,7 @@ def toolUpdateDriverCode(args) {
                 return [success: allSucceeded, status: "in_progress", updates: itemResults,
                         updatesRemaining: args.updates.subList(idx, args.updates.size()),
                         lastBackup: formatTimestamp(state.lastBackupTimestamp),
-                        resume: [note: "Completed driver updates are retained. Continue with only updatesRemaining, preserving their order and expectedVersion values."]]
+                        resume: (_bat529EmbeddedCatalogRead(['["m",[["note","Completed driver updates are retained. Continue with only updatesRemaining, preserving their order and expectedVersion values."]]]']) as Map)]
             }
             def item = args.updates[idx]
             if (!(item instanceof Map) || !item.driverId) {
@@ -19455,7 +19389,7 @@ def toolListInstalledApps(args) {
     try {
         def responseText = hubInternalGet("/hub2/appsList")
         if (!responseText) {
-            return [success: false, error: "Empty response from /hub2/appsList", note: "Hub internal API may be transiently unavailable."]
+            return (_bat529EmbeddedCatalogRead(['["m",[["success",false],["error","Empty response from /hub2/appsList"],["note","Hub internal API may be transiently unavailable."]]]']) as Map)
         }
         def parsed
         try {
@@ -19610,20 +19544,13 @@ def _getAllToolDefinitions_partCodeManagement() {
     return defs()
 }
 def _readOnlyToolNames_partCodeManagement() {
-    return [
-        "hub_list_apps", "hub_list_drivers", "hub_list_libraries", "hub_get_source",
-        "hub_list_device_dependents", "hub_get_app_config"
-    ]
+    return (_bat529EmbeddedCatalogRead(['["l",["hub_list_apps","hub_list_drivers","hub_list_libraries","hub_get_source","hub_list_device_dependents","hub_get_app_config"]]']) as List)
 }
 def _idempotentWriteToolNames_partCodeManagement() {
-    return [
-        "hub_update_app", "hub_update_driver", "hub_update_library", "hub_delete_item"
-    ]
+    return (_bat529EmbeddedCatalogRead(['["l",["hub_update_app","hub_update_driver","hub_update_library","hub_delete_item"]]']) as List)
 }
 def _openWorldToolNames_partCodeManagement() {
-    return [
-        "hub_create_app", "hub_create_driver", "hub_create_library", "hub_update_app", "hub_update_driver", "hub_update_library"
-    ]
+    return (_bat529EmbeddedCatalogRead(['["l",["hub_create_app","hub_create_driver","hub_create_library","hub_update_app","hub_update_driver","hub_update_library"]]']) as List)
 }
 def _toolDisplayMeta_partCodeManagement() {
     return (_bat529EmbeddedCatalogRead(['["m",[["hub_list_apps",["m",[["title","List Apps"],["summary","List installed app types or enumerate app instances."]]]],["hub_list_drivers",["m",[["title","List Drivers"],["summary","List all installed drivers."]]]],["hub_list_libraries",["m",[["title","List Libraries"],["summary","List installed Groovy libraries."]]]],["hub_get_source",["m",[["title","Get Source Code"],["summary","Read Groovy source for an app, driver, or library."]]]],["hub_create_app",["m",[["title","Install App"],["summary","Install a new app from source, a File Manager file, or a URL, or instantiate installed app code."]]]],["hub_create_driver",["m",[["title","Install Driver"],["summary","Install one or more drivers from source, File Manager files, or a URL."]]]],["hub_update_app",["m",[["title","Update App Code"],["summary","Modify an existing app\'s source code, or enable/configure its OAuth (client id/secret)."]]]],["hub_update_driver",["m",[["title","Update Driver Code"],["summary","Modify an existing driver\'s source code."]]]],["hub_create_library",["m",[["title","Install Library"],["summary","Install a new Groovy library."]]]],["hub_update_library",["m",[["title","Update Library Code"],["summary","Modify an existing library\'s source code."]]]],["hub_delete_item",["m",[["title","Delete Code Item"],["summary","Permanently delete an app, driver, or library (auto-backs up first)."]]]],["hub_list_device_dependents",["m",[["title","List Device Dependents"],["summary","Find all apps that reference a device."]]]],["hub_get_app_config",["m",[["title","Get App Configuration"],["summary","Read an installed app\'s configuration page."]]]]]]']) as Map)
@@ -19944,7 +19871,7 @@ def toolGetHpmDrift(args) {
     try {
         def userAppTypesText = hubInternalGet("/hub2/userAppTypes")
         if (!userAppTypesText) {
-            orphanDetection = [enabled: false, reason: "Empty response from /hub2/userAppTypes -- orphan-app signals were not evaluated this call"]
+            orphanDetection = (_bat529EmbeddedCatalogRead(['["m",[["enabled",false],["reason","Empty response from /hub2/userAppTypes -- orphan-app signals were not evaluated this call"]]]']) as Map)
             mcpLog("warn", "hpm", "get_hpm_drift: empty /hub2/userAppTypes response -- orphan detection disabled")
         } else {
             def userAppTypesParsed = new groovy.json.JsonSlurper().parseText(userAppTypesText)
@@ -19967,7 +19894,7 @@ def toolGetHpmDrift(args) {
     try {
         def userDeviceTypesText = hubInternalGet("/hub2/userDeviceTypes")
         if (!userDeviceTypesText) {
-            orphanDriverDetection = [enabled: false, reason: "Empty response from /hub2/userDeviceTypes -- orphan-driver signals were not evaluated this call"]
+            orphanDriverDetection = (_bat529EmbeddedCatalogRead(['["m",[["enabled",false],["reason","Empty response from /hub2/userDeviceTypes -- orphan-driver signals were not evaluated this call"]]]']) as Map)
             mcpLog("warn", "hpm", "get_hpm_drift: empty /hub2/userDeviceTypes response -- orphan driver detection disabled")
         } else {
             def userDeviceTypesParsed = new groovy.json.JsonSlurper().parseText(userDeviceTypesText)
@@ -20005,11 +19932,7 @@ def toolGetHpmDrift(args) {
         (manifest.apps ?: []).each { a ->
             if (!(a instanceof Map)) {
                 skippedAppCount++
-                dataQualityWarnings << [
-                    type         : "skipped-malformed-component",
-                    componentType: "app",
-                    _warning     : "app component entry is not a Map -- skipped"
-                ]
+                dataQualityWarnings << (_bat529EmbeddedCatalogRead(['["m",[["type","skipped-malformed-component"],["componentType","app"],["_warning","app component entry is not a Map -- skipped"]]]']) as Map)
                 mcpLog("warn", "hpm", "get_hpm_drift: non-Map app component in '${manifest.packageName}' (value: ${a?.toString()?.take(60) ?: 'null'}) -- skipped")
                 return
             }
@@ -20075,11 +19998,7 @@ def toolGetHpmDrift(args) {
         (manifest.drivers ?: []).each { d ->
             if (!(d instanceof Map)) {
                 skippedDriverCount++
-                dataQualityWarnings << [
-                    type         : "skipped-malformed-component",
-                    componentType: "driver",
-                    _warning     : "driver component entry is not a Map -- skipped"
-                ]
+                dataQualityWarnings << (_bat529EmbeddedCatalogRead(['["m",[["type","skipped-malformed-component"],["componentType","driver"],["_warning","driver component entry is not a Map -- skipped"]]]']) as Map)
                 mcpLog("warn", "hpm", "get_hpm_drift: non-Map driver component in '${manifest.packageName}' (value: ${d?.toString()?.take(60) ?: 'null'}) -- skipped")
                 return
             }
@@ -20205,9 +20124,7 @@ def _readOnlyToolNames_partHpm() {
     ]
 }
 def _toolDisplayMeta_partHpm() {
-    return [
-        hub_list_hpm_packages: [title: "List HPM Packages", summary: "List packages tracked by Hubitat Package Manager, optionally with drift detection."]
-    ]
+    return (_bat529EmbeddedCatalogRead(['["m",[["hub_list_hpm_packages",["m",[["title","List HPM Packages"],["summary","List packages tracked by Hubitat Package Manager, optionally with drift detection."]]]]]]']) as Map)
 }
 def _bat529Cb_112d3686_1(def it) { it.signals
 }
@@ -21789,7 +21706,7 @@ private Map _rmRestoreViaNativeImport(Map snapshot, Integer savedId, boolean exi
     def parsed
     try { parsed = new groovy.json.JsonSlurper().parseText(snapshot.nativeExport.toString()) } catch (Exception e) {
         mcpLog("warn", "rm-native", "Restore of app ${savedId}: the backup's App Cloner export does not parse (${e.message}); restoring by settings replay")
-        return [fallback: "the backup's App Cloner export could not be parsed"]
+        return (_bat529EmbeddedCatalogRead(['["m",[["fallback","the backup\'s App Cloner export could not be parsed"]]]']) as Map)
     }
     def gone = [:]
     def deadDevices = ((((parsed?.deviceReplacements instanceof Map) ? (parsed.deviceReplacements as Map).keySet() : [])).collect((this.&_bat529Cb_dbfd46be_64))).findAll(((this.&_bat529Cb_dbfd46be_73).curry([gone] as Object[])))
@@ -21806,7 +21723,7 @@ private Map _rmRestoreViaNativeImport(Map snapshot, Integer savedId, boolean exi
             mcpLog("warn", "rm-native", "Restore of app ${savedId}: finding a Rule Machine rule to seed the import failed (${e.message})")
             hint = null
         }
-        if (hint == null) return [fallback: "no Rule Machine rule was found to seed the App Cloner import"]
+        if (hint == null) return (_bat529EmbeddedCatalogRead(['["m",[["fallback","no Rule Machine rule was found to seed the App Cloner import"]]]']) as Map)
     }
     if (exists) {
         try { _requireUnprotectedAppDeletion(savedId) } catch (IllegalArgumentException protExc) {
@@ -21991,8 +21908,7 @@ private List _rmNativeCurrentSettings(Long id) {
     (_nmSettingsInventory(id)).collect((this.&_bat529Cb_dbfd46be_34))
 }
 private Map _rmNativeModelSignature(Map state) {
-    def keys = ['actions', 'actionList', 'capabstrue', 'capabsfalse', 'eval', 'disabledActions', 'disabledTriggers',
-                'actNdx', 'ndx', 'ruleNdx', 'waitCondNdx', 'predCapabs', 'hasPredicate']
+    def keys = (_bat529EmbeddedCatalogRead(['["l",["actions","actionList","capabstrue","capabsfalse","eval","disabledActions","disabledTriggers","actNdx","ndx","ruleNdx","waitCondNdx","predCapabs","hasPredicate"]]']) as List)
     Map result = (state).findAll(((this.&_bat529Cb_dbfd46be_10).curry([keys] as Object[])))
     (['actions', 'capabstrue', 'capabsfalse', 'eval']).each(((this.&_bat529Cb_dbfd46be_63).curry([result, state] as Object[])))
     result.actionList = state.actionList instanceof List ? state.actionList : []
@@ -22016,7 +21932,7 @@ private String _rmRestoredRuleName(List plan, Map identity) {
     def name = (plan).find((this.&_bat529Cb_dbfd46be_6))?.value
     if (name != null) return name.toString()
     String label = _rmLabelName(identity.appLabel)
-    ['*BROKEN*', '(Not Installed)', '(Stopped)', '(Paused)', '(Required Expression false)', '(Repeating)'].each { decoration ->
+    (_bat529EmbeddedCatalogRead(['["l",["*BROKEN*","(Not Installed)","(Stopped)","(Paused)","(Required Expression false)","(Repeating)"]]']) as List).each { decoration ->
         if (label.endsWith(' ' + decoration)) label = label.substring(0, label.length() - decoration.length() - 1)
     }
     label
@@ -22997,7 +22913,7 @@ def toolSearchTools(args) {
         docTokens << docTokensAll[i]
     }
     def queryTokens = bm25Tokenize(query)
-    if (!queryTokens) return [results: [], message: "No searchable terms in query"]
+    if (!queryTokens) return (_bat529EmbeddedCatalogRead(['["m",[["results",["l",[]]],["message","No searchable terms in query"]]]']) as Map)
     def scores = bm25Score(docTokens, queryTokens)
     def ranked = []
     scores.eachWithIndex { score, idx ->
@@ -23036,8 +22952,7 @@ def toolSearchCorpusFingerprint(List defs = null) {
         }
     }
     h = _fpField(h, bm25Tokenize(_bm25DocText(
-        [name: 'hub_x-1', title: 'A_b', description: 'cd', params: 'ef', hints: 'gh',
-         gateway: 'ij'])).join(','))
+        (_bat529EmbeddedCatalogRead(['["m",[["name","hub_x-1"],["title","A_b"],["description","cd"],["params","ef"],["hints","gh"],["gateway","ij"]]]']) as Map))).join(','))
     return Long.toString(h)
 }
 private String _bm25DocText(entry) {
@@ -23160,7 +23075,7 @@ private Map _platformApiSearch(String query, cursor) {
         return out
     }
     if (!(index instanceof Map) || !(index.pages instanceof List)) {
-        return [success: false, error: "The hub's API documentation index has an unexpected shape."]
+        return (_bat529EmbeddedCatalogRead(['["m",[["success",false],["error","The hub\'s API documentation index has an unexpected shape."]]]']) as Map)
     }
     def hits = []
     index.pages.each { pg ->
@@ -23902,18 +23817,9 @@ Map _rmDeleteAction(Integer appId, Integer actionIdx, boolean skipStructuralChec
         throw new IllegalStateException("removeAction(${actionIdx}) blocked: rule ${appId} has state.editAct=${stuckEditAct} set from a prior interrupted action edit. RM 5.1 silently no-ops delAct clicks until this clears. Recovery options: (a) wait ~60s and retry (RM's stale-state timeout -- UNVERIFIED for this marker: an artificially-set editAct observed live did NOT clear after 5+ minutes); (b) open the rule in the Hubitat UI and finish or cancel the open action editor. Verified live on fw 2.5.1.135: cancelBtn/cancelAct clicks, updateRule, and an in-place hub_restore_backup do NOT clear a stuck editAct (restore-in-place rewrites settings, not app state) -- if (a) and (b) fail, delete the rule, then hub_restore_backup(scope='source', backupKey='<a recent rm-rule snapshot for this rule>', confirm=true), which RECREATES it with fresh state.")
     }
     def sType = settingsByName["actSubType.${actionIdx}".toString()]?.value?.toString()
-    def structuralSubTypes = ["getIfThen", "getElseIf", "getElse", "getEndIf", "getRepeat", "getWhile", "getStopRepeat"]
+    def structuralSubTypes = (_bat529EmbeddedCatalogRead(['["l",["getIfThen","getElseIf","getElse","getEndIf","getRepeat","getWhile","getStopRepeat"]]']) as List)
     if (sType in structuralSubTypes && !skipStructuralCheck) {
-        def humanKind = [
-            "getIfThen": "IF",
-            "getElseIf": "ELSE-IF",
-            "getElse": "ELSE",
-            "getEndIf": "END-IF",
-            "getRepeat": "Repeat",
-            "getWhile": "Repeat-While",
-            "getStopRepeat": "End-Repeat"
-        ][sType] ?: sType
-        def orderedIndices = _rmOrderedActionIndices(appId)
+        def humanKind = (_bat529EmbeddedCatalogRead(['["m",[["getIfThen","IF"],["getElseIf","ELSE-IF"],["getElse","ELSE"],["getEndIf","END-IF"],["getRepeat","Repeat"],["getWhile","Repeat-While"],["getStopRepeat","End-Repeat"]]]']) as Map)_rmOrderedActionIndices(appId)
         if (orderedIndices == null) {
             throw new IllegalStateException("removeAction(${actionIdx}) blocked: action ${actionIdx} is a structural ${humanKind} row and the rule's compiled action order (ruleBuilderJson actionList) is unavailable, so the deletion's effect on block balance cannot be verified -- the settings scan can be masked by leftover rows. Retry once ruleBuilderJson answers (hub_get_rule_health lists the read failure under checkErrors), or use replaceActions to rebuild the action list atomically. RM is not touched.")
         }
@@ -24131,7 +24037,7 @@ Map _rmSubmitMainPageDone(Integer appId) {
         return [done: false, reason: "root page fetch failed: ${rootExc.message}".toString()]
     }
     String commitPage = cfg?.configPage?.name?.toString()
-    if (!commitPage) return [done: false, reason: "the app's root page carries no name"]
+    if (!commitPage) return (_bat529EmbeddedCatalogRead(['["m",[["done",false],["reason","the app\'s root page carries no name"]]]']) as Map)
     def schema = _rmCollectInputSchema(cfg?.configPage)
     def status
     try { status = _rmFetchStatusJson(appId) }
@@ -24141,7 +24047,7 @@ Map _rmSubmitMainPageDone(Integer appId) {
     }
     if (!(status?.appSettings instanceof List)) {
         mcpLog("warn", "rm-native", "_rmSubmitMainPageDone: statusJson for app ${appId} has no appSettings list -- skipping Done click rather than blanking ${schema.size()} inputs")
-        return [done: false, reason: "statusJson carried no appSettings list"]
+        return (_bat529EmbeddedCatalogRead(['["m",[["done",false],["reason","statusJson carried no appSettings list"]]]']) as Map)
     }
     def liveSettings = _rmLiveSettingsFromStatus(status)
     def settingsMap = [:]
@@ -24368,7 +24274,7 @@ private Map _rmBuildRuleSnapshot(Integer ruleId, String reason, String activePag
         detectedAppType = exactKey ?: bareKey ?: (name ==~ /Rule-[0-9.]+/ ? "rule_machine" : "app")
     }
     if (config?.app?.appType instanceof Map) {
-        ["oauthClientId", "oauthClientSecret", "encryptedPassword", "sourcePassword"].each { config.app.appType.remove(it) }
+        (_bat529EmbeddedCatalogRead(['["l",["oauthClientId","oauthClientSecret","encryptedPassword","sourcePassword"]]']) as List).each { config.app.appType.remove(it) }
     }
     Set redacted = _rmRedactSnapshotPasswords(config, status instanceof Map ? status : null)
     def snapshot = [
@@ -24602,7 +24508,7 @@ List _rmDeleteExpressionConditions(Integer appId, Collection ids) {
     return (ids.findAll { !remaining.contains("rCapab_${it}".toString()) }).collect((this.&_bat529Cb_4076886b_95))
 }
 private Map _rmTokSetExpression(Integer appId, List target) {
-    if (!target) return [restored: false, error: "no original tokens were recorded, so nothing was changed"]
+    if (!target) return (_bat529EmbeddedCatalogRead(['["m",[["restored",false],["error","no original tokens were recorded, so nothing was changed"]]]']) as Map)
     def cache = [:]
     def hrefParams = [unUsed: null]
     def writeST = { Map params, String key, Object value, String label = null ->
@@ -24649,8 +24555,8 @@ Map _rmReconcileRuleStructure(Integer appId, Map snapshot) {
     def conds = { Map st -> (st?.capabsfalse instanceof Map) ? ((st.capabsfalse as Map).keySet()).collect((this.&_bat529Cb_4076886b_51)): [] }
     def acts = { Map st -> (st?.actionList instanceof List) ? ((st.actionList as List)).collect((this.&_bat529Cb_4076886b_39)): [] }
     def live = _rmReadRuleState(appId)
-    if (live == null) return [structureRestored: false, structureError: "the rule's triggers and actions could not be read after the restore"]
-    def removed = [triggers: [], actions: [], conditions: []]
+    if (live == null) return (_bat529EmbeddedCatalogRead(['["m",[["structureRestored",false],["structureError","the rule\'s triggers and actions could not be read after the restore"]]]']) as Map)
+    def removed = (_bat529EmbeddedCatalogRead(['["m",[["triggers",["l",[]]],["actions",["l",[]]],["conditions",["l",[]]]]]']) as Map)
     def failures = []
     ((trigs(live) - trigs(snap))).each(((this.&_bat529Cb_4076886b_140).curry([appId, failures, removed] as Object[])))
     def extraActs = acts(live) - acts(snap)
@@ -24711,7 +24617,7 @@ Map _rmReconcileRuleStructure(Integer appId, Map snapshot) {
         try { _rmClickAppButton(appId, "updateRule") } catch (Exception e) { updateRuleError = e.message ?: e.toString() }
     }
     def after = _rmReadRuleState(appId)
-    if (after == null) return [structureRestored: false, structureError: "the rule's triggers and actions could not be read after the restore"]
+    if (after == null) return (_bat529EmbeddedCatalogRead(['["m",[["structureRestored",false],["structureError","the rule\'s triggers and actions could not be read after the restore"]]]']) as Map)
     def snapTrigText = (snap.capabstrue instanceof Map) ? snap.capabstrue as Map : [:]
     def out = [structureRestored: true]
     if (removed.triggers) out.removedTriggers = removed.triggers
@@ -24855,13 +24761,13 @@ Map _rmRestoreRequiredExpression(Integer appId, Map snapshot) {
             _rmClickAppButton(appId, "updateRule")
             boolean gone = !_rmIsCommittedRETell(_rmCollectPageInputNames(appId, "STPage"))
             return gone ? [requiredExpressionRestored: true, requiredExpressionRemoved: true] :
-                [requiredExpressionRestored: false, requiredExpressionError: "the snapshot has no Required Expression but removing the live one did not take"]
+                (_bat529EmbeddedCatalogRead(['["m",[["requiredExpressionRestored",false],["requiredExpressionError","the snapshot has no Required Expression but removing the live one did not take"]]]']) as Map)
         } catch (Exception e) {
             return [requiredExpressionRestored: false, requiredExpressionError: "removing the live Required Expression failed (${e.message})"]
         }
     }
     def liveState = _rmReadRuleState(appId)
-    if (liveState == null) return [requiredExpressionRestored: false, requiredExpressionError: "the rule's expression state could not be read after the restore"]
+    if (liveState == null) return (_bat529EmbeddedCatalogRead(['["m",[["requiredExpressionRestored",false],["requiredExpressionError","the rule\'s expression state could not be read after the restore"]]]']) as Map)
     def liveTokens = (liveState.eval instanceof Map && (liveState.eval as Map)["0"] instanceof List) ? (liveState.eval as Map)["0"] as List : []
     def deadDevices = _rmExpressionDeadDevices(snapshot, _rmTokenConditionIds(snapTokens))
     if (deadDevices) {
@@ -24933,7 +24839,7 @@ Map _rmRestoreRequiredExpression(Integer appId, Map snapshot) {
         }
         def after = _rmReadRuleState(appId)
         if (after == null) {
-            return [requiredExpressionRestored: false, requiredExpressionError: "the rebuilt expression could not be read back to confirm it"]
+            return (_bat529EmbeddedCatalogRead(['["m",[["requiredExpressionRestored",false],["requiredExpressionError","the rebuilt expression could not be read back to confirm it"]]]']) as Map)
         }
         def afterTokens = (after.eval instanceof Map && (after.eval as Map)["0"] instanceof List) ? (after.eval as Map)["0"] as List : []
         boolean committed = _rmIsCommittedRETell(_rmCollectPageInputNames(appId, "STPage"))
@@ -25194,8 +25100,8 @@ private Map _naOperationSchema(String operation) {
     if (operation == 'create') return [type: 'object', additionalProperties: false, properties: [
         app_type: [type: 'string', enum: _naCreateTypes()], name: [type: 'string', minLength: 1, maxLength: 200], fields: [type: 'object'],
         controller_id: [type: 'integer', minimum: 1], button_number: [type: 'integer', minimum: 1],
-        event: [type: 'string', enum: ['pushed', 'held', 'doubleTapped', 'released']]], required: ['app_type']]
-    if (operation == 'update') return [type: 'object', additionalProperties: false, properties: [fields: [type: 'object'], page: [type: 'string']], required: ['fields']]
+        event: (_bat529EmbeddedCatalogRead(['["m",[["type","string"],["enum",["l",["pushed","held","doubleTapped","released"]]]]]']) as Map)], required: ['app_type']]
+    if (operation == 'update') return (_bat529EmbeddedCatalogRead(['["m",[["type","object"],["additionalProperties",false],["properties",["m",[["fields",["m",[["type","object"]]]],["page",["m",[["type","string"]]]]]]],["required",["l",["fields"]]]]]']) as Map)
     if (operation == 'form') return _ndOperationSchema('form')
     throw new IllegalArgumentException('Unknown native app operation; use create, update or form')
 }
@@ -25206,7 +25112,7 @@ Map toolSetNativeApp(Map request) {
     if (request.containsKey('args') && !(request.args instanceof Map)) throw new IllegalArgumentException('args must be an object')
     if (!request.containsKey('operation')) {
         if (request.args) throw new IllegalArgumentException('Choose an operation before supplying args')
-        return [operations: ['create', 'update', 'form'], usage: 'Choose operation for its schema. Writes return schema until confirm=true. See set_native_app_reference.']
+        return (_bat529EmbeddedCatalogRead(['["m",[["operations",["l",["create","update","form"]]],["usage","Choose operation for its schema. Writes return schema until confirm=true. See set_native_app_reference."]]]']) as Map)
     }
     if (!(request.operation instanceof String)) throw new IllegalArgumentException('operation must be a string')
     String operation = request.operation
@@ -25634,14 +25540,10 @@ private Map _naUpdateFailure(Long id, Exception failure, Map backup, boolean att
     [success: false, app_id: id, partial: attempted, error: failure.message?.toString(), backup: backup, note: (recovery + guide).toString()]
 }
 def _readOnlyToolNames_partNativeRM() {
-    return [
-        "hub_list_rules", "hub_get_rule_health", "hub_list_rule_local_variables"
-    ]
+    return (_bat529EmbeddedCatalogRead(['["l",["hub_list_rules","hub_get_rule_health","hub_list_rule_local_variables"]]']) as List)
 }
 def _idempotentWriteToolNames_partNativeRM() {
-    return [
-        "hub_set_rule_paused", "hub_set_rule_private_boolean", "hub_set_app_disabled"
-    ]
+    return (_bat529EmbeddedCatalogRead(['["l",["hub_set_rule_paused","hub_set_rule_private_boolean","hub_set_app_disabled"]]']) as List)
 }
 def _toolDisplayMeta_partNativeRM() {
     return (_bat529EmbeddedCatalogRead(['["m",[["hub_list_rules",["m",[["title","List Rule Machine Rules"],["summary","List all Rule Machine rules."]]]],["hub_call_rule",["m",[["title","Trigger Rule Machine Rule"],["summary","Trigger one or more Rule Machine rules, run their actions, or stop them."]]]],["hub_set_rule_paused",["m",[["title","Pause or Resume Rule"],["summary","Pause or resume one or more Rule Machine rules in one call."]]]],["hub_set_rule_private_boolean",["m",[["title","Set Rule Private Boolean"],["summary","Set the private boolean of one or more Rule Machine rules."]]]],["hub_get_rule_health",["m",[["title","Get Rule Health"],["summary","Read-only health check on any installed app."]]]],["hub_list_rule_local_variables",["m",[["title","List Rule Local Variables"],["summary","Read-only list of a Rule Machine rule\'s local variables."]]]],["hub_set_native_app",["m",[["title","Set Native App"],["summary","Create, update or drive the native forms of classic apps (Room Lighting, Thermostat Scheduler and Controller, user apps)."]]]],["hub_delete_native_app",["m",[["title","Delete Native App"],["summary","Delete a classic native app (auto-snapshot first)."]]]],["hub_set_app_disabled",["m",[["title","Enable or Disable App"],["summary","Enable or disable any installed app without deleting it (reversible)."]]]]]]']) as Map)
@@ -26281,7 +26183,7 @@ private void _nrCheckSettingRow(Object row) {
         throw new IllegalArgumentException('Each setting requires name, type and value')
     }
     boolean device = _nrIsDeviceType(row.type)
-    if (!(row.type in ['text', 'textarea', 'password', 'enum', 'mode', 'bool', 'number', 'decimal', 'time']) && !device) throw new IllegalArgumentException('Unsupported native setting type')
+    if (!(row.type in (_bat529EmbeddedCatalogRead(['["l",["text","textarea","password","enum","mode","bool","number","decimal","time"]]']) as List)) && !device) throw new IllegalArgumentException('Unsupported native setting type')
     if (row.value == null) throw new IllegalArgumentException('Null setting values are unsupported; they do not reliably clear native settings')
     if (row.value instanceof List) {
         if (!device && !(row.type in ['enum', 'mode'])) throw new IllegalArgumentException('Lists require enum, mode or capability type')
@@ -26329,7 +26231,7 @@ private Map _nrRulePages(Long ruleId) {
     type.name == 'Button Rule-5.1' ? [primary: 'selectActions', actions: 'selectActionsX'] : [primary: 'mainPage', actions: 'selectActions']
 }
 Map _nrPage(Long ruleId, String page, Map params = [:]) {
-    if (!(page in ['mainPage', 'selectActions', 'selectActionsX', 'doActPage', 'STPage', 'selectTriggers', 'selectConditions', 'localVar'])) throw new IllegalArgumentException('Unsupported native page')
+    if (!(page in (_bat529EmbeddedCatalogRead(['["l",["mainPage","selectActions","selectActionsX","doActPage","STPage","selectTriggers","selectConditions","localVar"]]']) as List))) throw new IllegalArgumentException('Unsupported native page')
     if (params == null || (params && !(page in ['selectActions', 'STPage', 'selectConditions']))) throw new IllegalArgumentException('This page does not accept parameters')
     def handle = _nrHandle(ruleId)
     def result
@@ -26892,9 +26794,9 @@ private Map _nmCompileWait(Long ruleId, String actionId, List events, boolean ed
     for (int position = 0; position < events.size(); position++) {
         Map fresh = _nrState(ruleId)
         def allocated = fresh.waitNdx instanceof Map ? fresh.waitNdx.get(key) : null
-        if (!(allocated instanceof List) || allocated.size() <= position) return [success: false, error: 'Native wait event allocation failed']
+        if (!(allocated instanceof List) || allocated.size() <= position) return (_bat529EmbeddedCatalogRead(['["m",[["success",false],["error","Native wait event allocation failed"]]]']) as Map)
         String eventId = _nmId(allocated.get(position))
-        if (eventIds.contains(eventId)) return [success: false, error: 'Native wait event identity was repeated']
+        if (eventIds.contains(eventId)) return (_bat529EmbeddedCatalogRead(['["m",[["success",false],["error","Native wait event identity was repeated"]]]']) as Map)
         eventIds << eventId
         Map event = events.get(position)
         List fields = [[name: "tCapab-${eventId}".toString(), type: 'enum', value: event.capability]] + _nmFields(event.get('fields') as List, "-${eventId}".toString())
@@ -27249,7 +27151,7 @@ def _bat529Cb_ba52df93_80(def id, List __bat529Tuple) {
         throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
     return _bat529Cb_ba52df93_80(id, *__bat529Tuple)
 }
-def _bat529Cb_ba52df93_81(def it) { !(it in ['id', 'type', 'subtype', 'fields', 'expression', 'events', 'condition'])
+def _bat529Cb_ba52df93_81(def it) { !(it in (_bat529EmbeddedCatalogRead(['["l",["id","type","subtype","fields","expression","events","condition"]]']) as List))
 }
 def _bat529Cb_ba52df93_82(def it) { it.rule.toString()
 }
@@ -27365,7 +27267,7 @@ def _bat529Cb_ba52df93_105(def id, def row) {
             throw new IllegalArgumentException('Fields require native name templates containing #, type and value')
         }
         boolean device = row.type == 'capability' || row.type.startsWith('capability.')
-        if (!(row.type in ['text', 'textarea', 'password', 'enum', 'mode', 'bool', 'number', 'decimal', 'time']) && !device) throw new IllegalArgumentException('Unsupported native setting type')
+        if (!(row.type in (_bat529EmbeddedCatalogRead(['["l",["text","textarea","password","enum","mode","bool","number","decimal","time"]]']) as List)) && !device) throw new IllegalArgumentException('Unsupported native setting type')
         if (row.value == null) throw new IllegalArgumentException('Null native setting values are unsupported')
         if (row.value instanceof List) {
             if (!device && !(row.type in ['enum', 'mode'])) throw new IllegalArgumentException('Setting lists require enum, mode or capability type')
@@ -27461,7 +27363,7 @@ private Map _ndRender(Long id, String page) {
 }
 Map toolGetRuleDocument(Map args) {
     Long id = _ndId(args.rule_id)
-    def allowed = ['actions', 'conditions', 'triggers', 'expressions', 'variables', 'settings']
+    def allowed = (_bat529EmbeddedCatalogRead(['["l",["actions","conditions","triggers","expressions","variables","settings"]]']) as List)
     def sections = args.sections == null ? allowed : args.sections
     if (!(sections instanceof List) || (sections).any(((this.&_bat529Cb_18d8bae2_2).curry([allowed] as Object[])))) throw new IllegalArgumentException('Unknown document section')
     boolean paged = args.containsKey('cursor') || args.containsKey('limit')
@@ -27768,7 +27670,7 @@ private Map _ndApply(Long id, List changes, boolean created) {
             persistedState.stPrimed == false
         if (actualTriggers && !stopped && !paused && !suppressed && subscriptions.empty && jobs.empty) throw new IllegalStateException('Native triggers have no active subscriptions or scheduled jobs')
         if (created && getAppByAppId(id)?.installed != true) throw new IllegalStateException('Native rule is not installed after Done')
-        [success: true, rule_id: id, created: created, results: outcomes, broken: false, stopped: stopped, paused: paused, eventSubscriptions: subscriptions, scheduledJobs: jobs, verification: 'Native persistence, compilation and activation checks passed; verify intended device behavior independently.', document: toolGetRuleDocument([rule_id: id, sections: ['actions', 'conditions', 'triggers', 'expressions', 'variables']])] +
+        [success: true, rule_id: id, created: created, results: outcomes, broken: false, stopped: stopped, paused: paused, eventSubscriptions: subscriptions, scheduledJobs: jobs, verification: 'Native persistence, compilation and activation checks passed; verify intended device behavior independently.', document: toolGetRuleDocument([rule_id: id, sections: (_bat529EmbeddedCatalogRead(['["l",["actions","conditions","triggers","expressions","variables"]]']) as List)])] +
             (suppressed ? [subscriptionSettle: 'SUPPRESSED: Required Expression is false'] : [:])
     } catch (Exception failure) {
         mcpLogError('rm-native', "hub_set_rule ${created ? 'create' : 'update'} failed for rule ${id}: ${failure.message}".toString(), failure)
@@ -27804,7 +27706,7 @@ Map toolUpdateRuleDocument(Map args) {
     }
 }
 private Map _ndEditBackup(Long id, String reason) {
-    if (_effectiveBackupSetting('backupBeforeRuleEdits') == 'false') return [skipped: true, reason: 'Automatic pre-edit backups are disabled']
+    if (_effectiveBackupSetting('backupBeforeRuleEdits') == 'false') return (_bat529EmbeddedCatalogRead(['["m",[["skipped",true],["reason","Automatic pre-edit backups are disabled"]]]']) as Map)
     Map backup = _rmBackupRuleSnapshot(id.toString().toInteger(), reason, true)
     if (!(backup?.backupKey instanceof String) || !backup.backupKey) throw new IllegalStateException('No recovery handle was returned')
     backup
@@ -27826,7 +27728,7 @@ Map toolCreateRuleDocument(Map args) {
     try {
         def response = hubInternalGetRaw("/installedapp/createchild/hubitat/Rule-5.1/parent/${parentId}")
         id = _nrCreatedAppId(response)
-        if (id == null) return [success: false, partial: true, error: 'Native child creation did not return its rule ID; inspect the parent before retrying']
+        if (id == null) return (_bat529EmbeddedCatalogRead(['["m",[["success",false],["partial",true],["error","Native child creation did not return its rule ID; inspect the parent before retrying"]]]']) as Map)
         def child = getAppByAppId(id)
         if (child?.parentAppId?.toString() != parentId.toString() || child?.appType?.namespace != 'hubitat' || child?.appType?.name != 'Rule-5.1') throw new IllegalStateException('Created child did not match the requested native parent and rule type')
         verifiedChild = true
@@ -27851,7 +27753,7 @@ private Map _ndOperationSchema(String operation) {
     Map properties = [:]
     List required = []
     if (operation == 'read') {
-        properties.sections = [type: 'array', items: [type: 'string', enum: ['actions', 'conditions', 'triggers', 'expressions', 'variables', 'settings']]]
+        properties.sections = (_bat529EmbeddedCatalogRead(['["m",[["type","array"],["items",["m",[["type","string"],["enum",["l",["actions","conditions","triggers","expressions","variables","settings"]]]]]]]]']) as Map)
         properties.cursor = [type: 'string']
         properties.limit = [type: 'integer', minimum: 1, maximum: 100]
     } else if (operation == 'create') {
@@ -27889,7 +27791,7 @@ Map toolSetRule(Map request) {
     if (request.containsKey('args') && !(request.args instanceof Map)) throw new IllegalArgumentException('args must be an object')
     if (!request.containsKey('operation')) {
         if (request.args) throw new IllegalArgumentException('Choose an operation before supplying args')
-        return [operations: ['read', 'create', 'update', 'form'], usage: 'Choose operation for its schema. Writes return schema until confirm=true. See set_rule_reference.']
+        return (_bat529EmbeddedCatalogRead(['["m",[["operations",["l",["read","create","update","form"]]],["usage","Choose operation for its schema. Writes return schema until confirm=true. See set_rule_reference."]]]']) as Map)
     }
     if (!(request.operation instanceof String)) throw new IllegalArgumentException('operation must be a string')
     String operation = request.operation
@@ -27919,7 +27821,7 @@ def _getAllToolDefinitions_partNativeDocuments() {
 }
 def _readOnlyToolNames_partNativeDocuments() { [] }
 def _toolDisplayMeta_partNativeDocuments() {
-    [hub_set_rule: [title: 'Set Native Rule', summary: 'Read, create and update native rules or use their native editor forms.']]
+    (_bat529EmbeddedCatalogRead(['["m",[["hub_set_rule",["m",[["title","Set Native Rule"],["summary","Read, create and update native rules or use their native editor forms."]]]]]]']) as Map)
 }
 String _ndGuide() {
     return '''## Set Rule Reference
@@ -28047,7 +27949,7 @@ def _bat529Cb_18d8bae2_34(def it) { it == null || !it.toString().isInteger() || 
 }
 def _bat529Cb_18d8bae2_35(def id, def page) { _ndRender(id, page)
 }
-def _bat529Cb_18d8bae2_36(def it) { !(it in ['operation', 'rule_id', 'args', 'confirm', 'bestPracticeKey'])
+def _bat529Cb_18d8bae2_36(def it) { !(it in (_bat529EmbeddedCatalogRead(['["l",["operation","rule_id","args","confirm","bestPracticeKey"]]']) as List))
 }
 def _bat529Cb_18d8bae2_37(def id, def entry) { entry.value.app_id?.toString() == id.toString()
 }
@@ -28330,9 +28232,9 @@ private Map _nfContext(Long id, Map model, String from = null) {
         (from ? _nfEncode(groovy.json.JsonOutput.toJson([from])) : '%5B%5D')
     if (page.install || model.doneButton) _nfControl(controls, [name: '_action_update', value: 'Done', kind: 'navigation', title: model.cancelButton ? 'Save' : 'Done'])
     else if (page.nextPage && !page.donePage) _nfControl(controls, [name: '_action_next', value: page.nextPageLabel ?: 'Next', kind: 'navigation', title: page.nextPageLabel ?: 'Next'])
-    else if (page.nextPage && page.donePage) _nfControl(controls, [name: '_action_done', value: 'Done', kind: 'navigation', title: 'Done'])
-    else if (trail != '%5B%5D') _nfControl(controls, [name: '_action_previous', value: 'Done', kind: 'navigation', title: 'Done (previous page)'])
-    if (model.cancelButton) _nfControl(controls, [name: '_action_update', value: 'Cancel', kind: 'navigation', title: 'Cancel'])
+    else if (page.nextPage && page.donePage) _nfControl(controls, (_bat529EmbeddedCatalogRead(['["m",[["name","_action_done"],["value","Done"],["kind","navigation"],["title","Done"]]]']) as Map))
+    else if (trail != '%5B%5D') _nfControl(controls, (_bat529EmbeddedCatalogRead(['["m",[["name","_action_previous"],["value","Done"],["kind","navigation"],["title","Done (previous page)"]]]']) as Map))
+    if (model.cancelButton) _nfControl(controls, (_bat529EmbeddedCatalogRead(['["m",[["name","_action_update"],["value","Cancel"],["kind","navigation"],["title","Cancel"]]]']) as Map))
     if (model.removeButton) unsupported << 'Remove app: use the dedicated native-app deletion tool'
     Map envelope = [id: id.toString(), currentPage: page.name ?: '', pageBreadcrumbs: trail]
     (['returnPath', 'referrer', 'url', 'formAction']).each(((this.&_bat529Cb_82110e0f_24).curry([envelope, model] as Object[])))
@@ -28397,9 +28299,9 @@ private Map _nfPublic(Map context, List optionsFor) {
 }
 private Map _nfBackup(Long id, def nativeApp, String page) {
     boolean builtIn = nativeApp?.appType?.namespace == 'hubitat'
-    if (builtIn && nativeApp.appType.name == 'Rule Machine') return [skipped: true, reason: 'Parent creation/navigation has no existing child state to restore; opening a child starts its own protected workflow']
+    if (builtIn && nativeApp.appType.name == 'Rule Machine') return (_bat529EmbeddedCatalogRead(['["m",[["skipped",true],["reason","Parent creation/navigation has no existing child state to restore; opening a child starts its own protected workflow"]]]']) as Map)
     if (builtIn && nativeApp.appType.name in ['Rule-5.1', 'Button Rule-5.1']) return _ndEditBackup(id, 'pre-native-form')
-    if (_effectiveBackupSetting('backupBeforeRuleEdits') == 'false') return [skipped: true, reason: 'Automatic pre-edit backups are disabled']
+    if (_effectiveBackupSetting('backupBeforeRuleEdits') == 'false') return (_bat529EmbeddedCatalogRead(['["m",[["skipped",true],["reason","Automatic pre-edit backups are disabled"]]]']) as Map)
     _rmBackupBeforeEdit(id.toInteger(), 'pre-native-form', page)
 }
 private Map _nfDefaultsReport(List posted, List rejected) {
@@ -28649,7 +28551,7 @@ def _bat529Cb_82110e0f_19(def envelope, def page, def key) { if (page[key]) enve
 }
 def _bat529Cb_82110e0f_20(def it) { _nfEncode(it)
 }
-def _bat529Cb_82110e0f_21(def it) { !(it in ['app_id', 'steps', 'options_for', 'confirm', 'bestPracticeKey'])
+def _bat529Cb_82110e0f_21(def it) { !(it in (_bat529EmbeddedCatalogRead(['["l",["app_id","steps","options_for","confirm","bestPracticeKey"]]']) as List))
 }
 def _bat529Cb_82110e0f_22(def controls, def fields, def messages, def model, def unsupported, def item, def index) { _nfWalk(item, fields, controls, messages, unsupported, model, index)
 }
@@ -28956,7 +28858,7 @@ def mainPage() {
                   defaultValue: true
             input "mcpLogLevel", "enum", title: "MCP Debug Log Level",
                   description: "Controls MCP-accessible debug logs (default: errors only)",
-                  options: ["debug": "Debug (verbose)", "info": "Info (normal)", "warn": "Warnings only", "error": "Errors only (recommended)"],
+                  options: (_bat529EmbeddedCatalogRead(['["m",[["debug","Debug (verbose)"],["info","Info (normal)"],["warn","Warnings only"],["error","Errors only (recommended)"]]]']) as Map),
                   defaultValue: "error", required: false
             input "debugLogging", "bool", title: "Log MCP request/response traffic", defaultValue: false,
                   description: "Writes every MCP request, response and notification to Hubitat's log viewer. Other debug output follows the MCP Debug Log Level above."
@@ -28985,14 +28887,7 @@ def formatTimestamp(timestamp) {
             def date = new Date(timestamp)
             return date.format("yyyy-MM-dd HH:mm:ss")
         } else if (timestamp instanceof String) {
-            def formats = [
-                "yyyy-MM-dd'T'HH:mm:ss.SSSZ",
-                "yyyy-MM-dd'T'HH:mm:ssZ",
-                "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'",
-                "yyyy-MM-dd'T'HH:mm:ss'Z'",
-                "yyyy-MM-dd'T'HH:mm:ss",
-                "yyyy-MM-dd HH:mm:ss",
-            ]
+            def formats = (_bat529EmbeddedCatalogRead(['["l",["yyyy-MM-dd\'T\'HH:mm:ss.SSSZ","yyyy-MM-dd\'T\'HH:mm:ssZ","yyyy-MM-dd\'T\'HH:mm:ss.SSS\'Z\'","yyyy-MM-dd\'T\'HH:mm:ss\'Z\'","yyyy-MM-dd\'T\'HH:mm:ss","yyyy-MM-dd HH:mm:ss"]]']) as List)
             for (fmt in formats) {
                 try {
                     def date = Date.parse(fmt, timestamp)
@@ -30135,7 +30030,7 @@ private boolean _mcpClientIsWrapper(String name, String version) {
     String lower = name?.toLowerCase()
     if (!lower) return false
     if (lower == "mcp") return version == null || version == "0.1.0"
-    return ["mcp-remote", "mcp-proxy", "fastmcp-remote", "supergateway"].contains(lower)
+    return (_bat529EmbeddedCatalogRead(['["l",["mcp-remote","mcp-proxy","fastmcp-remote","supergateway"]]']) as List).contains(lower)
 }
 private boolean _openAiClientRequest() {
     return mcpClientIdentity()?.client?.name == "openai-mcp"
@@ -30252,10 +30147,7 @@ def handleInitialize(msg) {
     ])
 }
 def serverCapabilities() {
-    [
-        tools: [:],
-        resources: [subscribe: false, listChanged: false]
-    ]
+    (_bat529EmbeddedCatalogRead(['["m",[["tools",["m",[]]],["resources",["m",[["subscribe",false],["listChanged",false]]]]]]']) as Map)
 }
 def handleServerDiscover(msg) {
     String headerVersion = _requestHeader("MCP-Protocol-Version")
@@ -30631,13 +30523,13 @@ def handleToolsCallLegacy(msg) {
             ])
             result = [isError: true, error: "Tool ${reactiveToolName} returned no result",
                       tool: reactiveToolName]
-            if (audit != null) outcome = [outcome: "unknown", error: "tool returned no result"]
+            if (audit != null) outcome = (_bat529EmbeddedCatalogRead(['["m",[["outcome","unknown"],["error","tool returned no result"]]]']) as Map)
         }
         if (audit != null && outcome == null) outcome = _writeOutcome(result)
         return _renderToolResult(msg.id, toolName, reactiveToolName, args, result,
             result instanceof Map && result.isError == true)
     } catch (IllegalArgumentException e) {
-        if (audit != null && outcome == null) outcome = [outcome: "failed", error: "validation refused the call"]
+        if (audit != null && outcome == null) outcome = (_bat529EmbeddedCatalogRead(['["m",[["outcome","failed"],["error","validation refused the call"]]]']) as Map)
         mcpLog("error", "server", "Validation error in ${reactiveToolName}: ${e.message}", null, [
             details: _toolLogDetails(reactiveToolName, toolName, args, [error: e.message])
         ])
@@ -30656,7 +30548,7 @@ def handleToolsCallLegacy(msg) {
     } finally {
         if (writeLeaseId != null) _writeReleaseRequest(writeLeaseId)
         if (audit != null && writeLeaseId != null) {
-            Map fin = outcome ?: [outcome: "unknown", error: "request ended before a result was produced"]
+            Map fin = outcome ?: (_bat529EmbeddedCatalogRead(['["m",[["outcome","unknown"],["error","request ended before a result was produced"]]]']) as Map)
             _writeAuditLog(audit, "finished", fin + [durationMs: now() - reqT0])
         }
     }
@@ -30698,9 +30590,7 @@ private void _writeAuditLog(Map audit, String phase, Map extra) {
     } catch (Exception ignored) { }
 }
 private List _writeTargetKeys() {
-    return ["appId", "nativeAppId", "ruleId", "deviceId", "device_id",
-        "driverId", "roomId", "room_id", "variableName", "name", "id", "jobId", "type", "action", "scope",
-        "backupKey", "ref", "mode", "fileName", "filename", "path"]
+    return (_bat529EmbeddedCatalogRead(['["l",["appId","nativeAppId","ruleId","deviceId","device_id","driverId","roomId","room_id","variableName","name","id","jobId","type","action","scope","backupKey","ref","mode","fileName","filename","path"]]']) as List)
 }
 private Map _writeTargetSummary(String leaf, String outer, args) {
     try {
@@ -30728,19 +30618,19 @@ private Map _writeOutcome(result) {
     try {
         if (!(result instanceof Map)) return [outcome: "completed"]
         Map r = result as Map
-        if (r.__deviceValidation != null) return [outcome: "failed", error: "validation refused the call"]
+        if (r.__deviceValidation != null) return (_bat529EmbeddedCatalogRead(['["m",[["outcome","failed"],["error","validation refused the call"]]]']) as Map)
         if (r.status?.toString() == "in_progress") {
             return r.requestId != null ? [outcome: "accepted"]
-                : [outcome: "partial", error: "paused with remaining work in the result"]
+                : (_bat529EmbeddedCatalogRead(['["m",[["outcome","partial"],["error","paused with remaining work in the result"]]]']) as Map)
         }
         if (r.partial == true) return [outcome: "partial", error: _writeOutcomeCode(r, "some items did not apply")]
         if (r.isError == true || r.success == false) return [outcome: "failed", error: _writeOutcomeCode(r, "tool returned a failure result")]
         if (r.stateError instanceof CharSequence && r.stateError.toString().trim()) {
-            return [outcome: "unknown", error: "the write ran but reading the resulting state failed"]
+            return (_bat529EmbeddedCatalogRead(['["m",[["outcome","unknown"],["error","the write ran but reading the resulting state failed"]]]']) as Map)
         }
         return [outcome: "completed"]
     } catch (Exception ignored) {
-        return [outcome: "unknown", error: "outcome could not be classified"]
+        return (_bat529EmbeddedCatalogRead(['["m",[["outcome","unknown"],["error","outcome could not be classified"]]]']) as Map)
     }
 }
 private String _writeOutcomeCode(Map r, String fallback) {
@@ -33174,7 +33064,7 @@ def validateCondition(condition) {
             break
         case "days_of_week":
             if (!condition.days) throw new IllegalArgumentException("days_of_week condition requires days array")
-            def validDays = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
+            def validDays = (_bat529EmbeddedCatalogRead(['["l",["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"]]']) as List)
             (condition.days).each(((this.&_bat529Cb_ad9a62cb_216).curry([validDays] as Object[])))
             break
         case "sun_position":
@@ -33186,7 +33076,7 @@ def validateCondition(condition) {
             break
         case "hsm_status":
             if (!condition.status) throw new IllegalArgumentException("hsm_status condition requires status")
-            def validHsmStatuses = ["disarmed", "armedAway", "armedHome", "armedNight", "armingAway", "armingHome", "armingNight"]
+            def validHsmStatuses = (_bat529EmbeddedCatalogRead(['["l",["disarmed","armedAway","armedHome","armedNight","armingAway","armingHome","armingNight"]]']) as List)
             if (!validHsmStatuses.contains(condition.status)) {
                 throw new IllegalArgumentException("hsm_status condition: Invalid status '${condition.status}'. Valid statuses: ${validHsmStatuses.join(', ')}")
             }
@@ -33373,7 +33263,7 @@ def validateAction(action) {
             if (!action.deviceId) throw new IllegalArgumentException("set_fan_speed action requires deviceId")
             if (!findDevice(action.deviceId)) throw new IllegalArgumentException("Device not found: ${action.deviceId}")
             if (!action.speed) throw new IllegalArgumentException("set_fan_speed action requires speed")
-            if (!["low", "medium-low", "medium", "medium-high", "high", "on", "off", "auto"].contains(action.speed)) {
+            if (!(_bat529EmbeddedCatalogRead(['["l",["low","medium-low","medium","medium-high","high","on","off","auto"]]']) as List).contains(action.speed)) {
                 throw new IllegalArgumentException("set_fan_speed: invalid speed '${action.speed}'")
             }
             break
@@ -33460,12 +33350,7 @@ def _parseSinceArg(since) {
     if (s.isEmpty()) return null
     if (s.isLong()) return new Date(s.toLong())
     if (s.endsWith("Z")) s = s.substring(0, s.length() - 1) + "+0000"
-    def formats = [
-        "yyyy-MM-dd'T'HH:mm:ss.SSSZ",
-        "yyyy-MM-dd'T'HH:mm:ssZ",
-        "yyyy-MM-dd'T'HH:mm:ss.SSSXXX",
-        "yyyy-MM-dd'T'HH:mm:ssXXX",
-    ]
+    def formats = (_bat529EmbeddedCatalogRead(['["l",["yyyy-MM-dd\'T\'HH:mm:ss.SSSZ","yyyy-MM-dd\'T\'HH:mm:ssZ","yyyy-MM-dd\'T\'HH:mm:ss.SSSXXX","yyyy-MM-dd\'T\'HH:mm:ssXXX"]]']) as List)
     for (fmt in formats) {
         try { return Date.parse(fmt, s) } catch (Exception ignored) {}
     }
@@ -34047,7 +33932,7 @@ def _postMultipartBackup(String path, String field, String fileName, byte[] file
             try { result = new groovy.json.JsonSlurper().parseText(d?.toString() ?: "{}") }
             catch (Exception ig) {
                 mcpLogError("hub-admin", "${path} returned a non-JSON body (status=${resp?.status})", ig)
-                result = [success: false, message: "Upload returned an unexpected (non-JSON) response; not treated as success."]
+                result = (_bat529EmbeddedCatalogRead(['["m",[["success",false],["message","Upload returned an unexpected (non-JSON) response; not treated as success."]]]']) as Map)
             }
         }
     }
@@ -34553,8 +34438,7 @@ private Map _getDebugLogHistoryResult(Map args = [:]) {
             if (buffer.fetchError) throw new IllegalStateException("Native log recovery failed; retry this request: ${buffer.fetchError}")
         }
         long remaining = Math.min(remainingBudget, Math.max(0L, deadline - now()))
-        if (remaining <= 0L) return [status: "in_progress", retryable: true,
-            note: "Native log history is loading. Continue with requestState when supplied, otherwise repeat the same call."]
+        if (remaining <= 0L) return (_bat529EmbeddedCatalogRead(['["m",[["status","in_progress"],["retryable",true],["note","Native log history is loading. Continue with requestState when supplied, otherwise repeat the same call."]]]']) as Map)
         long waitMs = Math.min(WORKER_POLL_MS, remaining)
         pauseExecution(waitMs)
         remainingBudget -= waitMs
@@ -35510,21 +35394,16 @@ def _guideSectionForTool(toolName) {
     if (t == 'hub_set_visual_rule' || t == 'hub_delete_visual_rule') return 'visual_rule_reference'
     if (t.endsWith('_custom_rule')) return 'rules'
     if (t == 'hub_set_native_app') return 'set_native_app_reference'
-    if (t in ['hub_delete_native_app', 'hub_clone_native_app',
-              'hub_export_native_app', 'hub_import_native_app']) return 'builtin_app_tools_crud'
-    if (t in ['hub_set_app_disabled', 'hub_call_rule', 'hub_set_rule_paused',
-              'hub_set_rule_private_boolean']) return 'builtin_app_tools_rules'
+    if (t in (_bat529EmbeddedCatalogRead(['["l",["hub_delete_native_app","hub_clone_native_app","hub_export_native_app","hub_import_native_app"]]']) as List)) return 'builtin_app_tools_crud'
+    if (t in (_bat529EmbeddedCatalogRead(['["l",["hub_set_app_disabled","hub_call_rule","hub_set_rule_paused","hub_set_rule_private_boolean"]]']) as List)) return 'builtin_app_tools_rules'
     if (t in ['hub_get_device', 'hub_update_device']) return 'update_device'
     if (t == 'hub_manage_virtual_device') return 'virtual_devices'
-    if (t in ['hub_create_dashboard', 'hub_update_dashboard', 'hub_delete_dashboard', 'hub_clone_dashboard']) return 'dashboards'
+    if (t in (_bat529EmbeddedCatalogRead(['["l",["hub_create_dashboard","hub_update_dashboard","hub_delete_dashboard","hub_clone_dashboard"]]']) as List)) return 'dashboards'
     if (t in ['hub_create_backup', 'hub_restore_backup']) return 'backup'
     if (t in ['hub_write_file', 'hub_delete_file']) return 'file_manager'
-    if (t in ['hub_call_zwave', 'hub_set_zwave', 'hub_call_zigbee', 'hub_set_zigbee',
-              'hub_call_matter']) return 'hub_admin_write_radios'
-    if (t in ['hub_call_device_command', 'hub_call_device_swap', 'hub_call_device_replace',
-              'hub_create_device']) return 'hub_admin_write_devices'
-    if (t in ['hub_delete_device', 'hub_delete_room', 'hub_delete_item', 'hub_reboot', 'hub_shutdown',
-              'hub_update_firmware', 'hub_call_destructive_ops']) return 'hub_admin_write_destructive'
+    if (t in (_bat529EmbeddedCatalogRead(['["l",["hub_call_zwave","hub_set_zwave","hub_call_zigbee","hub_set_zigbee","hub_call_matter"]]']) as List)) return 'hub_admin_write_radios'
+    if (t in (_bat529EmbeddedCatalogRead(['["l",["hub_call_device_command","hub_call_device_swap","hub_call_device_replace","hub_create_device"]]']) as List)) return 'hub_admin_write_devices'
+    if (t in (_bat529EmbeddedCatalogRead(['["l",["hub_delete_device","hub_delete_room","hub_delete_item","hub_reboot","hub_shutdown","hub_update_firmware","hub_call_destructive_ops"]]']) as List)) return 'hub_admin_write_destructive'
     if (t == 'hub_get_device_attribute') return 'device_authorization'
     if (t == 'hub_report_issue') return 'performance_diagnostics'
     return null
