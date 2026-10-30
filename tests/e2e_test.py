@@ -3193,13 +3193,8 @@ class TestRunner:
         assert isinstance(fut, dict) and fut.get("count") == 0 and fut.get("events") == [], \
             f"future since should yield an empty list, not: {fut}"
 
-        # Location and hub events (reboots, low memory) are hub_get_logs tabs; both must answer.
+        # Location and hub events are hub_get_logs tabs (covered by test_get_logs_location_and_hub_events).
         self._expect_tool_refusal("hub_list_device_events", {"hoursBack": 1}, "hub_get_logs(mode='locationEvents')")
-        loc =self.client.call_tool("hub_get_logs", {"mode": ["locationEvents", "hubEvents"], "limit": 50})
-        assert isinstance(loc, dict) and set(loc.get("modes") or {}) == {"locationEvents", "hubEvents"} \
-            and "failedModes" not in loc, f"location and hub events must both answer: {loc}"
-        assert all(isinstance(r, dict) and isinstance(r.get("entries"), list) and "error" not in r
-                   for r in loc["modes"].values()), f"each tab must return its entries: {loc}"
 
         # Read the scaffold's history (relative/hoursBack mode). Also pins the
         # relative-mode envelope: sinceMode=relative, echoes hoursBack not since.
@@ -5303,8 +5298,8 @@ class TestRunner:
             limited = self.client.call_tool("hub_list_devices", {"scope": "owned", "limit": 3})
             assert limited.get("count") == 3, f"limit=3 was ignored: {limited}"
             assert limited.get("total") == len(full_devices), f"virtual total mismatch: {limited}"
-            assert limited.get("hasMore") is True and limited.get("nextOffset") == 3, \
-                f"classic virtual pagination metadata missing: {limited}"
+            assert limited.get("hasMore") is True and limited.get("nextCursor") == "3", \
+                f"owned-scope pagination metadata missing: {limited}"
             assert [d.get("id") for d in limited.get("devices", [])] == \
                 [d.get("id") for d in full_devices[:3]], f"limit page changed ordering: {limited}"
 
