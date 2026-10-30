@@ -27,7 +27,7 @@ private List _ndSettings(Long id) {
     if (!(response instanceof Map) || !(response.settings instanceof List)) throw new IllegalStateException('Native settings are unavailable')
     response.settings.collect { row ->
         if (!(row instanceof Map) || !(row.name instanceof String)) throw new IllegalStateException('Unexpected native setting row')
-        boolean secret = row.type == 'password' || _appConfigIsSecretSetting(row.name, row.type, row.value)
+        boolean secret = _redactsCredentials() && (row.type == 'password' || _appConfigIsSecretSetting(row.name, row.type, row.value))
         def setting = [name: row.name, type: row.type, multiple: row.multiple, value: secret ? null : row.value, device_ids: row.deviceList instanceof Map ? row.deviceList.keySet().collect { it.toString() }.sort() : null]
         if (secret) setting.redacted = true
         setting
@@ -131,7 +131,11 @@ Map toolGetRuleDocument(Map args) {
     if ('conditions' in sections) document.conditions = nativeState.capabsfalse instanceof Map ? nativeState.capabsfalse : [:]
     if ('triggers' in sections) document.triggers = nativeState.capabstrue instanceof Map ? nativeState.capabstrue : [:]
     if ('expressions' in sections) document.expressions = nativeState.eval instanceof Map ? nativeState.eval : [:]
-    if ('variables' in sections) document.variables = _nrHandle(id).getAllLocalVars()
+    if ('variables' in sections) document.variables = _nrHandle(id).getAllLocalVars().collectEntries { name, row ->
+        Map shown = _rmPublicLocalVariable(name.toString(), row instanceof Map ? row : [value: row])
+        shown.remove('name')
+        [(name): row instanceof Map ? row + shown : shown]
+    }
     if ('settings' in sections) document.settings = _ndSettings(id)
     if (paged) {
         String section = sections[0]
@@ -246,15 +250,22 @@ private boolean _ndKnownRow(Map rows, String rowId, String missing) {
 // actNdx, then advances that counter; a new rule starts both at 1. The batch may name the row by it.
 private String _ndPredictAppend(Map rows, Map counters, String part) {
     String family = part == 'action' ? 'action' : 'condition'
-    int next = counters.get(family) as int
+    List taken = family == 'action' ? [rows.action] : [rows.condition, rows.trigger]
+    int next = _ndCounter(counters.get(family), taken.any { !it.ids.isEmpty() })
     counters.put(family, next + 1)
     String predicted = next.toString()
+    if (taken.any { predicted in it.ids }) throw new IllegalArgumentException("Rule Machine's next ${family} id ${predicted} is already in use; read the rule again before appending")
     rows.get(part).predicted << predicted
     rows.get(part).added++
     predicted
 }
 
-private int _ndCounter(Object value) { value != null && value.toString().isInteger() && value.toString().toInteger() > 0 ? value.toString().toInteger() : 1 }
+// A rule with no rows in a family may not carry its counter yet; one that has rows must.
+private int _ndCounter(Object value, boolean hasRows) {
+    if (value != null && value.toString().isInteger() && value.toString().toInteger() > 0) return value.toString().toInteger()
+    if (hasRows) throw new IllegalArgumentException("The rule's row counter is unreadable; read the rule again before appending")
+    return 1
+}
 
 private void _ndDropRow(Map rows, String rowId, String missing) {
     if (_ndKnownRow(rows, rowId, missing)) rows.ids.remove(rowId)
@@ -274,7 +285,8 @@ private void _ndPreflight(Long id, List changes) {
     Map rows = [action: [ids: (actionOrder + projectedActions.keySet()) as Set, added: 0, deleted: [] as Set, predicted: [] as Set],
                 condition: [ids: conditions.keySet().collect { it.toString() } as Set, added: 0, deleted: [] as Set, predicted: [] as Set],
                 trigger: [ids: triggers.keySet().collect { it.toString() } as Set, added: 0, deleted: [] as Set, predicted: [] as Set]]
-    Map counters = [condition: _ndCounter(before.ndx), action: _ndCounter(before.actNdx)]
+    // Read when the batch first appends to a family, so a counter it never uses cannot refuse it.
+    Map counters = [condition: before.ndx, action: before.actNdx]
     // A rule's first Required Expression advances ndx by one (live); later ones leave it.
     boolean hasRequired = expressions.get('0') instanceof List && !expressions.get('0').isEmpty()
     boolean appendedActions = false
@@ -338,7 +350,7 @@ private void _ndPreflight(Long id, List changes) {
                 projectedActions.remove(target)
                 actionOrder = actionOrder.findAll { it != target }
             }
-            if (change.part == 'required' && !hasRequired) { counters.put('condition', (counters.get('condition') as int) + 1); hasRequired = true }
+            if (change.part == 'required' && !hasRequired) { counters.put('condition', _ndCounter(counters.get('condition'), !(rows.condition.ids.isEmpty() && rows.trigger.ids.isEmpty())) + 1); hasRequired = true }
             if (change.part in ['expression', 'required']) {
                 String evalId = change.part == 'required' ? '0' : value.id.toString()
                 expressions.put(evalId, value.tokens)
@@ -661,7 +673,7 @@ Example changes: [{part:"action",value:{type:"messageActs",subtype:"getLogMsg",f
 
 hub_set_rule(operation:"form",rule_id,args:{steps:[{kind:"open"}]},confirm:true) operates an enabled Rule-5.1 or Button Rule-5.1 rule, or its Rule Machine parent; hub_set_native_app(operation:"form",app_id,...) runs the same steps on any other classic app. Read action variants, input names and option values from the returned forms instead of guessing them. Even open renders execute app code and can change state or cause side effects. An open's optional page names a registered native page, and from names the page that links to it, so a sub-page opened directly offers its Done back to that parent. Follow returned controls for page parameters and breadcrumbs. A create_child control creates the parent's native child type, returns created_app_id and closes the parent context; open the child separately to configure it. Apps are deleted with hub_delete_native_app.
 
-Submit with {kind:"submit",expect_page:"last returned page",fields:{"native field name":value},activate:"returned control_id"}; without activate it saves the fields and refreshes the page. Control IDs tell apart native buttons that share a name, such as editing and deleting the same variable. Form results mask password-typed fields and fields whose names look like credentials (API keys, tokens, passwords, PINs, lock codes) with the same marker hub_get_app_config uses. A page with both a next page and a done page renders its Done as the _action_done control, which the hub answers by saving the page and rendering that same page again. An app without pages also shows the hub's default fields, label (the app's name) and mode[mode] (a list of mode IDs from its options), and a page's own label and mode elements are the same two fields; the hub does not always keep the label posted with mode[mode], so after such a submit the label is checked and posted again on its own when the hub put back an older one (label_restored). Native enum keys, device IDs, booleans and single/multiple cardinality are checked before the request. Each submit posts the supplied settings and, as the browser does, the shown default of every other input with no stored value; a password's default is never posted, and page code can still change its own settings. args.options_for:["device field name"] expands device choices on the final returned page.
+Submit with {kind:"submit",expect_page:"last returned page",fields:{"native field name":value},activate:"returned control_id"}; without activate it saves the fields and refreshes the page. Control IDs tell apart native buttons that share a name, such as editing and deleting the same variable. With Hide passwords and credentials on (the default), form results mask password-typed fields and fields whose names look like credentials (API keys, tokens, passwords, PINs, lock codes) with the same marker hub_get_app_config uses; with it off they read as stored, except for a per-client token. A page with both a next page and a done page renders its Done as the _action_done control, which the hub answers by saving the page and rendering that same page again. An app without pages also shows the hub's default fields, label (the app's name) and mode[mode] (a list of mode IDs from its options), and a page's own label and mode elements are the same two fields; the hub does not always keep the label posted with mode[mode], so after such a submit the label is checked and posted again on its own when the hub put back an older one (label_restored). Native enum keys, device IDs, booleans and single/multiple cardinality are checked before the request. Each submit posts the supplied settings and, as the browser does, the shown default of every other input with no stored value; a password's default is never posted, and page code can still change its own settings. args.options_for:["device field name"] expands device choices on the final returned page.
 
 A batch holds 1 through 16 steps, each using the form the step before it returned, so dependent fields require another submit after they appear. A button handler runs before its step's fields are saved, as in the browser: submit the fields it needs in an earlier step. A button without submitOnChange reloads and needs a separate field submission.
 

@@ -105,17 +105,24 @@ class ToolNativeDeviceReadsSpec extends ToolSpecBase {
     }
 
     @Unroll
-    def 'enabled readback cannot confirm an unavailable disabled flag #disabled'() {
+    def 'a disable is not confirmed by an unreadable disabled flag #disabled'() {
         given:
         fixture('selected')
-        nativeModel.device.disabled = disabled
+        def posts = []
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false ->
+            posts << path
+            nativeModel.device.disabled = disabled
+            [success: true]
+        }
 
         when:
-        def result = script._confirmDisabledFlip('10', false)
+        def result = script.toolUpdateDevice([deviceId: '10', fields: [enabled: false]])
 
         then:
-        result.ok == false
-        result.fetchFailed == true
+        posts == ['/device/disable']
+        result.success == false
+        result.changes.empty
+        result.errors*.property == ['enabled']
 
         where:
         disabled << [null, '', 'unknown', 0, [:], []]

@@ -534,6 +534,11 @@ def toolUpdateDashboard(args) {
     def deviceCsv = _dashboardDeviceCsv(args.deviceIds, true)
     // Wholesale replace would CLEAR an omitted dashboardPin/hsmPin: preserve an existing PIN the caller
     // didn't pass by reading + re-injecting it. (theme isn't recoverable from app-config.)
+    // A read returns PINs masked while Hide passwords and credentials is on; passing it back keeps the stored PIN.
+    String pinMarker = _appConfigRedactedMarker()
+    args = [:] + args
+    if (args.options instanceof Map) args.options = args.options.findAll { k, v -> !(k in ["dashboardPin", "hsmPin"] && v?.toString() == pinMarker) }
+    ["dashboardPin", "hsmPin"].each { k -> if (args[k]?.toString() == pinMarker) args.remove(k) }
     def argsForQuery = args
     boolean pinPreserveFailed = false
     def hasField = { String k -> (args.options instanceof Map && args.options.containsKey(k)) || args.containsKey(k) }
@@ -980,6 +985,19 @@ private List _normalizeDeviceIdList(raw) {
     return (raw != null) ? [raw.toString()] : []
 }
 
+// A dashboard's PINs are app settings: Hide passwords and credentials masks them in every dashboard tool
+// result, at the tool boundary only, so internal reads keep the real PINs.
+private _dashboardPublic(result) {
+    if (!_redactsCredentials()) return result
+    if (result instanceof Map) {
+        return result.collectEntries { k, v ->
+            [(k): (k in ["dashboardPin", "hsmPin"] && v != null && v.toString()) ? _appConfigRedactedMarker() : _dashboardPublic(v)]
+        }
+    }
+    if (result instanceof List) return result.collect { _dashboardPublic(it) }
+    return result
+}
+
 // Build the /dashboard/create|update query. Booleans serialize as "true"/"false"; theme empty == legacy.
 // Tile/nav/pin values are read from an `options` sub-object first, else the top-level arg (keeps the flat
 // tools/list catalog small while supporting direct callers). The id param (update) is added by the caller.
@@ -987,6 +1005,11 @@ private Map _buildDashboardConfigQuery(Map args, String deviceCsv) {
     def boolStr = { v -> (v == true || v?.toString()?.toLowerCase() == "true") ? "true" : "false" }
     def opts = (args.options instanceof Map) ? args.options : [:]
     def opt = { String k -> opts.containsKey(k) ? opts.get(k) : args.get(k) }
+    ["dashboardPin", "hsmPin"].each { k ->
+        if (opt(k)?.toString() == _appConfigRedactedMarker()) {
+            throw new IllegalArgumentException("${k} is the redaction marker, not a PIN. Pass the real PIN, or omit it on hub_update_dashboard to keep the stored one.")
+        }
+    }
     return [
         name: args.name.toString(),
         deviceIds: deviceCsv,

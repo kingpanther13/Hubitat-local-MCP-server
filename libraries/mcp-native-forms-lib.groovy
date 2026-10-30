@@ -189,7 +189,8 @@ private void _nfWalk(Object node, Map fields, Map controls, List messages, List 
             if (device && current instanceof Map) current = current.keySet().collect { it.toString() }
             if (device && !field.multiple && current instanceof List) current = current ? current[0] : null
             if (type == 'password') field.has_value = current != null && current != ''
-            else { field.value = current; field.value_source = exists ? 'stored' : 'default' }
+            // With Hide passwords and credentials off, a stored password reads back as stored.
+            if (type != 'password' || (exists && !_redactsCredentials())) { field.value = current; field.value_source = exists ? 'stored' : 'default' }
             // The page default the browser posts for an input with no stored value; a password's default is never posted.
             if (!exists && type != 'password' && current != null && current != '' && !(current instanceof Collection && current.isEmpty())) field.default_value = current
             field.present = exists && current != null && current != '' && (!(current instanceof Collection) || !current.empty)
@@ -298,6 +299,7 @@ private List _nfDevices(Map field) {
 
 private String _nfValue(Map field, Object value) {
     if (!field.supported || field.disabled || (!field.app_field && field.name =~ /[\[\]\r\n]/)) throw new IllegalArgumentException("Unsupported or disabled native field: ${field.name}")
+    if (_isRedactionMarker(value)) throw new IllegalArgumentException("${field.name} is the redaction marker, not a value; omit the field to keep the stored one")
     // A device input also takes the {id: label} map a configuration read returns.
     if (field.device && value instanceof Map) {
         List ids = value.keySet().collect { it.toString() }
@@ -322,11 +324,11 @@ private Map _nfPublic(Map context, List optionsFor) {
     List fields = context.get('fields').values().collect { field ->
         Map result = [:] + field
         ['device', 'ignore', 'capability', 'present', 'default_value', 'app_field', 'sidecars', 'hub_default'].each { result.remove(it) }
-        if (field.type == 'password') result.redacted = true
+        if (field.type == 'password' && _redactsCredentials()) result.redacted = true
         // The whole-result pass keys on a setting's name, and here the token sits under value.
         else if (field.name ==~ /(?i)access_?token/ && result.value instanceof CharSequence && result.value && _redactsAccessTokens()) result.value = _accessTokenRedactedMarker()
         // The same name rule as hub_get_app_config: a free-text apiKey or brokerPassword is a secret too.
-        else if (_appConfigIsSecretSetting(field.name, field.type, result.value)) { result.value = _appConfigRedactedMarker(); result.redacted = true }
+        else if (_appConfigMasksSetting(field.name, field.type, result.value)) { result.value = _appConfigRedactedMarker(); result.redacted = true }
         if (field.device && field.name in optionsFor) result.options = _nfDevices(field)
         if (field.device) result.options_available = true
         result
@@ -516,6 +518,8 @@ Map toolCallAppForm(Map args, String toolName = 'hub_set_rule') {
         if (step.kind == 'open' && step.from != null && (step.page == null || !(step.from instanceof String) || !(step.from ==~ /[A-Za-z_][A-Za-z0-9_.-]*/))) throw new IllegalArgumentException('from names the parent page of the opened page and requires page')
         if (step.kind == 'submit' && (!(step.expect_page instanceof String) || (step.get('fields') != null && !(step.get('fields') instanceof Map)))) throw new IllegalArgumentException('Submit requires expect_page and an optional fields object')
         if (step.activate != null && !(step.activate instanceof String)) throw new IllegalArgumentException('activate requires a returned control_id string')
+        def marked = step.get('fields') instanceof Map ? step.get('fields').find { k, v -> _isRedactionMarker(v) } : null
+        if (marked) throw new IllegalArgumentException("${marked.key} is the redaction marker, not a value; omit the field to keep the stored one")
     }
     requireDestructiveConfirm(args.confirm)
     Long id = args.app_id.toString().toLong()

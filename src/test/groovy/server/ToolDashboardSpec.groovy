@@ -652,6 +652,54 @@ class ToolDashboardSpec extends ToolSpecBase {
         thrown(IllegalArgumentException)
     }
 
+    def "dispatch masks dashboard PINs while Hide passwords and credentials is on, and returns them as stored when off"() {
+        given:
+        hubGet.register('/dashboard/all') { params ->
+            '[{"installedAppId":412,"name":"Living Room","deviceIds":"12,34","dashboardPin":"1111","hsmPin":"2222"}]'
+        }
+        settingsMap.enableRead = true
+        settingsMap.redactCredentials = toggle
+
+        when:
+        def listed = script.executeTool('hub_list_dashboards', [:])
+        def got = script.executeTool('hub_get_dashboard', [dashboardId: '412'])
+
+        then:
+        listed.dashboards[0].dashboardPin == shown
+        got.dashboardPin == shown
+        got.hsmPin == (toggle == false ? '2222' : '***redacted (password)***')
+
+        where:
+        toggle | shown
+        null   | '***redacted (password)***'
+        false  | '1111'
+    }
+
+    def "update fed a masked read keeps the stored PINs; create refuses the marker before any write"() {
+        given:
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/412') { params ->
+            '{"app":{"label":"Living Room"},"settings":{"dashboardPin":"4242","hsmPin":"7777"}}'
+        }
+
+        when: 'the masked PINs from a read are passed back'
+        script.toolUpdateDashboard([dashboardId: '412', name: 'Living Room', deviceIds: ['12', '34'],
+                                    dashboardPin: '***redacted (password)***', options: [hsmPin: '***redacted (password)***']])
+
+        then: 'the stored PINs are re-sent, not the marker'
+        def call = hubGet.calls.find { it.path == '/dashboard/update' }
+        call.params.dashboardPin == '4242'
+        call.params.hsmPin == '7777'
+
+        when:
+        script.toolCreateDashboard([name: 'Copy', deviceIds: ['12'], options: [dashboardPin: '***redacted (password)***']])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains('redaction marker')
+        !hubGet.calls.any { it.path == '/dashboard/create' }
+    }
+
     def "update preserves an existing PIN the caller didn't pass (wholesale replace must not clear it)"() {
         given: 'the dashboard currently has a dashboardPin, and the caller updates WITHOUT supplying one'
         enableWrite()

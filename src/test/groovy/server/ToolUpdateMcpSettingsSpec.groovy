@@ -683,23 +683,23 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "writes redactAccessTokens=#value as the response token-redaction toggle"() {
+    def "writes #key=#value as a response redaction toggle"() {
         given:
         enableDeveloperModeAndAdminWrite()
 
         when:
         def result = script.toolUpdateMcpSettings([
-            settings: [redactAccessTokens: value],
+            settings: [(key): value],
             confirm: true
         ])
 
         then:
         result.success == true
-        result.updated == [redactAccessTokens: value]
-        sharedAppStub.settingsStore['redactAccessTokens'] == [type: 'bool', value: value]
+        result.updated == [(key): value]
+        sharedAppStub.settingsStore[key] == [type: 'bool', value: value]
 
         where:
-        value << [true, false]
+        [key, value] << [['redactAccessTokens', 'redactCredentials'], [true, false]].combinations()
     }
 
     def "mixed batch with bad mcpLogLevel rejects ALL keys (atomic validation)"() {

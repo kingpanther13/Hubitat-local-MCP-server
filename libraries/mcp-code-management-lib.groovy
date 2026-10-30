@@ -580,10 +580,12 @@ def toolGetAppConfig(args) {
             // a bool's true is its value.
             if (i.defaultValue != null && (i.defaultValue != true || i.type == "bool")) input.value = i.defaultValue
             else if (i.value != null && (i.value != true || i.type == "bool")) input.value = i.value
-            // A mode input renders no value; it is stored in settings, as the form engine reads it.
-            if (i.type == "mode" && parsed.settings instanceof Map && parsed.settings.containsKey(i.name)) input.value = parsed.settings[i.name]
+            // The page's defaultValue is the code default; a stored value lives in settings, as the form engine
+            // reads it.
+            String inputType = i.type?.toString() ?: ""
+            if (!inputType.startsWith("capability") && !inputType.startsWith("device.") && parsed.settings instanceof Map && parsed.settings[i.name] != null) input.value = parsed.settings[i.name]
             if (i.type == "password" && i.name) passwordInputNames << i.name.toString()
-            if (input.containsKey("value") && _appConfigIsSecretSetting(i.name, i.type, input.value)) input.value = redactedPw
+            if (input.containsKey("value") && _appConfigMasksSetting(i.name, i.type, input.value)) input.value = redactedPw
             // An accessToken input stores its token under "value", which the whole-result pass (keyed on
             // the setting NAME) cannot see, so its rule applies here: the toggle, or a client caller.
             else if (input.containsKey("value") && _redactsAccessTokens() && input.value instanceof CharSequence &&
@@ -651,7 +653,7 @@ def toolGetAppConfig(args) {
     result.settingsKeyCount = settingsCount
     if (includeSettings) {
         def rawSettings = (parsed.settings instanceof Map) ? parsed.settings : [:]
-        if (!rawSettings) {
+        if (!rawSettings || !_redactsCredentials()) {
             result.settings = rawSettings
         } else {
             // configure/json carries no types for settings declared on other pages. statusJson lists
@@ -678,7 +680,7 @@ def toolGetAppConfig(args) {
                     redacted.put(k, _appConfigIsSecretSetting(key, type, v) ? redactedPw : v)
                 }
                 result.settings = redacted
-                result.settingsRedactionNote = "Secret values read ${redactedPw}: every setting the hub types as a password, on any page of the app, plus free-text settings whose names look like credentials (password, passwd, pwd, pass, passphrase, passcode, secret, token, API/access/private key, credential, psk, PIN, or a lock, user, access or alarm code). OAuth accessToken settings follow the Hide access tokens setting instead. Empty values are shown as-is. The secret itself is never returned; read or change it in the Hubitat UI.".toString()
+                result.settingsRedactionNote = "Secret values read ${redactedPw}: every setting the hub types as a password, on any page of the app, plus free-text settings whose names look like credentials (password, passwd, pwd, pass, passphrase, passcode, secret, token, API/access/private key, credential, psk, a PIN, or a code named for a lock, user, alarm, keypad, installer or similar). OAuth accessToken settings follow the Hide access tokens setting instead. Empty values are shown as-is. Turn off Hide passwords and credentials in the MCP app's settings to read them.".toString()
             }
         }
     } else if (settingsCount > 0) {
@@ -687,8 +689,6 @@ def toolGetAppConfig(args) {
 
     return result
 }
-
-private String _appConfigRedactedMarker() { return "***redacted (password)***" }
 
 // name -> input type for every setting of an installed app, from statusJson appSettings.
 // Null when the read fails or the shape is not the expected list, so the caller can fail closed.
@@ -710,77 +710,6 @@ private Map _appConfigSettingTypes(Integer appId) {
         if (rec instanceof Map && rec.name != null && rec.type != null) types.put(rec.name.toString(), rec.type.toString())
     }
     return types
-}
-
-// Whether a setting/input value must be redacted. A null or empty value hides nothing. The hub's
-// own password type always redacts. Otherwise a credential-shaped name redacts, unless the value
-// is a Boolean or the input type cannot hold free text (a "usePassword" toggle, a "tokenDevice"
-// picker). Number types stay in scope on purpose: a numeric PIN/passcode is still a secret.
-private boolean _appConfigIsSecretSetting(name, type, value) {
-    if (_appConfigEmptyValue(value)) return false
-    String t = type?.toString()
-    if (t == "password") return true
-    if (value instanceof Boolean) return false
-    if (t && (t in ["bool", "boolean", "enum", "mode", "time", "date", "button", "href", "hub", "icon", "color"] ||
-              t.startsWith("capability") || t.startsWith("device"))) return false
-    return _appConfigSecretName(name)
-}
-
-private boolean _appConfigEmptyValue(value) {
-    if (value == null) return true
-    if (value instanceof CharSequence && value.toString().isEmpty()) return true
-    (value instanceof Collection || value instanceof Map) && value.isEmpty()
-}
-
-// Credential-shaped setting names. The name is split into lowercase words at camelCase, acronym,
-// digit, and punctuation boundaries ("HPMPassword" -> hpm|password, "api_key2" -> api|key), and
-// each word is tested on its own, so substrings inside unrelated words do not match: "bypass",
-// "passThrough", "compass", "tokenizer", "secretary" are not secrets. A hit is ignored when the
-// next word marks metadata ABOUT the secret ("passwordSet", "tokenCount", "tokenExpiry").
-private boolean _appConfigSecretName(name) {
-    String raw = name?.toString()
-    if (!raw) return false
-    // OAuth access tokens are governed by the redactAccessTokens setting, which deliberately leaves
-    // them readable by default so the AI can read endpoint URLs.
-    if (raw ==~ /(?i)access_?token/) return false
-    // Cheap prefilter: a large app has 500-1000 keys and almost none can match.
-    String lower = raw.toLowerCase()
-    if (!(lower.contains("pass") || lower.contains("pwd") || lower.contains("secret") || lower.contains("token") ||
-          lower.contains("key") || lower.contains("credential") || lower.contains("psk") || lower.contains("pin") || lower.contains("code"))) return false
-    String spaced = raw.replaceAll(/([a-z0-9])([A-Z])/, '$1 $2').replaceAll(/([A-Z]+)([A-Z][a-z])/, '$1 $2')
-    List words = spaced.toLowerCase().split(/[^a-z]+/).findAll { part -> part }
-    Set metadata = ["count", "counter", "cnt", "expiry", "expires", "expire", "expired", "expiration", "time",
-                    "timestamp", "date", "length", "len", "type", "enabled", "enable", "set", "required", "url",
-                    "uri", "endpoint", "timeout", "interval", "mode", "policy", "hint", "label", "name"] as Set
-    Set keyQualifiers = ["api", "access", "private", "auth", "client", "secret", "encryption", "signing", "shared"] as Set
-    Set pinQualifiers = ["lock", "user", "access", "pass", "disarm", "arm", "alarm", "security", "unlock", "auth", "entry", "keypad", "door", "master", "admin", "guest"] as Set
-    Set hardwarePins = ["led", "gpio", "relay", "io", "digital", "analog", "data", "output", "input", "sensor", "pwm", "signal", "button",
-                        "power", "reset", "enable", "interrupt", "irq", "clock", "clk", "sda", "scl", "tx", "rx", "servo", "motor", "trigger", "echo"] as Set
-    for (int idx = 0; idx < words.size(); idx++) {
-        String w = words[idx]
-        String prev = idx > 0 ? words[idx - 1] : null
-        String next = idx + 1 < words.size() ? words[idx + 1] : null
-        boolean hit = w.contains("password") || w.contains("passwd") || w.contains("passphrase") ||
-            w.contains("passcode") || w.contains("pwd") || w.contains("apikey") || w.contains("privatekey") ||
-            w.contains("accesskey") || (w.contains("secret") && !w.startsWith("secretar")) ||
-            w.endsWith("token") || w.endsWith("tokens") || w.startsWith("credential") || w == "psk" ||
-            // "pass" alone is a password only as the final word ("mqttPass") or split from its
-            // own suffix ("passWord"); "passThrough", "passMode", and "byPass" are not.
-            (w == "pass" && prev != "by" && (next == null || next in ["word", "phrase", "code", "key"])) ||
-            (keyQualifiers.contains(w) && (next == "key" || next == "keys")) ||
-            // A PIN is a secret unless a hardware word names it a pin of a board ("ledPin", "gpioPin"); a
-            // code only after a lock, user, access, alarm or entry word ("userCodes"; "zipCode" is not).
-            (w in ["pin", "pins", "pincode", "pincodes"] && !(prev in hardwarePins)) ||
-            (w in ["code", "codes"] && (prev in pinQualifiers || prev in ["pin", "pins"]))
-        if (!hit) continue
-        // A metadata word right after the hit ("passwordSet", "tokenCount"); for the two-word
-        // "api key" form the metadata word follows "key".
-        boolean twoWords = ((next == "key" || next == "keys") && keyQualifiers.contains(w)) || (w in ["pin", "pins"] && next in ["code", "codes"])
-        String after = twoWords ? (idx + 2 < words.size() ? words[idx + 2] : null) : next
-        if (after != null && metadata.contains(after)) continue
-        return true
-    }
-    return false
 }
 
 // Unified source reader for the hub_get_source tool: dispatches on type to the
@@ -3224,7 +3153,7 @@ A transport drop can lose the response while the hub still commits this write; v
         // Hub Admin App Configuration Read (grouped with installed-apps peers)
         [
             name: "hub_get_app_config",
-            description: """Read an installed classic app's page as the Hubitat UI renders it: the app's identity, the page's sections with each input's current value, and its child apps. The pages it links to are listed in page.hrefs. controls lists the page's buttons and links with the control_id that hub_set_native_app or hub_set_rule(operation:'form') activates, and pageNote says when the hub rendered another page than pageName. Secret values are redacted.""",
+            description: """Read an installed classic app's page as the Hubitat UI renders it: the app's identity, the page's sections with each input's current value, and its child apps. The pages it links to are listed in page.hrefs. controls lists the page's buttons and links with the control_id that hub_set_native_app or hub_set_rule(operation:'form') activates, and pageNote says when the hub rendered another page than pageName. Secret values are redacted unless Hide passwords and credentials is off (always for a per-client token).""",
             inputSchema: [
                 type: "object",
                 properties: [

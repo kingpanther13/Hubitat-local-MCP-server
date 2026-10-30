@@ -196,11 +196,13 @@ class NativeDocumentsSpec extends ToolSpecBase {
         events.empty
     }
 
-    def 'native password settings are redacted without rendering or altering false and zero'() {
+    def 'native password and credential-named settings are redacted without rendering or altering false and zero'() {
         given:
         String secret = 'native-password-secret'
         hubGet.register('/installedapp/settings/42') { q -> JsonOutput.toJson([settings: [
             [name: 'credential', type: 'password', value: secret],
+            [name: 'apiKey', type: 'text', value: 'text-typed-api-key'],
+            [name: 'lockCode', type: 'number', value: 4321],
             [name: 'passwordHint', type: 'text', value: 'visible hint'],
             [name: 'flag', type: 'bool', value: false],
             [name: 'count', type: 'number', value: 0]
@@ -212,11 +214,29 @@ class NativeDocumentsSpec extends ToolSpecBase {
         credential.value == null
         credential.redacted == true
         !JsonOutput.toJson(result).contains(secret)
+        ['apiKey', 'lockCode'].every { name -> result.settings.find { it.name == name }.with { it.value == null && it.redacted == true } }
+        !JsonOutput.toJson(result).contains('text-typed-api-key') && !JsonOutput.toJson(result).contains('4321')
         result.settings.find { it.name == 'passwordHint' }.value == 'visible hint'
-        result.settings.findAll { it.type != 'password' }.every { !it.containsKey('redacted') }
+        result.settings.findAll { !(it.name in ['credential', 'apiKey', 'lockCode']) }.every { !it.containsKey('redacted') }
         result.settings.find { it.name == 'flag' }.value == false
         result.settings.find { it.name == 'count' }.value == 0
         events.isEmpty()
+    }
+
+    def 'credential-named settings and local variables read as stored with Hide passwords and credentials off, hidden by default'() {
+        given:
+        hubGet.register('/installedapp/settings/42') { q -> JsonOutput.toJson([settings: [[name: 'apiKey', type: 'text', value: 'key-1']]]) }
+        nativeState.allLocalVars.doorCode = [type: 'string', value: '4321']
+        when:
+        def hidden = script.toolGetRuleDocument([rule_id: 42, sections: ['settings', 'variables']])
+        settingsMap.redactCredentials = false
+        def shown = script.toolGetRuleDocument([rule_id: 42, sections: ['settings', 'variables']])
+        then:
+        hidden.settings[0].value == null && hidden.settings[0].redacted == true
+        hidden.variables.doorCode.value == null && hidden.variables.doorCode.redacted == true
+        hidden.variables.counter.value == 0 && !hidden.variables.counter.containsKey('redacted')
+        shown.settings[0].value == 'key-1' && !shown.settings[0].containsKey('redacted')
+        shown.variables.doorCode.value == '4321'
     }
 
     def 'disabled native required expression ignores stale predicate flags without rendering'() {
@@ -827,6 +847,33 @@ class NativeDocumentsSpec extends ToolSpecBase {
         then:
         def wrongKind = thrown(IllegalArgumentException)
         wrongKind.message == 'changes[1]: Expression references an unknown condition'
+        when: 'a later change names the appended action by the actNdx id'
+        script._ndPreflight(42L, script._ndChanges([logChange(), [part: 'delete', value: [part: 'action', id: '7']]]))
+        then:
+        noExceptionThrown()
+        when: 'the next id above the highest action is not the one Rule Machine gives'
+        script._ndPreflight(42L, script._ndChanges([logChange(), [part: 'delete', value: [part: 'action', id: '4']]]))
+        then:
+        def staleAction = thrown(IllegalArgumentException)
+        staleAction.message.contains('Native action does not exist')
+    }
+
+    def 'an append refuses an unreadable counter on a rule with rows and a predicted id already in use'() {
+        def condition = [part: 'condition', value: [capability: 'Switch', fields: [
+            [name: 'rDev_#', type: 'capability.switch', value: ['789']], [name: 'state_#', type: 'enum', value: 'on']]]]
+        when: 'the condition counter is missing on a rule that has conditions'
+        nativeState.remove('ndx')
+        script._ndPreflight(42L, script._ndChanges([condition]))
+        then:
+        def missing = thrown(IllegalArgumentException)
+        missing.message.contains('row counter is unreadable')
+        when: 'the action counter names an action the rule already has'
+        nativeState.ndx = 6
+        nativeState.actNdx = 3
+        script._ndPreflight(42L, script._ndChanges([logChange()]))
+        then:
+        def taken = thrown(IllegalArgumentException)
+        taken.message.contains('next action id 3 is already in use')
     }
 
     def "a rule's first Required Expression advances the condition counter, so a later append takes the next id"() {

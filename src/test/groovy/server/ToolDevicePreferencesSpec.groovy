@@ -254,11 +254,10 @@ class ToolDevicePreferencesSpec extends ToolSpecBase {
 
         when:
         def result = script.toolGetDevice(DEVICE_ID, 'configuration')
-        def schema = script.getAllToolDefinitions().find { it.name == 'hub_update_device' }.inputSchema.properties
         def fields = result.editableFields.collectEntries { [(it.name): it] }
 
         then:
-        fields.keySet() == (schema.keySet() - ['deviceId', 'confirm', 'bestPracticeKey']) as Set
+        fields.keySet() == script._deviceEditFields().keySet()
         fields.label.value == 'Synthetic Hall Climate'
         fields.deviceNetworkId.value == 'SYNTHETIC-DNI-901'
         fields.room.value == 'Synthetic Hall'
@@ -266,7 +265,7 @@ class ToolDevicePreferencesSpec extends ToolSpecBase {
         fields.showOnHome.value == false
         fields.defaultCurrentState.value == ''
         fields.tags.value == []
-        fields.preferences.valueReference == 'preferences'
+        fields.dataValues.value.firmwareVersion == '9.9.9-synthetic'
         fields.deviceTypeId.optionsReference.args.include == 'all'
         fields.deviceTypeId.requiresConfirmation == true
         fields.meshEnabled.value == false
@@ -283,18 +282,9 @@ class ToolDevicePreferencesSpec extends ToolSpecBase {
 
         when:
         def result = script.toolGetDevice(DEVICE_ID, 'configuration')
-        def preferenceField = result.editableFields.find { it.name == 'preferences' }
         def preferences = result.preferences.collectEntries { [(it.name): it] }
 
-        then:
-        preferenceField.valueReference == 'preferences'
-        preferenceField.valuePresent
-        preferenceField.readStatus == 'complete'
-        !preferenceField.applicable
-        !preferenceField.writable
-        preferenceField.reason == 'Driver preferences cannot be saved on a linked device; edit the source device.'
-
-        and: 'stored values, types, and defaults remain available for inspection'
+        then: 'stored values, types, and defaults remain available for inspection'
         preferences.descriptionLogging.value == false
         preferences.descriptionLogging.type == 'bool'
         preferences.descriptionLogging.defaultValue == true
@@ -588,6 +578,46 @@ class ToolDevicePreferencesSpec extends ToolSpecBase {
         result.sections.attributes.declaredAttributes[0].value == '***redacted (password)***'
     }
 
+    def "with Hide passwords and credentials off, details returns secret attribute records as stored"() {
+        given:
+        settingsMap.redactCredentials = false
+        childDevicesList << new TestDevice(id: 901, name: 'Fixture')
+        def nativeModel = fixture()
+        nativeModel.device.currentStates = [apiToken: [name: 'apiToken', value: 'private-attribute-value', dataType: 'STRING']]
+        nativeModel.remove('commands')
+        registerFixture(DEVICE_ID, nativeModel)
+
+        when:
+        def result = script.toolGetDevice(DEVICE_ID, 'details', ['attributes'])
+
+        then:
+        result.sections.attributes.declaredAttributes[0].value == 'private-attribute-value'
+        result.sections.attributes.currentStates.apiToken.value == 'private-attribute-value'
+    }
+
+    @spock.lang.Unroll
+    def "a #type preference named #name reads #expected"() {
+        given:
+        def fullJson = fixture()
+        fullJson.settings << [defaultValue: null, deviceId: 901, id: 10100, multiple: false, name: name, options: [:],
+                              range: null, required: false, title: name, type: type, value: stored, version: 1]
+        fullJson.inputValues << [name: name, inputValue: stored]
+        addListedDevice()
+        registerFixture(DEVICE_ID, fullJson)
+
+        when:
+        def exposed = script.toolGetDevice(DEVICE_ID, 'configuration').preferences.find { it.name == name }
+
+        then:
+        exposed.value == expected
+
+        where:
+        name       | type   | stored  | expected
+        'alarmPin' | 'text' | '1111'  | '***redacted (password)***'
+        'lockCode' | 'text' | '2222'  | '***redacted (password)***'
+        'zipCode'  | 'text' | '02134' | '02134'
+    }
+
     def "empty multiple enum storage is a saved empty selection while explicit null remains null"() {
         given:
         def full = [device: [id: 1], settings: [[name: 'choices', type: 'enum', multiple: true, value: '']], inputValues: []]
@@ -683,7 +713,6 @@ class ToolDevicePreferencesSpec extends ToolSpecBase {
         def result = script.toolGetDevice(DEVICE_ID, 'configuration')
 
         then:
-        result.editableFields.find { it.name == 'dashboardIds' }.applicable
         result.editableFields.find { it.name == 'dashboardIds' }.writable
     }
 
@@ -787,8 +816,8 @@ class ToolDevicePreferencesSpec extends ToolSpecBase {
         def fields = script.toolGetDevice(DEVICE_ID, 'configuration').editableFields
 
         then:
-        ['name', 'label', 'deviceTypeId', 'deviceNetworkId', 'zigbeeId', 'preferences'].every { name ->
-            fields.find { it.name == name }.applicable
+        ['name', 'label', 'deviceTypeId', 'deviceNetworkId', 'zigbeeId'].every { name ->
+            fields.find { it.name == name }.writable
         }
     }
 
@@ -807,24 +836,19 @@ class ToolDevicePreferencesSpec extends ToolSpecBase {
 
         when:
         def field = script.toolGetDevice(DEVICE_ID, 'configuration').editableFields.find { it.name == 'zigbeeId' }
-        def prepared = null
         def refusal = null
         try {
-            prepared = script._prepareDeviceUpdatePatch(
-                [deviceId: DEVICE_ID, zigbeeId: '0200000000411002', confirm: true], DEVICE_ID, full)
+            script._planDeviceEdit(full, [zigbeeId: '0200000000411002'])
         } catch (IllegalArgumentException ex) {
             refusal = ex.message
         }
 
         then:
-        field.applicable == editable
         field.writable == editable
         if (editable) {
             assert refusal == null
-            assert prepared.args.zigbeeId == '0200000000411002'
         } else {
-            assert prepared == null
-            assert refusal?.contains('zigbeeId')
+            assert refusal == "zigbeeId cannot be changed: ${field.reason}"
         }
 
         where:

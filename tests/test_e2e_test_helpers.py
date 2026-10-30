@@ -280,6 +280,7 @@ def test_bypass_boundary_preserves_existing_preferences_and_requires_unknown_nam
     preferences_before = dict(declared)
     preference_attempts = []
     label_attempts = []
+    room_attempts = []
     bypass_changes = []
     bypass = False
     current_label = "Native original"
@@ -328,10 +329,13 @@ def test_bypass_boundary_preserves_existing_preferences_and_requires_unknown_nam
                 assert arguments["attribute"] == "nativeConfiguration"
                 return {"value": json.dumps(native_observations[-1])}
             if name == "hub_update_device":
-                if "label" in arguments:
-                    current_label = arguments["label"]
-                    label_attempts.append(arguments["label"])
+                if "label" in arguments.get("fields", {}):
+                    current_label = arguments["fields"]["label"]
+                    label_attempts.append(current_label)
                     return {"success": True, "changes": [{"property": "label"}]}
+                if "room" in arguments.get("fields", {}):
+                    room_attempts.append(arguments["fields"]["room"])
+                    return {"success": True, "changes": [{"property": "room", "newValue": arguments["fields"]["room"] or "none"}]}
                 patch = arguments["preferences"]
                 preference_attempts.append(patch)
                 assert not set(patch) & set(declared), "Boundary probe attempted an existing preference"
@@ -366,6 +370,7 @@ def test_bypass_boundary_preserves_existing_preferences_and_requires_unknown_nam
     assert preference_attempts == [{prefix + "__": True}]
     assert declared == preferences_before
     assert label_attempts == ["Native original _BWTEST", "Native original"]
+    assert room_attempts == [f"{et.SCAFFOLD_PREFIX}Room", ""]
     assert current_label == "Native original"
     assert len(native_observations) == 1
     assert log_bypasses == [False, True]
@@ -412,8 +417,8 @@ def test_bypass_boundary_restores_exact_native_label_after_a_committed_rename_fa
                 return {"events": [], "count": 0}
             if name == "hub_list_device_dependents":
                 return {"deviceId": "10", "appsUsing": []}
-            if name == "hub_update_device" and "label" in arguments:
-                current_label = arguments["label"]
+            if name == "hub_update_device" and "label" in arguments.get("fields", {}):
+                current_label = arguments["fields"]["label"]
                 label_attempts.append(current_label)
                 if len(label_attempts) == 1:
                     if failure == "exception":
@@ -1297,8 +1302,8 @@ def test_send_retains_structured_rpc_error_with_mixed_quotes(send_client):
     }}),
     ("hub_manage_virtual_device", {"action": "create", "deviceType": "Virtual Switch", "confirm": True}),
     ("hub_manage_virtual_device", {"action": "delete", "deviceNetworkId": "test-dni", "confirm": True}),
-    ("hub_update_device", {"deviceId": "88", "label": "Changed"}),
-    ("hub_manage_devices", {"tool": "hub_update_device", "args": {"deviceId": "88", "label": "Changed"}}),
+    ("hub_update_device", {"deviceId": "88", "fields": {"label": "Changed"}}),
+    ("hub_manage_devices", {"tool": "hub_update_device", "args": {"deviceId": "88", "fields": {"label": "Changed"}}}),
 ])
 def test_send_does_not_retry_a_lost_first_mrtr_request(send_client, name, args):
     # The first request of an MRTR write starts the write; a fast one may already be

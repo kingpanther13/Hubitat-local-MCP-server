@@ -39,8 +39,10 @@ class SnapshotPasswordRedactionSpec extends ToolSpecBase {
         snap.configJson.configPage.sections[0].input[0].value == null
     }
 
-    def "a snapshot drops a credential-named text setting the way hub_get_app_config redacts it"() {
+    @spock.lang.Unroll
+    def "a snapshot drops a credential-named text setting whatever Hide passwords and credentials is (#toggle)"() {
         given:
+        settingsMap.redactCredentials = toggle
         List uploads = []
         script.metaClass.uploadHubFile = { String fn, byte[] b -> uploads << new String(b, 'UTF-8') }
         hubGet.register('/installedapp/configure/json/78') { params ->
@@ -64,6 +66,9 @@ class SnapshotPasswordRedactionSpec extends ToolSpecBase {
         !uploads[0].contains('4321')
         snap.redactedSettings == ['apiKey', 'disarmPin']
         snap.configJson.settings == [zipCode: '02134']
+
+        where:
+        toggle << [null, false]
     }
 
     def "a snapshot without password settings carries no redactedSettings"() {

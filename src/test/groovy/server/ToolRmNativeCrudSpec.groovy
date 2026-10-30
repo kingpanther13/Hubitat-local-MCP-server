@@ -12,7 +12,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     // Apps are RM rules unless a test says otherwise.
     def setup() {
-        script.metaClass.getAppByAppId = { id -> [appType: [name: 'Rule-5.1']] }
+        script.metaClass.getAppByAppId = { id -> [appType: [name: 'Rule-5.1', namespace: 'hubitat']] }
     }
 
     private RMUtilsMock rmUtils
@@ -356,6 +356,27 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         'no location'    | '{"status":"success"}'
         'not JSON'       | '<html>error</html>'
         'an empty reply' | ''
+        'a null location' | '{"status":"success","location":null}'
+    }
+
+    def "_rmSubmitMainPageDone commits only on a top-level location, not on a re-rendered page that names one: #label"() {
+        given:
+        hubGet.register('/installedapp/configure/json/603') { JsonOutput.toJson([app: [id: 603], configPage: [name: 'mainPage', sections: []]]) }
+        hubGet.register('/installedapp/statusJson/603') { JsonOutput.toJson([appSettings: []]) }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, data: reply] }
+
+        when:
+        def outcome = script._rmSubmitMainPageDone(603)
+
+        then:
+        outcome.done == done
+
+        where:
+        label                        | reply                                                                                      | done
+        'an accepted Done'           | '{"status":"success","location":"/installedapp/list?section=apps"}'                        | true
+        'an accepted Done as a Map'  | [status: 'success', location: '/installedapp/list?section=apps']                           | true
+        'a page with a location input' | JsonOutput.toJson([configPage: [name: 'mainPage', sections: [[input: [[name: 'location', type: 'text']]]]]]) | false
+        'a page with a location setting' | JsonOutput.toJson([configPage: [name: 'mainPage', sections: []], settings: [location: 'Kitchen']]) | false
     }
 
     def "_rmSubmitMainPageDone re-submits capability device ids from statusJson #idsField (value is null for device settings)"() {

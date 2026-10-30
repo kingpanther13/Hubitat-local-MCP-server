@@ -52,7 +52,7 @@ from sdk_conformance_helpers import (
 
 PREFIX = "BAT_E2E_"
 # Persistent scaffold FIXTURES (the shared switch + temp sensors that rule fixtures reference and the
-# poll tests read, plus the BAT_E2E_KEEP_Room the /device/updateRoom scenario moves a device into)
+# poll tests read, plus the BAT_E2E_KEEP_Room the room-assignment scenario moves a device into)
 # carry this marker so the cleanup sweeps SKIP them by name -- created once and reused across runs,
 # never deleted. Under-test fixtures use the bare PREFIX and are still reaped. A missing KEEP_
 # fixture is a hub-provisioning problem, not a test bug: the owning scenario says how to recreate it.
@@ -207,6 +207,13 @@ def _summarize_mrtr_e2e_proof(
 # ---------------------------------------------------------------------------
 # Exceptions
 # ---------------------------------------------------------------------------
+
+
+def device_update_args(device_id, patch):
+    """hub_update_device arguments for a flat patch: device fields go in `fields`, the rest stay top-level."""
+    top = {k: v for k, v in patch.items() if k in ("preferences", "confirm", "bestPracticeKey")}
+    fields = {k: v for k, v in patch.items() if k not in top}
+    return {"deviceId": device_id, **({"fields": fields} if fields else {}), **top}
 
 
 class McpError(Exception):
@@ -3156,18 +3163,30 @@ class TestRunner:
         assert miss.get("roomFilterMatchedKnownRoom") is False, \
             f"unknown room must report roomFilterMatchedKnownRoom=false: {miss.get('roomFilterMatchedKnownRoom')!r}"
 
-        everything = self.client.call_tool("hub_list_devices")
-        roomed = [d for d in everything.get("devices", []) if d.get("room")]
-        if not roomed:
-            print("    [INFO] no device on this hub has a room assignment; skipping the positive match")
-            return
-        room = roomed[0]["room"]
-        expected = sorted(d["id"] for d in everything["devices"]
-                          if (d.get("room") or "").lower() == room.lower())
-        scoped = self.client.call_tool("hub_list_devices", {"roomFilter": room.lower()})
-        got = sorted(d["id"] for d in scoped.get("devices", []))
-        assert got == expected, \
-            f"roomFilter={room.lower()!r} returned {got}, expected {expected} (case-insensitive exact match)"
+        # The positive match owns its input: the scaffold switch goes into the standing KEEP_ room,
+        # so the test never depends on room assignments other tests left behind.
+        dev_id = self.get_test_switch_id()
+        room = f"{SCAFFOLD_PREFIX}Room"
+        before = self.client.call_tool("hub_get_device", {"deviceId": dev_id})
+        original_room = before.get("room") if isinstance(before, dict) else None
+        try:
+            placed = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"room": room}})
+            assert placed.get("success") is True, f"could not place the scaffold switch in {room}: {placed}"
+            everything =self.client.call_tool("hub_list_devices")
+            expected = sorted(d["id"] for d in everything.get("devices", [])
+                              if (d.get("room") or "").lower() == room.lower())
+            assert str(dev_id) in [str(i) for i in expected], f"{dev_id} is not listed in {room}: {expected}"
+            scoped = self.client.call_tool("hub_list_devices", {"roomFilter": room.lower()})
+            got = sorted(d["id"] for d in scoped.get("devices", []))
+            assert got == expected, \
+                f"roomFilter={room.lower()!r} returned {got}, expected {expected} (case-insensitive exact match)"
+        finally:
+            try:
+                restored = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"room": original_room or ""}})
+            except McpError as exc:
+                restored = exc
+            if not isinstance(restored, dict) or restored.get("success") is not True:
+                self._fixture_reset_failures.append(f"room filter: restoring {dev_id} to {original_room!r} failed: {restored}")
 
     @test("devices")
     def test_list_device_events_since_bookmark(self) -> None:
@@ -3723,9 +3742,14 @@ class TestRunner:
         try:
             # updateDataValue writes arbitrary keys onto device.data; the inClusters marker makes the
             # resolver treat the record as Z-Wave (a bare numeric id with no marker stays unlabelled).
-            self.client.call_tool("hub_update_device", {
+            # userCode is credential-named: Hide passwords and credentials (pinned on) hides it in
+            # the write's echo and in every read.
+            written = self.client.call_tool("hub_update_device", {
                 "deviceId": dev_id,
-                "dataValues": {"manufacturer": "634", "inClusters": "0x5E,0x25,0x70"}})
+                "fields": {"dataValues": {"manufacturer": "634", "inClusters": "0x5E,0x25,0x70", "userCode": "4321"}}})
+            echoed = {row.get("property"): row.get("newValue") for row in written.get("changes", [])}
+            assert echoed.get("dataValue.userCode") == "***redacted (password)***", \
+                f"a credential-named data value must not be echoed: {written}"
             result = self.client.call_tool("hub_get_device", {
                 "deviceId": dev_id, "mode": "details", "sections": ["data"]})
             data = (result.get("sections") or {}).get("data") or {}
@@ -3733,6 +3757,28 @@ class TestRunner:
                 f"raw manufacturer id must be preserved beside manufacturerName: {data}"
             assert data.get("manufacturerName") == "Zooz", \
                 f"manufacturer 634 (0x027A) must resolve to Zooz: {data}"
+            assert data.get("userCode") == "***redacted (password)***", f"userCode must read hidden: {data}"
+            # Writing a masked read back is refused, so the stored credential is never overwritten with the marker.
+            for edit in ({"fields": {"dataValues": {"userCode": "***redacted (password)***"}}},
+                         {"preferences": {"autoOff": "***redacted (password)***"}}):
+                try:
+                    echoed_back = self.client.call_tool("hub_update_device", {"deviceId": dev_id, **edit})
+                except McpToolError as exc:
+                    echoed_back = _tool_error_payload(exc)
+                assert "redaction marker" in str(echoed_back.get("error")), f"the masked value was accepted as a write: {echoed_back}"
+            try:
+                self._mcp_settings({"redactCredentials": False})
+                stored = (self.client.call_tool("hub_get_device", {
+                    "deviceId": dev_id, "mode": "details", "sections": ["data"]}).get("sections") or {}).get("data") or {}
+            finally:
+                self._mcp_settings({"redactCredentials": True})
+            assert stored.get("userCode") == "4321", f"the stored userCode changed: {stored}"
+            try:
+                empty = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"dataValues": {}}})
+            except McpToolError as exc:
+                empty = _tool_error_payload(exc)
+            assert "dataValues must be a non-empty object" in str(empty.get("error")), \
+                f"an empty dataValues must be refused, not reported as a successful no-op: {empty}"
         finally:
             if dni:
                 try:
@@ -3901,13 +3947,13 @@ class TestRunner:
             return snapshots
 
         def update(patch, *, require_data_change=True):
-            result = self._write_once("hub_manage_devices", "hub_update_device", {
-                "deviceId": device_id, **patch,
-            }, f"{profile['path']} configuration edit")
+            result = self._write_once("hub_manage_devices", "hub_update_device",
+                                      device_update_args(device_id, patch), f"{profile['path']} configuration edit")
             assert result.get("success") is True, f"Configuration edit failed: {result}"
             assert not result.get("errors"), f"Configuration edit reported success with rejected fields: {result}"
             assert result.get("mrtr", {}).get("continued") is True, f"Device update bypassed MRTR: {result}"
-            changed = {row.get("property") for row in result.get("changes", [])}
+            # Read back as requested: changed, or already that value before the save.
+            changed = {row.get("property") for row in result.get("changes", [])} | set(result.get("unchanged", []))
             pane_fields = {"retryEnabled", "showOnHome", "defaultCurrentState"} & patch.keys()
             assert pane_fields <= changed, f"Configuration pane write was not confirmed: {result}"
             if "dataValues" in patch and require_data_change:
@@ -4016,7 +4062,7 @@ class TestRunner:
         negative_fields = []
         for key, decision in {**manifest["nativeFields"], **profile.get("nativeFields", {})}.items():
             field = editable.get(key, {})
-            availability[key] = {"expectation": decision["expectation"], "applicable": field.get("applicable"),
+            availability[key] = {"expectation": decision["expectation"],
                                  "writable": field.get("writable"), "reason": field.get("reason")}
             if decision["expectation"] == "positive":
                 assert field.get("writable") is True and key in baseline, (
@@ -4028,7 +4074,7 @@ class TestRunner:
                 )
                 edits[key] = decision["target"]
             elif decision["expectation"] == "unavailable":
-                assert field.get("applicable") is False and "target" in decision, (
+                assert field.get("writable") is False and field.get("reason") and "target" in decision, (
                     f"Expected unavailable native {key} changed; inspect provisioning: {availability[key]}"
                 )
                 negative_fields.append((key, decision["target"]))
@@ -4083,9 +4129,8 @@ class TestRunner:
                                    if common_contract)
             for patch in invalid_patches:
                 try:
-                    refused = self._write_once("hub_manage_devices", "hub_update_device", {
-                        "deviceId": device_id, **patch,
-                    }, "invalid configuration fixture write")
+                    refused = self._write_once("hub_manage_devices", "hub_update_device",
+                                               device_update_args(device_id, patch), "invalid configuration fixture write")
                     assert refused.get("success") is False, f"Invalid write succeeded: {refused}"
                 except (McpToolError, McpError) as exc:
                     affected = next(iter(patch.get("preferences", patch)))
@@ -4133,6 +4178,9 @@ class TestRunner:
             assert native["runtimeMultipleIsList"] is True and native["runtimeMultiple"] == ["red", "blue"], (
                 f"Driver did not receive a List: {native}"
             )
+            # A whole number sent as a JSON float is the same limit, not a cleared one.
+            same_limit = update({"maxEvents": float(edits["maxEvents"])})
+            assert same_limit.get("unchanged") == ["maxEvents"], f"maxEvents {float(edits['maxEvents'])} was not kept: {same_limit}"
             remaining = desired
             if common_contract:
                 try:
@@ -4377,17 +4425,26 @@ class TestRunner:
         # persistent scaffold switch -- a Home-page flag toggle is idempotent and does not
         # disturb the rule/poll fixtures that also read this device's state.
         dev_id = self.get_test_switch_id()
-        hide = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "showOnHome": False})
+        # Start from shown, so the hide below is a real change whatever an earlier run left.
+        shown = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"showOnHome": True}})
+        assert shown.get("success") is True, f"show-on-home baseline failed: {shown}"
+        hide = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"showOnHome": False}})
         assert hide.get("success") is True, f"hide-from-home failed: {hide}"
         assert any(c.get("property") == "showOnHome" for c in (hide.get("changes") or [])), \
             f"showOnHome change not recorded: {hide}"
         # Restore so the device's Home visibility is unchanged across runs.
-        show = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "showOnHome": True})
+        show = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"showOnHome": True}})
         assert show.get("success") is True, f"show-on-home restore failed: {show}"
+        # A field passed beside fields instead of inside it is refused before any write.
+        try:
+            self.client.call_tool("hub_update_device", {"deviceId": dev_id, "showOnHome": False})
+            raise AssertionError("hub_update_device accepted a top-level field")
+        except (McpToolError, McpError) as exc:
+            assert "Unknown argument" in str(exc), f"Top-level field refusal was not explicit: {exc}"
 
     @test("devices")
     def test_update_device_room_assign_and_unassign(self) -> None:
-        """UNCONDITIONAL live proof of /device/updateRoom (name-keyed room assignment).
+        """UNCONDITIONAL live proof of room assignment through the Device Info save (by name and by id).
 
         The bypass-block leg that also touches this endpoint only runs when the arbitrarily-picked
         unlisted device happens to already be in a room, so it can skip an entire run. This one owns
@@ -4416,10 +4473,14 @@ class TestRunner:
         original_room = (before.get("room") or before.get("roomName")) if isinstance(before, dict) else None
 
         try:
-            # THE surface under test: name-keyed assignment via /device/updateRoom.
-            assigned = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "room": room_name})
+            # THE surface under test: assignment by room name, then by id, through the Device Info save,
+            # each from outside the room so the save has to move the device.
+            if original_room:
+                out = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"room": ""}})
+                assert out.get("success") is True, f"hub_update_device room unassign failed: {out}"
+            assigned =self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"room": room_name}})
             assert assigned.get("success") is True, \
-                f"hub_update_device room assign failed -- /device/updateRoom rejected it: {assigned}"
+                f"hub_update_device room assign failed: {assigned}"
             assert any(c.get("property") == "room" for c in (assigned.get("changes") or [])), \
                 f"room change not recorded: {assigned}"
 
@@ -4429,16 +4490,28 @@ class TestRunner:
             assert any(str(d.get("id")) == str(dev_id) for d in (got.get("devices") or [])), \
                 f"room '{room_name}' does not list device {dev_id} after the assign: {got}"
 
-            # The unassign leg shares the endpoint and has its own read-back guard in production.
-            unassigned = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "room": ""})
+            # By numeric id from outside the room, so the save has to move the device; a number is an id,
+            # and a whole number sent as a decimal is the same id.
+            cleared = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"room": ""}})
+            assert cleared.get("success") is True, f"hub_update_device room unassign failed: {cleared}"
+            by_id = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"room": float(room_id)}})
+            assert by_id.get("success") is True and any(
+                c.get("property") == "room" and c.get("newValue") == room_name for c in (by_id.get("changes") or [])), \
+                f"room assign by id did not read back as '{room_name}': {by_id}"
+            got = self.client.call_tool("hub_manage_rooms", {
+                "tool": "hub_get_room", "args": {"room": room_id}})
+            assert any(str(d.get("id")) == str(dev_id) for d in (got.get("devices") or [])), \
+                f"room '{room_name}' does not list device {dev_id} after the assign by id: {got}"
+
+            unassigned = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"room": ""}})
             assert unassigned.get("success") is True, f"hub_update_device room unassign failed: {unassigned}"
 
-            print(f"    ROOM_ASSIGN ok -- /device/updateRoom moved {dev_id} into '{room_name}' and out again")
+            print(f"    ROOM_ASSIGN ok -- moved {dev_id} into '{room_name}' by name and id, and out again")
         finally:
             # Restore prior membership; if it had none, the unassign above already left it correct.
             if original_room:
                 try:
-                    self.client.call_tool("hub_update_device", {"deviceId": dev_id, "room": str(original_room)})
+                    self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"room": str(original_room)}})
                 except Exception as exc:
                     print(f"  [WARN] room-assign cleanup: restoring device {dev_id} to '{original_room}' failed: {exc}")
 
@@ -4446,10 +4519,16 @@ class TestRunner:
     def test_update_device_default_current_state(self) -> None:
         # Intent: choose which attribute appears in the Status column for a device.
         dev_id = self.get_test_switch_id()
-        result = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "defaultCurrentState": "switch"})
+        cleared = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"defaultCurrentState": ""}})
+        assert cleared.get("success") is True, f"clear default current state failed: {cleared}"
+        result = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"defaultCurrentState": "switch"}})
         assert result.get("success") is True, f"set default current state failed: {result}"
         assert any(c.get("property") == "defaultCurrentState" for c in (result.get("changes") or [])), \
             f"defaultCurrentState change not recorded: {result}"
+        # Saving the value it already has is reported as unchanged, not as a change.
+        again = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"defaultCurrentState": "switch"}})
+        assert again.get("success") is True and again.get("changes") == [] and \
+            again.get("unchanged") == ["defaultCurrentState"], f"a no-op save must report unchanged: {again}"
 
     @test("devices")
     def test_update_device_tags(self) -> None:
@@ -4491,7 +4570,7 @@ class TestRunner:
         try:
             form_before = preserved_form_fields()
             result = self.client.call_tool("hub_update_device", {
-                "deviceId": dev_id, "tags": ["kitchen", "downstairs"],
+                "deviceId": dev_id, "fields": {"tags": ["kitchen", "downstairs"]},
             })
             assert result.get("success") is True, f"tag edit failed: {result}"
             assert any(c.get("property") == "tags" for c in (result.get("changes") or [])), \
@@ -4564,16 +4643,11 @@ class TestRunner:
             assert isinstance(got, dict) and str(got.get("id")) == new_id, \
                 f"the device tools do not reach the created device {new_id}: {str(got)[:300]}"
 
-            # The label leg is /device/updateLabel -- and this is its only UNCONDITIONAL live proof.
-            # (The bypass-block leg that also exercises it is gated on the arbitrarily-picked device
-            # having a label, so it can skip entirely; see the [COVERAGE GAP] print there.) The envelope
-            # reports `label` as the APPLIED label, falling back to the driver's own default when the
-            # dedicated setter AND the wholesale /device/update fallback both missed -- so a requested
-            # label reading back means the leg worked, and a label warning is the tool's own admission
-            # that it did not.
+            # The label rides the native create (or, for a built-in driver, one Device Info save after it).
+            # The envelope reports `label` as the APPLIED label, so a requested label reading back means
+            # the leg worked, and a label warning is the tool's own admission that it did not.
             assert created.get("label") == f"{PREFIX}FromDriver", (
-                "hub_create_device did not apply the requested label -- /device/updateLabel and the "
-                f"wholesale /device/update fallback both missed: label={created.get('label')!r} "
+                f"hub_create_device did not apply the requested label: label={created.get('label')!r} "
                 f"warnings={created.get('warnings')!r}")
             assert not [w for w in (created.get("warnings") or []) if "label" in str(w).lower()], \
                 f"hub_create_device warned about the label: {created.get('warnings')!r}"
@@ -5423,7 +5497,7 @@ class TestRunner:
             lambda: self.client.call_tool("hub_manage_dashboards", {
                 "tool": "hub_create_dashboard",
                 "args": {"name": dash_name, "deviceIds": [str(switch_id)],
-                         "options": {"showClockTile": True, "theme": "dark"}},
+                         "options": {"showClockTile": True, "theme": "dark", "dashboardPin": "4321"}},
             }),
             lambda: self._find_dashboard_id_by_name(dash_name),
             "create dashboard",
@@ -5457,6 +5531,8 @@ class TestRunner:
         # The read reaches the hub's full dashboard list (not the id-and-name fallback), so the
         # theme set on create comes back and a wholesale update can carry it.
         assert got.get("theme") == "dark", f"hub_get_dashboard lost the dashboard's theme: {got}"
+        # Hide passwords and credentials masks the PIN in the read.
+        assert got.get("dashboardPin") == "***redacted (password)***", f"hub_get_dashboard returned the PIN in clear: {got}"
         listed_all = self.client.call_tool("hub_read_dashboards", {"tool": "hub_list_dashboards", "args": {}})
         assert listed_all.get("source") == "dashboard-all", \
             f"hub_list_dashboards fell back to the child-app list: {listed_all.get('source')} {listed_all.get('note')}"
@@ -5469,7 +5545,7 @@ class TestRunner:
             lambda: self.client.call_tool("hub_manage_dashboards", {
                 "tool": "hub_update_dashboard",
                 "args": {"dashboardId": dash_id, "name": dash_name, "deviceIds": upd_devices,
-                         "options": {"showClockTile": new_clock}}}),
+                         "options": {"showClockTile": new_clock, "dashboardPin": got.get("dashboardPin")}}}),
             lambda: bool((self.client.call_tool("hub_manage_dashboards", {
                 "tool": "hub_get_dashboard", "args": {"dashboardId": dash_id}}) or {}).get("showClockTile")) == new_clock,
             "update dashboard",
@@ -5483,6 +5559,13 @@ class TestRunner:
                 "tool": "hub_get_dashboard", "args": {"dashboardId": dash_id}})
             assert bool(reread.get("showClockTile")) == new_clock, \
                 f"hub_update_dashboard reported success but showClockTile didn't change: {reread}"
+        # The masked PIN passed back through the update kept the stored one.
+        try:
+            self._mcp_settings({"redactCredentials": False})
+            stored = self.client.call_tool("hub_manage_dashboards", {"tool": "hub_get_dashboard", "args": {"dashboardId": dash_id}})
+        finally:
+            self._mcp_settings({"redactCredentials": True})
+        assert stored.get("dashboardPin") == "4321", f"the update with the masked PIN changed the stored PIN: {stored}"
 
         # CLONE (clone-by-value: copies the source config into a new dashboard named "<name> (copy)")
         clone = self.client.call_tool("hub_manage_dashboards", {
@@ -6243,6 +6326,8 @@ def pagePw() {
             input "p", "password", title: "Password", required: false
             input "apiKey", "text", title: "API key", required: false
             input "disarmPin", "text", title: "Disarm PIN", required: false
+            input "doorLedPin", "text", title: "Door LED pin", required: false
+            input "lockErrorCode", "text", title: "Lock error code", required: false
             input "note", "text", title: "Note", required: false
             paragraph "p-state: ${settings.p == 'SECRET_VALUE' ? 'kept' : 'changed'}"
             href "pageMore", title: "More", description: "open"
@@ -6259,6 +6344,11 @@ def pageMore() {
 def installed() {}
 def updated() {}
 """
+
+    @staticmethod
+    def _app_config_input_values(config: dict) -> dict:
+        return {i.get("name"): i.get("value") for s in (config.get("page") or {}).get("sections", [])
+                for i in s.get("inputs", []) if "value" in i}
 
     @test("native_apps")
     def test_set_native_app_snapshot_redacts_password_settings(self) -> None:
@@ -6282,17 +6372,50 @@ def updated() {}
             instance_id = inst.get("instanceAppId")
             assert inst.get("committed") is True and instance_id, f"creating the password app instance failed: {inst}"
             api_key, pin = "ak-e2e-5d1f", "pin-9731"
-            first = self._native_app("update", {"fields": {"p": secret, "apiKey": api_key, "disarmPin": pin}}, instance_id)
+            first = self._native_app("update", {"fields": {"p": secret, "apiKey": api_key, "disarmPin": pin,
+                                                           "doorLedPin": "13", "lockErrorCode": "E42"}}, instance_id)
             assert first.get("success") is True, f"setting the password failed: {first}"
             # Credential-named text inputs: the form result masks them like hub_get_app_config does.
             form = self._native_app_form(instance_id, {"kind": "open"})
             shown = {f["name"]: f.get("value") for f in form.get("fields", []) if f["name"] in ("apiKey", "disarmPin")}
             assert shown == {"apiKey": "***redacted (password)***", "disarmPin": "***redacted (password)***"}, \
                 f"the form returned credential-named values in clear: {shown}"
-            named = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config", "args": {
-                "appId": instance_id, "includeSettings": True}}).get("settings") or {}
+            config = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config", "args": {
+                "appId": instance_id, "includeSettings": True}})
+            named = config.get("settings") or {}
             assert named.get("apiKey") == "***redacted (password)***" and named.get("disarmPin") == "***redacted (password)***", \
                 f"includeSettings returned credential-named values in clear: {named}"
+            # Page inputs read the stored values (the page JSON carries only code defaults), masked the same way.
+            page = self._app_config_input_values(config)
+            assert page.get("doorLedPin") == "13" and page.get("p") == "***redacted (password)***" and \
+                page.get("apiKey") == "***redacted (password)***", f"page inputs did not read the stored values: {page}"
+            # A board pin and a status code next to a credential word are not credentials.
+            assert named.get("doorLedPin") == "13" and named.get("lockErrorCode") == "E42", \
+                f"includeSettings hid a board pin or status code: {named}"
+            # A masked read written back is refused by update and by a form submit, so the stored
+            # password is never overwritten with the marker (the reads below still return the secret).
+            for call in (lambda: self._native_app("update", {"fields": {"p": "***redacted (password)***"}}, instance_id),
+                         lambda: self._native_app("form", {"steps": [{"kind": "submit", "expect_page": "pagePw",
+                                                                     "fields": {"apiKey": "***redacted (password)***"}}]}, instance_id)):
+                try:
+                    echoed_back = call()
+                except McpToolError as exc:
+                    echoed_back = _tool_error_payload(exc)
+                assert "redaction marker" in str(echoed_back.get("error")), f"the masked value was accepted as a write: {echoed_back}"
+            # With Hide passwords and credentials off, the form and the settings read every value as stored.
+            try:
+                self._mcp_settings({"redactCredentials": False})
+                plain = {f["name"]: f.get("value") for f in self._native_app_form(instance_id, {"kind": "open"}).get("fields", [])}
+                stored_config = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config", "args": {
+                    "appId": instance_id, "includeSettings": True}})
+                stored = stored_config.get("settings") or {}
+            finally:
+                self._mcp_settings({"redactCredentials": True})
+            assert plain.get("p") == secret and plain.get("apiKey") == api_key, f"with the setting off the form hid a value: {plain}"
+            assert self._app_config_input_values(stored_config).get("p") == secret, \
+                f"with the setting off a page input hid a value: {self._app_config_input_values(stored_config)}"
+            assert stored.get("p") == secret and stored.get("disarmPin") == pin, \
+                f"with the setting off includeSettings hid a value: {stored}"
             more = self._native_app("update", {"fields": {"note2": "sub edit"}, "page": "pageMore"}, instance_id)
             assert more.get("success") is True and more.get("page") == "pageMore", \
                 f"the sub-page update under a root page not named mainPage failed: {more}"
@@ -7276,6 +7399,12 @@ def updated() {}
             assert page.get("source") == "configPage" and page.get("broken") is None, page
         finally:
             self._delete_native(app_id)
+        # An id no app holds is reported as not found, not read as a built-in app.
+        try:
+            missing = self.client.call_tool("hub_get_rule_health", {"appId": 999999999})
+        except McpToolError as exc:
+            missing = _tool_error_payload(exc)
+        assert isinstance(missing, dict) and "App 999999999 not found" in str(missing.get("error")), missing
 
     @test("native_apps")
     def test_rule_health_broken_true_on_dangling_trigger(self) -> None:
@@ -8081,6 +8210,15 @@ def updated() {}
             assert (typed["decimalProof"]["type"], float(typed["decimalProof"]["value"])) == ("bigdecimal", 3.75), typed
             assert (typed["seenAt"]["type"], typed["seenAt"]["value"]) == ("datetime", timestamp), typed
             assert "seenAt" in self._rm_page(app_id)
+            # A credential-named local variable reads hidden by default and as stored with the toggle off.
+            hidden = self._rm_update(app_id, [native_change("variable", operation="create", name="doorCode",
+                                                            type="string", value="4321")])["document"]["variables"]
+            assert hidden["doorCode"].get("redacted") is True and hidden["doorCode"].get("value") is None, hidden
+            try:
+                self._mcp_settings({"redactCredentials": False})
+                assert self._native_rule_document(app_id)["variables"]["doorCode"]["value"] == "4321"
+            finally:
+                self._mcp_settings({"redactCredentials": True})
             removed = self._rm_update(app_id, [native_delete("action", action),
                                                native_change("variable", operation="delete", name="fields")])
             assert "fields" not in removed["document"]["variables"], removed["document"]["variables"]
@@ -12897,9 +13035,8 @@ def updated() {}
         # hub_set_system_settings(darkMode) sets the admin-UI theme via an INDEPENDENT setter
         # (GET /hub/applyDarkMode/<bool>, HTTP 200 empty, no read-back -- /hub/details/json has no
         # dark/theme key). FIRMWARE-TOLERANT: /hub/applyDarkMode may not exist on older firmware
-        # (it 404s, the same way /device/setShowOnHome did on 2.5.0.157). The tool then returns a
-        # structured {success:false, error:"Failed to apply dark mode: ..."} envelope (NOT isError,
-        # so call_tool hands it back as a dict). Treat a genuine endpoint-absent failure as a CLEAN
+        # (it 404s there). The tool then returns a structured {success:false, error:"Failed to apply
+        # dark mode: ..."} envelope (NOT isError, so call_tool hands it back as a dict). Treat a genuine endpoint-absent failure as a CLEAN
         # SKIP, distinct from a flaky relay 504 (which the runner retries). Sets dark then reverts to
         # light so the hub theme is left as we found it.
         def _dark_call(on: bool) -> Any:
@@ -14811,7 +14948,7 @@ def updated() {}
                     steps.append({**pane_and_room, "preferences": record.get("preferences") or {}, "confirm": True})
                 for patch in steps:
                     result = self.client.call_tool("hub_manage_devices", {
-                        "tool": "hub_update_device", "args": {"deviceId": device_id, **patch}})
+                        "tool": "hub_update_device", "args": device_update_args(device_id, patch)})
                     if not isinstance(result, dict) or result.get("success") is not True or result.get("errors"):
                         raise AssertionError(f"restore patch {sorted(patch)} rejected: {result}")
                 readback = self.client.call_tool("hub_get_device", {"deviceId": device_id})
@@ -14850,7 +14987,7 @@ def updated() {}
                 try:
                     self._set_device_bypass(True)
                     result = self.client.call_tool("hub_manage_devices", {
-                        "tool": "hub_update_device", "args": {"deviceId": dev_id, "label": label}})
+                        "tool": "hub_update_device", "args": {"deviceId": dev_id, "fields": {"label": label}}})
                     assert result.get("success") is True and not result.get("errors"), result
                     print(f"    renamed '{candidates[0].get('label')}' (ID: {dev_id}) back to '{label}'")
                     candidates[0]["label"] = label
@@ -14935,7 +15072,7 @@ def updated() {}
                 steps.append(step)
             for patch in steps:
                 result = self.client.call_tool("hub_manage_devices", {
-                    "tool": "hub_update_device", "args": {"deviceId": device_id, **patch}})
+                    "tool": "hub_update_device", "args": device_update_args(device_id, patch)})
                 if not isinstance(result, dict) or result.get("success") is not True or result.get("errors"):
                     raise AssertionError(f"canonical patch {sorted(patch)} rejected: {result}")
             print(f"    reconciled '{profile['label']}' (ID: {device_id}) to the canonical baseline: "
@@ -15134,7 +15271,7 @@ def updated() {}
             ("hub_get_device", {"deviceId": unauth}),
             ("hub_get_device_attribute", {"deviceId": unauth, "attribute": "switch"}),
             ("hub_list_device_events", {"deviceId": unauth}),
-            ("hub_update_device", {"deviceId": unauth, "label": f"{SCAFFOLD_PREFIX}Configuration_StandaloneBypass"}),
+            ("hub_update_device", {"deviceId": unauth, "fields": {"label": f"{SCAFFOLD_PREFIX}Configuration_StandaloneBypass"}}),
             ("hub_call_device_command", {"deviceId": unauth, "command": "captureConfiguration", "parameters": ["0"]}),
             ("hub_list_device_dependents", {"deviceId": unauth}),
         ]
@@ -15193,13 +15330,13 @@ def updated() {}
             })
             label_field = next((field for field in configuration.get("editableFields", [])
                                 if field.get("name") == "label"), {})
-            orig_label = label_field.get("value") if label_field.get("valuePresent") is True else None
+            orig_label = label_field.get("value")
             cmd_names = [c.get("name") for c in (dev.get("commands") or []) if isinstance(c, dict)]
             orig_room = dev.get("room")
 
             assert isinstance(orig_label, str), f"Owned fixture label is not restorable: {label_field}"
             try:
-                up = self.client.call_tool("hub_update_device", {"deviceId": unauth, "label": f"{orig_label} _BWTEST"})
+                up = self.client.call_tool("hub_update_device", {"deviceId": unauth, "fields": {"label": f"{orig_label} _BWTEST"}})
                 assert up.get("success") is True, f"bypass label rename did not succeed: {up}"
                 assert any(c.get("property") == "label" for c in (up.get("changes") or [])), \
                     f"bypass label change not recorded: {up}"
@@ -15208,7 +15345,7 @@ def updated() {}
                 })
                 assert next(row["value"] for row in observed["editableFields"] if row["name"] == "label") == f"{orig_label} _BWTEST"
             finally:
-                restore = self.client.call_tool("hub_update_device", {"deviceId": unauth, "label": orig_label})
+                restore = self.client.call_tool("hub_update_device", {"deviceId": unauth, "fields": {"label": orig_label}})
                 assert restore.get("success") is True, f"bypass label restore did not succeed: {restore}"
                 observed = self.client.call_tool("hub_get_device", {
                     "deviceId": unauth, "mode": "configuration", "fields": ["label"],
@@ -15231,17 +15368,24 @@ def updated() {}
             observed = self.client.call_tool("hub_get_device_attribute", {"deviceId": unauth, "attribute": "nativeConfiguration"})
             assert json.loads(observed["value"]).get("nonce") == nonce, f"Bypass native command did not execute: {observed}"
 
-            # (c) room assign via /device/updateRoom, re-assigning to the SAME room (a no-op move that
-            # proves the NAME-keyed endpoint returns true without relocating the device).
-            if not orig_room:
-                print(f"    [BYPASS LEG SKIPPED] leg (c): device {unauth} is in no room, so the "
-                      f"UNLISTED-device path for /device/updateRoom was not exercised this run "
-                      f"(the endpoint itself is covered unconditionally elsewhere)")
-            if orig_room:
-                rr = self.client.call_tool("hub_update_device", {"deviceId": unauth, "room": orig_room})
-                assert rr.get("success") is True, f"bypass same-room re-assign did not succeed: {rr}"
-                assert any(c.get("property") == "room" for c in (rr.get("changes") or [])), \
-                    f"bypass room change not recorded: {rr}"
+            # (c) room assignment on an unlisted device through the Device Info save. The leg owns its
+            # input: it moves the device into the standing KEEP_ room and puts the original assignment
+            # back; re-saving the room it already has must report it unchanged and move nothing.
+            target_room = orig_room or f"{SCAFFOLD_PREFIX}Room"
+            try:
+                rr = self.client.call_tool("hub_update_device", {"deviceId": unauth, "fields": {"room": target_room}})
+                assert rr.get("success") is True, f"bypass room assign did not succeed: {rr}"
+                if orig_room:
+                    assert rr.get("changes") == [] and rr.get("unchanged") == ["room"], \
+                        f"bypass same-room re-save must report the room unchanged: {rr}"
+                else:
+                    assert any(c.get("property") == "room" and c.get("newValue") == target_room
+                               for c in (rr.get("changes") or [])), f"bypass room change not recorded: {rr}"
+            finally:
+                if not orig_room:
+                    back = self.client.call_tool("hub_update_device", {"deviceId": unauth, "fields": {"room": ""}})
+                    if not isinstance(back, dict) or back.get("success") is not True:
+                        self._fixture_reset_failures.append(f"bypass leg (c): clearing the room on {unauth} failed: {back}")
 
             # (d) reject a guaranteed undeclared preference before mutation. Positive native
             # saves/readback run in the configuration matrix; this boundary test preserves preferences.
@@ -15621,7 +15765,7 @@ def updated() {}
         self._set_bps(enableMandatoryBPS=False)
         try:
             self.client.call_tool("hub_manage_devices", {
-                "tool": "hub_update_device", "args": {"deviceId": "999999999", "label": "BAT_E2E_x"}})
+                "tool": "hub_update_device", "args": {"deviceId": "999999999", "fields": {"label": "BAT_E2E_x"}}})
             raise AssertionError("updating a bogus device should have errored")
         except McpError as e:
             msg = str(e)
@@ -17930,6 +18074,13 @@ def main() -> None:
     assert _cap_res.get("success") is True, \
         f"could not disable the global write cap for the run: {_cap_res}"
     print("Write cap: maxConcurrentWrites=0 for the suite (the cap test sets and restores its own)\n")
+
+    # Credential masking ON (its default) for the run, so a run that stopped inside the one test that
+    # turns it off cannot fail the next run's masking assertions.
+    _mask_res = client.call_tool("hub_manage_mcp", {
+        "tool": "hub_update_mcp_settings",
+        "args": {"settings": {"redactCredentials": True}, "confirm": True}})
+    assert _mask_res.get("success") is True, f"could not pin redactCredentials ON for the run: {_mask_res}"
 
     _grps = [s.strip() for s in args.groups.split(",") if s.strip()] if args.groups else None
     _tsts = [s.strip() for s in args.tests.split(",") if s.strip()] if args.tests else None

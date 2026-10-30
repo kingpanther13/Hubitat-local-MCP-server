@@ -1070,6 +1070,11 @@ def advancedOverridesPage() {
                   description: "Leave OFF (default): tokens are returned as the hub shows them. ON: access_token= URL values and accessToken / access_token fields in tool results are replaced with ***redacted (access token)***.",
                   defaultValue: false
         }
+        section("Passwords and credentials in responses") {
+            input "redactCredentials", "bool", title: "Hide passwords and credentials in MCP responses",
+                  description: "ON (default): password settings, and app, device and rule values whose names look like credentials (apiKey, brokerPassword, lockCode, alarmPin), read back hidden; the setting is still listed and can still be written. OFF: they are returned as stored. Per-client tokens always see them hidden. File Manager backups leave out password and credential-named settings either way.",
+                  defaultValue: true
+        }
         section("Native app edit backups") {
             paragraph "Rule edits take one fresh File Manager snapshot before each changes batch or native editor workflow. A new rule has no earlier version to back up. Delete backups remain enabled independently."
             input "backupBeforeRuleEdits", "bool", title: "Back up before editing a native rule",
@@ -5024,6 +5029,104 @@ private String _accessTokenRedactedMarker() { return "***redacted (access token)
 // A client token never sees another token, whatever the redaction setting says.
 private boolean _redactsAccessTokens() { settings.redactAccessTokens == true || callerClient != null }
 
+// Hide passwords and credentials (default ON) governs what reads return; a client token always has
+// them hidden, and File Manager snapshots drop secret settings whatever it says.
+private boolean _redactsCredentials() { settings.redactCredentials != false || callerClient != null }
+
+private String _appConfigRedactedMarker() { return "***redacted (password)***" }
+
+// A masked read passed back as a value would store the marker as the credential.
+private boolean _isRedactionMarker(value) { value instanceof CharSequence && value.toString() == _appConfigRedactedMarker() }
+
+private boolean _appConfigMasksSetting(name, type, value) { _redactsCredentials() && _appConfigIsSecretSetting(name, type, value) }
+
+// Whether a setting/input value must be redacted. A null or empty value hides nothing. The hub's
+// own password type always redacts. Otherwise a credential-shaped name redacts, unless the value
+// is a Boolean or the input type cannot hold free text (a "usePassword" toggle, a "tokenDevice"
+// picker). Number types stay in scope on purpose: a numeric PIN/passcode is still a secret.
+private boolean _appConfigIsSecretSetting(name, type, value) {
+    if (_appConfigEmptyValue(value)) return false
+    String t = type?.toString()
+    if (t == "password") return true
+    if (value instanceof Boolean) return false
+    if (t && (t in ["bool", "boolean", "enum", "mode", "time", "date", "button", "href", "hub", "icon", "color"] ||
+              t.startsWith("capability") || t.startsWith("device"))) return false
+    return _appConfigSecretName(name)
+}
+
+private boolean _appConfigEmptyValue(value) {
+    if (value == null) return true
+    if (value instanceof CharSequence && value.toString().isEmpty()) return true
+    (value instanceof Collection || value instanceof Map) && value.isEmpty()
+}
+
+// Credential-shaped setting names. The name is split into lowercase words at camelCase, acronym,
+// digit, and punctuation boundaries ("HPMPassword" -> hpm|password, "api_key2" -> api|key), and
+// each word is tested on its own, so substrings inside unrelated words do not match: "bypass",
+// "passThrough", "compass", "tokenizer", "secretary" are not secrets. A hit is ignored when the
+// next word marks metadata ABOUT the secret ("passwordSet", "tokenCount", "tokenExpiry").
+private boolean _appConfigSecretName(name) {
+    String raw = name?.toString()
+    if (!raw) return false
+    // OAuth access tokens are governed by the redactAccessTokens setting, which deliberately leaves
+    // them readable by default so the AI can read endpoint URLs.
+    if (raw ==~ /(?i)access_?token/) return false
+    // Cheap prefilter: a large app has 500-1000 keys and almost none can match.
+    String lower = raw.toLowerCase()
+    if (!(lower.contains("pass") || lower.contains("pwd") || lower.contains("secret") || lower.contains("token") ||
+          lower.contains("key") || lower.contains("credential") || lower.contains("psk") || lower.contains("pin") || lower.contains("code"))) return false
+    String spaced = raw.replaceAll(/([a-z0-9])([A-Z])/, '$1 $2').replaceAll(/([A-Z]+)([A-Z][a-z])/, '$1 $2')
+    List words = spaced.toLowerCase().split(/[^a-z]+/).findAll { part -> part }
+    Set metadata = ["count", "counter", "cnt", "expiry", "expires", "expire", "expired", "expiration", "time",
+                    "timestamp", "date", "length", "len", "type", "enabled", "enable", "set", "required", "url",
+                    "uri", "endpoint", "timeout", "interval", "mode", "policy", "hint", "label", "name"] as Set
+    Set keyQualifiers = ["api", "access", "private", "auth", "client", "secret", "encryption", "signing", "shared"] as Set
+    Set pinQualifiers = ["lock", "user", "access", "pass", "disarm", "arm", "alarm", "security", "unlock", "auth", "entry", "keypad", "door",
+                         "master", "admin", "guest", "installer", "duress", "gate", "garage", "hsm", "panel", "safe", "vault"] as Set
+    Set hardwarePins = ["led", "gpio", "relay", "io", "digital", "analog", "data", "output", "input", "sensor", "pwm", "signal", "button",
+                        "power", "reset", "enable", "interrupt", "irq", "clock", "clk", "sda", "scl", "tx", "rx", "servo", "motor", "trigger", "echo"] as Set
+    // A credential word anywhere in the name ("keypadInputPin", "alarmResetCode") outranks a hardware word,
+    // except a board word right before the pin ("doorLedPin") or a status or location word before the code
+    // ("lockErrorCode", "lockZipCode").
+    boolean qualified = words.any { it in pinQualifiers }
+    Set boardPins = ["led", "gpio", "relay", "pwm", "servo", "motor", "sda", "scl", "clk", "clock", "irq", "analog", "digital", "tx", "rx", "io"] as Set
+    Set statusCodes = ["status", "error", "result", "response", "reason", "fault", "event", "state", "zip", "postal", "country", "area"] as Set
+    for (int idx = 0; idx < words.size(); idx++) {
+        String w = words[idx]
+        String prev = idx > 0 ? words[idx - 1] : null
+        String next = idx + 1 < words.size() ? words[idx + 1] : null
+        boolean hit = w.contains("password") || w.contains("passwd") || w.contains("passphrase") ||
+            w.contains("passcode") || w.contains("pwd") || w.contains("apikey") || w.contains("privatekey") ||
+            w.contains("accesskey") || (w.contains("secret") && !w.startsWith("secretar")) ||
+            w.endsWith("token") || w.endsWith("tokens") || w.startsWith("credential") || w == "psk" ||
+            // "pass" alone is a password only as the final word ("mqttPass") or split from its
+            // own suffix ("passWord"); "passThrough", "passMode", and "byPass" are not.
+            (w == "pass" && prev != "by" && (next == null || next in ["word", "phrase", "code", "key"])) ||
+            (keyQualifiers.contains(w) && (next == "key" || next == "keys")) ||
+            // A PIN, and a code with a credential word or right after "pin" ("userCodes"), within the
+            // exceptions above; with no credential word any hardware word frees a pin ("ledPin").
+            (w in ["pin", "pins", "pincode", "pincodes"] && (qualified ? !(prev in boardPins) : !(prev in hardwarePins))) ||
+            (w in ["code", "codes"] && !(prev in statusCodes) && (qualified || prev in ["pin", "pins"])) ||
+            // One-word forms: "userpin", "alarmcode", "HSMPIN".
+            _appConfigQualifiedSuffix(w, pinQualifiers)
+        if (!hit) continue
+        // A metadata word right after the hit ("passwordSet", "tokenCount"); for the two-word
+        // "api key" form the metadata word follows "key".
+        boolean twoWords = ((next == "key" || next == "keys") && keyQualifiers.contains(w)) || (w in ["pin", "pins"] && next in ["code", "codes"])
+        String after = twoWords ? (idx + 2 < words.size() ? words[idx + 2] : null) : next
+        if (after != null && metadata.contains(after)) continue
+        return true
+    }
+    return false
+}
+
+private boolean _appConfigQualifiedSuffix(String word, Set qualifiers) {
+    for (suffix in ["pincodes", "pincode", "pins", "pin", "codes", "code"]) {
+        if (word.length() > suffix.length() && word.endsWith(suffix) && word.substring(0, word.length() - suffix.length()) in qualifiers) return true
+    }
+    return false
+}
+
 // redactAccessTokens (Advanced page). Covers the three shapes a token reaches a tool result in:
 // an access_token= URL parameter (app page paragraphs), an accessToken/access_token map key
 // (app settings and state) or the clientTokens map of per-client tokens, and that same key
@@ -5619,14 +5722,14 @@ def getGatewayConfig() {
                 hub_call_device_command: "Send one device command, or batch up to 20 mixed commands in one call (commands cannot be combined with waitFor). Args: deviceId, command, parameters?, waitFor? | commands: [{deviceId, command, parameters?}]",
                 hub_call_device_swap: "Swap a device: apps/rules using from_device_id run on to_device_id's hardware afterwards (the hub exchanges the two identities). Args: from_device_id, to_device_id, confirm",
                 hub_call_device_replace: "Replace a dead device's hardware while KEEPING its id + all app/rule references (re-points to new_device_id; list_options=true reads compatible candidates). Args: old_device_id, new_device_id?, list_options?, confirm",
-                hub_update_device: "Update applicable device identity, configuration, driver, history, dashboard/mesh, retry, or assistant fields after hub_get_device(mode='configuration'). Args: deviceId plus one or more editable properties; confirm is required for high-impact fields.",
+                hub_update_device: "Change a device's Device Info fields, driver preferences, assistants or enabled state after hub_get_device(mode='configuration'). Args: deviceId, fields?, preferences?, confirm (for requiresConfirmation fields)",
                 hub_create_device: "Create a device from a driver-type id (hub_list_drivers include='all'); for LAN/integration/software drivers, NOT radio hardware (pair those). Args: deviceTypeId, label?, confirm",
                 hub_list_devices: "List devices with current states; format='context' = plain-text house snapshot. Args: detailed?, filter, labelFilter?, capabilityFilter?, roomFilter?, onlyOn?, changedSince?, attributeNames?, format, fields?, limit?, cursor?",
                 hub_get_device: "Inspect one device. Args: deviceId, mode? (summary/configuration/details), sections? (details mode), fields? (configuration/details field selector), cursor? (continue one oversized scalar). Configuration mode discovers editable fields and preference definitions/current values before an update.",
                 hub_get_device_attribute: "Read one attribute's value, or block-poll one OR several devices (deviceIds + mode any/all) until it reaches expectedValue/expectedValues. Args: deviceId | deviceIds (max 20), mode? (any/all), attribute, expectedValue?, expectedValues?, timeoutMs?, pollIntervalMs?, comparator?, stableForMs?",
                 hub_list_device_events: "Recent device events, a time-windowed history, an absolute bookmark (since) with an optional end (until), per-app events (appId), or location and hub events (reboots, low memory). Args: deviceId?, appId?, hoursBack?, since?, until?, attribute?, limit?",
                 hub_get_hub_mesh: "Read Hub Mesh (hub-to-hub device/variable sharing on the LAN): enabled state, peer hubs, shared/linked devices + hub variables, sync interval, mode-following hub. Args: include_token?",
-                hub_update_hub_mesh: "Change Hub Mesh settings (enable/disable needs a hub reboot; per-device sharing is hub_update_device meshEnabled). Args: enabled?, full_refresh_interval? (0/120/300/3600), mode_hub_id? ('none'=local modes), peer_hub_id?+peer_token?"
+                hub_update_hub_mesh: "Change Hub Mesh settings (enable/disable needs a hub reboot; per-device sharing is hub_update_device fields.meshEnabled). Args: enabled?, full_refresh_interval? (0/120/300/3600), mode_hub_id? ('none'=local modes), peer_hub_id?+peer_token?"
             ],
             searchHints: [
                 hub_call_device_command: "send command control turn on off set level dim lock unlock device run batch multiple several devices mixed commands ad hoc one call",
@@ -6772,12 +6875,12 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
         case "hub_delete_visual_rule": return toolDeleteVisualRule(args)
 
         // Dashboard CRUD -- Easy (classic /dashboard/* endpoints) + legacy Hubitat® Dashboards; impl in McpDashboardsLib
-        case "hub_list_dashboards": return toolListDashboards(args)
-        case "hub_get_dashboard": return toolGetDashboard(args)
-        case "hub_create_dashboard": return toolCreateDashboard(args)
-        case "hub_update_dashboard": return toolUpdateDashboard(args)
+        case "hub_list_dashboards": return _dashboardPublic(toolListDashboards(args))
+        case "hub_get_dashboard": return _dashboardPublic(toolGetDashboard(args))
+        case "hub_create_dashboard": return _dashboardPublic(toolCreateDashboard(args))
+        case "hub_update_dashboard": return _dashboardPublic(toolUpdateDashboard(args))
         case "hub_delete_dashboard": return toolDeleteDashboard(args)
-        case "hub_clone_dashboard": return toolCloneDashboard(args)
+        case "hub_clone_dashboard": return _dashboardPublic(toolCloneDashboard(args))
 
         // Tool Guide
         case "hub_get_tool_guide": return toolGetToolGuide(args.section, args.cursor, [platform_api_search: args.platform_api_search, platform_api_page: args.platform_api_page])
@@ -7750,8 +7853,7 @@ private String _redactSecretsInPath(String path) {
  * routes 404 (/app/updateOAuth, /device/updateLabel, /device/setShowOnHome) while WILDCARD routes
  * MASK it by absorbing the junk into their path-parameter. The query map also URL-encodes, so
  * pre-encoding a value double-encodes it. RETHROW CONTRACT: a degrading catch must rethrow
- * IllegalStateException before falling back (see _radioGetSafe and the showOnHome /
- * setDefaultCurrentState / create-label legs in McpDevicesLib) or the guard becomes the silent
+ * IllegalStateException before falling back (see _radioGetSafe) or the guard becomes the silent
  * 404 it exists to end.
  */
 private _hubRequest(String method, String path, Map opts = [:]) {
@@ -10382,17 +10484,22 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
     def compiledReadError = null   // a thrown/bad-200 compiled-state read, surfaced if the HTML path also fails
     boolean useRuleBuilder = (source != "configPage")
     boolean useConfigPage = (source != "ruleBuilderJson")
-    // Only built-in apps are read. A user or community app's state can carry Rule Machine's keys
-    // without being a rule, and its default page runs its own code, which can drop a wizard's pending
-    // input (Hubitat Package Manager clears a pending install there).
+    // Only a built-in app's page is read. A
+    // user or community app's state can carry Rule Machine's keys without being a rule, and its
+    // default page runs its own code, which can drop a wizard's pending input (Hubitat Package
+    // Manager clears a pending install there).
     def installed = null
+    boolean identified = true
     try { installed = getAppByAppId(appId as Long) }
     catch (Exception lookup) {
-        useRuleBuilder = false; useConfigPage = false
-        checkErrors << "app ${appId} was not read: it could not be identified (${lookup.message ?: lookup.toString()}), and a user or community app is not read as a rule".toString()
+        // The compiled state runs no page code, so it is still read; the page is not.
+        identified = false
+        useConfigPage = false
+        checkErrors << "app ${appId}'s page was not read: the app could not be identified (${lookup.message ?: lookup.toString()}), and a user or community app's page runs its own code".toString()
     }
+    if (identified && installed == null) throw new IllegalArgumentException("App ${appId} not found; list installed apps with hub_list_apps")
     def namespace = installed?.appType?.namespace?.toString()
-    if (namespace && namespace != "hubitat") {
+    if (identified && namespace != "hubitat") {
         useRuleBuilder = false; useConfigPage = false
         label = installed.label?.toString()
         ruleFormat = "classic-app"
@@ -10589,7 +10696,8 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
     // predicate is included only when the compiled state carried one. The dual-path cost is one
     // extra localhost GET, not response size — the empty arrays are a few bytes.
     def result = [
-        ok: !sourcesUsed.isEmpty() && issues.isEmpty() && broken != true && validationErrors.isEmpty(),
+        // An app that could not be identified may be a user app whose state only looks like a rule's.
+        ok: identified && !sourcesUsed.isEmpty() && issues.isEmpty() && broken != true && validationErrors.isEmpty(),
         // unreadable: NEITHER source could be read -- a "couldn't check" verdict, not
         // a "checked and broken" one (ok stays false; there is no positive evidence
         // either way). Callers gating committed work on ok should treat unreadable
@@ -11611,14 +11719,14 @@ PATCH-like write over Hub Mesh's hub-level settings; every parameter optional, v
 - `mode_hub_id` → `/device/followModes/<hubId|none>`; a peer `hubId` from `hub_get_hub_mesh` `peers[]`, or `'none'` for local modes.
 - `peer_hub_id` + `peer_token` (TOGETHER) → `POST /device/setHubMeshToken`; stores that peer's mesh token here, needed when the peer has UI login security. Read the token on the PEER via its own `hub_get_hub_mesh(include_token=true)`. An all-digits `peer_hub_id` is sent as a JSON number, matching the hub UI's wire format.
 
-Peer hubs are auto-discovered on the LAN — there is no "add peer" write; enabling mesh on both hubs is what makes them peers. Per-DEVICE sharing is `hub_update_device` (`meshEnabled`), not this tool; `meshFullSync` there applies to a LINKED device (with Hub Mesh refresh enabled), keeping the local proxy synced on the periodic refresh.
+Peer hubs are auto-discovered on the LAN — there is no "add peer" write; enabling mesh on both hubs is what makes them peers. Per-DEVICE sharing is `hub_update_device` (`fields.meshEnabled`), not this tool; `fields.meshFullSync` there applies to a LINKED device (with Hub Mesh refresh enabled), keeping the local proxy synced on the periodic refresh.
 
 ### Per-device and per-variable Hub Mesh linking & sharing
 
 The hub-LEVEL settings above are `hub_update_hub_mesh`; the per-entity share/link operations are folded into the device and variable tools (no dedicated tools):
 
-- **Share a device** into the mesh: `hub_update_device(deviceId, meshEnabled=true|false)`. Its full reference is `hub_get_tool_guide(section='update_device')`.
-- **Link a device** a peer shares: `hub_create_device(mesh_source_hub_id, mesh_source_device_id, confirm=true)` — pair from `hub_get_hub_mesh` `availableLinkedDevices[]`. On the resulting LINKED device, `hub_update_device(meshFullSync=true)` (requires Hub Mesh refresh enabled) keeps the local proxy synced on the periodic refresh.
+- **Share a device** into the mesh: `hub_update_device(deviceId, fields={meshEnabled: true|false}, confirm=true)`. Its full reference is `hub_get_tool_guide(section='update_device')`.
+- **Link a device** a peer shares: `hub_create_device(mesh_source_hub_id, mesh_source_device_id, confirm=true)` — pair from `hub_get_hub_mesh` `availableLinkedDevices[]`. On the resulting LINKED device, `hub_update_device(fields={meshFullSync: true}, confirm=true)` (requires Hub Mesh refresh enabled) keeps the local proxy synced on the periodic refresh.
 - **Unlink a device**: `hub_delete_device(deviceId, confirm=true)` — removes only the local proxy; warns on `appsUsing`, and distinctly when it could not check.
 - **Share a variable**: `hub_set_variable(name, mesh_shared=true|false)` (hub variables only).
 - **Link a variable** a peer shares: `hub_create_variable(mesh_source_hub_id, mesh_source_name, confirm=true)` — pair from `hub_get_hub_mesh` `availableLinkedHubVariables[]`. The variable references are in `hub_get_tool_guide(section='variables')`.
@@ -11712,43 +11820,29 @@ MCP-managed virtual devices:
 
 Call `hub_get_device(deviceId=..., mode="configuration")` before an update. It reports the fields that are applicable and writable for this device, declared preference types/options/ranges/defaults and current saved values, driver identity, and source/read status. A saved false, zero, empty string or null is distinct from an unset value; a driver default does not prove the setting was saved. Use `mode="details"` with optional `sections` for wider inspection.
 
-Details mode does not inline event or log history; it points to the read tools for them. Password values are redacted. Missing or unrecognized native data is reported as partial or unavailable. It never proves the device has no settings. `driverSource` gives a ready hub_get_source call when a user driver resolves to exactly one driver. Otherwise it gives the hub_list_drivers lookup and the reason. Built-in driver source is not available. Driver source can show more declarations, but it never shows the device's saved preference values. Every mode is read-only (it is also in hub_read_devices), and device authorization still applies.
+Details mode does not inline event or log history; it points to the read tools for them. Password values are redacted unless Hide passwords and credentials is off. Missing or unrecognized native data is reported as partial or unavailable. It never proves the device has no settings. `driverSource` gives a ready hub_get_source call when a user driver resolves to exactly one driver. Otherwise it gives the hub_list_drivers lookup and the reason. Built-in driver source is not available. Driver source can show more declarations, but it never shows the device's saved preference values. Every mode is read-only (it is also in hub_read_devices), and device authorization still applies.
 
 For smaller expanded reads, pass `fields=[]` to discover `availableFields`, then select exact names. Configuration selection applies to preference names, editable property names and device-info keys. Details selection applies to section keys; attributes also accepts an individual attribute name. Commands and jobs use the row indices returned by `availableFields`, so duplicate or unnamed rows remain selectable. Omitting `fields` retains the full selected sections.
 Examples: `fields=["txtEnable"]` in configuration mode, or `sections=["state"], fields=["lastRefresh"]` in details mode.
 
 If even one selected value exceeds the response budget, the tool returns `contentFormat="json-fragment"`, a `content` string (`contentText` for ChatGPT) and `nextCursor`. Repeat the same read with that cursor, concatenate the fragments in order, then parse the joined JSON. Pages retain the original redacted snapshot despite later telemetry changes. Continue within five minutes with the same device, mode, sections and fields. Expiry, eviction or a server reload requires restarting without cursor. At most eight snapshots and 2,097,152 characters of serialized JSON are retained in memory; select fewer fields if the budget is exceeded. Device authorization is checked on every page.
 
-Every update requires the Write master and applicable tool permissions. When mandatory best-practice acknowledgment is enabled, put `bestPracticeKey` inside the gateway's `args` alongside the patch.
+`hub_update_device(deviceId, fields={...}, preferences={...}, confirm?)` saves the way the device page does, one save per page section, then reads the device back once and reports each field in `changes`, `unchanged` (it already had the requested value) or `errors`. Put `bestPracticeKey` beside them when mandatory best-practice acknowledgment is enabled. The whole request is checked before anything is written; a field the device does not offer (configuration reports `writable:false` with a `reason`) is refused.
 
-| Properties | Behavior |
-|------------|----------|
-| `label`, `name`, `deviceNetworkId` | Device identity; network-ID changes require confirmation and backup. |
-| `dataValues`, `preferences` | Data-section values and declared driver preferences. Inspect configuration first. |
-| `room`, `enabled`, `showOnHome`, `defaultCurrentState`, `tags` | Room, availability, Home visibility, Status-column attribute, and replacement tag set. |
-| `deviceTypeId`, `zigbeeId` | Driver and radio identity where applicable; confirmation and backup required. |
-| `notes`, `defaultIcon` | Device note and icon override; empty string clears. |
-| `maxEvents`, `maxStates`, `spammyThreshold` | Native history limits (1-2000) and event-alert threshold (100-2000). |
-| `dashboardIds`, `meshEnabled`, `meshFullSync` | Applicable dashboard/mesh assignments; confirmation and backup required. |
-| `retryEnabled` | Command retry where the native device exposes it. |
-| `homeKitEnabled`, `amazonAlexaEnabled`, `googleHomeEnabled` | Supported and installed assistant assignments; confirmation and backup required. |
+- **Device Info save** (one request for all of these): `label`, `name`, `deviceNetworkId`, `room` (text matches a name, else an id; a number is an id; `""` clears), `tags` (replaces the set; `[]` clears), `notes`, `defaultIcon` (`""` clears), `maxEvents`/`maxStates` (1-2000), `spammyThreshold` (100-2000), `deviceTypeId`, `zigbeeId`, `dashboardIds` (the legacy Hubitat Dashboards that list this device; replaces the set; an Easy Dashboard picks its devices with `hub_update_dashboard` `deviceIds`), `meshEnabled`, `meshFullSync`. The hub rebuilds the device from this save, so every current value is sent with the change.
+- **Preferences save** (one request): `preferences`, `showOnHome`, `defaultCurrentState` (`""` selects None), `retryEnabled`. It runs the driver's `updated()`, as the page's Save Preferences does; settings that are not named keep their values.
+- `homeKitEnabled`, `amazonAlexaEnabled`, `googleHomeEnabled` go to the assistant integrations; a refusal names the integration's reason. `enabled` enables or disables the device. `dataValues` sets Data entries through the driver's `updateDataValue`.
 
-Omitted properties are preserved. The complete patch is validated before writes begin. A runtime partial failure reports per-property successes and errors; inspect the result before retrying.
+`requiresConfirmation` fields (driver, network and Zigbee IDs, dashboards, Hub Mesh, assistants) need `confirm=true` and a backup under 24 hours old.
 
-**Preferences format:**
-`{"pollInterval": {"type": "number", "value": 30}, "debugLogging": {"type": "bool", "value": true}}`
-
-Use the preference's declared type and constraints from configuration mode; bool and boolean declarations are supported. Unknown names are refused. Omit preferences to preserve them. Clearing an optional preference requires an explicit entry such as `{"debugLogging":{"clear":true}}`; null, empty strings, whitespace and empty arrays are rejected. Do not combine clear with value. Required preferences cannot be cleared. Read values and driver defaults do not constitute a write request. An unreadable schema/readback is reported separately from an unknown name or a value that did not persist. Room names use case-insensitive exact matching. `tags` replaces the full tag set; an empty array clears it.
-An empty `room` string removes the room assignment. A preference save re-sends the device's current Home visibility, Status-column attribute and command-retry values, so those stay unchanged unless the patch sets them.
-
-If an unset enum reports `multiple: null`, check `driverSource` or metadata captured before clearing, then supply `multiple: true` or `multiple: false` alongside `value` when restoring it. For example, `{"colors":{"value":["red"],"multiple":true}}` restores a declared multi-select enum; do not guess its selection cardinality.
+**Preferences format:** a value of the declared type, e.g. `{"pollInterval": 30, "debugLogging": true}`; `{"type": ..., "value": ...}` is also accepted when the type matches. Unknown names are refused. A multi-select enum takes a list. Clearing an optional preference needs `{"clear": true}`; null, blank strings and empty lists are refused, and required preferences cannot be cleared. If an unset enum reports `multiple: null`, check `driverSource` or metadata read before clearing and send `{"value": [...], "multiple": true}` (or `false`); its selection cardinality is never guessed.
 
 ### Hub Mesh: sharing, linking, and unlinking devices
 
 Hub Mesh shares devices between Hubitat hubs on the same LAN (not the Z-Wave/Zigbee radio mesh). Three device operations, split across tools:
 
-- **Share / unshare** one of THIS hub's devices into the mesh: `hub_update_device(deviceId, meshEnabled=true|false)`. No dedicated tool — it is a device property. (`meshFullSync` is NOT a share flag: it applies to a LINKED device, below.)
-- **Link** a device a PEER hub shares onto this hub: `hub_create_device(mesh_source_hub_id, mesh_source_device_id, confirm=true)` — the pair comes from `hub_get_hub_mesh` `availableLinkedDevices[]` (`hubId` + `deviceId`). The result carries the new local `deviceId` (resolved by a `localLinkedDevices` diff). On that resulting linked device, `hub_update_device(meshFullSync=true)` (requires Hub Mesh refresh enabled) keeps the local proxy synced on the periodic refresh. Linking a device already linked here returns `success` with `alreadyLinked:true` (no fresh link is issued). The `createLinked` GET returns 200 with an empty body even when nothing actually links, so the tool reads mesh state back and keys on the source: if the device links (it drops out of `availableLinkedDevices[]` or its row flips `linkedLocally:true`) you get `success` with the new id; if it stays present with `linkedLocally:false` (a confirmed silent no-op) you get a `success:false` FAILURE, NOT a soft warning; only an unreadable mesh list is a warn-not-fail. A no-op is usually transient — Hub Mesh takes time to re-establish a peer connection after that peer reboots or updates and a link briefly no-ops during that window before clearing itself — so wait and retry. If it persists, confirm the peer is online in `hub_get_hub_mesh` `peers[]` (`offline:false`, `warning:null`) and that this hub holds its mesh token (store it with `hub_update_hub_mesh(peer_hub_id, peer_token)`, read from the peer's OWN `hub_get_hub_mesh(include_token=true)`).
+- **Share / unshare** one of THIS hub's devices into the mesh: `hub_update_device(deviceId, fields={meshEnabled: true|false}, confirm=true)`. No dedicated tool — it is a device property. (`meshFullSync` is NOT a share flag: it applies to a LINKED device, below.)
+- **Link** a device a PEER hub shares onto this hub: `hub_create_device(mesh_source_hub_id, mesh_source_device_id, confirm=true)` — the pair comes from `hub_get_hub_mesh` `availableLinkedDevices[]` (`hubId` + `deviceId`). The result carries the new local `deviceId` (resolved by a `localLinkedDevices` diff). On that resulting linked device, `hub_update_device(fields={meshFullSync: true}, confirm=true)` (requires Hub Mesh refresh enabled) keeps the local proxy synced on the periodic refresh. Linking a device already linked here returns `success` with `alreadyLinked:true` (no fresh link is issued). The `createLinked` GET returns 200 with an empty body even when nothing actually links, so the tool reads mesh state back and keys on the source: if the device links (it drops out of `availableLinkedDevices[]` or its row flips `linkedLocally:true`) you get `success` with the new id; if it stays present with `linkedLocally:false` (a confirmed silent no-op) you get a `success:false` FAILURE, NOT a soft warning; only an unreadable mesh list is a warn-not-fail. A no-op is usually transient — Hub Mesh takes time to re-establish a peer connection after that peer reboots or updates and a link briefly no-ops during that window before clearing itself — so wait and retry. If it persists, confirm the peer is online in `hub_get_hub_mesh` `peers[]` (`offline:false`, `warning:null`) and that this hub holds its mesh token (store it with `hub_update_hub_mesh(peer_hub_id, peer_token)`, read from the peer's OWN `hub_get_hub_mesh(include_token=true)`).
 - **Unlink** a linked device: `hub_delete_device(deviceId, confirm=true)`. This removes ONLY the local proxy; the source device on the peer hub is untouched. The tool warns when the linked device is in use by local apps (`appsUsing`), which will break.
 
 Read the current mesh state (shared/linked/available lists, per-device `appsUsing`) with `hub_get_hub_mesh`; the hub-level mesh settings are in `hub_update_hub_mesh`.
@@ -12151,7 +12245,7 @@ A single tool can also be switched off under **Advanced: Per-tool Overrides**. A
   - On a Rule Machine rule a paragraph holding a disabled action or trigger reads `{text, disabled: [...]}`, listing the text of each disabled row it holds. On selectActions (Button Rule: selectActionsX) a disabled action's `disable<N>` control reads 'Enable Action', and the control named `<N>.0.<bool>` carries that action's text; N is the action index, not the row position. The button toggles: never replay a click whose response was lost. hub_set_app_disabled disables the whole app.
   - `pageNote` appears when the hub rendered another page than `pageName`: the app reaches that page only through its link, so open it in a form workflow.
   - `appType.system` and `appType.menu` are the fields hub_list_apps(scope='types') gives for every type at once.
-  - `includeSettings=true` adds the raw settings map: 500-1000 app-encoded keys on large apps (Room Lighting stores per-device scene levels as `dm~<deviceId>~<scene>`). Secrets read `***redacted (password)***`: every setting the hub types as a password, on any page, and free-text settings with credential-shaped names (password, pass, secret, token, API key, credential, ...). OAuth accessToken settings follow the Hide access tokens setting. Page inputs are redacted the same way. When the setting types cannot be read the map is withheld and `settingsNote` says why.
+  - `includeSettings=true` adds the raw settings map: 500-1000 app-encoded keys on large apps (Room Lighting stores per-device scene levels as `dm~<deviceId>~<scene>`). Secrets read `***redacted (password)***`: every setting the hub types as a password, on any page, and free-text settings with credential-shaped names (password, pass, secret, token, API key, credential, PIN, lock or alarm code, ...). OAuth accessToken settings follow the Hide access tokens setting. Page inputs are redacted the same way. With Hide passwords and credentials turned off in the MCP app's settings they read as stored. When the setting types cannot be read the map is withheld and `settingsNote` says why.
   - A type='mode' input's `value` is its stored setting. Day Lights uses ten of them for per-mode levels, gated by `useModeOverrides`; most apps use one as an "only during these modes" restriction.
   - **Mode gating in the built-in apps.** The hub has no "modes in use by" list, so read each app; resolve mode IDs with hub_list_modes.
     - **Notifier** — `modes` (mode ids) on `moreOptions`; restricts.
@@ -12434,7 +12528,7 @@ Read-only; each entry carries id, name, and `type` ('easy' or 'legacy'). Easy en
 
 ### hub_get_dashboard
 
-Read-only. For an Easy Dashboard: tiles, navigation, devices, and PINs. For a legacy dashboard: its authorized `deviceIds` plus a nested `layout` object (see "Legacy layout shape" below). Read before the wholesale `hub_update_dashboard` and pass its output straight back. A read that partly fails returns `partial: true` with a note — the missing fields are unavailable, not defaulted.
+Read-only. For an Easy Dashboard: tiles, navigation, devices, and PINs (read `***redacted (password)***` while Hide passwords and credentials is on; passing that back to `hub_update_dashboard` keeps the stored PIN). For a legacy dashboard: its authorized `deviceIds` plus a nested `layout` object (see "Legacy layout shape" below). Read before the wholesale `hub_update_dashboard` and pass its output straight back. A read that partly fails returns `partial: true` with a note — the missing fields are unavailable, not defaulted.
 
 ### hub_create_dashboard
 

@@ -2564,7 +2564,7 @@ DEVICE_NATIVE_ACCESS_TOKENS = (
     # per-device helpers
     "_fetchDeviceFullJson(",
     "_fetchBypassDeviceEvents(",
-    "_postBypassDeviceModel(",
+    "_saveDeviceInfoForm(",
     "_fireBypassCommand(",
     # whole-population (bulk) helpers: the path the device tools now read through
     "_mcpVisibleDevices(",
