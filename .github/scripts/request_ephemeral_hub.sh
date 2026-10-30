@@ -169,9 +169,15 @@ verdict() {
     [ "$conclusion" != unreadable ] || desc="the $kind hub's provider run could not be read"
     [ "$conclusion" != success ] || { state=success; desc="the $kind hub's suite passed"; }
   fi
-  GH_TOKEN="$STATUS_TOKEN" gh api -X POST "repos/$GITHUB_REPOSITORY/statuses/$PUBLIC_SHA" \
-    -f state="$state" -f context="Ephemeral e2e verdict ($kind)" -f description="$desc" >/dev/null
-  echo "Ephemeral e2e verdict ($kind): $state -- $desc"
+  local context="Ephemeral e2e verdict ($kind)"
+  # The API can record the status and still return a reply gh cannot read: check what was recorded.
+  if ! GH_TOKEN="$STATUS_TOKEN" gh api -X POST "repos/$GITHUB_REPOSITORY/statuses/$PUBLIC_SHA" \
+      -f state="$state" -f context="$context" -f description="$desc" >/dev/null; then
+    GH_TOKEN="$STATUS_TOKEN" gh api "repos/$GITHUB_REPOSITORY/commits/$PUBLIC_SHA/statuses" \
+      --jq "[.[] | select(.context == \"$context\")][0].state" | grep -qx "$state" ||
+      fail "The $context status could not be posted."
+  fi
+  echo "$context: $state -- $desc"
 }
 
 case "${1:-}" in
