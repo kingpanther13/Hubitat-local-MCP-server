@@ -508,6 +508,10 @@ def toolUpdateDashboard(args) {
         throw new IllegalArgumentException("name is required. Update REPLACES the dashboard's config wholesale (there is no server-side read-merge), so pass the full desired config every time.")
     }
     def deviceCsv = _dashboardDeviceCsv(args.deviceIds, true)
+    String pinMarker = _appConfigRedactedMarker()
+    args = [:] + args
+    if (args.options instanceof Map) args.options = args.options.findAll { k, v -> !(k in ["dashboardPin", "hsmPin"] && v?.toString() == pinMarker) }
+    ["dashboardPin", "hsmPin"].each { k -> if (args[k]?.toString() == pinMarker) args.remove(k) }
     def argsForQuery = args
     boolean pinPreserveFailed = false
     def hasField = { String k -> (args.options instanceof Map && args.options.containsKey(k)) || args.containsKey(k) }
@@ -894,10 +898,25 @@ private List _normalizeDeviceIdList(raw) {
     }
     return (raw != null) ? [raw.toString()] : []
 }
+private _dashboardPublic(result) {
+    if (!_redactsCredentials()) return result
+    if (result instanceof Map) {
+        return result.collectEntries { k, v ->
+            [(k): (k in ["dashboardPin", "hsmPin"] && v != null && v.toString()) ? _appConfigRedactedMarker() : _dashboardPublic(v)]
+        }
+    }
+    if (result instanceof List) return result.collect { _dashboardPublic(it) }
+    return result
+}
 private Map _buildDashboardConfigQuery(Map args, String deviceCsv) {
     def boolStr = { v -> (v == true || v?.toString()?.toLowerCase() == "true") ? "true" : "false" }
     def opts = (args.options instanceof Map) ? args.options : [:]
     def opt = { String k -> opts.containsKey(k) ? opts.get(k) : args.get(k) }
+    ["dashboardPin", "hsmPin"].each { k ->
+        if (opt(k)?.toString() == _appConfigRedactedMarker()) {
+            throw new IllegalArgumentException("${k} is the redaction marker, not a PIN. Pass the real PIN, or omit it on hub_update_dashboard to keep the stored one.")
+        }
+    }
     return [
         name: args.name.toString(),
         deviceIds: deviceCsv,
@@ -12806,7 +12825,7 @@ private String _deviceEditUnavailable(String field, Map fj) {
             return d.zigbeeId ? null : 'The device has no Zigbee ID.'
         case 'deviceNetworkId':
             return (component && !linked) || _deviceFlag(d.linkedLocally) ? 'This device takes its network ID from its parent.' : null
-        case 'dashboardIds': return _deviceFlag(fj.hasDashboards) && fj.dashboards instanceof List ? null : 'The hub has no dashboards to assign.'
+        case 'dashboardIds': return _deviceFlag(fj.hasDashboards) && fj.dashboards instanceof List ? null : 'The hub has no Hubitat Dashboards (legacy) to assign. An Easy Dashboard picks its devices with hub_update_dashboard deviceIds.'
         case 'meshEnabled': return _deviceFlag(d.meshSelectionEnabled) ? null : 'Hub Mesh sharing is not available for this device.'
         case 'meshFullSync': return linked && _deviceFlag(fj.hubMeshRefreshEnabled) ? null : 'Full sync applies to a linked device while Hub Mesh refresh is enabled.'
         case 'retryEnabled': return _deviceFlag(fj.commandRetrySelectionEnabled) || _deviceFlag(d.retryAvailable) ? null : 'Command retry is not available for this device.'
@@ -17320,7 +17339,8 @@ def toolGetAppConfig(args) {
             if (i.options) input.options = stripOptionsHtml(i.options)
             if (i.defaultValue != null && (i.defaultValue != true || i.type == "bool")) input.value = i.defaultValue
             else if (i.value != null && (i.value != true || i.type == "bool")) input.value = i.value
-            if (i.type == "mode" && parsed.settings instanceof Map && parsed.settings.containsKey(i.name)) input.value = parsed.settings[i.name]
+            String inputType = i.type?.toString() ?: ""
+            if (!inputType.startsWith("capability") && !inputType.startsWith("device.") && parsed.settings instanceof Map && parsed.settings[i.name] != null) input.value = parsed.settings[i.name]
             if (i.type == "password" && i.name) passwordInputNames << i.name.toString()
             if (input.containsKey("value") && _appConfigMasksSetting(i.name, i.type, input.value)) input.value = redactedPw
             else if (input.containsKey("value") && _redactsAccessTokens() && input.value instanceof CharSequence &&
@@ -19483,7 +19503,7 @@ A transport drop can lose the response while the hub still commits this write; v
         ],
         [
             name: "hub_get_app_config",
-            description: """Read an installed classic app's page as the Hubitat UI renders it: the app's identity, the page's sections with each input's current value, and its child apps. The pages it links to are listed in page.hrefs. controls lists the page's buttons and links with the control_id that hub_set_native_app or hub_set_rule(operation:'form') activates, and pageNote says when the hub rendered another page than pageName. Secret values are redacted.""",
+            description: """Read an installed classic app's page as the Hubitat UI renders it: the app's identity, the page's sections with each input's current value, and its child apps. The pages it links to are listed in page.hrefs. controls lists the page's buttons and links with the control_id that hub_set_native_app or hub_set_rule(operation:'form') activates, and pageNote says when the hub rendered another page than pageName. Secret values are redacted unless Hide passwords and credentials is off.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -26922,7 +26942,7 @@ Example changes: [{part:"action",value:{type:"messageActs",subtype:"getLogMsg",f
 
 hub_set_rule(operation:"form",rule_id,args:{steps:[{kind:"open"}]},confirm:true) operates an enabled Rule-5.1 or Button Rule-5.1 rule, or its Rule Machine parent; hub_set_native_app(operation:"form",app_id,...) runs the same steps on any other classic app. Read action variants, input names and option values from the returned forms instead of guessing them. Even open renders execute app code and can change state or cause side effects. An open's optional page names a registered native page, and from names the page that links to it, so a sub-page opened directly offers its Done back to that parent. Follow returned controls for page parameters and breadcrumbs. A create_child control creates the parent's native child type, returns created_app_id and closes the parent context; open the child separately to configure it. Apps are deleted with hub_delete_native_app.
 
-Submit with {kind:"submit",expect_page:"last returned page",fields:{"native field name":value},activate:"returned control_id"}; without activate it saves the fields and refreshes the page. Control IDs tell apart native buttons that share a name, such as editing and deleting the same variable. Form results mask password-typed fields and fields whose names look like credentials (API keys, tokens, passwords, PINs, lock codes) with the same marker hub_get_app_config uses. A page with both a next page and a done page renders its Done as the _action_done control, which the hub answers by saving the page and rendering that same page again. An app without pages also shows the hub's default fields, label (the app's name) and mode[mode] (a list of mode IDs from its options), and a page's own label and mode elements are the same two fields; the hub does not always keep the label posted with mode[mode], so after such a submit the label is checked and posted again on its own when the hub put back an older one (label_restored). Native enum keys, device IDs, booleans and single/multiple cardinality are checked before the request. Each submit posts the supplied settings and, as the browser does, the shown default of every other input with no stored value; a password's default is never posted, and page code can still change its own settings. args.options_for:["device field name"] expands device choices on the final returned page.
+Submit with {kind:"submit",expect_page:"last returned page",fields:{"native field name":value},activate:"returned control_id"}; without activate it saves the fields and refreshes the page. Control IDs tell apart native buttons that share a name, such as editing and deleting the same variable. With Hide passwords and credentials on (the default), form results mask password-typed fields and fields whose names look like credentials (API keys, tokens, passwords, PINs, lock codes) with the same marker hub_get_app_config uses; with it off they read as stored. A page with both a next page and a done page renders its Done as the _action_done control, which the hub answers by saving the page and rendering that same page again. An app without pages also shows the hub's default fields, label (the app's name) and mode[mode] (a list of mode IDs from its options), and a page's own label and mode elements are the same two fields; the hub does not always keep the label posted with mode[mode], so after such a submit the label is checked and posted again on its own when the hub put back an older one (label_restored). Native enum keys, device IDs, booleans and single/multiple cardinality are checked before the request. Each submit posts the supplied settings and, as the browser does, the shown default of every other input with no stored value; a password's default is never posted, and page code can still change its own settings. args.options_for:["device field name"] expands device choices on the final returned page.
 
 A batch holds 1 through 16 steps, each using the form the step before it returned, so dependent fields require another submit after they appear. A button handler runs before its step's fields are saved, as in the browser: submit the fields it needs in an earlier step. A button without submitOnChange reloads and needs a separate field submission.
 
@@ -32240,12 +32260,12 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
         case "hub_get_visual_rule": return toolGetVisualRule(args)
         case "hub_set_visual_rule": return toolSetVisualRule(args)
         case "hub_delete_visual_rule": return toolDeleteVisualRule(args)
-        case "hub_list_dashboards": return toolListDashboards(args)
-        case "hub_get_dashboard": return toolGetDashboard(args)
-        case "hub_create_dashboard": return toolCreateDashboard(args)
-        case "hub_update_dashboard": return toolUpdateDashboard(args)
+        case "hub_list_dashboards": return _dashboardPublic(toolListDashboards(args))
+        case "hub_get_dashboard": return _dashboardPublic(toolGetDashboard(args))
+        case "hub_create_dashboard": return _dashboardPublic(toolCreateDashboard(args))
+        case "hub_update_dashboard": return _dashboardPublic(toolUpdateDashboard(args))
         case "hub_delete_dashboard": return toolDeleteDashboard(args)
-        case "hub_clone_dashboard": return toolCloneDashboard(args)
+        case "hub_clone_dashboard": return _dashboardPublic(toolCloneDashboard(args))
         case "hub_get_tool_guide": return toolGetToolGuide(args.section, args.cursor, [platform_api_search: args.platform_api_search, platform_api_page: args.platform_api_page])
         case "hub_search_tools": return toolSearchTools(args)
         case "hub_read_apps_code":
@@ -35699,7 +35719,7 @@ If even one selected value exceeds the response budget, the tool returns `conten
 
 `hub_update_device(deviceId, fields={...}, preferences={...}, confirm?)` saves the way the device page does, one save per page section, then reads the device back once and reports each field in `changes`, `unchanged` (it already had the requested value) or `errors`. Put `bestPracticeKey` beside them when mandatory best-practice acknowledgment is enabled. The whole request is checked before anything is written; a field the device does not offer (configuration reports `writable:false` with a `reason`) is refused.
 
-- **Device Info save** (one request for all of these): `label`, `name`, `deviceNetworkId`, `room` (name or id; `""` clears), `tags` (replaces the set; `[]` clears), `notes`, `defaultIcon` (`""` clears), `maxEvents`/`maxStates` (1-2000), `spammyThreshold` (100-2000), `deviceTypeId`, `zigbeeId`, `dashboardIds` (replaces the set), `meshEnabled`, `meshFullSync`. The hub rebuilds the device from this save, so every current value is sent with the change.
+- **Device Info save** (one request for all of these): `label`, `name`, `deviceNetworkId`, `room` (name or id; `""` clears), `tags` (replaces the set; `[]` clears), `notes`, `defaultIcon` (`""` clears), `maxEvents`/`maxStates` (1-2000), `spammyThreshold` (100-2000), `deviceTypeId`, `zigbeeId`, `dashboardIds` (the legacy Hubitat Dashboards that list this device; replaces the set; an Easy Dashboard picks its devices with `hub_update_dashboard` `deviceIds`), `meshEnabled`, `meshFullSync`. The hub rebuilds the device from this save, so every current value is sent with the change.
 - **Preferences save** (one request): `preferences`, `showOnHome`, `defaultCurrentState` (`""` selects None), `retryEnabled`. It runs the driver's `updated()`, as the page's Save Preferences does; settings that are not named keep their values.
 - `homeKitEnabled`, `amazonAlexaEnabled`, `googleHomeEnabled` go to the assistant integrations; a refusal names the integration's reason. `enabled` enables or disables the device. `dataValues` sets Data entries through the driver's `updateDataValue`.
 
@@ -36391,7 +36411,7 @@ Read-only; each entry carries id, name, and `type` ('easy' or 'legacy'). Easy en
 
 ### hub_get_dashboard
 
-Read-only. For an Easy Dashboard: tiles, navigation, devices, and PINs. For a legacy dashboard: its authorized `deviceIds` plus a nested `layout` object (see "Legacy layout shape" below). Read before the wholesale `hub_update_dashboard` and pass its output straight back. A read that partly fails returns `partial: true` with a note — the missing fields are unavailable, not defaulted.
+Read-only. For an Easy Dashboard: tiles, navigation, devices, and PINs (read `***redacted (password)***` while Hide passwords and credentials is on; passing that back to `hub_update_dashboard` keeps the stored PIN). For a legacy dashboard: its authorized `deviceIds` plus a nested `layout` object (see "Legacy layout shape" below). Read before the wholesale `hub_update_dashboard` and pass its output straight back. A read that partly fails returns `partial: true` with a note — the missing fields are unavailable, not defaulted.
 
 ### hub_create_dashboard
 
