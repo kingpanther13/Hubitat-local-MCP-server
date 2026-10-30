@@ -900,7 +900,7 @@ private boolean _deviceConfigurationSecretKey(key) {
 
 private _deviceConfigurationPublicValue(value, key = '') {
     if (!_redactsCredentials()) return value
-    if (_deviceConfigurationSecretKey(key)) return '***redacted (password)***'
+    if (_deviceConfigurationSecretKey(key)) return _appConfigRedactedMarker()
     if (value instanceof Map) {
         def copy = [:]
         value.each { k, v -> copy.put(k, _deviceConfigurationPublicValue(v, k)) }
@@ -972,8 +972,8 @@ private Map _publicDevicePreference(Map entry) {
         if (!(key in ['rawValue', 'declared'])) copy.put(key, _deviceConfigurationPublicValue(value))
     }
     if (_devicePreferenceIsSecret(entry)) {
-        if (copy.containsKey('value')) copy.value = '***redacted (password)***'
-        if (copy.containsKey('defaultValue')) copy.defaultValue = '***redacted (password)***'
+        if (copy.containsKey('value')) copy.value = _appConfigRedactedMarker()
+        if (copy.containsKey('defaultValue')) copy.defaultValue = _appConfigRedactedMarker()
         copy.redacted = true
     }
     copy.writable = !(entry.valueStatus in ['unknown', 'invalid'])
@@ -1130,6 +1130,11 @@ private _readBypassAttrValue(deviceId, attribute) {
     return _readBypassAttrValueFrom(_fetchDeviceFullJson(deviceId), attribute)
 }
 
+// Polls compare the stored value; only the value a read returns is masked.
+private _devicePublicAttributeValue(name, value) {
+    return value != null && _redactsCredentials() && _deviceConfigurationSecretKey(name) ? _appConfigRedactedMarker() : value
+}
+
 private List _nativeReportedDeviceAttributes(Map d) {
     def attributes = []
     def cs = d?.currentStates
@@ -1137,7 +1142,7 @@ private List _nativeReportedDeviceAttributes(Map d) {
         cs.each { name, st ->
             if (name != null) {
                 def dataType = (st instanceof Map) ? st.dataType?.toString() : null
-                def value = _nativeDeviceStateValue(st)
+                def value = _devicePublicAttributeValue(name, _nativeDeviceStateValue(st))
                 attributes << [name: name, dataType: dataType, value: value]
             }
         }
@@ -1322,13 +1327,7 @@ private Map _deviceExpandedResult(deviceId, Map identity, Map fj, String mode, s
                 // Keep the historical key while identifying its native, reported-state coverage.
                 value.attributeCoverage = [source: 'device.currentStates', declarationsComplete: false,
                     note: 'Unset or cleared attributes can be absent; absence does not establish an unsupported attribute.']
-                if (d.currentStates instanceof Map) value.declaredAttributes = _nativeReportedDeviceAttributes(d).collect { row ->
-                    def attribute = _deviceConfigurationPublicValue(row)
-                    if (row instanceof Map && _redactsCredentials() && _deviceConfigurationSecretKey(row.name)) {
-                        attribute.value = '***redacted (password)***'
-                    }
-                    attribute
-                }
+                if (d.currentStates instanceof Map) value.declaredAttributes = _nativeReportedDeviceAttributes(d).collect { _deviceConfigurationPublicValue(it) }
                 break
             case 'commands':
                 value = _deviceConfigurationPublicValue(fj?.commands)
@@ -2140,7 +2139,7 @@ def toolGetAttribute(deviceId, attribute) {
                 error: 'Native device current states could not be read.', note: 'Check the native Devices page and retry.']
     }
     def result = [device: _bypassDeviceLabel(full, deviceId), attribute: attribute,
-                  value: _readBypassAttrValueFrom(full, attribute)]
+                  value: _devicePublicAttributeValue(attribute, _readBypassAttrValueFrom(full, attribute))]
     if (!full.device.currentStates.containsKey(attribute)) {
         result.neverReported = true
         result.reportedAttributes = _fullJsonAttributeNames(full)
@@ -2182,12 +2181,12 @@ def _evalAttrCondition(value, comparator, matchSet, numericThreshold, betweenLow
 // request's deadline, device reads included, so the relay never drops the answer; the result then
 // says so. The request clock rides in as __reqT0 and never reaches the engine's arg check.
 def toolPollUntilAttribute(args) {
-    if (!(args instanceof Map) || !args.containsKey("__reqT0")) return _pollUntilAttributeCore(args)
+    if (!(args instanceof Map) || !args.containsKey("__reqT0")) return _maskPolledAttribute(_pollUntilAttributeCore(args), args)
     Map pollArgs = [:] + (args as Map)
     def t0 = pollArgs.remove("__reqT0")
     long budget = _isCloudRequest() ? _relayBudgetMs() : _lanBudgetMs()
     def asked = pollArgs.containsKey("timeoutMs") ? pollArgs.timeoutMs : 5000
-    if (!(t0 instanceof Number) || budget <= 0L || !(asked instanceof Number) || asked < 100 || asked > 60000) return _pollUntilAttributeCore(pollArgs)
+    if (!(t0 instanceof Number) || budget <= 0L || !(asked instanceof Number) || asked < 100 || asked > 60000) return _maskPolledAttribute(_pollUntilAttributeCore(pollArgs), pollArgs)
     long deadline = (t0 as long) + budget
     long left = deadline - now()
     String why = _isCloudRequest() ? 'the cloud relay drops a request that runs much longer' : 'the LAN time budget is set'
@@ -2206,6 +2205,13 @@ def toolPollUntilAttribute(args) {
         result.budgetLimited = true
         result.budgetNote = "The poll stopped after ${result.elapsedMs ?: 0} ms instead of waiting ${asked} ms: ${why}. Poll again to keep waiting.".toString()
     }
+    return _maskPolledAttribute(result, pollArgs)
+}
+
+private _maskPolledAttribute(result, Map args) {
+    if (!(result instanceof Map)) return result
+    if (result.containsKey('finalValue')) result.finalValue = _devicePublicAttributeValue(args.attribute, result.finalValue)
+    if (result.devices instanceof List) result.devices.each { if (it instanceof Map) it.finalValue = _devicePublicAttributeValue(args.attribute, it.finalValue) }
     return result
 }
 
@@ -3318,7 +3324,7 @@ def toolUpdateDevice(args) {
 }
 
 // One native save per page section (data values: one call per key), in the page's order, then one
-// read-back verifies every field.
+// read-back verifies every field. Data values go before enable/disable: after a disable they never land.
 private Map _applyDeviceEdit(deviceId, Map fj, Map fields, Map send, Map preferences) {
     Map d = fj.device
     String deviceLabel = _bypassDeviceLabel(fj, deviceId)
@@ -3353,6 +3359,11 @@ private Map _applyDeviceEdit(deviceId, Map fj, Map fields, Map send, Map prefere
             assistants.keySet().each { failed.put(it, "The assistant save failed; inspect the device before retrying.") }
         }
     }
+    if (fields.dataValues) {
+        def dataErrors = []
+        _applyNativeDeviceDataValues(deviceId, fields.dataValues, [], dataErrors, false)
+        if (dataErrors) failed.put('dataValues', dataErrors.collect { it.error }.unique().join(' '))
+    }
     if (fields.containsKey('enabled')) {
         try {
             hubInternalPostJson("/device/disable", groovy.json.JsonOutput.toJson([id: _prefSaveDeviceId(deviceId), disable: !fields.enabled]))
@@ -3360,11 +3371,6 @@ private Map _applyDeviceEdit(deviceId, Map fj, Map fields, Map send, Map prefere
             mcpLog("error", "device", "hub_update_device: enable/disable for ${deviceId} failed (${e.class.simpleName})")
             failed.put('enabled', "The enable/disable request failed; inspect the device before retrying.")
         }
-    }
-    if (fields.dataValues) {
-        def dataErrors = []
-        _applyNativeDeviceDataValues(deviceId, fields.dataValues, [], dataErrors, false)
-        if (dataErrors) failed.put('dataValues', dataErrors.collect { it.error }.unique().join(' '))
     }
 
     def after = _fetchDeviceFullJson(deviceId)
@@ -3548,7 +3554,7 @@ private void _verifyDevicePreferenceWrite(String name, Map setting, List changes
         return
     }
     if (_devicePreferenceMatches(model, name, setting)) {
-        changes << [property: "preference.${name}", newValue: _devicePreferenceIsSecret(entry) ? [type: entry.type, value: "[REDACTED]"] : setting]
+        changes << [property: "preference.${name}", newValue: _devicePreferenceIsSecret(entry) ? [type: entry.type, value: _appConfigRedactedMarker()] : setting]
     } else {
         errors << [property: "preference.${name}", stage: "verify", status: "mismatch", error: "Saved, but the preference reads back as a different value. Inspect the device configuration before retrying."]
     }
