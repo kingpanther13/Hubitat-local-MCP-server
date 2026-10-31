@@ -239,15 +239,12 @@ def toolGetHubInfo(args = null) {
     info.setupVersion = state.setupVersion
     info.mcpClient = mcpClientIdentity()
     // Every device the MCP tools reach: the selected devices plus the MCP-managed virtual devices,
-    // or with the allowlist bypassed every device in the hub's device tree.
+    // or with the allowlist bypassed every device on the hub's Devices page.
     def reachable = ((settings.selectedDevices ?: []) + (getChildDevices() ?: [])).collect { it?.id?.toString() }.findAll { it } as Set
     if (_bypassEnabled()) {
         info.deviceAllowlistBypassed = true
         try {
-            def tree = new groovy.json.JsonSlurper().parseText(hubInternalGet("/hub2/devicesList") ?: "{}")
-            def records = _flattenHub2DeviceTree(tree instanceof Map ? tree.devices : null)
-            if (!(records instanceof List)) throw new IllegalStateException("the device tree was not a list")
-            records.each { r -> if (r?.id != null) reachable << r.id.toString() }
+            reachable.addAll(_readDevicesPage().collect { it.id })
         } catch (Exception e) {
             info.mcpDeviceCountNote = "The allowlist is bypassed, so every hub device is reachable, but the hub's device list could not be read (${e.message}); the count covers the selected and MCP-managed devices only.".toString()
         }

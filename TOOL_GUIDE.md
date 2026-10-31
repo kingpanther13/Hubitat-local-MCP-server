@@ -882,7 +882,7 @@ Use after hub_list_files to fetch a named file (config, backup, exported rule/ap
 
 ### hub_get_device_health (device-staleness check + LAN/WAN network probes)
 - Stale checks cover selected devices plus MCP-owned children with bypass OFF, and all native hub devices with bypass ON. Use hub_list_devices(scope='owned') for an ownership-scoped child inventory.
-- Health reads activity from one native device-tree request. An explicit null activity is reported as never; missing or invalid activity metadata is reported as unavailable with metadataUnavailable: true, and counted as unknown.
+- Health reads activity from one read of the hub's Devices page (the same read hub_list_devices uses). A null activity is reported as never; an unparseable activity, or an allowed device missing from the page, is reported as unavailable with metadataUnavailable: true, and counted as unknown.
 - pingHosts/tracerouteHost/speedtest are independent read-only network probes, runnable in any combination; each param documents its own mechanics and result location.
 - pingHosts: each entry is sent through hubitat.helper.NetworkUtils.ping() and reported under pingResults with reachable/rttAvg/packetLoss. Hostnames are not resolved -- pass IPs only.
 - tracerouteHost: hostnames are rejected -- pass an IP (dotted-quad).
@@ -1572,7 +1572,7 @@ Reference for the room tools (hub_list_rooms, hub_get_room, hub_create_room, hub
 
 ### hub_get_room
 
-A device the MCP server cannot reach is returned with `accessible=false` and no `currentStates` (label "(device not accessible via MCP)").
+The devices and their states come from one read of the hub's Devices page, the same source as hub_list_devices; if the page cannot be read the call returns an error. A device the MCP server cannot reach (not on the page, or not selected for MCP access) is returned with `accessible=false` and no `currentStates` (label "(device not accessible via MCP)"). For a paged or filtered list of a room's devices use hub_list_devices(roomFilter=<room name>).
 
 ### hub_create_room
 

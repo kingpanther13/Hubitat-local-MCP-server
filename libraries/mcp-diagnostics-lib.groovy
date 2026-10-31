@@ -1630,26 +1630,19 @@ def toolForceGarbageCollection(args) {
 }
 
 private Map _deviceHealthInventory() {
-    boolean bypass = _bypassEnabled()
-    def allowedIds = ((settings.selectedDevices ?: []) + (getChildDevices() ?: [])).collect { it.id.toString() } as Set
-    if (!bypass && !allowedIds) {
+    Set allowedIds = _mcpAuthorizedIds(getChildDevices() ?: [])
+    if (allowedIds != null && !allowedIds) {
         return [devices: [], message: "No devices selected for MCP access and no MCP-managed virtual devices"]
     }
-    // The Devices page carries activity for the whole tree in one read, including children.
-    def text = hubInternalGet("/hub2/devicesList")
-    def parsed = new groovy.json.JsonSlurper().parseText(text ?: "{}")
-    def records = _flattenHub2DeviceTree(parsed instanceof Map ? parsed.devices : null)
-    if (!(records instanceof List)) throw new IllegalStateException("Native device tree is unavailable or malformed")
-    def byId = [:]
-    records.each { record ->
-        String id = record.id.toString()
-        if (bypass || allowedIds.contains(id)) {
-            byId.put(id, [id: id, label: record.label, lastActivity: record.lastActivity,
-                metadataUnavailable: !record.containsKey('lastActivity')])
+    // The Devices page carries activity for every device in one read, including children.
+    Map byId = [:]
+    for (record in _readDevicesPage()) {
+        if (allowedIds == null || allowedIds.contains(record.id)) {
+            byId.put(record.id, [id: record.id, label: record.label, lastActivity: record.lastActivity])
         }
     }
     // A missing selected/owned device is an unknown result, not proof that it is healthy or absent.
-    allowedIds.each { id ->
+    allowedIds?.each { id ->
         if (!byId.containsKey(id)) byId.put(id, [id: id, metadataUnavailable: true])
     }
     return [devices: byId.values() as List]

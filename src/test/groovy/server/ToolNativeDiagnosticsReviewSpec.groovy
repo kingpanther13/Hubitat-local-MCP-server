@@ -112,7 +112,7 @@ class ToolNativeDiagnosticsReviewSpec extends ToolSpecBase {
         bypass << [false, true]
     }
 
-    def 'health missing activity and missing allowed identities remain explicit unknowns'() {
+    def 'health absent activity reads as never; missing allowed identities and unparseable activity stay unavailable'() {
         given:
         settingsMap.selectedDevices = [1, 2, 3, 4].collect { new TestDevice(id: it) }
         hubGet.register('/hub2/devicesList') {
@@ -128,9 +128,12 @@ class ToolNativeDiagnosticsReviewSpec extends ToolSpecBase {
         result.summary.totalDevices == 4
         result.summary.unknownCount == 4
         result.unknownDevices.find { it.id == '1' }.lastActivity == 'never'
-        result.unknownDevices.find { it.id == '2' }.metadataUnavailable == true
+        result.unknownDevices.find { it.id == '2' }.lastActivity == 'never'
+        !result.unknownDevices.find { it.id == '2' }.containsKey('metadataUnavailable')
+        result.unknownDevices.find { it.id == '3' }.lastActivity == 'unavailable'
         result.unknownDevices.find { it.id == '3' }.metadataUnavailable == true
         result.unknownDevices.find { it.id == '4' }.lastActivity == 'unavailable'
+        result.unknownDevices.find { it.id == '4' }.metadataUnavailable == true
         hubGet.calls*.path == ['/hub2/devicesList']
     }
 

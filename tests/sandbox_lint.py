@@ -2596,11 +2596,13 @@ def _device_gate_libraries() -> list[str]:
 # Every entry is a documented scope decision, not a convenience.
 DEVICE_GATE_EXEMPT = {
     "toolListDevices": "population is the Devices page scoped by _mcpAuthorizedIds (selection + MCP children, or every device with bypass); no caller-supplied device id",
+    "toolGetRoom": "room devices are served from the Devices page only for ids in _mcpAuthorizedIds (or every device with bypass); any other id gets the accessible=false row; no caller-supplied device id",
     "toolDeleteDevice": "administrative force-delete keeps its documented broader scope behind confirm + backup",
     "toolCreateDevice": "creates the device it then reads; there is no pre-existing device to authorize",
     "toolCreateVirtualDevice": "MCP-child ownership scoped (reads only the child it created)",
     "toolDeleteVirtualDevice": "MCP-child ownership scoped",
     "toolGetHubLogs": "hub-wide diagnostics by design; deviceId is a log filter and the identity probe returns a boolean only",
+    "toolGetHubInfo": "reads the Devices page only with the allowlist bypassed (every device reachable) and returns a count, never device data; no caller-supplied device id",
     "toolListHubDrivers": "/device/drivers is the driver catalog, not a device",
     "toolUpdateHubMesh": "the /device/ Hub Mesh endpoints (setHubMeshFullRefreshInterval, followModes, setHubMeshToken) configure HUB-WIDE mesh settings; no caller-supplied device id is involved",
 }

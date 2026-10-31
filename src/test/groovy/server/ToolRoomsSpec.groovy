@@ -1,5 +1,6 @@
 package server
 
+import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
 import spock.lang.Shared
 
@@ -20,7 +21,8 @@ import support.ToolSpecBase
  * for platform methods on BaseExecutor — httpPost is intercepted via a
  * permanent `_ *` stub in setupSpec() that dispatches to a per-feature
  * @Shared Closure handler (httpPostHandler). getRooms / getHubSecurityCookie
- * are purely dynamic, stubbed per-test on script.metaClass.
+ * are purely dynamic, stubbed per-test on script.metaClass. hub_get_room reads its device rows
+ * from the Devices page, registered per feature on hubGet ('/hub2/devicesList').
  *
  * Destructive tools require (the Write master gates centrally at executeTool and
  * defaults ON, so it needs no seed; requireDestructiveConfirm needs confirm + 24h backup):
@@ -392,52 +394,93 @@ class ToolRoomsSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "hub_get_room expands deviceIds into device details and flags unresolvable ids as not-accessible"() {
-        given: 'a room referencing a resolvable child device and an unresolvable id'
-        installGetRoomsStub([
-            [id: 7, name: 'Den', deviceIds: [100, 999]]
-        ])
-        and: 'a child device findable at id 100 with a current state'
-        childDevicesList << new TestDevice(
-            id: 100, name: 'den_light', label: 'Den Light',
-            currentStates: [[name: 'switch', value: 'on']]
-        )
-
-        when:
-        def result = script.toolGetRoom('7')
-
-        then: 'both deviceIds produce an entry, resolvable one carries details, unresolvable one flagged'
-        result.deviceCount == 2
-        def known = result.devices.find { it.id == '100' }
-        known != null
-        known.label == 'Den Light'
-        known.name == 'den_light'
-        known.currentStates == [switch: 'on']
-
-        def unknown = result.devices.find { it.id == '999' }
-        unknown != null
-        unknown.label == '(device not accessible via MCP)'
-        unknown.accessible == false
+    private void registerDevicesPage(List<Map> nodes) {
+        hubGet.register('/hub2/devicesList') { JsonOutput.toJson([devices: nodes.collect { [data: it] }]) }
     }
 
-    def "hub_get_room tolerates a device whose currentStates read throws (entry still returned, no propagation)"() {
-        given: 'a room with a device whose currentStates getter throws'
-        installGetRoomsStub([[id: 7, name: 'Den', deviceIds: [100]]])
-        def dev = new TestDevice(id: 100, name: 'den_light', label: 'Den Light',
-            currentStates: [[name: 'switch', value: 'on']])
-        dev.metaClass.getCurrentStates = { -> throw new RuntimeException('states unavailable') }
-        childDevicesList << dev
+    def "hub_get_room builds device rows from the Devices page and flags ids it cannot serve as not-accessible"() {
+        given: 'a room with a page device MCP can reach, an id missing from the page, and a page device MCP cannot reach'
+        installGetRoomsStub([
+            [id: 7, name: 'Den', deviceIds: [100, 999, 200]]
+        ])
+        childDevicesList << new TestDevice(id: 100, name: 'den_light', label: 'Den Light')
+        registerDevicesPage([
+            [id: 100, name: 'Den Light', secondaryName: 'den_light', currentStates: [[key: 'switch', value: 'on'], [key: 'level', value: 40]]],
+            [id: 200, name: 'Den Fan', secondaryName: 'den_fan', currentStates: [[key: 'switch', value: 'off']]]
+        ])
 
         when:
         def result = script.toolGetRoom('7')
 
-        then: 'the device entry is still returned (id/label/name) with no currentStates, and nothing propagates'
-        result.deviceCount == 1
-        def d = result.devices.find { it.id == '100' }
-        d != null
-        d.label == 'Den Light'
-        d.name == 'den_light'
-        !d.containsKey('currentStates')
+        then: 'one page read; the reachable device carries the page label, name and string states'
+        hubGet.calls.count { it.path == '/hub2/devicesList' } == 1
+        result.deviceCount == 3
+        def known = result.devices.find { it.id == '100' }
+        known.label == 'Den Light'
+        known.name == 'den_light'
+        known.currentStates == [switch: 'on', level: '40']
+
+        and: 'the missing and the unauthorized ids keep the not-accessible row'
+        ['999', '200'].every { id ->
+            def row = result.devices.find { it.id == id }
+            row.label == '(device not accessible via MCP)' && row.name == 'unknown' && row.accessible == false && !row.containsKey('currentStates')
+        }
+    }
+
+    def "hub_get_room serves every page device when the allowlist bypass is on, and omits empty states"() {
+        given:
+        settingsMap.bypassDeviceAllowlist = true
+        installGetRoomsStub([[id: 7, name: 'Den', deviceIds: [200]]])
+        registerDevicesPage([[id: 200, name: 'Den Fan', currentStates: []]])
+
+        when:
+        def result = script.toolGetRoom('Den')
+
+        then: 'an unlabelled device reads its name as both label and name'
+        result.devices == [[id: '200', label: 'Den Fan', name: 'Den Fan']]
+    }
+
+    def "hub_get_room masks credential-named states when credential redaction is on"() {
+        given:
+        installGetRoomsStub([[id: 7, name: 'Den', deviceIds: [100]]])
+        childDevicesList << new TestDevice(id: 100, name: 'den_light', label: 'Den Light')
+        registerDevicesPage([[id: 100, name: 'Den Light', currentStates: [[key: 'apiToken', value: 'abc123'], [key: 'switch', value: 'on']]]])
+
+        when:
+        def masked = script.toolGetRoom('7')
+        settingsMap.redactCredentials = false
+        def plain = script.toolGetRoom('7')
+
+        then:
+        masked.devices[0].currentStates == [apiToken: script._appConfigRedactedMarker(), switch: 'on']
+        plain.devices[0].currentStates == [apiToken: 'abc123', switch: 'on']
+    }
+
+    def "hub_get_room returns the isError envelope when the Devices page cannot be read"() {
+        given: 'a room with a device and no /hub2/devicesList fixture, so the read fails'
+        installGetRoomsStub([[id: 7, name: 'Den', deviceIds: [100]]])
+        childDevicesList << new TestDevice(id: 100, name: 'den_light', label: 'Den Light')
+
+        when:
+        def result = script.toolGetRoom('7')
+
+        then:
+        result.success == false
+        result.isError == true
+        result.error.startsWith("The hub's device list (/hub2/devicesList) could not be read: ")
+        result.note == "Retry; if it persists check the hub's Devices page."
+    }
+
+    def "hub_get_room on a room with no devices does not read the Devices page"() {
+        given:
+        installGetRoomsStub([[id: 7, name: 'Den', deviceIds: []]])
+
+        when:
+        def result = script.toolGetRoom('7')
+
+        then:
+        result.devices == []
+        hubGet.calls.empty
     }
 
     @spock.lang.Unroll
@@ -448,12 +491,8 @@ class ToolRoomsSpec extends ToolSpecBase {
             [id: 7, name: 'Den', deviceIds: [100, 999]]
         ])
         and:
-        childDevicesList << new TestDevice(
-            id: 100, name: 'den_light', label: 'Den Light',
-            currentStates: [[name: 'switch', value: 'on'], [name: 'fields', value: false],
-                            [name: 'metaClass', value: 0], [name: 'Fields', value: null],
-                            [name: 'getClass', value: 'data']]
-        )
+        childDevicesList << new TestDevice(id: 100, name: 'den_light', label: 'Den Light')
+        registerDevicesPage([[id: 100, name: 'Den Light', secondaryName: 'den_light', currentStates: [[key: 'switch', value: 'on']]]])
 
         when:
         def response = mcpDriver.callTool('hub_get_room', [room: '7'])
@@ -467,11 +506,29 @@ class ToolRoomsSpec extends ToolSpecBase {
         known != null
         known.label == 'Den Light'
         known.name == 'den_light'
-        known.currentStates == [switch: 'on', fields: false, metaClass: 0, Fields: null, getClass: 'data']
+        known.currentStates == [switch: 'on']
         def unknown = inner.devices.find { it.id == '999' }
         unknown != null
         unknown.label == '(device not accessible via MCP)'
         unknown.accessible == false
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "hub_get_room via dispatch returns the isError envelope when the Devices page cannot be read (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        installGetRoomsStub([[id: 7, name: 'Den', deviceIds: [100]]])
+        childDevicesList << new TestDevice(id: 100, name: 'den_light', label: 'Den Light')
+
+        when:
+        def response = mcpDriver.callTool('hub_get_room', [room: '7'])
+
+        then:
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('/hub2/devicesList')
 
         where:
         useGateways << [true, false]
