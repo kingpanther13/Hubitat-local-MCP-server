@@ -3961,6 +3961,11 @@ class TestRunner:
                     )
 
         native, baseline = capture()
+        if baseline.get("largeReadProbePresent"):
+            # A run cancelled between seedLargeReadProbe and clearLargeReadProbe leaves the probe on
+            # the persistent fixture; clear it here so one cancelled run does not fail the next.
+            command("clearLargeReadProbe")
+            native, baseline = capture()
         metadata_baseline = preserved_metadata()
         cfg = configuration()
         assert_native_preferences(native, cfg, expected)
