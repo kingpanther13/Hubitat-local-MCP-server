@@ -27473,7 +27473,7 @@ def advancedOverridesPage() {
                   defaultValue: false
         }
         section("Backup storage") {
-            paragraph "Automatic code and rule backups live in File Manager. File Manager files use hub storage and count toward a full local backup's 100 MiB file limit; database backups leave them out. Backups are removed only when they exceed this budget together, oldest first. An item's newest backup, the backup just taken and a restore in progress are never removed, so the budget can stay exceeded once every item is down to one."
+            paragraph "Automatic code and rule backups live in File Manager. File Manager files use hub storage and count toward a full local backup's 100 MiB file limit; database backups leave them out. Backups are removed only when they exceed this budget together, oldest first. The newest backup of an item still on the hub, the backup just taken and a restore in progress are never removed, so the budget can stay exceeded once every item is down to one. Backups of deleted items are removed like any other."
             input "backupBudgetMb", "number", title: "Backup storage budget (MB)",
                   description: "Total size of the automatic code and rule backups (default: 10; range 1 to 1000000, values outside it use the nearest end).",
                   defaultValue: 10, required: false
@@ -33140,14 +33140,19 @@ List _itemBackupRetentionVictims(Map manifest, Collection keepKeys) {
     List victims = []
     if (used <= budget) return victims
     Closure stamp = { k -> def t = manifest[k]?.timestamp; t instanceof Number ? (t as Long) : 0L }
+    Closure itemId = { v -> (v?.ruleId != null ? v.ruleId : v?.id)?.toString() }
     Map newest = [:]
     manifest.each { k, v ->
         if (v?.deletePending) return
-        String item = "${v?.type}:${v?.ruleId != null ? v.ruleId : v?.id}".toString()
+        String item = "${v?.type}:${itemId(v)}".toString()
         if (!newest.containsKey(item) || stamp(k) > stamp(newest.get(item))) newest.put(item, k)
     }
+    Map live = _itemBackupLiveIds(newest.values().collect { manifest[it]?.type?.toString() })
     Set kept = new HashSet(keepKeys)
-    kept.addAll(newest.values())
+    newest.values().each { k ->
+        Set ids = live[manifest[k]?.type?.toString()]
+        if (ids == null || ids.contains(itemId(manifest[k]))) kept << k
+    }
     List candidates = manifest.keySet().findAll { !kept.contains(it) && !manifest[it]?.deletePending }
         .sort { a, b -> stamp(a) <=> stamp(b) }
     for (k in candidates) {
@@ -33156,6 +33161,37 @@ List _itemBackupRetentionVictims(Map manifest, Collection keepKeys) {
         used -= _itemBackupEntryBytes(manifest[k])
     }
     return victims
+}
+private Map _itemBackupLiveIds(Collection types) {
+    Map paths = [app: "/hub2/userAppTypes", driver: "/hub2/userDeviceTypes", library: "/hub2/userLibraries", "rm-rule": "/hub2/appsList"]
+    Map live = [:]
+    types.findAll { paths.containsKey(it) }.unique().each { type ->
+        String path = paths[type]
+        try {
+            String text = hubInternalGet(path)?.toString()
+            if (!text) throw new IllegalStateException("empty response")
+            def parsed = new groovy.json.JsonSlurper().parseText(text)
+            Set ids = new HashSet()
+            if (type == "rm-rule") {
+                if (!(parsed instanceof Map) || !(parsed.apps instanceof List)) throw new IllegalStateException("no apps tree")
+                def walk
+                walk = { node ->
+                    if (!(node instanceof Map) || (node.children != null && !(node.children instanceof List))) throw new IllegalStateException("unexpected app node")
+                    def id = node.data instanceof Map ? node.data.id : node.id
+                    if (id != null) ids << id.toString()
+                    node.children?.each { walk(it) }
+                }
+                parsed.apps.each { walk(it) }
+            } else {
+                if (!(parsed instanceof List)) throw new IllegalStateException("not a list")
+                parsed.each { if (it instanceof Map && it.id != null) ids << it.id.toString() }
+            }
+            live.put(type, ids)
+        } catch (Exception e) {
+            mcpLog("warn", "hub-admin", "Backup retention could not read ${path} (${e.message}); the newest ${type} backup of every item stays protected")
+        }
+    }
+    return live
 }
 long _itemBackupBudgetMb() {
     def value = settings?.backupBudgetMb
@@ -33188,7 +33224,7 @@ Map _itemBackupBudgetUsage(Map manifest) {
     return [usedBytes: used, limitBytes: _itemBackupByteBudget()]
 }
 String _itemBackupRetentionNote() {
-    return "Backups are removed only when all MCP backups together exceed the ${_itemBackupBudgetMb()} MB storage budget, oldest first; an item's newest backup is never removed, so the budget can stay exceeded once every item is down to one."
+    return "Backups are removed only when all MCP backups together exceed the ${_itemBackupBudgetMb()} MB storage budget, oldest first; an item's newest backup is never removed while that item still exists on the hub, so the budget can stay exceeded once every item is down to one. Backups of deleted items are removed like any other."
 }
 List unlinkItemBackupManifestFile(String fileName, String exactKey = null) {
     if (!fileName) return []
@@ -35229,7 +35265,7 @@ Duplicates an existing MCP custom-engine rule into a new, independent rule with 
 - Rapid source-code edits preserve the original for one hour. Rule edits take a fresh pre-edit snapshot as described below.
 
 ### Backup retention
-- There is no count limit: backups are removed only when all MCP backups together exceed the storage budget, oldest first across every item and kind of backup. An item's newest backup is never removed, and neither are the backup just taken and an active restore target; the budget can therefore stay exceeded once every item is down to one backup.
+- There is no count limit: backups are removed only when all MCP backups together exceed the storage budget, oldest first across every item and kind of backup. An item's newest backup is never removed while that item still exists on the hub, and neither are the backup just taken and an active restore target; the budget can therefore stay exceeded once every item is down to one backup. Backups of an app, driver, library or rule that has been deleted from the hub are removed like any other, newest included. If the hub's list of an item type cannot be read, every item of that type is treated as still existing.
 - The budget is the Advanced setting "Backup storage budget (MB)" (`backupBudgetMb`): default 10, at least 1, at most 1000000 (1 TB). The Advanced page takes any number and the server clamps it to that range. With Developer Mode on, hub_update_mcp_settings also sets it and refuses a value that is not a whole number in that range.
 - Where each response says it:
   - Rule Machine writes and deletes: the `backup` object carries `retentionNote`, and the restoreHint ends with that note.
@@ -35337,7 +35373,7 @@ Use after hub_list_files to fetch a named file (config, backup, exported rule/ap
 
 **Cursor pagination.** List tools that take `cursor` return the whole list when it is omitted, subject to the guard; `hub_list_backups` (scope=source) is the exception and always returns one page, with `hasMore: true` and `nextCursor` when more backups follow. Pass `cursor: ""` for the first page, then pass each returned `nextCursor` until it is absent. A malformed or out-of-range cursor is rejected as a validation error. Page sizes:
 - 25: `hub_list_hpm_packages`.
-- 50: `hub_list_apps` (pages the filtered set), `hub_list_drivers`, `hub_list_libraries`, `hub_list_bundles`, `hub_list_rules`, `hub_get_custom_rule` (list mode), `hub_list_captured_states`, `hub_list_backups` (scope=source, newest first), and `hub_list_devices` (when `limit` is unset).
+- 50: `hub_list_apps` (pages the filtered set), `hub_list_drivers`, `hub_list_libraries`, `hub_list_bundles`, `hub_list_rules`, `hub_get_custom_rule` (list mode), `hub_list_captured_states`, `hub_list_backups` (scope=source, newest first), and `hub_list_devices` in `format='context'` when `limit` is unset (the other formats are unpaged until a `cursor` or a positive `limit` is given).
 - 100: `hub_list_variables` (hubVariables; ruleVariables stay whole), `hub_list_files`, `hub_list_rooms`, `hub_list_device_dependents` (appsUsing), `hub_get_logs` (50 per tab when several are listed), `hub_get_memory_history`, and `hub_get_device_health` (staleDevices).
 - `hub_get_device` and `hub_get_tool_guide` page oversized responses automatically.
 
@@ -35408,7 +35444,7 @@ Issue-type routing: `issueType` picks the GitHub issue template behind `submitUr
 
 ### hub_list_devices
 
-**Source.** Every call reads the hub's Devices page once: labels, room, driver, protocol, disabled flag, lastActivity and current states (string values, no units) for every device, plus the capability feed when capabilities are needed. `format='detailed'`, or `fields` naming `attributes`/`commands`, adds one read per listed device (typed values with units, commands with arguments, `driverNamespace`); such a page can end early with `budgetLimited: true` and a `nextCursor`, and a device whose read fails is listed with `metadataUnavailable: true` and `partial: true`.
+**Source.** A call whose scope is not empty reads the hub's Devices page once (an empty `authorized`/`owned` scope answers without a read): labels, room, driver, protocol, disabled flag, lastActivity and current states (string values, no units) for every device, plus the capability feed when capabilities are needed. `format='detailed'`, or `fields` naming `attributes`/`commands`, adds one read per listed device (typed values with units, commands with arguments, `driverNamespace`); such a page can end early with `budgetLimited: true` and a `nextCursor`, and a device whose read fails is listed with `metadataUnavailable: true` and `partial: true`.
 
 **scope.** `authorized` (default): selected devices plus this app's children, or every device with the allowlist bypass on. `all`: every hub device as `{id, label, name, driver, room, protocol, disabled, mcpAuthorized}` with `mcpAuthorizedCount`/`unauthorizedCount`; formats summary and ids only, and no state filters. `owned`: the virtual devices this app created.
 
