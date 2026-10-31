@@ -1121,31 +1121,29 @@ def toolGetRoom(String roomIdentifier) {
         def available = rooms.collect { it?.name }.sort()
         throw new IllegalArgumentException("Room '${roomIdentifier}' not found. Available rooms: ${available.join(', ')}")
     }
+    Map pageById = [:]
+    if (room.deviceIds) {
+        try {
+            for (pageRec in _readDevicesPage()) pageById.put(pageRec.id, pageRec)
+        } catch (IllegalStateException e) {
+            return [success: false, isError: true, error: "The hub's device list (/hub2/devicesList) could not be read: ${e.message}".toString(),
+                    note: "Retry; if it persists check the hub's Devices page."]
+        }
+    }
+    Set authorized = _mcpAuthorizedIds(getChildDevices() ?: [])
+    boolean redact = _redactsCredentials()
     def devices = []
-    def allDevices = (settings.selectedDevices ?: []).toList()
-    def childDevs = getChildDevices() ?: []
-    def selectedIds = allDevices.collect { it.id.toString() } as Set
-    childDevs.each { cd -> if (!selectedIds.contains(cd.id.toString())) { allDevices.add(cd) } }
-    room.deviceIds?.each { devId ->
-        def device = allDevices?.find { it?.id?.toString() == devId.toString() }
-        if (device) {
-            def devInfo = [
-                id: device.id.toString(),
-                label: device.label ?: device.name ?: "unknown",
-                name: device.name ?: "unknown"
-            ]
-            def states = [:]
-            try {
-                device.currentStates?.each { st ->
-                    states.put(st.name, st.value)
-                }
-            } catch (Exception e) {
-                mcpLog("debug", "room", "hub_get_room: currentStates read failed for device ${device.id}: ${e.message}")
-            }
+    for (devId in (room.deviceIds ?: [])) {
+        String id = devId.toString()
+        Map rec = (authorized == null || authorized.contains(id)) ? pageById.get(id) : null
+        if (rec) {
+            def devInfo = [id: id, label: rec.label, name: rec.name]
+            Map states = [:]
+            for (st in rec.currentStates) states.put(st.key, _listStateValue(st.key, st.value, redact))
             if (states) devInfo.currentStates = states
             devices << devInfo
         } else {
-            devices << [id: devId.toString(), label: "(device not accessible via MCP)", name: "unknown", accessible: false]
+            devices << [id: id, label: "(device not accessible via MCP)", name: "unknown", accessible: false]
         }
     }
     return [
@@ -7150,24 +7148,17 @@ def toolForceGarbageCollection(args) {
     return result
 }
 private Map _deviceHealthInventory() {
-    boolean bypass = _bypassEnabled()
-    def allowedIds = ((settings.selectedDevices ?: []) + (getChildDevices() ?: [])).collect { it.id.toString() } as Set
-    if (!bypass && !allowedIds) {
+    Set allowedIds = _mcpAuthorizedIds(getChildDevices() ?: [])
+    if (allowedIds != null && !allowedIds) {
         return [devices: [], message: "No devices selected for MCP access and no MCP-managed virtual devices"]
     }
-    def text = hubInternalGet("/hub2/devicesList")
-    def parsed = new groovy.json.JsonSlurper().parseText(text ?: "{}")
-    def records = _flattenHub2DeviceTree(parsed instanceof Map ? parsed.devices : null)
-    if (!(records instanceof List)) throw new IllegalStateException("Native device tree is unavailable or malformed")
-    def byId = [:]
-    records.each { record ->
-        String id = record.id.toString()
-        if (bypass || allowedIds.contains(id)) {
-            byId.put(id, [id: id, label: record.label, lastActivity: record.lastActivity,
-                metadataUnavailable: !record.containsKey('lastActivity')])
+    Map byId = [:]
+    for (record in _readDevicesPage()) {
+        if (allowedIds == null || allowedIds.contains(record.id)) {
+            byId.put(record.id, [id: record.id, label: record.label, lastActivity: record.lastActivity])
         }
     }
-    allowedIds.each { id ->
+    allowedIds?.each { id ->
         if (!byId.containsKey(id)) byId.put(id, [id: id, metadataUnavailable: true])
     }
     return [devices: byId.values() as List]
@@ -8674,10 +8665,7 @@ def toolGetHubInfo(args = null) {
     if (_bypassEnabled()) {
         info.deviceAllowlistBypassed = true
         try {
-            def tree = new groovy.json.JsonSlurper().parseText(hubInternalGet("/hub2/devicesList") ?: "{}")
-            def records = _flattenHub2DeviceTree(tree instanceof Map ? tree.devices : null)
-            if (!(records instanceof List)) throw new IllegalStateException("the device tree was not a list")
-            records.each { r -> if (r?.id != null) reachable << r.id.toString() }
+            reachable.addAll(_readDevicesPage().collect { it.id })
         } catch (Exception e) {
             info.mcpDeviceCountNote = "The allowlist is bypassed, so every hub device is reachable, but the hub's device list could not be read (${e.message}); the count covers the selected and MCP-managed devices only.".toString()
         }
@@ -32231,25 +32219,6 @@ def _firmwareAtLeast(fw, String target) {
 }
 def hubReadTimeoutSec() { 30 }
 def hubWriteTimeoutSec() { 420 }
-private List _flattenHub2DeviceTree(nodes, List acc = null) {
-    if (!(nodes instanceof List)) return acc
-    if (acc == null) acc = []
-    boolean malformed = false
-    nodes.each { node ->
-        if (!(node instanceof Map)) { malformed = true; return }
-        def data = node.data
-        if (!(data instanceof Map) || data.id == null) { malformed = true; return }
-        def record = [id: data.id, label: data.name]
-        ['lastActivity', 'roomId', 'roomName', 'disabled', 'currentStates'].each { key -> if (data.containsKey(key)) record.put(key, data.get(key)) }
-        acc << record
-        if (_flattenHub2DeviceTree(node.children, acc) == null) malformed = true
-    }
-    if (malformed) {
-        mcpLog("warn", "devices", "_flattenHub2DeviceTree: /hub2/devicesList carried a node that is not a map or has no data.id -- treating the inventory as unreadable rather than returning a short list")
-        return null
-    }
-    return acc
-}
 def _parseSinceArg(since) {
     if (since instanceof Number) {
         return new Date(since.toLong())
@@ -35390,7 +35359,7 @@ Use after hub_list_files to fetch a named file (config, backup, exported rule/ap
 
 ### hub_get_device_health (device-staleness check + LAN/WAN network probes)
 - Stale checks cover selected devices plus MCP-owned children with bypass OFF, and all native hub devices with bypass ON. Use hub_list_devices(scope='owned') for an ownership-scoped child inventory.
-- Health reads activity from one native device-tree request. An explicit null activity is reported as never; missing or invalid activity metadata is reported as unavailable with metadataUnavailable: true, and counted as unknown.
+- Health reads activity from one read of the hub's Devices page (the same read hub_list_devices uses). A null activity is reported as never; an unparseable activity, or an allowed device missing from the page, is reported as unavailable with metadataUnavailable: true, and counted as unknown.
 - pingHosts/tracerouteHost/speedtest are independent read-only network probes, runnable in any combination; each param documents its own mechanics and result location.
 - pingHosts: each entry is sent through hubitat.helper.NetworkUtils.ping() and reported under pingResults with reachable/rttAvg/packetLoss. Hostnames are not resolved -- pass IPs only.
 - tracerouteHost: hostnames are rejected -- pass an IP (dotted-quad).
@@ -35883,7 +35852,7 @@ Reference for the room tools (hub_list_rooms, hub_get_room, hub_create_room, hub
 
 ### hub_get_room
 
-A device the MCP server cannot reach is returned with `accessible=false` and no `currentStates` (label "(device not accessible via MCP)").
+The devices and their states come from one read of the hub's Devices page, the same source as hub_list_devices; if the page cannot be read the call returns an error. A device the MCP server cannot reach (not on the page, or not selected for MCP access) is returned with `accessible=false` and no `currentStates` (label "(device not accessible via MCP)"). For a paged or filtered list of a room's devices use hub_list_devices(roomFilter=<room name>).
 
 ### hub_create_room
 
