@@ -22,6 +22,35 @@ class BackupRetentionSpec extends ToolSpecBase {
          timestamp: timestamp, sourceLength: sizeBytes, sizeBytes: sizeBytes]
     }
 
+    private Map code(String type, String id, long timestamp, long sizeBytes) {
+        [type: type, id: id, fileName: "mcp-backup-${type}-${id}.groovy".toString(), timestamp: timestamp,
+         version: 1, sourceLength: sizeBytes, sizeBytes: sizeBytes]
+    }
+
+    // The hub's lists of the items that still exist. A type left out stays unregistered, so
+    // reading its list fails.
+    private void onHub(Map idsByType) {
+        Map paths = [app: '/hub2/userAppTypes', driver: '/hub2/userDeviceTypes', library: '/hub2/userLibraries']
+        idsByType.each { type, ids ->
+            if (type == 'rm-rule') {
+                // Rules are children of their Rule Machine parent app in the tree.
+                hubGet.register('/hub2/appsList') { params ->
+                    JsonOutput.toJson([apps: [[data: [id: 900, type: 'Rule Machine'], children: ids.collect { [data: [id: it], children: []] }]]])
+                }
+            } else {
+                hubGet.register(paths[type]) { params -> JsonOutput.toJson(ids.collect { [id: it as Integer, name: "type ${it}"] }) }
+            }
+        }
+    }
+
+    private List captureLogs() {
+        List entries = []
+        script.metaClass.mcpLog = { String level, String component, String message, String ruleId = null, Map extra = null ->
+            entries << [level: level, component: component, message: message]
+        }
+        return entries
+    }
+
     private List deletedFiles() {
         List deleted = []
         script.metaClass.deleteHubFile = { String name -> deleted << name }
@@ -317,6 +346,7 @@ class BackupRetentionSpec extends ToolSpecBase {
             'rm-rule_6_b': rule(6, 'b', 7L, MIB),
             app_1: app('1', 2L, 3 * MIB)
         ]
+        onHub(['rm-rule': [5, 6], app: ['1', '9']])
         List deleted = deletedFiles()
 
         when:
@@ -335,6 +365,7 @@ class BackupRetentionSpec extends ToolSpecBase {
             'rm-rule_5_c': rule(5, 'c', 3L, MIB),
             app_1: app('1', 2L, 4 * MIB)
         ]
+        onHub(['rm-rule': [5], app: ['1', '9']])
         List deleted = deletedFiles()
 
         when: 'rm-rule_5_a is the active restore target'
@@ -352,6 +383,7 @@ class BackupRetentionSpec extends ToolSpecBase {
             'rm-rule_6_a': rule(6, 'a', 1L, 3 * MIB),
             'rm-rule_6_b': rule(6, 'b', 2L, 2 * MIB)
         ]
+        onHub(['rm-rule': [6], app: ['1']])
         List deleted = deletedFiles()
 
         when:
@@ -362,10 +394,11 @@ class BackupRetentionSpec extends ToolSpecBase {
         deleted == ['mcp-rm-backup-6-a.json']
     }
 
-    def 'a full index of one item backups evicts all but its newest'() {
+    def 'a full index of one live item backups evicts all but its newest'() {
         given:
         settingsMap.backupBudgetMb = 1
         backupIndex = (1..4).collectEntries { [("rm-rule_5_s${it}".toString()): rule(5, "s${it}", (long) it, 600 * 1024L)] }
+        onHub(['rm-rule': [5]])
         List deleted = deletedFiles()
 
         when:
@@ -382,6 +415,7 @@ class BackupRetentionSpec extends ToolSpecBase {
             app_1: app('1', 1L, 6 * MIB),
             prerestore_app_1: app('1', 2L, 3 * MIB, [fileName: 'mcp-prerestore-app-1.groovy', undoForBackupKey: 'app_1'])
         ]
+        onHub([app: ['1', '9']])
         List deleted = deletedFiles()
 
         when:
@@ -395,6 +429,7 @@ class BackupRetentionSpec extends ToolSpecBase {
     def 'a single backup larger than the budget is kept and every evictable backup goes'() {
         given:
         backupIndex = ['rm-rule_5_a': rule(5, 'a', 1L, MIB), 'rm-rule_5_b': rule(5, 'b', 2L, MIB)]
+        onHub(['rm-rule': [5, 6]])
         deletedFiles()
 
         when:
@@ -402,6 +437,95 @@ class BackupRetentionSpec extends ToolSpecBase {
 
         then:
         backupIndex.keySet() == ['rm-rule_5_b', 'rm-rule_6_a'] as Set
+    }
+
+    def 'a deleted item lone backup is evicted before a live item older restore points'() {
+        given: 'rule 9 is gone from the hub; live rule 5 holds two earlier points'
+        backupIndex = [
+            'rm-rule_9_x': rule(9, 'x', 1L, 4 * MIB),
+            'rm-rule_5_a': rule(5, 'a', 2L, 3 * MIB),
+            'rm-rule_5_b': rule(5, 'b', 3L, 3 * MIB)
+        ]
+        onHub(['rm-rule': [5]])
+        List deleted = deletedFiles()
+
+        when:
+        script._publishItemBackup('rm-rule_5_c', rule(5, 'c', 4L, MIB))
+
+        then:
+        deleted == ['mcp-rm-backup-9-x.json']
+        backupIndex.keySet() == ['rm-rule_5_a', 'rm-rule_5_b', 'rm-rule_5_c'] as Set
+    }
+
+    def 'once the deleted items backups are gone, a live item keeps its newest while its older points go'() {
+        given: 'app 3 is gone; app 9 is not listed yet but is the backup being published'
+        backupIndex = [
+            app_3: app('3', 1L, MIB),
+            'rm-rule_5_a': rule(5, 'a', 2L, 3 * MIB),
+            'rm-rule_5_b': rule(5, 'b', 3L, 3 * MIB),
+            app_1: app('1', 4L, 3 * MIB)
+        ]
+        onHub(['rm-rule': [5], app: ['1']])
+        List deleted = deletedFiles()
+
+        when:
+        script._publishItemBackup('app_9', app('9', 10L, 2 * MIB))
+
+        then:
+        deleted == ['mcp-backup-app-3.groovy', 'mcp-rm-backup-5-a.json']
+        backupIndex.keySet() == ['rm-rule_5_b', 'app_1', 'app_9'] as Set
+    }
+
+    def 'an unreadable item list keeps that type newest backups protected and warns'() {
+        given: 'the app list fails; rule 9 is gone and rule 5 is live'
+        backupIndex = [
+            app_3: app('3', 1L, 4 * MIB),
+            'rm-rule_9_x': rule(9, 'x', 2L, 3 * MIB),
+            'rm-rule_5_a': rule(5, 'a', 3L, 3 * MIB)
+        ]
+        onHub(['rm-rule': [5]])
+        hubGet.register('/hub2/userAppTypes') { params ->
+            if (body == null) throw new RuntimeException('hub busy')
+            body
+        }
+        List deleted = deletedFiles()
+        List logs = captureLogs()
+
+        when:
+        script._publishItemBackup('rm-rule_5_b', rule(5, 'b', 4L, 2 * MIB))
+
+        then:
+        deleted == ['mcp-rm-backup-9-x.json']
+        backupIndex.keySet() == ['app_3', 'rm-rule_5_a', 'rm-rule_5_b'] as Set
+        logs.count { it.level == 'warn' && it.component == 'hub-admin' && it.message.contains('/hub2/userAppTypes') } == 1
+
+        where:
+        body << [null, '', '{"apps":[]}', '<html>login</html>']
+    }
+
+    def 'every backup type is checked against its own hub list, once each'() {
+        given: 'the deleted items are the newest backups, so age alone would keep them'
+        Map index = [:]
+        ['app', 'driver', 'library'].eachWithIndex { String type, int i ->
+            index["${type}_1".toString()] = code(type, '1', (long) i, 2 * MIB)
+            index["${type}_2".toString()] = code(type, '2', 10L + i, 2 * MIB)
+        }
+        index['rm-rule_1_a'] = rule(1, 'a', 3L, 2 * MIB)
+        index['rm-rule_2_a'] = rule(2, 'a', 13L, 2 * MIB)
+        backupIndex = index
+        onHub([app: ['1'], driver: ['1'], library: ['1'], 'rm-rule': [1]])
+        List deleted = deletedFiles()
+
+        when:
+        script._publishItemBackup('app_9', app('9', 20L, MIB))
+
+        then:
+        deleted as Set == ['mcp-backup-app-2.groovy', 'mcp-backup-driver-2.groovy', 'mcp-backup-library-2.groovy',
+                           'mcp-rm-backup-2-a.json'] as Set
+        backupIndex.keySet() == ['app_1', 'driver_1', 'library_1', 'rm-rule_1_a', 'app_9'] as Set
+        ['/hub2/userAppTypes', '/hub2/userDeviceTypes', '/hub2/userLibraries', '/hub2/appsList'].every { path ->
+            hubGet.calls.count { it.path == path } == 1
+        }
     }
 
     def 'pending-deletion entries do not count toward the reported budget usage'() {
@@ -462,6 +586,7 @@ class BackupRetentionSpec extends ToolSpecBase {
         String uuid = '0f8fad5b-d9cb-469f-a165-70867728950e'
         listFiles([[name: 'mcp-backup-app-1.groovy', type: 'file', size: String.valueOf(600 * 1024)],
                    [name: "mcp-backup-app-1-${uuid}.groovy".toString(), type: 'file', size: String.valueOf(300 * 1024), date: '5000']])
+        onHub([app: ['1', '9']])
         List deleted = deletedFiles()
 
         when:
@@ -479,7 +604,7 @@ class BackupRetentionSpec extends ToolSpecBase {
         script._itemBackupEntryBytes([:]) == 0L
     }
 
-    def 'under the budget no backup is evicted, however many snapshots or items there are'() {
+    def 'under the budget no backup is evicted and no hub list is read, however many snapshots or items there are'() {
         given: 'forty snapshots of one rule, plus another rule and an app'
         Map seeded = (1..40).collectEntries { [("rm-rule_5_s${it}".toString()): rule(5, "s${it}", (long) it, 10L)] }
         seeded['rm-rule_6_s1'] = rule(6, 's1', 0L, 10L)
@@ -493,6 +618,7 @@ class BackupRetentionSpec extends ToolSpecBase {
         then:
         deleted.isEmpty()
         backupIndex.size() == 43
+        hubGet.calls.empty
     }
 
     // ---------- the Backup storage budget setting ----------
@@ -544,6 +670,7 @@ class BackupRetentionSpec extends ToolSpecBase {
         given:
         settingsMap.backupBudgetMb = 1
         backupIndex = budgetIndex()
+        onHub([app: ['1', '9'], 'rm-rule': [5]])
         List deleted = deletedFiles()
 
         when: 'the new backup takes the total to 1.5 MB'
@@ -616,6 +743,6 @@ class BackupRetentionSpec extends ToolSpecBase {
     def 'the retention note states the one eviction rule'() {
         expect:
         script._itemBackupRetentionNote() ==
-            "Backups are removed only when all MCP backups together exceed the 10 MB storage budget, oldest first; an item's newest backup is never removed, so the budget can stay exceeded once every item is down to one."
+            "Backups are removed only when all MCP backups together exceed the 10 MB storage budget, oldest first; an item's newest backup is never removed while that item still exists on the hub, so the budget can stay exceeded once every item is down to one. Backups of deleted items are removed like any other."
     }
 }

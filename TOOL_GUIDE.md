@@ -750,7 +750,7 @@ Duplicates an existing MCP custom-engine rule into a new, independent rule with 
 - Rapid source-code edits preserve the original for one hour. Rule edits take a fresh pre-edit snapshot as described below.
 
 ### Backup retention
-- There is no count limit: backups are removed only when all MCP backups together exceed the storage budget, oldest first across every item and kind of backup. An item's newest backup is never removed, and neither are the backup just taken and an active restore target; the budget can therefore stay exceeded once every item is down to one backup.
+- There is no count limit: backups are removed only when all MCP backups together exceed the storage budget, oldest first across every item and kind of backup. An item's newest backup is never removed while that item still exists on the hub, and neither are the backup just taken and an active restore target; the budget can therefore stay exceeded once every item is down to one backup. Backups of an app, driver, library or rule that has been deleted from the hub are removed like any other, newest included. If the hub's list of an item type cannot be read, every item of that type is treated as still existing.
 - The budget is the Advanced setting "Backup storage budget (MB)" (`backupBudgetMb`): default 10, at least 1, at most 1000000 (1 TB). The Advanced page takes any number and the server clamps it to that range. With Developer Mode on, hub_update_mcp_settings also sets it and refuses a value that is not a whole number in that range.
 - Where each response says it:
   - Rule Machine writes and deletes: the `backup` object carries `retentionNote`, and the restoreHint ends with that note.
