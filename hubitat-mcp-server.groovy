@@ -83,7 +83,7 @@ private String _effectiveBackupSetting(String key) {
 // parses and serialises the app's whole state blob.
 @groovy.transform.Field static final String ITEM_BACKUP_INDEX_FILE = "mcp-backup-index.json"
 // Default and ceiling for the backupBudgetMb setting: indexed backup bytes kept across every
-// item before the oldest backups are evicted; each item's newest backup stays. The ceiling
+// item before the oldest backups are evicted, whatever item they belong to. The ceiling
 // (1 TB) keeps the byte count far from long overflow.
 @groovy.transform.Field static final long ITEM_BACKUP_DEFAULT_BUDGET_MB = 10L
 @groovy.transform.Field static final long ITEM_BACKUP_MAX_BUDGET_MB = 1000000L
@@ -1080,7 +1080,7 @@ def advancedOverridesPage() {
                   defaultValue: false
         }
         section("Backup storage") {
-            paragraph "Automatic code and rule backups live in File Manager. File Manager files use hub storage and count toward a full local backup's 100 MiB file limit; database backups leave them out. Backups are removed only when they exceed this budget together, oldest first. The newest backup of an item still on the hub, the backup just taken and a restore in progress are never removed, so the budget can stay exceeded once every item is down to one. Backups of deleted items are removed like any other."
+            paragraph "Automatic code and rule backups live in File Manager. File Manager files use hub storage and count toward a full local backup's 100 MiB file limit; database backups leave them out. Backups are removed only when they exceed this budget together, oldest first across every item. Only the backup just taken and a restore in progress are never removed; an item's only backup goes when it is the oldest, so the budget is a hard cap."
             input "backupBudgetMb", "number", title: "Backup storage budget (MB)",
                   description: "Total size of the automatic code and rule backups (default: 10; range 1 to 1000000, values outside it use the nearest end).",
                   defaultValue: 10, required: false
@@ -8880,9 +8880,8 @@ void _publishUploadedItemBackup(String key, Map entry, String protectedKey = nul
 }
 
 // Backups are evicted only when the byte budget is exceeded; an app, driver or library key
-// is otherwise replaced in place by that item's next baseline. The published key,
-// protectedKey (an active restore target) and the newest backup of each item still on the
-// hub are never evicted.
+// is otherwise replaced in place by that item's next baseline. Only the published key and
+// protectedKey (an active restore target) are never evicted.
 void _publishItemBackup(String key, Map entry, String protectedKey = null) {
     synchronized (ITEM_BACKUP_MANIFESTS) {
         // previous must survive the removals below: it is what finds the files no entry references any more.
@@ -8906,12 +8905,9 @@ void _publishItemBackup(String key, Map entry, String protectedKey = null) {
     }
 }
 
-// Keys to evict while indexed bytes exceed the backup budget, oldest first across all items.
-// keepKeys and the newest backup of each item still on the hub (same type and id; a
-// pre-restore undo counts for its item) are never chosen. A deleted item's backups are
-// ordinary candidates: on a hub that creates and deletes many rules they would otherwise be
-// immortal and leave only live items' older restore points to evict. Pending entries are
-// left to the pending purge.
+// Keys to evict while indexed bytes exceed the backup budget, oldest first across all items
+// and kinds. Only keepKeys are never chosen: the budget is a hard cap, so an item's only
+// backup goes when it is the oldest. Pending entries are left to the pending purge.
 List _itemBackupRetentionVictims(Map manifest, Collection keepKeys) {
     long budget = _itemBackupByteBudget()
     long used = 0L
@@ -8919,19 +8915,7 @@ List _itemBackupRetentionVictims(Map manifest, Collection keepKeys) {
     List victims = []
     if (used <= budget) return victims
     Closure stamp = { k -> def t = manifest[k]?.timestamp; t instanceof Number ? (t as Long) : 0L }
-    Closure itemId = { v -> (v?.ruleId != null ? v.ruleId : v?.id)?.toString() }
-    Map newest = [:]
-    manifest.each { k, v ->
-        if (v?.deletePending) return
-        String item = "${v?.type}:${itemId(v)}".toString()
-        if (!newest.containsKey(item) || stamp(k) > stamp(newest.get(item))) newest.put(item, k)
-    }
-    Map live = _itemBackupLiveIds(newest.values().collect { manifest[it]?.type?.toString() })
     Set kept = new HashSet(keepKeys)
-    newest.values().each { k ->
-        Set ids = live[manifest[k]?.type?.toString()]
-        if (ids == null || ids.contains(itemId(manifest[k]))) kept << k
-    }
     List candidates = manifest.keySet().findAll { !kept.contains(it) && !manifest[it]?.deletePending }
         .sort { a, b -> stamp(a) <=> stamp(b) }
     for (k in candidates) {
@@ -8940,41 +8924,6 @@ List _itemBackupRetentionVictims(Map manifest, Collection keepKeys) {
         used -= _itemBackupEntryBytes(manifest[k])
     }
     return victims
-}
-
-// Ids of the items still on the hub, by backup type, one hub read per type. A type absent from
-// the result (unknown, or its list unreadable) has every item counted as live.
-private Map _itemBackupLiveIds(Collection types) {
-    Map paths = [app: "/hub2/userAppTypes", driver: "/hub2/userDeviceTypes", library: "/hub2/userLibraries", "rm-rule": "/hub2/appsList"]
-    Map live = [:]
-    types.findAll { paths.containsKey(it) }.unique().each { type ->
-        String path = paths[type]
-        try {
-            String text = hubInternalGet(path)?.toString()
-            if (!text) throw new IllegalStateException("empty response")
-            def parsed = new groovy.json.JsonSlurper().parseText(text)
-            Set ids = new HashSet()
-            if (type == "rm-rule") {
-                if (!(parsed instanceof Map) || !(parsed.apps instanceof List)) throw new IllegalStateException("no apps tree")
-                // Rules nest under their parent app, so ids are collected at every depth.
-                def walk
-                walk = { node ->
-                    if (!(node instanceof Map) || (node.children != null && !(node.children instanceof List))) throw new IllegalStateException("unexpected app node")
-                    def id = node.data instanceof Map ? node.data.id : node.id
-                    if (id != null) ids << id.toString()
-                    node.children?.each { walk(it) }
-                }
-                parsed.apps.each { walk(it) }
-            } else {
-                if (!(parsed instanceof List)) throw new IllegalStateException("not a list")
-                parsed.each { if (it instanceof Map && it.id != null) ids << it.id.toString() }
-            }
-            live.put(type, ids)
-        } catch (Exception e) {
-            mcpLog("warn", "hub-admin", "Backup retention could not read ${path} (${e.message}); the newest ${type} backup of every item stays protected")
-        }
-    }
-    return live
 }
 
 // The "Backup storage budget (MB)" setting: default 10, clamped to 1..ITEM_BACKUP_MAX_BUDGET_MB,
@@ -9020,7 +8969,7 @@ Map _itemBackupBudgetUsage(Map manifest) {
 // The eviction rule every backup answers with: the retentionNote / backupRetentionNote and
 // retentionPolicy fields, and the tail of restore and undo hints.
 String _itemBackupRetentionNote() {
-    return "Backups are removed only when all MCP backups together exceed the ${_itemBackupBudgetMb()} MB storage budget, oldest first; an item's newest backup is never removed while that item still exists on the hub, so the budget can stay exceeded once every item is down to one. Backups of deleted items are removed like any other."
+    return "Backups are removed only when all MCP backups together exceed the ${_itemBackupBudgetMb()} MB storage budget, oldest first across every item and kind; only the backup being taken and an active restore target are never removed, so the budget is a hard cap."
 }
 
 /** Remove manifest records that point at a File Manager file after that file is deleted. */
@@ -11735,7 +11684,7 @@ Deploys every declared library bundle + app from the manifest at `ref`, saving t
 
 ### hub_update_mcp_settings — bypassDeviceAllowlist (DANGEROUS escape hatch)
 
-`bypassDeviceAllowlist` (bool, default OFF) removes the device-selection boundary when enabled. Device reads, commands, configuration writes, inventory, health checks, dependent lookups, swaps and replacements use native hub endpoints. With bypass OFF, access is limited to selected devices plus MCP-owned children. With bypass ON, these operations can reach any existing device; the Read/Write masters, confirmations and operation-specific eligibility checks still apply. MCP-owned virtual inventory remains ownership-scoped. Hub logs, including device-filtered logs, remain readable regardless of device selection or bypass; the Read master still applies. Explicit scope=all inventory and existing administrative force-delete operations retain their documented broader scope. Its effect is independent of Developer Mode. On firmware older than 2.5.0, native device operations use the MCP app's Hub Security credentials when Hub Security is enabled. On 2.5.0 and later no credentials are involved -- an app's loopback requests are exempt from the hub login. Native attribute discovery contains reported current states, including their available types and values; unset or cleared attributes can be absent. An explicit missing-attribute read returns null with neverReported, and polling may time out instead of rejecting an unknown name. A command with waitFor can therefore execute before a mistyped attribute times out. Supported-command and argument validation still run before command execution. Attribute discovery is reported-state only on EVERY path (selected devices included): `attributes` in list/detail reads and `declaredAttributes` in details mode carry current states, and an attribute the driver declares but has never set is absent, not unsupported (`attributeCoverage.declarationsComplete: false` says so in-band). Attribute values keep the driver-declared type: an attribute whose native record carries `dataType: NUMBER` is a JSON number, every other value is a string, and the type is stable per attribute; the `hubitat://context` and `hubitat://context-summary` resources are served from one bulk hub read and carry string values without unit suffixes. Whole-population reads -- the two context resources and every `hub_list_devices` filter -- come from that single bulk read, never one native read per device; only a device the bulk read does not cover costs a per-device read (capped at 20 for the resources, with the rest reported as state unavailable). A Devices-page read that fails returns a structured retry error from `hub_list_devices` (no per-device fallback). In `format='detailed'`, a listed device whose own detail read fails stays in the list with `metadataUnavailable: true` and the response carries `partial: true`. Swap and replace both verify a bypass-only id against native metadata before any native request. The legacy custom-rule engine keeps its own selection-only device references; bypass does not extend to it.
+`bypassDeviceAllowlist` (bool, default OFF) removes the device-selection boundary when enabled. Device reads, commands, configuration writes, inventory, health checks, dependent lookups, swaps and replacements use native hub endpoints. With bypass OFF, access is limited to selected devices plus MCP-owned children. With bypass ON, these operations can reach any existing device; the Read/Write masters, confirmations and operation-specific eligibility checks still apply. MCP-owned virtual inventory remains ownership-scoped. Hub logs, including device-filtered logs, remain readable regardless of device selection or bypass; the Read master still applies. Explicit scope=all inventory and existing administrative force-delete operations retain their documented broader scope. Its effect is independent of Developer Mode. On firmware older than 2.5.0, native device operations use the MCP app's Hub Security credentials when Hub Security is enabled. On 2.5.0 and later no credentials are involved -- an app's loopback requests are exempt from the hub login. Native attribute discovery contains reported current states, including their available types and values; unset or cleared attributes can be absent. An explicit missing-attribute read returns null with neverReported, and polling may time out instead of rejecting an unknown name. A command with waitFor can therefore execute before a mistyped attribute times out. Supported-command and argument validation still run before command execution. Attribute discovery is reported-state only on EVERY path (selected devices included): `attributes` in list/detail reads and `declaredAttributes` in details mode carry current states, and an attribute the driver declares but has never set is absent, not unsupported (`attributeCoverage.declarationsComplete: false` says so in-band). Attribute values keep the driver-declared type: an attribute whose native record carries `dataType: NUMBER` is a JSON number, every other value is a string, and the type is stable per attribute; the `hubitat://context` and `hubitat://context-summary` resources are served from one bulk hub read and carry string values without unit suffixes. Whole-population reads -- the two context resources and every `hub_list_devices` filter -- come from that single bulk read, never one native read per device; there is no per-device fallback, so a device the Devices page does not list is absent from those results. A Devices-page read that fails returns a structured retry error from `hub_list_devices` (no per-device fallback). In `format='detailed'`, a listed device whose own detail read fails stays in the list with `metadataUnavailable: true` and the response carries `partial: true`. Swap and replace both verify a bypass-only id against native metadata before any native request. The legacy custom-rule engine keeps its own selection-only device references; bypass does not extend to it.
 
 **selectedDevices** is the MCP device-access scope. Pass {"mode":"replace"|"add"|"remove", "ids":[<device id strings>], "allowEmpty":<bool>} -- or a bare array as shorthand for replace ({"selectedDevices":["42","108"]} == {mode:"replace", ids:["42","108"]}). 'replace' sets the authorized set to exactly ids; 'add' unions ids with the current set (safest for "grant one device" -- no need to re-enumerate the whole list); 'remove' subtracts ids. For replace/add every id is validated against the full hub device list (discover ids via hub_list_devices(scope='all'), each carries an mcpAuthorized flag) -- one unknown id rejects the whole batch and nothing is written; 'remove' does not validate (removing an absent/since-deleted id is a no-op). Refuses to empty the scope unless allowEmpty:true.
 
@@ -11952,7 +11901,7 @@ Duplicates an existing MCP custom-engine rule into a new, independent rule with 
 - Rapid source-code edits preserve the original for one hour. Rule edits take a fresh pre-edit snapshot as described below.
 
 ### Backup retention
-- There is no count limit: backups are removed only when all MCP backups together exceed the storage budget, oldest first across every item and kind of backup. An item's newest backup is never removed while that item still exists on the hub, and neither are the backup just taken and an active restore target; the budget can therefore stay exceeded once every item is down to one backup. Backups of an app, driver, library or rule that has been deleted from the hub are removed like any other, newest included. If the hub's list of an item type cannot be read, every item of that type is treated as still existing.
+- There is no count limit: backups are removed only when all MCP backups together exceed the storage budget, oldest first across every item and kind of backup. Only the backup being taken and an active restore target are never removed; nothing else is protected, so an item's only backup goes when it is the oldest and the budget is a hard cap. A single backup larger than the whole budget is still kept, because it is the backup being taken.
 - The budget is the Advanced setting "Backup storage budget (MB)" (`backupBudgetMb`): default 10, at least 1, at most 1000000 (1 TB). The Advanced page takes any number and the server clamps it to that range. With Developer Mode on, hub_update_mcp_settings also sets it and refuses a value that is not a whole number in that range.
 - Where each response says it:
   - Rule Machine writes and deletes: the `backup` object carries `retentionNote`, and the restoreHint ends with that note.

@@ -37,7 +37,7 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
         entry(id, timestamp) + [sizeBytes: MIB]
     }
 
-    // A 1 MB snapshot of rule 7: the fillers share one item, so all but the newest are evictable.
+    // A 1 MB snapshot of rule 7, used to fill the budget.
     private Map bigRuleSnapshot(int n, long timestamp) {
         [type: 'rm-rule', id: 7, ruleId: 7, fileName: "mcp-rm-backup-7-s${n}.json".toString(),
          timestamp: timestamp, sourceLength: MIB, sizeBytes: MIB]

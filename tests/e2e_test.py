@@ -6417,7 +6417,7 @@ def updated() {}
                 "appId": instance_id, "force": True, "confirm": True}})
             assert gone.get("success") is True, f"deleting the password app instance failed: {gone}"
             instance_id = None
-            # The delete's own snapshot is the app's newest backup, which retention never evicts; on a
+            # The delete's own snapshot is the newest backup, so oldest-first retention evicts it last; on a
             # hub at its storage budget the earlier snapshot may already be gone.
             recreate_key = (gone.get("backup") or {}).get("backupKey") or key
             try:
@@ -8932,7 +8932,8 @@ def updated() {}
             keys = {name: backup["backupKey"] for name, backup in backups.items()}
             for backup in backups.values():
                 note = str(backup.get("retentionNote"))
-                assert "retention" not in backup and "oldest first" in note and "newest backup is never removed" in note, \
+                assert "retention" not in backup and "oldest first" in note \
+                    and "active restore target are never removed" in note and "hard cap" in note, \
                     f"a rule write's snapshot must state the plain eviction rule and no retention kind: {backup}"
             assert self._rm_restore(keys["Den"]).get("success") is True
             assert labels["Kitchen"] in json.dumps(self._native_rule_document(app_id)["conditions"])
@@ -12193,7 +12194,7 @@ def updated() {}
             f"source-backup listing must report the storage budget: {src}"
         policy = str(src.get("retentionPolicy"))
         assert "maxBackups" not in src and "10 MB storage budget" in policy and "oldest first" in policy \
-            and "newest backup" in policy, f"source-backup listing must describe the budget-only retention policy: {src}"
+            and "hard cap" in policy, f"source-backup listing must describe the budget-only retention policy: {src}"
         for entry in src["backups"]:
             assert "retention" not in entry, f"a backup entry must carry no retention kind: {entry}"
 
