@@ -27,8 +27,8 @@ import support.ToolSpecBase
  *   - app.updateSetting       -> sharedAppStub (TestChildApp.settingsStore); getApp() layered
  *     onto the @Shared appExecutor in setupSpec. settingsStore is the assertion surface for
  *     the WRITE (selectedDevices -> [type: 'capability.*', value: <List of id strings>]).
- *   - hubInternalGet          -> hubGet.register('/device/listWithCapabilities/json'){...} for
- *     the all-hub validation read.
+ *   - hubInternalGet          -> hubGet.register('/hub2/devicesList'){...}, the Devices page the
+ *     id validation reads.
  *   - settings.selectedDevices -> settingsMap.selectedDevices (current authorized set).
  */
 class McpSettingsDeviceScopeSpec extends ToolSpecBase {
@@ -59,10 +59,10 @@ class McpSettingsDeviceScopeSpec extends ToolSpecBase {
         stateMap.lastBackupTimestamp = 1234567890000L  // matches HarnessSpec's fixed now()
     }
 
-    // Register the full hub device set used by id validation.
+    // Register the hub's Devices page used by id validation.
     private void registerHubDevices(List ids) {
-        hubGet.register('/device/listWithCapabilities/json') { params ->
-            JsonOutput.toJson(ids.collect { [id: it, label: "Device ${it}", capabilities: ["Switch"]] })
+        hubGet.register('/hub2/devicesList') { params ->
+            JsonOutput.toJson([devices: ids.collect { [key: "DEV-${it}", data: [id: it, name: "Device ${it}"], children: []] }])
         }
     }
 
@@ -434,7 +434,7 @@ class McpSettingsDeviceScopeSpec extends ToolSpecBase {
         sharedAppStub.settingsStore['selectedDevices'] == [type: 'capability.*', value: ['80', '81']]
 
         and: 'the all-hub device list endpoint was actually hit'
-        hubGet.calls.any { it.path == '/device/listWithCapabilities/json' }
+        hubGet.calls.any { it.path == '/hub2/devicesList' }
     }
 
     def "empty add is a no-op (skips the fetch, resulting set == current)"() {
@@ -454,7 +454,7 @@ class McpSettingsDeviceScopeSpec extends ToolSpecBase {
         sharedAppStub.settingsStore['selectedDevices'] == [type: 'capability.*', value: ['80']]
 
         and: 'no fetch happened (the requestedIds.isEmpty() guard skipped it)'
-        !hubGet.calls.any { it.path == '/device/listWithCapabilities/json' }
+        !hubGet.calls.any { it.path == '/hub2/devicesList' }
     }
 
     // -------- Golden path: remove (subtract) --------
@@ -668,9 +668,7 @@ class McpSettingsDeviceScopeSpec extends ToolSpecBase {
         given:
         enableDevModeAndWrite()
         settingsMap.selectedDevices = [dev(80)]
-        // BOTH sources must fail: the primary alone falls through to the fallback.
-        hubGet.register('/device/listWithCapabilities/json') { params -> throw new RuntimeException('boom') }
-        hubGet.register('/hub2/devicesList') { params -> throw new RuntimeException('boom too') }
+        hubGet.register('/hub2/devicesList') { params -> throw new RuntimeException('boom') }
 
         when:
         def result = setScope(['81'])
@@ -687,13 +685,10 @@ class McpSettingsDeviceScopeSpec extends ToolSpecBase {
         sharedAppStub.settingsStore.isEmpty()
     }
 
-    def "returns a structured error when the all-hub device list is not a JSON array"() {
-        // Both sources parsed to a non-List (firmware contract drift -- a Map instead of an array).
-        // A non-List primary falls through to the fallback, so the error names the fallback.
+    def "returns a structured error when the Devices page has an unexpected shape"() {
         given:
         enableDevModeAndWrite()
         settingsMap.selectedDevices = [dev(80)]
-        hubGet.register('/device/listWithCapabilities/json') { params -> JsonOutput.toJson([oops: 'not an array']) }
         hubGet.register('/hub2/devicesList') { params -> JsonOutput.toJson([devices: 'not a list']) }
 
         when:
@@ -717,7 +712,7 @@ class McpSettingsDeviceScopeSpec extends ToolSpecBase {
         given:
         enableDevModeAndWrite()
         settingsMap.selectedDevices = [dev(80)]
-        hubGet.register('/device/listWithCapabilities/json') { params -> throw new RuntimeException('boom') }
+        hubGet.register('/hub2/devicesList') { params -> throw new RuntimeException('boom') }
 
         when:
         def result = script.toolUpdateMcpSettings([settings: [debugLogging: true, selectedDevices: ['81']], confirm: true])
@@ -797,72 +792,9 @@ class McpSettingsDeviceScopeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    // Platform 2.5.1.173 and later removed /device/listWithCapabilities/json (confirmed on .173/.174).
-    // Id validation then uses the /hub2/devicesList tree unioned with the /hub2/vrb/devices feed
-    // (_fetchAllHubDeviceRecords): an id either source carries validates. When the tree cannot be
-    // read the inventory is the feed alone and flagged idsComplete:false -- an id it lacks is
-    // "could not validate", never "unknown".
-
-    def "selectedDevices validation accepts an id known only via the vrb tier"() {
+    def "selectedDevices validation accepts child devices nested under their parent on the page"() {
         given:
         enableDevModeAndWrite()
-        hubGet.register('/device/listWithCapabilities/json') { params -> throw new RuntimeException("status code: 404") }
-        hubGet.register('/hub2/vrb/devices') { params ->
-            JsonOutput.toJson([[id: 11, label: "Eleven", capabilities: ["Switch"]]])
-        }
-        hubGet.register('/hub2/devicesList') { params ->
-            JsonOutput.toJson([devices: [[key: "DEV-11", data: [id: 11, name: "Eleven"], children: []]]])
-        }
-
-        when:
-        def result = setScope([11])
-
-        then: "the id is known through the assembled inventory"
-        result.success == true
-        sharedAppStub.settingsStore['selectedDevices'] == [type: 'capability.*', value: ['11']]
-        hubGet.calls.any { it.path == '/hub2/vrb/devices' }
-    }
-
-    def "selectedDevices validation accepts an id the vrb feed omits but the devicesList spine carries"() {
-        given: 'the picker feed filtered device 12 out; the tree still lists it'
-        enableDevModeAndWrite()
-        hubGet.register('/device/listWithCapabilities/json') { params -> throw new RuntimeException("status code: 404") }
-        hubGet.register('/hub2/vrb/devices') { params -> JsonOutput.toJson([[id: 11, label: "Eleven", capabilities: ["Switch"]]]) }
-        hubGet.register('/hub2/devicesList') { params ->
-            JsonOutput.toJson([devices: [[key: "DEV-11", data: [id: 11, name: "Eleven"], children: []],
-                                         [key: "DEV-12", data: [id: 12, name: "Twelve"], children: []]]])
-        }
-
-        when:
-        def result = setScope([12])
-
-        then: "a real device is never called unknown because the picker skipped it"
-        result.success == true
-        sharedAppStub.settingsStore['selectedDevices'] == [type: 'capability.*', value: ['12']]
-    }
-
-    def "selectedDevices validation falls back when the capabilities endpoint answers EMPTY (#body)"() {
-        given:
-        enableDevModeAndWrite()
-        hubGet.register('/device/listWithCapabilities/json') { params -> body }
-        hubGet.register('/hub2/devicesList') { params ->
-            JsonOutput.toJson([devices: [[key: "DEV-11", data: [id: 11, name: "Eleven"], children: []]]])
-        }
-
-        when:
-        def result = setScope([11])
-
-        then: "an id present only in the fallback inventory validates -- an empty primary body is not an empty hub"
-        result.success == true
-
-        where:
-        body << [null, '', '[]']
-    }
-
-    def "selectedDevices validation falls back to hub2 devicesList when the capabilities endpoint is gone"() {
-        given:
-        enableDevModeAndWrite()
-        hubGet.register('/device/listWithCapabilities/json') { params -> throw new RuntimeException("status code: 404") }
         hubGet.register('/hub2/devicesList') { params ->
             JsonOutput.toJson([devices: [
                 [key: "DEV-11", data: [id: 11, name: "Eleven"], children: [
@@ -874,139 +806,13 @@ class McpSettingsDeviceScopeSpec extends ToolSpecBase {
         when:
         def result = setScope([11, 12])
 
-        then: "ids present in the fallback inventory validate, children included"
-        result.success == true
-    }
-
-    def "selectedDevices validation still names an unknown id on the fallback path"() {
-        given:
-        enableDevModeAndWrite()
-        hubGet.register('/device/listWithCapabilities/json') { params -> throw new RuntimeException("status code: 404") }
-        hubGet.register('/hub2/devicesList') { params ->
-            JsonOutput.toJson([devices: [[key: "DEV-11", data: [id: 11, name: "Eleven"], children: []]]])
-        }
-
-        when:
-        setScope([11, 999])
-
-        then:
-        def e = thrown(IllegalArgumentException)
-        e.message.contains("999")
-    }
-
-    def "selectedDevices validation declines, rather than rejects, an id missing from a feed-alone inventory"() {
-        given: 'the tree cannot be read, so the inventory is the picker feed alone'
-        enableDevModeAndWrite()
-        hubGet.register('/device/listWithCapabilities/json') { params -> throw new RuntimeException("status code: 404") }
-        hubGet.register('/hub2/vrb/devices') { params -> JsonOutput.toJson([[id: 11, label: "Eleven", capabilities: ["Switch"]]]) }
-        hubGet.register('/hub2/devicesList') { params -> throw new RuntimeException("status code: 504") }
-
-        when:
-        def result = setScope([12])
-
-        then: 'a knowingly incomplete set cannot call a device unknown; nothing is written'
-        result.success == false
-        result.isError == true
-        result.error.contains("Could not validate")
-        result.error.contains("12")
-        result.error.contains("504")
-        !sharedAppStub.settingsStore.containsKey('selectedDevices')
-    }
-
-    def "selectedDevices validation declines when the tree answers EMPTY and the feed does not answer at all"() {
-        given: 'correlated degradation: an empty tree, a dead feed, a hub full of real devices'
-        enableDevModeAndWrite()
-        hubGet.register('/device/listWithCapabilities/json') { params -> throw new RuntimeException("status code: 404") }
-        hubGet.register('/hub2/vrb/devices') { params -> throw new RuntimeException("status code: 504") }
-        hubGet.register('/hub2/devicesList') { params -> JsonOutput.toJson([devices: []]) }
-
-        when:
-        def result = setScope([11])
-
-        then: 'nothing was written and the real device was not called unknown'
-        result.success == false
-        result.isError == true
-        result.error.contains("Could not validate")
-        result.error.contains("cannot be told from a dead endpoint")
-        !sharedAppStub.settingsStore.containsKey('selectedDevices')
-    }
-
-    def "selectedDevices validation declines an unknown id once the feed has PROVED the tree short"() {
-        given: 'the feed lists a device the tree lacks, so the tree cannot vouch for the id set'
-        enableDevModeAndWrite()
-        hubGet.register('/device/listWithCapabilities/json') { params -> throw new RuntimeException("status code: 404") }
-        hubGet.register('/hub2/vrb/devices') { params -> JsonOutput.toJson([[id: 11, label: "Eleven", capabilities: ["Switch"]], [id: 12, label: "Twelve", capabilities: ["Switch"]]]) }
-        hubGet.register('/hub2/devicesList') { params ->
-            JsonOutput.toJson([devices: [[key: "DEV-11", data: [id: 11, name: "Eleven"], children: []]]])
-        }
-
-        when:
-        def result = setScope([13])
-
-        then:
-        result.success == false
-        result.isError == true
-        result.error.contains("Could not validate")
-        result.error.contains("omitted 1 device(s)")
-    }
-
-    def "selectedDevices validation still accepts an id the feed-alone inventory does carry"() {
-        given:
-        enableDevModeAndWrite()
-        hubGet.register('/device/listWithCapabilities/json') { params -> throw new RuntimeException("status code: 404") }
-        hubGet.register('/hub2/vrb/devices') { params -> JsonOutput.toJson([[id: 11, label: "Eleven", capabilities: ["Switch"]]]) }
-        hubGet.register('/hub2/devicesList') { params -> throw new RuntimeException("status code: 504") }
-
-        when:
-        def result = setScope([11])
-
         then:
         result.success == true
-        sharedAppStub.settingsStore['selectedDevices'] == [type: 'capability.*', value: ['11']]
+        sharedAppStub.settingsStore['selectedDevices'] == [type: 'capability.*', value: ['11', '12']]
+        hubGet.calls.count { it.path == '/hub2/devicesList' } == 1
     }
 
-    def "degraded inventory permits adding an already-authorized device but not a new unseen device"() {
-        given:
-        enableDevModeAndWrite()
-        settingsMap.selectedDevices = [dev(12)]
-        hubGet.register('/device/listWithCapabilities/json') { params -> throw new RuntimeException("status code: 404") }
-        hubGet.register('/hub2/vrb/devices') { params -> JsonOutput.toJson([[id: 11, label: "Eleven", capabilities: ["Switch"]]]) }
-        hubGet.register('/hub2/devicesList') { params -> throw new RuntimeException("status code: 504") }
-
-        when:
-        def result = setScopeStructured([mode: 'add', ids: [12]])
-
-        then: 'the no-op add writes the unchanged scope, nothing more'
-        result.success == true
-        sharedAppStub.settingsStore['selectedDevices'] == [type: 'capability.*', value: ['12']]
-
-        when:
-        def unknown = setScopeStructured([mode: 'add', ids: [12, 13]])
-
-        then:
-        unknown.success == false
-        unknown.error.contains('13')
-        !unknown.error.contains('12')
-    }
-
-    def "degraded inventory still rejects replace over an already-authorized id it cannot see"() {
-        given:
-        enableDevModeAndWrite()
-        settingsMap.selectedDevices = [dev(12)]
-        hubGet.register('/device/listWithCapabilities/json') { params -> throw new RuntimeException("status code: 404") }
-        hubGet.register('/hub2/vrb/devices') { params -> JsonOutput.toJson([[id: 11, label: "Eleven", capabilities: ["Switch"]]]) }
-        hubGet.register('/hub2/devicesList') { params -> throw new RuntimeException("status code: 504") }
-
-        when:
-        def result = setScopeStructured([mode: 'replace', ids: [12]])
-
-        then:
-        result.success == false
-        result.error.contains('12')
-        sharedAppStub.settingsStore.isEmpty()
-    }
-
-    def "complete inventory still rejects an already-authorized id that no longer exists"() {
+    def "validation rejects an already-authorized id that is no longer on the Devices page"() {
         given:
         enableDevModeAndWrite()
         settingsMap.selectedDevices = [dev(12)]
@@ -1019,21 +825,5 @@ class McpSettingsDeviceScopeSpec extends ToolSpecBase {
         def e = thrown(IllegalArgumentException)
         e.message.contains('Unknown device id(s): 12')
         sharedAppStub.settingsStore.isEmpty()
-    }
-
-    def "selectedDevices validation errors when ALL THREE inventory endpoints fail"() {
-        given:
-        enableDevModeAndWrite()
-        hubGet.register('/device/listWithCapabilities/json') { params -> throw new RuntimeException("boom") }
-        hubGet.register('/hub2/vrb/devices') { params -> throw new RuntimeException("boom as well") }
-        hubGet.register('/hub2/devicesList') { params -> throw new RuntimeException("boom too") }
-
-        when:
-        def result = setScope([11])
-
-        then: "nothing is written and the failure reaches the client as an error"
-        result.success == false
-        result.isError == true
-        result.error.contains("/hub2/devicesList")
     }
 }

@@ -186,6 +186,31 @@ class ToolNativeDeviceReadsSpec extends ToolSpecBase {
         script.toolPollUntilAttribute([deviceId: '10', attribute: 'temperature', expectedValue: '74.29']).finalValue == 74.29
     }
 
+    @Unroll
+    def 'lockCodes reads masked=#hide in the summary, the attribute read and a poll'() {
+        given:
+        fixture('selected')
+        settingsMap.redactCredentials = hide
+        String stored = '{"1":{"name":"Guest","code":"1234"}}'
+        nativeModel.device.currentStates.lockCodes = [value: stored, dataType: 'STRING']
+        def shown = hide ? script._appConfigRedactedMarker() : stored
+
+        when:
+        def summary = script.toolGetDevice('10')
+        def attribute = script.toolGetAttribute('10', 'lockCodes')
+        def poll = script.toolPollUntilAttribute([deviceId: '10', attribute: 'lockCodes', expectedValue: stored])
+
+        then:
+        summary.attributes.find { it.name == 'lockCodes' }.value == shown
+        summary.attributes.find { it.name == 'switch' }.value == 'on'
+        attribute.value == shown
+        poll.success == true
+        poll.finalValue == shown
+
+        where:
+        hide << [true, false]
+    }
+
     def 'unreported attribute discovery stays empty while an explicit read remains distinguishable from fetch failure'() {
         given:
         fixture('selected')

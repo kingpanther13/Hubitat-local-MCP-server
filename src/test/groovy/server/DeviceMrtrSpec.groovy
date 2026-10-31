@@ -120,11 +120,7 @@ class DeviceMrtrSpec extends ToolSpecBase {
             reads++; clock.addAndGet(12000L)
             [id: '88', label: label, nextCursor: 'unchanged-cursor', preferences: [token: 'private-pref']]
         }
-        script.metaClass.toolListDevices = { detailed, offset, limit, filter, labelFilter, capabilityFilter,
-                format, fields, cursor, scope, roomFilter, onlyOn, changedSince, attributeNames, reqT0 ->
-            reads++; clock.addAndGet(12000L); [devices: [[id: '88', label: label]]]
-        }
-        script.metaClass.toolListVirtualDevices = { args ->
+        script.metaClass.toolListDevices = { Map listArgs ->
             reads++; clock.addAndGet(12000L); [devices: [[id: '88', label: label]]]
         }
         Map args = [tool: leaf, args: leafArgs]
@@ -172,7 +168,7 @@ class DeviceMrtrSpec extends ToolSpecBase {
         leaf               | leafArgs
         'hub_get_device'   | [deviceId: '88', mode: 'configuration']
         'hub_list_devices' | [labelFilter: 'Before']
-        'hub_list_devices' | [filter: 'virtual']
+        'hub_list_devices' | [scope: 'owned']
     }
 
     def "a slow hub_list_rules read continues from its background snapshot and the next call is fresh"() {
@@ -327,17 +323,18 @@ class DeviceMrtrSpec extends ToolSpecBase {
     }
 
     def "a legacy client's hub_list_devices page ends at the relay budget with a cursor to continue"() {
-        given: 'each native device read costs 2500 ms of the request clock'
+        given: 'each detail read costs 2500 ms of the request clock'
         settingsMap.selectedDevices = (1..10).collect { i ->
             def d = new TestDevice(id: i, name: "D${i}", label: "Device-${i}")
             NativeInventoryFixture.register(hubGet, i.toString()) { clock.addAndGet(2500L); d }
             d
         }
+        NativeInventoryFixture.registerDevicesPage(hubGet) { -> settingsMap.selectedDevices }
 
-        when: 'a 2025-11-25 client lists every device in one request'
+        when: 'a 2025-11-25 client lists every device in detail in one request'
         mcpDriver.pushHeaders(['MCP-Protocol-Version': '2025-11-25'])
         mcpDriver.pushBody([jsonrpc: '2.0', id: ++mcpDriver.lastSentId, method: 'tools/call',
-            params: [name: 'hub_read_devices', arguments: [tool: 'hub_list_devices', args: [:]]]])
+            params: [name: 'hub_read_devices', arguments: [tool: 'hub_list_devices', args: [format: 'detailed']]]])
         script.handleMcpRequest()
         def response = mcpDriver.parseResponseJson() as Map
         def page = mcpDriver.parseInner(response)
@@ -354,9 +351,8 @@ class DeviceMrtrSpec extends ToolSpecBase {
     def "a modern hub_list_devices background read runs without the request clock"() {
         given:
         def clocks = []
-        script.metaClass.toolListDevices = { detailed, offset, limit, filter, labelFilter, capabilityFilter,
-                format, fields, cursor, scope, roomFilter, onlyOn, changedSince, attributeNames, reqT0 ->
-            clocks << reqT0; clock.addAndGet(12000L); [devices: [], count: 0, total: 0]
+        script.metaClass.toolListDevices = { Map listArgs ->
+            clocks << listArgs.__reqT0; clock.addAndGet(12000L); [devices: [], count: 0, total: 0]
         }
         Map args = [tool: 'hub_list_devices', args: [:]]
 

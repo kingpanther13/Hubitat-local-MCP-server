@@ -645,7 +645,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
 
         then: 'the mutation did not leak into the fresh copy'
         secondDev.description != 'MUTATED-BY-TEST'
-        secondDev.description.contains('List all devices')
+        secondDev.description.contains('List devices')
     }
 
     def "flat-mode strips [[FLAT_TRIM]] advanced blocks; the full defs keep them (gateway-rich, flat-small) (#296)"() {

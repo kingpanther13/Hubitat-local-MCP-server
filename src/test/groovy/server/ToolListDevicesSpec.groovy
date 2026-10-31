@@ -1,26 +1,27 @@
 package server
 
+import groovy.json.JsonOutput
 import java.util.concurrent.atomic.AtomicLong
 import spock.lang.Shared
+import spock.lang.Unroll
 import support.NativeInventoryFixture
 import support.TestDevice
 import support.TestLocation
 import support.ToolSpecBase
 
 /**
- * Spec for toolListDevices (hubitat-mcp-server.groovy).
+ * hub_list_devices (toolListDevices in McpDevicesLib): every listing is served from ONE read of the
+ * hub's Devices page (/hub2/devicesList), plus the capability feed (/hub2/vrb/devices) when
+ * capabilities are needed. Only detailed records read /device/fullJson, for the devices on the page.
  *
- * Covers: labelFilter, capabilityFilter, format=ids, fields projection, and
- * composition with each other and with existing pagination args.
- *
- * The base fixture provides settingsMap.selectedDevices (empty) and
- * childDevicesList (also empty). Tests seed devices via both mechanisms to
- * exercise the deduplication path in the implementation.
+ * The page fixture lists the selected devices, then the MCP children, then `hubOnly` (devices on the
+ * hub that MCP is not authorized for), in that order.
  */
 class ToolListDevicesSpec extends ToolSpecBase {
 
-    /** format='context' reads location.mode (and hsmStatus when present). */
     @Shared private TestLocation sharedLocation = new TestLocation()
+
+    private List hubOnly = []
 
     def setupSpec() {
         appExecutor.getLocation() >> sharedLocation
@@ -28,2320 +29,781 @@ class ToolListDevicesSpec extends ToolSpecBase {
 
     def setup() {
         sharedLocation.hsmStatus = null
-        [5, 900].each { id ->
-            NativeInventoryFixture.register(hubGet, id.toString()) {
-                ((settingsMap.selectedDevices ?: []) + childDevicesList).find { it.id == id }
-            }
-        }
+        hubOnly = []
+        NativeInventoryFixture.registerDevicesPage(hubGet) { -> (settingsMap.selectedDevices ?: []) + childDevicesList + hubOnly }
     }
-
-    // ---- helpers --------------------------------------------------------
 
     private TestDevice makeDevice(Map props) {
         def device = new TestDevice(
             id: props.id ?: 1,
             name: props.name ?: 'TestDriver',
-            label: props.label ?: props.name ?: 'Test Device',
+            label: props.containsKey('label') ? props.label : 'Test Device',
             roomName: props.room ?: null,
+            deviceNetworkId: props.dni ?: null,
             capabilities: props.capabilities ?: [],
-            supportedAttributes: props.attrs ?: [],
             supportedCommands: props.cmds ?: [],
             attributeValues: props.attrValues ?: [:],
-            lastActivity: props.lastActivity ?: null
+            lastActivity: props.lastActivity ?: null,
+            disabled: props.disabled
         )
         NativeInventoryFixture.register(hubGet, device.id.toString()) { device }
         return device
     }
 
-    // ---- labelFilter tests ----------------------------------------------
+    private List fullJsonReads() { hubGet.calls.findAll { it.path.startsWith('/device/fullJson/') }*.path }
 
-    // ---- cursor pagination tests (#174) --------------------------------
+    // ---- summary record ---------------------------------------------------
 
-    def "cursor='' returns the first 50 devices + nextCursor (regression guard for the documented opt-in)"() {
-        // Pre-fix, the inline cursor parser called ''.toInteger() and threw isError validation result
-        // for the documented "pass '' for the first page" pattern.
+    def "summary lists the selection and the app's children from one page read, with no per-device reads"() {
         given:
-        settingsMap.selectedDevices = (0..<120).collect { i -> makeDevice(id: i + 1, name: "D${i}", label: "Device-${String.format('%03d', i)}") }
+        settingsMap.selectedDevices = [makeDevice(id: 1, name: 'Generic Zigbee Bulb', label: 'Kitchen Light', room: 'Kitchen',
+            dni: 'ABCD', attrValues: [switch: 'on', level: 40, '_1': 'tile'])]
+        childDevicesList << makeDevice(id: 2, name: 'Virtual Switch', label: null)
 
         when:
-        def result = script.toolListDevices(false, 0, 0, null, null, null, null, null, '')
+        def result = script.toolListDevices([:])
 
         then:
-        result.devices.size() == 50
-        result.nextCursor == '50'
-        result.total == 120
-    }
-
-    def "cursor iterates pages with no duplicates and last page omits nextCursor"() {
-        given:
-        settingsMap.selectedDevices = (0..<120).collect { i -> makeDevice(id: i + 1, name: "D${i}", label: "Device-${String.format('%03d', i)}") }
-
-        when:
-        def collected = []
-        String cursor = ''
-        int pages = 0
-        while (true) {
-            def page = script.toolListDevices(false, 0, 0, null, null, null, null, null, cursor)
-            collected.addAll(page.devices)
-            pages++
-            if (!page.nextCursor) break
-            cursor = page.nextCursor
-            assert pages < 10 : "pagination runaway"
-        }
-
-        then:
-        pages == 3
-        collected.size() == 120
-        (collected*.id as Set).size() == 120
-    }
-
-    def "cursor + non-zero offset is rejected (mutually exclusive)"() {
-        // Defends against silent cursor-override-offset surprise.
-        given:
-        settingsMap.selectedDevices = [makeDevice(id: 1, name: 'D1')]
-
-        when:
-        script.toolListDevices(false, 50, 0, null, null, null, null, null, '0')
-
-        then:
-        def ex = thrown(IllegalArgumentException)
-        ex.message.toLowerCase().contains('mutually exclusive')
-    }
-
-    def "non-numeric cursor throws with the hub_list_devices-specific error message"() {
-        given:
-        settingsMap.selectedDevices = [makeDevice(id: 1, name: 'D1')]
-
-        when:
-        script.toolListDevices(false, 0, 0, null, null, null, null, null, 'banana')
-
-        then:
-        def ex = thrown(IllegalArgumentException)
-        ex.message.toLowerCase().contains('cursor')
-        ex.message.contains('hub_list_devices')
-    }
-
-    def "cursor + format='ids' emits nextCursor in the ids branch too"() {
-        given:
-        settingsMap.selectedDevices = (0..<120).collect { i -> makeDevice(id: i + 1, name: "D${i}", label: "Device-${String.format('%03d', i)}") }
-
-        when:
-        def result = script.toolListDevices(false, 0, 0, null, null, null, 'ids', null, '')
-
-        then:
-        result.deviceIds.size() == 50
-        result.nextCursor == '50'
-    }
-
-    def "labelFilter: returns only devices whose label contains the substring"() {
-        given:
-        def kitchen = makeDevice(id: 1, label: 'Kitchen Light')
-        def bath    = makeDevice(id: 2, label: 'Bathroom Fan')
-        def office  = makeDevice(id: 3, label: 'Office Lamp')
-        settingsMap.selectedDevices = [kitchen, bath, office]
-
-        when:
-        def result = script.toolListDevices(false, 0, 0, null, 'kitchen', null, null, null)
-
-        then:
-        result.devices.size() == 1
-        result.devices[0].label == 'Kitchen Light'
-        result.total == 1
-    }
-
-    @spock.lang.Unroll
-    def "via dispatch: labelFilter returns only devices whose label contains the substring (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        def kitchen = makeDevice(id: 1, label: 'Kitchen Light')
-        def bath    = makeDevice(id: 2, label: 'Bathroom Fan')
-        def office  = makeDevice(id: 3, label: 'Office Lamp')
-        settingsMap.selectedDevices = [kitchen, bath, office]
-
-        when:
-        def response = mcpDriver.callTool('hub_list_devices', [labelFilter: 'kitchen'])
-
-        then:
-        response.error == null
-        !response.result.isError
-        def inner = mcpDriver.parseInner(response)
-        inner.devices.size() == 1
-        inner.devices[0].label == 'Kitchen Light'
-        inner.total == 1
-
-        where:
-        useGateways << [true, false]
-    }
-
-    def "labelFilter: case-insensitive -- lowercase filter matches mixed-case label"() {
-        given:
-        def d1 = makeDevice(id: 1, label: 'Kitchen Light')
-        def d2 = makeDevice(id: 2, label: 'Bathroom Fan')
-        settingsMap.selectedDevices = [d1, d2]
-
-        when:
-        def result = script.toolListDevices(false, 0, 0, null, 'KITCHEN', null, null, null)
-
-        then:
-        result.devices.size() == 1
-        result.devices[0].label == 'Kitchen Light'
-    }
-
-    @spock.lang.Unroll
-    def "via dispatch: labelFilter case-insensitive (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        def d1 = makeDevice(id: 1, label: 'Kitchen Light')
-        def d2 = makeDevice(id: 2, label: 'Bathroom Fan')
-        settingsMap.selectedDevices = [d1, d2]
-
-        when:
-        def response = mcpDriver.callTool('hub_list_devices', [labelFilter: 'KITCHEN'])
-
-        then:
-        response.error == null
-        !response.result.isError
-        def inner = mcpDriver.parseInner(response)
-        inner.devices.size() == 1
-        inner.devices[0].label == 'Kitchen Light'
-
-        where:
-        useGateways << [true, false]
-    }
-
-    def "labelFilter: null means no label filtering -- all devices returned"() {
-        given:
-        def d1 = makeDevice(id: 1, label: 'Light A')
-        def d2 = makeDevice(id: 2, label: 'Light B')
-        settingsMap.selectedDevices = [d1, d2]
-
-        when:
-        def result = script.toolListDevices(false, 0, 0, null, null, null, null, null)
-
-        then:
-        result.devices.size() == 2
-    }
-
-    @spock.lang.Unroll
-    def "via dispatch: labelFilter null means no label filtering (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        def d1 = makeDevice(id: 1, label: 'Light A')
-        def d2 = makeDevice(id: 2, label: 'Light B')
-        settingsMap.selectedDevices = [d1, d2]
-
-        when:
-        def response = mcpDriver.callTool('hub_list_devices', [:])
-
-        then:
-        response.error == null
-        !response.result.isError
-        def inner = mcpDriver.parseInner(response)
-        inner.devices.size() == 2
-
-        where:
-        useGateways << [true, false]
-    }
-
-    def "labelFilter: empty string means no label filtering"() {
-        given:
-        def d1 = makeDevice(id: 1, label: 'Light A')
-        def d2 = makeDevice(id: 2, label: 'Light B')
-        settingsMap.selectedDevices = [d1, d2]
-
-        when:
-        def result = script.toolListDevices(false, 0, 0, null, '', null, null, null)
-
-        then:
-        result.devices.size() == 2
-    }
-
-    @spock.lang.Unroll
-    def "via dispatch: labelFilter empty string means no label filtering (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        def d1 = makeDevice(id: 1, label: 'Light A')
-        def d2 = makeDevice(id: 2, label: 'Light B')
-        settingsMap.selectedDevices = [d1, d2]
-
-        when:
-        def response = mcpDriver.callTool('hub_list_devices', [labelFilter: ''])
-
-        then:
-        response.error == null
-        !response.result.isError
-        def inner = mcpDriver.parseInner(response)
-        inner.devices.size() == 2
-
-        where:
-        useGateways << [true, false]
-    }
-
-    def "labelFilter: no match returns empty device list"() {
-        given:
-        def d1 = makeDevice(id: 1, label: 'Living Room Light')
-        settingsMap.selectedDevices = [d1]
-
-        when:
-        def result = script.toolListDevices(false, 0, 0, null, 'basement', null, null, null)
-
-        then:
-        result.devices.size() == 0
-        result.total == 0
-    }
-
-    @spock.lang.Unroll
-    def "via dispatch: labelFilter no match returns empty device list (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        def d1 = makeDevice(id: 1, label: 'Living Room Light')
-        settingsMap.selectedDevices = [d1]
-
-        when:
-        def response = mcpDriver.callTool('hub_list_devices', [labelFilter: 'basement'])
-
-        then:
-        response.error == null
-        !response.result.isError
-        def inner = mcpDriver.parseInner(response)
-        inner.devices.size() == 0
-        inner.total == 0
-
-        where:
-        useGateways << [true, false]
-    }
-
-    // ---- capabilityFilter tests -----------------------------------------
-
-    def "capabilityFilter: returns only devices with the matching capability"() {
-        given:
-        def sw     = makeDevice(id: 1, label: 'Light Switch', capabilities: [[name: 'Switch']])
-        def motion = makeDevice(id: 2, label: 'Motion Sensor', capabilities: [[name: 'MotionSensor']])
-        def dimmer = makeDevice(id: 3, label: 'Dimmer', capabilities: [[name: 'Switch'], [name: 'SwitchLevel']])
-        settingsMap.selectedDevices = [sw, motion, dimmer]
-
-        when:
-        def result = script.toolListDevices(false, 0, 0, null, null, 'Switch', null, null)
-
-        then:
-        result.devices.size() == 2
-        result.devices*.label as Set == ['Light Switch', 'Dimmer'] as Set
-    }
-
-    @spock.lang.Unroll
-    def "via dispatch: capabilityFilter returns only devices with the matching capability (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        def sw     = makeDevice(id: 1, label: 'Light Switch', capabilities: [[name: 'Switch']])
-        def motion = makeDevice(id: 2, label: 'Motion Sensor', capabilities: [[name: 'MotionSensor']])
-        def dimmer = makeDevice(id: 3, label: 'Dimmer', capabilities: [[name: 'Switch'], [name: 'SwitchLevel']])
-        settingsMap.selectedDevices = [sw, motion, dimmer]
-
-        when:
-        def response = mcpDriver.callTool('hub_list_devices', [capabilityFilter: 'Switch'])
-
-        then:
-        response.error == null
-        !response.result.isError
-        def inner = mcpDriver.parseInner(response)
-        inner.devices.size() == 2
-        inner.devices*.label as Set == ['Light Switch', 'Dimmer'] as Set
-
-        where:
-        useGateways << [true, false]
-    }
-
-    def "capabilityFilter: case-insensitive -- 'switch' matches 'Switch'"() {
-        given:
-        def sw     = makeDevice(id: 1, label: 'Light Switch', capabilities: [[name: 'Switch']])
-        def motion = makeDevice(id: 2, label: 'Motion Sensor', capabilities: [[name: 'MotionSensor']])
-        settingsMap.selectedDevices = [sw, motion]
-
-        when:
-        def result = script.toolListDevices(false, 0, 0, null, null, 'switch', null, null)
-
-        then:
-        result.devices.size() == 1
-        result.devices[0].label == 'Light Switch'
-    }
-
-    @spock.lang.Unroll
-    def "via dispatch: capabilityFilter case-insensitive lowercase matches PascalCase (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        def sw     = makeDevice(id: 1, label: 'Light Switch', capabilities: [[name: 'Switch']])
-        def motion = makeDevice(id: 2, label: 'Motion Sensor', capabilities: [[name: 'MotionSensor']])
-        settingsMap.selectedDevices = [sw, motion]
-
-        when:
-        def response = mcpDriver.callTool('hub_list_devices', [capabilityFilter: 'switch'])
-
-        then:
-        response.error == null
-        !response.result.isError
-        def inner = mcpDriver.parseInner(response)
-        inner.devices.size() == 1
-        inner.devices[0].label == 'Light Switch'
-
-        where:
-        useGateways << [true, false]
-    }
-
-    def "capabilityFilter: null means no capability filtering"() {
-        given:
-        def d1 = makeDevice(id: 1, label: 'Light', capabilities: [[name: 'Switch']])
-        def d2 = makeDevice(id: 2, label: 'Sensor', capabilities: [[name: 'TemperatureMeasurement']])
-        settingsMap.selectedDevices = [d1, d2]
-
-        when:
-        def result = script.toolListDevices(false, 0, 0, null, null, null, null, null)
-
-        then:
-        result.devices.size() == 2
-    }
-
-    @spock.lang.Unroll
-    def "via dispatch: capabilityFilter null means no capability filtering (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        def d1 = makeDevice(id: 1, label: 'Light', capabilities: [[name: 'Switch']])
-        def d2 = makeDevice(id: 2, label: 'Sensor', capabilities: [[name: 'TemperatureMeasurement']])
-        settingsMap.selectedDevices = [d1, d2]
-
-        when:
-        def response = mcpDriver.callTool('hub_list_devices', [:])
-
-        then:
-        response.error == null
-        !response.result.isError
-        def inner = mcpDriver.parseInner(response)
-        inner.devices.size() == 2
-
-        where:
-        useGateways << [true, false]
-    }
-
-    // ---- format=ids tests -----------------------------------------------
-
-    def "format=ids: returns flat deviceIds array"() {
-        given:
-        def d1 = makeDevice(id: 1, label: 'Device A')
-        def d2 = makeDevice(id: 2, label: 'Device B')
-        def d3 = makeDevice(id: 3, label: 'Device C')
-        settingsMap.selectedDevices = [d1, d2, d3]
-
-        when:
-        def result = script.toolListDevices(false, 0, 0, null, null, null, 'ids', null)
-
-        then:
-        result.deviceIds == [1, 2, 3]
-        result.count == 3
-        result.total == 3
-        // No 'devices' key -- result shape changes for ids
-        !result.containsKey('devices')
-    }
-
-    @spock.lang.Unroll
-    def "via dispatch: format=ids returns flat deviceIds array (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        def d1 = makeDevice(id: 1, label: 'Device A')
-        def d2 = makeDevice(id: 2, label: 'Device B')
-        def d3 = makeDevice(id: 3, label: 'Device C')
-        settingsMap.selectedDevices = [d1, d2, d3]
-
-        when:
-        def response = mcpDriver.callTool('hub_list_devices', [format: 'ids'])
-
-        then:
-        response.error == null
-        !response.result.isError
-        def inner = mcpDriver.parseInner(response)
-        inner.deviceIds == [1, 2, 3]
-        inner.count == 3
-        inner.total == 3
-        !inner.containsKey('devices')
-
-        where:
-        useGateways << [true, false]
-    }
-
-    def "format=ids combined with labelFilter narrows the ID list"() {
-        given:
-        def d1 = makeDevice(id: 1, label: 'Kitchen Light')
-        def d2 = makeDevice(id: 2, label: 'Bathroom Fan')
-        def d3 = makeDevice(id: 3, label: 'Kitchen Outlet')
-        settingsMap.selectedDevices = [d1, d2, d3]
-
-        when:
-        def result = script.toolListDevices(false, 0, 0, null, 'kitchen', null, 'ids', null)
-
-        then:
-        result.deviceIds == [1, 3]
+        result.total == 2
         result.count == 2
-        result.total == 2
+        !result.containsKey('unfilteredTotal')
+        !result.containsKey('nextCursor')
+        result.devices[0] == [id: '1', label: 'Kitchen Light', name: 'Generic Zigbee Bulb', driver: 'Generic Zigbee Bulb', room: 'Kitchen',
+            disabled: false, deviceNetworkId: 'ABCD', lastActivity: null, protocol: 'virtual',
+            currentStates: [switch: 'on', level: '40']]
+        result.devices[1].label == 'Virtual Switch'
+        result.devices[1].name == 'Virtual Switch'
+        result.devices[1].mcpManaged == true
+        result.devices[1].currentStates == [:]
+
+        and: 'one page read and nothing else'
+        hubGet.calls*.path == ['/hub2/devicesList']
     }
 
-    @spock.lang.Unroll
-    def "via dispatch: format=ids combined with labelFilter narrows the ID list (useGateways=#useGateways)"() {
+    def "page fields map onto the record: children carry parentDeviceId, Hub Mesh links and tags ride along"() {
         given:
-        settingsMap.useGateways = useGateways
-        def d1 = makeDevice(id: 1, label: 'Kitchen Light')
-        def d2 = makeDevice(id: 2, label: 'Bathroom Fan')
-        def d3 = makeDevice(id: 3, label: 'Kitchen Outlet')
-        settingsMap.selectedDevices = [d1, d2, d3]
-
-        when:
-        def response = mcpDriver.callTool('hub_list_devices', [labelFilter: 'kitchen', format: 'ids'])
-
-        then:
-        response.error == null
-        !response.result.isError
-        def inner = mcpDriver.parseInner(response)
-        inner.deviceIds == [1, 3]
-        inner.count == 2
-        inner.total == 2
-
-        where:
-        useGateways << [true, false]
-    }
-
-    // ---- fields projection tests ----------------------------------------
-
-    def "fields projection: only requested fields appear in each device object"() {
-        given:
-        def d1 = makeDevice(id: 1, label: 'Test Light', name: 'GenericZWaveSwitch')
-        settingsMap.selectedDevices = [d1]
-
-        when:
-        def result = script.toolListDevices(false, 0, 0, null, null, null, null, ['id', 'label'])
-
-        then:
-        result.devices.size() == 1
-        def dev = result.devices[0]
-        dev.id == '1'
-        dev.label == 'Test Light'
-        // Fields not in the projection must be absent
-        !dev.containsKey('name')
-        !dev.containsKey('room')
-        !dev.containsKey('disabled')
-        !dev.containsKey('currentStates')
-    }
-
-    @spock.lang.Unroll
-    def "via dispatch: fields projection only requested fields appear in each device object (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        def d1 = makeDevice(id: 1, label: 'Test Light', name: 'GenericZWaveSwitch')
-        settingsMap.selectedDevices = [d1]
-
-        when:
-        def response = mcpDriver.callTool('hub_list_devices', [fields: ['id', 'label']])
-
-        then:
-        response.error == null
-        !response.result.isError
-        def inner = mcpDriver.parseInner(response)
-        inner.devices.size() == 1
-        def dev = inner.devices[0]
-        dev.id == '1'
-        dev.label == 'Test Light'
-        !dev.containsKey('name')
-        !dev.containsKey('room')
-        !dev.containsKey('disabled')
-        !dev.containsKey('currentStates')
-
-        where:
-        useGateways << [true, false]
-    }
-
-    def "fields projection: fields=['capabilities'] with detailed=true returns capabilities only"() {
-        given:
-        def d1 = makeDevice(id: 1, label: 'Smart Switch', capabilities: [[name: 'Switch'], [name: 'Refresh']])
-        settingsMap.selectedDevices = [d1]
-
-        when:
-        // detailed=true with field projection: capabilities present, attributes and commands absent
-        def result = script.toolListDevices(true, 0, 0, null, null, null, null, ['id', 'capabilities'])
-
-        then:
-        result.devices.size() == 1
-        def dev = result.devices[0]
-        dev.capabilities != null
-        dev.capabilities.contains('Switch')
-        !dev.containsKey('attributes')
-        !dev.containsKey('commands')
-    }
-
-    @spock.lang.Unroll
-    def "via dispatch: fields=['capabilities'] with detailed=true returns capabilities only (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        def d1 = makeDevice(id: 1, label: 'Smart Switch', capabilities: [[name: 'Switch'], [name: 'Refresh']])
-        settingsMap.selectedDevices = [d1]
-
-        when:
-        def response = mcpDriver.callTool('hub_list_devices', [detailed: true, fields: ['id', 'capabilities']])
-
-        then:
-        response.error == null
-        !response.result.isError
-        def inner = mcpDriver.parseInner(response)
-        inner.devices.size() == 1
-        def dev = inner.devices[0]
-        dev.capabilities != null
-        dev.capabilities.contains('Switch')
-        !dev.containsKey('attributes')
-        !dev.containsKey('commands')
-
-        where:
-        useGateways << [true, false]
-    }
-
-    def "fields projection: unknown field name throws IllegalArgumentException listing the bad name"() {
-        given:
-        def d1 = makeDevice(id: 42, label: 'My Device')
-        settingsMap.selectedDevices = [d1]
-
-        when:
-        script.toolListDevices(false, 0, 0, null, null, null, null, ['id', 'lable', 'label'])
-
-        then:
-        def ex = thrown(IllegalArgumentException)
-        ex.message.contains('lable')
-        // Valid field list should also appear so the caller knows what to use
-        ex.message.contains('label')
-    }
-
-    @spock.lang.Unroll
-    def "via dispatch: fields projection unknown field name returns isError validation result listing the bad name (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        def d1 = makeDevice(id: 42, label: 'My Device')
-        settingsMap.selectedDevices = [d1]
-
-        when:
-        def response = mcpDriver.callTool('hub_list_devices', [fields: ['id', 'lable', 'label']])
-
-        then:
-        response.result.isError == true
-        mcpDriver.parseInner(response).error.contains('lable')
-        mcpDriver.parseInner(response).error.contains('label')
-
-        where:
-        useGateways << [true, false]
-    }
-
-    def "fields projection: empty fields list returns all default fields"() {
-        given:
-        def d1 = makeDevice(id: 1, label: 'Full Device')
-        settingsMap.selectedDevices = [d1]
-
-        when:
-        def result = script.toolListDevices(false, 0, 0, null, null, null, null, [])
-
-        then:
-        result.devices.size() == 1
-        def dev = result.devices[0]
-        // All default summary fields should be present
-        dev.containsKey('id')
-        dev.containsKey('label')
-        dev.containsKey('name')
-        dev.containsKey('room')
-        dev.containsKey('disabled')
-        dev.containsKey('currentStates')
-    }
-
-    @spock.lang.Unroll
-    def "via dispatch: fields projection empty fields list returns all default fields (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        def d1 = makeDevice(id: 1, label: 'Full Device')
-        settingsMap.selectedDevices = [d1]
-
-        when:
-        def response = mcpDriver.callTool('hub_list_devices', [fields: []])
-
-        then:
-        response.error == null
-        !response.result.isError
-        def inner = mcpDriver.parseInner(response)
-        inner.devices.size() == 1
-        def dev = inner.devices[0]
-        dev.containsKey('id')
-        dev.containsKey('label')
-        dev.containsKey('name')
-        dev.containsKey('room')
-        dev.containsKey('disabled')
-        dev.containsKey('currentStates')
-
-        where:
-        useGateways << [true, false]
-    }
-
-    // ---- format validation test -----------------------------------------
-
-    def "format=xml throws IllegalArgumentException with valid values listed"() {
-        given:
-        def d1 = makeDevice(id: 1, label: 'Device A')
-        settingsMap.selectedDevices = [d1]
-
-        when:
-        script.toolListDevices(false, 0, 0, null, null, null, 'xml', null)
-
-        then:
-        def ex = thrown(IllegalArgumentException)
-        ex.message.contains('xml')
-        ex.message.contains('summary')
-        ex.message.contains('detailed')
-        ex.message.contains('ids')
-    }
-
-    @spock.lang.Unroll
-    def "via dispatch: format=xml returns isError validation result with valid values listed (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        def d1 = makeDevice(id: 1, label: 'Device A')
-        settingsMap.selectedDevices = [d1]
-
-        when:
-        def response = mcpDriver.callTool('hub_list_devices', [format: 'xml'])
-
-        then:
-        response.result.isError == true
-        mcpDriver.parseInner(response).error.contains('xml')
-        mcpDriver.parseInner(response).error.contains('summary')
-        mcpDriver.parseInner(response).error.contains('detailed')
-        mcpDriver.parseInner(response).error.contains('ids')
-
-        where:
-        useGateways << [true, false]
-    }
-
-    // ---- composition tests ----------------------------------------------
-
-    def "labelFilter + capabilityFilter: both applied, only intersection returned"() {
-        given:
-        def kitchenSwitch  = makeDevice(id: 1, label: 'Kitchen Light', capabilities: [[name: 'Switch']])
-        def kitchenSensor  = makeDevice(id: 2, label: 'Kitchen Motion', capabilities: [[name: 'MotionSensor']])
-        def bedroomSwitch  = makeDevice(id: 3, label: 'Bedroom Light', capabilities: [[name: 'Switch']])
-        settingsMap.selectedDevices = [kitchenSwitch, kitchenSensor, bedroomSwitch]
-
-        when:
-        def result = script.toolListDevices(false, 0, 0, null, 'kitchen', 'Switch', null, null)
-
-        then:
-        result.devices.size() == 1
-        result.devices[0].id == '1'
-    }
-
-    @spock.lang.Unroll
-    def "via dispatch: labelFilter + capabilityFilter both applied only intersection returned (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        def kitchenSwitch  = makeDevice(id: 1, label: 'Kitchen Light', capabilities: [[name: 'Switch']])
-        def kitchenSensor  = makeDevice(id: 2, label: 'Kitchen Motion', capabilities: [[name: 'MotionSensor']])
-        def bedroomSwitch  = makeDevice(id: 3, label: 'Bedroom Light', capabilities: [[name: 'Switch']])
-        settingsMap.selectedDevices = [kitchenSwitch, kitchenSensor, bedroomSwitch]
-
-        when:
-        def response = mcpDriver.callTool('hub_list_devices', [labelFilter: 'kitchen', capabilityFilter: 'Switch'])
-
-        then:
-        response.error == null
-        !response.result.isError
-        def inner = mcpDriver.parseInner(response)
-        inner.devices.size() == 1
-        inner.devices[0].id == '1'
-
-        where:
-        useGateways << [true, false]
-    }
-
-    def "labelFilter + pagination: offset/limit applied to already-filtered set"() {
-        given:
-        // 4 devices with 'light' in label; request page of 2 starting at offset 1
-        def d1 = makeDevice(id: 1, label: 'Light A')
-        def d2 = makeDevice(id: 2, label: 'Light B')
-        def d3 = makeDevice(id: 3, label: 'Light C')
-        def d4 = makeDevice(id: 4, label: 'Light D')
-        def d5 = makeDevice(id: 5, label: 'Fan')
-        settingsMap.selectedDevices = [d1, d2, d3, d4, d5]
-
-        when:
-        def result = script.toolListDevices(false, 1, 2, null, 'light', null, null, null)
-
-        then:
-        result.total == 4         // 4 devices match the label filter
-        result.count == 2         // page of 2
-        result.devices[0].id == '2'
-        result.devices[1].id == '3'
-        result.hasMore == true
-        result.nextOffset == 3
-    }
-
-    @spock.lang.Unroll
-    def "via dispatch: labelFilter + pagination offset/limit applied to already-filtered set (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        def d1 = makeDevice(id: 1, label: 'Light A')
-        def d2 = makeDevice(id: 2, label: 'Light B')
-        def d3 = makeDevice(id: 3, label: 'Light C')
-        def d4 = makeDevice(id: 4, label: 'Light D')
-        def d5 = makeDevice(id: 5, label: 'Fan')
-        settingsMap.selectedDevices = [d1, d2, d3, d4, d5]
-
-        when:
-        def response = mcpDriver.callTool('hub_list_devices', [offset: 1, limit: 2, labelFilter: 'light'])
-
-        then:
-        response.error == null
-        !response.result.isError
-        def inner = mcpDriver.parseInner(response)
-        inner.total == 4
-        inner.count == 2
-        inner.devices[0].id == '2'
-        inner.devices[1].id == '3'
-        inner.hasMore == true
-        inner.nextOffset == 3
-
-        where:
-        useGateways << [true, false]
-    }
-
-    // ---- backward-compat / default behavior tests -----------------------
-
-    def "no new args: existing args still produce the same response shape"() {
-        given:
-        def d1 = makeDevice(id: 10, label: 'Compat Light')
-        settingsMap.selectedDevices = [d1]
-
-        when:
-        // Call with only original args (no new args supplied)
-        def result = script.toolListDevices(false, 0, 0, null)
-
-        then:
-        result.devices.size() == 1
-        result.devices[0].label == 'Compat Light'
-        result.devices[0].containsKey('currentStates')
-        !result.containsKey('labelFilter')
-        !result.containsKey('capabilityFilter')
-    }
-
-    @spock.lang.Unroll
-    def "via dispatch: no new args produces the same response shape (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        def d1 = makeDevice(id: 10, label: 'Compat Light')
-        settingsMap.selectedDevices = [d1]
-
-        when:
-        def response = mcpDriver.callTool('hub_list_devices', [:])
-
-        then:
-        response.error == null
-        !response.result.isError
-        def inner = mcpDriver.parseInner(response)
-        inner.devices.size() == 1
-        inner.devices[0].label == 'Compat Light'
-        inner.devices[0].containsKey('currentStates')
-        !inner.containsKey('labelFilter')
-        !inner.containsKey('capabilityFilter')
-
-        where:
-        useGateways << [true, false]
-    }
-
-    def "format=ids with pagination includes hasMore and nextOffset"() {
-        given:
-        (1..5).each { i ->
-            settingsMap.selectedDevices << makeDevice(id: i, label: "Device ${i}")
+        settingsMap.bypassDeviceAllowlist = true
+        hubGet.register('/hub2/devicesList') {
+            JsonOutput.toJson([devices: [
+                [key: 'DEV-10', data: [id: 10, name: 'Hub Bridge', secondaryName: 'Bridge Driver', type: 'Bridge', isNetwork: true,
+                    isLinked: true, tags: 'lights, upstairs', roomName: '', lastActivity: '2026-10-20T18:05:27+0000',
+                    currentStates: [[key: 'switch', value: 'on'], [key: 'switch', value: 'off']]],
+                 children: [[key: 'DEV-11', data: [id: 11, name: 'Bridge Child', type: 'Child', isZwave: true, disabled: true], children: []]]]
+            ]])
         }
 
         when:
-        def result = script.toolListDevices(false, 0, 3, null, null, null, 'ids', null)
+        def result = script.toolListDevices([:])
 
-        then:
-        result.deviceIds.size() == 3
-        result.hasMore == true
-        result.nextOffset == 3
-    }
+        then: 'depth-first page order'
+        result.devices*.id == ['10', '11']
 
-    @spock.lang.Unroll
-    def "via dispatch: format=ids with pagination includes hasMore and nextOffset (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        (1..5).each { i ->
-            settingsMap.selectedDevices << makeDevice(id: i, label: "Device ${i}")
+        and:
+        with(result.devices[0]) {
+            label == 'Hub Bridge'
+            name == 'Bridge Driver'
+            driver == 'Bridge'
+            room == null
+            protocol == 'network'
+            linked == true
+            tags == ['lights', 'upstairs']
+            lastActivity == '2026-10-20T18:05:27+0000'
+            currentStates == [switch: 'off']
+            !containsKey('parentDeviceId')
         }
-
-        when:
-        def response = mcpDriver.callTool('hub_list_devices', [limit: 3, format: 'ids'])
-
-        then:
-        response.error == null
-        !response.result.isError
-        def inner = mcpDriver.parseInner(response)
-        inner.deviceIds.size() == 3
-        inner.hasMore == true
-        inner.nextOffset == 3
-
-        where:
-        useGateways << [true, false]
-    }
-
-    // ---- BLOCKING-1: fields auto-promote to detailed mode ----------------
-
-    def "fields=['id','capabilities'] without detailed=true still returns capabilities"() {
-        given:
-        def d1 = makeDevice(id: 1, label: 'Smart Switch', capabilities: [[name: 'Switch'], [name: 'Refresh']])
-        settingsMap.selectedDevices = [d1]
-
-        when:
-        // detailed=false (default), format omitted -- auto-promote must fire
-        def result = script.toolListDevices(false, 0, 0, null, null, null, null, ['id', 'capabilities'])
-
-        then:
-        result.devices.size() == 1
-        def dev = result.devices[0]
-        dev.capabilities != null
-        dev.capabilities.contains('Switch')
-        // id requested and present
-        dev.id == '1'
-        // attributes and commands were not requested -- absent
-        !dev.containsKey('attributes')
-        !dev.containsKey('commands')
-        // currentStates was not requested -- absent
-        !dev.containsKey('currentStates')
-    }
-
-    @spock.lang.Unroll
-    def "via dispatch: fields=['id','capabilities'] without detailed=true still returns capabilities (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        def d1 = makeDevice(id: 1, label: 'Smart Switch', capabilities: [[name: 'Switch'], [name: 'Refresh']])
-        settingsMap.selectedDevices = [d1]
-
-        when:
-        def response = mcpDriver.callTool('hub_list_devices', [fields: ['id', 'capabilities']])
-
-        then:
-        response.error == null
-        !response.result.isError
-        def inner = mcpDriver.parseInner(response)
-        inner.devices.size() == 1
-        def dev = inner.devices[0]
-        dev.capabilities != null
-        dev.capabilities.contains('Switch')
-        dev.id == '1'
-        !dev.containsKey('attributes')
-        !dev.containsKey('commands')
-        !dev.containsKey('currentStates')
-
-        where:
-        useGateways << [true, false]
-    }
-
-    // ---- WARN-2: offset overshoot with format=ids returns ids shape ------
-
-    def "format=ids with offset beyond total returns deviceIds shape not devices shape"() {
-        given:
-        def d1 = makeDevice(id: 1, label: 'Device A')
-        settingsMap.selectedDevices = [d1]
-
-        when:
-        def result = script.toolListDevices(false, 999, 0, null, null, null, 'ids', null)
-
-        then:
-        result.containsKey('deviceIds')
-        result.deviceIds == []
-        result.count == 0
-        result.total == 1
-        !result.containsKey('devices')
-    }
-
-    @spock.lang.Unroll
-    def "via dispatch: format=ids with offset beyond total returns deviceIds shape (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        def d1 = makeDevice(id: 1, label: 'Device A')
-        settingsMap.selectedDevices = [d1]
-
-        when:
-        def response = mcpDriver.callTool('hub_list_devices', [offset: 999, format: 'ids'])
-
-        then:
-        response.error == null
-        !response.result.isError
-        def inner = mcpDriver.parseInner(response)
-        inner.containsKey('deviceIds')
-        inner.deviceIds == []
-        inner.count == 0
-        inner.total == 1
-        !inner.containsKey('devices')
-
-        where:
-        useGateways << [true, false]
-    }
-
-    // ---- WARN-3: format validation fires before offset early-return ------
-
-    def "invalid format with offset overshoot throws IllegalArgumentException not silent early-return"() {
-        given:
-        def d1 = makeDevice(id: 1, label: 'Device A')
-        settingsMap.selectedDevices = [d1]
-
-        when:
-        // offset=999 would trigger early-return before format validation in the old ordering
-        script.toolListDevices(false, 999, 0, null, null, null, 'xml', null)
-
-        then:
-        def ex = thrown(IllegalArgumentException)
-        ex.message.contains('xml')
-        ex.message.contains('summary')
-    }
-
-    @spock.lang.Unroll
-    def "via dispatch: invalid format with offset overshoot returns isError validation result (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        def d1 = makeDevice(id: 1, label: 'Device A')
-        settingsMap.selectedDevices = [d1]
-
-        when:
-        def response = mcpDriver.callTool('hub_list_devices', [offset: 999, format: 'xml'])
-
-        then:
-        response.result.isError == true
-        mcpDriver.parseInner(response).error.contains('xml')
-        mcpDriver.parseInner(response).error.contains('summary')
-
-        where:
-        useGateways << [true, false]
-    }
-
-    // ---- WARN-5: unfilteredTotal present with labelFilter only -----------
-
-    def "labelFilter only: response includes unfilteredTotal"() {
-        given:
-        def d1 = makeDevice(id: 1, label: 'Kitchen Light')
-        def d2 = makeDevice(id: 2, label: 'Kitchen Outlet')
-        def d3 = makeDevice(id: 3, label: 'Bedroom Light')
-        settingsMap.selectedDevices = [d1, d2, d3]
-
-        when:
-        def result = script.toolListDevices(false, 0, 0, null, 'kitchen', null, null, null)
-
-        then:
-        result.total == 2
-        result.unfilteredTotal == 3
-    }
-
-    @spock.lang.Unroll
-    def "via dispatch: labelFilter only response includes unfilteredTotal (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        def d1 = makeDevice(id: 1, label: 'Kitchen Light')
-        def d2 = makeDevice(id: 2, label: 'Kitchen Outlet')
-        def d3 = makeDevice(id: 3, label: 'Bedroom Light')
-        settingsMap.selectedDevices = [d1, d2, d3]
-
-        when:
-        def response = mcpDriver.callTool('hub_list_devices', [labelFilter: 'kitchen'])
-
-        then:
-        response.error == null
-        !response.result.isError
-        def inner = mcpDriver.parseInner(response)
-        inner.total == 2
-        inner.unfilteredTotal == 3
-
-        where:
-        useGateways << [true, false]
-    }
-
-    // ---- MEDIUM-1: format=ids unfilteredTotal parity with capabilityFilter --
-
-    def "format=ids + capabilityFilter: response includes unfilteredTotal"() {
-        given:
-        def d1 = makeDevice(id: 1, label: 'Light Switch', capabilities: [[name: 'Switch']])
-        def d2 = makeDevice(id: 2, label: 'Motion Sensor', capabilities: [[name: 'MotionSensor']])
-        def d3 = makeDevice(id: 3, label: 'Dimmer', capabilities: [[name: 'Switch'], [name: 'SwitchLevel']])
-        settingsMap.selectedDevices = [d1, d2, d3]
-
-        when:
-        def result = script.toolListDevices(false, 0, 0, null, null, 'Switch', 'ids', null)
-
-        then:
-        result.total == 2
-        result.unfilteredTotal == 3
-        result.deviceIds as Set == [1, 3] as Set
-        result.containsKey('capabilityFilter')
-    }
-
-    @spock.lang.Unroll
-    def "via dispatch: format=ids + capabilityFilter response includes unfilteredTotal (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        def d1 = makeDevice(id: 1, label: 'Light Switch', capabilities: [[name: 'Switch']])
-        def d2 = makeDevice(id: 2, label: 'Motion Sensor', capabilities: [[name: 'MotionSensor']])
-        def d3 = makeDevice(id: 3, label: 'Dimmer', capabilities: [[name: 'Switch'], [name: 'SwitchLevel']])
-        settingsMap.selectedDevices = [d1, d2, d3]
-
-        when:
-        def response = mcpDriver.callTool('hub_list_devices', [capabilityFilter: 'Switch', format: 'ids'])
-
-        then:
-        response.error == null
-        !response.result.isError
-        def inner = mcpDriver.parseInner(response)
-        inner.total == 2
-        inner.unfilteredTotal == 3
-        inner.deviceIds as Set == [1, 3] as Set
-        inner.containsKey('capabilityFilter')
-
-        where:
-        useGateways << [true, false]
-    }
-
-    // ---- MEDIUM-2: format=ids offset-overshoot unfilteredTotal parity -------
-
-    def "format=ids + labelFilter + offset overshoot: early-return includes unfilteredTotal"() {
-        given:
-        def d1 = makeDevice(id: 1, label: 'Kitchen Light')
-        def d2 = makeDevice(id: 2, label: 'Kitchen Outlet')
-        def d3 = makeDevice(id: 3, label: 'Bedroom Fan')
-        settingsMap.selectedDevices = [d1, d2, d3]
-
-        when:
-        // 2 devices match 'kitchen'; offset=999 triggers early-return
-        def result = script.toolListDevices(false, 999, 0, null, 'kitchen', null, 'ids', null)
-
-        then:
-        result.deviceIds == []
-        result.count == 0
-        result.total == 2
-        result.unfilteredTotal == 3
-        result.containsKey('labelFilter')
-    }
-
-    @spock.lang.Unroll
-    def "via dispatch: format=ids + labelFilter + offset overshoot early-return includes unfilteredTotal (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        def d1 = makeDevice(id: 1, label: 'Kitchen Light')
-        def d2 = makeDevice(id: 2, label: 'Kitchen Outlet')
-        def d3 = makeDevice(id: 3, label: 'Bedroom Fan')
-        settingsMap.selectedDevices = [d1, d2, d3]
-
-        when:
-        def response = mcpDriver.callTool('hub_list_devices', [offset: 999, labelFilter: 'kitchen', format: 'ids'])
-
-        then:
-        response.error == null
-        !response.result.isError
-        def inner = mcpDriver.parseInner(response)
-        inner.deviceIds == []
-        inner.count == 0
-        inner.total == 2
-        inner.unfilteredTotal == 3
-        inner.containsKey('labelFilter')
-
-        where:
-        useGateways << [true, false]
-    }
-
-    // ---- B2: all-unknown fields throws, not silently empty
-
-    def "fields projection with all-unknown names throws IllegalArgumentException"() {
-        given:
-        def d1 = makeDevice(id: 1, label: 'My Device')
-        settingsMap.selectedDevices = [d1]
-
-        when:
-        script.toolListDevices(false, 0, 0, null, null, null, null, ['nope'])
-
-        then:
-        def ex = thrown(IllegalArgumentException)
-        ex.message.contains('nope')
-    }
-
-    @spock.lang.Unroll
-    def "via dispatch: fields projection with all-unknown names returns isError validation result (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        def d1 = makeDevice(id: 1, label: 'My Device')
-        settingsMap.selectedDevices = [d1]
-
-        when:
-        def response = mcpDriver.callTool('hub_list_devices', [fields: ['nope']])
-
-        then:
-        response.result.isError == true
-        mcpDriver.parseInner(response).error.contains('nope')
-
-        where:
-        useGateways << [true, false]
-    }
-
-    // ---- B3: capabilityFilterMatchedKnownCapability typo diagnostic ----------
-
-    def "capabilityFilter typo: count=0 response includes capabilityFilterMatchedKnownCapability=false"() {
-        given:
-        def sw = makeDevice(id: 1, label: 'Light Switch', capabilities: [[name: 'Switch']])
-        settingsMap.selectedDevices = [sw]
-
-        when:
-        // 'Switches' (plural) does not match 'Switch' (exact)
-        def result = script.toolListDevices(false, 0, 0, null, null, 'Switches', null, null)
-
-        then:
-        result.devices.size() == 0
-        result.containsKey('capabilityFilterMatchedKnownCapability')
-        result.capabilityFilterMatchedKnownCapability == false
-    }
-
-    @spock.lang.Unroll
-    def "via dispatch: capabilityFilter typo count=0 response includes capabilityFilterMatchedKnownCapability=false (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        def sw = makeDevice(id: 1, label: 'Light Switch', capabilities: [[name: 'Switch']])
-        settingsMap.selectedDevices = [sw]
-
-        when:
-        def response = mcpDriver.callTool('hub_list_devices', [capabilityFilter: 'Switches'])
-
-        then:
-        response.error == null
-        !response.result.isError
-        def inner = mcpDriver.parseInner(response)
-        inner.devices.size() == 0
-        inner.containsKey('capabilityFilterMatchedKnownCapability')
-        inner.capabilityFilterMatchedKnownCapability == false
-
-        where:
-        useGateways << [true, false]
-    }
-
-    def "capabilityFilter with labelFilter pre-eliminating all devices: diagnostic distinguishes real capability from typo via unfiltered scan"() {
-        given:
-        // Device has Switch but labelFilter eliminates it before capabilityFilter runs.
-        // The diagnostic scans the UNFILTERED device set, so it correctly identifies that
-        // 'Switch' is a real capability on this hub even though no device passes both filters.
-        def sw = makeDevice(id: 1, label: 'Kitchen Light', capabilities: [[name: 'Switch']])
-        settingsMap.selectedDevices = [sw]
-
-        when:
-        // labelFilter 'basement' eliminates all devices; capabilityFilter 'Switch' then sees an empty set.
-        // Without the unfiltered scan this would falsely report 'Switch' as a typo.
-        def result = script.toolListDevices(false, 0, 0, null, 'basement', 'Switch', null, null)
-
-        then:
-        result.devices.size() == 0
-        result.containsKey('capabilityFilterMatchedKnownCapability')
-        // 'Switch' is real on the hub (Kitchen Light has it), just excluded by labelFilter
-        result.capabilityFilterMatchedKnownCapability == true
-    }
-
-    @spock.lang.Unroll
-    def "via dispatch: capabilityFilter with labelFilter pre-eliminating all devices distinguishes real capability from typo (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        def sw = makeDevice(id: 1, label: 'Kitchen Light', capabilities: [[name: 'Switch']])
-        settingsMap.selectedDevices = [sw]
-
-        when:
-        def response = mcpDriver.callTool('hub_list_devices', [labelFilter: 'basement', capabilityFilter: 'Switch'])
-
-        then:
-        response.error == null
-        !response.result.isError
-        def inner = mcpDriver.parseInner(response)
-        inner.devices.size() == 0
-        inner.containsKey('capabilityFilterMatchedKnownCapability')
-        inner.capabilityFilterMatchedKnownCapability == true
-
-        where:
-        useGateways << [true, false]
-    }
-
-    // ---- B4: type validation throws on wrong arg types ----------------------
-
-    def "capabilityFilter: passing a List instead of String throws IllegalArgumentException"() {
-        given:
-        def d1 = makeDevice(id: 1, label: 'Device A')
-        settingsMap.selectedDevices = [d1]
-
-        when:
-        script.toolListDevices(false, 0, 0, null, null, ['Switch'], null, null)
-
-        then:
-        def ex = thrown(IllegalArgumentException)
-        ex.message.contains('capabilityFilter')
-    }
-
-    @spock.lang.Unroll
-    def "via dispatch: capabilityFilter passing a List instead of String returns isError validation result (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        def d1 = makeDevice(id: 1, label: 'Device A')
-        settingsMap.selectedDevices = [d1]
-
-        when:
-        def response = mcpDriver.callTool('hub_list_devices', [capabilityFilter: ['Switch']])
-
-        then:
-        response.result.isError == true
-        mcpDriver.parseInner(response).error.contains('capabilityFilter')
-
-        where:
-        useGateways << [true, false]
-    }
-
-    def "labelFilter: passing a List instead of String throws IllegalArgumentException"() {
-        given:
-        def d1 = makeDevice(id: 1, label: 'Device A')
-        settingsMap.selectedDevices = [d1]
-
-        when:
-        script.toolListDevices(false, 0, 0, null, ['kitchen'], null, null, null)
-
-        then:
-        def ex = thrown(IllegalArgumentException)
-        ex.message.contains('labelFilter')
-    }
-
-    @spock.lang.Unroll
-    def "via dispatch: labelFilter passing a List instead of String returns isError validation result (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        def d1 = makeDevice(id: 1, label: 'Device A')
-        settingsMap.selectedDevices = [d1]
-
-        when:
-        def response = mcpDriver.callTool('hub_list_devices', [labelFilter: ['kitchen']])
-
-        then:
-        response.result.isError == true
-        mcpDriver.parseInner(response).error.contains('labelFilter')
-
-        where:
-        useGateways << [true, false]
-    }
-
-    def "fields: passing a String instead of List throws IllegalArgumentException"() {
-        given:
-        def d1 = makeDevice(id: 1, label: 'Device A')
-        settingsMap.selectedDevices = [d1]
-
-        when:
-        script.toolListDevices(false, 0, 0, null, null, null, null, 'id,label')
-
-        then:
-        def ex = thrown(IllegalArgumentException)
-        ex.message.contains('fields')
-    }
-
-    @spock.lang.Unroll
-    def "via dispatch: fields passing a String instead of List returns isError validation result (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        def d1 = makeDevice(id: 1, label: 'Device A')
-        settingsMap.selectedDevices = [d1]
-
-        when:
-        def response = mcpDriver.callTool('hub_list_devices', [fields: 'id,label'])
-
-        then:
-        response.result.isError == true
-        mcpDriver.parseInner(response).error.contains('fields')
-
-        where:
-        useGateways << [true, false]
-    }
-
-    // ---- B5: hub-read avoidance asserted via call counters ------------------
-
-    def "fields projection: currentValue NOT called when fields excludes currentStates"() {
-        given:
-        def calls = []
-        def d1 = makeDevice(id: 1, label: 'My Light', name: 'TestDriver')
-        d1.attributeValues = [switch: 'on']
-        // Override currentValue on the instance to count calls
-        d1.metaClass.currentValue = { String attr ->
-            calls << attr
-            return d1.attributeValues[attr]
+        with(result.devices[1]) {
+            parentDeviceId == '10'
+            protocol == 'zwave'
+            disabled == true
+            !containsKey('linked')
+            !containsKey('tags')
         }
-        settingsMap.selectedDevices = [d1]
+    }
+
+    def "the allowlist bypass lists every page device under the default scope"() {
+        given:
+        settingsMap.bypassDeviceAllowlist = true
+        hubOnly = [makeDevice(id: 7, label: 'Garage'), makeDevice(id: 8, label: 'Porch')]
 
         when:
-        def result = script.toolListDevices(false, 0, 0, null, null, null, null, ['id', 'label'])
+        def result = script.toolListDevices([:])
 
         then:
-        result.devices.size() == 1
-        result.devices[0].id == '1'
-        result.devices[0].label == 'My Light'
-        !result.devices[0].containsKey('currentStates')
-        calls.isEmpty()
+        result.devices*.id == ['7', '8']
     }
 
-    @spock.lang.Unroll
-    def "via dispatch: fields projection currentValue NOT called when fields excludes currentStates (useGateways=#useGateways)"() {
+    def "a selected device the page no longer lists is not invented"() {
         given:
-        settingsMap.useGateways = useGateways
-        def calls = []
-        def d1 = makeDevice(id: 1, label: 'My Light', name: 'TestDriver')
-        d1.attributeValues = [switch: 'on']
-        d1.metaClass.currentValue = { String attr ->
-            calls << attr
-            return d1.attributeValues[attr]
-        }
-        settingsMap.selectedDevices = [d1]
+        settingsMap.selectedDevices = [makeDevice(id: 1, label: 'Kept')]
+        def gone = makeDevice(id: 2, label: 'Deleted')
+        hubGet.register('/hub2/devicesList') { JsonOutput.toJson([devices: [NativeInventoryFixture.pageNode(settingsMap.selectedDevices[0])]]) }
+        settingsMap.selectedDevices << gone
 
         when:
-        def response = mcpDriver.callTool('hub_list_devices', [fields: ['id', 'label']])
+        def result = script.toolListDevices([:])
 
         then:
-        response.error == null
-        !response.result.isError
-        def inner = mcpDriver.parseInner(response)
-        inner.devices.size() == 1
-        inner.devices[0].id == '1'
-        inner.devices[0].label == 'My Light'
-        !inner.devices[0].containsKey('currentStates')
-        calls.isEmpty()
-
-        where:
-        useGateways << [true, false]
+        result.devices*.id == ['1']
     }
 
-    def "fields projection: native state is read when fields includes currentStates"() {
-        given:
-        def calls = []
-        def d1 = makeDevice(id: 1, label: 'My Light', name: 'TestDriver')
-        d1.attributeValues = [switch: 'on']
-        d1.metaClass.currentValue = { String attr ->
-            calls << attr
-            return d1.attributeValues[attr]
-        }
-        settingsMap.selectedDevices = [d1]
+    // ---- filters --------------------------------------------------------
 
-        when:
-        def result = script.toolListDevices(false, 0, 0, null, null, null, null, ['id', 'label', 'currentStates'])
-
-        then:
-        result.devices.size() == 1
-        result.devices[0].currentStates.switch == 'on'
-        calls.isEmpty()
-        hubGet.calls.any { it.path == '/device/fullJson/1' }
-    }
-
-    @spock.lang.Unroll
-    def "via dispatch: fields projection native state is read when fields includes currentStates (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        def calls = []
-        def d1 = makeDevice(id: 1, label: 'My Light', name: 'TestDriver')
-        d1.attributeValues = [switch: 'on']
-        d1.metaClass.currentValue = { String attr ->
-            calls << attr
-            return d1.attributeValues[attr]
-        }
-        settingsMap.selectedDevices = [d1]
-
-        when:
-        def response = mcpDriver.callTool('hub_list_devices', [fields: ['id', 'label', 'currentStates']])
-
-        then:
-        response.error == null
-        !response.result.isError
-        def inner = mcpDriver.parseInner(response)
-        inner.devices.size() == 1
-        inner.devices[0].currentStates.switch == 'on'
-        calls.isEmpty()
-        hubGet.calls.any { it.path == '/device/fullJson/1' }
-
-        where:
-        useGateways << [true, false]
-    }
-
-    // ---- B6: kitchen-sink -- labelFilter + capabilityFilter + pagination -----
-
-    def "labelFilter + capabilityFilter + pagination -- all three applied in pipeline order"() {
-        given:
-        // 8 devices: varied labels and capabilities to exercise both filters + pagination
-        def kSwitch  = makeDevice(id: 1, label: 'Kitchen Light',  capabilities: [[name: 'Switch']])
-        def kSensor  = makeDevice(id: 2, label: 'Kitchen Motion', capabilities: [[name: 'MotionSensor']])
-        def kDimmer  = makeDevice(id: 3, label: 'Kitchen Dimmer', capabilities: [[name: 'Switch'], [name: 'SwitchLevel']])
-        def kOutlet  = makeDevice(id: 4, label: 'Kitchen Outlet', capabilities: [[name: 'Switch']])
-        def kFan     = makeDevice(id: 5, label: 'Kitchen Fan',    capabilities: [[name: 'Switch']])
-        def bSwitch  = makeDevice(id: 6, label: 'Bedroom Switch', capabilities: [[name: 'Switch']])
-        def bSensor  = makeDevice(id: 7, label: 'Bedroom Sensor', capabilities: [[name: 'MotionSensor']])
-        def bDimmer  = makeDevice(id: 8, label: 'Bedroom Dimmer', capabilities: [[name: 'Switch'], [name: 'SwitchLevel']])
-        settingsMap.selectedDevices = [kSwitch, kSensor, kDimmer, kOutlet, kFan, bSwitch, bSensor, bDimmer]
-
-        when:
-        // labelFilter='kitchen' AND capabilityFilter='Switch' AND pagination (offset=1, limit=2)
-        def result = script.toolListDevices(false, 1, 2, null, 'kitchen', 'Switch', null, null)
-
-        then:
-        // Kitchen Switch devices: kSwitch(1), kDimmer(3), kOutlet(4), kFan(5) = 4 after both filters
-        result.total == 4
-        result.count == 2
-        result.hasMore == true
-        result.nextOffset == 3
-        result.devices.size() == 2
-        // offset 1: devices at index 1 and 2 of the filtered+sorted set: kDimmer(3) and kOutlet(4)
-        result.devices*.id as Set == ['3', '4'] as Set
-        // Verify every returned device satisfies both filters
-        result.devices.every { dev ->
-            def d = settingsMap.selectedDevices.find { it.id.toString() == dev.id }
-            d.label.toLowerCase().contains('kitchen') &&
-            d.capabilities.any { it.name == 'Switch' }
-        }
-        result.unfilteredTotal == 8
-        result.labelFilter == 'kitchen'
-        result.capabilityFilter == 'Switch'
-    }
-
-    @spock.lang.Unroll
-    def "via dispatch: labelFilter + capabilityFilter + pagination -- all three applied in pipeline order (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        def kSwitch  = makeDevice(id: 1, label: 'Kitchen Light',  capabilities: [[name: 'Switch']])
-        def kSensor  = makeDevice(id: 2, label: 'Kitchen Motion', capabilities: [[name: 'MotionSensor']])
-        def kDimmer  = makeDevice(id: 3, label: 'Kitchen Dimmer', capabilities: [[name: 'Switch'], [name: 'SwitchLevel']])
-        def kOutlet  = makeDevice(id: 4, label: 'Kitchen Outlet', capabilities: [[name: 'Switch']])
-        def kFan     = makeDevice(id: 5, label: 'Kitchen Fan',    capabilities: [[name: 'Switch']])
-        def bSwitch  = makeDevice(id: 6, label: 'Bedroom Switch', capabilities: [[name: 'Switch']])
-        def bSensor  = makeDevice(id: 7, label: 'Bedroom Sensor', capabilities: [[name: 'MotionSensor']])
-        def bDimmer  = makeDevice(id: 8, label: 'Bedroom Dimmer', capabilities: [[name: 'Switch'], [name: 'SwitchLevel']])
-        settingsMap.selectedDevices = [kSwitch, kSensor, kDimmer, kOutlet, kFan, bSwitch, bSensor, bDimmer]
-
-        when:
-        def response = mcpDriver.callTool('hub_list_devices', [offset: 1, limit: 2, labelFilter: 'kitchen', capabilityFilter: 'Switch'])
-
-        then:
-        response.error == null
-        !response.result.isError
-        def inner = mcpDriver.parseInner(response)
-        inner.total == 4
-        inner.count == 2
-        inner.hasMore == true
-        inner.nextOffset == 3
-        inner.devices.size() == 2
-        inner.devices*.id as Set == ['3', '4'] as Set
-        inner.devices.every { dev ->
-            def d = settingsMap.selectedDevices.find { it.id.toString() == dev.id }
-            d.label.toLowerCase().contains('kitchen') &&
-            d.capabilities.any { it.name == 'Switch' }
-        }
-        inner.unfilteredTotal == 8
-        inner.labelFilter == 'kitchen'
-        inner.capabilityFilter == 'Switch'
-
-        where:
-        useGateways << [true, false]
-    }
-
-    // ---- P6: inverse case-insensitivity (both directions) -------------------
-
-    def "labelFilter: UPPERCASE filter matches lowercase label"() {
-        given:
-        def d1 = makeDevice(id: 1, label: 'kitchen light')
-        def d2 = makeDevice(id: 2, label: 'bathroom fan')
-        settingsMap.selectedDevices = [d1, d2]
-
-        when:
-        def result = script.toolListDevices(false, 0, 0, null, 'KITCHEN', null, null, null)
-
-        then:
-        result.devices.size() == 1
-        result.devices[0].label == 'kitchen light'
-    }
-
-    @spock.lang.Unroll
-    def "via dispatch: labelFilter UPPERCASE filter matches lowercase label (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        def d1 = makeDevice(id: 1, label: 'kitchen light')
-        def d2 = makeDevice(id: 2, label: 'bathroom fan')
-        settingsMap.selectedDevices = [d1, d2]
-
-        when:
-        def response = mcpDriver.callTool('hub_list_devices', [labelFilter: 'KITCHEN'])
-
-        then:
-        response.error == null
-        !response.result.isError
-        def inner = mcpDriver.parseInner(response)
-        inner.devices.size() == 1
-        inner.devices[0].label == 'kitchen light'
-
-        where:
-        useGateways << [true, false]
-    }
-
-    def "capabilityFilter: UPPERCASE filter matches lowercase capability name"() {
-        given:
-        def sw = makeDevice(id: 1, label: 'Light', capabilities: [[name: 'switch']])
-        settingsMap.selectedDevices = [sw]
-
-        when:
-        def result = script.toolListDevices(false, 0, 0, null, null, 'SWITCH', null, null)
-
-        then:
-        result.devices.size() == 1
-        result.devices[0].label == 'Light'
-    }
-
-    @spock.lang.Unroll
-    def "via dispatch: capabilityFilter UPPERCASE filter matches lowercase capability name (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        def sw = makeDevice(id: 1, label: 'Light', capabilities: [[name: 'switch']])
-        settingsMap.selectedDevices = [sw]
-
-        when:
-        def response = mcpDriver.callTool('hub_list_devices', [capabilityFilter: 'SWITCH'])
-
-        then:
-        response.error == null
-        !response.result.isError
-        def inner = mcpDriver.parseInner(response)
-        inner.devices.size() == 1
-        inner.devices[0].label == 'Light'
-
-        where:
-        useGateways << [true, false]
-    }
-
-    // ---- B1: id always present, not projected away --------------------------
-
-    def "fields projection: id always present even when not in fields list"() {
-        given:
-        def d1 = makeDevice(id: 99, label: 'No-Id Requested')
-        settingsMap.selectedDevices = [d1]
-
-        when:
-        def result = script.toolListDevices(false, 0, 0, null, null, null, null, ['label'])
-
-        then:
-        result.devices.size() == 1
-        // id must always be present -- callers can't address the device without it
-        result.devices[0].id == '99'
-        result.devices[0].label == 'No-Id Requested'
-        !result.devices[0].containsKey('name')
-    }
-
-    @spock.lang.Unroll
-    def "via dispatch: fields projection id always present even when not in fields list (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        def d1 = makeDevice(id: 99, label: 'No-Id Requested')
-        settingsMap.selectedDevices = [d1]
-
-        when:
-        def response = mcpDriver.callTool('hub_list_devices', [fields: ['label']])
-
-        then:
-        response.error == null
-        !response.result.isError
-        def inner = mcpDriver.parseInner(response)
-        inner.devices.size() == 1
-        inner.devices[0].id == '99'
-        inner.devices[0].label == 'No-Id Requested'
-        !inner.devices[0].containsKey('name')
-
-        where:
-        useGateways << [true, false]
-    }
-
-    // ---- issue #366: roomFilter / onlyOn / changedSince / attributeNames / format='context'
-
-    private List seedContextDevices() {
-        [
-            makeDevice(id: 1, label: 'Kitchen Light', room: 'Kitchen',
-                capabilities: [[name: 'Switch'], [name: 'SwitchLevel']],
-                attrValues: [switch: 'on', level: 80]),
-            makeDevice(id: 2, label: 'Kitchen Sensor', room: 'Kitchen',
-                capabilities: [[name: 'TemperatureMeasurement']],
-                attrValues: [temperature: 71.5, humidity: 40]),
-            makeDevice(id: 3, label: 'Porch Light', room: 'Porch',
-                capabilities: [[name: 'Switch']],
-                attrValues: [switch: 'off']),
-            makeDevice(id: 4, label: 'Roomless Plug',
-                capabilities: [[name: 'Switch']],
-                attrValues: [switch: 'on'])
-        ]
-    }
-
-    def "roomFilter keeps only devices assigned to that room, case-insensitively"() {
-        given:
-        settingsMap.selectedDevices = seedContextDevices()
-
-        when:
-        def result = script.toolListDevices(false, 0, 0, null, null, null, null, null, null, null, 'kitchen')
-
-        then:
-        result.devices*.id == ['1', '2']
-        result.total == 2
-        result.unfilteredTotal == 4
-        result.roomFilter == 'kitchen'
-    }
-
-    def "roomFilter zero-match reports roomFilterMatchedKnownRoom for typo-vs-absence"() {
-        given:
-        settingsMap.selectedDevices = seedContextDevices()
-
-        when: 'a real room emptied by an earlier filter'
-        def emptied = script.toolListDevices(false, 0, 0, null, 'Sensor', null, null, null, null, null, 'Porch')
-
-        and: 'a room no device is assigned to'
-        def typo = script.toolListDevices(false, 0, 0, null, null, null, null, null, null, null, 'Porsche')
-
-        then:
-        emptied.total == 0
-        emptied.roomFilterMatchedKnownRoom == true
-        typo.total == 0
-        typo.roomFilterMatchedKnownRoom == false
-    }
-
-    def "onlyOn=true keeps only devices whose switch reads on; false is a no-op"() {
-        given:
-        settingsMap.selectedDevices = seedContextDevices()
-
-        when:
-        def on = script.toolListDevices(false, 0, 0, null, null, null, null, null, null, null, null, true)
-        def noop = script.toolListDevices(false, 0, 0, null, null, null, null, null, null, null, null, false)
-
-        then: 'the off switch and the switchless sensor are both excluded'
-        on.devices*.id == ['1', '4']
-        on.onlyOn == true
-        on.unfilteredTotal == 4
-
-        and: 'onlyOn=false filters nothing and is not echoed'
-        noop.devices.size() == 4
-        !noop.containsKey('onlyOn')
-    }
-
-    def "changedSince keeps devices active at/after the timestamp and drops never-reported ones"() {
-        given:
-        def old = makeDevice(id: 1, label: 'Old', lastActivity: new Date(1000000L))
-        def fresh = makeDevice(id: 2, label: 'Fresh', lastActivity: new Date(5000000L))
-        def never = makeDevice(id: 3, label: 'Never')
-        settingsMap.selectedDevices = [old, fresh, never]
-
-        when: 'epoch-millis form'
-        def result = script.toolListDevices(false, 0, 0, null, null, null, null, null, null, null, null, null, 3000000L)
-
-        then:
-        result.devices*.id == ['2']
-        result.unfilteredTotal == 3
-
-        and: 'the epoch input echoes as a canonical ISO string'
-        result.changedSince == new Date(3000000L).format("yyyy-MM-dd'T'HH:mm:ss.SSSZ")
-    }
-
-    def "changedSince accepts ISO-8601 and rejects an unparseable value with isError validation result guidance"() {
+    def "filters apply in order before paging and each echoes, with unfilteredTotal over the scope"() {
         given:
         settingsMap.selectedDevices = [
-            makeDevice(id: 1, label: 'Fresh', lastActivity: Date.parse("yyyy-MM-dd'T'HH:mm:ssZ", '2026-06-23T12:00:00+0000'))
+            makeDevice(id: 1, label: 'Kitchen Light', room: 'Kitchen', capabilities: [[name: 'Switch']], attrValues: [switch: 'on']),
+            makeDevice(id: 2, label: 'Kitchen Fan', room: 'Kitchen', capabilities: [[name: 'Switch']], attrValues: [switch: 'off']),
+            makeDevice(id: 3, label: 'kitchen sensor', room: 'kitchen', capabilities: [[name: 'MotionSensor']]),
+            makeDevice(id: 4, label: 'Porch Light', room: 'Porch', capabilities: [[name: 'Switch']], attrValues: [switch: 'on'])
         ]
 
         when:
-        def result = script.toolListDevices(false, 0, 0, null, null, null, null, null, null, null, null, null, '2026-06-23T10:00:00Z')
+        def result = script.toolListDevices([labelFilter: 'KITCHEN', capabilityFilter: 'switch', roomFilter: 'KITCHEN', stateFilter: [switch: 'on']])
 
         then:
         result.devices*.id == ['1']
+        result.total == 1
+        result.unfilteredTotal == 4
+        result.labelFilter == 'KITCHEN'
+        result.capabilityFilter == 'switch'
+        result.roomFilter == 'KITCHEN'
+        result.stateFilter == [switch: 'on']
+        !fullJsonReads()
+    }
+
+    @Unroll
+    def "#label"() {
+        given:
+        settingsMap.selectedDevices = [
+            makeDevice(id: 1, label: 'A', room: 'Den', disabled: true),
+            makeDevice(id: 2, label: 'B', room: 'Den', disabled: false),
+            makeDevice(id: 3, label: 'C')
+        ]
 
         when:
-        script.toolListDevices(false, 0, 0, null, null, null, null, null, null, null, null, null, 'yesterday-ish')
+        def result = script.toolListDevices(args)
 
         then:
-        def ex = thrown(IllegalArgumentException)
-        ex.message.contains('changedSince')
-        ex.message.contains('ISO-8601')
+        result.devices*.id == ids
+        result.containsKey('unfilteredTotal') == filtered
+
+        where:
+        label                                   | args                  || ids               | filtered
+        'disabled=true keeps only disabled'     | [disabled: true]      || ['1']             | true
+        'disabled=false keeps only enabled'     | [disabled: false]     || ['2', '3']        | true
+        'an empty roomFilter is a no-op'        | [roomFilter: '']      || ['1', '2', '3']   | false
+        'an empty labelFilter is a no-op'       | [labelFilter: '']     || ['1', '2', '3']   | false
+        'an empty stateFilter is a no-op'       | [stateFilter: [:]]    || ['1', '2', '3']   | false
     }
 
-    def "a colon-offset timestamp (the lastActivity XXX form) parses in changedSince"() {
-        // formatLastActivity emits yyyy-MM-dd'T'HH:mm:ssXXX -- a COLON offset (-06:00) on a
-        // non-UTC hub -- so the documented change-watching loop only works if the parser
-        // accepts that spelling alongside the colon-less one.
+    def "stateFilter needs every named attribute to read its value, compared as the page string"() {
         given:
-        def activity = Date.parse("yyyy-MM-dd'T'HH:mm:ssZ", '2026-06-23T12:00:00+0000')
-        settingsMap.selectedDevices = [makeDevice(id: 1, label: 'Fresh', lastActivity: activity)]
+        settingsMap.selectedDevices = [
+            makeDevice(id: 1, attrValues: [switch: 'on', level: 50]),
+            makeDevice(id: 2, attrValues: [switch: 'on', level: 20]),
+            makeDevice(id: 3, attrValues: [level: 50])
+        ]
 
-        when: '05:59:59-06:00 == 11:59:59Z, one second before the device activity'
-        def result = script.toolListDevices(false, 0, 0, null, null, null, null, null, null, null, null, null, '2026-06-23T05:59:59-06:00')
-
-        then:
-        result.devices*.id == ['1']
-        result.changedSince == '2026-06-23T05:59:59-06:00'
+        expect:
+        script.toolListDevices([stateFilter: [switch: 'on', level: 50]]).devices*.id == ['1']
     }
 
-    @spock.lang.Unroll
-    def "type validation: #label throws a recoverable IAE"() {
+    def "staleHours keeps devices quiet that long and never-active ones; changedSince keeps the recently active"() {
+        given:
+        long nowMs = script.now()
+        settingsMap.selectedDevices = [
+            makeDevice(id: 1, lastActivity: new Date(nowMs - 48 * 3600000L)),
+            makeDevice(id: 2, lastActivity: new Date(nowMs - 3600000L)),
+            makeDevice(id: 3)
+        ]
+
+        when:
+        def stale = script.toolListDevices([staleHours: 24])
+        def changed = script.toolListDevices([changedSince: nowMs - 2 * 3600000L])
+
+        then:
+        stale.devices*.id == ['1', '3']
+        stale.staleHours == 24
+        changed.devices*.id == ['2']
+
+        and: 'epoch input echoes as canonical ISO'
+        changed.changedSince ==~ /\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}[+-]\d{4}/
+    }
+
+    def "a returned lastActivity round-trips into changedSince"() {
+        given:
+        settingsMap.selectedDevices = [makeDevice(id: 1, lastActivity: new Date(script.now() - 60000L)), makeDevice(id: 2)]
+        def stamp = script.toolListDevices([:]).devices[0].lastActivity
+
+        expect:
+        script.toolListDevices([changedSince: stamp]).devices*.id == ['1']
+        script.toolListDevices([changedSince: stamp]).changedSince == stamp
+    }
+
+    def "zero matches tell a typo from an empty result, over the unfiltered scope"() {
+        given:
+        settingsMap.selectedDevices = [makeDevice(id: 1, label: 'Lamp', room: 'Den', capabilities: [[name: 'Switch']])]
+
+        expect:
+        script.toolListDevices([capabilityFilter: 'Swich']).capabilityFilterMatchedKnownCapability == false
+        script.toolListDevices([labelFilter: 'none', capabilityFilter: 'Switch']).capabilityFilterMatchedKnownCapability == true
+        script.toolListDevices([roomFilter: 'Dne']).roomFilterMatchedKnownRoom == false
+        script.toolListDevices([labelFilter: 'none', roomFilter: 'den']).roomFilterMatchedKnownRoom == true
+        !script.toolListDevices([roomFilter: 'Den']).containsKey('roomFilterMatchedKnownRoom')
+    }
+
+    def "an unreadable capability feed is reported and capabilityFilter matches nothing"() {
+        given:
+        settingsMap.selectedDevices = [makeDevice(id: 1, capabilities: [[name: 'Switch']])]
+        hubGet.register('/hub2/vrb/devices') { throw new IOException('down') }
+
+        when:
+        def result = script.toolListDevices([capabilityFilter: 'Switch'])
+
+        then:
+        result.devices == []
+        result.capabilitiesUnavailable == true
+        result.note.contains('/hub2/vrb/devices')
+        !result.containsKey('capabilityFilterMatchedKnownCapability')
+    }
+
+    // ---- projection -------------------------------------------------------
+
+    def "fields projects the record, id is always kept, and page-only fields need no device read"() {
+        given:
+        settingsMap.selectedDevices = [makeDevice(id: 1, label: 'Lamp', room: 'Den', capabilities: [[name: 'Switch']])]
+
+        when:
+        def result = script.toolListDevices([fields: ['label', 'roomId', 'notes', 'source', 'capabilities']])
+
+        then:
+        result.devices == [[id: '1', label: 'Lamp', roomId: null, notes: null, source: null, capabilities: ['Switch']]]
+        !fullJsonReads()
+    }
+
+    def "an empty fields list is the default record"() {
+        given:
+        settingsMap.selectedDevices = [makeDevice(id: 1)]
+
+        expect:
+        script.toolListDevices([fields: []]).devices == script.toolListDevices([:]).devices
+    }
+
+    def "unknown fields are refused with the valid names"() {
         given:
         settingsMap.selectedDevices = [makeDevice(id: 1)]
 
         when:
-        script.toolListDevices(false, 0, 0, null, null, null, null, null, null, null, roomF, onlyOnArg, null, attrNames)
+        script.toolListDevices([fields: ['id', 'lable']])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('lable')
+        ex.message.contains('deviceNetworkId')
+    }
+
+    def "attributeNames picks currentStates attributes in caller order; [] is the default set"() {
+        given:
+        settingsMap.selectedDevices = [makeDevice(id: 1, attrValues: [switch: 'on', level: 5, colorName: 'Red'])]
+
+        expect:
+        script.toolListDevices([attributeNames: ['colorName', 'switch']]).devices[0].currentStates == [colorName: 'Red', switch: 'on']
+        script.toolListDevices([attributeNames: []]).devices[0].currentStates == [switch: 'on', level: '5']
+    }
+
+    def "credential-named attributes are masked when credential redaction is on"() {
+        given:
+        settingsMap.selectedDevices = [makeDevice(id: 1, attrValues: [apiToken: 'abc123', switch: 'on'])]
+
+        when:
+        def masked = script.toolListDevices([attributeNames: ['apiToken', 'switch']])
+        settingsMap.redactCredentials = false
+        def plain = script.toolListDevices([attributeNames: ['apiToken']])
+
+        then:
+        masked.devices[0].currentStates == [apiToken: script._appConfigRedactedMarker(), switch: 'on']
+        plain.devices[0].currentStates == [apiToken: 'abc123']
+    }
+
+    // ---- detailed -------------------------------------------------------
+
+    def "detailed reads each listed device for typed attributes, commands and driverNamespace"() {
+        given:
+        def lamp = makeDevice(id: 1, label: 'Lamp', capabilities: [[name: 'Switch'], [name: 'SwitchLevel']], attrValues: [switch: 'on', level: 40])
+        settingsMap.selectedDevices = [lamp]
+        hubGet.register('/device/fullJson/1') {
+            JsonOutput.toJson([device: [id: 1, name: 'Dimmer', label: 'Lamp', deviceTypeNamespace: 'hubitat', capabilities: ['Switch'],
+                currentStates: [switch: [value: 'on'], level: [value: '40', dataType: 'NUMBER', numberValue: 40, unit: '%']]],
+                commands: [[name: 'setLevel', parameters: [[name: 'level', type: 'NUMBER']]], [name: 'on']]])
+        }
+
+        when:
+        def result = script.toolListDevices([format: 'detailed'])
+
+        then:
+        with(result.devices[0]) {
+            capabilities == ['Switch', 'SwitchLevel']
+            attributes.find { it.name == 'level' }.value == 40
+            attributes.find { it.name == 'level' }.unit == '%'
+            !attributes.find { it.name == 'switch' }.containsKey('unit')
+            commands == [[name: 'setLevel', arguments: [[name: 'level', type: 'NUMBER']]], [name: 'on', arguments: null]]
+            driverNamespace == 'hubitat'
+            !containsKey('currentStates')
+        }
+        fullJsonReads() == ['/device/fullJson/1']
+    }
+
+    def "fields naming attributes reads only the devices on the page"() {
+        given:
+        settingsMap.selectedDevices = (1..5).collect { makeDevice(id: it, attrValues: [switch: 'on']) }
+
+        when:
+        def result = script.toolListDevices([fields: ['attributes'], limit: 2])
+
+        then:
+        result.devices*.id == ['1', '2']
+        result.devices[0].attributes == [[name: 'switch', dataType: null, value: 'on']]
+        fullJsonReads() == ['/device/fullJson/1', '/device/fullJson/2']
+    }
+
+    def "a device whose detail read fails is still listed, marked, and the response is partial"() {
+        given:
+        settingsMap.selectedDevices = [makeDevice(id: 1), makeDevice(id: 2)]
+        hubGet.register('/device/fullJson/2') { throw new IOException('timeout') }
+
+        when:
+        def result = script.toolListDevices([format: 'detailed'])
+
+        then:
+        result.devices*.id == ['1', '2']
+        !result.devices[0].containsKey('metadataUnavailable')
+        result.devices[1].metadataUnavailable == true
+        result.devices[1].label == 'Test Device'
+        result.partial == true
+    }
+
+    // ---- ids + context ----------------------------------------------------
+
+    def "format=ids returns integer ids, filtered and paged"() {
+        given:
+        settingsMap.selectedDevices = (1..4).collect { makeDevice(id: it, label: it % 2 ? 'Odd' : 'Even') }
+
+        when:
+        def result = script.toolListDevices([format: 'ids', labelFilter: 'odd', limit: 1])
+
+        then:
+        result.deviceIds == [1]
+        result.count == 1
+        result.total == 2
+        result.unfilteredTotal == 4
+        result.hasMore == true
+        result.nextCursor == '1'
+        !result.containsKey('devices')
+    }
+
+    def "format=context is a self-contained text snapshot with page values and feed capabilities"() {
+        given:
+        sharedLocation.hsmStatus = 'armedAway'
+        settingsMap.selectedDevices = [
+            makeDevice(id: 1, label: 'Kitchen Light', room: 'Kitchen', capabilities: [[name: 'Switch'], [name: 'SwitchLevel']],
+                attrValues: [switch: 'on', level: 80, temperature: 72.5]),
+            makeDevice(id: 2, label: 'Roomless Plug', capabilities: [[name: 'Switch']], attrValues: [switch: 'off'])
+        ]
+
+        when:
+        def result = script.toolListDevices([format: 'context'])
+
+        then:
+        result.mode == 'Home'
+        result.hsmStatus == 'armedAway'
+        result.count == 2
+        result.total == 2
+        def lines = result.summary.readLines()
+        lines[0] == 'Mode: Home'
+        lines[1] == 'HSM: armedAway'
+        lines[2] == 'Devices: 2 of 2'
+        lines[3] == '- Kitchen Light (1, Kitchen) - Switch, SwitchLevel; switch=on, level=80, temperature=72.5'
+        lines[4] == '- Roomless Plug (2, No room) - Switch; switch=off'
+        !fullJsonReads()
+    }
+
+    def "format=context pages at 50 by default and names the next cursor in its header"() {
+        given:
+        settingsMap.selectedDevices = (1..60).collect { makeDevice(id: it, label: "Device-${it}") }
+
+        when:
+        def first = script.toolListDevices([format: 'context'])
+        def second = script.toolListDevices([format: 'context', cursor: first.nextCursor])
+
+        then:
+        first.count == 50
+        first.total == 60
+        first.nextCursor == '50'
+        first.summary.contains("Devices: 50 of 60 (nextCursor=50 -- pass cursor:'50' for the next page)")
+        second.count == 10
+        !second.containsKey('nextCursor')
+    }
+
+    def "an explicit attribute projection that matches nothing in context says so"() {
+        given:
+        settingsMap.selectedDevices = [makeDevice(id: 1, attrValues: [switch: 'on'])]
+
+        expect:
+        script.toolListDevices([format: 'context', attributeNames: ['temp']]).attributeNamesMatchedNoAttributes == true
+        !script.toolListDevices([format: 'context', attributeNames: ['switch']]).containsKey('attributeNamesMatchedNoAttributes')
+    }
+
+    @Unroll
+    def "an empty authorized scope keeps the #format shape without reading the hub"() {
+        when:
+        def result = script.toolListDevices([format: format])
+
+        then:
+        result.total == 0
+        result.message.contains('No devices selected')
+        result.containsKey(key)
+        hubGet.calls.isEmpty()
+
+        where:
+        format    | key
+        'summary' | 'devices'
+        'ids'     | 'deviceIds'
+        'context' | 'summary'
+    }
+
+    // ---- paging -----------------------------------------------------------
+
+    def "cursor pages through the list once, 50 at a time unless limit is set"() {
+        given:
+        settingsMap.selectedDevices = (1..120).collect { makeDevice(id: it, label: "D${it}") }
+
+        when:
+        def ids = []
+        def pages = []
+        def cursor = ''
+        while (cursor != null) {
+            def page = script.toolListDevices([cursor: cursor, fields: ['id']])
+            pages << page
+            ids.addAll(page.devices*.id)
+            cursor = page.nextCursor
+            assert pages.size() < 5
+        }
+
+        then:
+        ids == (1..120)*.toString()
+        pages*.count == [50, 50, 20]
+        pages[1].offset == 50
+        pages[1].limit == 50
+        pages[2].hasMore == false
+    }
+
+    def "limit alone pages from the start and hands back a cursor"() {
+        given:
+        settingsMap.selectedDevices = (1..3).collect { makeDevice(id: it) }
+
+        when:
+        def result = script.toolListDevices([limit: 2])
+
+        then:
+        result.devices*.id == ['1', '2']
+        result.offset == 0
+        result.limit == 2
+        result.nextCursor == '2'
+    }
+
+    @Unroll
+    def "cursor #cursor is refused"() {
+        given:
+        settingsMap.selectedDevices = (1..3).collect { makeDevice(id: it) }
+
+        when:
+        script.toolListDevices([cursor: cursor])
 
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.contains(expected)
 
         where:
-        label                        | roomF | onlyOnArg | attrNames        | expected
-        'non-string roomFilter'      | 42    | null      | null             | 'roomFilter'
-        'non-boolean onlyOn'         | null  | 'yes'     | null             | 'onlyOn'
-        'non-array attributeNames'   | null  | null      | 'switch'         | 'attributeNames'
-        'non-string attribute entry' | null  | null      | ['switch', 7]    | 'attributeNames'
+        cursor | expected
+        'abc'  | 'hub_list_devices nextCursor'
+        '3'    | 'out of range'
+        '-1'   | 'out of range'
     }
 
-    def "format='context' returns a self-contained text snapshot with mode header and per-device lines"() {
-        given:
-        settingsMap.selectedDevices = seedContextDevices()
+    // ---- validation -------------------------------------------------------
 
+    @Unroll
+    def "validation: #label is refused before any hub read, even with nothing authorized"() {
         when:
-        def result = script.toolListDevices(false, 0, 0, null, null, null, 'context', null, null, null)
-
-        then: 'structured fields ride alongside the text'
-        result.mode == 'Home'
-        result.count == 4
-        result.total == 4
-        !result.containsKey('devices')
-
-        and: 'the summary leads with the header'
-        def lines = result.summary.readLines()
-        lines[0] == 'Mode: Home'
-        lines[1] == 'Devices: 4 of 4'
-
-        and: 'device lines carry label (id, room) - capabilities; attr=value'
-        lines.contains('- Kitchen Light (1, Kitchen) - Switch, SwitchLevel; switch=on, level=80')
-        lines.contains('- Porch Light (3, Porch) - Switch; switch=off')
-        lines.contains('- Roomless Plug (4, No room) - Switch; switch=on')
-    }
-
-    def "format='context' includes the HSM line only when the hub exposes a status"() {
-        given:
-        settingsMap.selectedDevices = [makeDevice(id: 1, label: 'D')]
-        sharedLocation.hsmStatus = 'armedAway'
-
-        when:
-        def result = script.toolListDevices(false, 0, 0, null, null, null, 'context', null, null, null)
-
-        then:
-        result.hsmStatus == 'armedAway'
-        result.summary.readLines()[1] == 'HSM: armedAway'
-    }
-
-    def "format='context' defaults to a 50-device page and emits nextCursor without opting into cursor mode"() {
-        given:
-        settingsMap.selectedDevices = (0..<60).collect { i -> makeDevice(id: i + 1, label: "Device-${String.format('%03d', i)}") }
-
-        when:
-        def result = script.toolListDevices(false, 0, 0, null, null, null, 'context', null, null, null)
-
-        then:
-        result.count == 50
-        result.total == 60
-        result.nextCursor == '50'
-        result.nextOffset == 50
-        result.hasMore == true
-
-        and: 'the header names the continuation cursor'
-        result.summary.readLines().find { it.startsWith('Devices:') }.contains('nextCursor=50')
-
-        when: 'the advertised cursor fetches the remainder'
-        def page2 = script.toolListDevices(false, 0, 0, null, null, null, 'context', null, '50', null)
-
-        then:
-        page2.count == 10
-        !page2.containsKey('nextCursor')
-    }
-
-    def "format='context' with attributeNames projects only the named attributes in caller order"() {
-        given:
-        settingsMap.selectedDevices = [
-            makeDevice(id: 1, label: 'Multi', room: 'Den',
-                capabilities: [[name: 'Switch']],
-                attrValues: [switch: 'on', level: 80, temperature: 71])
-        ]
-
-        when:
-        def result = script.toolListDevices(false, 0, 0, null, null, null, 'context', null, null, null, null, null, null, ['temperature', 'switch'])
-
-        then:
-        result.summary.readLines().last() == '- Multi (1, Den) - Switch; temperature=71, switch=on'
-    }
-
-    def "format='context' composes with roomFilter + onlyOn for a scoped what's-on snapshot"() {
-        given:
-        settingsMap.selectedDevices = seedContextDevices()
-
-        when:
-        def result = script.toolListDevices(false, 0, 0, null, null, null, 'context', null, null, null, 'Kitchen', true)
-
-        then:
-        result.count == 1
-        result.total == 1
-        result.unfilteredTotal == 4
-        result.summary.readLines().last().startsWith('- Kitchen Light (1, Kitchen)')
-    }
-
-    def "scope='all' rejects the state-based filters and the context format"() {
-        given:
-        settingsMap.selectedDevices = [makeDevice(id: 1)]
-
-        when:
-        script.toolListDevices(false, 0, 0, null, null, null, fmt, null, null, 'all', roomF, onlyOnArg, since, attrNames)
+        script.toolListDevices(args)
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains("scope='all'")
+        ex.message.contains(expected)
+        hubGet.calls.isEmpty()
 
         where:
-        fmt       | roomF     | onlyOnArg | since | attrNames
-        'context' | null      | null      | null  | null
-        null      | 'Kitchen' | null      | null  | null
-        null      | null      | true      | null  | null
-        null      | null      | null      | '0'   | null
-        null      | null      | null      | null  | ['switch']
+        label                              | args                                       || expected
+        'the removed detailed argument'    | [detailed: true]                           || 'Unknown argument: detailed'
+        'the removed offset argument'      | [offset: 5]                                || 'Unknown argument: offset'
+        'the removed filter argument'      | [filter: 'virtual']                        || 'Unknown argument: filter'
+        'the removed onlyOn argument'      | [onlyOn: true]                             || 'Unknown argument: onlyOn'
+        'an unknown scope'                 | [scope: 'bogus']                           || 'scope must be one of'
+        'an unknown format'                | [format: 'xml']                            || 'summary, detailed, ids, context'
+        'a non-string labelFilter'         | [labelFilter: ['a']]                       || 'labelFilter must be a string'
+        'a non-string capabilityFilter'    | [capabilityFilter: 7]                      || 'capabilityFilter must be a string'
+        'a non-string roomFilter'          | [roomFilter: 42]                           || 'roomFilter must be a string'
+        'a non-boolean disabled'           | [disabled: 'yes']                          || 'disabled must be a boolean'
+        'a zero staleHours'                | [staleHours: 0]                            || 'staleHours'
+        'a string staleHours'              | [staleHours: '24']                         || 'staleHours'
+        'an offset-less changedSince'      | [changedSince: '2026-06-23T10:00:00']      || 'Unparseable changedSince'
+        'a list stateFilter'               | [stateFilter: ['switch']]                  || 'stateFilter must be an object'
+        'a nested stateFilter value'       | [stateFilter: [switch: [on: 1]]]           || 'stateFilter must be an object'
+        'a string attributeNames'          | [attributeNames: 'switch']                 || 'attributeNames must be an array'
+        'a non-string attribute name'      | [attributeNames: ['switch', 7]]            || 'attributeNames must be an array'
+        'a string fields'                  | [fields: 'id']                             || 'fields must be an array'
+        'a negative limit'                 | [limit: -1]                                || 'limit must be a non-negative integer'
+        'a fractional limit'               | [limit: 2.5]                               || 'limit must be a non-negative integer'
+        'attributeNames on detailed'       | [format: 'detailed', attributeNames: []]   || 'attributeNames applies'
+        'fields on ids'                    | [format: 'ids', fields: ['id']]            || 'fields applies'
+        'scope all with context'           | [scope: 'all', format: 'context']          || "scope='all' supports"
+        'scope all with stateFilter'       | [scope: 'all', stateFilter: [switch: 'on']]|| "scope='all' lists identity only"
+        'scope all with staleHours'        | [scope: 'all', staleHours: 1]              || "scope='all' lists identity only"
+        'scope all with changedSince'      | [scope: 'all', changedSince: 0]            || "scope='all' lists identity only"
+        'scope all with attributeNames'    | [scope: 'all', attributeNames: []]         || "scope='all' lists identity only"
+        'scope all with currentStates'     | [scope: 'all', fields: ['currentStates']]  || "scope='all' lists identity only"
     }
 
-    def "via dispatch: format='context' + new filters round-trip the tools/call envelope"() {
-        given:
-        settingsMap.useGateways = true
-        settingsMap.selectedDevices = seedContextDevices()
-
-        when:
-        def response = mcpDriver.callTool('hub_list_devices', [format: 'context', roomFilter: 'Kitchen'])
-
-        then:
-        response.error == null
-        !response.result.isError
-        def inner = mcpDriver.parseInner(response)
-        inner.mode == 'Home'
-        inner.count == 2
-        inner.summary.contains('- Kitchen Sensor (2, Kitchen)')
-    }
-
-    def "attributeNames without format='context' is rejected instead of silently ignored"() {
+    def "server-injected keys are not caller arguments, and a non-numeric clock is ignored"() {
         given:
         settingsMap.selectedDevices = [makeDevice(id: 1)]
 
-        when:
-        script.toolListDevices(false, 0, 0, null, null, null, fmt, null, null, null, null, null, null, ['switch'])
-
-        then:
-        def ex = thrown(IllegalArgumentException)
-        ex.message.contains('attributeNames')
-        ex.message.contains("format='context'")
-
-        where:
-        fmt << [null, 'summary', 'detailed', 'ids']
+        expect:
+        script.toolListDevices([__reqT0: 'banana']).devices*.id == ['1']
     }
 
-    def "bad arguments are rejected even when no devices are authorized"() {
-        // The type/format validations run BEFORE the empty-inventory early return, so an
-        // empty hub answers a bad call with isError validation result instead of a success envelope.
+    // ---- scope all / owned --------------------------------------------------
+
+    def "scope='all' lists every page device with mcpAuthorized and counts over the filtered set"() {
         given:
-        settingsMap.selectedDevices = []
+        settingsMap.selectedDevices = [makeDevice(id: 1, label: 'Lamp A', capabilities: [[name: 'Switch']])]
+        childDevicesList << makeDevice(id: 2, label: 'Lamp B', capabilities: [[name: 'Switch']])
+        hubOnly = [makeDevice(id: 3, label: 'Lamp C', capabilities: [[name: 'Switch']]), makeDevice(id: 4, label: 'Lock', capabilities: [[name: 'Lock']])]
 
         when:
-        script.toolListDevices(false, 0, 0, null, null, null, 'bogus', null, null, null)
+        def result = script.toolListDevices([scope: 'all', capabilityFilter: 'switch'])
 
         then:
-        thrown(IllegalArgumentException)
-
-        when:
-        script.toolListDevices(false, 0, 0, null, null, null, null, null, null, null, null, 'yes')
-
-        then:
-        thrown(IllegalArgumentException)
-    }
-
-    def "format='context' keeps its shape on an empty install"() {
-        given:
-        settingsMap.selectedDevices = []
-
-        when:
-        def result = script.toolListDevices(false, 0, 0, null, null, null, 'context', null, null, null)
-
-        then: 'context shape, not the bare devices-array shape'
-        result.mode == 'Home'
-        result.count == 0
-        result.total == 0
-        !result.containsKey('devices')
-        result.message
-
-        and: 'the summary is still a self-contained snapshot'
-        def lines = result.summary.readLines()
-        lines[0] == 'Mode: Home'
-        lines[1] == 'Devices: 0 of 0'
-        lines[2] == result.message
-    }
-
-    def "format='context' keeps its shape and the filter echoes when offset exceeds the filtered total"() {
-        given:
-        settingsMap.selectedDevices = seedContextDevices()
-
-        when:
-        def result = script.toolListDevices(false, 50, 0, null, null, null, 'context', null, null, null, 'Kitchen')
-
-        then: 'context shape with the shared echoes, not the devices-array shape'
-        result.mode == 'Home'
-        result.count == 0
-        result.total == 2
-        result.roomFilter == 'Kitchen'
+        result.scope == 'all'
+        result.devices*.id == ['1', '2', '3']
+        result.devices*.mcpAuthorized == [true, true, false]
+        result.devices[2] == [id: '3', label: 'Lamp C', name: 'TestDriver', driver: 'TestDriver', room: null, protocol: 'virtual',
+            disabled: false, capabilities: ['Switch'], mcpAuthorized: false]
+        result.mcpAuthorizedCount == 2
+        result.unauthorizedCount == 1
         result.unfilteredTotal == 4
-        !result.containsKey('devices')
-        result.summary.readLines()[0] == 'Mode: Home'
-        result.message.contains('exceeds')
+        !fullJsonReads()
     }
 
-    def "summary offset-exceeds early return now carries the new filter echoes too"() {
+    def "scope='all' leaves capabilities out unless asked, and the bypass authorizes every device"() {
         given:
-        settingsMap.selectedDevices = seedContextDevices()
+        settingsMap.bypassDeviceAllowlist = true
+        hubOnly = [makeDevice(id: 3, label: 'C')]
 
         when:
-        def result = script.toolListDevices(false, 50, 0, null, null, null, null, null, null, null, null, true)
+        def result = script.toolListDevices([scope: 'all'])
+        def ids = script.toolListDevices([scope: 'all', format: 'ids'])
 
         then:
-        result.devices == []
-        result.onlyOn == true
-        result.unfilteredTotal == 4
-        result.filter == 'all'
-        result.message.contains('exceeds')
+        !result.devices[0].containsKey('capabilities')
+        result.devices[0].mcpAuthorized == true
+        result.unauthorizedCount == 0
+        !hubGet.calls.any { it.path == '/hub2/vrb/devices' }
+        ids.deviceIds == [3]
+        ids.mcpAuthorizedCount == 1
     }
 
-    def "context lines append the reported unit directly after the value"() {
-        // Real hub State objects carry a unit (degrees-F, "%"); the line renders value+unit
-        // with no separator -- compact and unambiguous for a model reader, and pinned here
-        // because the guide documents the exact shape.
+    def "scope='owned' lists only this app's children, with their saved driver namespace when detailed"() {
         given:
-        def dev = makeDevice(id: 9, label: 'Attic T&H', room: 'Attic', capabilities: [[name: 'TemperatureMeasurement']])
-        dev.currentStates = [[name: 'temperature', value: '71.5', unit: '°F'], [name: 'humidity', value: '48', unit: '%']]
-        settingsMap.selectedDevices = [dev]
-
-        when:
-        def result = script.toolListDevices(false, 0, 0, null, null, null, 'context', null, null, null)
-
-        then:
-        result.summary.readLines().last() == '- Attic T&H (9, Attic) - TemperatureMeasurement; temperature=71.5°F, humidity=48%'
-    }
-
-    private static class ThrowingStatesDevice extends TestDevice {
-        List getCurrentStates() { throw new RuntimeException('driver exploded') }
-    }
-
-    def "a native state transport failure marks partial context and retains healthy devices"() {
-        given:
-        def broken = new ThrowingStatesDevice(id: 5, label: 'Broken Driver', roomName: 'Den',
-            capabilities: [[name: 'Switch']])
-        settingsMap.selectedDevices = [broken, makeDevice(id: 6, label: 'Fine', attrValues: [switch: 'on'])]
-
-        when:
-        def result = script.toolListDevices(false, 0, 0, null, null, null, 'context', null, null, null)
-
-        then:
-        result.partial == true
-        result.count == 2
-        result.summary.contains('Device 5 (5, No room) (state unavailable) (capabilities unavailable)')
-        result.summary.contains('Fine (6, No room); switch=on')
-    }
-
-    @spock.lang.Unroll
-    def "via dispatch: filter='virtual' rejects #label"() {
-        // toolListVirtualDevices evaluates none of the new args; silently dropping them
-        // would leave the caller believing the filter applied. All five clauses of the
-        // guard are exercised so none can be dropped while the suite stays green.
-        given:
-        settingsMap.useGateways = true
         settingsMap.selectedDevices = [makeDevice(id: 1)]
-
-        when:
-        def response = mcpDriver.callTool('hub_list_devices', [filter: 'virtual'] + extra)
-
-        then:
-        response.result?.isError == true
-        mcpDriver.parseInner(response)?.error?.contains("filter='virtual'")
-
-        where:
-        label                | extra
-        "format='context'"   | [format: 'context']
-        'roomFilter'         | [roomFilter: 'Kitchen']
-        'onlyOn=true'        | [onlyOn: true]
-        'changedSince'       | [changedSince: 0]
-        'attributeNames'     | [attributeNames: ['switch']]
-    }
-
-    def "via dispatch: filter='virtual' rejects a MALFORMED state arg instead of silently routing"() {
-        // A non-Boolean onlyOn fails the == true guard, so without up-front type
-        // validation it would silently route to the virtual listing as if never passed.
-        given:
-        settingsMap.useGateways = true
-        settingsMap.selectedDevices = [makeDevice(id: 1)]
-
-        when:
-        def response = mcpDriver.callTool('hub_list_devices', [filter: 'virtual', onlyOn: 'true'])
-
-        then:
-        response.result?.isError == true
-        mcpDriver.parseInner(response)?.error?.contains('boolean')
-    }
-
-    def "via dispatch: filter='virtual' tolerates the documented no-op values"() {
-        // onlyOn=false and roomFilter='' are no-ops everywhere else; a generic client
-        // that populates every schema property must not be rejected for them here.
-        given:
-        settingsMap.useGateways = true
-        settingsMap.selectedDevices = [makeDevice(id: 1)]
-
-        when:
-        def response = mcpDriver.callTool('hub_list_devices', [filter: 'virtual', onlyOn: false, roomFilter: ''])
-
-        then:
-        response.error == null
-        !response.result.isError
-    }
-
-    def "scope='all' tolerates the documented no-op values too"() {
-        given:
-        hubGet.register('/device/listWithCapabilities/json') { params ->
-            '[{"id": 1, "label": "Hub Device", "capabilities": ["Switch"]}]'
+        childDevicesList << makeDevice(id: 2, label: 'My Virtual')
+        hubGet.register('/device/fullJson/2') {
+            JsonOutput.toJson([device: [id: 2, name: 'Virtual Switch', label: 'My Virtual', deviceTypeNamespace: 'hubitat',
+                data: [mcpDriverNamespace: 'custom.ns'], capabilities: [], currentStates: [:]], commands: []])
         }
+
+        when:
+        def summary = script.toolListDevices([scope: 'owned'])
+        def detailed = script.toolListDevices([scope: 'owned', format: 'detailed'])
+
+        then:
+        summary.devices*.id == ['2']
+        summary.devices[0].mcpManaged == true
+        detailed.devices[0].driverNamespace == 'custom.ns'
+    }
+
+    def "scope='owned' with no children says how to create one, without a hub read"() {
+        given:
         settingsMap.selectedDevices = [makeDevice(id: 1)]
 
         when:
-        def result = script.toolListDevices(false, 0, 0, null, null, null, null, null, null, 'all', '', false)
+        def result = script.toolListDevices([scope: 'owned'])
 
         then:
-        notThrown(IllegalArgumentException)
-        result.devices.size() == 1
+        result == [devices: [], count: 0, total: 0,
+                   message: 'No MCP-managed virtual devices found. Use hub_manage_virtual_device(action="create") to create one.']
+        hubGet.calls.isEmpty()
     }
 
-    def "via dispatch: every new argument plumbs through the positional call"() {
-        // The dispatch case is a fourteen-argument positional call -- this pins the
-        // plumbing of all five new args at the Spock layer, not just live e2e.
+    // ---- page failures ----------------------------------------------------
+
+    @Unroll
+    def "an unreadable Devices page (#label) is a runtime error, not an empty list"() {
         given:
-        settingsMap.useGateways = true
-        settingsMap.selectedDevices = seedContextDevices()
+        settingsMap.selectedDevices = [makeDevice(id: 1)]
+        hubGet.register('/hub2/devicesList', responder)
 
         when:
-        def response = mcpDriver.callTool('hub_list_devices',
-            [format: 'context', roomFilter: 'Kitchen', onlyOn: true, changedSince: 0, attributeNames: ['switch']])
+        def result = script.toolListDevices([:])
 
         then:
-        response.error == null
-        def inner = mcpDriver.parseInner(response)
-        inner.roomFilter == 'Kitchen'
-        inner.onlyOn == true
-        inner.changedSince instanceof String
+        result.success == false
+        result.isError == true
+        result.error.startsWith("The hub's device list (/hub2/devicesList) could not be read: ")
+        result.note.contains("Devices page")
 
-        and: 'Kitchen Light is on but has no lastActivity, so changedSince=0 excludes it'
-        inner.count == 0
-        inner.unfilteredTotal == 4
+        where:
+        label            | responder
+        'transport'      | { throw new IOException('read timed out') }
+        'empty body'     | { '' }
+        'wrong shape'    | { JsonOutput.toJson([devices: 'nope']) }
+        'a node with no id' | { JsonOutput.toJson([devices: [[key: 'DEV-1', data: [name: 'x']]]]) }
     }
 
-    def "format='context' includes MCP-managed child devices in the population"() {
-        given:
-        settingsMap.selectedDevices = [makeDevice(id: 1, label: 'Authorized', attrValues: [switch: 'on'])]
-        childDevicesList << new TestDevice(id: 900, label: 'MCP Virtual Switch',
-            capabilities: [[name: 'Switch']], attributeValues: [switch: 'off'])
+    // ---- request budget on detailed pages -------------------------------------
 
-        when:
-        def result = script.toolListDevices(false, 0, 0, null, null, null, 'context', null, null, null)
-
-        then:
-        result.count == 2
-        result.summary.readLines().contains('- MCP Virtual Switch (900, No room) - Switch; switch=off')
-    }
-
-    def "attributeNames: [] means the default set, matching the fields convention"() {
-        given:
-        settingsMap.selectedDevices = [makeDevice(id: 1, label: 'D', attrValues: [switch: 'on', temperature: 71])]
-
-        when:
-        def result = script.toolListDevices(false, 0, 0, null, null, null, 'context', null, null, null, null, null, null, [])
-
-        then:
-        result.summary.readLines().last() == '- D (1, No room); switch=on, temperature=71'
-        !result.containsKey('attributeNamesMatchedNoAttributes')
-    }
-
-    def "an explicit projection that matches nothing reports the typo-vs-absence diagnostic"() {
-        given:
-        settingsMap.selectedDevices = [makeDevice(id: 1, label: 'D', attrValues: [temperature: 71])]
-
-        when: "'temp' is the classic mistyping of 'temperature'"
-        def result = script.toolListDevices(false, 0, 0, null, null, null, 'context', null, null, null, null, null, null, ['temp'])
-
-        then:
-        result.attributeNamesMatchedNoAttributes == true
-
-        when: 'a matching projection does not carry the diagnostic'
-        def ok = script.toolListDevices(false, 0, 0, null, null, null, 'context', null, null, null, null, null, null, ['temperature'])
-
-        then:
-        !ok.containsKey('attributeNamesMatchedNoAttributes')
-    }
-
-    // ---- legacy request budget (#495) -----------------------------------
-
-    // Each native device read advances the request clock by 2500 ms, so a 6000 ms cloud budget is
-    // spent once the third device of a page has been read.
+    // Each detail read advances the request clock by 2500 ms, so a 6000 ms cloud budget is spent
+    // once the third device of a page has been read.
     private AtomicLong budgetedDevices(int count) {
         def clock = new AtomicLong(1234567890000L)
         NOW_OVERRIDE.set({ -> clock.get() })
         settingsMap.relayBudgetMs = 6000
         script.metaClass._isCloudRequest = { -> true }
         settingsMap.selectedDevices = (1..count).collect { i ->
-            def d = makeDevice(id: i, name: "D${i}", label: "Device-${i}")
+            def d = makeDevice(id: i, label: "Device-${i}")
             NativeInventoryFixture.register(hubGet, i.toString()) { clock.addAndGet(2500L); d }
             d
         }
         return clock
     }
 
-    private Map listBudgeted(AtomicLong clock, Map opts = [:]) {
-        script.toolListDevices(opts.detailed ?: false, opts.offset ?: 0, opts.limit ?: 0, opts.filter, null, null, opts.format, null, opts.cursor,
-            null, null, null, null, null, opts.containsKey('reqT0') ? opts.reqT0 : clock.get())
-    }
-
-    def "a page whose device reads reach the request budget ends early at the first device not returned"() {
+    def "a detailed page whose reads reach the request budget ends early with a cursor"() {
         given:
         def clock = budgetedDevices(10)
 
         when:
-        def result = listBudgeted(clock, [detailed: detailed])
+        def result = script.toolListDevices([format: 'detailed', __reqT0: clock.get()])
 
         then:
         result.devices*.id == ['1', '2', '3']
-        result.count == 3
         result.total == 10
         result.budgetLimited == true
         result.hasMore == true
         result.offset == 0
-        result.nextOffset == 3
         result.nextCursor == '3'
         result.note.contains('devices 1-3 of 10')
-        result.note.contains('7 more device(s) remain')
-        result.note.contains('offset 3')
-
-        where: 'the detailed format shares the cut'
-        detailed << [false, true]
+        result.note.contains("cursor '3'")
     }
 
-    def "following the budget cursor pages through every device exactly once, in order"() {
+    def "following the budget cursor reads every device exactly once, in order"() {
         given:
         def clock = budgetedDevices(10)
 
         when:
         def ids = []
+        def pages = 0
         def cursor = ''
-        def pageResults = []
         while (cursor != null) {
-            def page = listBudgeted(clock, [cursor: cursor])
-            pageResults << page
+            def page = script.toolListDevices([format: 'detailed', cursor: cursor, __reqT0: clock.get()])
             ids.addAll(page.devices*.id)
             cursor = page.nextCursor
-            assert pageResults.size() < 10 : 'pagination runaway'
+            assert ++pages < 10
         }
 
-        then: 'three budget-cut pages, then a last page that fits'
-        ids == (1..10).collect { it.toString() }
-        pageResults.size() == 4
-        pageResults[1].offset == 3
-        pageResults[1].limit == 50
-        pageResults[1].note.contains('devices 4-6 of 10')
-        pageResults[1].note.contains("cursor '6'")
+        then:
+        ids == (1..10)*.toString()
+        pages == 4
     }
 
-    def "an offset-paged caller is told to continue by offset, and that call succeeds"() {
+    def "a spent budget still returns one device, and summary pages are never cut"() {
         given:
         def clock = budgetedDevices(10)
 
         when:
-        def first = listBudgeted(clock, [offset: 2, limit: 5])
-        def next = listBudgeted(clock, [offset: first.nextOffset, limit: 5])
+        def detailed = script.toolListDevices([format: 'detailed', __reqT0: clock.get() - 7000L])
+        def summary = script.toolListDevices([__reqT0: clock.get() - 7000L])
 
         then:
-        first.devices*.id == ['3', '4', '5']
-        first.note.contains('offset 5')
-        !first.note.contains('cursor')
-        next.devices*.id == ['6', '7', '8']
+        detailed.devices*.id == ['1']
+        detailed.nextCursor == '1'
+        summary.devices.size() == 10
+        !summary.containsKey('budgetLimited')
     }
 
-    def "a request that reaches the page with its budget already spent still returns one device"() {
-        given:
-        def clock = budgetedDevices(10)
-
-        when:
-        def result = listBudgeted(clock, [reqT0: clock.get() - 7000L])
-
-        then:
-        result.devices*.id == ['1']
-        result.budgetLimited == true
-        result.nextOffset == 1
-    }
-
-    def "devices already read while filtering are not cut from the page"() {
-        given: 'no bulk inventory, so the filter reads every device and spends the budget'
-        def clock = budgetedDevices(10)
-
-        when:
-        def result = listBudgeted(clock, [filter: 'enabled'])
-
-        then:
-        result.devices.size() == 10
-        !result.containsKey('budgetLimited')
-    }
-
-    def "a non-numeric request clock from a client is ignored"() {
-        given:
-        def clock = budgetedDevices(10)
-
-        when:
-        def result = listBudgeted(clock, [reqT0: 'banana'])
-
-        then:
-        result.devices.size() == 10
-        !result.containsKey('budgetLimited')
-    }
-
-    def "the context format cuts its page at the budget and names the cursor in its header"() {
-        given:
-        def clock = budgetedDevices(10)
-
-        when:
-        def result = listBudgeted(clock, [format: 'context', limit: 20])
-
-        then:
-        result.count == 3
-        result.budgetLimited == true
-        result.nextCursor == '3'
-        result.summary.contains('Devices: 3 of 10 (nextCursor=3')
-    }
-
-    def "no page is cut without a request clock or on a LAN with no budget"() {
+    def "no detailed page is cut without a request clock or on a LAN with no budget"() {
         given:
         def clock = budgetedDevices(10)
         if (lan) script.metaClass._isCloudRequest = { -> false }
 
         when:
-        def result = listBudgeted(clock, withClock ? [:] : [reqT0: null])
+        def result = script.toolListDevices(withClock ? [format: 'detailed', __reqT0: clock.get()] : [format: 'detailed'])
 
         then:
         result.devices.size() == 10
         !result.containsKey('budgetLimited')
-        !result.containsKey('nextCursor')
 
         where:
         withClock | lan
         false     | false
         true      | true
+    }
+
+    // ---- dispatch (one per shape) ----------------------------------------------
+
+    @Unroll
+    def "via dispatch (useGateways=#useGateways): #format round-trips the tools/call envelope"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.selectedDevices = [makeDevice(id: 1, label: 'Kitchen Light', capabilities: [[name: 'Switch']], attrValues: [switch: 'on']),
+                                       makeDevice(id: 2, label: 'Fan')]
+
+        when:
+        def response = mcpDriver.callTool('hub_list_devices', [format: format, labelFilter: 'kitchen'])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.total == 1
+        check(inner)
+
+        where:
+        useGateways | format    | check
+        true        | 'summary' | { Map r -> r.devices*.label == ['Kitchen Light'] }
+        false       | 'summary' | { Map r -> r.devices*.label == ['Kitchen Light'] }
+        false       | 'ids'     | { Map r -> r.deviceIds == [1] }
+        false       | 'context' | { Map r -> r.summary.contains('- Kitchen Light (1, No room) - Switch; switch=on') }
+    }
+
+    def "via dispatch: a validation refusal is an isError result naming the argument"() {
+        given:
+        settingsMap.selectedDevices = [makeDevice(id: 1)]
+
+        when:
+        def response = mcpDriver.callTool('hub_list_devices', [onlyOn: true])
+
+        then:
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Unknown argument: onlyOn')
     }
 }

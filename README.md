@@ -281,7 +281,7 @@ The server has 115 tools total. To keep the MCP `tools/list` manageable, **13 co
 
 | Tool | Description |
 |------|-------------|
-| `hub_manage_virtual_device` | Create or delete an MCP-managed virtual device (`action`: "create", "delete") -- supports built-in `deviceType` OR `customDriver={namespace, name}` (Write master). To list MCP-managed virtual devices with states, use `hub_list_devices` with `filter='virtual'`. |
+| `hub_manage_virtual_device` | Create or delete an MCP-managed virtual device (`action`: "create", "delete") -- supports built-in `deviceType` OR `customDriver={namespace, name}` (Write master). To list MCP-managed virtual devices with states, use `hub_list_devices` with `scope='owned'`. |
 
 </details>
 
@@ -337,7 +337,7 @@ Call a gateway with no arguments to see full parameter schemas. Call with `tool=
 
 | Tool | Description |
 |------|-------------|
-| `hub_list_devices` | List accessible devices (pagination, server-side labelFilter/capabilityFilter, format=ids, field projection; `filter='virtual'` lists only MCP-managed virtual devices) |
+| `hub_list_devices` | List devices from the hub's Devices page list: filters (label, capability, room, state, disabled, stale, changedSince), formats (summary/detailed/ids/context), field projection, cursor pages; `scope='all'` every hub device, `scope='owned'` this app's virtual devices |
 | `hub_get_device` | Full device details: attributes, commands, capabilities |
 | `hub_get_device_attribute` | Get a specific attribute value. Pass exactly one of `expectedValue` or `expectedValues` to block-poll the attribute until it matches or times out — `timeoutMs` in MILLISECONDS (default 5000ms = 5 seconds, max 60000ms). `comparator` (eq/ne/gt/gte/lt/lte/between) and `stableForMs` (debounce) refine the match; a numeric comparator on a non-numeric attribute times out with `nonNumericAttribute: true`. For multi-device convergence pass `deviceIds` (a list, mutually exclusive with `deviceId`, max 20) with `mode` (all/any), returning a compact per-device array (`{deviceId, device, finalValue, matched}`) plus `convergedCount`. A device whose read throws mid-poll (e.g. removed) is flagged `readError: true` (per-device in multi-device mode) and degraded to unread without aborting the poll for the others. Polling BLOCKS the MCP request; use sparingly and prefer event-driven flows when available. |
 | `hub_list_device_events` | Recent events for a device. Add `hoursBack` for a relative window (up to 7 days) or `since` for an absolute bookmark (events after an exact timestamp; round-trip a returned `date`); the response echoes `sinceMode` (`explicit`/`relative`) and the bounding field (`since` or `hoursBack`). Omit `deviceId` for mode/HSM/hub-variable/sendLocationEvent location events. |
@@ -445,7 +445,7 @@ Monitoring tools are gated by the Read master (ON by default). The network confi
 | `hub_call_device_replace` | Replace a dead/failing device's hardware while KEEPING its id + all app/rule references (re-points to `new_device_id`; `list_options=true` reads compatible candidates). Distinct from swap, which moves references to the new device |
 | `hub_update_device` | Change a device's settings: Device Info `fields` (label, room, tags, driver, ...), driver `preferences`, assistants, enabled |
 | `hub_create_device` | Create a device from a driver-type id (`deviceTypeId` from `hub_list_drivers(include='all')`); for LAN/integration/software drivers, NOT radio hardware (pair those). Requires `confirm=true`. |
-| `hub_list_devices` | List accessible devices (pagination, server-side labelFilter/capabilityFilter, format=ids, field projection; `filter='virtual'` lists only MCP-managed virtual devices) (also in `hub_read_devices`) |
+| `hub_list_devices` | List devices from the hub's Devices page list: filters (label, capability, room, state, disabled, stale, changedSince), formats (summary/detailed/ids/context), field projection, cursor pages; `scope='all'` every hub device, `scope='owned'` this app's virtual devices (also in `hub_read_devices`) |
 | `hub_get_device` | Full device details: attributes, commands, capabilities (also in `hub_read_devices`) |
 | `hub_get_device_attribute` | Get a specific attribute value. Pass exactly one of `expectedValue` or `expectedValues` to block-poll the attribute until it matches or times out — `timeoutMs` in MILLISECONDS (default 5000ms = 5 seconds, max 60000ms). `comparator` (eq/ne/gt/gte/lt/lte/between) and `stableForMs` (debounce) refine the match; a numeric comparator on a non-numeric attribute times out with `nonNumericAttribute: true`. For multi-device convergence pass `deviceIds` (a list, mutually exclusive with `deviceId`, max 20) with `mode` (all/any), returning a compact per-device array (`{deviceId, device, finalValue, matched}`) plus `convergedCount`. Polling BLOCKS the MCP request; use sparingly and prefer event-driven flows when available. (also in `hub_read_devices`) |
 | `hub_list_device_events` | Recent events for a device. Add `hoursBack` for a relative window (up to 7 days) or `since` for an absolute bookmark (events after an exact timestamp; round-trip a returned `date`); the response echoes `sinceMode` (`explicit`/`relative`) and the bounding field (`since` or `hoursBack`). Omit `deviceId` for mode/HSM/hub-variable/sendLocationEvent location events. (also in `hub_read_devices`) |
@@ -918,7 +918,7 @@ Requests use the fixed loopback address inside the hub, never the LAN or cloud e
 <details>
 <summary><b>Known Limits</b></summary>
 
-- **`hub_list_devices` with `detailed=true`** — Can be slow on 50+ devices. Use pagination: `hub_list_devices(detailed=true, limit=25, offset=0)`. Use `labelFilter` or `capabilityFilter` to narrow server-side before pagination. Use `fields=[...]` to skip expensive hub reads -- `currentStates` and `attributes` trigger per-device hub reads and are the ones worth projecting out; `capabilities` and `commands` are in-memory and cheap.
+- **`hub_list_devices` with `format='detailed'`** — reads each listed device individually; page it with `limit`/`cursor` (20-30 per page). Summary, ids and context formats come from one Devices-page read and need no paging for speed; narrow with `labelFilter`/`capabilityFilter`/`roomFilter` and project with `fields=[...]` to keep responses small.
 - **Duration triggers** — Maximum of 2 hours (7200 seconds)
 - **Captured states** — Default limit of 20 (configurable 1-100 in settings)
 - **Hubitat Cloud responses** — 128KB maximum (AWS MQTT limit). Use pagination for large device lists.
@@ -978,18 +978,17 @@ Alternatively, the app's Device Access section has a **Bypass Device Allowlist**
 </details>
 
 <details>
-<summary><b>hub_list_devices(detailed=true) fails over Hubitat Cloud</b></summary>
+<summary><b>hub_list_devices(format='detailed') fails over Hubitat Cloud</b></summary>
 
 Hubitat Cloud has a **128KB response size limit** (AWS MQTT limitation). Use pagination and server-side filtering to stay under the limit:
 
 ```
-hub_list_devices(detailed=true, limit=25, offset=0)               // First 25 devices
-hub_list_devices(detailed=true, limit=25, offset=25)              // Next 25 devices
-hub_list_devices(capabilityFilter='Switch', limit=25, offset=0)   // Only Switch devices
-hub_list_devices(fields=['id','label','currentStates'], limit=50) // Slim payload
+hub_list_devices(format='detailed', limit=25, cursor='')            // First 25 devices, then pass nextCursor
+hub_list_devices(capabilityFilter='Switch', limit=25, cursor='')    // Only Switch devices
+hub_list_devices(fields=['id','label','currentStates'], limit=50)   // Slim payload
 ```
 
-The response includes `total`, `hasMore`, and `nextOffset` to help with pagination.
+The response includes `total`, `hasMore`, and `nextCursor` to help with pagination.
 
 </details>
 

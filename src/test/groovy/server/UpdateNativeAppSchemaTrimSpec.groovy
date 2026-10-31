@@ -369,51 +369,20 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         forms.content.contains('never automatically retry') || forms.content.contains('instead of replaying buttons')
     }
 
-    def "device description drops wrapped prose in flat mode and keeps its guide fallback"() {
+    def "hub_list_devices carries no deferred prose: flat and gateway modes serve the same compact definition"() {
         given:
         enableEveryToggle()
         settingsMap.useGateways = false
-        def flat = script.getToolDefinitions().find { it.name == 'hub_list_devices' }.description as String
-        settingsMap.useGateways = true
-        def gateway = script.applyDescriptionTransform(script.getAllToolDefinitions(), false).find { it.name == 'hub_list_devices' }.description as String
+        def flat = script.getToolDefinitions().find { it.name == 'hub_list_devices' }
+        def gateway = script.applyDescriptionTransform(script.getAllToolDefinitions(), false).find { it.name == 'hub_list_devices' }
+
         expect:
-        flat.length() < gateway.length()
-        flat.contains('hub_get_tool_guide(')
-        ![flat, gateway].any { it.contains(OPEN_MARKER) || it.contains(CLOSE_MARKER) }
-    }
-
-    def "hub_list_devices.fields inline-marker drops the valid-name enumeration in flat mode but keeps it in gateway mode"() {
-        // hub_list_devices isn't behind a gateway, but its `fields` property has an
-        // INLINE [[FLAT_TRIM]] marker (different from hub_set_rule's
-        // addRequiredExpression case in terms of placement). Pin both directions
-        // explicitly so a regression in the inline-strip path surfaces here.
-        given:
-        enableEveryToggle()
-
-        when: 'flat-mode hub_list_devices.fields description (dropContent=true)'
-        settingsMap.useGateways = false
-        def flatFieldsDesc = script.getToolDefinitions()
-            .find { it.name == 'hub_list_devices' }
-            .inputSchema.properties.fields.description as String
-
-        and: 'gateway-mode hub_list_devices.fields description (dropContent=false -- tokens-only strip)'
-        def gwFieldsDesc = script.applyDescriptionTransform(script.getAllToolDefinitions(), false)
-            .find { it.name == 'hub_list_devices' }
-            .inputSchema.properties.fields.description as String
-
-        then: 'flat-mode strips the valid-name enumeration; the pointer to hub_get_tool_guide survives'
-        // 'mcpManaged' is a field name inside the wrapped block; "auto-promotes"
-        // is the start of the projection-semantics paragraph also inside the
-        // marker. Both must be absent in flat mode.
-        !flatFieldsDesc.contains('mcpManaged')
-        !flatFieldsDesc.contains('auto-promotes the response to detailed mode')
-        flatFieldsDesc.contains("hub_get_tool_guide(section='performance_devices')")
-
-        and: 'gateway-mode ALSO drops the enumeration -- migrated to the served performance guide (#296); no marker tokens either way'
-        !gwFieldsDesc.contains('mcpManaged')
-        !gwFieldsDesc.contains('auto-promotes the response to detailed mode')
-        !gwFieldsDesc.contains(OPEN_MARKER)
-        !gwFieldsDesc.contains(CLOSE_MARKER)
+        flat.description == gateway.description
+        flat.inputSchema == gateway.inputSchema
+        flat.description.contains("hub_get_tool_guide(section='performance_devices')")
+        groovy.json.JsonOutput.toJson([name: flat.name, description: flat.description, inputSchema: flat.inputSchema])
+            .getBytes('UTF-8').length <= 1600
+        ![flat.description, groovy.json.JsonOutput.toJson(flat.inputSchema)].any { it.contains(OPEN_MARKER) || it.contains(CLOSE_MARKER) }
     }
 
     def "tools/list size-guard backstop emits -32603 if the catalog ever overflows the 124,000-byte cap"() {

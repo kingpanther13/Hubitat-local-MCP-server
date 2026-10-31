@@ -107,43 +107,75 @@ class ToolNativeVirtualDevicesSpec extends ToolSpecBase {
         })
     }
 
+    // The Devices page and capability feed for these ids, built from their fullJson models.
+    private void page(List ids) {
+        hubGet.register('/hub2/devicesList') {
+            JsonOutput.toJson([devices: ids.collect { id ->
+                def d = models[id]?.device ?: [id: id.toInteger(), name: "Device ${id}"]
+                [key: "DEV-${id}", data: [id: d.id, name: d.label ?: d.name, secondaryName: d.label ? d.name : '',
+                    type: d.deviceTypeName, dni: d.deviceNetworkId, isVirtual: true,
+                    currentStates: (d.currentStates ?: [:]).collect { k, v -> [key: k, value: v.value] }], children: []]
+            }])
+        }
+        hubGet.register('/hub2/vrb/devices') {
+            JsonOutput.toJson(ids.collect { id -> [id: id.toInteger(), capabilities: models[id]?.device?.capabilities ?: []] })
+        }
+    }
+
+    private List fullJsonReads() { hubGet.calls.findAll { it.path.startsWith('/device/fullJson/') }*.path }
+
     @Unroll
-    def 'virtual inventory uses native detail and keeps ownership pagination with bypass #bypass'() {
+    def 'owned inventory lists only the app children from the page, with bypass #bypass'() {
         given:
         settingsMap.bypassDeviceAllowlist = bypass
         owned('77')
         owned('78')
         settingsMap.selectedDevices = [new TestDevice(id: 99, name: 'Not MCP owned')]
+        page(['77', '78', '99'])
 
         when:
-        def result = script.toolListVirtualDevices([cursor: '', limit: 1])
+        def result = script.toolListDevices([scope: 'owned', cursor: '', limit: 1])
 
         then:
         result.total == 2
         result.count == 1
         result.nextCursor == '1'
-        result.devices*.id == ['77']
-        result.devices[0].name == 'Native name'
-        result.devices[0].driverNamespace == 'persisted-ns'
-        result.devices[0].driverType == 'Native Driver'
-        result.devices[0].typeName == 'Native Driver'
-        result.devices[0].capabilities == ['Switch', 'TemperatureMeasurement']
-        result.devices[0].commands == ['on']
-        result.devices[0].currentStates == [switch: 'on', temperature: 21.50]
-        !hubGet.calls.any { it.path == '/device/fullJson/99' }
-        !hubGet.calls.any { it.path == '/device/fullJson/78' }
+        result.devices == [[id: '77', label: 'Native label', name: 'Native name', driver: 'Native Driver', room: null,
+            disabled: false, deviceNetworkId: 'mcp-77', lastActivity: null, protocol: 'virtual', mcpManaged: true,
+            currentStates: [switch: 'on', temperature: '21.50']]]
+        fullJsonReads().isEmpty()
 
         where:
         bypass << [false, true]
     }
 
-    def 'virtual inventory derives missing namespace from native driver metadata'() {
+    def 'owned detailed reads only the listed device for its saved driver namespace and typed values'() {
+        given:
+        owned('77')
+        owned('78')
+        page(['77', '78'])
+
+        when:
+        def result = script.toolListDevices([scope: 'owned', format: 'detailed', limit: 1])
+
+        then:
+        with(result.devices[0]) {
+            driverNamespace == 'persisted-ns'
+            capabilities == ['Switch', 'TemperatureMeasurement']
+            commands == [[name: 'on', arguments: null]]
+            attributes.find { it.name == 'temperature' }.value == 21.50
+        }
+        fullJsonReads() == ['/device/fullJson/77']
+    }
+
+    def 'owned detailed falls back to the native driver namespace when none was saved'() {
         given:
         owned('77')
         models['77'].device.data = [:]
+        page(['77'])
 
         when:
-        def response = mcpDriver.callTool('hub_list_devices', [filter: 'virtual'])
+        def response = mcpDriver.callTool('hub_list_devices', [scope: 'owned', format: 'detailed'])
 
         then:
         response.error == null
@@ -152,7 +184,7 @@ class ToolNativeVirtualDevicesSpec extends ToolSpecBase {
     }
 
     @Unroll
-    def 'virtual native filters intersect before pagination through #surface with bypass #bypass'() {
+    def 'owned filters intersect before pagination through #surface with bypass #bypass'() {
         given:
         settingsMap.bypassDeviceAllowlist = bypass
         ['77', '78', '79', '80', '81'].each { owned(it) }
@@ -164,14 +196,11 @@ class ToolNativeVirtualDevicesSpec extends ToolSpecBase {
         models['80'].device.name = 'BAT Native Fallback'
         models['81'].device.label = 'BAT Native Last'
         settingsMap.selectedDevices = [new TestDevice(id: 99, name: 'BAT Native not owned')]
-        childDevicesList.each { sdk ->
-            sdk.metaClass.getLabel = { throw new AssertionError('SDK label read') }
-            sdk.metaClass.getName = { throw new AssertionError('SDK name read') }
-        }
-        def args = [filter: 'virtual', labelFilter: 'bat NATIVE', capabilityFilter: 'sWITCH', cursor: '1', limit: 1]
+        page(['77', '78', '79', '80', '81', '99'])
+        def args = [scope: 'owned', labelFilter: 'bat NATIVE', capabilityFilter: 'sWITCH', cursor: '1', limit: 1]
 
         when:
-        def result = surface == 'direct' ? script.toolListVirtualDevices(args) :
+        def result = surface == 'direct' ? script.toolListDevices(args) :
             mcpDriver.parseInner(mcpDriver.callTool('hub_list_devices', args))
 
         then:
@@ -183,58 +212,31 @@ class ToolNativeVirtualDevicesSpec extends ToolSpecBase {
         result.offset == 1
         result.hasMore == true
         result.nextCursor == '2'
-        !hubGet.calls.any { it.path == '/device/fullJson/99' }
+        fullJsonReads().isEmpty()
         writes.empty
 
         where:
         [surface, bypass] << ['direct', 'dispatch'].collectMany { surface -> [false, true].collect { [surface, it] } }
     }
 
-    def 'virtual filter no matches is an empty filtered population'() {
-        given:
-        owned('77')
-
-        when:
-        def result = script.toolListVirtualDevices([labelFilter: 'Absent', cursor: '', limit: 1])
-
-        then:
-        result.devices == []
-        result.total == 0
-        result.count == 0
-        result.unfilteredTotal == 1
-        result.hasMore == false
-        !result.containsKey('nextCursor')
-        result.message.toLowerCase().contains('match')
-        !result.message.contains('create one')
-    }
-
-    def 'virtual cursor bounds use filtered total'() {
+    def 'owned cursor bounds use the filtered total'() {
         given:
         ['77', '78', '79'].each { owned(it) }
         models['77'].device.label = 'Only match'
+        page(['77', '78', '79'])
 
         when:
-        script.toolListVirtualDevices([labelFilter: 'Only', cursor: '2', limit: 1])
+        script.toolListDevices([scope: 'owned', labelFilter: 'Only', cursor: '2', limit: 1])
 
         then:
         def error = thrown(IllegalArgumentException)
         error.message.contains('out of range')
-    }
-
-    def 'virtual empty inventory still rejects an out of range cursor'() {
-        when:
-        script.toolListVirtualDevices([labelFilter: 'Absent', cursor: '1'])
-
-        then:
-        def error = thrown(IllegalArgumentException)
-        error.message.contains('out of range')
-        hubGet.calls.empty
     }
 
     @Unroll
-    def 'virtual #field filter rejects non-string #value even with no children'() {
+    def 'owned #field rejects non-string #value with no children and no hub read'() {
         when:
-        script.toolListVirtualDevices([(field): value])
+        script.toolListDevices([scope: 'owned', (field): value])
 
         then:
         def error = thrown(IllegalArgumentException)
@@ -245,81 +247,15 @@ class ToolNativeVirtualDevicesSpec extends ToolSpecBase {
         [field, value] << ['labelFilter', 'capabilityFilter'].collectMany { field -> [7, false, [], [:]].collect { [field, it] } }
     }
 
-    def 'empty virtual filters preserve page-only native hydration'() {
-        given:
-        owned('77')
-        owned('78')
-
+    def 'owned with no children says how to create one without a hub read'() {
         when:
-        def result = script.toolListVirtualDevices([labelFilter: '', capabilityFilter: '', limit: 1])
+        def result = script.toolListDevices([scope: 'owned', labelFilter: 'Absent'])
 
         then:
-        result.devices*.id == ['77']
-        result.total == 2
-        !hubGet.calls.any { it.path == '/device/fullJson/78' }
-    }
-
-    @Unroll
-    def 'virtual filters retain unreadable owned identities and mark partial results at cursor #cursor'() {
-        given:
-        ['77', '78', '79'].each { owned(it) }
-        models['77'].device.label = 'Unrelated'
-        models['78'].device.label = 'Match'
-        hubGet.register('/device/fullJson/79') { null }
-
-        when:
-        def result = script.toolListVirtualDevices([labelFilter: 'Match', cursor: cursor, limit: 1])
-
-        then:
-        result.total == 2
-        result.unfilteredTotal == 3
-        result.success == true
-        result.isError != true
-        result.partialSuccess == true
-        result.unreadableDeviceIds == ['79']
-        result.devices*.id == [expectedId]
-        if (expectedId == '79') assert result.devices[0].success == false
-
-        where:
-        cursor | expectedId
-        ''     | '78'
-        '1'    | '79'
-    }
-
-    def 'virtual inventory preserves failed device id and counts instead of claiming empty native metadata'() {
-        given:
-        owned('77')
-        readable = false
-
-        when:
-        def result = script.toolListVirtualDevices([:])
-
-        then:
-        result.success == false
-        result.isError == true
-        result.partialSuccess != true
-        result.count == 1
-        result.total == 1
-        result.devices[0].id == '77'
-        result.devices[0].success == false
-        result.devices[0].error.contains('fullJson')
-        !result.devices[0].containsKey('capabilities')
-    }
-
-    def 'virtual inventory does not invent hubitat namespace when native namespace metadata is missing'() {
-        given:
-        owned('77')
-        models['77'].device.data = [:]
-        models['77'].device.remove('deviceTypeNamespace')
-
-        when:
-        def result = script.toolListVirtualDevices([:])
-
-        then:
-        result.partialSuccess == true
-        result.devices[0].driverNamespace == null
-        result.devices[0].warnings
-        result.devices[0].driverType == 'Native Driver'
+        result.devices == []
+        result.total == 0
+        result.message.contains('hub_manage_virtual_device')
+        hubGet.calls.empty
     }
 
     def 'create persists namespace through fixed native writer with readback and returns native reported attributes'() {
@@ -450,29 +386,25 @@ class ToolNativeVirtualDevicesSpec extends ToolSpecBase {
         surface << ['direct', 'dispatch']
     }
 
-    @Unroll
-    def 'virtual inventory partial failures preserve usable results through dispatch with readable #usable'() {
+    def 'an owned device whose detail read fails stays listed and the result is partial, through dispatch'() {
         given:
         owned('77')
         owned('78')
-        if (!usable) hubGet.register('/device/fullJson/77') { null }
+        page(['77', '78'])
         hubGet.register('/device/fullJson/78') { null }
 
         when:
-        def response = mcpDriver.callTool('hub_list_devices', [filter: 'virtual'])
+        def response = mcpDriver.callTool('hub_list_devices', [scope: 'owned', format: 'detailed'])
 
         then:
         response.error == null
-        (response.result.isError == true) == !usable
+        !response.result.isError
         def result = mcpDriver.parseInner(response)
-        result.success == usable
-        (result.partialSuccess == true) == usable
         result.devices*.id == ['77', '78']
-        result.devices[1].success == false
+        result.devices[1].metadataUnavailable == true
+        result.devices[1].deviceNetworkId == 'mcp-78'
+        result.partial == true
         result.count == 2
-
-        where:
-        usable << [false, true]
     }
 
     @Unroll
