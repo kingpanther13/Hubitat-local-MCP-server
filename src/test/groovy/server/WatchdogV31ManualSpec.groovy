@@ -1153,7 +1153,7 @@ class WatchdogV31ManualSpec extends WatchdogSpec {
 
         where:
         scenario          | locate                                                   || errorPart
-        'location throws' | { -> throw new IllegalStateException('hub unavailable') } || 'hub unavailable'
+        'location throws' | { -> throw new IllegalStateException('hub unavailable') } || 'could not be read'
         'no uptime'       | { -> new TestLocation(hub: new TestHub()) }              || 'not a number'
     }
 

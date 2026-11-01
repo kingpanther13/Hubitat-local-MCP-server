@@ -2029,7 +2029,7 @@ def adminDeleteAppRuntimeStats(args) {
         def up = location.hub?.uptime
         if (up instanceof Number) uptimeSeconds = up
         else result.uptimeError = "location.hub.uptime is not a number (${up}).".toString()
-    } catch (Exception e) { result.uptimeError = "location.hub.uptime could not be read: ${e.message}".toString() }
+    } catch (Exception e) { result.uptimeError = "location.hub.uptime could not be read: ${e.message ?: e.toString()}".toString() }
     Long limitMs = (uptimeSeconds != null && thresholdPct != null) ?
         (((uptimeSeconds as long) * 1000L * thresholdPct / 100) as long) : null
     result += [uptimeSeconds: uptimeSeconds,
