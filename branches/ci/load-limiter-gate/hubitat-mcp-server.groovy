@@ -1555,7 +1555,7 @@ def toolExportBundle(args) {
     try {
         def cookie = getHubSecurityCookie()
         def params = [
-            uri: hubBaseUri(),
+            uri: hubLoopbackUri(),
             path: "/bundle/export/${bundleId}",
             textParser: false,
             ignoreSSLIssues: true,
@@ -4380,7 +4380,7 @@ def toolCreateHubBackup(args) {
     try {
         Long preEpoch = _latestLocalHubBackupEpoch("database")
         long confirmT0 = now()
-        def asyncParams = [uri: hubBaseUri(), path: "/hub/backupDB", query: [fileName: "latest"], timeout: 300]
+        def asyncParams = [uri: hubLoopbackUri(), path: "/hub/backupDB", query: [fileName: "latest"], timeout: 300]
         def cookie = getHubSecurityCookie()
         if (cookie) asyncParams.headers = [Cookie: cookie]
         asynchttpGet("backupResponseSink", asyncParams)
@@ -4611,7 +4611,7 @@ private Map _applyNetworkBackup(Map spec, boolean test, Map cur) {
 private Map _createFullLocalBackup(boolean scheduleUpdated, networkBackup) {
     Long pre = _latestLocalHubBackupEpoch("full")
     long t0 = now()
-    def params = [uri: hubBaseUri(), path: "/hub2/createFullLocalBackup", timeout: 600]
+    def params = [uri: hubLoopbackUri(), path: "/hub2/createFullLocalBackup", timeout: 600]
     def cookie = getHubSecurityCookie()
     if (cookie) params.headers = [Cookie: cookie]
     asynchttpGet("backupResponseSink", params)
@@ -5444,7 +5444,7 @@ private List _bugReportSettingsLines(String privacyMode) {
             "- **Best-practice ack required:** ${eff(settings.enableMandatoryBPS, true)}",
             "- **Legacy custom rule engine:** ${getCustomEngineMode()} (toggle ${settings.enableCustomRuleEngine == null ? 'unset' : settings.enableCustomRuleEngine.toString()})",
             "- **Bypass device allowlist:** ${eff(settings.bypassDeviceAllowlist, false)}",
-            "- **Hub security enabled:** ${eff(settings.hubSecurityEnabled, false)}",
+            "- **Hub Login Security credentials configured:** ${_hubSecurityCredentialsConfigured()}",
             "- **Tool mode (useGateways):** ${settings.useGateways == null ? 'gateway (default)' : (settings.useGateways == false ? 'flat' : 'gateway')}",
             "- **MCP log level (UI setting):** ${settings.mcpLogLevel == null ? 'not set (effective level above)' : settings.mcpLogLevel.toString()}",
             "- **MCP traffic logging:** ${eff(settings.debugLogging, false)}",
@@ -8689,7 +8689,7 @@ def toolGetHubInfo(args = null) {
     }
     info.mcpCapturedStates = countCapturedStates()
     info.lastBackupEpoch = state.lastBackupTimestamp ?: null
-    info.hubSecurityConfigured = settings.hubSecurityEnabled ?: false
+    info.hubSecurityConfigured = _hubSecurityCredentialsConfigured()
     info.readEnabled = settings.enableRead != false
     info.writeEnabled = settings.enableWrite != false
     info.customRuleEngineEnabled = settings.enableCustomRuleEngine == true
@@ -27488,7 +27488,7 @@ def mainPage() {
             }
         }
         section("Hub Security") {
-            paragraph "<b>Hub Login Security credentials (optional).</b> Only needed if Hub Login Security is turned on for your hub AND you want this server's hub requests routed through the hub's LAN address, which keeps them off the hub's per-app load limiter. " +
+            paragraph "<b>Hub Login Security credentials (optional).</b> Only needed if Hub Login Security is turned on for your hub AND you want this server's hub requests routed through the hub's LAN address, which keeps their HTTP wait out of the busy time the hub's per-app load limiter counts. " +
                       "Without them the server uses loopback and works normally."
             input "hubSecurityEnabled", "bool", title: "Use Hub Login Security credentials",
                   defaultValue: false, submitOnChange: true
@@ -28205,6 +28205,7 @@ def updated() {
     if (settings.retainReportErrors != true) atomicState.remove("reportErrors")
     HUB_SIGNIN_FAILED_AT.clear()
     HUB_LAN_PROBE.clear()
+    HUB_LOOPBACK_FALLBACK_NOTED.clear()
     atomicState.remove("hubSecurityCookie")
     atomicState.remove("hubSecurityCookieExpiry")
     _cleanupRetiredToolState()
@@ -32822,27 +32823,31 @@ def getSelectedDevices() {
 }
 String hubLoopbackUri() { "http://127.0.0.1:8080" }
 String hubBaseUri() { _hubRoute().uri }
+private Boolean _hubLoginSecurityFlag() {
+    def secured = null
+    try { secured = isHubitatUISecurityEnabled() } catch (Exception ignored) { }
+    return (secured == true || secured == false) ? (Boolean) secured : null
+}
 private Map _hubRoute() {
     String loop = hubLoopbackUri()
     def failedAt = HUB_LAN_ROUTE_FAILED_AT.get("at")
     if (failedAt != null && now() - (failedAt as long) < HUB_LAN_ROUTE_RETRY_MS) {
         return [uri: loop, note: "the hub did not answer on its LAN address; it is tried again ${HUB_LAN_ROUTE_RETRY_MS / 60000L} minutes after the failure".toString()]
     }
-    def secured = null
-    try { secured = isHubitatUISecurityEnabled() } catch (Exception ignored) { }
+    Boolean secured = _hubLoginSecurityFlag()
     boolean creds = _hubSecurityCredentialsConfigured()
     if (secured == true && !creds) {
         return [uri: loop, note: "Hub Login Security is on and no Hub Login Security credentials are configured in this app"]
     }
-    if (secured != true && secured != false && !creds) return _hubLoopbackFallback("the Hub Login Security switch is unreadable")
+    if (secured == null && !creds) return _hubLoopbackFallback("the Hub Login Security switch is unreadable")
     String ip = null
     try { ip = location?.hub?.localIP?.toString() } catch (Exception ignored) { }
     if (!(ip && ip ==~ /\d{1,3}(\.\d{1,3}){3}/ && !ip.startsWith("0.") && !ip.startsWith("127."))) {
         return _hubLoopbackFallback("location.hub.localIP is unreadable, absent or not a usable LAN address")
     }
-    if (creds && _hubSignInBackoffActive()) return [uri: loop, note: "Hub Login Security sign-in failed"]
+    if (secured != false && creds && _hubSignInBackoffActive()) return [uri: loop, note: "Hub Login Security sign-in failed"]
     String lan = "http://${ip}:8080"
-    String probeNote = _hubLanProbe(lan)
+    String probeNote = _hubLanProbe(lan, secured)
     return probeNote == null ? [uri: lan, note: null] : [uri: loop, note: probeNote]
 }
 private boolean _hubSecurityCredentialsConfigured() {
@@ -32857,13 +32862,17 @@ private Map _hubLoopbackFallback(String reason) {
 @groovy.transform.Field static final long HUB_LAN_ROUTE_RETRY_MS = 5L * 60L * 1000L
 @groovy.transform.Field static final java.util.concurrent.ConcurrentHashMap HUB_LAN_PROBE = new java.util.concurrent.ConcurrentHashMap()
 @groovy.transform.Field static final java.util.concurrent.ConcurrentHashMap HUB_LAN_PROBING = new java.util.concurrent.ConcurrentHashMap()
-private String _hubLanProbe(String lan) {
+private String _hubLanProbe(String lan, Boolean secured) {
     def cached = HUB_LAN_PROBE.get(lan)
-    if (cached != null) return cached.ok ? null : cached.note
+    if (cached != null && (cached.ok || cached.lasting || now() - (cached.at as long) < HUB_LAN_ROUTE_RETRY_MS)) {
+        return cached.ok ? null : cached.note
+    }
     if (HUB_LAN_PROBING.putIfAbsent("probing", true) != null) return "the LAN route is being probed"
     try {
-        def cookie = getHubSecurityCookie()
-        if (_hubSecurityCredentialsConfigured() && !cookie && _hubSignInBackoffActive()) return "Hub Login Security sign-in failed"
+        def cookie = (secured == false) ? null : getHubSecurityCookie()
+        if (secured != false && _hubSecurityCredentialsConfigured() && !cookie) {
+            return _hubSignInBackoffActive() ? "Hub Login Security sign-in failed" : "the Hub Login Security sign-in got no answer"
+        }
         def params = [uri: lan, path: "/hub/advanced/freeOSMemory", followRedirects: false, textParser: true,
                       ignoreSSLIssues: true, timeout: 10]
         if (cookie) params.headers = [Cookie: cookie]
@@ -32887,15 +32896,15 @@ private String _hubLanProbe(String lan) {
             return null
         }
         if ((status != null && status >= 300 && status < 400) || _looksLikeLoginPage(body)) {
-            return _hubLanProbeFailed(lan, "the hub redirects LAN requests (Hub Login Security without working credentials, or SSL-only)")
+            return _hubLanProbeFailed(lan, "the hub redirects LAN requests (Hub Login Security without working credentials, or SSL-only)", true)
         }
-        return _hubLanProbeFailed(lan, "the LAN route probe got an unexpected answer (HTTP ${status ?: 'none'})".toString())
+        return _hubLanProbeFailed(lan, "the LAN route probe got an unexpected answer (HTTP ${status ?: 'none'}); it is probed again ${HUB_LAN_ROUTE_RETRY_MS / 60000L} minutes later".toString(), false)
     } finally {
         HUB_LAN_PROBING.remove("probing")
     }
 }
-private String _hubLanProbeFailed(String lan, String reason) {
-    HUB_LAN_PROBE.put(lan, [ok: false, note: reason])
+private String _hubLanProbeFailed(String lan, String reason, boolean lasting) {
+    HUB_LAN_PROBE.put(lan, [ok: false, note: reason, lasting: lasting, at: now()])
     _noteHubLoopbackFallback(reason)
     return reason
 }
@@ -32990,20 +32999,23 @@ def getHubSecurityCookie() {
         return atomicState.hubSecurityCookie
     }
     if (_hubSignInBackoffActive()) return null
-    def cookie = _hubSignIn()
+    Map signIn = _hubSignIn()
+    def cookie = signIn.cookie
     if (cookie) {
         atomicState.hubSecurityCookie = cookie
         atomicState.hubSecurityCookieExpiry = now() + (30 * 60 * 1000)
         HUB_LAN_PROBE.clear()
         HUB_SIGNIN_FAILED_AT.remove("at")
         mcpLog("debug", "hub-admin", "Hub Security authentication successful")
-    } else {
+    } else if (signIn.answered) {
         HUB_SIGNIN_FAILED_AT.put("at", now())
         _noteHubLoopbackFallback("the Hub Login Security credentials were refused (they are used again once fixed in the app)")
+    } else {
+        _noteHubLoopbackFallback("the Hub Login Security sign-in got no answer (it is tried again on the next hub call)")
     }
     return cookie
 }
-private String _hubSignIn() {
+private Map _hubSignIn() {
     Integer status = null
     def location = null
     def setCookie = null
@@ -33025,12 +33037,13 @@ private String _hubSignIn() {
         if (resp != null) read(resp)
         else mcpLog("debug", "hub-admin", "Hub Security sign-in failed (${e.class.simpleName}): ${e.message}")
     }
+    if (status == null) return [cookie: null, answered: false]
     String loc = location?.toString()?.replaceFirst(/(?i)^location:\s*/, "")?.trim()
-    if (status == null || status < 300 || status >= 400 || loc?.contains("/login")) return null
+    if (status < 300 || status >= 400 || loc?.contains("/login")) return [cookie: null, answered: true]
     def cookies = (setCookie instanceof List ? setCookie : (setCookie != null ? [setCookie] : [])).collect {
         it.toString().replaceFirst(/^(?i)set-cookie:\s*/, "").split(';')[0].trim()
     }.findAll { it }
-    return cookies.find { it.startsWith("HUBSESSION=") } ?: (cookies ? cookies[0] : null)
+    return [cookie: cookies.find { it.startsWith("HUBSESSION=") } ?: (cookies ? cookies[0] : null), answered: true]
 }
 @groovy.transform.Field static final java.util.concurrent.ConcurrentHashMap HUB_SIGNIN_FAILED_AT = new java.util.concurrent.ConcurrentHashMap()
 private boolean _hubSignInBackoffActive() {
@@ -33069,7 +33082,7 @@ private _hubRequest(String method, String path, Map opts = [:]) {
         throw new IllegalStateException(
             "hubInternal* path must not contain a querystring: '${_redactSecretsInPath(path)}'. The platform client escapes an embedded '?' into the literal path (exact routes then 404, wildcard routes silently swallow it) -- pass the parameters as the query map instead, e.g. hubInternalGet('/device/updateLabel', [deviceId: id, label: name]). Do NOT pre-encode the values; the query map does that.")
     }
-    def cookie = getHubSecurityCookie()
+    def cookie = (_hubLoginSecurityFlag() == false) ? null : getHubSecurityCookie()
     def params = [
         uri: (opts.followRedirects == false || opts.cookie || opts.loopbackRetry) ? hubLoopbackUri() : hubBaseUri(),
         path: path,
@@ -33152,7 +33165,8 @@ private _hubRequest(String method, String path, Map opts = [:]) {
         }
     }
     if (readError != null) throw readError
-    if (!opts.isRetry && params.uri != hubLoopbackUri() && _looksLikeLoginPage(result instanceof Map ? result.data : result)) {
+    if (params.uri != hubLoopbackUri() && _looksLikeLoginPage(result instanceof Map ? result.data : result)) {
+        if (opts.isRetry) throw new IllegalStateException("the hub's login refused this request twice on the LAN route; check the Hub Login Security credentials in the app")
         _forgetLanRouteAfterLoginRefusal(method, path, cookie)
         return _hubRequest(method, path, opts + [isRetry: true])
     }
@@ -33366,7 +33380,7 @@ def hubInternalPostJson(String path, String jsonBody, int timeout = 420, boolean
     return null
 }
 def hubInternalBytes(String method, String path, Map query = null, Map formBody = null, int timeout = 300, boolean isRetry = false) {
-    def params = [uri: hubBaseUri(), path: path, timeout: timeout, textParser: false, ignoreSSLIssues: true]
+    def params = [uri: hubLoopbackUri(), path: path, timeout: timeout, textParser: false, ignoreSSLIssues: true]
     if (query) params.query = query
     if (formBody != null) {
         params.body = formBody
@@ -33542,7 +33556,7 @@ def _postMultipartBackup(String path, String field, String fileName, byte[] file
     for (byte[] chunk : [pre, fileBytes, post]) {
         for (int i = 0; i < chunk.length; i++) body[at++] = chunk[i]
     }
-    def params = [uri: hubBaseUri(), path: path, timeout: 300,
+    def params = [uri: hubLoopbackUri(), path: path, timeout: 300,
                   requestContentType: "multipart/form-data; boundary=${boundary}".toString(),
                   body: body]
     def cookie = getHubSecurityCookie()
