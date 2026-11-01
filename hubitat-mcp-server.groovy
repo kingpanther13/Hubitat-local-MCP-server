@@ -1080,7 +1080,7 @@ def advancedOverridesPage() {
                   defaultValue: false
         }
         section("Backup storage") {
-            paragraph "Automatic code and rule backups live in File Manager. File Manager files use hub storage and count toward a full local backup's 100 MiB file limit; database backups leave them out. Backups are removed only when they exceed this budget together, oldest first across every item. Only the backup just taken and a restore in progress are never removed; an item's only backup goes when it is the oldest, so the budget is a hard cap."
+            paragraph "Automatic code and rule backups live in File Manager. File Manager files use hub storage and count toward a full local backup's 100 MiB file limit; database backups leave them out. Backups are removed only when they exceed this budget together, oldest first across every item. Only the backup just taken and a restore in progress are never removed; an item's only backup goes when it is the oldest, so the budget is a hard cap. A backup larger than the budget on its own removes nothing else."
             input "backupBudgetMb", "number", title: "Backup storage budget (MB)",
                   description: "Total size of the automatic code and rule backups (default: 10; range 1 to 1000000, values outside it use the nearest end).",
                   defaultValue: 10, required: false
@@ -8907,15 +8907,19 @@ void _publishItemBackup(String key, Map entry, String protectedKey = null) {
 
 // Keys to evict while indexed bytes exceed the backup budget, oldest first across all items
 // and kinds. Only keepKeys are never chosen: the budget is a hard cap, so an item's only
-// backup goes when it is the oldest. Pending entries are left to the pending purge.
+// backup goes when it is the oldest. When the kept entries alone exceed the budget no eviction
+// can reach it, so nothing else goes for them. Pending entries are left to the pending purge.
 List _itemBackupRetentionVictims(Map manifest, Collection keepKeys) {
     long budget = _itemBackupByteBudget()
     long used = 0L
     manifest.each { k, v -> if (!v?.deletePending) used += _itemBackupEntryBytes(v) }
     List victims = []
     if (used <= budget) return victims
-    Closure stamp = { k -> def t = manifest[k]?.timestamp; t instanceof Number ? (t as Long) : 0L }
     Set kept = new HashSet(keepKeys)
+    long keptBytes = 0L
+    kept.each { k -> if (manifest[k] && !manifest[k].deletePending) keptBytes += _itemBackupEntryBytes(manifest[k]) }
+    if (keptBytes > budget) return victims
+    Closure stamp = { k -> def t = manifest[k]?.timestamp; t instanceof Number ? (t as Long) : 0L }
     List candidates = manifest.keySet().findAll { !kept.contains(it) && !manifest[it]?.deletePending }
         .sort { a, b -> stamp(a) <=> stamp(b) }
     for (k in candidates) {
@@ -8969,7 +8973,7 @@ Map _itemBackupBudgetUsage(Map manifest) {
 // The eviction rule every backup answers with: the retentionNote / backupRetentionNote and
 // retentionPolicy fields, and the tail of restore and undo hints.
 String _itemBackupRetentionNote() {
-    return "Backups are removed only when all MCP backups together exceed the ${_itemBackupBudgetMb()} MB storage budget, oldest first across every item and kind; only the backup being taken and an active restore target are never removed, so the budget is a hard cap."
+    return "Backups are removed only when all MCP backups together exceed the ${_itemBackupBudgetMb()} MB storage budget, oldest first across every item and kind; only the backup being taken and an active restore target are never removed, so the budget is a hard cap. A backup larger than the budget on its own removes nothing else."
 }
 
 /** Remove manifest records that point at a File Manager file after that file is deleted. */
@@ -11901,7 +11905,7 @@ Duplicates an existing MCP custom-engine rule into a new, independent rule with 
 - Rapid source-code edits preserve the original for one hour. Rule edits take a fresh pre-edit snapshot as described below.
 
 ### Backup retention
-- There is no count limit: backups are removed only when all MCP backups together exceed the storage budget, oldest first across every item and kind of backup. Only the backup being taken and an active restore target are never removed; nothing else is protected, so an item's only backup goes when it is the oldest and the budget is a hard cap. A single backup larger than the whole budget is still kept, because it is the backup being taken.
+- There is no count limit: backups are removed only when all MCP backups together exceed the storage budget, oldest first across every item and kind of backup. Only the backup being taken and an active restore target are never removed; nothing else is protected, so an item's only backup goes when it is the oldest and the budget is a hard cap. A single backup larger than the whole budget is still kept, because it is the backup being taken, and removes nothing else: no removal could reach the budget.
 - The budget is the Advanced setting "Backup storage budget (MB)" (`backupBudgetMb`): default 10, at least 1, at most 1000000 (1 TB). The Advanced page takes any number and the server clamps it to that range. With Developer Mode on, hub_update_mcp_settings also sets it and refuses a value that is not a whole number in that range.
 - Where each response says it:
   - Rule Machine writes and deletes: the `backup` object carries `retentionNote`, and the restoreHint ends with that note.
@@ -12088,11 +12092,11 @@ Issue-type routing: `issueType` picks the GitHub issue template behind `submitUr
 
 **Summary record.** `{id, label, name, driver, room, disabled, deviceNetworkId, lastActivity, currentStates}` plus `protocol` (zigbee/zwave/matter/network/bluetooth/virtual), `parentDeviceId` on child devices, `mcpManaged`, `linked` (Hub Mesh) and `tags` when they apply. `label` is the display name; group by `parentDeviceId` to count a parent's children.
 
-**Filters** apply before paging, in this order: scope, `disabled` (true = only disabled, false = only enabled), `labelFilter` (label substring), `capabilityFilter` (exact capability name), `roomFilter` (exact room name), `stateFilter` (`{"switch":"on"}`: every named attribute must read that value), `staleHours` (no activity for that long; never-active devices count as stale), `changedSince` (active at or after epoch ms or ISO-8601 with an offset; a returned `lastActivity` round-trips). A zero match carries `capabilityFilterMatchedKnownCapability` or `roomFilterMatchedKnownRoom` to tell a typo from an empty result. If the capability feed cannot be read the response carries `capabilitiesUnavailable: true` and capabilityFilter matches nothing.
+**Filters** apply before paging, in this order: scope, `disabled` (true = only disabled, false = only enabled), `labelFilter` (label substring), `capabilityFilter` (exact capability name), `roomFilter` (exact room name), `stateFilter` (`{"switch":"on"}`: every named attribute must read that value; a credential-named attribute is refused while Hide passwords and credentials is on), `staleHours` (no activity for that long; never-active devices count as stale), `changedSince` (active at or after epoch ms or ISO-8601 with an offset; a returned `lastActivity` round-trips). A device whose page entry carries no usable value for a filtered field is excluded and named in `metadataUnavailableIds` with `partial: true`; a record missing such a field carries `metadataUnavailable: true`. A zero match carries `capabilityFilterMatchedKnownCapability` or `roomFilterMatchedKnownRoom` to tell a typo from an empty result. If the capability feed cannot be read or lists no device the response carries `capabilitiesUnavailable: true` and capabilityFilter matches nothing.
 
 **Projection.** `fields` picks record fields (`id` always kept): id, label, name, driver, room, roomId, disabled, deviceNetworkId, lastActivity, protocol, parentDeviceId, mcpManaged, linked, tags, notes, source, currentStates, capabilities, attributes, commands. `attributeNames` picks the attributes in `currentStates` and context lines; the default set is switch, level, motion, contact, presence, lock, temperature, humidity, illuminance, battery, power, energy, thermostatMode, thermostatOperatingState, heatingSetpoint, coolingSetpoint, speed, position, valve, water and smoke. An explicit set that matches nothing in context returns `attributeNamesMatchedNoAttributes: true`.
 
-**format='ids'** returns `{deviceIds, count, total}`. **format='context'** returns `summary`: `Mode:`, `HSM:` when available, `Devices: N of M` (with the next cursor when more remain), then `- Label (id, room) - Cap1, Cap2; attr=value` lines; it pages at 50 unless `limit` is set.
+**format='ids'** returns `{deviceIds, count, total}`. **format='context'** returns `summary`: `Mode:`, `HSM:` when available, `Devices: N of M` (with the next cursor when more remain), then `- Label (id, room) - Cap1, Cap2; attr=value` lines; it pages at 50 unless `limit` is set. A cursor past the end (the result shrank between pages) returns an empty last page.
 
 ### hub_get_device
 
@@ -12529,7 +12533,7 @@ Reference for the room tools (hub_list_rooms, hub_get_room, hub_create_room, hub
 
 ### hub_get_room
 
-The devices and their states come from one read of the hub's Devices page, the same source as hub_list_devices; if the page cannot be read the call returns an error. A device the MCP server cannot reach (not on the page, or not selected for MCP access) is returned with `accessible=false` and no `currentStates` (label "(device not accessible via MCP)"). For a paged or filtered list of a room's devices use hub_list_devices(roomFilter=<room name>).
+The devices and their states come from one read of the hub's Devices page, the same source as hub_list_devices; if the page cannot be read the call returns an error. A device not selected for MCP access is returned with `accessible=false` and no `currentStates` (label "(device not accessible via MCP)"); a reachable device the page does not list is returned with `metadataUnavailable=true` (label "(device not on the hub's Devices page)"). For a paged or filtered list of a room's devices use hub_list_devices(roomFilter=<room name>).
 
 ### hub_create_room
 

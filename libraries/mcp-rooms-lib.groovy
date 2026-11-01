@@ -38,10 +38,11 @@ def toolGetRoom(String roomIdentifier) {
         throw new IllegalArgumentException("Room '${roomIdentifier}' not found. Available rooms: ${available.join(', ')}")
     }
 
+    List roomIds = (room.deviceIds ?: []).collect { it.toString() }
     Map pageById = [:]
-    if (room.deviceIds) {
+    if (roomIds) {
         try {
-            for (pageRec in _readDevicesPage()) pageById.put(pageRec.id, pageRec)
+            for (pageRec in _readDevicesPage(roomIds as Set)) pageById.put(pageRec.id, pageRec)
         } catch (IllegalStateException e) {
             return [success: false, isError: true, error: "The hub's device list (/hub2/devicesList) could not be read: ${e.message}".toString(),
                     note: "Retry; if it persists check the hub's Devices page."]
@@ -50,18 +51,21 @@ def toolGetRoom(String roomIdentifier) {
     Set authorized = _mcpAuthorizedIds(getChildDevices() ?: [])
     boolean redact = _redactsCredentials()
     def devices = []
-    for (devId in (room.deviceIds ?: [])) {
-        String id = devId.toString()
-        Map rec = (authorized == null || authorized.contains(id)) ? pageById.get(id) : null
-        if (rec) {
-            def devInfo = [id: id, label: rec.label, name: rec.name]
-            Map states = [:]
-            for (st in rec.currentStates) states.put(st.key, _listStateValue(st.key, st.value, redact))
-            if (states) devInfo.currentStates = states
-            devices << devInfo
-        } else {
+    for (id in roomIds) {
+        if (authorized != null && !authorized.contains(id)) {
             devices << [id: id, label: "(device not accessible via MCP)", name: "unknown", accessible: false]
+            continue
         }
+        Map rec = pageById.get(id)
+        if (!rec) {
+            devices << [id: id, label: "(device not on the hub's Devices page)", name: "unknown", accessible: true, metadataUnavailable: true]
+            continue
+        }
+        def devInfo = [id: id, label: rec.label, name: rec.name]
+        Map states = [:]
+        for (st in rec.currentStates) states.put(st.key, _listStateValue(st.key, st.value, redact))
+        if (states) devInfo.currentStates = states
+        devices << devInfo
     }
 
     return [

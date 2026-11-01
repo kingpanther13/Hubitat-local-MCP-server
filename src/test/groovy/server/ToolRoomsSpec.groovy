@@ -430,14 +430,17 @@ class ToolRoomsSpec extends ToolSpecBase {
     def "hub_get_room serves every page device when the allowlist bypass is on, and omits empty states"() {
         given:
         settingsMap.bypassDeviceAllowlist = true
-        installGetRoomsStub([[id: 7, name: 'Den', deviceIds: [200]]])
+        installGetRoomsStub([[id: 7, name: 'Den', deviceIds: [200, 999]]])
         registerDevicesPage([[id: 200, name: 'Den Fan', currentStates: []]])
 
         when:
         def result = script.toolGetRoom('Den')
 
         then: 'an unlabelled device reads its name as both label and name'
-        result.devices == [[id: '200', label: 'Den Fan', name: 'Den Fan']]
+        result.devices[1] == [id: '200', label: 'Den Fan', name: 'Den Fan']
+
+        and: 'a reachable device the page does not list is unknown, not inaccessible'
+        result.devices[0] == [id: '999', label: "(device not on the hub's Devices page)", name: 'unknown', accessible: true, metadataUnavailable: true]
     }
 
     def "hub_get_room masks credential-named states when credential redaction is on"() {

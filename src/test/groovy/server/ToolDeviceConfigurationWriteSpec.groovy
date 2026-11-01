@@ -616,9 +616,11 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
         'unlisted' | true
     }
 
-    def 'data values are written before a disable'() {
+    @Unroll
+    def 'data values are written after an enable and before a disable (enabled: #enabled)'() {
         given:
         def model = fixture()
+        model.device.disabled = !enabled
         registerFixture(model, true)
         def posts = stubPosts { path, body ->
             if (path == '/device/runmethod') model.device.data.put(body.args[0].value, body.args[1].value)
@@ -627,12 +629,17 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateDevice([deviceId: '10', fields: [enabled: false, dataValues: [probe: '0007']]])
+        def result = script.toolUpdateDevice([deviceId: '10', fields: [enabled: enabled, dataValues: [probe: '0007']]])
 
         then:
         result.success == true
-        posts*.path == ['/device/runmethod', '/device/disable']
-        posts[1].body == [id: 10, disable: true]
+        posts*.path == order
+        posts.find { it.path == '/device/disable' }.body == [id: 10, disable: !enabled]
+
+        where:
+        enabled | order
+        false   | ['/device/runmethod', '/device/disable']
+        true    | ['/device/disable', '/device/runmethod']
     }
 
     def 'a data value the driver accepts without storing is an error that keeps secrets redacted'() {

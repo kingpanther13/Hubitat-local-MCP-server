@@ -3081,7 +3081,27 @@ class TestRunner:
         stale = self.client.call_tool("hub_list_devices", {"staleHours": 1, "fields": ["id", "lastActivity"]})
         assert stale.get("staleHours") == 1, f"staleHours not echoed: {list(stale)}"
         everything = self.client.call_tool("hub_list_devices", {"fields": ["id", "lastActivity"]})
-        assert stale.get("total", 0) <= everything.get("total", 0), f"stale set larger than the inventory: {stale}"
+        # The stale set is exactly the devices quiet for an hour or never active, judged from the
+        # inventory's own lastActivity values; a device within a minute of the boundary may flip
+        # between the two reads and is left out of the comparison.
+        now = datetime.now(UTC)
+
+        def _age_seconds(value):
+            for fmt in ("%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%S.%f%z"):
+                try:
+                    return (now - datetime.strptime(value, fmt)).total_seconds()
+                except ValueError:
+                    continue
+            raise AssertionError(f"unparseable lastActivity {value!r}")
+
+        ages = {d["id"]: (_age_seconds(d["lastActivity"]) if d.get("lastActivity") else None)
+                for d in everything.get("devices", [])}
+        settled = {i for i, age in ages.items() if age is None or abs(age - 3600) > 60}
+        expected = {i for i in settled if ages[i] is None or ages[i] >= 3600} - set(stale.get("metadataUnavailableIds") or [])
+        got = {d["id"] for d in stale.get("devices", [])} & settled
+        assert got == expected, f"staleHours=1 kept {sorted(got - expected)} and dropped {sorted(expected - got)}"
+        # A credential-named attribute cannot be matched: a filter on it would confirm a guess.
+        self._expect_tool_refusal("hub_list_devices", {"stateFilter": {"lockCodes": "1234"}}, "hidden while")
         # Removed arguments are refused, not silently ignored.
         self._expect_tool_refusal("hub_list_devices", {"detailed": True}, "detailed")
         self._expect_tool_refusal("hub_list_devices", {"offset": 1, "limit": 2}, "offset")
@@ -3752,6 +3772,39 @@ class TestRunner:
                 empty = _tool_error_payload(exc)
             assert "dataValues must be a non-empty object" in str(empty.get("error")), \
                 f"an empty dataValues must be refused, not reported as a successful no-op: {empty}"
+            # A disabled device drops data values, so an enable is sent before them and both land.
+            disabled = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"enabled": False}})
+            assert disabled.get("success") is True, f"could not disable the fixture: {disabled}"
+            re_enabled = self.client.call_tool("hub_update_device", {
+                "deviceId": dev_id, "fields": {"enabled": True, "dataValues": {"afterEnable": "1"}}})
+            assert re_enabled.get("success") is True and not re_enabled.get("errors"), \
+                f"enable + dataValues on a disabled device must land both: {re_enabled}"
+            assert {row.get("property") for row in re_enabled.get("changes", [])} == {"enabled", "dataValue.afterEnable"}, \
+                f"both the enable and the data value must report as changes: {re_enabled}"
+            # A credential-named ATTRIBUTE (a lock's lockCodes) hides the same way in the command
+            # snapshot and the event rows, where the description repeats the value.
+            lock_label = f"{PREFIX}LockCodes"
+            lock = self.client.call_tool("hub_manage_virtual_device", {
+                "action": "create", "deviceType": "Virtual Lock", "deviceLabel": lock_label, "confirm": True})
+            lock_dev = lock.get("device") or {}
+            lock_id = str(lock_dev.get("id") or lock.get("deviceId") or "")
+            lock_dni = str(lock_dev.get("deviceNetworkId") or "")
+            assert lock_id and lock_dni, f"could not create {lock_label}: {lock}"
+            try:
+                sent = self.client.call_tool("hub_call_device_command", {
+                    "deviceId": lock_id, "command": "setCode", "parameters": ["1", "4321", "Guest"], "includeState": True})
+                snap = (sent.get("state") or {}).get("lockCodes") or {}
+                assert snap.get("value") == "***redacted (password)***", f"the command snapshot must hide lockCodes: {sent}"
+                rows = [e for e in self.client.call_tool("hub_list_device_events", {
+                    "deviceId": lock_id, "hoursBack": 1, "limit": 30}).get("events", []) if e.get("name") == "lockCodes"]
+                assert rows and all(e.get("value") == "***redacted (password)***" and "4321" not in str(e.get("description"))
+                                    for e in rows), f"event rows must hide lockCodes: {rows}"
+            finally:
+                try:
+                    self.client.call_tool("hub_manage_virtual_device", {
+                        "action": "delete", "deviceNetworkId": lock_dni, "confirm": True})
+                except (McpError, McpToolError):
+                    pass
         finally:
             if dni:
                 try:

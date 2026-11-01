@@ -393,7 +393,7 @@ class BackupRetentionSpec extends ToolSpecBase {
         deleted == ['mcp-prerestore-app-1.groovy']
     }
 
-    def 'a single backup larger than the budget is kept and every other backup goes'() {
+    def 'a single backup larger than the budget is kept and evicts nothing: no eviction could reach the budget'() {
         given:
         backupIndex = ['rm-rule_5_a': rule(5, 'a', 1L, MIB), 'rm-rule_5_b': rule(5, 'b', 2L, MIB)]
         List deleted = deletedFiles()
@@ -402,8 +402,8 @@ class BackupRetentionSpec extends ToolSpecBase {
         script._publishItemBackup('rm-rule_6_a', rule(6, 'a', 10L, 11 * MIB))
 
         then:
-        backupIndex.keySet() == ['rm-rule_6_a'] as Set
-        deleted == ['mcp-rm-backup-5-a.json', 'mcp-rm-backup-5-b.json']
+        backupIndex.keySet() == ['rm-rule_5_a', 'rm-rule_5_b', 'rm-rule_6_a'] as Set
+        deleted == []
     }
 
     def 'pending-deletion entries are neither counted against the budget nor chosen'() {

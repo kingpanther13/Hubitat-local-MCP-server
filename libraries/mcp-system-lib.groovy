@@ -240,13 +240,15 @@ def toolGetHubInfo(args = null) {
     info.mcpClient = mcpClientIdentity()
     // Every device the MCP tools reach: the selected devices plus the MCP-managed virtual devices,
     // or with the allowlist bypassed every device on the hub's Devices page.
-    def reachable = ((settings.selectedDevices ?: []) + (getChildDevices() ?: [])).collect { it?.id?.toString() }.findAll { it } as Set
-    if (_bypassEnabled()) {
+    List children = getChildDevices() ?: []
+    Set reachable = _mcpAuthorizedIds(children)
+    if (reachable == null) {
         info.deviceAllowlistBypassed = true
         try {
-            reachable.addAll(_readDevicesPage().collect { it.id })
+            reachable = _readDevicesPage().collect { it.id } as Set
         } catch (Exception e) {
             info.mcpDeviceCountNote = "The allowlist is bypassed, so every hub device is reachable, but the hub's device list could not be read (${e.message}); the count covers the selected and MCP-managed devices only.".toString()
+            reachable = _selectedAndChildIds(children)
         }
     }
     info.mcpDeviceCount = reachable.size()

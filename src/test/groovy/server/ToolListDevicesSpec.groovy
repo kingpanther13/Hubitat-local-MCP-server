@@ -311,18 +311,80 @@ class ToolListDevicesSpec extends ToolSpecBase {
         script.toolListDevices([attributeNames: []]).devices[0].currentStates == [switch: 'on', level: '5']
     }
 
-    def "credential-named attributes are masked when credential redaction is on"() {
+    def "credential-named attributes are masked in records and context lines when credential redaction is on"() {
         given:
-        settingsMap.selectedDevices = [makeDevice(id: 1, attrValues: [apiToken: 'abc123', switch: 'on'])]
+        settingsMap.selectedDevices = [makeDevice(id: 1, label: 'Door', attrValues: [apiToken: 'abc123', lockCodes: '{"1":{"code":"1234"}}', switch: 'on'])]
 
         when:
         def masked = script.toolListDevices([attributeNames: ['apiToken', 'switch']])
+        def context = script.toolListDevices([format: 'context', attributeNames: ['switch', 'lockCodes']])
         settingsMap.redactCredentials = false
         def plain = script.toolListDevices([attributeNames: ['apiToken']])
 
         then:
         masked.devices[0].currentStates == [apiToken: script._appConfigRedactedMarker(), switch: 'on']
+        context.summary.readLines().last() == "- Door (1, No room); switch=on, lockCodes=${script._appConfigRedactedMarker()}"
         plain.devices[0].currentStates == [apiToken: 'abc123']
+    }
+
+    def "a credential-named stateFilter key is refused while redaction is on, so a filter cannot confirm a guess"() {
+        given:
+        settingsMap.selectedDevices = [makeDevice(id: 1, attrValues: [lockCodes: '{"1":{"code":"1234"}}'])]
+
+        when:
+        script.toolListDevices([stateFilter: [lockCodes: '{"1":{"code":"1234"}}']])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('lockCodes')
+        ex.message.contains('hidden')
+        hubGet.calls.isEmpty()
+
+        when:
+        settingsMap.redactCredentials = false
+
+        then:
+        script.toolListDevices([stateFilter: [lockCodes: '{"1":{"code":"1234"}}']]).devices*.id == ['1']
+    }
+
+    def "a page entry missing a filtered field, or with an unparseable activity, is excluded and named"() {
+        given: 'the bypass authorizes a hand-built page: one full entry, one bare entry, one with garbage activity'
+        settingsMap.bypassDeviceAllowlist = true
+        hubGet.register('/hub2/devicesList') { JsonOutput.toJson([devices: [
+            [data: [id: 1, name: 'Full', disabled: false, roomName: 'Den', lastActivity: null, currentStates: [[key: 'switch', value: 'on']]]],
+            [data: [id: 2, name: 'Bare']],
+            [data: [id: 3, name: 'Odd', disabled: false, roomName: null, lastActivity: 'yesterday-ish', currentStates: []]]
+        ]]) }
+
+        expect: 'each filter excludes the entry that cannot answer it and says which'
+        script.toolListDevices([disabled: false]).devices*.id == ['1', '3']
+        script.toolListDevices([disabled: false]).metadataUnavailableIds == ['2']
+        script.toolListDevices([roomFilter: 'Den']).metadataUnavailableIds == ['2']
+        script.toolListDevices([stateFilter: [switch: 'on']]).metadataUnavailableIds == ['2']
+        script.toolListDevices([staleHours: 1]).devices*.id == ['1']
+        script.toolListDevices([staleHours: 1]).metadataUnavailableIds == ['2', '3']
+        script.toolListDevices([changedSince: 0]).devices*.id == []
+        script.toolListDevices([changedSince: 0]).partial == true
+
+        and: 'a bare record is marked, a full one is not, and the context line does not invent a room'
+        script.toolListDevices([:]).devices.find { it.id == '2' }.metadataUnavailable == true
+        !script.toolListDevices([:]).devices.find { it.id == '1' }.containsKey('metadataUnavailable')
+        script.toolListDevices([format: 'context']).summary.contains('- Bare (2, room unknown)')
+        script.toolListDevices([format: 'context']).summary.contains('- Odd (3, No room)')
+    }
+
+    def "a capability feed that lists no device beside a populated page is unavailable, not capability-less"() {
+        given:
+        settingsMap.selectedDevices = [makeDevice(id: 1, capabilities: [[name: 'Switch']])]
+        hubGet.register('/hub2/vrb/devices') { '[]' }
+
+        when:
+        def result = script.toolListDevices([capabilityFilter: 'Switch'])
+
+        then:
+        result.devices == []
+        result.capabilitiesUnavailable == true
+        !script.toolListDevices([fields: ['capabilities']]).devices[0].containsKey('capabilities')
     }
 
     // ---- detailed -------------------------------------------------------
@@ -526,8 +588,22 @@ class ToolListDevicesSpec extends ToolSpecBase {
         where:
         cursor | expected
         'abc'  | 'hub_list_devices nextCursor'
-        '3'    | 'out of range'
         '-1'   | 'out of range'
+    }
+
+    def "a cursor past a result that shrank between pages is an empty last page, not an error"() {
+        given:
+        settingsMap.selectedDevices = (1..3).collect { makeDevice(id: it) }
+
+        when:
+        def page = script.toolListDevices([cursor: '7', limit: 2])
+
+        then:
+        page.devices == []
+        page.count == 0
+        page.total == 3
+        page.hasMore == false
+        !page.containsKey('nextCursor')
     }
 
     // ---- validation -------------------------------------------------------
@@ -559,6 +635,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         'an offset-less changedSince'      | [changedSince: '2026-06-23T10:00:00']      || 'Unparseable changedSince'
         'a list stateFilter'               | [stateFilter: ['switch']]                  || 'stateFilter must be an object'
         'a nested stateFilter value'       | [stateFilter: [switch: [on: 1]]]           || 'stateFilter must be an object'
+        'a credential-named stateFilter'   | [stateFilter: [apiToken: 'x']]             || 'hidden while'
         'a string attributeNames'          | [attributeNames: 'switch']                 || 'attributeNames must be an array'
         'a non-string attribute name'      | [attributeNames: ['switch', 7]]            || 'attributeNames must be an array'
         'a string fields'                  | [fields: 'id']                             || 'fields must be an array'

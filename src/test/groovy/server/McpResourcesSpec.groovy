@@ -183,7 +183,9 @@ class McpResourcesSpec extends ToolSpecBase {
         given:
         settingsMap.selectedDevices = [
             new TestDevice(id: 7, label: 'Kitchen Light', roomName: 'Kitchen',
-                capabilities: [[name: 'Switch']], attributeValues: [switch: 'on'])
+                capabilities: [[name: 'Switch']], attributeValues: [switch: 'on']),
+            new TestDevice(id: 8, label: 'Front Door', roomName: 'Hall',
+                capabilities: [[name: 'Lock']], attributeValues: [lock: 'locked', lockCodes: '{"1":{"code":"1234"}}'])
         ]
 
         when:
@@ -197,6 +199,10 @@ class McpResourcesSpec extends ToolSpecBase {
         def lines = content.text.readLines()
         lines[0] == 'Mode: Home'
         lines.contains('- Kitchen Light (7, Kitchen) - Switch; switch=on')
+
+        and: 'the fixed attribute set has no credential-named entry, so lockCodes never reaches the snapshot'
+        lines.contains('- Front Door (8, Hall) - Lock; lock=locked')
+        !content.text.contains('1234')
 
         and: 'live state is marked immediately stale for caching intermediaries'
         response.result.ttlMs == 0
