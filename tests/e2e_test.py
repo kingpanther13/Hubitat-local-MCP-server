@@ -13445,7 +13445,17 @@ def updated() {}
         if route != "lan":
             raise SkipTest(f"hub calls stay on loopback (hubRequestRoute={route!r}): {info.get('hubRequestRouteNote')}")
         reset_args = {"appId": self.server_app_id, "confirm": True}
-        zeroed = self._watchdog_tool("hub_delete_app_runtime_stats", reset_args)
+
+        def reset_stats() -> dict:
+            try:
+                return self._watchdog_tool("hub_delete_app_runtime_stats", reset_args)
+            except (AssertionError, McpToolError) as exc:
+                if "Unknown tool" in str(exc):
+                    raise SkipTest("stats read-back unavailable: the watchdog does not expose "
+                                   "hub_delete_app_runtime_stats") from exc
+                raise
+
+        zeroed = reset_stats()
         assert zeroed.get("success") is True, f"runtime-statistics reset failed: {zeroed}"
         # Interleaved so relay drift lands on both sides of the subtraction alike.
         wall = wall_control = 0.0
@@ -13458,7 +13468,7 @@ def updated() {}
             wall += time.monotonic() - t1
             assert isinstance(res, (dict, list)) and not (isinstance(res, dict) and res.get("success") is False), \
                 f"hub_list_devices call {i + 1}: {res}"
-        measured = self._watchdog_tool("hub_delete_app_runtime_stats", reset_args)
+        measured = reset_stats()
         if measured.get("verified") is False:
             raise SkipTest("stats read-back unavailable")
         busy_ms = (measured.get("before") or {}).get("totalMs")
@@ -17591,8 +17601,9 @@ _IPV4 = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
 _ephemeral_literals: set[str] = set()
 
 
-# The ephemeral lane runs without a watchdog, may report its Z-Wave radio offline and routes hub calls
-# over loopback; a provider that supplies a watchdog may still lack the stats read-back
+# The ephemeral lane may run without a watchdog and may report its Z-Wave radio offline. Its jvm hub
+# reports no LAN address, so hub calls stay on loopback; its os hub routes over its LAN address, but the
+# lane's deploy-controller lacks hub_delete_app_runtime_stats, so the stats read-back is unavailable
 # (docs/ephemeral-hub-e2e.md, Coverage). Only these documented skips pass there. Every other skip,
 # and every skip on the physical hub, still fails.
 EPHEMERAL_ACCEPTED_SKIPS = ("WATCHDOG_URL/HUBITAT_APP_ID not set", "Z-Wave radio offline on this hub",

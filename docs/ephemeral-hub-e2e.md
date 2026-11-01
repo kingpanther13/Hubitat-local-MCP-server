@@ -176,6 +176,7 @@ The lane sets `E2E_MRTR_ACTION_COUNT=36` and `E2E_WRITE_CAP_VARIABLE_COUNT=120` 
 continuation and write-cap proofs outlast one HTTP leg on a fast hub, and the watchdog-dependent
 tests, `test_endpoint_access_toggles_block_their_own_transport`,
 `test_bps_refusal_is_error_logged_at_error_and_debug_thresholds` and
-`test_hub_calls_not_charged_as_app_busy_time`, skip. The last one would skip there even with a
-watchdog: the lane's hubs route hub calls over loopback. A provider that supplies a watchdog without
-the stats read-back makes it skip with `stats read-back unavailable`.
+`test_hub_calls_not_charged_as_app_busy_time`, skip. The last one skips on both hub kinds: the
+`jvm` hub reports no LAN address, so its hub calls stay on loopback (`hub calls stay on loopback`);
+the `os` hub routes them over its LAN address, but the lane's deploy-controller does not expose
+`hub_delete_app_runtime_stats` (`stats read-back unavailable`).
