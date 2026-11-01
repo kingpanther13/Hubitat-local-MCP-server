@@ -174,5 +174,7 @@ that evidence and its required `Full e2e (runs with label)` gate.
 
 The lane sets `E2E_MRTR_ACTION_COUNT=36` and `E2E_WRITE_CAP_VARIABLE_COUNT=120` so the MRTR
 continuation and write-cap proofs outlast one HTTP leg on a fast hub, and the watchdog-dependent
-tests, `test_endpoint_access_toggles_block_their_own_transport` and
-`test_bps_refusal_is_error_logged_at_error_and_debug_thresholds`, skip.
+tests, `test_endpoint_access_toggles_block_their_own_transport`,
+`test_bps_refusal_is_error_logged_at_error_and_debug_thresholds` and
+`test_hub_calls_not_charged_as_app_busy_time`, skip. The last one would skip there even with a
+watchdog: the lane's hubs route hub calls over loopback.

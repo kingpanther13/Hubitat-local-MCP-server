@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Shared helpers for the shell scripts that call the watchdog's manual tools (the deploy script's
-# runtime-statistics reset, watchdog maintenance). The package install itself is watchdog_v3.py. Source it:
+# Shared helpers for calling the watchdog's manual tools over JSON-RPC: send a tool call and read its
+# result text, its success flag and its error, resolve an Apps Code class id, and deploy an app by
+# importUrl with a confirmed landing. The package install itself is watchdog_v3.py. Source it:
 #   source "$(dirname "$0")/mcp_watchdog_lib.sh"
 # Every call targets $WATCHDOG_URL (the watchdog's own /mcp endpoint), never the main $MCP_URL.
 #

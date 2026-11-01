@@ -728,7 +728,8 @@ class HubitatMcpClient:
         # Optional pre-send gap (E2E_REQUEST_GAP_SECONDS, default 0). It spaces the server app's
         # calls out over uptime; the platform's per-app load limiter ("App <id> generates excessive
         # hub load") compares the app's busy time since boot or the last runtime-statistics reset,
-        # counted twice, against uptime x threshold. E2E_PACE_SECONDS adds further per-TEST spacing.
+        # counted twice when the app produces its own events, against uptime x threshold.
+        # E2E_PACE_SECONDS adds further per-TEST spacing.
         time.sleep(REQUEST_GAP_SECONDS)
 
         # Chaos mode (E2E_CHAOS_504=<0..1>): after a WRITE completes, discard its response and
@@ -1378,6 +1379,7 @@ class TestRunner:
         self.watchdog_url = os.environ.get("WATCHDOG_URL", "")
         self.server_app_id = os.environ.get("HUBITAT_APP_ID", "")
         self.limiter_resets = 0
+        self.limiter_reset_failures = 0
         self._soft_passes: list[str] = []
         # Optional per-test spacing, in addition to the per-call gap in _send.
         self.pace_seconds = float(os.environ.get("E2E_PACE_SECONDS", "0"))
@@ -1540,34 +1542,32 @@ class TestRunner:
         return {tool.get("name") for tool in resp.json().get("result", {}).get("tools", [])}
 
     def _reset_app_runtime_stats(self, reason: str) -> bool:
-        """Zero the hub's per-app runtime statistics through the watchdog; True means the reset
-        succeeded, not that the blocked dispatch recovered -- the caller verifies its one retry.
-
-        The limiter compares the app's busy time since boot or the last reset, counted twice when
-        the app produces its own events, against uptime x threshold; the reset clears that busy
-        time without touching uptime. Never raises: a failed reset leaves the caller's failure as-is.
-        """
+        """Zero the hub's per-app runtime statistics through the watchdog, clearing the busy time the
+        load limiter weighs against uptime. True means the reset succeeded, not that the blocked call
+        recovered; a failed reset is counted and returns False. Never raises."""
         if not (self.watchdog_url and self.server_app_id):
             print(f"    [LIMITER] suspected load-limiter block ({reason}) but "
                   "WATCHDOG_URL/HUBITAT_APP_ID not set -- cannot reset, failing as-is.")
             return False
         print(f"    [LIMITER] suspected platform load-limiter block: {reason}")
-        if getattr(self, "_load_diagnostics", False) and not self.limiter_resets:
+        if getattr(self, "_load_diagnostics", False) and not (self.limiter_resets or self.limiter_reset_failures):
             self._record_load_snapshot("first limiter recovery")
         try:
             res = self._watchdog_tool("hub_delete_app_runtime_stats",
                                       {"appId": self.server_app_id, "confirm": True})
         except AssertionError as exc:
-            print(f"    [LIMITER] runtime-statistics reset failed: {exc} -- failing as-is.")
-            return False
+            res = {"error": str(exc)}
         if res.get("success") is not True:
+            self.limiter_reset_failures += 1
             print(f"    [LIMITER] runtime-statistics reset failed: {str(res)[:300]} -- failing as-is.")
             return False
         before = (res.get("before") or {}).get("totalMs")
         after = (res.get("after") or {}).get("totalMs")
+        unverified = "" if res.get("verified") is not False else \
+            f" (NOT verified: {res.get('note') or 'stats read-back unavailable'})"
         self.limiter_resets += 1
         print(f"    [LIMITER] reset #{self.limiter_resets} of app {self.server_app_id}'s runtime "
-              f"statistics: total {before} -> {after} ms, limit {res.get('limitMs')} ms "
+              f"statistics: total {before} -> {after} ms, limit {res.get('limitMs')} ms{unverified} "
               "-- retrying the blocked dispatch once.")
         return True
 
@@ -2267,7 +2267,7 @@ class TestRunner:
                 if attempt == 1 and re.search(r"\b50[0-3]\b", es):
                     retry_reason = "limiter 5xx"
                     print(f"    [RETRY] {name} failed on a server 5xx ({es[:80]}) -- suspected load "
-                          "limiter; recovering the app and re-running once")
+                          "limiter; resetting the runtime statistics and re-running once")
                     self._reset_app_runtime_stats(f"server 5xx on {name}: {es[:120]}")
                     continue
                 # The summary table stays readable with a 200-char message, but the FULL
@@ -11662,7 +11662,9 @@ def updated() {}
             # increment adds atomically on the hub and reports both values. Right after the bulk
             # create the platform load limiter can refuse the call: reset the runtime statistics,
             # and retry only when the read-back shows the first attempt added nothing (a retry must
-            # never add twice). A refused call is retried after the reset and then two short waits.
+            # never add twice). A refused call is retried after the reset and then after two short
+            # waits, which stay for runs whose reset fails (no watchdog): the busy budget grows with
+            # uptime, so a call just over the limit can clear without one.
             inc = self.client.call_tool("hub_manage_variables", {
                 "tool": "hub_set_variable", "args": {"name": names[0], "increment": 5}})
             for wait_s in (0, 10, 20):
@@ -13435,15 +13437,20 @@ def updated() {}
 
     @test("system_tools")
     def test_hub_calls_not_charged_as_app_busy_time(self) -> None:
-        """The server's own hub HTTP calls are not charged as its busy time (App Stats total). The
-        watchdog reads the hub's stats directly, so the server's cached stats read cannot pollute the
-        window; busy/wall is hardware-independent (charged loopback waits give ~0.9, uncharged
-        ~0.15-0.3). Charged busy time trips the per-app load limiter; a hub without a LAN address skips."""
+        """With Hub Login Security off (hubRequestRoute "lan"), the server's hub HTTP calls are not
+        charged as its busy time (App Stats total), which is what trips the per-app load limiter. The
+        watchdog reads the stats directly; a hub_list_modes control removes transport/relay time from the
+        denominator, so busy/wall is hardware-independent (charged ~0.9, uncharged ~0.15-0.3)."""
         if not (self.watchdog_url and self.server_app_id):
             raise SkipTest("WATCHDOG_URL/HUBITAT_APP_ID not set -- cannot reset the runtime statistics")
-        info = self.client.call_tool("hub_get_info", {})
-        if not info.get("localIP"):
-            raise SkipTest("hub reports no LAN address (hub_get_info.localIP) -- hub calls stay on loopback by design")
+        route = self.client.call_tool("hub_get_info", {}).get("hubRequestRoute")
+        if route != "lan":
+            raise SkipTest(f"hub calls stay on loopback (hubRequestRoute={route!r}): Hub Login Security is on, "
+                           "the hub's LAN address is unreadable, or the Read master is off")
+        t0 = time.monotonic()
+        for _ in range(5):
+            self.client.call_tool("hub_list_modes", {})
+        wall_control = time.monotonic() - t0
         reset_args = {"appId": self.server_app_id, "confirm": True}
         zeroed = self._watchdog_tool("hub_delete_app_runtime_stats", reset_args)
         assert zeroed.get("success") is True, f"runtime-statistics reset failed: {zeroed}"
@@ -13454,15 +13461,17 @@ def updated() {}
                 f"hub_list_devices call {i + 1}: {res}"
         wall = time.monotonic() - t0
         measured = self._watchdog_tool("hub_delete_app_runtime_stats", reset_args)
+        if measured.get("verified") is False:
+            raise SkipTest("stats read-back unavailable")
         busy_ms = (measured.get("before") or {}).get("totalMs")
         if not isinstance(busy_ms, (int, float)):
             raise SkipTest(f"watchdog reset reported no numeric before.totalMs: {str(measured)[:300]}")
-        share = busy_ms / (wall * 1000)
+        share = busy_ms / max(1.0, (wall - wall_control) * 1000)
         print(f"    [BUSY] server app {self.server_app_id}: {busy_ms} ms busy over 5 hub_list_devices calls "
-              f"({wall:.1f}s wall), busy share {share:.2f}")
+              f"({wall:.1f}s wall, {wall_control:.1f}s hub_list_modes control), busy share {share:.2f}")
         assert share < 0.6, \
             f"hub calls are being charged as app busy time (share {share:.2f}: {busy_ms} ms busy over " \
-            f"{wall:.1f}s wall) -- that is what trips the hub's per-app load limiter"
+            f"{wall:.1f}s wall less a {wall_control:.1f}s control) -- that is what trips the hub's per-app load limiter"
 
     @test("system_tools")
     def test_delete_logs_mcp_starts_a_new_log(self) -> None:
@@ -17419,6 +17428,10 @@ def updated() {}
                   f"{self.server_app_id or '?'} followed load-limiter errors. "
                   "A successful reset does not prove dispatch recovered; "
                   "the individual test results above record the outcome.")
+        if self.limiter_reset_failures:
+            print(f"\n  [LIMITER] {self.limiter_reset_failures} runtime-statistics reset(s) for app "
+                  f"{self.server_app_id or '?'} FAILED after load-limiter errors; "
+                  "the [LIMITER] lines above name each one.")
 
         if self._fixture_reset_failures:
             print(f"\n  [FIXTURE-RESET] {len(self._fixture_reset_failures)} permanent-fixture reset(s) FAILED -- "
@@ -17568,11 +17581,12 @@ _IPV4 = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
 _ephemeral_literals: set[str] = set()
 
 
-# The ephemeral test hub has no LAN address and may report its Z-Wave radio offline, and a provider
-# setup without a watchdog is still tolerated; only these documented skips pass there. Every other
-# skip, and every skip on the physical hub, still fails.
+# The ephemeral test hub runs without a watchdog and may report its Z-Wave radio offline; its hubs
+# route hub calls over loopback, and a watchdog-equipped provider may lack the stats read-back
+# (docs/ephemeral-hub-e2e.md, Coverage). Only these documented skips pass there. Every other skip,
+# and every skip on the physical hub, still fails.
 EPHEMERAL_ACCEPTED_SKIPS = ("WATCHDOG_URL/HUBITAT_APP_ID not set", "Z-Wave radio offline on this hub",
-                            "hub reports no LAN address")
+                            "hub calls stay on loopback", "stats read-back unavailable")
 
 
 def accepted_skip(message: str) -> bool:

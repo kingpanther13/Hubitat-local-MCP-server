@@ -87,36 +87,69 @@ echo "::add-mask::${WATCHDOG_URL##*access_token=}"
 
 # ===========================================================================
 # RESET THE PER-APP RUNTIME STATISTICS -- hub_delete_app_runtime_stats through the watchdog.
-#    After 15 minutes of uptime the hub's per-app load limiter refuses an app whose busy time (Logs >
-#    App Stats total), counted twice for its own events, passes uptime x threshold (stock 33 %).
-#    A full e2e run cost the server app ~700 s busy while its hub calls went over loopback (the
-#    server now routes them through the hub's LAN address, which the hub does not charge).
+#    The hub's per-app load limiter refuses an app whose busy time (Logs > App Stats total), counted
+#    twice for its own events, passes uptime x threshold (stock 33 %). When Hub Login Security is off
+#    the server routes plain hub reads through the hub's LAN address, which the hub does not charge;
+#    the 1,400,000 ms warning below is derived from the loopback-era cost of a full run (~700 s busy).
 #    Disabling and re-enabling the app does not change that counter; a reboot zeroes it and uptime.
 #    The reset zeroes every app's total while apps keep serving and leaves uptime alone.
 # ===========================================================================
+# reset_runtime_stats <app-id> -- the tool is idempotent, so an empty answer or a busy refusal (both
+# scheduled nothing) is retried; if that persists, or the watchdog predates the tool, the run continues
+# with a warning (the suite resets in-run on a limiter trip). Returns 1 only on an explicit failure.
+reset_runtime_stats() {
+  local app_id="$1" rpc text rpc_err err_file busy why attempt=1 summary limit_ms
+  rpc=$(jq -nc --arg id "$app_id" '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_delete_app_runtime_stats",arguments:{appId:$id,confirm:true}}}')
+  while :; do
+    # call_tool reports a JSON-RPC error on stderr with empty stdout; capture that line to read it and
+    # pass any other stderr (a curl timeout, which is an empty answer) through.
+    err_file=$(mktemp)
+    text=$(call_tool "$rpc" 2>"$err_file" || true)
+    rpc_err=$(grep '^::error::watchdog JSON-RPC error' "$err_file" || true)
+    grep -v '^::error::watchdog JSON-RPC error' "$err_file" >&2 || true
+    rm -f "$err_file"
+    busy=$(printf '%s' "$text" | jq -r '.busy == true' 2>/dev/null || echo false)
+    if [ -n "$rpc_err" ] || { [ -n "$text" ] && [ "$busy" != "true" ]; }; then break; fi
+    if [ "$attempt" -ge "$WD_RPC_ATTEMPTS" ]; then break; fi
+    if [ -n "$text" ]; then why="watchdog busy: $(err_of "$text")"; else why="empty answer"; fi
+    echo "  ...reset attempt ${attempt}/${WD_RPC_ATTEMPTS}: ${why}; retrying in ${WD_RPC_RETRY_SLEEP}s..."
+    attempt=$((attempt + 1)); sleep "$WD_RPC_RETRY_SLEEP"
+  done
+  if printf '%s\n%s' "$text" "$rpc_err" | grep -q 'Unknown tool'; then
+    echo "::warning::The standing watchdog predates hub_delete_app_runtime_stats -- run watchdog maintenance (hub-e2e.yml watchdog_update=true). Continuing without the reset."
+    return 0
+  fi
+  if [ -n "$rpc_err" ]; then
+    echo "::error::Runtime-statistics reset for app ${app_id} failed -- the run would start exposed to the load limiter. ${rpc_err#::error::}"
+    return 1
+  fi
+  if [ -z "$text" ] || [ "$busy" = "true" ]; then
+    if [ -n "$text" ]; then why="watchdog busy: $(err_of "$text")"; else why="empty answer"; fi
+    echo "::warning::Runtime-statistics reset for app ${app_id} got no usable answer after ${attempt} attempt(s) (${why}) -- continuing; the suite resets the statistics if the limiter trips."
+    return 0
+  fi
+  if [ "$(ok_of "$text")" != "true" ]; then
+    echo "::error::Runtime-statistics reset for app ${app_id} failed -- the run would start exposed to the load limiter. $(err_of "$text") Response: ${text:0:300}"
+    return 1
+  fi
+  summary=$(printf '%s' "$text" | jq -r '"before \(.before.totalMs) ms, after \(.after.totalMs) ms, uptime \(.uptimeSeconds) s, threshold \(.thresholdPct) %, " + (if (.limitMs | type) == "number" then "limit \(.limitMs) ms, margin \((.limitMs - 2 * ((.after.totalMs | numbers) // 0)) | floor) ms" else "busy budget unknown (threshold/uptime unreadable: \([.thresholdError, .uptimeError] | map(strings) | join("; ") | if . == "" then "no error reported" else . end))" end)' 2>/dev/null || true)
+  limit_ms=$(printf '%s' "$text" | jq -r 'if (.limitMs | type) == "number" then (.limitMs | floor) else "" end' 2>/dev/null || true)
+  echo "Runtime statistics reset for app ${app_id}: ${summary:-${text:0:300}}"
+  if [ "$(printf '%s' "$text" | jq -r '.verified == false' 2>/dev/null || echo false)" = "true" ]; then
+    echo "::warning::Runtime-statistics reset for app ${app_id} was accepted but not verified: $(printf '%s' "$text" | jq -r '.note // "stats read-back unavailable"' 2>/dev/null || true)"
+  fi
+  if [ -n "$limit_ms" ] && [ "$limit_ms" -lt 1400000 ]; then
+    echo "::warning::Busy budget after the reset is ${limit_ms} ms (< 1,400,000 ms, twice a full run's ~700 s) -- hub uptime is too short for a full run; the suite resets the statistics again if the limiter trips."
+  fi
+  return 0
+}
+
 SERVER_APP_ID="${HUBITAT_APP_ID:-}"
 if [ -z "$SERVER_APP_ID" ]; then
   echo "::warning::HUBITAT_APP_ID not set -- skipping the runtime-statistics reset (this run starts with the busy time prior activity left on the server app)."
 else
   echo "Resetting the hub's per-app runtime statistics through the watchdog (server app ${SERVER_APP_ID})..."
-  RESET_RPC=$(jq -nc --arg id "$SERVER_APP_ID" '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_delete_app_runtime_stats",arguments:{appId:$id,confirm:true}}}')
-  # call_tool reports a JSON-RPC error on stderr with empty stdout; capture it to tell an old watchdog apart.
-  RESET_ERR_FILE=$(mktemp)
-  RESET_TEXT=$(call_tool "$RESET_RPC" 2>"$RESET_ERR_FILE" || true)
-  RESET_RPC_ERR=$(cat "$RESET_ERR_FILE"); rm -f "$RESET_ERR_FILE"
-  if [ "$(ok_of "$RESET_TEXT")" = "true" ]; then
-    RESET_LINE=$(printf '%s' "$RESET_TEXT" | jq -r '"before \(.before.totalMs) ms, after \(.after.totalMs) ms, uptime \(.uptimeSeconds) s, threshold \(.thresholdPct) %, limit \(.limitMs) ms, margin \(((.limitMs // 0) - 2 * (.after.totalMs // 0)) | floor) ms"' 2>/dev/null || true)
-    LIMIT_MS=$(printf '%s' "$RESET_TEXT" | jq -r '(.limitMs // 0) | floor' 2>/dev/null || echo 0)
-    echo "Runtime statistics reset for app ${SERVER_APP_ID}: ${RESET_LINE}"
-    if [ "${LIMIT_MS:-0}" -lt 1400000 ] 2>/dev/null; then
-      echo "::warning::Busy budget after the reset is ${LIMIT_MS} ms (< 1,400,000 ms, twice a full run's ~700 s) -- hub uptime is too short for a full run; the suite resets the statistics again if the limiter trips."
-    fi
-  elif printf '%s\n%s' "$RESET_TEXT" "$RESET_RPC_ERR" | grep -q 'Unknown tool'; then
-    echo "::warning::The standing watchdog predates hub_delete_app_runtime_stats -- run watchdog maintenance (hub-e2e.yml watchdog_update=true). Continuing without the reset."
-  else
-    echo "::error::Runtime-statistics reset for app ${SERVER_APP_ID} failed -- the run would start exposed to the load limiter. $(err_of "$RESET_TEXT")${RESET_RPC_ERR:+ ${RESET_RPC_ERR#::error::}} Response: ${RESET_TEXT:0:300}"
-    exit 1
-  fi
+  if ! reset_runtime_stats "$SERVER_APP_ID"; then exit 1; fi
 
   # Readiness: prove the server's /mcp endpoint actually ANSWERS after the install before handing off
   # to the tests. The first request absorbs any lazy-recompile/warmup latency here instead of inside

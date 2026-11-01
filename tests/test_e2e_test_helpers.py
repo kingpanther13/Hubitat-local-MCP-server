@@ -746,6 +746,7 @@ def test_print_summary_requires_tests_and_fixture_resets_to_succeed(
     }]
     runner.client = SimpleNamespace(op_timings=[], continuation_timings=[])
     runner.limiter_resets = 0
+    runner.limiter_reset_failures = 0
     runner.server_app_id = None
     runner._fixture_reset_failures = reset_failures
     runner._soft_passes = []
@@ -908,6 +909,7 @@ def test_limiter_summary_does_not_claim_retried_dispatches_passed(capsys):
                        "message": "dispatch remained blocked", "duration": 0.1}]
     runner.client = SimpleNamespace(op_timings=[], continuation_timings=[])
     runner.limiter_resets = 6
+    runner.limiter_reset_failures = 2
     runner.server_app_id = "38"
     runner._fixture_reset_failures = []
     runner._soft_passes = []
@@ -915,6 +917,7 @@ def test_limiter_summary_does_not_claim_retried_dispatches_passed(capsys):
     output = capsys.readouterr().out
     assert "retried dispatches passed" not in output
     assert "6 runtime-statistics reset(s)" in output
+    assert "2 runtime-statistics reset(s) for app 38 FAILED" in output
 
 
 @pytest.mark.parametrize("unavailable", [False, True])
@@ -1074,6 +1077,43 @@ def test_call_with_limiter_reset_retries_only_limiter_trips(
     assert (limited is not None) is expect_limited
     if not expect_limited:
         assert limited is None and isinstance(res, dict)
+
+
+def _reset_runner(watchdog_tool):
+    runner = object.__new__(et.TestRunner)
+    runner.watchdog_url, runner.server_app_id = "https://watchdog.invalid/mcp", "38"
+    runner.limiter_resets = runner.limiter_reset_failures = 0
+    runner._watchdog_tool = watchdog_tool
+    return runner
+
+
+def _raise_unusable(name, arguments):
+    raise AssertionError(f"watchdog {name} returned no usable result")
+
+
+@pytest.mark.parametrize("watchdog_tool, expected, resets, failures", [
+    pytest.param(_raise_unusable, False, 0, 1, id="unusable-answer-is-a-failed-reset"),
+    pytest.param(lambda name, arguments: {"success": False, "error": "answered 'no'"}, False, 0, 1,
+                 id="refusal-is-a-failed-reset"),
+    pytest.param(lambda name, arguments: {"success": True, "before": {"totalMs": 936332},
+                                          "after": {"totalMs": 0}, "limitMs": 285120000}, True, 1, 0,
+                 id="success-counts-one-reset"),
+])
+def test_reset_app_runtime_stats_reports_and_counts_each_outcome(watchdog_tool, expected, resets, failures):
+    runner = _reset_runner(watchdog_tool)
+    assert runner._reset_app_runtime_stats("probe") is expected
+    assert (runner.limiter_resets, runner.limiter_reset_failures) == (resets, failures)
+
+
+def test_reset_app_runtime_stats_counts_every_failure_and_flags_an_unverified_reset(capsys):
+    runner = _reset_runner(_raise_unusable)
+    assert runner._reset_app_runtime_stats("first") is False
+    assert runner._reset_app_runtime_stats("second") is False
+    assert runner.limiter_reset_failures == 2 and runner.limiter_resets == 0
+    runner._watchdog_tool = lambda name, arguments: {"success": True, "verified": False,
+                                                     "note": "stats read-back failed"}
+    assert runner._reset_app_runtime_stats("third") is True
+    assert "NOT verified: stats read-back failed" in capsys.readouterr().out
 
 
 def test_call_with_limiter_reset_propagates_non_limiter_errors():
@@ -3175,10 +3215,12 @@ def test_radio_unavailable_error_accepts_only_503_or_unavailable(error, unavaila
 @pytest.mark.parametrize("lane, message, expected", [
     ("ephemeral", "WATCHDOG_URL/HUBITAT_APP_ID not set", True),
     ("ephemeral", "Z-Wave radio offline on this hub", True),
-    ("ephemeral", "hub reports no LAN address (hub_get_info.localIP) -- hub calls stay on loopback by design", True),
+    ("ephemeral", "hub calls stay on loopback (hubRequestRoute='loopback'): Hub Login Security is on", True),
+    ("ephemeral", "stats read-back unavailable", True),
     ("ephemeral", "some other reason", False),
     ("", "WATCHDOG_URL/HUBITAT_APP_ID not set", False),
-    ("", "hub reports no LAN address (hub_get_info.localIP) -- hub calls stay on loopback by design", False),
+    ("", "hub calls stay on loopback (hubRequestRoute='loopback'): Hub Login Security is on", False),
+    ("", "stats read-back unavailable", False),
 ])
 def test_accepted_skip_passes_only_documented_ephemeral_reasons(monkeypatch, lane, message, expected):
     if lane:

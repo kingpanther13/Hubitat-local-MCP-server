@@ -20,7 +20,7 @@ private Map _appClonerInit(Integer sourceAppId) {
     // Cloner state machine validates `referrer`/`url` against the session that
     // opened the cloner. Use the running hub's IP — hardcoding fails for any
     // other deployment. Falls back to 127.0.0.1 (the loopback the parent app
-    // already uses for hubInternal* calls) if location.hub.localIP is null.
+    // falls back to for hubInternal* calls) if location.hub.localIP is null.
     String hubIp = null
     try { hubIp = location?.hub?.localIP?.toString() } catch (Exception ignored) { /* fall through */ }
     if (!hubIp) hubIp = "127.0.0.1"
@@ -680,7 +680,7 @@ private Map _appClonerStagePlan(Integer newAppId) {
     // Primary enumeration: ONE /hub2/appsList read carries the complete nested
     // app tree -- no per-node configPage render (which for a cloned Button
     // Controller with N children turned one read into N+1 expensive renders on
-    // the same per-app load counters the sticky limiter watches).
+    // the same per-app load counters the per-app load limiter watches).
     try {
         def responseText = hubInternalGet("/hub2/appsList")
         def parsed = new groovy.json.JsonSlurper().parseText(responseText)

@@ -48,7 +48,7 @@ The Hubitat-runtime code has no external dependencies -- everything runs inside 
 │  │  - Isolated settings & state per rule     │  │
 │  └───────────────────────────────────────────┘  │
 │                                                 │
-│  Hub Internal API (http://127.0.0.1:8080)       │
+│  Hub Internal API (loopback or LAN IP, :8080)   │
 │  - /hub/advanced/* (memory, temp, db size)      │
 │  - /hub2/* (apps, drivers, zwave, zigbee)       │
 │  - /app/ajax/*, /driver/ajax/* (code mgmt)      │
@@ -344,7 +344,7 @@ Exception: `toolCreateHubBackup` checks `confirm` directly without requiring a p
 
 ### Hub Internal API Helpers
 
-Three helpers for calling the hub's internal HTTP API at `http://127.0.0.1:8080`:
+Three helpers for calling the hub's internal HTTP API on loopback (`http://127.0.0.1:8080`), or on the hub's own LAN address on firmware 2.5.0+ with Hub Login Security off (the hub does not count HTTP wait on a non-loopback host toward the app's busy time):
 
 | Helper | Use Case | Content Type |
 |--------|----------|--------------|
@@ -402,7 +402,7 @@ unreadable version as NOT obsolete — it deliberately avoids `_firmwareAtLeast`
 default for a blank version, which would wipe a working install's credentials on an
 unidentifiable hub.
 
-Native requests use the fixed `http://127.0.0.1:8080` loopback endpoint on the hub. Login credentials and cookies are plaintext on that local connection; they are not sent to the hub's LAN address or cloud relay by this helper. This trusts the hub's operating system and locally installed code: a process able to inspect loopback traffic can read them. Install only trusted apps/drivers and restrict hub administration. Do not replace this origin with a remote HTTP address; remote credential transport requires authenticated TLS. The local HTTP connection does not provide confidentiality against a compromised hub.
+Native requests use the `http://127.0.0.1:8080` loopback endpoint, or the hub's own LAN address on firmware 2.5.0+ with Hub Login Security off, because the hub does not count HTTP wait on a non-loopback host toward the app's busy time (the per-app load limiter). Login credentials, session cookies and every request that reads a redirect stay on loopback; they are not sent to the hub's LAN address or cloud relay by this helper, and the connection is plaintext either way. This trusts the hub's operating system and locally installed code: a process able to inspect loopback traffic can read them. Install only trusted apps/drivers and restrict hub administration. Do not route credentials to any other HTTP address; remote credential transport requires authenticated TLS. The local HTTP connection does not provide confidentiality against a compromised hub.
 
 ### State Management
 
@@ -510,7 +510,7 @@ All routes require the Write master. Validation runs before mutation; runtime fa
 | `hub_update_room` | Write master + confirm | Renames room via `POST /room/save` with existing `roomId` and new `name`. Preserves device assignments |
 
 **Key API details:**
-- All room mutations use `POST /room/save` at `http://127.0.0.1:8080` with `Content-Type: application/json`
+- All room mutations use `POST /room/save` on the hub's internal API (loopback, or the LAN address as above) with `Content-Type: application/json`
 - The JSON body uses `roomId` (not `id`) — the API returns `{"roomId":null,"error":"Invalid room id"}` if `id` is used
 - Body format: `{"roomId": <int>, "name": "<string>", "deviceIds": [<int>, ...]}`
 - For room creation, `roomId: 0` triggers create behavior (Grails convention)
@@ -559,7 +559,7 @@ The Hubitat Groovy sandbox restricts:
 
 ### Hub Internal API Endpoints Reference
 
-These are undocumented endpoints on the Hubitat hub at `http://127.0.0.1:8080`:
+These are undocumented endpoints on the Hubitat hub's internal API (`http://127.0.0.1:8080`, or the hub's LAN address on port 8080 as above):
 
 **Read endpoints (GET):**
 | Path | Returns |

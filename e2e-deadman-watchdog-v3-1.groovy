@@ -1992,7 +1992,8 @@ def adminSetAppDisabled(args) {
 }
 
 // hub_delete_app_runtime_stats: zero every app's Logs > App Stats total/count. The per-app load
-// limiter compares that busy time against uptime x threshold %, and a disable/enable keeps it.
+// limiter compares that busy time against hub uptime x threshold %, and a disable/enable keeps it.
+// The reset restarts the App Stats appsUptime window but not hub uptime, so limitMs uses location.hub.uptime.
 def adminDeleteAppRuntimeStats(args) {
     requireConfirm(args)
     String appId = null
@@ -2002,46 +2003,82 @@ def adminDeleteAppRuntimeStats(args) {
         appId = raw.toInteger().toString()
     }
     def beforeDoc = _parseJsonBody(hubGet("/logs/json", [:]))
-    Map before = appId ? appRuntimeRow(beforeDoc, appId, false) : null
+    Map before = appId ? appRuntimeRow(beforeDoc, appId) : null
     String appPart = appId ? "; app ${appId} total ${before.totalMs} ms" : ""
     mcpAdminLog "Resetting app runtime stats (/hub/advanced/resetAppRuntimeStats)${appPart}"
-    String reset = hubGet("/hub/advanced/resetAppRuntimeStats", [:])
-    if (reset?.trim() != "ok") {
-        Map failed = [success: false, error: "GET /hub/advanced/resetAppRuntimeStats answered '${reset}' (expected ok)".toString()]
+    Map resetResp = hubGetStatus("/hub/advanced/resetAppRuntimeStats", [:])
+    Integer st = resetResp?.status as Integer
+    String reset = resetResp?.data?.toString()
+    if (st == null || st >= 300 || reset?.trim() != "ok") {
+        Map failed = [success: false] + resetFailure(st, reset)
         if (appId) failed += [appId: appId, before: before]
         return failed
     }
     def afterDoc = _parseJsonBody(hubGet("/logs/json", [:]))
-    Map after = appId ? appRuntimeRow(afterDoc, appId, true) : null
-    def thresholdPct = hubNumber(hubGet("/hub/advanced/getExcessiveLoadThreshold", [:]))
-    if (!(thresholdPct instanceof Long)) thresholdPct = null
-    def uptimeSeconds
-    try { uptimeSeconds = location.hub?.uptime } catch (Exception e) { uptimeSeconds = "unavailable" }
-    Long limitMs = (uptimeSeconds instanceof Number && thresholdPct != null) ?
-        (((uptimeSeconds as long) * 1000L * (thresholdPct as long) / 100) as long) : null
-    Map result = [success: true, uptimeSeconds: uptimeSeconds,
-                  uptimeText: (beforeDoc instanceof Map ? beforeDoc.uptime : null) ?: (afterDoc instanceof Map ? afterDoc.uptime : null),
-                  appsUptimeBeforeText: beforeDoc instanceof Map ? beforeDoc.appsUptime : null,
-                  thresholdPct: thresholdPct, limitMs: limitMs,
-                  note: "limitMs is the busy budget the load limiter compares 2 x an app's total against when the app produces its own events.",
-                  message: "App runtime statistics reset."]
-    if (appId) {
+    Map after = appId ? appRuntimeRow(afterDoc, appId) : null
+
+    Map result = [success: true, message: "App runtime statistics reset."]
+    List notes = []
+    String rawThreshold = hubGet("/hub/advanced/getExcessiveLoadThreshold", [:])
+    def threshold = hubNumber(rawThreshold)
+    Long thresholdPct = threshold instanceof Number ? (threshold as long) : null
+    if (thresholdPct == null) result.thresholdError = (rawThreshold == null ? "GET /hub/advanced/getExcessiveLoadThreshold did not answer." :
+        "GET /hub/advanced/getExcessiveLoadThreshold answered '${rawThreshold.trim()}', not a number.").toString()
+    def uptimeSeconds = null
+    try {
+        def up = location.hub?.uptime
+        if (up instanceof Number) uptimeSeconds = up
+        else result.uptimeError = "location.hub.uptime is not a number (${up}).".toString()
+    } catch (Exception e) { result.uptimeError = "location.hub.uptime could not be read: ${e.message}".toString() }
+    Long limitMs = (uptimeSeconds != null && thresholdPct != null) ?
+        (((uptimeSeconds as long) * 1000L * thresholdPct / 100) as long) : null
+    result += [uptimeSeconds: uptimeSeconds,
+               uptimeText: (beforeDoc instanceof Map ? beforeDoc.uptime : null) ?: (afterDoc instanceof Map ? afterDoc.uptime : null),
+               appsUptimeBeforeText: beforeDoc instanceof Map ? beforeDoc.appsUptime : null,
+               thresholdPct: thresholdPct, limitMs: limitMs]
+    notes << "limitMs is the busy budget the load limiter compares an app's total against (counted twice when the app produces its own events)."
+
+    boolean verified = false
+    if (!appId) {
+        notes.add(0, "Pass appId to verify the reset against an app's total.")
+    } else {
+        String beforeText = before.totalMs == null ? "unknown" : "${before.totalMs} ms"
+        String afterText = after.totalMs == null ? "unknown" : "${after.totalMs} ms"
         result += [appId: appId, before: before, after: after,
-                   message: "App runtime statistics reset; app ${appId} total ${before.totalMs} ms -> ${after.totalMs} ms.".toString()]
-        if (before.totalMs instanceof Number && before.totalMs > 0 &&
-                !(after.totalMs instanceof Number && after.totalMs < before.totalMs)) {
+                   message: "App runtime statistics reset; app ${appId} total ${beforeText} -> ${afterText}.".toString()]
+        if (before.totalMs == null) {
+            notes.add(0, "The reset was accepted but the App Stats read before it was unavailable, so the drop is unverified.")
+        } else if (after.totalMs == null) {
+            notes.add(0, "The reset was accepted but the App Stats read-back was unavailable.")
+        } else if (before.totalMs > 0 && !(after.totalMs < before.totalMs)) {
             result += [success: false, error: "The reset did not take: app ${appId} total ${before.totalMs} ms before, ${after.totalMs} ms after.".toString()]
+            notes = ["Read Logs > App Stats; if the total is still climbing another app is busy. A reboot (hub_reboot) resets the statistics and uptime."]
+        } else {
+            verified = true
         }
     }
+    result.verified = verified
+    result.note = notes.join(" ")
     return result
 }
 
-// An absent row in a readable /logs/json is total 0 after a reset: the hub lists only apps with activity.
-Map appRuntimeRow(doc, String appId, boolean absentIsZero) {
+// error + recovery note for a reset the hub did not answer with ok.
+Map resetFailure(Integer st, String body) {
+    String path = "GET /hub/advanced/resetAppRuntimeStats"
+    String retry = "Retry once the hub answers /hub/advanced reads (hub_get_metrics); repeating the reset is harmless."
+    if (st == null) return [error: "${path} got no HTTP answer (timeout or dead web stack), so the counters may not have reset.".toString(), note: retry]
+    String hint = st == 404 ? "A 404 means the firmware predates the endpoint: reboot the hub (hub_reboot) to reset the statistics." :
+        (st in [301, 302, 401, 403] ? "Hub Security login failed: check the watchdog's Hub Security username/password, then retry." :
+            "${retry} If it keeps failing, reboot the hub (hub_reboot) to reset the statistics.".toString())
+    return [error: "${path} answered HTTP ${st} '${body?.trim()}' (expected ok).".toString(), note: hint]
+}
+
+// An absent row in a readable /logs/json is total 0: the hub lists only apps with activity since the last reset.
+Map appRuntimeRow(doc, String appId) {
     def rows = (doc instanceof Map && doc.appStats instanceof List) ? doc.appStats : null
-    def row = rows?.find { it?.id?.toString() == appId }
-    if (row != null) return [totalMs: row.total, count: row.count]
-    return (rows != null && absentIsZero) ? [totalMs: 0, count: 0] : [totalMs: null, count: null]
+    if (rows == null) return [totalMs: null, count: null]
+    def row = rows.find { it?.id?.toString() == appId }
+    return row != null ? [totalMs: row.total, count: row.count] : [totalMs: 0, count: 0]
 }
 
 
@@ -2754,7 +2791,7 @@ def getManualToolDefinitions() {
          inputSchema: [type: "object", properties: [prefix: [type: "string", description: "Name prefix to purge; default BAT_E2E_."], confirm: [type: "boolean"]], required: ["confirm"]]],
         [name: "hub_set_app_disabled", annotations: [title: "Set App Disabled", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false], description: "Toggle an installed app's disabled flag (the admin UI red-X) via POST /installedapp/disable; verified by read-back. Refuses to disable the watchdog's own instance. confirm:true required.",
          inputSchema: [type: "object", properties: [appId: [type: "string"], disable: [type: "boolean"], confirm: [type: "boolean"]], required: ["appId", "disable", "confirm"]]],
-        [name: "hub_delete_app_runtime_stats", annotations: [title: "Delete App Runtime Stats", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false], description: "Reset the hub's per-app runtime statistics (the Logs > App Stats totals) through /hub/advanced/resetAppRuntimeStats; every app keeps running. The hub's per-app load limiter compares an app's busy time since boot (counted twice when the app produces its own events) against uptime x the excessive-load threshold %, and disabling and re-enabling the app does not clear that counter, while this reset does. Reports the named app's total before and after the reset plus the current busy budget. confirm:true required.",
+        [name: "hub_delete_app_runtime_stats", annotations: [title: "Delete App Runtime Stats", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false], description: "Reset the hub's per-app runtime statistics (the Logs > App Stats totals) through /hub/advanced/resetAppRuntimeStats; every app keeps running. The hub's per-app load limiter compares an app's busy time since boot (counted twice when the app produces its own events) against uptime x the excessive-load threshold %, and disabling and re-enabling the app does not clear that counter, while this reset does. The reset also restarts the App Stats uptime window; hub uptime, which the limiter compares against, does not change. Reports the named app's total before and after the reset plus the current busy budget (limitMs); verified is true only when that total was read on both sides and dropped or was already 0. Irreversible: every app's App Stats totals are zeroed and cannot be restored; confirm:true required.",
          inputSchema: [type: "object", properties: [
             appId: [type: "string", description: "Installed-app id whose runtime total to report before and after the reset (optional)."],
             confirm: [type: "boolean", description: "Must be true."]], required: ["confirm"]]],

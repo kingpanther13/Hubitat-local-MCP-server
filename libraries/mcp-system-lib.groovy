@@ -309,6 +309,9 @@ def toolGetHubInfo(args = null) {
         info.headerValidation = hv
     }
 
+    // Not PII: says only whether hub calls take the LAN address or loopback.
+    info.hubRequestRoute = (hubBaseUri() == hubLoopbackUri()) ? "loopback" : "lan"
+
     // PII/location data requires the Read master (default ON)
     if (settings.enableRead != false) {
         info.name = hub?.name
@@ -1084,8 +1087,8 @@ private _modePost(String path, Map body) {
 private _modeWriteResult(String op, parsed) {
     if (parsed instanceof Map && parsed.success == true) {
         // Don't re-read the full mode list here -- that's an extra /modes/json round-trip per write
-        // and the hub's per-app load limiter punishes back-to-back calls. The caller reads via
-        // hub_list_modes when it needs the updated list.
+        // and the hub's per-app load limiter compares this app's busy time since boot against
+        // uptime. The caller reads via hub_list_modes when it needs the updated list.
         return [success: true, action: op, note: "Read the updated mode list with hub_list_modes."]
     }
     def err = (parsed instanceof Map) ? (parsed.message ?: parsed.error) : null

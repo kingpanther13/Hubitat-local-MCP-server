@@ -400,7 +400,7 @@ def test_request_trace_capacity_recovery_boundary_counts_posts_only() -> None:
     trace = RequestTrace()
     assert trace.capacity_recovery_boundary == 0
     # The boundary indexes into posts(), so non-POST legs (SSE GETs, session
-    # DELETEs) recorded before the bounce must not shift it.
+    # DELETEs) recorded before the reset must not shift it.
     trace.legs = [
         {"method": "POST", "mcp_protocol_version": "2026-07-28", "status": 504},
         {"method": "GET", "mcp_protocol_version": None, "status": 405},

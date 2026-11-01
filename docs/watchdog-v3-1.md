@@ -17,6 +17,13 @@ it unchanged except what is listed here.
   `libraries` request against a bundle manifest behaves exactly as in v3.
 - Its code-protection check (the refusal to delete, or to replace without a live MCP peer, a
   watchdog's own code) covers both v3 and v3.1 code.
+- `hub_delete_app_runtime_stats` resets the hub's per-app runtime statistics (Logs > App Stats),
+  the busy-time counters the per-app load limiter compares against hub uptime. CI calls it at the
+  start of every run and when the limiter trips mid-run, because disabling and re-enabling the app
+  does not clear them. `verified` is true only when the named app's total was read before and
+  after the reset and dropped (or was already 0), and `limitMs` is the busy budget
+  (hub uptime x the excessive-load threshold %) the limiter compares that total against, counted
+  twice when the app produces its own events.
 
 ## Wiring
 
