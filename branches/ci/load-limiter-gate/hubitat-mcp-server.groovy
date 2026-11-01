@@ -32902,7 +32902,10 @@ private String _hubLanProbeFailed(String lan, String reason) {
 private boolean _looksLikeLoginPage(body) {
     if (!(body instanceof CharSequence)) return false
     String t = body.toString()
-    return t.contains("/login") && t.toLowerCase().contains("<form")
+    return (t =~ /(?is)<title>\s*Login\b/).find() &&
+        (t =~ /(?i)<form\b[^>]*\bmethod\s*=\s*"post"/).find() &&
+        (t =~ /(?i)<input\b[^>]*\bname\s*=\s*"username"/).find() &&
+        (t =~ /(?i)<input\b(?=[^>]*\btype\s*=\s*"password")(?=[^>]*\bname\s*=\s*"password")[^>]*>/).find()
 }
 private boolean _isConnectFailure(Exception e) {
     def t = e
