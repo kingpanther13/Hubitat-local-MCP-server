@@ -745,7 +745,7 @@ def test_print_summary_requires_tests_and_fixture_resets_to_succeed(
         "message": "probe result", "duration": 0.1,
     }]
     runner.client = SimpleNamespace(op_timings=[], continuation_timings=[])
-    runner.throttle_bounces = 0
+    runner.limiter_resets = 0
     runner.server_app_id = None
     runner._fixture_reset_failures = reset_failures
     runner._soft_passes = []
@@ -907,14 +907,14 @@ def test_limiter_summary_does_not_claim_retried_dispatches_passed(capsys):
     runner.results = [{"group": "native_apps", "name": "blocked", "status": "fail",
                        "message": "dispatch remained blocked", "duration": 0.1}]
     runner.client = SimpleNamespace(op_timings=[], continuation_timings=[])
-    runner.throttle_bounces = 6
+    runner.limiter_resets = 6
     runner.server_app_id = "38"
     runner._fixture_reset_failures = []
     runner._soft_passes = []
     assert runner._print_summary() is False
     output = capsys.readouterr().out
     assert "retried dispatches passed" not in output
-    assert "6 watchdog bounce(s)" in output
+    assert "6 runtime-statistics reset(s)" in output
 
 
 @pytest.mark.parametrize("unavailable", [False, True])
@@ -1030,25 +1030,25 @@ _LIMITED = "RMUtils.sendAction failed: App 38 generates excessive hub load"
 
 
 @pytest.mark.parametrize(
-    "replies, bounces, bounce_ok, expected_calls, expected_bounces, expect_limited",
+    "replies, resets, reset_ok, expected_calls, expected_resets, expect_limited",
     [
-        pytest.param([{"success": True}], 1, True, 1, 0, False, id="clean-call-never-bounces"),
+        pytest.param([{"success": True}], 1, True, 1, 0, False, id="clean-call-never-resets"),
         pytest.param([{"success": False, "error": _LIMITED}, {"success": True}], 1, True, 2, 1, False,
-                     id="envelope-trip-bounces-and-retries"),
+                     id="envelope-trip-resets-and-retries"),
         pytest.param([et.McpToolError("hub_manage_rule_machine", _LIMITED), {"success": True}], 1, True, 2, 1, False,
-                     id="raised-trip-bounces-and-retries"),
+                     id="raised-trip-resets-and-retries"),
         pytest.param([{"success": False, "error": _LIMITED}] * 3, 2, True, 3, 2, True,
-                     id="sticky-limiter-exhausts-bounce-rounds"),
+                     id="sticky-limiter-exhausts-reset-rounds"),
         pytest.param([{"success": False, "error": _LIMITED}], 1, False, 1, 1, True,
-                     id="failed-bounce-does-not-retry"),
+                     id="failed-reset-does-not-retry"),
         pytest.param([{"success": False, "error": "no such rule"}], 1, True, 1, 0, False,
-                     id="other-failure-is-returned-not-bounced"),
+                     id="other-failure-is-returned-not-reset"),
     ],
 )
-def test_call_with_limiter_bounce_retries_only_limiter_trips(
-    replies, bounces, bounce_ok, expected_calls, expected_bounces, expect_limited,
+def test_call_with_limiter_reset_retries_only_limiter_trips(
+    replies, resets, reset_ok, expected_calls, expected_resets, expect_limited,
 ):
-    calls, bounced = [], []
+    calls, reset_reasons = [], []
     replies = iter(replies)
 
     class Client:
@@ -1061,32 +1061,32 @@ def test_call_with_limiter_bounce_retries_only_limiter_trips(
 
     runner = object.__new__(et.TestRunner)
     runner.client = Client()
-    runner._clear_load_throttle = lambda reason: bounced.append(reason) or bounce_ok
+    runner._reset_app_runtime_stats = lambda reason: reset_reasons.append(reason) or reset_ok
 
-    res, limited = runner._call_with_limiter_bounce(
+    res, limited = runner._call_with_limiter_reset(
         "hub_manage_rule_machine", "hub_call_rule", {"ruleId": 7, "action": "actions"},
-        "probe", bounces=bounces)
+        "probe", resets=resets)
 
     assert calls == [("hub_manage_rule_machine",
                       {"tool": "hub_call_rule", "args": {"ruleId": 7, "action": "actions"}})] * expected_calls
-    assert len(bounced) == expected_bounces
-    assert all(reason.startswith("probe: ") for reason in bounced)
+    assert len(reset_reasons) == expected_resets
+    assert all(reason.startswith("probe: ") for reason in reset_reasons)
     assert (limited is not None) is expect_limited
     if not expect_limited:
         assert limited is None and isinstance(res, dict)
 
 
-def test_call_with_limiter_bounce_propagates_non_limiter_errors():
+def test_call_with_limiter_reset_propagates_non_limiter_errors():
     class Client:
         def call_tool(self, name, arguments):
             raise et.McpToolError("hub_manage_rule_machine", "rule 7 not found")
 
     runner = object.__new__(et.TestRunner)
     runner.client = Client()
-    runner._clear_load_throttle = lambda reason: pytest.fail("a non-limiter error must not bounce")
+    runner._reset_app_runtime_stats = lambda reason: pytest.fail("a non-limiter error must not reset")
 
     with pytest.raises(et.McpToolError, match="not found"):
-        runner._call_with_limiter_bounce("hub_manage_rule_machine", "hub_call_rule", {}, "probe")
+        runner._call_with_limiter_reset("hub_manage_rule_machine", "hub_call_rule", {}, "probe")
 
 
 def _logs_body(payload):
@@ -2961,13 +2961,13 @@ def test_delete_bundle_uses_logical_write_helper(monkeypatch):
     )]
 
 
-def test_build_capacity_recovery_is_the_conformance_bounce_seam(monkeypatch):
+def test_build_capacity_recovery_is_the_conformance_reset_seam(monkeypatch):
     """sdk_conformance_test._load_hub_config wires the SDK MRTR proof's
     capacity-recovery callable through sdk_conformance_helpers.build_capacity_recovery
     under CAPACITY_RECOVERY_CONFIG_KEY. Exercise that construction path here (the
     helpers module is importable without the SDK closure; the conformance script is
-    not): the builder must hand back TestRunner's bounce, TestRunner construction
-    must do no hub I/O, and with WATCHDOG_URL unset the bounce must decline
+    not): the builder must hand back TestRunner's reset, TestRunner construction
+    must do no hub I/O, and with WATCHDOG_URL unset the reset must decline
     deterministically without touching the network."""
     import sdk_conformance_helpers as sch
 
@@ -2979,13 +2979,13 @@ def test_build_capacity_recovery_is_the_conformance_bounce_seam(monkeypatch):
     )
 
     def _no_network(*args, **kwargs):
-        raise AssertionError("bounce without WATCHDOG_URL must not touch the network")
+        raise AssertionError("reset without WATCHDOG_URL must not touch the network")
 
     monkeypatch.setattr(et.requests, "post", _no_network)
-    bounce = sch.build_capacity_recovery(et, client)
-    assert bounce.__func__ is et.TestRunner._clear_load_throttle
-    assert sch.CAPACITY_RECOVERY_CONFIG_KEY == "clear_load_throttle"
-    assert bounce("interface pin") is False
+    reset = sch.build_capacity_recovery(et, client)
+    assert reset.__func__ is et.TestRunner._reset_app_runtime_stats
+    assert sch.CAPACITY_RECOVERY_CONFIG_KEY == "reset_app_runtime_stats"
+    assert reset("interface pin") is False
 
 
 @pytest.mark.parametrize("initial", ["on", "off"])
@@ -3175,8 +3175,10 @@ def test_radio_unavailable_error_accepts_only_503_or_unavailable(error, unavaila
 @pytest.mark.parametrize("lane, message, expected", [
     ("ephemeral", "WATCHDOG_URL/HUBITAT_APP_ID not set", True),
     ("ephemeral", "Z-Wave radio offline on this hub", True),
+    ("ephemeral", "hub reports no LAN address (hub_get_info.localIP) -- hub calls stay on loopback by design", True),
     ("ephemeral", "some other reason", False),
     ("", "WATCHDOG_URL/HUBITAT_APP_ID not set", False),
+    ("", "hub reports no LAN address (hub_get_info.localIP) -- hub calls stay on loopback by design", False),
 ])
 def test_accepted_skip_passes_only_documented_ephemeral_reasons(monkeypatch, lane, message, expected):
     if lane:

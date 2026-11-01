@@ -11,6 +11,7 @@ class WatchdogV31ParitySpec extends WatchdogV31Harness {
         hub_update_library: 'adminUpdateLibrary', hub_delete_item: 'adminDeleteItem',
         hub_force_delete_app: 'adminForceDeleteInstalledApp', hub_purge_e2e_artifacts: 'adminPurgeE2eArtifacts',
         hub_reboot: 'adminRebootHub', hub_set_app_disabled: 'adminSetAppDisabled',
+        hub_delete_app_runtime_stats: 'adminDeleteAppRuntimeStats',
         hub_get_metrics: 'adminGetMetrics', hub_update_platform: 'adminUpdatePlatform',
         hub_get_memory_history: 'adminGetMemoryHistory', hub_get_hub_logs: 'adminGetHubLogs',
         hub_list_app_instances: 'adminListAppInstances', hub_install_bundle: 'adminInstallBundle',
@@ -97,7 +98,7 @@ class WatchdogV31ParitySpec extends WatchdogV31Harness {
         where:
         tool << ['hub_update_app', 'hub_create_library', 'hub_update_library', 'hub_delete_item',
                  'hub_force_delete_app', 'hub_purge_e2e_artifacts', 'hub_reboot', 'hub_set_app_disabled',
-                 'hub_update_platform', 'hub_install_bundle', 'hub_delete_bundle', 'hub_write_file',
+                 'hub_delete_app_runtime_stats', 'hub_update_platform', 'hub_install_bundle', 'hub_delete_bundle', 'hub_write_file',
                  'hub_create_backup', 'hub_set_mcp_developer_mode', 'hub_update_mcp_settings', 'hub_get_source']
     }
 

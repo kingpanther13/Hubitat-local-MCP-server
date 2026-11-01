@@ -333,7 +333,7 @@ boolean manualToolWrites(String toolName, Map args) {
     if (toolName == "hub_manage_variables") return args.action in ["set", "hub_set_variable"] && args.name != testHubLeaseVariable()
     return toolName in ["hub_update_app", "hub_set_mcp_developer_mode", "hub_update_mcp_settings", "hub_create_library",
         "hub_update_library", "hub_delete_item", "hub_force_delete_app", "hub_purge_e2e_artifacts",
-        "hub_reboot", "hub_set_app_disabled", "hub_install_bundle", "hub_delete_bundle",
+        "hub_reboot", "hub_set_app_disabled", "hub_delete_app_runtime_stats", "hub_install_bundle", "hub_delete_bundle",
         "hub_write_file", "hub_create_backup"]
 }
 
@@ -831,6 +831,7 @@ def executeManualTool(String toolName, Map args) {
         case "hub_purge_e2e_artifacts": return adminPurgeE2eArtifacts(args)
         case "hub_reboot": return adminRebootHub(args)
         case "hub_set_app_disabled": return adminSetAppDisabled(args)
+        case "hub_delete_app_runtime_stats": return adminDeleteAppRuntimeStats(args)
         case "hub_get_metrics":      return adminGetMetrics(args)
         case "hub_update_platform":  return adminUpdatePlatform(args)
         case "hub_get_memory_history": return adminGetMemoryHistory(args)
@@ -1990,6 +1991,59 @@ def adminSetAppDisabled(args) {
             error: "POST accepted (HTTP ${st}) but the read-back shows disabled=${observed} (wanted ${disable})."]
 }
 
+// hub_delete_app_runtime_stats: zero every app's Logs > App Stats total/count. The per-app load
+// limiter compares that busy time against uptime x threshold %, and a disable/enable keeps it.
+def adminDeleteAppRuntimeStats(args) {
+    requireConfirm(args)
+    String appId = null
+    if (args.appId != null) {
+        String raw = args.appId.toString()
+        if (!raw.isInteger() || raw.toInteger() <= 0) throw new IllegalArgumentException("appId must be a positive integer (got: '${raw}')")
+        appId = raw.toInteger().toString()
+    }
+    def beforeDoc = _parseJsonBody(hubGet("/logs/json", [:]))
+    Map before = appId ? appRuntimeRow(beforeDoc, appId, false) : null
+    String appPart = appId ? "; app ${appId} total ${before.totalMs} ms" : ""
+    mcpAdminLog "Resetting app runtime stats (/hub/advanced/resetAppRuntimeStats)${appPart}"
+    String reset = hubGet("/hub/advanced/resetAppRuntimeStats", [:])
+    if (reset?.trim() != "ok") {
+        Map failed = [success: false, error: "GET /hub/advanced/resetAppRuntimeStats answered '${reset}' (expected ok)".toString()]
+        if (appId) failed += [appId: appId, before: before]
+        return failed
+    }
+    def afterDoc = _parseJsonBody(hubGet("/logs/json", [:]))
+    Map after = appId ? appRuntimeRow(afterDoc, appId, true) : null
+    def thresholdPct = hubNumber(hubGet("/hub/advanced/getExcessiveLoadThreshold", [:]))
+    if (!(thresholdPct instanceof Long)) thresholdPct = null
+    def uptimeSeconds
+    try { uptimeSeconds = location.hub?.uptime } catch (Exception e) { uptimeSeconds = "unavailable" }
+    Long limitMs = (uptimeSeconds instanceof Number && thresholdPct != null) ?
+        (((uptimeSeconds as long) * 1000L * (thresholdPct as long) / 100) as long) : null
+    Map result = [success: true, uptimeSeconds: uptimeSeconds,
+                  uptimeText: (beforeDoc instanceof Map ? beforeDoc.uptime : null) ?: (afterDoc instanceof Map ? afterDoc.uptime : null),
+                  appsUptimeBeforeText: beforeDoc instanceof Map ? beforeDoc.appsUptime : null,
+                  thresholdPct: thresholdPct, limitMs: limitMs,
+                  note: "limitMs is the busy budget the load limiter compares 2 x an app's total against when the app produces its own events.",
+                  message: "App runtime statistics reset."]
+    if (appId) {
+        result += [appId: appId, before: before, after: after,
+                   message: "App runtime statistics reset; app ${appId} total ${before.totalMs} ms -> ${after.totalMs} ms.".toString()]
+        if (before.totalMs instanceof Number && before.totalMs > 0 &&
+                !(after.totalMs instanceof Number && after.totalMs < before.totalMs)) {
+            result += [success: false, error: "The reset did not take: app ${appId} total ${before.totalMs} ms before, ${after.totalMs} ms after.".toString()]
+        }
+    }
+    return result
+}
+
+// An absent row in a readable /logs/json is total 0 after a reset: the hub lists only apps with activity.
+Map appRuntimeRow(doc, String appId, boolean absentIsZero) {
+    def rows = (doc instanceof Map && doc.appStats instanceof List) ? doc.appStats : null
+    def row = rows?.find { it?.id?.toString() == appId }
+    if (row != null) return [totalMs: row.total, count: row.count]
+    return (rows != null && absentIsZero) ? [totalMs: 0, count: 0] : [totalMs: null, count: null]
+}
+
 
 // hub_get_metrics: probe-grade current metrics + the hub's own health alerts. Mirrors the main
 // server's toolGetHubPerformance current block (/hub/advanced/* reads) and _healthAlertsFromHub2
@@ -2700,6 +2754,10 @@ def getManualToolDefinitions() {
          inputSchema: [type: "object", properties: [prefix: [type: "string", description: "Name prefix to purge; default BAT_E2E_."], confirm: [type: "boolean"]], required: ["confirm"]]],
         [name: "hub_set_app_disabled", annotations: [title: "Set App Disabled", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false], description: "Toggle an installed app's disabled flag (the admin UI red-X) via POST /installedapp/disable; verified by read-back. Refuses to disable the watchdog's own instance. confirm:true required.",
          inputSchema: [type: "object", properties: [appId: [type: "string"], disable: [type: "boolean"], confirm: [type: "boolean"]], required: ["appId", "disable", "confirm"]]],
+        [name: "hub_delete_app_runtime_stats", annotations: [title: "Delete App Runtime Stats", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false], description: "Reset the hub's per-app runtime statistics (the Logs > App Stats totals) through /hub/advanced/resetAppRuntimeStats; every app keeps running. The hub's per-app load limiter compares an app's busy time since boot (counted twice when the app produces its own events) against uptime x the excessive-load threshold %, and disabling and re-enabling the app does not clear that counter, while this reset does. Reports the named app's total before and after the reset plus the current busy budget. confirm:true required.",
+         inputSchema: [type: "object", properties: [
+            appId: [type: "string", description: "Installed-app id whose runtime total to report before and after the reset (optional)."],
+            confirm: [type: "boolean", description: "Must be true."]], required: ["confirm"]]],
         [name: "hub_get_metrics", annotations: [title: "Get Metrics", readOnlyHint: true, idempotentHint: true, openWorldHint: false], inputSchema: [type: "object", properties: [:]], description: "Current hub metrics (free memory, temp, DB size, uptime) + the hub's own health alerts. Read-only."],
         [name: "hub_reboot", annotations: [title: "Reboot", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false], description: "Reboot the hub (POST /hub/reboot; 1-3 min downtime). The only in-band recovery from a wedged web stack -- if loopback HTTP is already dead this call cannot land either and the hub needs a physical power cycle. The watchdog also reboots on its own when loopback HTTP has been dead for 4+ minutes (at most once per 30 minutes; the autoRebootOnWedge setting). Refused during a package deployment hold or while another manual write runs, unless force:true. Requires confirm=true.", inputSchema: [type: "object", properties: [confirm: [type: "boolean", description: "Must be true."], force: [type: "boolean", description: "Reboot even during a package deployment hold, another manual write, or a platform update the hub accepted that is still installing (all refused otherwise)."]], required: ["confirm"]]],
         [name: "hub_update_platform", annotations: [title: "Update Platform", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true], description: "Apply the hub's pending platform update (downloads + installs + REBOOTS the hub; requires confirm=true). statusOnly=true polls update progress without confirm.", inputSchema: [type: "object", properties: [confirm: [type: "boolean", description: "Must be true to apply (the hub reboots itself)."], statusOnly: [type: "boolean", description: "Poll /hub/cloud/checkUpdateStatus only; no confirm needed."]]]],

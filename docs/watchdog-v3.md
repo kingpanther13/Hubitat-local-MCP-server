@@ -35,6 +35,9 @@ kept.
 `hub_update_mcp_settings` mirrors the server tool of the same name (minus `mcpLogLevel`) through
 the hub's settings page, so it works while the MCP server's own endpoint refuses requests, e.g.
 with `enableCloudAccess` off. Every run's prepare step uses it to turn both endpoints back on.
+`hub_delete_app_runtime_stats` resets the hub's per-app runtime statistics, the counters the
+per-app load limiter compares against hub uptime. CI calls it at the start of every run and when
+the limiter trips mid-run, because disabling and re-enabling the app does not clear them.
 
 ## Package deployment
 

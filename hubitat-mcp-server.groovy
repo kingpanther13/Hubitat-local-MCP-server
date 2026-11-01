@@ -7556,8 +7556,22 @@ def getSelectedDevices() {
 
 // ==================== HUB SECURITY & INTERNAL API HELPERS ====================
 
-// Single source for the hub's internal API base URI (was an 11x-repeated literal).
-def hubBaseUri() { "http://127.0.0.1:8080" }
+// Single source for the hub's internal API base URI. The hub does not charge HTTP wait to the
+// calling app when the host is not loopback, so the hub's own LAN address keeps the per-app load
+// limiter's busy counter near zero. Loopback stays the route whenever Hub Login Security is on
+// (or unreadable): only 127.0.0.1 is exempt from that login.
+String hubLoopbackUri() { "http://127.0.0.1:8080" }
+
+String hubBaseUri() {
+    boolean secured = true
+    try { secured = isHubitatUISecurityEnabled() != false } catch (Exception ignored) { }
+    if (!secured) {
+        String ip = null
+        try { ip = location?.hub?.localIP?.toString() } catch (Exception ignored) { }
+        if (ip && ip ==~ /\d{1,3}(\.\d{1,3}){3}/) return "http://${ip}:8080"
+    }
+    return hubLoopbackUri()
+}
 
 def _firmwareAtLeast(fw, String target) {
     // Compare dotted firmware versions segment-by-segment, numerically. Returns true when fw >=
@@ -7579,7 +7593,7 @@ def _firmwareAtLeast(fw, String target) {
     return true  // all segments equal -> >= holds
 }
 
-// Timeout rationale: reads are fast localhost fetches; writes (native-RM wizard steps,
+// Timeout rationale: reads are fast loopback/LAN hub fetches; writes (native-RM wizard steps,
 // large app/driver/library save+compile) can legitimately take minutes.
 def hubReadTimeoutSec() { 30 }
 def hubWriteTimeoutSec() { 420 }
@@ -7865,8 +7879,10 @@ private _hubRequest(String method, String path, Map opts = [:]) {
             "hubInternal* path must not contain a querystring: '${_redactSecretsInPath(path)}'. The platform client escapes an embedded '?' into the literal path (exact routes then 404, wildcard routes silently swallow it) -- pass the parameters as the query map instead, e.g. hubInternalGet('/device/updateLabel', [deviceId: id, label: name]). Do NOT pre-encode the values; the query map does that.")
     }
     def cookie = getHubSecurityCookie()
+    // The platform client auto-follows absolute redirects on a non-loopback host, so a request
+    // that must read a 302 Location stays on loopback.
     def params = [
-        uri: hubBaseUri(),
+        uri: (opts.followRedirects == false) ? hubLoopbackUri() : hubBaseUri(),
         path: path,
         textParser: true,
         ignoreSSLIssues: true,

@@ -98,7 +98,7 @@ on:
         required: false
         default: 'false'
       reboot_first:
-        description: 'probe_only: true = reboot the test hub before probing (clears a stuck per-app load throttle / LimitExceededException)'
+        description: 'probe_only: true = reboot the test hub before probing (resets the per-app runtime statistics and the uptime; normal runs reset the statistics through the watchdog without a reboot)'
         required: false
         default: 'false'
       disable_app_id:
@@ -490,8 +490,8 @@ jobs:
           done
       - name: Reboot test hub first (reboot_first=true)
         if: inputs.reboot_first == 'true'
-        # Clears the platform's sticky per-app load throttle (LimitExceededException "generates
-        # excessive hub load") -- community-confirmed to reset only on reboot. Fired through the
+        # A reboot resets the hub's per-app runtime statistics and its uptime (the normal run path
+        # resets the statistics through the watchdog without a reboot). Fired through the
         # normal destructive-ops gateway; the probe below then captures the post-reboot state.
         run: |
           set -euo pipefail
@@ -869,21 +869,6 @@ jobs:
           # Defer per-test native-rule fixture deletes to the teardown's watchdog purge (one hub-local
           # sweep) instead of the test critical path.
           E2E_DEFER_NATIVE_DELETES: '1'
-          # 0 = this limiter escalation NEVER reboots the test hub. Keep it that way. (The separate
-          # reboot_first dispatch input still reboots on explicit maintainer request.)
-          # This escalates a recurring platform load limiter to a hub REBOOT at every multiple of N
-          # app bounces (an app bounce only clears the app INSTANCE; the limiter lives on the
-          # platform's load counters, which only a reboot resets). It was set to '2' in #367 -- but
-          # the full lane ALWAYS trips the limiter more than twice, so '2' meant a reboot was the
-          # EXPECTED outcome of EVERY full lane, costing ~60s down plus recovery polling, and one
-          # observed run then re-ran its most expensive test whole on top of that. A routine reboot
-          # is not an acceptable price for the merge path.
-          # The trade-off, honestly: with reboots off, a limiter that outlives the bounce falls back
-          # to the SOFT-PASS path (reported under [SOFT-PASS] in the run summary) instead of being
-          # actively cleared -- which is the behaviour every run before #367 already had.
-          # To debug a limiter, change this value on a scratch branch and dispatch that branch --
-          # there is no workflow_dispatch input for it, so it cannot be overridden per-run.
-          E2E_LIMITER_REBOOT_AFTER: '0'
           E2E_LANE: ${{ steps.gate.outputs.lane }}
           E2E_TESTS: ${{ steps.gate.outputs.tests }}
         run: |

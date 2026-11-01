@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Shared helpers for the shell scripts that call the watchdog's manual tools (the deploy script's
-# throttle bounce, watchdog maintenance). The package install itself is watchdog_v3.py. Source it:
+# runtime-statistics reset, watchdog maintenance). The package install itself is watchdog_v3.py. Source it:
 #   source "$(dirname "$0")/mcp_watchdog_lib.sh"
 # Every call targets $WATCHDOG_URL (the watchdog's own /mcp endpoint), never the main $MCP_URL.
 #

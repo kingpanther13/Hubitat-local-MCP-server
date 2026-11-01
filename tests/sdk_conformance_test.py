@@ -202,7 +202,7 @@ def _load_hub_config() -> dict:
         "endpoint": endpoint,
         "safe_endpoint": safe_endpoint,
         "supported_versions": e2e_test.SUPPORTED_PROTOCOL_VERSIONS,
-        # The e2e suite's platform-limiter recovery (watchdog app bounce), shared so the
+        # The e2e suite's platform-limiter recovery (watchdog runtime-statistics reset), shared so the
         # MRTR proof can recover from the same capacity condition the suite already
         # handles. Construction and the no-watchdog decline are pinned by fast-lane
         # unit tests through build_capacity_recovery.
@@ -366,7 +366,7 @@ class ModernScenarios:
         print(f"         {summary['posts']} modern SDK POST(s) carried mirrored routing "
               f"headers, all answered {summary['statuses']}")
         if summary["capacity_excused"]:
-            print("         [CAPACITY] statuses before the verified limiter bounce, excused "
+            print("         [CAPACITY] statuses before the successful limiter reset, excused "
                   f"from the served contract: {summary['capacity_excused']}")
 
 
@@ -444,21 +444,21 @@ class ModernMrtrScenario:
             # The proof runs right after the full e2e suite, whose accumulated load can
             # trip the hub's per-app limiter: every write then errors (and relay legs can
             # 504) regardless of protocol conformance. Recover exactly the way the suite
-            # does -- one verified watchdog bounce -- and re-prove once on a fresh
-            # fixture. A deterministic nonconformance fails attempt 2 identically, so
-            # nothing real is masked; without bounce infrastructure, fail as-is.
+            # does -- one runtime-statistics reset through the watchdog -- and re-prove
+            # once on a fresh fixture. A deterministic nonconformance fails attempt 2
+            # identically, so nothing real is masked; without reset infrastructure, fail as-is.
             detail = _failure_detail(first_error, self.config["safe_endpoint"])
-            bounce = self.config.get(CAPACITY_RECOVERY_CONFIG_KEY)
-            if bounce is None:
+            reset = self.config.get(CAPACITY_RECOVERY_CONFIG_KEY)
+            if reset is None:
                 raise
             print(f"         [CAPACITY] MRTR proof attempt 1 failed: {detail}")
-            bounced = await anyio.to_thread.run_sync(
-                bounce, "SDK MRTR proof attempt 1 failed; clearing a suspected limiter block",
+            reset_ok = await anyio.to_thread.run_sync(
+                reset, "SDK MRTR proof attempt 1 failed; clearing a suspected limiter block",
             )
-            if not bounced:
+            if not reset_ok:
                 raise
             self.trace.mark_capacity_recovery()
-            print("         [CAPACITY] bounce verified -- retrying the MRTR proof once "
+            print("         [CAPACITY] runtime statistics reset -- retrying the MRTR proof once "
                   "on a fresh fixture")
         await self._prove_once(client, bps_keys)
 
