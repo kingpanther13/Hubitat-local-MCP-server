@@ -15081,11 +15081,13 @@ def updated() {}
         def _authorized_ids(devices: list[dict] | None = None) -> set[str]:
             rows = devices if devices is not None else (self._device_allowlist_inventory().get("devices") or [])
             return {str(d["id"]) for d in rows if d.get("mcpAuthorized")}
-        def _scope(mode: str, ids: list[str]) -> dict:
+        def _scope(mode: str, ids: list[str], allow_empty: bool = False) -> dict:
+            scope: dict = {"mode": mode, "ids": ids}
+            if allow_empty:
+                scope["allowEmpty"] = True
             return self.client.call_tool("hub_manage_mcp", {
                 "tool": "hub_update_mcp_settings",
-                "args": {"settings": {"selectedDevices": {"mode": mode, "ids": ids}},
-                         "confirm": True},
+                "args": {"settings": {"selectedDevices": scope}, "confirm": True},
             })
 
         all_devices = self._device_allowlist_inventory().get("devices") or []
@@ -15103,6 +15105,7 @@ def updated() {}
             raise SkipTest("no unauthorized device available to exercise the selectedDevices scope")
 
         added_ok = False
+        was_empty = False
         try:
             add = _scope("add", [unauth])
             assert add.get("success") is True, f"add did not succeed: {add}"
@@ -15110,13 +15113,17 @@ def updated() {}
             assert scope.get("mode") == "add", f"mode not echoed: {add}"
             assert unauth in (scope.get("added") or []), f"added list missing the id: {add}"
             assert unauth in (scope.get("authorizedDeviceIds") or []), f"resulting set missing the id: {add}"
+            # The selected set was empty before the add when it now holds only the added id.
+            was_empty = set(scope.get("authorizedDeviceIds") or []) == {unauth}
             added_ok = True
             # The device now reads back as authorized.
             assert unauth in _authorized_ids(), "device did not become mcpAuthorized after add"
         finally:
-            # Always restore: remove the id we added so the scope returns to its original set.
+            # Always restore: remove the id we added so the scope returns to its original set. An
+            # originally empty selected set is restored to empty, which the self-lockout guard only
+            # allows with allowEmpty.
             if added_ok:
-                rem = _scope("remove", [unauth])
+                rem = _scope("remove", [unauth], allow_empty=was_empty)
                 assert rem.get("success") is True, f"remove (restore) did not succeed: {rem}"
                 scope = rem.get("selectedDevices") or {}
                 assert unauth in (scope.get("removed") or []), f"removed list missing the id: {rem}"
