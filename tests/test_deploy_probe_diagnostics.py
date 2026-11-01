@@ -4,9 +4,11 @@ Regression guard for ``.github/scripts/mcp_watchdog_deploy.sh``. Its post-deploy
 ``tools/list`` body for a missing-library signature; grep exits 1 on no match, so under the script's
 ``set -euo pipefail`` the first attempt without a catalog ended the step with a bare exit 1 -- no retry,
 no error, nothing about the response. These tests run the script's own ``mcp_probe`` function and
-``BAD_LIB`` line (extracted from the file, not copied) under the same shell options.
+``BAD_LIB`` line (extracted from the file, not copied) under the same shell options, and its
+``reset_runtime_stats`` function against the real watchdog lib with ``mcp_call`` stubbed.
 """
 
+import json
 import re
 import subprocess
 import threading
@@ -119,3 +121,100 @@ def test_probe_reports_a_refused_connection():
     assert result.returncode == 0, f"mcp_probe ended the script: {result.stderr}"
     diag = result.stdout.split("DIAG=", 1)[1]
     assert "curl exit 7" in diag and "body: <empty>" in diag, diag
+
+
+LIB = SCRIPT.parent / "mcp_watchdog_lib.sh"
+
+
+def _reset_function() -> str:
+    match = re.search(r"^reset_runtime_stats\(\) \{\n.*?^\}\n", SCRIPT.read_text(), re.S | re.M)
+    assert match, f"{SCRIPT.name} no longer defines reset_runtime_stats()"
+    return match.group(0)
+
+
+def _tool_answer(payload: dict) -> str:
+    return json.dumps({"jsonrpc": "2.0", "id": 1, "result": {"content": [{"type": "text", "text": json.dumps(payload)}]}})
+
+
+_RESET_OK = {"success": True, "appId": "38", "before": {"totalMs": 936332, "count": 10},
+             "after": {"totalMs": 0, "count": 0}, "uptimeSeconds": 864000, "thresholdPct": 33,
+             "limitMs": 285120000, "verified": True}
+
+
+def _run_reset(tmp_path: Path, answers: list[str]) -> tuple[subprocess.CompletedProcess, int]:
+    """Run the script's reset_runtime_stats against the real watchdog lib with mcp_call stubbed to
+    return `answers` in order (the last one repeats); returns the result and the number of calls."""
+    answers_dir = tmp_path / "answers"
+    answers_dir.mkdir()
+    for index, answer in enumerate(answers, 1):
+        (answers_dir / str(index)).write_text(answer)
+    (answers_dir / "last").write_text(answers[-1])
+    calls = tmp_path / "calls"
+    calls.write_text("")
+    result = _bash(
+        f"WD_RPC_ATTEMPTS=3; WD_RPC_RETRY_SLEEP=0\nsource '{LIB.as_posix()}'\n"
+        f"mcp_call() {{ echo x >> '{calls.as_posix()}'; local n; n=$(wc -l < '{calls.as_posix()}' | tr -d ' ')\n"
+        f"  if [ -f '{answers_dir.as_posix()}/'$n ]; then cat '{answers_dir.as_posix()}/'$n; "
+        f"else cat '{answers_dir.as_posix()}/last'; fi; }}\n"
+        + _reset_function()
+        + 'rc=0; reset_runtime_stats 38 || rc=$?\necho "RC=$rc"\n'
+    )
+    return result, len(calls.read_text().splitlines())
+
+
+def test_reset_retries_an_empty_answer_then_warns_and_continues(tmp_path):
+    result, calls = _run_reset(tmp_path, [""])
+    assert "RC=0" in result.stdout and calls == 3, (calls, result.stdout, result.stderr)
+    assert "::warning::" in result.stdout and "no usable answer after 3 attempt(s) (empty answer)" in result.stdout
+
+
+def test_reset_retries_a_busy_refusal_until_it_lands(tmp_path):
+    busy = _tool_answer({"success": False, "busy": True, "error": "A manual write is still running"})
+    result, calls = _run_reset(tmp_path, [busy, _tool_answer(_RESET_OK)])
+    assert "RC=0" in result.stdout and calls == 2, (calls, result.stdout, result.stderr)
+    assert "Runtime statistics reset for app 38: before 936332 ms, after 0 ms" in result.stdout, result.stdout
+
+
+def test_reset_warns_on_a_watchdog_that_predates_the_tool(tmp_path):
+    unknown = json.dumps({"jsonrpc": "2.0", "id": 1, "error": {
+        "code": -32602, "message": "Invalid params: Unknown tool: hub_delete_app_runtime_stats."}})
+    result, calls = _run_reset(tmp_path, [unknown])
+    assert "RC=0" in result.stdout and calls == 1, (calls, result.stdout, result.stderr)
+    assert "::warning::The standing watchdog predates hub_delete_app_runtime_stats" in result.stdout
+
+
+def test_reset_fails_the_step_on_any_other_json_rpc_error_without_retrying(tmp_path):
+    internal = json.dumps({"jsonrpc": "2.0", "id": 1, "error": {"code": -32603, "message": "Internal error: boom"}})
+    result, calls = _run_reset(tmp_path, [internal])
+    assert "RC=1" in result.stdout and calls == 1, (calls, result.stdout, result.stderr)
+    assert "::error::Runtime-statistics reset for app 38 failed" in result.stdout and "Internal error: boom" in result.stdout
+
+
+def test_reset_fails_the_step_on_an_explicit_refusal(tmp_path):
+    refused = _tool_answer({"success": False, "error": "GET /hub/advanced/resetAppRuntimeStats answered 'no'"})
+    result, calls = _run_reset(tmp_path, [refused])
+    assert "RC=1" in result.stdout and calls == 1, (calls, result.stdout, result.stderr)
+    assert "::error::Runtime-statistics reset for app 38 failed" in result.stdout and "answered 'no'" in result.stdout
+
+
+def test_reset_reports_an_unknown_budget_without_the_short_uptime_warning(tmp_path):
+    unknown_budget = dict(_RESET_OK, limitMs=None, thresholdPct=None, thresholdError="threshold read failed")
+    result, _ = _run_reset(tmp_path, [_tool_answer(unknown_budget)])
+    assert "RC=0" in result.stdout, result.stdout + result.stderr
+    assert "busy budget unknown (threshold/uptime unreadable: threshold read failed)" in result.stdout, result.stdout
+    assert "1,400,000" not in result.stdout, result.stdout
+
+
+def test_reset_warns_when_uptime_is_too_short_for_a_full_run(tmp_path):
+    short = dict(_RESET_OK, uptimeSeconds=3600, limitMs=1188000)
+    result, _ = _run_reset(tmp_path, [_tool_answer(short)])
+    assert "RC=0" in result.stdout, result.stdout + result.stderr
+    assert "::warning::Busy budget after the reset is 1188000 ms (< 1,400,000 ms" in result.stdout, result.stdout
+
+
+def test_reset_warns_when_the_read_back_was_unavailable(tmp_path):
+    unverified = dict(_RESET_OK, verified=False, note="stats read-back failed after the reset")
+    result, _ = _run_reset(tmp_path, [_tool_answer(unverified)])
+    assert "RC=0" in result.stdout, result.stdout + result.stderr
+    assert "::warning::Runtime-statistics reset for app 38 was accepted but not verified: " \
+           "stats read-back failed after the reset" in result.stdout, result.stdout

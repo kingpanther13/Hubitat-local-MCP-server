@@ -240,6 +240,7 @@ case "tool_name": return toolMyNewTool(args)
 - Some tools pass the entire `args` map: `return toolBar(args)`
 - Default values use the Elvis operator `?:` inline
 - Tools are grouped by category with comment headers
+- `executeTool()` runs every leaf tool inside `_executeToolWithLoadLimiterRetry`: a call the hub's per-app load limiter refused ("generates excessive hub load", thrown or as a `success:false` result) resets the hub's app runtime statistics and is repeated once when the tool is in `getIdempotentToolNames()`; any other write is returned with a note instead of repeated. `handleMcpRequest()` adds each request's duration to a class-memory estimate of this app's busy time and schedules `_resetAppRuntimeStatsJob` at 80 % of uptime × threshold.
 
 ### Tool Implementation Pattern
 
@@ -567,6 +568,8 @@ These are undocumented endpoints on the Hubitat hub at `http://127.0.0.1:8080`:
 | `/hub/advanced/freeOSMemory` | Free memory in KB (text) |
 | `/hub/advanced/internalTempCelsius` | CPU temperature (text) |
 | `/hub/advanced/databaseSize` | Database size in KB (text) |
+| `/hub/advanced/getExcessiveLoadThreshold` | The per-app load limiter's threshold, % of uptime (stock 33). Read once per code load by the load-limiter guard. |
+| `/hub/advanced/resetAppRuntimeStats` | Zeroes every app's App Stats busy counter (uptime is untouched); answers `ok`. Used by the load-limiter guard, the refused-call retry in `executeTool()`, and `hub_delete_logs(mode='appRuntimeStats')`. |
 | `/hub/advanced/blinkLED` | Fires the hub's identify-LED sequence (blue → red → green) once. Returns the literal text `true`. Single GET, no body, self-resetting. Surfaced via the opt-in `identifyHub` flag on `hub_get_info` and `hub_get_device_health`. |
 | `/hub2/userAppTypes` | Apps Code definitions (JSON array: id, name, namespace). Each entry is a code definition, NOT a running instance -- child-app templates appear here even with zero active instances. Distinct from the `userAppTypes[]` key embedded in `/hub2/appsList` (which is the instance tree). Used by `hub_list_apps` and `hub_list_hpm_packages` (includeDrift=true; orphan-app detection). |
 | `/hub2/userDeviceTypes` | Drivers Code definitions (JSON array: id, name, namespace, capabilities, lastModified, usedBy[]). Despite the name, this is the Drivers Code registry (code definitions, not device instances). Used by `hub_list_drivers` and `hub_list_hpm_packages` (includeDrift=true; orphan-driver detection). Note: hub uses `userDeviceTypes` for the driver registry while apps use `userAppTypes` -- the naming asymmetry is a hub convention, not an error. |

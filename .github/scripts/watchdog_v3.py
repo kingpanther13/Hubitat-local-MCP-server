@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Drive the E2E hub through watchdog v3.1: prepare a run, install a commit, purge its fixtures.
+"""Drive the E2E hub through watchdog v3.2: prepare a run, install a commit, purge its fixtures.
 
 V3.1 replaces v3 (issue #522: it installs the built, libraries-inlined apps). Like v3 it never
 restores anything by itself, so every step here is explicit. A hub write is submitted once; a
@@ -19,8 +19,9 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-V3_APP_NAME = "E2E Dead-Man Watchdog v3.1"
-V3_VERSION = "3.1"  # hub_get_info.watchdogVersion; v3 answers 3
+# The app is named v3.2 once that source is installed, v3.1 if the older source is reinstalled.
+V3_APP_NAMES = ("E2E Dead-Man Watchdog v3.2", "E2E Dead-Man Watchdog v3.1")
+V3_VERSIONS = ("3.2", "3.1")  # hub_get_info.watchdogVersion; v3 answers 3
 ENDPOINT_RE = re.compile(r"https://cloud\.hubitat\.com/api/[0-9a-f-]+/apps/[0-9]+/mcp\?access_token=[A-Za-z0-9-]+")
 PACKAGE_APPS = ("MCP Rule", "MCP Rule Server")
 # The built (libraries inlined) apps published under bundle-artifacts/shas/<sha>/.
@@ -109,20 +110,20 @@ def mask(url):
 
 
 def resolve_v3_url(transport, mcp_url, watchdog_url, cache=None):
-    """Return v3.1's endpoint. Until WATCHDOG31_MCP_URL points at v3.1, read it from the v3.1 app page."""
+    """Return the watchdog's endpoint. Until WATCHDOG31_MCP_URL points at it, read it from its app page."""
     if cache is not None and cache.exists():
         return cache.read_text().strip()
     try:
         configured = transport.call(watchdog_url, "hub_get_info", {})
     except OSError:
         raise HubError("The configured watchdog endpoint does not answer") from None
-    if configured.get("watchdogVersion") == V3_VERSION:
+    if configured.get("watchdogVersion") in V3_VERSIONS:
         url = watchdog_url
     else:
         instances = transport.call(watchdog_url, "hub_list_app_instances", {}).get("apps") or []
-        matches = [item for item in instances if item.get("type") == V3_APP_NAME]
+        matches = [item for item in instances if item.get("type") in V3_APP_NAMES]
         if len(matches) != 1:
-            raise HubError(f"Expected one installed {V3_APP_NAME} instance, found {len(matches)}")
+            raise HubError(f"Expected one installed {' or '.join(V3_APP_NAMES)} instance, found {len(matches)}")
         config = transport.call(mcp_url, "hub_read_apps_code", {
             "tool": "hub_get_app_config", "args": {"appId": str(matches[0]["id"])},
         })
@@ -131,8 +132,8 @@ def resolve_v3_url(transport, mcp_url, watchdog_url, cache=None):
             raise HubError("The v3 app page does not show exactly one endpoint")
         url = urls.pop()
         mask(url)
-        if transport.call(url, "hub_get_info", {}).get("watchdogVersion") != V3_VERSION:
-            raise HubError("The discovered endpoint is not watchdog v3.1")
+        if transport.call(url, "hub_get_info", {}).get("watchdogVersion") not in V3_VERSIONS:
+            raise HubError("The discovered endpoint is not watchdog v3.2 or v3.1")
     if cache is not None:
         cache.write_text(url)
         cache.chmod(0o600)
@@ -150,7 +151,7 @@ def instance_snapshot(transport, v3):
     if not isinstance(apps, list) or not apps:
         raise Unreadable(f"Cannot read the installed app instances: {answer.get('error')}")
     kept = sorted((str(a.get("id")), a.get("type"), a.get("disabled")) for a in apps
-                  if isinstance(a, dict) and a.get("type") in ("MCP Rule Server", V3_APP_NAME))
+                  if isinstance(a, dict) and a.get("type") in ("MCP Rule Server", *V3_APP_NAMES))
     if not any(kind == "MCP Rule Server" for _id, kind, _disabled in kept):
         raise HubError("The MCP Rule Server instance is not installed")
     return kept

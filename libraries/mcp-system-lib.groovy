@@ -262,7 +262,7 @@ def toolGetHubInfo(args = null) {
     info.mcpCapturedStates = countCapturedStates()
     // Last hub_create_backup epoch (millis): lets a client decide whether a fresh backup is
     // actually needed (the destructive-confirm gate's 24h window reads this same state key) --
-    // e2e uses it to skip per-run backups, a hub-heavy op the platform's load limiter punishes.
+    // e2e uses it to skip per-run backups, a hub-heavy op that adds to the busy time the per-app load limiter counts.
     info.lastBackupEpoch = state.lastBackupTimestamp ?: null
 
     // Settings visibility (always available). hubSecurityConfigured is whether this app holds
@@ -1083,9 +1083,9 @@ private _modePost(String path, Map body) {
 
 private _modeWriteResult(String op, parsed) {
     if (parsed instanceof Map && parsed.success == true) {
-        // Don't re-read the full mode list here -- that's an extra /modes/json round-trip per write
-        // and the hub's per-app load limiter punishes back-to-back calls. The caller reads via
-        // hub_list_modes when it needs the updated list.
+        // Don't re-read the full mode list here -- that's an extra /modes/json round-trip per write,
+        // and each extra hub call adds to the busy time the per-app load limiter compares against
+        // uptime x its threshold. The caller reads via hub_list_modes when it needs the updated list.
         return [success: true, action: op, note: "Read the updated mode list with hub_list_modes."]
     }
     def err = (parsed instanceof Map) ? (parsed.message ?: parsed.error) : null

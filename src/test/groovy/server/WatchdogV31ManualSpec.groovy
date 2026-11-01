@@ -5,8 +5,10 @@ import me.biocomp.hubitat_ci.app.HubitatAppScript
 import spock.lang.Unroll
 import support.WatchdogSpec
 import support.PermissiveLog
+import support.TestHub
+import support.TestLocation
 
-// Coverage of the manual tools in the active v3.1 watchdog.
+// Coverage of the manual tools in the active v3.2 watchdog.
 class WatchdogV31ManualSpec extends WatchdogSpec {
     HubitatAppScript script
     List<List<Object>> runInCalls = []     // captures (delaySeconds, handler[, opts]) of every runIn
@@ -311,7 +313,7 @@ class WatchdogV31ManualSpec extends WatchdogSpec {
 
     // ---- self-update guard: the MCP server is the watchdog's only repair path -------------------
 
-    private static final String V31_SOURCE = 'definition(\n    name: "E2E Dead-Man Watchdog v3.1",\n    namespace: "mcp")\n'
+    private static final String V31_SOURCE = 'definition(\n    name: "E2E Dead-Man Watchdog v3.2",\n    namespace: "mcp")\n'
 
     @Unroll
     def "the watchdog's own code is replaced only while the MCP endpoint answers (available=#available)"() {
@@ -905,6 +907,311 @@ class WatchdogV31ManualSpec extends WatchdogSpec {
 
         expect:
         script.adminSetAppDisabled([appId: "5506", disable: true, confirm: true]).success == false
+    }
+
+    // ---- hub_delete_app_runtime_stats: the per-app load limiter counter reset ----
+
+    /** A watchdog whose getLocation() answers with locate(). */
+    private HubitatAppScript scriptOnHub(Closure locate) {
+        Map settings = [hubSecurityEnabled: false, debugLogging: false]
+        return loadWatchdog(
+            api: Mock(AppExecutor) {
+                _ * getLog() >> new PermissiveLog()
+                _ * getSettings() >> settings
+                _ * getAtomicState() >> { atomicStateMap }
+                _ * now() >> { System.currentTimeMillis() }
+                _ * getLocation() >> { locate() }
+            },
+            userSettingValues: settings
+        )
+    }
+
+    /** A watchdog on a hub whose location reports the given uptime in seconds. */
+    private HubitatAppScript scriptOnHub(BigInteger uptime) {
+        scriptOnHub { new TestLocation(hub: new TestHub(uptime: uptime)) }
+    }
+
+    private static String logsJson(String appsUptime, List rows) {
+        groovy.json.JsonOutput.toJson([uptime: '7h 21m 15s', appsUptime: appsUptime, appStats: rows])
+    }
+
+    private static final String LOGS_BEFORE = logsJson('7h 21m 15s',
+        [[id: 194, name: 'MCP Rule Server', total: 936332, count: 16257, pctTotal: 3.5],
+         [id: 7, name: 'Other', total: 5, count: 1, pctTotal: 0.0]])
+    private static final String LOGS_RESET = logsJson('0m 1s', [])
+    private static final String RESET_PATH = '/hub/advanced/resetAppRuntimeStats'
+    private static final List ALL_PATHS = ['/logs/json', RESET_PATH, '/logs/json', '/hub/advanced/getExcessiveLoadThreshold']
+
+    /**
+     * Serves /logs/json (before, then after), the reset GET (through hubGetStatus) and the threshold;
+     * records every path. Options: before, after, resetStatus, resetBody, threshold.
+     */
+    private static void stubStatsHub(HubitatAppScript target, List paths, Map o = [:]) {
+        String beforeDoc = o.containsKey('before') ? o.before : LOGS_BEFORE
+        String afterDoc = o.containsKey('after') ? o.after : LOGS_RESET
+        Integer resetStatus = o.containsKey('resetStatus') ? o.resetStatus : 200
+        String resetBody = o.containsKey('resetBody') ? o.resetBody : 'ok\n'
+        String threshold = o.containsKey('threshold') ? o.threshold : '33\n'
+        int logReads = 0
+        target.metaClass.hubGet = { String p, Map q ->
+            paths << p
+            if (p == '/logs/json') return (logReads++ == 0) ? beforeDoc : afterDoc
+            if (p == '/hub/advanced/getExcessiveLoadThreshold') return threshold
+            return null
+        }
+        target.metaClass.hubGetStatus = { String p, Map q ->
+            paths << p
+            p == RESET_PATH ? [status: resetStatus, location: null, data: resetBody] : [status: 404, location: null, data: null]
+        }
+    }
+
+    @Unroll
+    def "hub_delete_app_runtime_stats resets the counters and reports the totals and the busy budget (#scenario)"() {
+        given:
+        def hub = scriptOnHub(26475G)
+        List paths = []
+        stubStatsHub(hub, paths, [after: logsJson('0m 1s', afterRows)])
+
+        when:
+        def r = hub.adminDeleteAppRuntimeStats([appId: '194', confirm: true])
+
+        then:
+        r.success == true
+        r.verified == true
+        r.appId == '194'
+        r.before == [totalMs: 936332, count: 16257]
+        r.after == [totalMs: 0, count: 0]
+        r.thresholdPct == 33L
+        r.uptimeSeconds == 26475G
+        r.limitMs == 8736750L   // 26475 s x 1000 x 33 / 100
+        r.uptimeText == '7h 21m 15s'
+        r.appsUptimeBeforeText == '7h 21m 15s'
+        r.message.contains('936332 ms -> 0 ms')
+        r.note.contains('limitMs')
+        !r.containsKey('thresholdError') && !r.containsKey('uptimeError')
+        paths == ALL_PATHS
+
+        where:
+        scenario                          | afterRows
+        'row zeroed'                      | [[id: 194, name: 'MCP Rule Server', total: 0, count: 0, pctTotal: 0.0]]
+        'row dropped until it runs again' | []
+    }
+
+    @Unroll
+    def "hub_delete_app_runtime_stats verifies a zero total but not an app missing from the stats (#scenario)"() {
+        given:
+        def hub = scriptOnHub(26475G)
+        stubStatsHub(hub, [], [before: logsJson('1m 0s', beforeRows)])
+
+        when:
+        def r = hub.adminDeleteAppRuntimeStats([appId: '194', confirm: true])
+
+        then:
+        r.success == true
+        r.verified == verified
+        r.before == before
+        r.after == [totalMs: 0, count: 0]
+        (noteLine == null) || r.note.contains(noteLine)
+
+        where:
+        scenario             | beforeRows                         || verified | before                      | noteLine
+        'a row with total 0' | [[id: 194, total: 0, count: 0]]    || true     | [totalMs: 0, count: 0]      | null
+        'no row for the app' | [[id: 7, total: 5, count: 1]]      || false    | [totalMs: null, count: null] | 'no App Stats row for app 194'
+    }
+
+    @Unroll
+    def "hub_delete_app_runtime_stats reports a reset the hub did not answer ok and reads nothing further (#scenario)"() {
+        given:
+        List paths = []
+        stubStatsHub(script, paths, [resetStatus: status, resetBody: body])
+
+        when:
+        def r = script.adminDeleteAppRuntimeStats([appId: '194', confirm: true])
+
+        then:
+        r.success == false
+        r.error.contains(RESET_PATH)
+        r.error.contains(errorPart)
+        !r.error.contains("'null'")
+        r.note.contains(hint)
+        r.before == [totalMs: 936332, count: 16257]
+        paths == ['/logs/json', RESET_PATH]
+
+        where:
+        scenario              | status | body                 || errorPart          | hint
+        'no HTTP answer'      | null   | null                 || 'no HTTP answer'   | 'Retry once the hub answers /hub/advanced reads'
+        'endpoint missing'    | 404    | null                 || 'HTTP 404'         | 'firmware predates the endpoint'
+        'login refused'       | 401    | null                 || 'HTTP 401'         | 'if this hub still requires the watchdog'
+        'login redirect'      | 302    | null                 || 'HTTP 302'         | 'otherwise retry'
+        'answered other text' | 200    | 'error'              || "HTTP 200 'error'" | 'If it keeps failing, reboot the hub'
+        'answered a page'     | 200    | '<html>login</html>' || 'HTTP 200'         | 'If it keeps failing, reboot the hub'
+    }
+
+    @Unroll
+    def "hub_delete_app_runtime_stats fails when a readable total did not drop (#scenario)"() {
+        given:
+        def hub = scriptOnHub(26475G)
+        stubStatsHub(hub, [], [after: afterDoc])
+
+        when:
+        def r = hub.adminDeleteAppRuntimeStats([appId: '194', confirm: true])
+
+        then:
+        r.success == false
+        r.verified == false
+        r.error.contains('did not take')
+        r.note.contains('Logs > App Stats') && r.note.contains('another app is busy')
+        !r.note.contains('limitMs')
+        r.before.totalMs == 936332
+        r.after.totalMs == afterTotal
+
+        where:
+        scenario             | afterDoc                                                         || afterTotal
+        'total kept growing' | logsJson('7h 21m 16s', [[id: 194, total: 936400, count: 16258]]) || 936400
+        'total unchanged'    | LOGS_BEFORE                                                      || 936332
+    }
+
+    @Unroll
+    def "hub_delete_app_runtime_stats reports an accepted reset as unverified when the read-back is unavailable (#scenario)"() {
+        given:
+        def hub = scriptOnHub(26475G)
+        stubStatsHub(hub, [], [after: afterDoc])
+
+        when:
+        def r = hub.adminDeleteAppRuntimeStats([appId: '194', confirm: true])
+
+        then:
+        r.success == true
+        r.verified == false
+        !r.containsKey('error')
+        r.note.contains('the App Stats read-back was unavailable')
+        r.after == [totalMs: null, count: null]
+        r.message.contains('936332 ms -> unknown')
+        r.limitMs == 8736750L
+
+        where:
+        scenario       | afterDoc
+        'no answer'    | null
+        'an HTML page' | '<html>login</html>'
+    }
+
+    @Unroll
+    def "hub_delete_app_runtime_stats reports the reset as unverified when the read before it is unavailable (#scenario)"() {
+        given:
+        def hub = scriptOnHub(26475G)
+        stubStatsHub(hub, [], [before: beforeDoc])
+
+        when:
+        def r = hub.adminDeleteAppRuntimeStats([appId: '194', confirm: true])
+
+        then:
+        r.success == true
+        r.verified == false
+        r.note.contains('read before it was unavailable')
+        r.before == [totalMs: null, count: null]
+        r.after == [totalMs: 0, count: 0]
+        r.appsUptimeBeforeText == null
+
+        where:
+        scenario       | beforeDoc
+        'no answer'    | null
+        'an HTML page' | '<html>login</html>'
+    }
+
+    @Unroll
+    def "hub_delete_app_runtime_stats reads the threshold #raw as #pct"() {
+        given:
+        def hub = scriptOnHub(26475G)
+        stubStatsHub(hub, [], [threshold: raw])
+
+        when:
+        def r = hub.adminDeleteAppRuntimeStats([appId: '194', confirm: true])
+
+        then:
+        r.success == true
+        r.thresholdPct == pct
+        r.limitMs == limit
+        (r.thresholdError == null) == (errorPart == null)
+        errorPart == null || r.thresholdError.contains(errorPart)
+
+        where:
+        raw    || pct  | limit     | errorPart
+        '33.0' || 33L  | 8736750L  | null
+        ' 40 ' || 40L  | 10590000L | null
+        null   || null | null      | 'did not answer'
+        'abc'  || null | null      | 'not a number'
+    }
+
+    @Unroll
+    def "hub_delete_app_runtime_stats reports an unreadable uptime and leaves the budget empty (#scenario)"() {
+        given:
+        def hub = scriptOnHub(locate)
+        stubStatsHub(hub, [])
+
+        when:
+        def r = hub.adminDeleteAppRuntimeStats([appId: '194', confirm: true])
+
+        then:
+        r.success == true
+        r.verified == true
+        r.uptimeSeconds == null
+        r.uptimeError.contains(errorPart)
+        r.limitMs == null
+        r.thresholdPct == 33L
+
+        where:
+        scenario          | locate                                                   || errorPart
+        'location throws' | { -> throw new IllegalStateException('hub unavailable') } || 'could not be read'
+        'no uptime'       | { -> new TestLocation(hub: new TestHub()) }              || 'not a number'
+    }
+
+    def "hub_delete_app_runtime_stats is declared an idempotent destructive write"() {
+        given: "the reset zeroes every app's App Stats totals, which cannot be restored"
+        def a = script.getAdminToolDefinitions().find { it.name == 'hub_delete_app_runtime_stats' }.annotations
+
+        expect:
+        a.readOnlyHint == false
+        a.destructiveHint == true
+        a.idempotentHint == true
+        a.openWorldHint == false
+    }
+
+    @Unroll
+    def "hub_delete_app_runtime_stats validates before touching the hub (#args)"() {
+        given:
+        List paths = []
+        stubStatsHub(script, paths)
+
+        when:
+        script.adminDeleteAppRuntimeStats(args)
+
+        then:
+        thrown(IllegalArgumentException)
+        paths.isEmpty()
+
+        where:
+        args << [[appId: '194'], [appId: '194', confirm: 'true'], [appId: 'abc', confirm: true],
+                 [appId: '0', confirm: true], [appId: '-3', confirm: true], [appId: '', confirm: true]]
+    }
+
+    def "hub_delete_app_runtime_stats without an appId resets and reports only the budget"() {
+        given:
+        def hub = scriptOnHub(26475G)
+        List paths = []
+        stubStatsHub(hub, paths)
+
+        when:
+        def r = hub.adminDeleteAppRuntimeStats([confirm: true])
+
+        then:
+        r.success == true
+        r.verified == false
+        r.note.contains('Pass appId')
+        !r.containsKey('appId') && !r.containsKey('before') && !r.containsKey('after')
+        r.message == 'App runtime statistics reset.'
+        r.limitMs == 8736750L
+        r.findAll { k, v -> v == null }.isEmpty()
+        paths == ALL_PATHS
     }
 
     @Unroll
