@@ -4730,7 +4730,7 @@ def _getAllToolDefinitions_partDevices() {
         // Device Tools
         [
             name: "hub_list_devices",
-            description: """List devices with current states from the hub's Devices page, filtered and paged on the hub. format='context' = plain-text house snapshot, the best first call for "what's going on". Control only devices the user named exactly. Guide: hub_get_tool_guide(section='performance_devices').""",
+            description: """List devices with current states from the hub's Devices page, filtered and paged on the hub. format='context' = plain-text house snapshot, the best first call for "what's going on". Counts: count = this page, total = every match, unfilteredTotal = every device in scope before any filter. Control only devices the user named exactly. Guide: hub_get_tool_guide(section='performance_devices').""",
             inputSchema: [
                 type: "object",
                 properties: [
