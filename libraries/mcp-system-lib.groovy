@@ -266,10 +266,8 @@ def toolGetHubInfo(args = null) {
     info.lastBackupEpoch = state.lastBackupTimestamp ?: null
 
     // Settings visibility (always available). hubSecurityConfigured is whether this app holds
-    // hub-login credentials, not whether the hub's login is on; once the firmware retires them
-    // (hubSecurityRetired) it is always false and is left out, so it is not read as the hub's.
-    info.hubSecurityRetired = (state.hubSecurityRetired == true)
-    if (!info.hubSecurityRetired) info.hubSecurityConfigured = settings.hubSecurityEnabled ?: false
+    // hub-login credentials, not whether the hub's login is on.
+    info.hubSecurityConfigured = settings.hubSecurityEnabled ?: false
     info.readEnabled = settings.enableRead != false
     info.writeEnabled = settings.enableWrite != false
     info.customRuleEngineEnabled = settings.enableCustomRuleEngine == true
@@ -310,7 +308,9 @@ def toolGetHubInfo(args = null) {
     }
 
     // Not PII: says only whether hub calls take the LAN address or loopback.
-    info.hubRequestRoute = (hubBaseUri() == hubLoopbackUri()) ? "loopback" : "lan"
+    def route = _hubRoute()
+    info.hubRequestRoute = (route.uri == hubLoopbackUri()) ? "loopback" : "lan"
+    if (info.hubRequestRoute == "loopback" && route.note) info.hubRequestRouteNote = route.note
 
     // PII/location data requires the Read master (default ON)
     if (settings.enableRead != false) {

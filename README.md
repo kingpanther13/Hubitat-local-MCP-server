@@ -810,9 +810,7 @@ Every MCP tool is gated by two universal masters — **Read** and **Write** — 
 2. Under **Tool Access (Read / Write masters)**, toggle:
    - **Enable Read Tools** — exposes every read-only / non-destructive tool (list/get/search/diagnostics, hub info, app/driver/source reads). With it OFF, those tools vanish from the client and a cached call is rejected with "Read tools are disabled…".
    - **Enable Write Tools** — exposes every state-changing tool (device control, modes, variables, rooms, files, native rules, hub admin). With it OFF, those tools vanish and a cached call is rejected with "Write tools are disabled…".
-3. On firmware **older than 2.5.0**, if your hub has **Hub Security** enabled, also configure:
-   - **Hub Security Username** and **Password** under the Hub Security section
-   - On 2.5.0 and later this section is not shown, and no credentials are needed — see *Hub Security* below
+3. Optional: if your hub has **Hub Login Security** enabled, you can enter its **Username** and **Password** under the Hub Security section so the server's hub calls take the hub's LAN address, which keeps them off the per-app load limiter. Nothing needs them — see *Hub Security* below
 
 Both masters default ON — only an explicit OFF hides or blocks a class. (This replaces the former separate "Enable Hub Admin Read/Write Tools" and "Enable Built-in App Tools" toggles.)
 
@@ -890,13 +888,7 @@ When you use `hub_update_app`, `hub_update_driver`, `hub_update_library`, or `hu
 <details>
 <summary><b>Hub Security</b></summary>
 
-**On firmware 2.5.0 and later, Hub Security has no effect on this server and no credentials are needed** — even with Hub Login Security enabled on your hub. Hubitat exempts an app's own loopback requests (`http://127.0.0.1:8080`) from the admin-UI login, and while Hub Login Security is on every hub tool here reaches the hub that way. The same admin routes that redirect a LAN browser to `/login` return data to this app.
-
-Because those credentials did nothing, the Hub Security section is hidden on 2.5.0+. Any username and password previously stored are wiped and the toggle is forced off automatically -- on the first app save, or the first request from your MCP client, whichever comes first. You do not need to do anything; if you are looking for the section you configured before upgrading, this is where it went.
-
-**On firmware older than 2.5.0** the section still appears and still works. The exemption's exact introduction point is unknown, so the cutoff sits at a version that has been tested rather than the earliest that might work. If your hub is below 2.5.0 and has Hub Login Security enabled, configure the username and password there; the server caches the session cookie for 30 minutes and re-authenticates when it goes stale.
-
-The server calls the hub's internal API on loopback (`http://127.0.0.1:8080`), or, on firmware 2.5.0+ with Hub Login Security off, on the hub's own LAN address, because the hub does not count HTTP wait on a non-loopback host toward the app's busy time (the per-app load limiter). Login credentials, session cookies and every request that reads a redirect stay on loopback, and nothing goes through the cloud endpoint. The connection is plaintext either way, so it relies on a trusted hub operating system and installed code: install only trusted apps/drivers and restrict hub administration.
+**Hub Login Security credentials are optional: the server works without them.** Hubitat exempts an app's own loopback requests (`http://127.0.0.1:8080`) from the admin-UI login, so without credentials every hub call takes loopback and everything works. Otherwise the server sends its hub calls to the hub's own LAN address, because the hub does not count HTTP wait on a non-loopback host toward the app's busy time (the per-app load limiter); with Hub Login Security on, that needs the username and password under **Hub Security** in the app, which the server signs in with over loopback, and the session cookie then rides the hub calls, which never leave the hub. The LAN route is used only after a probe proves it answers (an SSL-only hub keeps loopback), requests that read a redirect always stay on loopback, and the connection is plaintext either way, so it relies on a trusted hub operating system and installed code: install only trusted apps/drivers and restrict hub administration.
 
 </details>
 

@@ -134,10 +134,6 @@ private String _effectiveBackupSetting(String key) {
 @groovy.transform.Field static final long WORKER_POLL_MS = 50L
 // Serialize the one-time protected-app default across concurrent endpoint handlers.
 @groovy.transform.Field static final Map PROTECTED_APPS_LOCK = new java.util.HashMap()
-// Apps whose Hub Security shed is settled (done, or not due on this firmware). A firmware update or
-// redeploy restarts the class, so the check reruns exactly when its answer can change.
-@groovy.transform.Field static final Set HUB_SECURITY_CHECKED = new java.util.HashSet()
-@groovy.transform.Field static final Map HUB_SECURITY_RETRY_AT = new java.util.HashMap()
 // Per-app latest released version, mirrored from state.updateCheck so every result's serverInfo
 // skips the state read; filled on first read, then replaced only by handleUpdateCheckResponse.
 @groovy.transform.Field static final Map LATEST_VERSION_SEEN = new java.util.HashMap()
@@ -353,20 +349,14 @@ def mainPage() {
             }
         }
 
-        // Hidden on firmware >= hubSecurityRetiredFw() -- see that helper for why. Anything still
-        // stored is shed by the next save or MCP request; hiding it here only stops new entries.
-        // Older hubs still see and use the section.
-        if (!_hubSecurityObsolete()) {
-            section("Hub Security") {
-                paragraph "If <b>Hub Security</b> is enabled on your hub, provide credentials here so Hub Admin tools can authenticate. " +
-                          "If Hub Security is NOT enabled, leave this off — Hub Admin tools will work without credentials."
-                input "hubSecurityEnabled", "bool", title: "Hub Security Enabled",
-                      description: "Turn on if your hub has Hub Security (login) enabled",
-                      defaultValue: false, submitOnChange: true
-                if (settings.hubSecurityEnabled) {
-                    input "hubSecurityUser", "text", title: "Hub Security Username", required: false
-                    input "hubSecurityPassword", "password", title: "Hub Security Password", required: false
-                }
+        section("Hub Security") {
+            paragraph "<b>Hub Login Security credentials (optional).</b> Only needed if Hub Login Security is turned on for your hub AND you want this server's hub requests routed through the hub's LAN address, which keeps them off the hub's per-app load limiter. " +
+                      "Without them the server uses loopback and works normally."
+            input "hubSecurityEnabled", "bool", title: "Use Hub Login Security credentials",
+                  defaultValue: false, submitOnChange: true
+            if (settings.hubSecurityEnabled) {
+                input "hubSecurityUser", "text", title: "Hub Security Username", required: false
+                input "hubSecurityPassword", "password", title: "Hub Security Password", required: false
             }
         }
 
@@ -1234,7 +1224,11 @@ def updated() {
     atomicState.remove("publishOutputSchemasForcedOff")
     // Error retention is opt-in; switching it off discards what it kept.
     if (settings.retainReportErrors != true) atomicState.remove("reportErrors")
-    _retireHubSecuritySettings()
+    // A settings save may have changed the Hub Login Security credentials: sign in and probe afresh.
+    HUB_SIGNIN_FAILED_AT.clear()
+    HUB_LAN_PROBE.clear()
+    atomicState.remove("hubSecurityCookie")
+    atomicState.remove("hubSecurityCookieExpiry")
     _cleanupRetiredToolState()
     TOOL_SEARCH_CORPUS_FP = null                  // ...and its in-JVM memo, or the next search reuses a stale key
     synchronized (TOOL_SEARCH_INDEX) { TOOL_SEARCH_INDEX.clear() }   // ...and the in-JVM index itself
@@ -1608,7 +1602,6 @@ def handleMcpRequest() {
     if (callerRefusal != null) return callerRefusal
 
     _cleanupRetiredToolState()
-    _retireHubSecuritySettingsOnce()   // updated() alone would never fire for a user who does not open the app page
     _refreshSetupAfterUpdate()
     _mrtrEnsureCleanupScheduled()
     def requestBody
@@ -5323,7 +5316,8 @@ def _cleanupRetiredToolState() {
         try {
             ['toolSearchCorpus', 'toolSearchTokens', 'toolSearchCorpusVersion',
              'toolSearchCorpusFingerprint', 'requiredParamsByTool',
-             'requiredParamsByToolFingerprint', 'predClearPending'].each { key ->
+             'requiredParamsByToolFingerprint', 'predClearPending',
+             'hubSecurityRetired', 'hubSecurityFwUnreadable'].each { key ->
                 if (atomicState.containsKey(key)) atomicState.remove(key)
                 if (state.containsKey(key)) state.remove(key)
             }
@@ -7561,25 +7555,41 @@ String hubLoopbackUri() { "http://127.0.0.1:8080" }
 
 // Base URI of the hubInternal* calls. The hub does not charge HTTP wait to the calling app when the
 // host is not loopback, so the hub's own LAN address keeps the hub HTTP wait out of the app's busy
-// counter. Falls back to loopback while Hub Login Security is on or unreadable, when the hub
-// reports no usable LAN address, and for HUB_LAN_ROUTE_RETRY_MS after a LAN connection failed.
-String hubBaseUri() {
-    // Hub Security credentials (pre-2.5.0 path) and their session cookie never leave loopback.
-    if (settings.hubSecurityEnabled && !_hubSecurityObsolete()) return hubLoopbackUri()
+// counter. The LAN address is used only once a probe has proved it answers; otherwise loopback.
+String hubBaseUri() { _hubRoute().uri }
+
+// [uri, note]: the route hub calls take, and why when it is loopback (note is null on the LAN route).
+private Map _hubRoute() {
+    String loop = hubLoopbackUri()
     def failedAt = HUB_LAN_ROUTE_FAILED_AT.get("at")
-    if (failedAt != null && now() - (failedAt as long) < HUB_LAN_ROUTE_RETRY_MS) return hubLoopbackUri()
+    if (failedAt != null && now() - (failedAt as long) < HUB_LAN_ROUTE_RETRY_MS) {
+        return [uri: loop, note: "the hub did not answer on its LAN address; it is tried again ${HUB_LAN_ROUTE_RETRY_MS / 60000L} minutes after the failure".toString()]
+    }
     def secured = null
     try { secured = isHubitatUISecurityEnabled() } catch (Exception ignored) { }
-    if (secured == true) return hubLoopbackUri()
-    if (secured != false) {
-        _noteHubLoopbackFallback("the Hub Login Security switch is unreadable")
-        return hubLoopbackUri()
+    boolean creds = _hubSecurityCredentialsConfigured()
+    if (secured == true && !creds) {
+        return [uri: loop, note: "Hub Login Security is on and no Hub Login Security credentials are configured in this app"]
     }
+    if (secured != true && secured != false && !creds) return _hubLoopbackFallback("the Hub Login Security switch is unreadable")
     String ip = null
     try { ip = location?.hub?.localIP?.toString() } catch (Exception ignored) { }
-    if (ip && ip ==~ /\d{1,3}(\.\d{1,3}){3}/ && !ip.startsWith("0.") && !ip.startsWith("127.")) return "http://${ip}:8080"
-    _noteHubLoopbackFallback("location.hub.localIP is unreadable, absent or not a usable LAN address")
-    return hubLoopbackUri()
+    if (!(ip && ip ==~ /\d{1,3}(\.\d{1,3}){3}/ && !ip.startsWith("0.") && !ip.startsWith("127."))) {
+        return _hubLoopbackFallback("location.hub.localIP is unreadable, absent or not a usable LAN address")
+    }
+    if (creds && _hubSignInBackoffActive()) return [uri: loop, note: "Hub Login Security sign-in failed"]
+    String lan = "http://${ip}:8080"
+    String probeNote = _hubLanProbe(lan)
+    return probeNote == null ? [uri: lan, note: null] : [uri: loop, note: probeNote]
+}
+
+private boolean _hubSecurityCredentialsConfigured() {
+    settings.hubSecurityEnabled == true && settings.hubSecurityUser && settings.hubSecurityPassword
+}
+
+private Map _hubLoopbackFallback(String reason) {
+    _noteHubLoopbackFallback(reason)
+    return [uri: hubLoopbackUri(), note: reason]
 }
 
 // A fallback quietly puts the hub HTTP wait back on the app's busy counter, so say it once per
@@ -7589,6 +7599,64 @@ String hubBaseUri() {
 // HUB_LAN_ROUTE_RETRY_MS after it.
 @groovy.transform.Field static final java.util.concurrent.ConcurrentHashMap HUB_LAN_ROUTE_FAILED_AT = new java.util.concurrent.ConcurrentHashMap()
 @groovy.transform.Field static final long HUB_LAN_ROUTE_RETRY_MS = 5L * 60L * 1000L
+// LAN probe results by LAN base URI ([ok: true] or [ok: false, note: why]); cleared by a re-login and
+// by a LAN connection failure, so the probe runs once per code load and again after either.
+@groovy.transform.Field static final java.util.concurrent.ConcurrentHashMap HUB_LAN_PROBE = new java.util.concurrent.ConcurrentHashMap()
+@groovy.transform.Field static final java.util.concurrent.ConcurrentHashMap HUB_LAN_PROBING = new java.util.concurrent.ConcurrentHashMap()
+
+// Proves the LAN route before any hub call takes it: a plain-HTTP LAN request can be redirected
+// (Hub Login Security without a working session, or an SSL-only hub), and a followed redirect would
+// turn a POST into a GET. Returns null when the hub answered with data, else why loopback is used.
+private String _hubLanProbe(String lan) {
+    def cached = HUB_LAN_PROBE.get(lan)
+    if (cached != null) return cached.ok ? null : cached.note
+    if (HUB_LAN_PROBING.putIfAbsent("probing", true) != null) return "the LAN route is being probed"
+    try {
+        def cookie = getHubSecurityCookie()
+        if (_hubSecurityCredentialsConfigured() && !cookie && _hubSignInBackoffActive()) return "Hub Login Security sign-in failed"
+        def params = [uri: lan, path: "/hub/advanced/freeOSMemory", followRedirects: false, textParser: true,
+                      ignoreSSLIssues: true, timeout: 10]
+        if (cookie) params.headers = [Cookie: cookie]
+        Integer status = null
+        String body = null
+        try {
+            httpGet(params) { resp ->
+                try { status = resp.status as Integer } catch (Exception ignored) { }
+                try { body = _readRespText(resp)?.toString() } catch (Exception ignored) { }
+            }
+        } catch (Exception e) {
+            if (_isConnectFailure(e)) {
+                HUB_LAN_ROUTE_FAILED_AT.put("at", now())
+                _noteHubLoopbackFallback("the hub did not answer on its LAN address")
+                return "the hub did not answer on its LAN address"
+            }
+            status = _httpStatusOf(e)
+        }
+        if (status != null && status >= 200 && status < 300 && body != null && body.trim() ==~ /\d+(\.\d+)?/) {
+            HUB_LAN_PROBE.put(lan, [ok: true])
+            return null
+        }
+        if ((status != null && status >= 300 && status < 400) || _looksLikeLoginPage(body)) {
+            return _hubLanProbeFailed(lan, "the hub redirects LAN requests (Hub Login Security without working credentials, or SSL-only)")
+        }
+        return _hubLanProbeFailed(lan, "the LAN route probe got an unexpected answer (HTTP ${status ?: 'none'})".toString())
+    } finally {
+        HUB_LAN_PROBING.remove("probing")
+    }
+}
+
+private String _hubLanProbeFailed(String lan, String reason) {
+    HUB_LAN_PROBE.put(lan, [ok: false, note: reason])
+    _noteHubLoopbackFallback(reason)
+    return reason
+}
+
+// The hub's login page, as a followed redirect to /login returns it with a 200.
+private boolean _looksLikeLoginPage(body) {
+    if (!(body instanceof CharSequence)) return false
+    String t = body.toString()
+    return t.contains("/login") && t.toLowerCase().contains("<form")
+}
 
 // A failure to open the connection at all, with no HTTP response: the request never reached the
 // hub, so repeating it on loopback cannot run a write twice. A read timeout does not qualify.
@@ -7618,8 +7686,7 @@ def _firmwareAtLeast(fw, String target) {
     // Compare dotted firmware versions segment-by-segment, numerically. Returns true when fw >=
     // target. Missing/BLANK fw returns true (assume modern) -- safe where a newer endpoint is the
     // right fallback. A non-numeric segment scores 0, so a wholly unparseable string compares BELOW
-    // any real target. A caller that must not assume modern gates the blank case itself
-    // (see _hubSecurityObsolete).
+    // any real target. A caller that must not assume modern gates the blank case itself.
     if (fw == null || !fw.toString().trim()) return true
     def fwParts = fw.toString().trim().split("\\.")
     def tgtParts = target.split("\\.")
@@ -7709,99 +7776,10 @@ def _parseSinceArg(since) {
     return null
 }
 
-// Firmware at which the Hub Security credential settings are retired. Hubitat exempts an
-// app's own loopback requests to 127.0.0.1:8080 from the admin-UI login (Hubitat staff,
-// community topic 143694, 2024-10-14), so these credentials do nothing: verified live on
-// 2.5.1.181 with Hub Login Security enforcing -- /hub/advanced/*, /hub2/hubData and
-// /hub/details/json all 302 a LAN browser to /login while returning real data through
-// hubInternal*. The exact firmware that introduced the exemption is unknown, so the gate sits
-// at a version we have actually tested rather than the earliest that might work.
-def hubSecurityRetiredFw() { "2.5.0" }
-
-// Blank/unreadable firmware must NOT count as modern here: _firmwareAtLeast assumes modern for a
-// blank string, which would wipe a working install's credentials on a hub we could not identify.
-private boolean _hubSecurityObsolete() {
-    String fw = null
-    def readErr = null
-    try { fw = location?.hub?.firmwareVersionString?.toString()?.trim() } catch (Exception e) { readErr = e }
-    if (!fw) {
-        // Announce a THROWN read once -- an absent/blank version is a normal unknown, but an
-        // exception is the case the catch would otherwise swallow. Once, because this runs on
-        // every hubInternal* call.
-        if (readErr != null && state.hubSecurityFwUnreadable != true) {
-            state.hubSecurityFwUnreadable = true
-            mcpLog("warn", "hub-admin", "Could not read the firmware version (${readErr.class.simpleName}: ${readErr.message}); keeping the Hub Security credential path (it retires on ${hubSecurityRetiredFw()}+)")
-        }
-        return false
-    }
-    return _firmwareAtLeast(fw, hubSecurityRetiredFw())
-}
-
-private boolean _hubFirmwareReadable() {
-    try {
-        return location?.hub?.firmwareVersionString?.toString()?.trim() as boolean
-    } catch (Exception e) {
-        mcpLog("debug", "hub-admin", "Hub Security: firmware version unreadable (${e.class.simpleName}): ${e.message}")
-        return false
-    }
-}
-
-// Request-path entry: settles once per class load, so warm requests read neither state nor firmware.
-// An unreadable firmware or a failed shed stays unsettled and is retried at most once a minute.
-private void _retireHubSecuritySettingsOnce() {
-    String appKey = _stateOwnerKey()
-    synchronized (HUB_SECURITY_CHECKED) {
-        if (HUB_SECURITY_CHECKED.contains(appKey)) return
-        def retryAt = HUB_SECURITY_RETRY_AT.get(appKey)
-        if (retryAt != null && (retryAt as Long) > now()) return
-    }
-    boolean settled = _retireHubSecuritySettings()
-    synchronized (HUB_SECURITY_CHECKED) {
-        if (settled) {
-            HUB_SECURITY_CHECKED.add(appKey)
-            HUB_SECURITY_RETRY_AT.remove(appKey)
-        } else {
-            HUB_SECURITY_RETRY_AT.put(appKey, now() + 60000L)
-        }
-    }
-}
-
-// Also reached from MCP requests, not only updated(): updated() fires on a manual save, so a hub
-// whose package or firmware crossed the cutoff and whose page is never opened would keep the dead
-// credentials on disk. Returns true once settled: shed, or below the cutoff on a readable firmware.
-private boolean _retireHubSecuritySettings() {
-    if (state.hubSecurityRetired == true) return true
-    // Below the cutoff the answer is final only when the firmware was readable (_hubSecurityObsolete
-    // already announced an unreadable one).
-    if (!_hubSecurityObsolete()) return _hubFirmwareReadable()
-    boolean had = (settings.hubSecurityEnabled == true) || settings.hubSecurityUser || settings.hubSecurityPassword
-    try {
-        // Credentials first: a partial failure then errs toward "secrets gone, toggle still on"
-        // rather than "toggle off, password still on disk".
-        app.removeSetting("hubSecurityUser")
-        app.removeSetting("hubSecurityPassword")
-        app.updateSetting("hubSecurityEnabled", [type: "bool", value: false])
-        atomicState.remove("hubSecurityCookie")
-        atomicState.remove("hubSecurityCookieExpiry")
-        state.hubSecurityRetired = true
-    } catch (Exception e) {
-        // This rides the request path; a cosmetic shed must never fail the request it arrived on.
-        _cleanupError("hub-admin", "Hub Security credential shed failed; stored credentials may remain on disk (they are inert on firmware ${hubSecurityRetiredFw()}+): ${_cleanupFailureDetail(e)}")
-        return false
-    }
-    if (had) {
-        // warn, not info: an irreversible deletion the user did not ask for. The default log level
-        // is "error", so even this can be filtered out -- hub_get_info.hubSecurityRetired and the
-        // bug report carry the durable, level-independent record.
-        mcpLog("warn", "hub-admin", "Hub Security credentials retired on firmware ${hubSecurityRetiredFw()}+ (an app's loopback requests are exempt from hub login; the stored credentials were unused)")
-    }
-    return true
-}
-
-// Returns null on retired firmware, when Hub Security is off, or when credentials are not
-// configured; otherwise a session cookie cached for 30 minutes.
+// Returns null when the Hub Login Security credentials are off, incomplete or refused; otherwise a
+// session cookie cached for 30 minutes. The sign-in always goes over loopback and never throws:
+// loopback needs no cookie, so a refused sign-in only keeps hub calls off the LAN route.
 def getHubSecurityCookie() {
-    if (_hubSecurityObsolete()) return null
     if (!settings.hubSecurityEnabled) return null
     if (!settings.hubSecurityUser || !settings.hubSecurityPassword) {
         mcpLog("warn", "hub-admin", "Hub Security is enabled but credentials are not configured")
@@ -7814,32 +7792,63 @@ def getHubSecurityCookie() {
         return atomicState.hubSecurityCookie
     }
 
-    // Authenticate
-    def cookie = null
-    try {
-        httpPost([
-            uri: hubBaseUri(),
-            path: "/login",
-            body: [username: settings.hubSecurityUser, password: settings.hubSecurityPassword],
-            textParser: true,
-            ignoreSSLIssues: true
-        ]) { resp ->
-            cookie = resp?.headers?.'Set-Cookie'?.split(';')?.getAt(0)
-        }
-    } catch (Exception e) {
-        mcpLogError("hub-admin", "Hub Security authentication failed", e)
-        throw new RuntimeException("Hub Security authentication failed. Check your username and password in MCP Rule Server settings.")
-    }
+    if (_hubSignInBackoffActive()) return null
 
+    def cookie = _hubSignIn()
     if (cookie) {
         atomicState.hubSecurityCookie = cookie
         atomicState.hubSecurityCookieExpiry = now() + (30 * 60 * 1000) // 30 minutes
+        HUB_LAN_PROBE.clear()   // a new session can change what the LAN route answers
+        HUB_SIGNIN_FAILED_AT.remove("at")
         mcpLog("debug", "hub-admin", "Hub Security authentication successful")
     } else {
-        mcpLog("warn", "hub-admin", "Hub Security authentication returned no cookie")
+        HUB_SIGNIN_FAILED_AT.put("at", now())
+        _noteHubLoopbackFallback("the Hub Login Security credentials were refused (they are used again once fixed in the app)")
     }
 
     return cookie
+}
+
+// Posts /login over loopback without following the redirect. The hub answers good credentials with
+// a 3xx away from /login and wrong ones with the login page (200), and sets a session cookie either
+// way, so only the 3xx makes the cookie a signed-in session. Returns that cookie, or null.
+private String _hubSignIn() {
+    Integer status = null
+    def location = null
+    def setCookie = null
+    def read = { resp ->
+        try { status = resp.status as Integer } catch (Exception ignored) { }
+        try { location = resp.headers?."Location" } catch (Exception ignored) { }
+        try { setCookie = resp.headers?."Set-Cookie" } catch (Exception ignored) { }
+    }
+    try {
+        httpPost([uri: hubLoopbackUri(), path: "/login",
+                  body: [username: settings.hubSecurityUser, password: settings.hubSecurityPassword],
+                  textParser: true, ignoreSSLIssues: true, followRedirects: false], read)
+    } catch (Exception e) {
+        // followRedirects:false surfaces the 3xx as an exception carrying the response.
+        def resp = null
+        try { resp = e.response } catch (Exception ignored) { resp = null }
+        if (resp == null) {
+            try { resp = e.cause?.response } catch (Exception ignored) { resp = null }
+        }
+        if (resp != null) read(resp)
+        else mcpLog("debug", "hub-admin", "Hub Security sign-in failed (${e.class.simpleName}): ${e.message}")
+    }
+    String loc = location?.toString()?.replaceFirst(/(?i)^location:\s*/, "")?.trim()
+    if (status == null || status < 300 || status >= 400 || loc?.contains("/login")) return null
+    def cookies = (setCookie instanceof List ? setCookie : (setCookie != null ? [setCookie] : [])).collect {
+        it.toString().replaceFirst(/^(?i)set-cookie:\s*/, "").split(';')[0].trim()
+    }.findAll { it }
+    return cookies.find { it.startsWith("HUBSESSION=") } ?: (cookies ? cookies[0] : null)
+}
+
+// When the last sign-in was refused. Inside HUB_LAN_ROUTE_RETRY_MS of it no /login is posted again.
+@groovy.transform.Field static final java.util.concurrent.ConcurrentHashMap HUB_SIGNIN_FAILED_AT = new java.util.concurrent.ConcurrentHashMap()
+
+private boolean _hubSignInBackoffActive() {
+    def at = HUB_SIGNIN_FAILED_AT.get("at")
+    return at != null && now() - (at as long) < HUB_LAN_ROUTE_RETRY_MS
 }
 
 /**
@@ -7921,9 +7930,9 @@ private _hubRequest(String method, String path, Map opts = [:]) {
     }
     def cookie = getHubSecurityCookie()
     // The platform client auto-follows absolute redirects on a non-loopback host, so a request
-    // that must read a 302 Location stays on loopback; so does any request carrying a session cookie.
+    // that must read a 302 Location stays on loopback; so does a request sent in its own hub session.
     def params = [
-        uri: (opts.followRedirects == false || cookie || opts.cookie || opts.loopbackRetry) ? hubLoopbackUri() : hubBaseUri(),
+        uri: (opts.followRedirects == false || opts.cookie || opts.loopbackRetry) ? hubLoopbackUri() : hubBaseUri(),
         path: path,
         textParser: true,
         ignoreSSLIssues: true,
@@ -7987,11 +7996,19 @@ private _hubRequest(String method, String path, Map opts = [:]) {
         _hubRtOutcome = e.class.simpleName
         if (!opts.loopbackRetry && params.uri != hubLoopbackUri() && _isConnectFailure(e)) {
             HUB_LAN_ROUTE_FAILED_AT.put("at", now())
+            HUB_LAN_PROBE.clear()
             _noteHubLoopbackFallback("the hub did not answer on its LAN address")
             _hubRtLogged = true
             try { _hubRtLog(method, path, now() - _hubRtT0, "${_hubRtOutcome}, retrying on loopback".toString()) }
             catch (Exception logErr) { log.warn "[hubrt] diagnostic logging failed: ${logErr.message}" }
             return _hubRequest(method, path, opts + [loopbackRetry: true])
+        }
+        if (!opts.isRetry && params.uri != hubLoopbackUri() && _isLoginRedirect(e)) {
+            _hubRtLogged = true
+            try { _hubRtLog(method, path, now() - _hubRtT0, "${_hubRtOutcome}, login redirect on the LAN route, retrying".toString()) }
+            catch (Exception logErr) { log.warn "[hubrt] diagnostic logging failed: ${logErr.message}" }
+            _forgetLanRouteAfterLoginRefusal(method, path, cookie)
+            return _hubRequest(method, path, opts + [isRetry: true])
         }
         if (shouldRetryWithFreshCookie(e, opts.isRetry == true)) {
             // Log this attempt on its own before recursing, so the outer finally does not
@@ -8014,7 +8031,32 @@ private _hubRequest(String method, String path, Map opts = [:]) {
     // Re-throw a mid-stream read failure rather than returning a Reader/stream toString() junk
     // string that downstream code would treat as a real body (matches the hardened deploy path).
     if (readError != null) throw readError
+    // A login filter refusing the LAN route comes back as the followed redirect: the login page.
+    if (!opts.isRetry && params.uri != hubLoopbackUri() && _looksLikeLoginPage(result instanceof Map ? result.data : result)) {
+        _forgetLanRouteAfterLoginRefusal(method, path, cookie)
+        return _hubRequest(method, path, opts + [isRetry: true])
+    }
     return result
+}
+
+// The login filter refused a LAN request before it ran (Hub Login Security turned on since the
+// probe, or an expired session), so the caller repeats it once. Forgetting the verdict and the
+// session makes the repeat re-resolve the route: sign in and re-probe, or loopback without credentials.
+private void _forgetLanRouteAfterLoginRefusal(String method, String path, cookie) {
+    HUB_LAN_PROBE.clear()
+    if (cookie) {
+        atomicState.hubSecurityCookie = null
+        atomicState.hubSecurityCookieExpiry = null
+    }
+    mcpLog("debug", "hub-admin", "The hub's login refused ${method} ${_redactSecretsInPath(path)} on the LAN route; re-checking the route and repeating once")
+}
+
+private boolean _isLoginRedirect(Exception e) {
+    Integer status = _httpStatusOf(e)
+    if (status == null || status < 300 || status >= 400) return false
+    def location = null
+    try { location = e.response?.headers?."Location"?.toString() } catch (Exception ignored) { location = null }
+    return location?.contains("/login") == true
 }
 
 // [hubrt] per-call diagnostic: every internal hub round-trip funnels through here, on success
@@ -11644,7 +11686,7 @@ Read-only diagnostics tool. Beyond the default payload (model, firmware, uptime,
 **Always returned (regardless of the flags below):**
 - `platformUpdate` — the pending hub FIRMWARE/platform update (see the hub_update_firmware entry above, which installs it). On firmware 2.5.2.129 and later, which dropped the pending-update flag, `available` comes from the hub's PLATFORM_UPDATE_AVAILABLE alert, or from the platform's latest-version check when that alert is absent or dismissed (true only when that version is newer than the running one); it is null when the hub data is unreadable or neither answers.
 - `safeMode` — whether the hub is running in Safe Mode (from /hub2/hubData; absent if /hub2/hubData was unreadable).
-- `hubRequestRoute` — `lan` when the server's hub calls use the hub's LAN address (Hub Login Security off), `loopback` otherwise.
+- `hubRequestRoute` — `lan` when the server's hub calls use the hub's LAN address (Hub Login Security off, or its credentials configured in this app, and the LAN address answered a probe), `loopback` otherwise; `hubRequestRouteNote` then says why.
 - `mcpClient` — the client that sent THIS request, derived from the request itself and never stored: under `client`, the name/version/title as this request declared them (all null when it declared none), `wrapper` (computed from that name and version) true when the name is a stdio-to-HTTP bridge rather than the host app, the protocol version and, on an `initialize` call, the version the client asked for, plus the era (modern/legacy) and the source (cloud/local). `client` is null when the request carried no message that could name one, and an `error` key is present instead when the read failed.
 
 **On a per-client access token only:** `clientAccess` -- what this token may use: `client` (the name the hub owner gave it), `readEnabled`, `writeEnabled`, `localAccessEnabled`, `cloudAccessEnabled`, and `tools` (the tools it can call right now). `recentWrites` then lists only this token's writes. A call the token may not make is refused with a message that names the client and what blocks it, so an agent can ask the hub owner for that access instead of retrying. A client token cannot read or change the MCP Rule Server app itself, and access tokens are always masked in its results.
@@ -11820,7 +11862,7 @@ Deploys every declared library bundle + app from the manifest at `ref`, saving t
 
 ### hub_update_mcp_settings — bypassDeviceAllowlist (DANGEROUS escape hatch)
 
-`bypassDeviceAllowlist` (bool, default OFF) removes the device-selection boundary when enabled. Device reads, commands, configuration writes, inventory, health checks, dependent lookups, swaps and replacements use native hub endpoints. With bypass OFF, access is limited to selected devices plus MCP-owned children. With bypass ON, these operations can reach any existing device; the Read/Write masters, confirmations and operation-specific eligibility checks still apply. MCP-owned virtual inventory remains ownership-scoped. Hub logs, including device-filtered logs, remain readable regardless of device selection or bypass; the Read master still applies. Explicit scope=all inventory and existing administrative force-delete operations retain their documented broader scope. Its effect is independent of Developer Mode. On firmware older than 2.5.0, native device operations use the MCP app's Hub Security credentials when Hub Security is enabled. On 2.5.0 and later no credentials are involved -- an app's loopback requests are exempt from the hub login. Native attribute discovery contains reported current states, including their available types and values; unset or cleared attributes can be absent. An explicit missing-attribute read returns null with neverReported, and polling may time out instead of rejecting an unknown name. A command with waitFor can therefore execute before a mistyped attribute times out. Supported-command and argument validation still run before command execution. Attribute discovery is reported-state only on EVERY path (selected devices included): `attributes` in list/detail reads and `declaredAttributes` in details mode carry current states, and an attribute the driver declares but has never set is absent, not unsupported (`attributeCoverage.declarationsComplete: false` says so in-band). Attribute values keep the driver-declared type: an attribute whose native record carries `dataType: NUMBER` is a JSON number, every other value is a string, and the type is stable per attribute; the `hubitat://context` and `hubitat://context-summary` resources are served from one bulk hub read and carry string values without unit suffixes. Whole-population reads -- the two context resources and every `hub_list_devices` filter -- come from that single bulk read, never one native read per device; only a device the bulk read does not cover costs a per-device read (capped at 20 for the resources, with the rest reported as state unavailable). One unreadable device no longer fails `hub_list_devices`: it is listed with `metadataUnavailable: true`, excluded from any active filter, named in `metadataUnavailableIds`, and the response carries `partial: true`; a bypass inventory whose id set could not be vouched for is returned with `idsComplete: false` instead of an error. Swap and replace both verify a bypass-only id against native metadata before any native request. The legacy custom-rule engine keeps its own selection-only device references; bypass does not extend to it.
+`bypassDeviceAllowlist` (bool, default OFF) removes the device-selection boundary when enabled. Device reads, commands, configuration writes, inventory, health checks, dependent lookups, swaps and replacements use native hub endpoints. With bypass OFF, access is limited to selected devices plus MCP-owned children. With bypass ON, these operations can reach any existing device; the Read/Write masters, confirmations and operation-specific eligibility checks still apply. MCP-owned virtual inventory remains ownership-scoped. Hub logs, including device-filtered logs, remain readable regardless of device selection or bypass; the Read master still applies. Explicit scope=all inventory and existing administrative force-delete operations retain their documented broader scope. Its effect is independent of Developer Mode. Native device operations need no Hub Security credentials: an app's loopback requests are exempt from the hub login, and credentials configured in the app only let hub calls take the hub's LAN address. Native attribute discovery contains reported current states, including their available types and values; unset or cleared attributes can be absent. An explicit missing-attribute read returns null with neverReported, and polling may time out instead of rejecting an unknown name. A command with waitFor can therefore execute before a mistyped attribute times out. Supported-command and argument validation still run before command execution. Attribute discovery is reported-state only on EVERY path (selected devices included): `attributes` in list/detail reads and `declaredAttributes` in details mode carry current states, and an attribute the driver declares but has never set is absent, not unsupported (`attributeCoverage.declarationsComplete: false` says so in-band). Attribute values keep the driver-declared type: an attribute whose native record carries `dataType: NUMBER` is a JSON number, every other value is a string, and the type is stable per attribute; the `hubitat://context` and `hubitat://context-summary` resources are served from one bulk hub read and carry string values without unit suffixes. Whole-population reads -- the two context resources and every `hub_list_devices` filter -- come from that single bulk read, never one native read per device; only a device the bulk read does not cover costs a per-device read (capped at 20 for the resources, with the rest reported as state unavailable). One unreadable device no longer fails `hub_list_devices`: it is listed with `metadataUnavailable: true`, excluded from any active filter, named in `metadataUnavailableIds`, and the response carries `partial: true`; a bypass inventory whose id set could not be vouched for is returned with `idsComplete: false` instead of an error. Swap and replace both verify a bypass-only id against native metadata before any native request. The legacy custom-rule engine keeps its own selection-only device references; bypass does not extend to it.
 
 **selectedDevices** is the MCP device-access scope. Pass {"mode":"replace"|"add"|"remove", "ids":[<device id strings>], "allowEmpty":<bool>} -- or a bare array as shorthand for replace ({"selectedDevices":["42","108"]} == {mode:"replace", ids:["42","108"]}). 'replace' sets the authorized set to exactly ids; 'add' unions ids with the current set (safest for "grant one device" -- no need to re-enumerate the whole list); 'remove' subtracts ids. For replace/add every id is validated against the full hub device list (discover ids via hub_list_devices(scope='all'), each carries an mcpAuthorized flag) -- one unknown id rejects the whole batch and nothing is written; 'remove' does not validate (removing an absent/since-deleted id is a no-op). Refuses to empty the scope unless allowEmpty:true.
 

@@ -579,7 +579,7 @@ PERSISTED_STATE_INVENTORY = {
     "state": {
         "accessToken", "ruleToDelete", "customEngineMigrated", "ruleVariables",
         "headersReadable", "originLocalIpReadable", "updateCheck",
-        "lastBackupTimestamp", "debugLogs", "hubSecurityRetired", "hubSecurityFwUnreadable", "setupVersion",
+        "lastBackupTimestamp", "debugLogs", "setupVersion",
         "clientTokens", "nextClientTokenId", "retiredTokenHashes", "clientAccessEditing", "clientTokenNotice",
     },
     "atomicState": {

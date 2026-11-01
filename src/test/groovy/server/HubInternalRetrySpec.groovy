@@ -76,6 +76,16 @@ class HubInternalRetrySpec extends ToolSpecBase {
         }
     }
 
+    /**
+     * What a good sign-in looks like under followRedirects:false: a 302 away from /login carrying the
+     * session cookie, surfaced as an exception with the response.
+     */
+    private static FakeHttpException signedIn(String setCookie) {
+        def e = new FakeHttpException(302, '/')
+        e.response.headers['Set-Cookie'] = setCookie
+        return e
+    }
+
     /** An exception with NO parseable .response.status -- only a message carrying the auth signal. */
     private static class FakeBareException extends RuntimeException {
         FakeBareException(String msg) { super(msg) }
@@ -100,7 +110,7 @@ class HubInternalRetrySpec extends ToolSpecBase {
         httpPostHandler = { Map params, Closure cb ->
             if (params.path == '/login') {
                 loginCalls++
-                cb.call([headers: ['Set-Cookie': 'JSESSIONID=should-not-be-used; Path=/']])
+                throw signedIn('JSESSIONID=should-not-be-used; Path=/')
             } else {
                 appCallHeaders = params.headers
                 cb.call([status: 200, data: 'OK'])
@@ -128,7 +138,7 @@ class HubInternalRetrySpec extends ToolSpecBase {
         httpPostHandler = { Map params, Closure cb ->
             if (params.path == '/login') {
                 loginCalls++
-                cb.call([headers: ['Set-Cookie': 'JSESSIONID=fresh; Path=/']])
+                throw signedIn('JSESSIONID=fresh; Path=/')
             } else {
                 appCalls++
                 if (appCalls == 1) {
@@ -161,7 +171,7 @@ class HubInternalRetrySpec extends ToolSpecBase {
         def appCalls = 0
         httpPostHandler = { Map params, Closure cb ->
             if (params.path == '/login') {
-                cb.call([headers: ['Set-Cookie': 'JSESSIONID=fresh; Path=/']])
+                throw signedIn('JSESSIONID=fresh; Path=/')
             } else {
                 appCalls++
                 throw new FakeHttpException(500)
@@ -189,7 +199,7 @@ class HubInternalRetrySpec extends ToolSpecBase {
         httpPostHandler = { Map params, Closure cb ->
             if (params.path == '/login') {
                 loginCalls++
-                cb.call([headers: ['Set-Cookie': 'JSESSIONID=fresh; Path=/']])
+                throw signedIn('JSESSIONID=fresh; Path=/')
             } else {
                 appCalls++
                 throw new FakeHttpException(401)
@@ -376,7 +386,7 @@ class HubInternalRetrySpec extends ToolSpecBase {
         httpPostHandler = { Map params, Closure cb ->
             if (params.path == '/login') {
                 loginCalls++
-                cb.call([headers: ['Set-Cookie': 'JSESSIONID=fresh; Path=/']])
+                throw signedIn('JSESSIONID=fresh; Path=/')
             } else {
                 appCalls++
                 if (appCalls == 1) throw new FakeBareException('server returned: Unauthorized')
@@ -404,7 +414,7 @@ class HubInternalRetrySpec extends ToolSpecBase {
         def appCalls = 0
         def loginCalls = 0
         httpPostHandler = { Map params, Closure cb ->
-            if (params.path == '/login') { loginCalls++; cb.call([headers: ['Set-Cookie': 'JSESSIONID=fresh; Path=/']]) }
+            if (params.path == '/login') { loginCalls++; throw signedIn('JSESSIONID=fresh; Path=/') }
             else { appCalls++; throw new FakeBareException('Connection reset by peer') }
         }
 

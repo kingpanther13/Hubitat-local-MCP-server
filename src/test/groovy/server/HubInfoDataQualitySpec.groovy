@@ -102,18 +102,18 @@ class HubInfoDataQualitySpec extends ToolSpecBase {
         !hubGet.calls.any { it.path == '/hub2/devicesList' }
     }
 
-    def "hubSecurityConfigured is listed only while the firmware still uses the credentials: retired=#retired"() {
-        given:
-        stateMap.hubSecurityRetired = retired
+    def "hubSecurityConfigured is always listed and hubSecurityRetired never is: leftover marker=#leftover"() {
+        given: 'a hub upgraded from the retirement era may still carry the old marker'
+        if (leftover) stateMap.hubSecurityRetired = true
 
         when:
         def info = script.toolGetHubInfo([:])
 
         then:
-        info.hubSecurityRetired == retired
-        info.containsKey('hubSecurityConfigured') == !retired
+        info.containsKey('hubSecurityConfigured')
+        !info.containsKey('hubSecurityRetired')
 
         where:
-        retired << [true, false]
+        leftover << [true, false]
     }
 }

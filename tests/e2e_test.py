@@ -2535,25 +2535,21 @@ class TestRunner:
     # -----------------------------------------------------------------------
 
     @test("infrastructure")
-    def test_hub_security_retired_on_current_firmware(self) -> None:
-        # The credential shed rides the first MCP request on firmware >= 2.5.0 and stamps
-        # state.hubSecurityRetired whether or not credentials were ever stored -- so this needs
-        # no fixture, no credentials and no teardown, and every later run just re-reads the
-        # marker. Deliberately does NOT cover deleting real credentials: storing a username and
-        # password that every run would wipe is not something e2e can own.
+    def test_hub_get_info_reports_hub_security_and_request_route(self) -> None:
+        """hub_get_info reports whether Hub Login Security credentials are stored (optional; the test
+        hubs have none) and which route the server's hub calls take, with a note only on loopback."""
         info = self.client.call_tool("hub_get_info", {})
-        fw = str(info.get("firmwareVersion") or "")
-        parts = [int(p) if p.isdigit() else 0 for p in fw.split(".")]
-        while len(parts) < 2:
-            parts.append(0)
-        if (parts[0], parts[1]) < (2, 5):
-            return  # below the cutoff the section (and the credential path) legitimately stays
-        assert info.get("hubSecurityRetired") is True, (
-            f"hub_get_info did not report the shed on firmware {fw}: {info.get('hubSecurityRetired')!r}"
-        )
-        assert "hubSecurityConfigured" not in info, (
-            f"hubSecurityConfigured is still listed after the shed: {info.get('hubSecurityConfigured')!r}"
-        )
+        assert "hubSecurityRetired" not in info, f"hubSecurityRetired is no longer reported: {info.get('hubSecurityRetired')!r}"
+        configured = info.get("hubSecurityConfigured")
+        assert isinstance(configured, bool), f"hubSecurityConfigured must be a bool: {configured!r}"
+        assert configured is False, "the test hubs store no Hub Login Security credentials, yet hubSecurityConfigured is True"
+        route = info.get("hubRequestRoute")
+        assert route in ("lan", "loopback"), f"hubRequestRoute must be 'lan' or 'loopback': {route!r}"
+        note = info.get("hubRequestRouteNote")
+        if route == "loopback":
+            assert isinstance(note, str) and note.strip(), f"a loopback route must carry a non-empty note: {note!r}"
+        else:
+            assert "hubRequestRouteNote" not in info, f"hubRequestRouteNote is for the loopback route only: {note!r}"
 
     @test("infrastructure")
     def test_hub_get_info_model_is_hardware_model(self) -> None:

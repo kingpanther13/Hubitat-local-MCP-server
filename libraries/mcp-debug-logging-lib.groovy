@@ -411,7 +411,6 @@ private List _bugReportSettingsLines(String privacyMode) {
             "- **Legacy custom rule engine:** ${getCustomEngineMode()} (toggle ${settings.enableCustomRuleEngine == null ? 'unset' : settings.enableCustomRuleEngine.toString()})",
             "- **Bypass device allowlist:** ${eff(settings.bypassDeviceAllowlist, false)}",
             "- **Hub security enabled:** ${eff(settings.hubSecurityEnabled, false)}",
-            "- **Hub security retired (firmware cutoff):** ${state.hubSecurityRetired == true}",
             "- **Tool mode (useGateways):** ${settings.useGateways == null ? 'gateway (default)' : (settings.useGateways == false ? 'flat' : 'gateway')}",
             "- **MCP log level (UI setting):** ${settings.mcpLogLevel == null ? 'not set (effective level above)' : settings.mcpLogLevel.toString()}",
             "- **MCP traffic logging:** ${eff(settings.debugLogging, false)}",
