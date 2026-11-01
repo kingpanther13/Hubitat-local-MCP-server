@@ -371,6 +371,65 @@ class ToolListDevicesSpec extends ToolSpecBase {
         !script.toolListDevices([:]).devices.find { it.id == '1' }.containsKey('metadataUnavailable')
         script.toolListDevices([format: 'context']).summary.contains('- Bare (2, room unknown)')
         script.toolListDevices([format: 'context']).summary.contains('- Odd (3, No room)')
+
+        and: 'a device the label filter excludes is not reported, and a missing field the record neither shows nor filters on marks nothing'
+        script.toolListDevices([labelFilter: 'Full', disabled: false]).with { devices*.id == ['1'] && !containsKey('metadataUnavailableIds') && !containsKey('partial') }
+        !script.toolListDevices([fields: ['id', 'label']]).devices.find { it.id == '2' }.containsKey('metadataUnavailable')
+        script.toolListDevices([fields: ['id', 'room']]).devices.find { it.id == '2' }.metadataUnavailable == true
+
+        and: 'the context resource files a missing room as unknown and marks the record'
+        def ctx = script._buildContextJson()
+        ctx.rooms.find { it.name == 'Room unknown' }.deviceIds == ['2']
+        ctx.devices.find { it.id == '2' }.metadataUnavailable == true
+        !ctx.devices.find { it.id == '3' }.containsKey('metadataUnavailable')
+    }
+
+    def "an empty lastActivity string is unanswered for the activity filters, not never-active"() {
+        given:
+        settingsMap.bypassDeviceAllowlist = true
+        hubGet.register('/hub2/devicesList') { JsonOutput.toJson([devices: [
+            [data: [id: 1, name: 'Blank', disabled: false, roomName: null, lastActivity: '', currentStates: []]],
+            [data: [id: 2, name: 'Never', disabled: false, roomName: null, lastActivity: null, currentStates: []]]
+        ]]) }
+
+        expect:
+        script.toolListDevices([staleHours: 1]).devices*.id == ['2']
+        script.toolListDevices([staleHours: 1]).metadataUnavailableIds == ['1']
+    }
+
+    def "a device the capability feed does not list is unanswered for capabilityFilter and marked where capabilities show"() {
+        given:
+        settingsMap.selectedDevices = [makeDevice(id: 1, capabilities: [[name: 'Switch']]), makeDevice(id: 2, capabilities: [[name: 'Switch']])]
+        hubGet.register('/hub2/vrb/devices') { JsonOutput.toJson([[id: 1, capabilities: ['Switch']]]) }
+
+        when:
+        def filtered = script.toolListDevices([capabilityFilter: 'Switch'])
+        def shown = script.toolListDevices([fields: ['id', 'capabilities']])
+
+        then:
+        filtered.devices*.id == ['1']
+        filtered.metadataUnavailableIds == ['2']
+        filtered.partial == true
+        shown.devices == [[id: '1', capabilities: ['Switch']], [id: '2', metadataUnavailable: true]]
+    }
+
+    def "an empty capability feed on a hub with no devices is not reported as unavailable"() {
+        given:
+        settingsMap.bypassDeviceAllowlist = true
+        hubGet.register('/hub2/devicesList') { JsonOutput.toJson([devices: []]) }
+        hubGet.register('/hub2/vrb/devices') { '[]' }
+
+        expect:
+        !script.toolListDevices([capabilityFilter: 'Switch']).containsKey('capabilitiesUnavailable')
+    }
+
+    @Unroll
+    def "an empty scope pages like any other result when paging was asked for (#format)"() {
+        expect:
+        script.toolListDevices([format: format, limit: 5]).with { offset == 0 && limit == 5 && hasMore == false && total == 0 }
+
+        where:
+        format << ['summary', 'ids', 'context']
     }
 
     def "a capability feed that lists no device beside a populated page is unavailable, not capability-less"() {

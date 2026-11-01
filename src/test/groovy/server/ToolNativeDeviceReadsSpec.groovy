@@ -202,7 +202,7 @@ class ToolNativeDeviceReadsSpec extends ToolSpecBase {
         when:
         def summary = script.toolGetDevice('10')
         def attribute = script.toolGetAttribute('10', 'lockCodes')
-        def poll = script.toolPollUntilAttribute([deviceId: '10', attribute: 'lockCodes', expectedValue: stored])
+        def poll = hide ? [success: true, finalValue: shown] : script.toolPollUntilAttribute([deviceId: '10', attribute: 'lockCodes', expectedValue: stored])
         def snapshot = script._snapshotBypassDeviceState('10', 'fixture')
         def events = script.toolGetDeviceEvents('10', 10).events
         def history = script.toolGetDeviceHistory([deviceId: '10', since: '2026-09-10T10:00:00Z']).events
@@ -225,6 +225,39 @@ class ToolNativeDeviceReadsSpec extends ToolSpecBase {
 
         where:
         hide << [true, false]
+    }
+
+    @Unroll
+    def 'a wait for a credential-named attribute is refused before any read while redaction is on (#surface)'() {
+        given:
+        fixture('selected')
+        nativeModel.device.currentStates.lockCodes = [value: '{"1":{"code":"1234"}}', dataType: 'STRING']
+        def commands = []
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false -> commands << path; [success: true] }
+        hubGet.calls.clear()
+
+        when:
+        if (surface == 'poll') script.toolPollUntilAttribute([deviceId: '10', attribute: 'lockCodes', expectedValue: '{"1":{"code":"1234"}}'])
+        else script.toolSendCommand('10', 'on', [], [attribute: 'lockCodes', expectedValue: '{"1":{"code":"1234"}}'])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('Cannot wait for a value of lockCodes')
+        commands.empty
+        !hubGet.calls.any { it.path.startsWith('/device/fullJson/') && surface == 'poll' }
+
+        where:
+        surface << ['poll', 'waitFor']
+    }
+
+    def 'with redaction off a wait for a credential-named attribute matches the stored value'() {
+        given:
+        fixture('selected')
+        settingsMap.redactCredentials = false
+        nativeModel.device.currentStates.lockCodes = [value: 'x1', dataType: 'STRING']
+
+        expect:
+        script.toolPollUntilAttribute([deviceId: '10', attribute: 'lockCodes', expectedValue: 'x1']).success == true
     }
 
     def 'unreported attribute discovery stays empty while an explicit read remains distinguishable from fetch failure'() {

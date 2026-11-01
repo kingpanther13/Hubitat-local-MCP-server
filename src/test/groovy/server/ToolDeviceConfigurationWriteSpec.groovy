@@ -617,6 +617,48 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
     }
 
     @Unroll
+    def 'data values for a device that is already disabled are refused before any write unless enabled is sent (#label)'() {
+        given:
+        def model = fixture()
+        model.device.disabled = true
+        registerFixture(model, true)
+        def posts = stubPosts()
+
+        when:
+        script.toolUpdateDevice([deviceId: '10', fields: fields])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('is disabled, and data values never land on a disabled device')
+        posts.empty
+
+        where:
+        label                     | fields
+        'data values alone'       | [dataValues: [probe: '0007']]
+        'with enabled: false'     | [enabled: false, dataValues: [probe: '0007']]
+    }
+
+    def 'a failed enable leaves the data values unwritten and says why'() {
+        given:
+        def model = fixture()
+        model.device.disabled = true
+        registerFixture(model, true)
+        def posts = stubPosts { path, body ->
+            if (path == '/device/disable') throw new IOException('refused')
+            null
+        }
+
+        when:
+        def result = script.toolUpdateDevice([deviceId: '10', fields: [enabled: true, dataValues: [probe: '0007']]])
+
+        then:
+        result.success == false
+        posts*.path == ['/device/disable']
+        result.errors.find { it.property == 'dataValues' }.error.contains('Not written: the enable failed')
+        result.errors.find { it.property == 'enabled' }
+    }
+
+    @Unroll
     def 'data values are written after an enable and before a disable (enabled: #enabled)'() {
         given:
         def model = fixture()

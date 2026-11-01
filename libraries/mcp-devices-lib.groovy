@@ -64,13 +64,18 @@ private void _flattenDevicesPage(List nodes, String parentId, List out, Set only
     }
 }
 
-// Capability names for every hub device by id string; null when the feed cannot be read or lists
-// no device at all (a hub with devices always has entries, so an empty feed is a bad read).
+// The capability feed for these page records; an empty feed beside devices is a bad read (null).
+private Map _capabilityFeedFor(List population) {
+    Map caps = _readCapabilityFeed()
+    return caps != null && caps.isEmpty() && population ? null : caps
+}
+
+// Capability names for every hub device by id string; null when the feed cannot be read.
 private Map _readCapabilityFeed() {
     try {
         def txt = hubInternalGet("/hub2/vrb/devices")
         def parsed = txt ? new groovy.json.JsonSlurper().parseText(txt) : null
-        if (!(parsed instanceof List) || parsed.isEmpty()) return null
+        if (!(parsed instanceof List)) return null
         Map caps = [:]
         for (entry in parsed) {
             if (entry instanceof Map && entry.id != null) caps.put(entry.id.toString(), _capabilityNames(entry.capabilities))
@@ -206,10 +211,14 @@ def toolListDevices(Map args) {
     Set childIds = children.collect { it.id.toString() } as Set
     Set authorized = _mcpAuthorizedIds(children)
     Set scopeIds = scope == "owned" ? childIds : (scope == "authorized" ? authorized : null)
+    boolean paged = opts.cursor != null || opts.limit > 0 || format == "context"
+    int pageSize = opts.limit > 0 ? opts.limit : 50
     if (scopeIds != null && scopeIds.isEmpty()) {
-        return _emptyDeviceList(format, scope == "owned" ?
+        Map empty = _emptyDeviceList(format, scope == "owned" ?
             "No MCP-managed virtual devices found. Use hub_manage_virtual_device(action=\"create\") to create one." :
             "No devices selected for MCP access and no MCP-managed virtual devices")
+        if (paged) empty.putAll([offset: 0, limit: pageSize, hasMore: false])
+        return empty
     }
     List population
     try {
@@ -219,7 +228,7 @@ def toolListDevices(Map args) {
                 note: "Retry; if it persists check the hub's Devices page."]
     }
     if (scopeIds != null) population = population.findAll { scopeIds.contains(it.id) }
-    Map caps = opts.wantCaps ? _readCapabilityFeed() : null
+    Map caps = opts.wantCaps ? _capabilityFeedFor(population) : null
 
     String lf = opts.labelFilter?.toLowerCase()
     String cf = opts.capabilityFilter
@@ -229,16 +238,20 @@ def toolListDevices(Map args) {
     Long sinceMs = opts.sinceDate?.time
     long nowMs = now()
     List matched = []
-    // Devices the page gave no usable value for a filtered field: excluded and named, never guessed.
+    // Devices with no usable value for a filtered field: excluded and named, never guessed. The
+    // label filter runs first so a device it excludes is not reported.
     List unanswered = []
     for (candidate in population) {
         List missing = candidate.missingFields
+        if (lf != null && !candidate.label.toLowerCase().contains(lf)) continue
+        if (cf != null && caps != null) {
+            if (!caps.containsKey(candidate.id)) { unanswered << candidate.id; continue }
+            if (!caps.get(candidate.id).any { it.equalsIgnoreCase(cf) }) continue
+        } else if (cf != null) continue
         if (opts.disabled != null) {
             if ("disabled" in missing) { unanswered << candidate.id; continue }
             if (candidate.disabled != opts.disabled) continue
         }
-        if (lf != null && !candidate.label.toLowerCase().contains(lf)) continue
-        if (cf != null && !(caps?.get(candidate.id)?.any { it.equalsIgnoreCase(cf) })) continue
         if (rf != null) {
             if ("room" in missing) { unanswered << candidate.id; continue }
             if (!rf.equalsIgnoreCase(candidate.roomName ?: "")) continue
@@ -251,7 +264,7 @@ def toolListDevices(Map args) {
             // A device that never reported counts as stale and as not changed; an activity value
             // that does not parse is unknown, so neither filter keeps it.
             Date la = candidate.lastActivity ? _parseSinceArg(candidate.lastActivity) : null
-            if ("lastActivity" in missing || (candidate.lastActivity && la == null)) { unanswered << candidate.id; continue }
+            if ("lastActivity" in missing || (candidate.lastActivity != null && la == null)) { unanswered << candidate.id; continue }
             if (staleMs != null && la != null && nowMs - la.time < staleMs) continue
             if (sinceMs != null && (la == null || la.time < sinceMs)) continue
         }
@@ -277,8 +290,6 @@ def toolListDevices(Map args) {
         common.note = "The hub's capability feed (/hub2/vrb/devices) could not be read or listed no device, so capabilities are omitted and capabilityFilter matches nothing. Retry."
     }
 
-    boolean paged = opts.cursor != null || opts.limit > 0 || format == "context"
-    int pageSize = opts.limit > 0 ? opts.limit : 50
     // A live filter can shrink the result between pages; a cursor past the end is an empty last page.
     int start = opts.cursor != null ? Math.min(_parseListCursor(opts.cursor, Integer.MAX_VALUE, "hub_list_devices"), total) : 0
     int end = paged ? (int) Math.min((long) start + pageSize, (long) total) : total
@@ -369,8 +380,14 @@ private Map _listDeviceRecord(Map rec, Map opts, List attrNames, Map caps, Set c
         }
         row.currentStates = states
     }
-    if (f.contains("capabilities") && caps != null) row.capabilities = caps.get(rec.id) ?: []
-    if (rec.missingFields) row.metadataUnavailable = true
+    boolean capsMissing = f.contains("capabilities") && caps != null && !caps.containsKey(rec.id)
+    if (f.contains("capabilities") && caps != null && !capsMissing) row.capabilities = caps.get(rec.id)
+    // Marked only for a missing field the record shows or a filter asked about.
+    Map shownBy = [disabled: f.contains("disabled") || opts.disabled != null,
+                   room: f.contains("room") || f.contains("roomId") || opts.roomFilter != null,
+                   lastActivity: f.contains("lastActivity") || opts.staleHours != null || opts.sinceDate != null,
+                   currentStates: f.contains("currentStates") || opts.stateFilter != null]
+    if (capsMissing || rec.missingFields.any { shownBy.get(it) }) row.metadataUnavailable = true
     if (!opts.wantFull) return row
     Map detail = null
     try {
@@ -512,7 +529,7 @@ def _buildContextSummaryText() {
     List records
     try { records = _contextResourceDevices() }
     catch (IllegalStateException e) { return "Context unavailable: the hub's device list (/hub2/devicesList) could not be read: ${e.message}".toString() }
-    Map caps = records ? _readCapabilityFeed() : null
+    Map caps = records ? _capabilityFeedFor(records) : null
     boolean redact = _redactsCredentials()
     def attrNames = _contextAttributeNames()
     def lines = []
@@ -558,12 +575,12 @@ def _buildContextJson() {
     List allDevices
     try { allDevices = _contextResourceDevices() }
     catch (IllegalStateException e) { return [success: false, isError: true, error: "The hub's device list (/hub2/devicesList) could not be read: ${e.message}".toString()] }
-    Map caps = allDevices ? _readCapabilityFeed() : null
+    Map caps = allDevices ? _capabilityFeedFor(allDevices) : null
     boolean redact = _redactsCredentials()
     def contextAttrs = _contextAttributeNames()
     def roomIndex = [:]
     for (d in allDevices) {
-        String r = d.roomName ?: "No room"
+        String r = "room" in d.missingFields ? "Room unknown" : (d.roomName ?: "No room")
         if (!roomIndex.containsKey(r)) roomIndex.put(r, [])
         roomIndex.get(r) << d.id
     }
@@ -593,6 +610,7 @@ def _buildContextJson() {
         }
         Map rec = [id: d.id, label: d.label, room: d.roomName, capabilities: caps?.get(d.id) ?: [], attributes: attrs]
         if (caps == null) rec.capabilitiesUnavailable = true
+        if (d.missingFields.any { it in ["room", "currentStates"] } || (caps != null && !caps.containsKey(d.id))) rec.metadataUnavailable = true
         used += _escapedLen(groovy.json.JsonOutput.toJson(rec))
         if (used > budget) {
             truncated = true
@@ -1831,6 +1849,7 @@ private Map _buildWaitForPollArgs(deviceId, deviceLabel, waitFor) {
     if (!(waitFor.attribute instanceof String) || !waitFor.attribute.trim()) {
         throw new IllegalArgumentException("waitFor.attribute is required and must be a non-empty string")
     }
+    _refuseCredentialPoll(waitFor.attribute)
     def hasExpectedValue  = waitFor.containsKey("expectedValue")
     def hasExpectedValues = waitFor.containsKey("expectedValues")
     if (hasExpectedValue && hasExpectedValues) {
@@ -2219,6 +2238,7 @@ def _evalAttrCondition(value, comparator, matchSet, numericThreshold, betweenLow
 // request's deadline, device reads included, so the relay never drops the answer; the result then
 // says so. The request clock rides in as __reqT0 and never reaches the engine's arg check.
 def toolPollUntilAttribute(args) {
+    if (args instanceof Map) _refuseCredentialPoll(args.attribute)
     if (!(args instanceof Map) || !args.containsKey("__reqT0")) return _maskPolledAttribute(_pollUntilAttributeCore(args), args)
     Map pollArgs = [:] + (args as Map)
     def t0 = pollArgs.remove("__reqT0")
@@ -2244,6 +2264,13 @@ def toolPollUntilAttribute(args) {
         result.budgetNote = "The poll stopped after ${result.elapsedMs ?: 0} ms instead of waiting ${asked} ms: ${why}. Poll again to keep waiting.".toString()
     }
     return _maskPolledAttribute(result, pollArgs)
+}
+
+// A wait for a hidden value would confirm a guess at it, one call per guess.
+private void _refuseCredentialPoll(attribute) {
+    if (attribute != null && _redactsCredentials() && _deviceConfigurationSecretKey(attribute)) {
+        throw new IllegalArgumentException("Cannot wait for a value of ${attribute}: credential-named attributes are hidden while 'Hide passwords and credentials' is on")
+    }
 }
 
 private _maskPolledAttribute(result, Map args) {
@@ -3455,6 +3482,9 @@ def toolUpdateDevice(args) {
         return [success: false, isError: true, error: "Unable to read /device/fullJson before updating device ${deviceId}; no update sent.",
                 note: "Read hub_get_device(mode='configuration') and retry when native device details are available."]
     }
+    if (fields.dataValues && fields.enabled != true && _deviceFlag(fj.device.disabled)) {
+        throw new IllegalArgumentException("Device ${deviceId} is disabled, and data values never land on a disabled device. Send enabled: true with the data values (the device is enabled first), or enable it first.")
+    }
     Map send = _planDeviceEdit(fj, fields, preferences)
     Map planned = preferences ? _planDevicePreferences(fj, preferences, fields) : [:]
     return _applyDeviceEdit(deviceId, fj, fields, send, planned)
@@ -3506,7 +3536,9 @@ private Map _applyDeviceEdit(deviceId, Map fj, Map fields, Map send, Map prefere
         }
     }
     if (fields.enabled == true) setEnabled()
-    if (fields.dataValues) {
+    if (fields.dataValues && failed.containsKey('enabled')) {
+        failed.put('dataValues', "Not written: the enable failed, and data values never land on a disabled device.")
+    } else if (fields.dataValues) {
         def dataErrors = []
         _applyNativeDeviceDataValues(deviceId, fields.dataValues, [], dataErrors, false)
         if (dataErrors) failed.put('dataValues', dataErrors.collect { it.error }.unique().join(' '))
@@ -4187,7 +4219,7 @@ def toolDeleteDevice(args) {
     if (recentEvents == null) {
         warnings << "EVENT HISTORY UNAVAILABLE: Recent events could not be read; do not assume this device is quiet."
     } else if (recentEvents) {
-        def lastEvent = recentEvents[0]
+        def lastEvent = recentEvents[0] instanceof Map ? _mapBypassEventRow(recentEvents[0]) : [:]
         warnings << "HAS RECENT EVENTS: Last event was ${lastEvent.name}=${lastEvent.value} at ${lastEvent.date}"
     }
 

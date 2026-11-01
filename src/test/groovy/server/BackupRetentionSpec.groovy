@@ -406,6 +406,27 @@ class BackupRetentionSpec extends ToolSpecBase {
         deleted == []
     }
 
+    def 'oversized backups in a row keep everything, and the next normal backup removes oldest first, the oversized ones included'() {
+        given:
+        backupIndex = ['rm-rule_5_a': rule(5, 'a', 1L, MIB)]
+        List deleted = deletedFiles()
+
+        when:
+        script._publishItemBackup('rm-rule_6_a', rule(6, 'a', 10L, 11 * MIB))
+        script._publishItemBackup('rm-rule_7_a', rule(7, 'a', 11L, 12 * MIB))
+
+        then:
+        backupIndex.keySet() == ['rm-rule_5_a', 'rm-rule_6_a', 'rm-rule_7_a'] as Set
+        deleted == []
+
+        when:
+        script._publishItemBackup('rm-rule_8_a', rule(8, 'a', 12L, MIB))
+
+        then:
+        backupIndex.keySet() == ['rm-rule_8_a'] as Set
+        deleted == ['mcp-rm-backup-5-a.json', 'mcp-rm-backup-6-a.json', 'mcp-rm-backup-7-a.json']
+    }
+
     def 'pending-deletion entries are neither counted against the budget nor chosen'() {
         given:
         Map manifest = [
@@ -636,6 +657,6 @@ class BackupRetentionSpec extends ToolSpecBase {
     def 'the retention note states the one eviction rule'() {
         expect:
         script._itemBackupRetentionNote() ==
-            "Backups are removed only when all MCP backups together exceed the 10 MB storage budget, oldest first across every item and kind; only the backup being taken and an active restore target are never removed, so the budget is a hard cap on everything but the backup being taken: one larger than the budget on its own stays and removes nothing else."
+            "Backups are removed only when all MCP backups together exceed the 10 MB storage budget, oldest first across every item and kind; only the backup being taken and an active restore target are never removed. When those alone exceed the budget nothing is removed, and the backups stay over it until a later backup's removal reaches them, oldest first."
     }
 }

@@ -3784,6 +3784,9 @@ class TestRunner:
                 f"dataValues + disable must land both: {disabled}"
             assert {row.get("property") for row in disabled.get("changes", [])} == {"enabled", "dataValue.beforeDisable"}, \
                 f"both the disable and the data value must report as changes: {disabled}"
+            # Data values alone on a disabled device would never land, so they are refused before any write.
+            self._expect_tool_refusal("hub_update_device", {"deviceId": dev_id, "fields": {"dataValues": {"whileDisabled": "1"}}},
+                                      "data values never land on a disabled device")
             re_enabled = self.client.call_tool("hub_update_device", {
                 "deviceId": dev_id, "fields": {"enabled": True, "dataValues": {"afterEnable": "1"}}})
             assert re_enabled.get("success") is True and not re_enabled.get("errors"), \
@@ -3824,6 +3827,13 @@ class TestRunner:
                     time.sleep(0.5)
                 assert rows and all(e.get("value") == "***redacted (password)***" and "4321" not in str(e.get("description"))
                                     for e in rows), f"event rows must hide lockCodes: {rows}"
+                # Waiting for a hidden value would confirm a guess, so a poll or waitFor on it is refused.
+                self._expect_tool_refusal("hub_get_device_attribute", {
+                    "deviceId": lock_id, "attribute": "lockCodes", "expectedValue": "4321", "timeoutMs": 500},
+                    "Cannot wait for a value of lockCodes")
+                self._expect_tool_refusal("hub_call_device_command", {
+                    "deviceId": lock_id, "command": "lock", "waitFor": {"attribute": "lockCodes", "expectedValue": "4321"}},
+                    "Cannot wait for a value of lockCodes")
             finally:
                 try:
                     self.client.call_tool("hub_manage_virtual_device", {
@@ -9011,7 +9021,7 @@ def updated() {}
             for backup in backups.values():
                 note = str(backup.get("retentionNote"))
                 assert "retention" not in backup and "oldest first" in note \
-                    and "active restore target are never removed" in note and "hard cap" in note, \
+                    and "active restore target are never removed" in note and "stay over it" in note, \
                     f"a rule write's snapshot must state the plain eviction rule and no retention kind: {backup}"
             assert self._rm_restore(keys["Den"]).get("success") is True
             assert labels["Kitchen"] in json.dumps(self._native_rule_document(app_id)["conditions"])
@@ -12272,7 +12282,7 @@ def updated() {}
             f"source-backup listing must report the storage budget: {src}"
         policy = str(src.get("retentionPolicy"))
         assert "maxBackups" not in src and "10 MB storage budget" in policy and "oldest first" in policy \
-            and "hard cap" in policy, f"source-backup listing must describe the budget-only retention policy: {src}"
+            and "stay over it" in policy, f"source-backup listing must describe the budget-only retention policy: {src}"
         for entry in src["backups"]:
             assert "retention" not in entry, f"a backup entry must carry no retention kind: {entry}"
 

@@ -1080,7 +1080,7 @@ def advancedOverridesPage() {
                   defaultValue: false
         }
         section("Backup storage") {
-            paragraph "Automatic code and rule backups live in File Manager. File Manager files use hub storage and count toward a full local backup's 100 MiB file limit; database backups leave them out. Backups are removed only when they exceed this budget together, oldest first across every item. Only the backup just taken and a restore in progress are never removed; an item's only backup goes when it is the oldest, so the budget is a hard cap on everything but the backup being taken: one larger than the budget on its own stays and removes nothing else."
+            paragraph "Automatic code and rule backups live in File Manager. File Manager files use hub storage and count toward a full local backup's 100 MiB file limit; database backups leave them out. Backups are removed only when they exceed this budget together, oldest first across every item. Only the backup just taken and a restore in progress are never removed; an item's only backup goes when it is the oldest. When those alone exceed the budget nothing is removed, and the backups stay over it until a later backup's removal reaches them, oldest first."
             input "backupBudgetMb", "number", title: "Backup storage budget (MB)",
                   description: "Total size of the automatic code and rule backups (default: 10; range 1 to 1000000, values outside it use the nearest end).",
                   defaultValue: 10, required: false
@@ -8906,7 +8906,7 @@ void _publishItemBackup(String key, Map entry, String protectedKey = null) {
 }
 
 // Keys to evict while indexed bytes exceed the backup budget, oldest first across all items
-// and kinds. Only keepKeys are never chosen: the budget is a hard cap, so an item's only
+// and kinds. Only keepKeys are never chosen, so an item's only
 // backup goes when it is the oldest. When the kept entries alone exceed the budget no eviction
 // can reach it, so nothing else goes for them. Pending entries are left to the pending purge.
 List _itemBackupRetentionVictims(Map manifest, Collection keepKeys) {
@@ -8973,7 +8973,7 @@ Map _itemBackupBudgetUsage(Map manifest) {
 // The eviction rule every backup answers with: the retentionNote / backupRetentionNote and
 // retentionPolicy fields, and the tail of restore and undo hints.
 String _itemBackupRetentionNote() {
-    return "Backups are removed only when all MCP backups together exceed the ${_itemBackupBudgetMb()} MB storage budget, oldest first across every item and kind; only the backup being taken and an active restore target are never removed, so the budget is a hard cap on everything but the backup being taken: one larger than the budget on its own stays and removes nothing else."
+    return "Backups are removed only when all MCP backups together exceed the ${_itemBackupBudgetMb()} MB storage budget, oldest first across every item and kind; only the backup being taken and an active restore target are never removed. When those alone exceed the budget nothing is removed, and the backups stay over it until a later backup's removal reaches them, oldest first."
 }
 
 /** Remove manifest records that point at a File Manager file after that file is deleted. */
@@ -11905,7 +11905,7 @@ Duplicates an existing MCP custom-engine rule into a new, independent rule with 
 - Rapid source-code edits preserve the original for one hour. Rule edits take a fresh pre-edit snapshot as described below.
 
 ### Backup retention
-- There is no count limit: backups are removed only when all MCP backups together exceed the storage budget, oldest first across every item and kind of backup. Only the backup being taken and an active restore target are never removed; nothing else is protected, so an item's only backup goes when it is the oldest and the budget is a hard cap on everything but the backup being taken. A single backup larger than the whole budget is still kept, because it is the backup being taken, and removes nothing else: no removal could reach the budget, so the index stays over it until that backup is the oldest.
+- There is no count limit: backups are removed only when all MCP backups together exceed the storage budget, oldest first across every item and kind of backup. Only the backup being taken and an active restore target are never removed; nothing else is protected, so an item's only backup goes when it is the oldest. When the backup being taken and an active restore target alone exceed the budget, nothing else is removed and the backups stay over the budget; a later backup's removal then goes oldest first and can take the oversized backup with the rest.
 - The budget is the Advanced setting "Backup storage budget (MB)" (`backupBudgetMb`): default 10, at least 1, at most 1000000 (1 TB). The Advanced page takes any number and the server clamps it to that range. With Developer Mode on, hub_update_mcp_settings also sets it and refuses a value that is not a whole number in that range.
 - Where each response says it:
   - Rule Machine writes and deletes: the `backup` object carries `retentionNote`, and the restoreHint ends with that note.

@@ -443,6 +443,16 @@ class ToolRoomsSpec extends ToolSpecBase {
         result.devices[0] == [id: '999', label: "(device not on the hub's Devices page)", name: 'unknown', accessible: true, metadataUnavailable: true]
     }
 
+    def "hub_get_room marks a device whose page entry carries no states as unknown, not stateless"() {
+        given:
+        settingsMap.bypassDeviceAllowlist = true
+        installGetRoomsStub([[id: 7, name: 'Den', deviceIds: [200]]])
+        registerDevicesPage([[id: 200, name: 'Den Fan']])
+
+        expect:
+        script.toolGetRoom('Den').devices == [[id: '200', label: 'Den Fan', name: 'Den Fan', metadataUnavailable: true]]
+    }
+
     def "hub_get_room masks credential-named states when credential redaction is on"() {
         given:
         installGetRoomsStub([[id: 7, name: 'Den', deviceIds: [100]]])

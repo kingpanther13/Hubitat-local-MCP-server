@@ -872,7 +872,7 @@ When you use `hub_update_app`, `hub_update_driver`, `hub_update_library`, or `hu
 - Persist even if the MCP app is uninstalled
 - Downloadable at `http://<your-hub-ip>/local/<filename>`
 - 1-hour protection window: multiple edits preserve the pre-edit original
-- No count limit: backups are removed only when all MCP backups together exceed the **Backup storage budget (MB)** advanced setting (default 10, range 1 to 1000000), oldest first across every item and kind. Only the backup being taken and an active restore target are never removed; nothing else is protected, so an item's only backup goes when it is the oldest and the budget is a hard cap on everything but the backup being taken: one larger than the budget on its own stays and removes nothing else. `hub_list_backups` shows the budget
+- No count limit: backups are removed only when all MCP backups together exceed the **Backup storage budget (MB)** advanced setting (default 10, range 1 to 1000000), oldest first across every item and kind. Only the backup being taken and an active restore target are never removed; nothing else is protected, so an item's only backup goes when it is the oldest. When those alone exceed the budget nothing is removed, and the backups stay over it until a later backup's removal reaches them, oldest first. `hub_list_backups` shows the budget
 - **Take a fresh snapshot before every edit** (advanced setting, off by default): a native app edit takes its own snapshot instead of reusing that app's snapshot from the last hour
 - `hub_write_file` and `hub_delete_file` keep the newest 5 `<name>_backup_<timestamp>` copies of each file
 
