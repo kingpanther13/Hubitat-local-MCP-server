@@ -16,6 +16,7 @@ class HubBaseUriSpec extends ToolSpecBase {
 
     @Shared private TestLocation sharedLocation = new TestLocation()
     @Shared Closure httpGetHandler = null
+    @Shared Closure httpPostHandler = null
 
     /** A redirect the way HTTPBuilder throws it under followRedirects:false (duck-typed .response). */
     private static class RedirectException extends RuntimeException {
@@ -23,6 +24,15 @@ class HubBaseUriSpec extends ToolSpecBase {
         RedirectException(String location) {
             super('HTTP 302')
             this.response = [status: 302, headers: ['Location': location]]
+        }
+    }
+
+    /** An HTTP error the way HTTPBuilder throws it: the exception carries the response. */
+    private static class StatusException extends RuntimeException {
+        final def response
+        StatusException(int status) {
+            super("HTTP ${status}")
+            this.response = [status: status]
         }
     }
 
@@ -34,16 +44,19 @@ class HubBaseUriSpec extends ToolSpecBase {
     def setupSpec() {
         appExecutor.getLocation() >> sharedLocation
         appExecutor.httpGet(_, _) >> { args -> if (httpGetHandler) httpGetHandler.call(args[0], args[1]) }
+        appExecutor.httpPost(_, _) >> { args -> if (httpPostHandler) httpPostHandler.call(args[0], args[1]) }
     }
 
     def cleanup() {
         httpGetHandler = null
+        httpPostHandler = null
     }
 
     def setup() {
         sharedLocation.hub = new TestHub(localIP: '192.168.1.13')
         // The once-only fallback latch is class memory, shared by every spec in the JVM.
         script.HUB_LOOPBACK_FALLBACK_NOTED.clear()
+        script.HUB_LAN_ROUTE_FAILED_AT.clear()
     }
 
     private void loginSecurity(boolean enabled) {
@@ -276,5 +289,83 @@ class HubBaseUriSpec extends ToolSpecBase {
         then:
         body == 'BODY'
         sent == [[uri: 'http://127.0.0.1:8080', cookie: 'HUBSESSION=abc']]
+    }
+
+    def 'a LAN connection failure retries the request once on loopback and logs the fallback once'() {
+        given:
+        loginSecurity(false)
+        def logs = captureLogs()
+        def sent = []
+        httpGetHandler = { Map params, Closure cb ->
+            sent << params.uri
+            if (params.uri != 'http://127.0.0.1:8080') throw new java.net.ConnectException('Connection refused')
+            cb.call([status: 200, data: 'BODY'])
+        }
+
+        when:
+        def body = script._hubRequest('GET', '/hub2/hubData', [returnShape: 'text'])
+
+        then:
+        body == 'BODY'
+        sent == ['http://192.168.1.13:8080', 'http://127.0.0.1:8080']
+        logs.count { it.level == 'warn' && it.message.contains('did not answer on its LAN address') } == 1
+    }
+
+    def 'after a LAN connection failure hub calls stay on loopback for the retry window, then try the LAN again'() {
+        given:
+        loginSecurity(false)
+        httpGetHandler = { Map params, Closure cb ->
+            if (params.uri != 'http://127.0.0.1:8080') throw new java.net.ConnectException('Connection refused')
+            cb.call([status: 200, data: 'BODY'])
+        }
+        script._hubRequest('GET', '/hub2/hubData', [returnShape: 'text'])
+        long failedAt = script.HUB_LAN_ROUTE_FAILED_AT.get('at') as long
+
+        expect: 'inside the window: loopback'
+        script.hubBaseUri() == 'http://127.0.0.1:8080'
+        script.toolGetHubInfo().hubRequestRoute == 'loopback'
+
+        when: 'the window has passed'
+        script.HUB_LAN_ROUTE_FAILED_AT.put('at', failedAt - script.HUB_LAN_ROUTE_RETRY_MS)
+
+        then:
+        script.hubBaseUri() == 'http://192.168.1.13:8080'
+    }
+
+    def 'an HTTP error status on the LAN route is not retried on loopback and leaves the route unchanged'() {
+        given:
+        loginSecurity(false)
+        def sent = []
+        httpGetHandler = { Map params, Closure cb ->
+            sent << params.uri
+            throw new StatusException(500)
+        }
+
+        when:
+        script._hubRequest('GET', '/hub2/hubData', [returnShape: 'text'])
+
+        then:
+        thrown(StatusException)
+        sent == ['http://192.168.1.13:8080']
+        script.HUB_LAN_ROUTE_FAILED_AT.isEmpty()
+        script.hubBaseUri() == 'http://192.168.1.13:8080'
+    }
+
+    def 'a read timeout on the LAN route is not retried, because the request may have reached the hub'() {
+        given:
+        loginSecurity(false)
+        def sent = []
+        httpPostHandler = { Map params, Closure cb ->
+            sent << params.uri
+            throw new java.net.SocketTimeoutException('Read timed out')
+        }
+
+        when:
+        script._hubRequest('POST', '/installedapp/update/json', [returnShape: 'text', body: 'x=1'])
+
+        then:
+        thrown(java.net.SocketTimeoutException)
+        sent == ['http://192.168.1.13:8080']
+        script.HUB_LAN_ROUTE_FAILED_AT.isEmpty()
     }
 }

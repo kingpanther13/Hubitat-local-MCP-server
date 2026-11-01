@@ -7561,11 +7561,13 @@ String hubLoopbackUri() { "http://127.0.0.1:8080" }
 
 // Base URI of the hubInternal* calls. The hub does not charge HTTP wait to the calling app when the
 // host is not loopback, so the hub's own LAN address keeps the hub HTTP wait out of the app's busy
-// counter. Falls back to loopback while Hub Login Security is on or unreadable, and when the hub
-// reports no usable LAN address.
+// counter. Falls back to loopback while Hub Login Security is on or unreadable, when the hub
+// reports no usable LAN address, and for HUB_LAN_ROUTE_RETRY_MS after a LAN connection failed.
 String hubBaseUri() {
     // Hub Security credentials (pre-2.5.0 path) and their session cookie never leave loopback.
     if (settings.hubSecurityEnabled && !_hubSecurityObsolete()) return hubLoopbackUri()
+    def failedAt = HUB_LAN_ROUTE_FAILED_AT.get("at")
+    if (failedAt != null && now() - (failedAt as long) < HUB_LAN_ROUTE_RETRY_MS) return hubLoopbackUri()
     def secured = null
     try { secured = isHubitatUISecurityEnabled() } catch (Exception ignored) { }
     if (secured == true) return hubLoopbackUri()
@@ -7583,6 +7585,19 @@ String hubBaseUri() {
 // A fallback quietly puts the hub HTTP wait back on the app's busy counter, so say it once per
 // reason and code load. Class memory, not state: hubBaseUri() runs on every hub call.
 @groovy.transform.Field static final java.util.concurrent.ConcurrentHashMap HUB_LOOPBACK_FALLBACK_NOTED = new java.util.concurrent.ConcurrentHashMap()
+// When the hub last failed to accept a connection on its LAN address; hub calls use loopback for
+// HUB_LAN_ROUTE_RETRY_MS after it.
+@groovy.transform.Field static final java.util.concurrent.ConcurrentHashMap HUB_LAN_ROUTE_FAILED_AT = new java.util.concurrent.ConcurrentHashMap()
+@groovy.transform.Field static final long HUB_LAN_ROUTE_RETRY_MS = 5L * 60L * 1000L
+
+// A failure to open the connection at all, with no HTTP response: the request never reached the
+// hub, so repeating it on loopback cannot run a write twice. A read timeout does not qualify.
+private boolean _isConnectFailure(Exception e) {
+    if (_httpStatusOf(e) != null) return false
+    String n = e.class.simpleName
+    if (n in ["ConnectException", "HttpHostConnectException", "NoRouteToHostException", "UnknownHostException", "ConnectTimeoutException"]) return true
+    return n == "SocketTimeoutException" && e.message?.toLowerCase()?.contains("connect")
+}
 
 def _noteHubLoopbackFallback(String reason) {
     try {
@@ -7900,7 +7915,7 @@ private _hubRequest(String method, String path, Map opts = [:]) {
     // The platform client auto-follows absolute redirects on a non-loopback host, so a request
     // that must read a 302 Location stays on loopback; so does any request carrying a session cookie.
     def params = [
-        uri: (opts.followRedirects == false || cookie || opts.cookie) ? hubLoopbackUri() : hubBaseUri(),
+        uri: (opts.followRedirects == false || cookie || opts.cookie || opts.loopbackRetry) ? hubLoopbackUri() : hubBaseUri(),
         path: path,
         textParser: true,
         ignoreSSLIssues: true,
@@ -7962,6 +7977,14 @@ private _hubRequest(String method, String path, Map opts = [:]) {
             }
         }
         _hubRtOutcome = e.class.simpleName
+        if (!opts.loopbackRetry && params.uri != hubLoopbackUri() && _isConnectFailure(e)) {
+            HUB_LAN_ROUTE_FAILED_AT.put("at", now())
+            _noteHubLoopbackFallback("the hub did not answer on its LAN address")
+            _hubRtLogged = true
+            try { _hubRtLog(method, path, now() - _hubRtT0, "${_hubRtOutcome}, retrying on loopback".toString()) }
+            catch (Exception logErr) { log.warn "[hubrt] diagnostic logging failed: ${logErr.message}" }
+            return _hubRequest(method, path, opts + [loopbackRetry: true])
+        }
         if (shouldRetryWithFreshCookie(e, opts.isRetry)) {
             // Log this attempt on its own before recursing, so the outer finally does not
             // fold the retry's duration into the failed attempt's line.
