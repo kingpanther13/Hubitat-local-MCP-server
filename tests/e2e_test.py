@@ -13456,10 +13456,8 @@ def updated() {}
             f"entries from before the clear came back: {after}"
         # The app runtime statistics (Logs > App Stats) are deleted only with confirm, and the reset
         # is read back: the server app's own total is 0 afterwards.
-        unconfirmed = self.client.call_tool("hub_manage_logs", {
-            "tool": "hub_delete_logs", "args": {"mode": "appRuntimeStats", "confirm": False}})
-        assert unconfirmed.get("success") is False and "confirm" in str(unconfirmed.get("error", "")).lower(), \
-            f"appRuntimeStats without confirm must be refused naming confirm: {unconfirmed}"
+        self._expect_tool_refusal("hub_manage_logs", {
+            "tool": "hub_delete_logs", "args": {"mode": "appRuntimeStats", "confirm": False}}, "confirm")
         stats = self.client.call_tool("hub_manage_logs", {
             "tool": "hub_delete_logs", "args": {"mode": "appRuntimeStats", "confirm": True}})
         assert stats.get("success") is True and stats.get("verified") is True, f"appRuntimeStats reset: {stats}"
