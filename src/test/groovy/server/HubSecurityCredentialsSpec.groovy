@@ -67,7 +67,7 @@ class HubSecurityCredentialsSpec extends ToolSpecBase {
         appExecutor.httpPost(_, _) >> { args ->
             Map params = args[0]
             if (params.path == '/login') {
-                logins << [uri: params.uri, body: params.body, followRedirects: params.followRedirects]
+                logins << [uri: params.uri, body: params.body, followRedirects: params.followRedirects, timeout: params.timeout]
                 if (loginHandler) return loginHandler.call(params, args[1])
                 // As the hub answers: wrong credentials re-render the login page (200) and still open an
                 // unauthenticated session; good ones redirect away from /login with the session cookie.
@@ -140,7 +140,7 @@ class HubSecurityCredentialsSpec extends ToolSpecBase {
         def body = script._hubRequest('GET', '/hub2/hubData', [returnShape: 'text'])
 
         then: 'one sign-in, over loopback, with the configured credentials and without following its redirect'
-        logins == [[uri: LOOP, body: [username: 'hubadmin', password: 'hunter2'], followRedirects: false]]
+        logins == [[uri: LOOP, body: [username: 'hubadmin', password: 'hunter2'], followRedirects: false, timeout: 10]]
 
         and: 'the LAN route was probed with the new cookie, then the request took it with the cookie attached'
         probes == [[uri: LAN, cookie: 'HUBSESSION=s1']]
@@ -327,6 +327,7 @@ class HubSecurityCredentialsSpec extends ToolSpecBase {
         signIn.cookie == expected
         signIn.answered == (answer != 'a connection failure')
         logins*.followRedirects == [false]
+        logins*.timeout == [10]
 
         where:
         answer                       | expected            | handler

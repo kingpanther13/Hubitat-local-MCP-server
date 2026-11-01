@@ -7847,7 +7847,7 @@ private Map _hubSignIn() {
     try {
         httpPost([uri: hubLoopbackUri(), path: "/login",
                   body: [username: settings.hubSecurityUser, password: settings.hubSecurityPassword],
-                  textParser: true, ignoreSSLIssues: true, followRedirects: false], read)
+                  textParser: true, ignoreSSLIssues: true, followRedirects: false, timeout: 10], read)
     } catch (Exception e) {
         // followRedirects:false surfaces the 3xx as an exception carrying the response.
         def resp = null
