@@ -13665,7 +13665,7 @@ def _getAllToolDefinitions_partDevices() {
     def defs = { [
         [
             name: "hub_list_devices",
-            description: """List devices with current states from the hub's Devices page, filtered and paged on the hub. format='context' = plain-text house snapshot, the best first call for "what's going on". Control only devices the user named exactly. Guide: hub_get_tool_guide(section='performance_devices').""",
+            description: """List devices with current states from the hub's Devices page, filtered and paged on the hub. format='context' = plain-text house snapshot, the best first call for "what's going on". unfilteredTotal = devices in scope before filters. Control only devices the user named exactly. Guide: hub_get_tool_guide(section='performance_devices').""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -13679,7 +13679,7 @@ def _getAllToolDefinitions_partDevices() {
                     changedSince: [type: ["string", "integer"], description: "Active since: epoch ms or ISO-8601 with offset"],
                     stateFilter: [type: "object", description: "e.g. {\"switch\":\"on\"}"],
                     attributeNames: [type: "array", items: [type: "string"], description: "Attributes to show in currentStates and context lines"],
-                    fields: [type: "array", items: [type: "string"], description: "Record fields to return (names in the guide)"],
+                    fields: [type: "array", items: [type: "string"], description: "Record fields (names in the guide)"],
                     limit: [type: "integer", description: "Page size; omit for all"],
                     cursor: [type: "string", description: "\"\" first, then nextCursor"]
                 ]
