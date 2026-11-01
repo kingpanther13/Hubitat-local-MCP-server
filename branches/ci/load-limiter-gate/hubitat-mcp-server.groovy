@@ -32844,10 +32844,17 @@ String hubBaseUri() {
 @groovy.transform.Field static final java.util.concurrent.ConcurrentHashMap HUB_LAN_ROUTE_FAILED_AT = new java.util.concurrent.ConcurrentHashMap()
 @groovy.transform.Field static final long HUB_LAN_ROUTE_RETRY_MS = 5L * 60L * 1000L
 private boolean _isConnectFailure(Exception e) {
-    if (_httpStatusOf(e) != null) return false
-    String n = e.class.simpleName
-    if (n in ["ConnectException", "HttpHostConnectException", "NoRouteToHostException", "UnknownHostException", "ConnectTimeoutException"]) return true
-    return n == "SocketTimeoutException" && e.message?.toLowerCase()?.contains("connect")
+    def t = e
+    for (int i = 0; i < 3 && t != null; i++) {
+        def st = null
+        try { st = t.response?.status } catch (Exception ignore) { st = null }
+        if (st != null) return false
+        String n = t.class.simpleName
+        if (n in ["ConnectException", "HttpHostConnectException", "NoRouteToHostException", "UnknownHostException", "ConnectTimeoutException"]) return true
+        if (n == "SocketTimeoutException" && t.message?.toLowerCase()?.contains("connect")) return true
+        t = t.cause
+    }
+    return false
 }
 def _noteHubLoopbackFallback(String reason) {
     try {
@@ -33094,7 +33101,7 @@ private _hubRequest(String method, String path, Map opts = [:]) {
             catch (Exception logErr) { log.warn "[hubrt] diagnostic logging failed: ${logErr.message}" }
             return _hubRequest(method, path, opts + [loopbackRetry: true])
         }
-        if (shouldRetryWithFreshCookie(e, opts.isRetry)) {
+        if (shouldRetryWithFreshCookie(e, opts.isRetry == true)) {
             _hubRtLogged = true
             try { _hubRtLog(method, path, now() - _hubRtT0, "${_hubRtOutcome}, retrying".toString()) }
             catch (Exception logErr) { log.warn "[hubrt] diagnostic logging failed: ${logErr.message}" }
