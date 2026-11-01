@@ -1148,6 +1148,7 @@ def toolGetRoom(String roomIdentifier) {
         Map states = [:]
         for (st in rec.currentStates) states.put(st.key, _listStateValue(st.key, st.value, redact))
         if (states) devInfo.currentStates = states
+        if ("currentStates" in rec.missingFields) devInfo.metadataUnavailable = true
         devices << devInfo
     }
     return [
@@ -9903,11 +9904,15 @@ private void _flattenDevicesPage(List nodes, String parentId, List out, Set only
         if (node.children instanceof List) _flattenDevicesPage(node.children, id, out, onlyIds)
     }
 }
+private Map _capabilityFeedFor(List population) {
+    Map caps = _readCapabilityFeed()
+    return caps != null && caps.isEmpty() && population ? null : caps
+}
 private Map _readCapabilityFeed() {
     try {
         def txt = hubInternalGet("/hub2/vrb/devices")
         def parsed = txt ? new groovy.json.JsonSlurper().parseText(txt) : null
-        if (!(parsed instanceof List) || parsed.isEmpty()) return null
+        if (!(parsed instanceof List)) return null
         Map caps = [:]
         for (entry in parsed) {
             if (entry instanceof Map && entry.id != null) caps.put(entry.id.toString(), _capabilityNames(entry.capabilities))
@@ -10030,10 +10035,14 @@ def toolListDevices(Map args) {
     Set childIds = children.collect { it.id.toString() } as Set
     Set authorized = _mcpAuthorizedIds(children)
     Set scopeIds = scope == "owned" ? childIds : (scope == "authorized" ? authorized : null)
+    boolean paged = opts.cursor != null || opts.limit > 0 || format == "context"
+    int pageSize = opts.limit > 0 ? opts.limit : 50
     if (scopeIds != null && scopeIds.isEmpty()) {
-        return _emptyDeviceList(format, scope == "owned" ?
+        Map empty = _emptyDeviceList(format, scope == "owned" ?
             "No MCP-managed virtual devices found. Use hub_manage_virtual_device(action=\"create\") to create one." :
             "No devices selected for MCP access and no MCP-managed virtual devices")
+        if (paged) empty.putAll([offset: 0, limit: pageSize, hasMore: false])
+        return empty
     }
     List population
     try {
@@ -10043,7 +10052,7 @@ def toolListDevices(Map args) {
                 note: "Retry; if it persists check the hub's Devices page."]
     }
     if (scopeIds != null) population = population.findAll { scopeIds.contains(it.id) }
-    Map caps = opts.wantCaps ? _readCapabilityFeed() : null
+    Map caps = opts.wantCaps ? _capabilityFeedFor(population) : null
     String lf = opts.labelFilter?.toLowerCase()
     String cf = opts.capabilityFilter
     String rf = opts.roomFilter
@@ -10055,12 +10064,15 @@ def toolListDevices(Map args) {
     List unanswered = []
     for (candidate in population) {
         List missing = candidate.missingFields
+        if (lf != null && !candidate.label.toLowerCase().contains(lf)) continue
+        if (cf != null && caps != null) {
+            if (!caps.containsKey(candidate.id)) { unanswered << candidate.id; continue }
+            if (!caps.get(candidate.id).any { it.equalsIgnoreCase(cf) }) continue
+        } else if (cf != null) continue
         if (opts.disabled != null) {
             if ("disabled" in missing) { unanswered << candidate.id; continue }
             if (candidate.disabled != opts.disabled) continue
         }
-        if (lf != null && !candidate.label.toLowerCase().contains(lf)) continue
-        if (cf != null && !(caps?.get(candidate.id)?.any { it.equalsIgnoreCase(cf) })) continue
         if (rf != null) {
             if ("room" in missing) { unanswered << candidate.id; continue }
             if (!rf.equalsIgnoreCase(candidate.roomName ?: "")) continue
@@ -10071,7 +10083,7 @@ def toolListDevices(Map args) {
         }
         if (staleMs != null || sinceMs != null) {
             Date la = candidate.lastActivity ? _parseSinceArg(candidate.lastActivity) : null
-            if ("lastActivity" in missing || (candidate.lastActivity && la == null)) { unanswered << candidate.id; continue }
+            if ("lastActivity" in missing || (candidate.lastActivity != null && la == null)) { unanswered << candidate.id; continue }
             if (staleMs != null && la != null && nowMs - la.time < staleMs) continue
             if (sinceMs != null && (la == null || la.time < sinceMs)) continue
         }
@@ -10095,8 +10107,6 @@ def toolListDevices(Map args) {
         common.capabilitiesUnavailable = true
         common.note = "The hub's capability feed (/hub2/vrb/devices) could not be read or listed no device, so capabilities are omitted and capabilityFilter matches nothing. Retry."
     }
-    boolean paged = opts.cursor != null || opts.limit > 0 || format == "context"
-    int pageSize = opts.limit > 0 ? opts.limit : 50
     int start = opts.cursor != null ? Math.min(_parseListCursor(opts.cursor, Integer.MAX_VALUE, "hub_list_devices"), total) : 0
     int end = paged ? (int) Math.min((long) start + pageSize, (long) total) : total
     List rows = matched.subList(start, end)
@@ -10183,8 +10193,13 @@ private Map _listDeviceRecord(Map rec, Map opts, List attrNames, Map caps, Set c
         }
         row.currentStates = states
     }
-    if (f.contains("capabilities") && caps != null) row.capabilities = caps.get(rec.id) ?: []
-    if (rec.missingFields) row.metadataUnavailable = true
+    boolean capsMissing = f.contains("capabilities") && caps != null && !caps.containsKey(rec.id)
+    if (f.contains("capabilities") && caps != null && !capsMissing) row.capabilities = caps.get(rec.id)
+    Map shownBy = [disabled: f.contains("disabled") || opts.disabled != null,
+                   room: f.contains("room") || f.contains("roomId") || opts.roomFilter != null,
+                   lastActivity: f.contains("lastActivity") || opts.staleHours != null || opts.sinceDate != null,
+                   currentStates: f.contains("currentStates") || opts.stateFilter != null]
+    if (capsMissing || rec.missingFields.any { shownBy.get(it) }) row.metadataUnavailable = true
     if (!opts.wantFull) return row
     Map detail = null
     try {
@@ -10293,7 +10308,7 @@ def _buildContextSummaryText() {
     List records
     try { records = _contextResourceDevices() }
     catch (IllegalStateException e) { return "Context unavailable: the hub's device list (/hub2/devicesList) could not be read: ${e.message}".toString() }
-    Map caps = records ? _readCapabilityFeed() : null
+    Map caps = records ? _capabilityFeedFor(records) : null
     boolean redact = _redactsCredentials()
     def attrNames = _contextAttributeNames()
     def lines = []
@@ -10331,12 +10346,12 @@ def _buildContextJson() {
     List allDevices
     try { allDevices = _contextResourceDevices() }
     catch (IllegalStateException e) { return [success: false, isError: true, error: "The hub's device list (/hub2/devicesList) could not be read: ${e.message}".toString()] }
-    Map caps = allDevices ? _readCapabilityFeed() : null
+    Map caps = allDevices ? _capabilityFeedFor(allDevices) : null
     boolean redact = _redactsCredentials()
     def contextAttrs = _contextAttributeNames()
     def roomIndex = [:]
     for (d in allDevices) {
-        String r = d.roomName ?: "No room"
+        String r = "room" in d.missingFields ? "Room unknown" : (d.roomName ?: "No room")
         if (!roomIndex.containsKey(r)) roomIndex.put(r, [])
         roomIndex.get(r) << d.id
     }
@@ -10365,6 +10380,7 @@ def _buildContextJson() {
         }
         Map rec = [id: d.id, label: d.label, room: d.roomName, capabilities: caps?.get(d.id) ?: [], attributes: attrs]
         if (caps == null) rec.capabilitiesUnavailable = true
+        if (d.missingFields.any { it in ["room", "currentStates"] } || (caps != null && !caps.containsKey(d.id))) rec.metadataUnavailable = true
         used += _escapedLen(groovy.json.JsonOutput.toJson(rec))
         if (used > budget) {
             truncated = true
@@ -11376,6 +11392,7 @@ private Map _buildWaitForPollArgs(deviceId, deviceLabel, waitFor) {
     if (!(waitFor.attribute instanceof String) || !waitFor.attribute.trim()) {
         throw new IllegalArgumentException("waitFor.attribute is required and must be a non-empty string")
     }
+    _refuseCredentialPoll(waitFor.attribute)
     def hasExpectedValue  = waitFor.containsKey("expectedValue")
     def hasExpectedValues = waitFor.containsKey("expectedValues")
     if (hasExpectedValue && hasExpectedValues) {
@@ -11671,6 +11688,7 @@ def _evalAttrCondition(value, comparator, matchSet, numericThreshold, betweenLow
     return [matched, true]
 }
 def toolPollUntilAttribute(args) {
+    if (args instanceof Map) _refuseCredentialPoll(args.attribute)
     if (!(args instanceof Map) || !args.containsKey("__reqT0")) return _maskPolledAttribute(_pollUntilAttributeCore(args), args)
     Map pollArgs = [:] + (args as Map)
     def t0 = pollArgs.remove("__reqT0")
@@ -11695,6 +11713,11 @@ def toolPollUntilAttribute(args) {
         result.budgetNote = "The poll stopped after ${result.elapsedMs ?: 0} ms instead of waiting ${asked} ms: ${why}. Poll again to keep waiting.".toString()
     }
     return _maskPolledAttribute(result, pollArgs)
+}
+private void _refuseCredentialPoll(attribute) {
+    if (attribute != null && _redactsCredentials() && _deviceConfigurationSecretKey(attribute)) {
+        throw new IllegalArgumentException("Cannot wait for a value of ${attribute}: credential-named attributes are hidden while 'Hide passwords and credentials' is on")
+    }
 }
 private _maskPolledAttribute(result, Map args) {
     if (!(result instanceof Map)) return result
@@ -12615,6 +12638,9 @@ def toolUpdateDevice(args) {
         return [success: false, isError: true, error: "Unable to read /device/fullJson before updating device ${deviceId}; no update sent.",
                 note: "Read hub_get_device(mode='configuration') and retry when native device details are available."]
     }
+    if (fields.dataValues && fields.enabled != true && _deviceFlag(fj.device.disabled)) {
+        throw new IllegalArgumentException("Device ${deviceId} is disabled, and data values never land on a disabled device. Send enabled: true with the data values (the device is enabled first), or enable it first.")
+    }
     Map send = _planDeviceEdit(fj, fields, preferences)
     Map planned = preferences ? _planDevicePreferences(fj, preferences, fields) : [:]
     return _applyDeviceEdit(deviceId, fj, fields, send, planned)
@@ -12661,7 +12687,9 @@ private Map _applyDeviceEdit(deviceId, Map fj, Map fields, Map send, Map prefere
         }
     }
     if (fields.enabled == true) setEnabled()
-    if (fields.dataValues) {
+    if (fields.dataValues && failed.containsKey('enabled')) {
+        failed.put('dataValues', "Not written: the enable failed, and data values never land on a disabled device.")
+    } else if (fields.dataValues) {
         def dataErrors = []
         _applyNativeDeviceDataValues(deviceId, fields.dataValues, [], dataErrors, false)
         if (dataErrors) failed.put('dataValues', dataErrors.collect { it.error }.unique().join(' '))
@@ -13223,7 +13251,7 @@ def toolDeleteDevice(args) {
     if (recentEvents == null) {
         warnings << "EVENT HISTORY UNAVAILABLE: Recent events could not be read; do not assume this device is quiet."
     } else if (recentEvents) {
-        def lastEvent = recentEvents[0]
+        def lastEvent = recentEvents[0] instanceof Map ? _mapBypassEventRow(recentEvents[0]) : [:]
         warnings << "HAS RECENT EVENTS: Last event was ${lastEvent.name}=${lastEvent.value} at ${lastEvent.date}"
     }
     def isRadioDevice = false
@@ -27509,7 +27537,7 @@ def advancedOverridesPage() {
                   defaultValue: false
         }
         section("Backup storage") {
-            paragraph "Automatic code and rule backups live in File Manager. File Manager files use hub storage and count toward a full local backup's 100 MiB file limit; database backups leave them out. Backups are removed only when they exceed this budget together, oldest first across every item. Only the backup just taken and a restore in progress are never removed; an item's only backup goes when it is the oldest, so the budget is a hard cap on everything but the backup being taken: one larger than the budget on its own stays and removes nothing else."
+            paragraph "Automatic code and rule backups live in File Manager. File Manager files use hub storage and count toward a full local backup's 100 MiB file limit; database backups leave them out. Backups are removed only when they exceed this budget together, oldest first across every item. Only the backup just taken and a restore in progress are never removed; an item's only backup goes when it is the oldest. When those alone exceed the budget nothing is removed, and the backups stay over it until a later backup's removal reaches them, oldest first."
             input "backupBudgetMb", "number", title: "Backup storage budget (MB)",
                   description: "Total size of the automatic code and rule backups (default: 10; range 1 to 1000000, values outside it use the nearest end).",
                   defaultValue: 10, required: false
@@ -33220,7 +33248,7 @@ Map _itemBackupBudgetUsage(Map manifest) {
     return [usedBytes: used, limitBytes: _itemBackupByteBudget()]
 }
 String _itemBackupRetentionNote() {
-    return "Backups are removed only when all MCP backups together exceed the ${_itemBackupBudgetMb()} MB storage budget, oldest first across every item and kind; only the backup being taken and an active restore target are never removed, so the budget is a hard cap on everything but the backup being taken: one larger than the budget on its own stays and removes nothing else."
+    return "Backups are removed only when all MCP backups together exceed the ${_itemBackupBudgetMb()} MB storage budget, oldest first across every item and kind; only the backup being taken and an active restore target are never removed. When those alone exceed the budget nothing is removed, and the backups stay over it until a later backup's removal reaches them, oldest first."
 }
 List unlinkItemBackupManifestFile(String fileName, String exactKey = null) {
     if (!fileName) return []
@@ -35261,7 +35289,7 @@ Duplicates an existing MCP custom-engine rule into a new, independent rule with 
 - Rapid source-code edits preserve the original for one hour. Rule edits take a fresh pre-edit snapshot as described below.
 
 ### Backup retention
-- There is no count limit: backups are removed only when all MCP backups together exceed the storage budget, oldest first across every item and kind of backup. Only the backup being taken and an active restore target are never removed; nothing else is protected, so an item's only backup goes when it is the oldest and the budget is a hard cap on everything but the backup being taken. A single backup larger than the whole budget is still kept, because it is the backup being taken, and removes nothing else: no removal could reach the budget, so the index stays over it until that backup is the oldest.
+- There is no count limit: backups are removed only when all MCP backups together exceed the storage budget, oldest first across every item and kind of backup. Only the backup being taken and an active restore target are never removed; nothing else is protected, so an item's only backup goes when it is the oldest. When the backup being taken and an active restore target alone exceed the budget, nothing else is removed and the backups stay over the budget; a later backup's removal then goes oldest first and can take the oversized backup with the rest.
 - The budget is the Advanced setting "Backup storage budget (MB)" (`backupBudgetMb`): default 10, at least 1, at most 1000000 (1 TB). The Advanced page takes any number and the server clamps it to that range. With Developer Mode on, hub_update_mcp_settings also sets it and refuses a value that is not a whole number in that range.
 - Where each response says it:
   - Rule Machine writes and deletes: the `backup` object carries `retentionNote`, and the restoreHint ends with that note.
