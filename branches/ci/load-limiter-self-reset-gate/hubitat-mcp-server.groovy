@@ -28516,6 +28516,7 @@ def handleMcpGet() {
 @groovy.transform.Field static final int LOAD_GUARD_DEFAULT_THRESHOLD_PCT = 33
 @groovy.transform.Field static final long LOAD_GUARD_CHECK_PCT = 50L
 @groovy.transform.Field static final long LOAD_GUARD_RESET_RETRY_MS = 5L * 60L * 1000L
+@groovy.transform.Field static final long LOAD_GUARD_CHECK_SPACING_MS = 60000L
 @groovy.transform.Field static final long LOAD_GUARD_LATCH_STALE_MS = 60000L
 @groovy.transform.Field static final String LOAD_LIMITER_TWICE_HINT = "The hub's per-app load limiter refused this call twice; reset the hub's app runtime statistics with hub_manage_logs(tool='hub_delete_logs', args={mode:'appRuntimeStats', confirm:true}) and retry."
 def handleMcpRequest() {
@@ -28579,6 +28580,8 @@ private void _loadGuardBeforeRequest() {
     if (upS < LOAD_GUARD_MIN_UPTIME_S || _loadGuardBusyMs() * 100L < _loadGuardLimitMs(upS) * LOAD_GUARD_CHECK_PCT) return
     def failedAt = LOAD_GUARD.resetFailedAt
     if (failedAt != null && now() - (failedAt as long) < LOAD_GUARD_RESET_RETRY_MS) return
+    def checkedAt = LOAD_GUARD.checkedAt
+    if (checkedAt != null && now() - (checkedAt as long) < LOAD_GUARD_CHECK_SPACING_MS) return
     _loadGuardSchedule("checkPending", "_loadGuardCheckJob")
 }
 int _loadGuardThresholdPct() {
@@ -28632,7 +28635,10 @@ def _loadGuardCheckJob() {
         long limit = up != null ? _loadGuardLimitMs(up as long) : 0L
         boolean due = limit > 0L && total * 100L >= limit * LOAD_GUARD_CHECK_PCT
         mcpLog("debug", "server", "load guard check: hub total ${total} ms of ${limit} ms limit (estimate was ${estimate} ms); reset: ${due ? 'yes' : 'no'}")
-        if (!due) return
+        if (!due) {
+            LOAD_GUARD.checkedAt = now()
+            return
+        }
         String reply = _resetAppRuntimeStatsNow()
         if (reply == "ok") {
             LOAD_GUARD.remove("resetFailedAt")
