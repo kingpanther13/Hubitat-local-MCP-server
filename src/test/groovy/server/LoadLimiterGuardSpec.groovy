@@ -464,6 +464,7 @@ class LoadLimiterGuardSpec extends ToolSpecBase {
 
     def 'a read refused through its gateway is reset and repeated once'() {
         given:
+        settingsMap.useGateways = true
         hubGet.register(RESET) { p -> 'ok' }
         int calls = 0
         script.metaClass.toolCheckRuleHealth = { args ->
