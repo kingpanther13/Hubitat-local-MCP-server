@@ -1992,7 +1992,8 @@ def adminSetAppDisabled(args) {
 }
 
 // hub_delete_app_runtime_stats: zero every app's Logs > App Stats total/count. The per-app load
-// limiter compares that busy time against hub uptime x threshold %, and a disable/enable keeps it.
+// limiter compares an app's busy time plus that of the app or device it calls (its own a second time
+// when it calls itself) against hub uptime x threshold %, and a disable/enable keeps it.
 // The reset restarts the App Stats appsUptime window but not hub uptime, so limitMs uses location.hub.uptime.
 def adminDeleteAppRuntimeStats(args) {
     requireConfirm(args)
@@ -2036,7 +2037,7 @@ def adminDeleteAppRuntimeStats(args) {
                uptimeText: (beforeDoc instanceof Map ? beforeDoc.uptime : null) ?: (afterDoc instanceof Map ? afterDoc.uptime : null),
                appsUptimeBeforeText: beforeDoc instanceof Map ? beforeDoc.appsUptime : null,
                thresholdPct: thresholdPct, limitMs: limitMs]
-    notes << "limitMs is the busy budget the load limiter compares an app's total against (counted twice when the app produces its own events)."
+    notes << "limitMs is the busy budget the load limiter compares an app's busy time plus that of the app or device it calls (its own a second time when it calls itself) against."
 
     boolean verified = false
     if (!appId) {
@@ -2797,7 +2798,7 @@ def getManualToolDefinitions() {
          inputSchema: [type: "object", properties: [prefix: [type: "string", description: "Name prefix to purge; default BAT_E2E_."], confirm: [type: "boolean"]], required: ["confirm"]]],
         [name: "hub_set_app_disabled", annotations: [title: "Set App Disabled", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false], description: "Toggle an installed app's disabled flag (the admin UI red-X) via POST /installedapp/disable; verified by read-back. Refuses to disable the watchdog's own instance. confirm:true required.",
          inputSchema: [type: "object", properties: [appId: [type: "string"], disable: [type: "boolean"], confirm: [type: "boolean"]], required: ["appId", "disable", "confirm"]]],
-        [name: "hub_delete_app_runtime_stats", annotations: [title: "Delete App Runtime Stats", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false], description: "Reset the hub's per-app runtime statistics (the Logs > App Stats totals) through /hub/advanced/resetAppRuntimeStats; every app keeps running. The hub's per-app load limiter compares an app's busy time since boot (counted twice when the app produces its own events) against uptime x the excessive-load threshold %, and disabling and re-enabling the app does not clear that counter, while this reset does. The reset also restarts the App Stats uptime window; hub uptime, which the limiter compares against, does not change. Reports the named app's total before and after the reset plus the current busy budget (limitMs); verified is true only when that total was read on both sides and dropped or was already 0. Irreversible: every app's App Stats totals are zeroed and cannot be restored; confirm:true required.",
+        [name: "hub_delete_app_runtime_stats", annotations: [title: "Delete App Runtime Stats", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false], description: "Reset the hub's per-app runtime statistics (the Logs > App Stats totals) through /hub/advanced/resetAppRuntimeStats; every app keeps running. The hub's per-app load limiter compares an app's busy time since boot plus that of the app or device it calls (its own a second time when it calls itself) against uptime x the excessive-load threshold %, and disabling and re-enabling the app does not clear that counter, while this reset does. The reset also restarts the App Stats uptime window; hub uptime, which the limiter compares against, does not change. Reports the named app's total before and after the reset plus the current busy budget (limitMs); verified is true only when that total was read on both sides and dropped or was already 0. Irreversible: every app's App Stats totals are zeroed and cannot be restored; confirm:true required.",
          inputSchema: [type: "object", properties: [
             appId: [type: "string", description: "Installed-app id whose runtime total to report before and after the reset (optional)."],
             confirm: [type: "boolean", description: "Must be true."]], required: ["confirm"]]],

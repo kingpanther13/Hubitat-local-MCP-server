@@ -87,8 +87,9 @@ echo "::add-mask::${WATCHDOG_URL##*access_token=}"
 
 # ===========================================================================
 # RESET THE PER-APP RUNTIME STATISTICS -- hub_delete_app_runtime_stats through the watchdog.
-#    The hub's per-app load limiter refuses an app whose busy time (Logs > App Stats total), counted
-#    twice for its own events, passes uptime x threshold (stock 33 %). A full e2e run costs the
+#    The hub's per-app load limiter refuses an app's call when its busy time (Logs > App Stats total)
+#    plus that of the app or device it calls (its own a second time when it calls itself) passes
+#    uptime x threshold (stock 33 %). A full e2e run costs the
 #    server app ~700 s busy, so the warning below fires under 1,400,000 ms of budget.
 #    Disabling and re-enabling the app does not change that counter; a reboot zeroes it and uptime.
 #    The reset zeroes every app's total while apps keep serving and leaves uptime alone.
@@ -96,9 +97,10 @@ echo "::add-mask::${WATCHDOG_URL##*access_token=}"
 # reset_runtime_stats <app-id> -- an empty answer or a busy refusal is retried (a busy refusal scheduled
 # nothing; a lost answer may have run, harmless because the reset is idempotent); if that persists, or
 # the watchdog predates the tool, the run continues with a warning (the suite resets in-run on a limiter
-# trip). Returns 1 only on an explicit failure.
+# trip). A reset the hub did not answer ("got no HTTP answer") is retried the same way and then only
+# warns. Returns 1 only on an explicit refusal.
 reset_runtime_stats() {
-  local app_id="$1" rpc text rpc_err err_file busy why attempt=1 summary limit_ms
+  local app_id="$1" rpc text rpc_err err_file busy unanswered=false why attempt=1 summary limit_ms
   rpc=$(jq -nc --arg id "$app_id" '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_delete_app_runtime_stats",arguments:{appId:$id,confirm:true}}}')
   while :; do
     # call_tool reports a JSON-RPC error on stderr with empty stdout; capture that line to read it and
@@ -109,9 +111,10 @@ reset_runtime_stats() {
     grep -v '^::error::watchdog JSON-RPC error' "$err_file" >&2 || true
     rm -f "$err_file"
     busy=$(printf '%s' "$text" | jq -r '.busy == true' 2>/dev/null || echo false)
-    if [ -n "$rpc_err" ] || { [ -n "$text" ] && [ "$busy" != "true" ]; }; then break; fi
+    unanswered=$(printf '%s' "$text" | jq -r '(.success == false) and ((.error // "") | contains("got no HTTP answer"))' 2>/dev/null || echo false)
+    if [ -n "$rpc_err" ] || { [ -n "$text" ] && [ "$busy" != "true" ] && [ "$unanswered" != "true" ]; }; then break; fi
     if [ "$attempt" -ge "$WD_RPC_ATTEMPTS" ]; then break; fi
-    if [ -n "$text" ]; then why="watchdog busy: $(err_of "$text")"; else why="empty answer"; fi
+    if [ "$unanswered" = "true" ]; then why="hub did not answer the reset"; elif [ -n "$text" ]; then why="watchdog busy: $(err_of "$text")"; else why="empty answer"; fi
     echo "  ...reset attempt ${attempt}/${WD_RPC_ATTEMPTS}: ${why}; retrying in ${WD_RPC_RETRY_SLEEP}s..."
     attempt=$((attempt + 1)); sleep "$WD_RPC_RETRY_SLEEP"
   done
@@ -123,8 +126,8 @@ reset_runtime_stats() {
     echo "::error::Runtime-statistics reset for app ${app_id} failed -- the run would start exposed to the load limiter. ${rpc_err#::error::}"
     return 1
   fi
-  if [ -z "$text" ] || [ "$busy" = "true" ]; then
-    if [ -n "$text" ]; then why="watchdog busy: $(err_of "$text")"; else why="empty answer"; fi
+  if [ -z "$text" ] || [ "$busy" = "true" ] || [ "$unanswered" = "true" ]; then
+    if [ "$unanswered" = "true" ]; then why="hub did not answer the reset: $(err_of "$text")"; elif [ -n "$text" ]; then why="watchdog busy: $(err_of "$text")"; else why="empty answer"; fi
     echo "::warning::Runtime-statistics reset for app ${app_id} got no usable answer after ${attempt} attempt(s) (${why}) -- continuing; the suite resets the statistics if the limiter trips."
     return 0
   fi

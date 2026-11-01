@@ -924,7 +924,7 @@ Requests use the fixed loopback address inside the hub, never the LAN or cloud e
 - **Hubitat Cloud responses** — 128KB maximum (AWS MQTT limit). Use pagination for large device lists.
 - No real-time event streaming (MCP responses only)
 - Sunrise/sunset times are recalculated daily
-- **Per-app load limiter** — The hub refuses an app's calls ("generates excessive hub load") once its busy time since boot passes uptime × the hub's excessive-load threshold (stock 33 %), after 15 minutes of uptime. The server tracks its own busy time and resets the hub's app runtime statistics before that point; a refused read or retry-safe write is reset and repeated once. `hub_delete_logs(mode='appRuntimeStats', confirm=true)` resets them by hand.
+- **Per-app load limiter** — The hub refuses an app's calls ("generates excessive hub load") once this app's busy time since boot plus that of the app or device it calls (its own a second time when it calls itself) passes uptime × the hub's excessive-load threshold (stock 33 %), after 15 minutes of uptime. The server watches its own busy time, checks the hub's real count at half the limit, and resets the hub's app runtime statistics before it trips; when a call is refused anyway, the statistics are reset and a refused read or retry-safe write is repeated once. A device command the limiter drops can still report success, so the early reset is what protects device commands; read the device back to confirm. `hub_delete_logs(mode='appRuntimeStats', confirm=true)` resets them by hand.
 
 </details>
 

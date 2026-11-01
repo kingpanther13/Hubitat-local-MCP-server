@@ -529,7 +529,9 @@ private Map _observeHubReadSnapshot(String key, String fetchId, Map job, Map arg
     }
 }
 
-def runNativeLogFetch(Map job = [:]) {
+def runNativeLogFetch(Map job = [:]) { _loadGuardTimed { _runNativeLogFetchBody(job) } }
+
+def _runNativeLogFetchBody(Map job = [:]) {
     if (job.owner != (app?.id?.toString() ?: "0")) return
     Map work = null
     synchronized (NATIVE_LOG_SNAPSHOTS) {
@@ -1068,8 +1070,8 @@ private Date _pastLogTime(Map entry, TimeZone zone) {
 }
 
 // hub_delete_logs: clear the MCP app's own log, delete one scheduled job the way the Logs page's
-// Delete button does (/hub/advanced/deleteScheduledJob, which removes that one Quartz job), or reset
-// the hub's app runtime statistics. The page offers no Delete on system jobs, so neither does this.
+// Delete button does (/hub/advanced/deleteScheduledJob, which removes that one Quartz job; the page
+// offers no Delete on system jobs, so neither does this), or reset the hub's app runtime statistics.
 def toolDeleteLogs(args) {
     String mode = args.mode?.toString()
     if (!(mode in ["mcp", "scheduledJobs", "appRuntimeStats"])) {
@@ -1138,8 +1140,9 @@ def toolDeleteLogs(args) {
     return [success: false, isError: true, jobId: jobId, error: "The hub did not delete ${jobId}: ${reply ?: 'empty reply'}"]
 }
 
-// mode='appRuntimeStats': zero every app's App Stats busy counter (the one the per-app load limiter
-// compares against uptime x its threshold), reading this app's row before and after to prove it.
+// mode='appRuntimeStats': zero every app's App Stats busy counter (the limiter compares this app's
+// busy time plus that of the app or device it calls -- its own a second time when it calls itself --
+// against uptime x its threshold), reading this app's row before and after to prove it.
 private Map _deleteAppRuntimeStats(Map args) {
     if (_argPresent(args, "jobId")) throw new IllegalArgumentException("Parameter jobId applies to mode='scheduledJobs' only")
     if (args.confirm != true) {
@@ -1149,7 +1152,11 @@ private Map _deleteAppRuntimeStats(Map args) {
     _logsJsonInvalidate()
     Map before = _logsJsonOwnAppStat()
     String reply = _resetAppRuntimeStatsNow()
+    mcpLog("warn", "monitoring", reply == "ok" ? "The hub's app runtime statistics were reset (hub_delete_logs)"
+                                               : "Resetting the hub's app runtime statistics failed (hub_delete_logs): ${reply ?: 'empty reply'}")
     Map after = _logsJsonOwnAppStat()
+    // After the reset an absent row is total 0 (the hub lists only apps with activity since the last reset).
+    if (after.missing == true) after = [totalMs: 0L, count: 0L]
     Long uptimeS = null
     try { def up = location?.hub?.uptime; if (up != null) uptimeS = up as long } catch (Exception ignored) { }
     int pct = _loadGuardThresholdPct()
@@ -1163,6 +1170,11 @@ private Map _deleteAppRuntimeStats(Map args) {
     if (reply != "ok") {
         out.isError = true
         out.error = "The hub did not reset its app runtime statistics: ${reply ?: 'empty reply'}".toString()
+    } else if (before.totalMs != null && after.totalMs != null && (before.totalMs as long) > 0L
+               && (after.totalMs as long) >= (before.totalMs as long)) {
+        out.success = false
+        out.isError = true
+        out.error = "The reset did not take: this app's App Stats total was ${before.totalMs} ms before and ${after.totalMs} ms after."
     }
     List unread = []
     if (before.totalMs == null) unread << "before: ${before.error}"
@@ -1245,16 +1257,16 @@ def _logsJsonFetchAndPublish(Long fetchId = null, boolean background = false) {
         if (_logsJsonFetchId() != fetchId) return snap
         LOGS_JSON_SNAPSHOT.snapshot = snap
         LOGS_JSON_SNAPSHOT.remove("fetchError")
+        // The hub's own count of this app's busy time also covers what the load guard's estimate
+        // misses. Inside the fence, so a fetch a reset has fenced off can never raise it.
+        try {
+            String appId = app?.id?.toString()
+            def own = appId ? snap.appStats.find { it.id?.toString() == appId } : null
+            if (own?.total != null) {
+                synchronized (LOAD_GUARD) { LOAD_GUARD.busyMs = Math.max(_loadGuardBusyMs(), own.total as long) }
+            }
+        } catch (Exception ignored) { }   // a correction only; it must never fail the fetch
     }
-    // The hub's own count of this app's busy time also covers scheduled workers and self-events the
-    // load guard's estimate misses. Only a published fetch counts: a reset fences off one in flight.
-    try {
-        String appId = app?.id?.toString()
-        def own = appId ? snap.appStats.find { it.id?.toString() == appId } : null
-        if (own?.total != null) {
-            synchronized (LOAD_GUARD) { LOAD_GUARD.busyMs = Math.max(_loadGuardBusyMs(), own.total as long) }
-        }
-    } catch (Exception ignored) { }   // a correction only; it must never fail the fetch
     return snap
 }
 
@@ -1312,7 +1324,9 @@ private void _logsJsonEnsureFetchScheduled() {
     }
 }
 
-def runLogsJsonFetch(Map job = [:]) {
+def runLogsJsonFetch(Map job = [:]) { _loadGuardTimed { _runLogsJsonFetchBody(job) } }
+
+def _runLogsJsonFetchBody(Map job = [:]) {
     Long fetchId = null
     try { fetchId = job?.fetchId as Long } catch (Exception ignored) { fetchId = null }
     try {
@@ -1394,7 +1408,7 @@ Map _logsJsonOwnAppStat() {
         Map snap = _logsJsonSnapshot([:])
         if (snap.state != "ready") return [error: snap.state == "failed" ? "Logs page read failed: ${snap.error}".toString() : "Logs page read still in progress"]
         def row = (snap.snapshot.appStats ?: []).find { it.id?.toString() == app.id?.toString() }
-        if (row == null) return [error: "no App Stats row for app ${app.id}".toString()]
+        if (row == null) return [error: "no App Stats row for app ${app.id}".toString(), missing: true]
         return [totalMs: (row.total ?: 0) as long, count: (row.count ?: 0) as long]
     } catch (Exception e) {
         return [error: "Logs page read failed: ${e.message ?: e.class.simpleName}".toString()]
@@ -2963,7 +2977,7 @@ def _getAllToolDefinitions_partDiagnostics() {
         ],
         [
             name: "hub_delete_logs",
-            description: """Clear the MCP app's own log (mode='mcp'), delete one scheduled job like the Logs page's Delete button (mode='scheduledJobs'), or reset the hub's app runtime statistics (mode='appRuntimeStats'). A scheduled-job delete removes only that timer; its app or device schedules it again only if its own code does. The runtime-statistics reset zeroes every app's App Stats busy time[[FLAT_TRIM]] -- the counter the hub's per-app load limiter compares against uptime x its threshold, refusing an app's calls with "generates excessive hub load" once over -- and returns this app's row before and after[[/FLAT_TRIM]]. Cannot be undone. The hub's past logs have no delete; its Reboot dialog offers a log purge: hub_reboot(confirm=true, purgeLogs=true).""",
+            description: """Clear the MCP app's own log (mode='mcp'), delete one scheduled job like the Logs page's Delete button (mode='scheduledJobs'), or reset the hub's app runtime statistics (mode='appRuntimeStats'). A scheduled-job delete removes only that timer; its app or device schedules it again only if its own code does. The runtime-statistics reset zeroes every app's App Stats busy time[[FLAT_TRIM]] -- the hub's per-app load limiter compares this app's busy time plus that of the app or device it calls (its own a second time when it calls itself) against uptime x its threshold, refusing an app's calls with "generates excessive hub load" once over -- and returns this app's row before and after[[/FLAT_TRIM]]. Cannot be undone. The hub's past logs have no delete; its Reboot dialog offers a log purge: hub_reboot(confirm=true, purgeLogs=true).""",
             inputSchema: [
                 type: "object",
                 properties: [

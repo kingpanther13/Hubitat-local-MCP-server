@@ -9,15 +9,21 @@ import support.TestLocation
 import support.ToolSpecBase
 
 /**
- * The per-app load limiter guard. The hub refuses an app's calls once its busy time since boot
- * passes uptime x the excessive-load threshold (stock 33 %), enforced after 15 minutes of uptime;
- * /hub/advanced/resetAppRuntimeStats zeroes every app's counter. Covers the class-memory estimate
- * and its early reset, the refused-call retry in executeTool, and hub_delete_logs(mode='appRuntimeStats').
+ * The per-app load limiter guard. The hub refuses an app's calls once this app's busy time since
+ * boot plus that of the app or device it calls (its own a second time when it calls itself) passes
+ * uptime x the excessive-load threshold (stock 33 %), enforced after 15 minutes of uptime;
+ * /hub/advanced/resetAppRuntimeStats zeroes every app's counter. Covers the class-memory estimate,
+ * the check job that replaces it with the hub's own total and resets at 50 %, the refused-call retry
+ * in executeTool, and hub_delete_logs(mode='appRuntimeStats').
  */
 class LoadLimiterGuardSpec extends ToolSpecBase {
 
     static final String RESET = '/hub/advanced/resetAppRuntimeStats'
     static final String THRESHOLD = '/hub/advanced/getExcessiveLoadThreshold'
+    static final long NOW = 1234567890000L
+    // uptime 10000 s x 33 % = 3,300,000 ms; the check fires at 50 % = 1,650,000 ms
+    static final long LIMIT = 3_300_000L
+    static final long HALF = 1_650_000L
 
     @Shared private TestChildApp sharedAppStub = new TestChildApp(id: 1L, label: 'MCP')
     @Shared private TestLocation sharedLocation = new TestLocation()
@@ -28,13 +34,16 @@ class LoadLimiterGuardSpec extends ToolSpecBase {
     }
 
     def setup() {
-        script.LOAD_GUARD.clear()
         sharedLocation.hub = new TestHub(uptime: 10000G)
     }
 
     private void busy(long ms) { script.LOAD_GUARD.busyMs = ms }
 
+    private void seeded() { script.LOAD_GUARD.seeded = true }
+
     private List handlers() { runInCalls.collect { it[1] } }
+
+    private int resets() { hubGet.calls.count { it.path == RESET } }
 
     private List captureLogs() {
         def entries = []
@@ -53,11 +62,17 @@ class LoadLimiterGuardSpec extends ToolSpecBase {
         }
     }
 
-    // ---- the guard ----
+    private void logsJsonWithoutOwnRow() {
+        hubGet.register('/logs/json') { p ->
+            JsonOutput.toJson([uptime: '2h', jobs: [], appStats: [[id: 7, name: 'Other', count: 3, total: 900, pct: 0.1]]])
+        }
+    }
 
-    def 'below 80 % of the limit only the one seed job is scheduled'() {
-        given: 'limit = 10000 s x 33 % = 3,300,000 ms; 80 % = 2,640,000 ms'
-        busy(2_639_999L)
+    // ---- per request: the estimate and the check job ----
+
+    def 'below 50 % of the limit only the seed job is scheduled'() {
+        given:
+        busy(HALF - 1L)
 
         when:
         2.times { script._loadGuardBeforeRequest() }
@@ -66,20 +81,22 @@ class LoadLimiterGuardSpec extends ToolSpecBase {
         handlers() == ['_seedLoadGuardJob']
     }
 
-    def 'at 80 % of the limit one reset job is scheduled, and a second request does not schedule another'() {
+    def 'at 50 % of the limit one check job is scheduled, and a second request does not schedule another'() {
         given:
-        busy(2_640_000L)
+        seeded()
+        busy(HALF)
 
         when:
         2.times { script._loadGuardBeforeRequest() }
 
         then:
-        handlers() == ['_seedLoadGuardJob', '_resetAppRuntimeStatsJob']
+        handlers() == ['_loadGuardCheckJob']
         runInCalls.every { it[0] == 0 }
     }
 
-    def 'under 15 minutes of uptime nothing is reset, however high the estimate'() {
+    def 'under 15 minutes of uptime nothing is checked, however high the estimate'() {
         given:
+        seeded()
         sharedLocation.hub = new TestHub(uptime: 899G)
         busy(10_000_000L)
 
@@ -87,10 +104,10 @@ class LoadLimiterGuardSpec extends ToolSpecBase {
         script._loadGuardBeforeRequest()
 
         then:
-        handlers() == ['_seedLoadGuardJob']
+        runInCalls.isEmpty()
     }
 
-    def 'uptime going down (a reboot) zeroes the estimate'() {
+    def 'uptime going down zeroes the estimate'() {
         given:
         script._loadGuardBeforeRequest()
         busy(1_000_000L)
@@ -115,65 +132,170 @@ class LoadLimiterGuardSpec extends ToolSpecBase {
         runInCalls.isEmpty()
     }
 
-    def 'a successful reset job zeroes the estimate, frees the latch and logs one warning'() {
+    def 'a scheduler that throws frees the latch, so the next request schedules again'() {
+        given:
+        seeded()
+        busy(HALF)
+        def logs = captureLogs()
+        RUN_IN_OVERRIDE.set({ List args -> throw new RuntimeException('scheduler down') })
+
+        when:
+        script._loadGuardBeforeRequest()
+
+        then:
+        !script.LOAD_GUARD.containsKey('checkPending')
+        logs.any { it.level == 'warn' && it.message.contains('_loadGuardCheckJob') && it.message.contains('scheduler down') }
+
+        when:
+        RUN_IN_OVERRIDE.set(null)
+        script._loadGuardBeforeRequest()
+
+        then:
+        handlers() == ['_loadGuardCheckJob']
+    }
+
+    @Unroll
+    def 'a check latch taken #ageMs ms ago is #verdict'() {
+        given:
+        seeded()
+        busy(HALF)
+        script.LOAD_GUARD.checkPending = NOW - ageMs
+
+        when:
+        script._loadGuardBeforeRequest()
+
+        then:
+        handlers() == expected
+
+        where:
+        ageMs   | verdict                     || expected
+        1_000L  | 'held'                      || []
+        61_000L | 'stale and taken over'      || ['_loadGuardCheckJob']
+    }
+
+    def 'the check job lowers the estimate to the hub total when that total is under 50 %, and resets nothing'() {
         given:
         script._loadGuardBeforeRequest()
-        busy(2_700_000L)
-        script.LOAD_GUARD.resetPending = true
+        busy(HALF + 500_000L)
+        script.LOAD_GUARD.checkPending = NOW
+        logsJsonWithOwnTotal { 100_000L }
         hubGet.register(RESET) { p -> 'ok' }
         def logs = captureLogs()
 
         when:
-        script._resetAppRuntimeStatsJob()
+        script._loadGuardCheckJob()
 
         then:
-        script._loadGuardBusyMs() == 0L
-        !script.LOAD_GUARD.containsKey('resetPending')
-        logs.findAll { it.level == 'warn' }*.message == [
-            "The hub's app runtime statistics were reset before the per-app load limiter tripped: busy 2700000 ms of 3300000 ms"]
+        script._loadGuardBusyMs() == 100_000L
+        resets() == 0
+        !script.LOAD_GUARD.containsKey('checkPending')
+        logs.findAll { it.level == 'debug' && it.message.startsWith('load guard check:') }*.message == [
+            "load guard check: hub total 100000 ms of ${LIMIT} ms limit (estimate was ${HALF + 500_000L} ms); reset: no".toString()]
     }
 
-    def 'a refused reset frees the latch, logs once, and waits before scheduling another'() {
+    def 'the check job resets when the hub total is at 50 %, zeroes the estimate and logs one warning'() {
         given:
-        busy(2_700_000L)
-        hubGet.register(RESET) { p -> 'denied' }
+        script._loadGuardBeforeRequest()
+        busy(10L)
+        script.LOAD_GUARD.checkPending = NOW
+        logsJsonWithOwnTotal { HALF }
+        hubGet.register(RESET) { p -> 'ok' }
         def logs = captureLogs()
 
         when:
+        script._loadGuardCheckJob()
+
+        then:
+        resets() == 1
+        script._loadGuardBusyMs() == 0L
+        !script.LOAD_GUARD.containsKey('checkPending')
+        logs.findAll { it.level == 'warn' }*.message == [
+            "The hub's app runtime statistics were reset before the per-app load limiter tripped: busy ${HALF} ms of ${LIMIT} ms".toString()]
+        logs.findAll { it.level == 'debug' && it.message.startsWith('load guard check:') }*.message == [
+            "load guard check: hub total ${HALF} ms of ${LIMIT} ms limit (estimate was ${HALF} ms); reset: yes".toString()]
+    }
+
+    def 'a refused reset logs once per failure streak, backs off five minutes, and an ok reset ends the streak'() {
+        given:
+        seeded()
         script._loadGuardBeforeRequest()
-        script._resetAppRuntimeStatsJob()
-        script._resetAppRuntimeStatsJob()
+        logsJsonWithOwnTotal { HALF }
+        String answer = 'denied'
+        hubGet.register(RESET) { p -> answer }
+        def logs = captureLogs()
+
+        when: 'two refused resets'
+        2.times { script._loadGuardCheckJob() }
         runInCalls.clear()
+        busy(HALF)
+        script._loadGuardBeforeRequest()
+
+        then: 'one warning, and no check inside the backoff'
+        logs.count { it.message.contains('did not reset') } == 1
+        runInCalls.isEmpty()
+
+        when: 'the backoff has passed'
+        NOW_OVERRIDE.set({ -> NOW + 300_001L })
         script._loadGuardBeforeRequest()
 
         then:
-        !script.LOAD_GUARD.containsKey('resetPending')
-        script._loadGuardBusyMs() == 2_700_000L
-        logs.count { it.level == 'warn' && it.message.contains('did not reset') } == 1
-        runInCalls.isEmpty()
+        handlers() == ['_loadGuardCheckJob']
+
+        when: 'an ok reset, then another refusal'
+        answer = 'ok'
+        script._loadGuardCheckJob()
+        answer = 'denied'
+        script._loadGuardCheckJob()
+
+        then: 'the new streak is reported again'
+        logs.count { it.message.contains('did not reset') } == 2
+    }
+
+    def 'a check job that cannot read the Logs page backs off instead of resetting'() {
+        given:
+        script._loadGuardBeforeRequest()
+        busy(HALF)
+        hubGet.register('/logs/json') { p -> throw new RuntimeException('read timed out') }
+        def logs = captureLogs()
+
+        when:
+        script._loadGuardCheckJob()
+
+        then:
+        resets() == 0
+        script.LOAD_GUARD.resetFailedAt == NOW
+        logs.any { it.level == 'warn' && it.message.contains('could not read') }
     }
 
     @Unroll
-    def 'the threshold is the hub value when readable, else 33: #label'() {
+    def 'the threshold is the hub value when readable; an unreadable one is 33 and read again next time: #label'() {
         given:
         if (answer != null) hubGet.register(THRESHOLD) { p -> answer }
+        def logs = captureLogs()
 
-        expect:
-        script._loadGuardThresholdPct() == expected
-        script._loadGuardLimitMs(10000L) == 10000L * expected * 10L
+        when:
+        def first = script._loadGuardThresholdPct()
+        def second = script._loadGuardThresholdPct()
+
+        then:
+        first == expected
+        second == expected
+        hubGet.calls.count { it.path == THRESHOLD } == reads
+        logs.count { it.level == 'warn' && it.message.contains('threshold is unreadable') } == warnings
 
         where:
-        label           | answer  || expected
-        'readable 50'   | '50'    || 50
-        'unreadable'    | null    || 33
-        'out of range'  | '0'     || 33
-        'not a number'  | 'oops'  || 33
+        label          | answer || expected | reads | warnings
+        'readable 50'  | '50'   || 50       | 1     | 0
+        'unreadable'   | null   || 33       | 2     | 2
+        'out of range' | '0'    || 33       | 2     | 2
+        'not a number' | 'oops' || 33       | 2     | 2
     }
 
-    def 'the seed job reads the threshold and seeds the estimate from this app App Stats row, keeping what accrued'() {
+    def 'the seed job reads the threshold, seeds from this app App Stats row, keeps what accrued, and is done'() {
         given:
         hubGet.register(THRESHOLD) { p -> '40' }
         logsJsonWithOwnTotal { 5000L }
+        script.LOAD_GUARD.seedScheduled = NOW
 
         when:
         busy(100L)
@@ -182,16 +304,42 @@ class LoadLimiterGuardSpec extends ToolSpecBase {
         then:
         script.LOAD_GUARD.thresholdPct == 40
         script._loadGuardBusyMs() == 5000L
+        script.LOAD_GUARD.seeded == true
+        !script.LOAD_GUARD.containsKey('seedScheduled')
 
-        when: 'more accrued since the read than the hub had counted'
-        busy(9000L)
-        script._seedLoadGuardJob()
+        when: 'later requests'
+        script._loadGuardBeforeRequest()
 
-        then:
-        script._loadGuardBusyMs() == 9000L
+        then: 'no second seed'
+        !handlers().contains('_seedLoadGuardJob')
     }
 
-    def 'every Logs page fetch raises the estimate to this app App Stats total, never lowers it'() {
+    def 'a seed job that cannot read the Logs page warns, frees the latch and backs off five minutes'() {
+        given:
+        hubGet.register('/logs/json') { p -> throw new RuntimeException('read timed out') }
+        script.LOAD_GUARD.seedScheduled = NOW
+        def logs = captureLogs()
+
+        when:
+        script._seedLoadGuardJob()
+        script._loadGuardBeforeRequest()
+
+        then: 'no reseed inside the backoff'
+        logs.any { it.level == 'warn' && it.message.contains('could not be seeded') }
+        script.LOAD_GUARD.seeded != true
+        !script.LOAD_GUARD.containsKey('seedScheduled')
+        script.LOAD_GUARD.seedFailedAt == NOW
+        runInCalls.isEmpty()
+
+        when: 'the backoff has passed'
+        NOW_OVERRIDE.set({ -> NOW + 300_001L })
+        script._loadGuardBeforeRequest()
+
+        then:
+        handlers() == ['_seedLoadGuardJob']
+    }
+
+    def 'every published Logs page fetch raises the estimate to this app App Stats total, never lowers it'() {
         given:
         long total = 7000L
         logsJsonWithOwnTotal { total }
@@ -211,6 +359,20 @@ class LoadLimiterGuardSpec extends ToolSpecBase {
         script._loadGuardBusyMs() == 7000L
     }
 
+    def 'a fetch fenced off by a reset (an old fetchId) does not raise the estimate'() {
+        given:
+        logsJsonWithOwnTotal { 9000L }
+        long staleId = script._logsJsonFetchId()
+        script._logsJsonInvalidate()
+        busy(0L)
+
+        when:
+        script._logsJsonFetchAndPublish(staleId)
+
+        then:
+        script._loadGuardBusyMs() == 0L
+    }
+
     def 'handleMcpRequest adds the request duration to the estimate'() {
         given:
         long clock = 1_000_000L
@@ -224,11 +386,29 @@ class LoadLimiterGuardSpec extends ToolSpecBase {
         script._loadGuardBusyMs() > 0L
     }
 
+    def 'a scheduled handler adds its wall time to the estimate and keeps its result'() {
+        given:
+        long clock = 1_000_000L
+        NOW_OVERRIDE.set({ -> clock += 40L; clock })
+        logsJsonWithOwnTotal { 0L }
+
+        when:
+        def timed = script._loadGuardTimed { 'body ran' }
+        long afterTimed = script._loadGuardBusyMs()
+        script.runLogsJsonFetch([:])
+
+        then:
+        timed == 'body ran'
+        afterTimed > 0L
+        script._loadGuardBusyMs() > afterTimed
+    }
+
     // ---- refused-call retry in executeTool ----
 
-    def 'a read refused by the limiter (thrown) is reset and repeated once'() {
+    def 'a read refused by the limiter (thrown) is reset, logged and repeated once'() {
         given:
         hubGet.register(RESET) { p -> 'ok' }
+        def logs = captureLogs()
         int calls = 0
         script.metaClass.toolGetHsmStatus = { ->
             calls++
@@ -242,7 +422,8 @@ class LoadLimiterGuardSpec extends ToolSpecBase {
         then:
         result == [success: true, status: 'disarmed']
         calls == 2
-        hubGet.calls.count { it.path == RESET } == 1
+        resets() == 1
+        logs.any { it.level == 'warn' && it.message.contains('refused hub_get_hsm_status') && it.message.contains('were reset') }
     }
 
     def 'a read refused by the limiter (envelope) is reset and repeated once'() {
@@ -260,33 +441,77 @@ class LoadLimiterGuardSpec extends ToolSpecBase {
         then:
         result == [success: true]
         calls == 2
+        resets() == 1
+    }
+
+    def 'a retry-safe write refused once is reset and repeated'() {
+        given:
+        hubGet.register(RESET) { p -> 'ok' }
+        int calls = 0
+        script.metaClass.toolSetRulePaused = { args ->
+            calls++
+            calls == 1 ? [success: false, error: 'App 1 generates excessive hub load'] : [success: true, paused: true]
+        }
+
+        when:
+        def result = script.executeTool('hub_set_rule_paused', [ruleId: 5, paused: true])
+
+        then:
+        result == [success: true, paused: true]
+        calls == 2
+        resets() == 1
+    }
+
+    def 'a read refused through its gateway is reset and repeated once'() {
+        given:
+        hubGet.register(RESET) { p -> 'ok' }
+        int calls = 0
+        script.metaClass.toolCheckRuleHealth = { args ->
+            calls++
+            if (calls == 1) throw new RuntimeException('App 1 generates excessive hub load')
+            return [success: true, healthy: true]
+        }
+
+        when:
+        def result = script.executeTool('hub_read_rules', [tool: 'hub_get_rule_health', args: [appId: 5]])
+
+        then:
+        result == [success: true, healthy: true]
+        calls == 2
+        resets() == 1
     }
 
     def 'two refusals return the error with the reset instruction appended'() {
         given:
         hubGet.register(RESET) { p -> 'ok' }
-        script.metaClass.toolGetHsmStatus = { -> [success: false, error: 'App 1 generates excessive hub load'] }
+        int calls = 0
+        script.metaClass.toolGetHsmStatus = { -> calls++; [success: false, error: 'App 1 generates excessive hub load'] }
 
         when:
         def result = script.executeTool('hub_get_hsm_status', [:])
 
         then:
+        calls == 2
+        resets() == 1
         result.success == false
-        result.error == "App 1 generates excessive hub load ${script.LOAD_LIMITER_TWICE_HINT}"
+        result.error == "App 1 generates excessive hub load ${script.LOAD_LIMITER_TWICE_HINT}".toString()
         result.error.contains("hub_manage_logs(tool='hub_delete_logs', args={mode:'appRuntimeStats', confirm:true})")
     }
 
     def 'two thrown refusals rethrow with the reset instruction appended'() {
         given:
         hubGet.register(RESET) { p -> 'ok' }
-        script.metaClass.toolGetHsmStatus = { -> throw new RuntimeException('App 1 generates excessive hub load') }
+        int calls = 0
+        script.metaClass.toolGetHsmStatus = { -> calls++; throw new RuntimeException('App 1 generates excessive hub load') }
 
         when:
         script.executeTool('hub_get_hsm_status', [:])
 
         then:
         def e = thrown(RuntimeException)
-        e.message == "App 1 generates excessive hub load ${script.LOAD_LIMITER_TWICE_HINT}"
+        e.message == "App 1 generates excessive hub load ${script.LOAD_LIMITER_TWICE_HINT}".toString()
+        calls == 2
+        resets() == 1
     }
 
     def 'an unrelated error is neither reset nor retried'() {
@@ -301,10 +526,10 @@ class LoadLimiterGuardSpec extends ToolSpecBase {
         def e = thrown(RuntimeException)
         e.message == 'boom'
         calls == 1
-        !hubGet.calls.any { it.path == RESET }
+        resets() == 0
     }
 
-    def 'a refused write that is not retry-safe is reset but not repeated'() {
+    def 'a refused write that is not retry-safe is reset but not repeated (envelope)'() {
         given:
         hubGet.register(RESET) { p -> 'ok' }
         int calls = 0
@@ -318,8 +543,47 @@ class LoadLimiterGuardSpec extends ToolSpecBase {
 
         then:
         calls == 1
-        hubGet.calls.count { it.path == RESET } == 1
+        resets() == 1
         result.error.contains('not repeated automatically')
+    }
+
+    def 'a refused write that is not retry-safe is reset but not repeated (thrown)'() {
+        given:
+        hubGet.register(RESET) { p -> 'ok' }
+        int calls = 0
+        script.metaClass.toolSendCommand = { a, b, c, d, e, f ->
+            calls++
+            throw new RuntimeException('App 1 generates excessive hub load')
+        }
+
+        when:
+        script.executeTool('hub_call_device_command', [deviceId: '5', command: 'on'])
+
+        then:
+        def e = thrown(RuntimeException)
+        e.message.startsWith('App 1 generates excessive hub load')
+        e.message.contains("The hub's app runtime statistics were reset.")
+        e.message.contains('not repeated automatically')
+        calls == 1
+        resets() == 1
+    }
+
+    def 'a reset that does not answer ok stops the retry and says so'() {
+        given:
+        hubGet.register(RESET) { p -> 'denied' }
+        def logs = captureLogs()
+        int calls = 0
+        script.metaClass.toolGetHsmStatus = { -> calls++; [success: false, error: 'App 1 generates excessive hub load'] }
+
+        when:
+        def result = script.executeTool('hub_get_hsm_status', [:])
+
+        then:
+        calls == 1
+        resets() == 1
+        result.error.contains("Resetting the hub's app runtime statistics failed (denied).")
+        !result.error.contains(script.LOAD_LIMITER_TWICE_HINT)
+        logs.any { it.level == 'warn' && it.message.contains('failed (denied)') }
     }
 
     // ---- hub_delete_logs(mode='appRuntimeStats') ----
@@ -331,16 +595,16 @@ class LoadLimiterGuardSpec extends ToolSpecBase {
         then:
         result.success == false
         result.error.contains('confirm=true')
-        !hubGet.calls.any { it.path == RESET }
+        resets() == 0
     }
 
-    def 'appRuntimeStats resets, reads this app row before and after, and verifies the drop'() {
+    def 'appRuntimeStats resets, reads this app row before and after, verifies the drop and logs the outcome'() {
         given:
-        hubGet.register(RESET) { p -> 'ok' }
         long total = 5000L
         logsJsonWithOwnTotal { total }
         hubGet.register(RESET) { p -> total = 0L; 'ok' }
         busy(4000L)
+        def logs = captureLogs()
 
         when:
         def result = script.toolDeleteLogs([mode: 'appRuntimeStats', confirm: true])
@@ -352,9 +616,43 @@ class LoadLimiterGuardSpec extends ToolSpecBase {
         result.verified == true
         result.uptimeSeconds == 10000L
         result.thresholdPct == 33
-        result.limitMs == 3_300_000L
+        result.limitMs == LIMIT
         !result.containsKey('note')
         script._loadGuardBusyMs() == 0L
+        logs.any { it.level == 'warn' && it.message.contains('were reset (hub_delete_logs)') }
+    }
+
+    def 'appRuntimeStats counts a missing row after the reset as 0'() {
+        given:
+        boolean wasReset = false
+        hubGet.register('/logs/json') { p ->
+            JsonOutput.toJson([uptime: '2h', jobs: [],
+                               appStats: wasReset ? [] : [[id: 1, name: 'MCP', count: 40, total: 5000, pct: 2.0]]])
+        }
+        hubGet.register(RESET) { p -> wasReset = true; 'ok' }
+
+        when:
+        def result = script.toolDeleteLogs([mode: 'appRuntimeStats', confirm: true])
+
+        then:
+        result.success == true
+        result.after == [totalMs: 0L, count: 0L]
+        result.verified == true
+    }
+
+    def 'appRuntimeStats reports a reset that did not take'() {
+        given:
+        logsJsonWithOwnTotal { 5000L }
+        hubGet.register(RESET) { p -> 'ok' }
+
+        when:
+        def result = script.toolDeleteLogs([mode: 'appRuntimeStats', confirm: true])
+
+        then:
+        result.success == false
+        result.isError == true
+        result.error.startsWith('The reset did not take')
+        result.verified == false
     }
 
     def 'appRuntimeStats says so when this app row cannot be read'() {
@@ -373,10 +671,11 @@ class LoadLimiterGuardSpec extends ToolSpecBase {
         result.note.contains('could not be read')
     }
 
-    def 'appRuntimeStats reports a refused reset as an error'() {
+    def 'appRuntimeStats reports a refused reset as an error and logs it'() {
         given:
         hubGet.register(RESET) { p -> 'denied' }
         logsJsonWithOwnTotal { 5000L }
+        def logs = captureLogs()
 
         when:
         def result = script.toolDeleteLogs([mode: 'appRuntimeStats', confirm: true])
@@ -385,5 +684,6 @@ class LoadLimiterGuardSpec extends ToolSpecBase {
         result.success == false
         result.error.contains('denied')
         result.verified == false
+        logs.any { it.level == 'warn' && it.message.contains('failed (hub_delete_logs): denied') }
     }
 }

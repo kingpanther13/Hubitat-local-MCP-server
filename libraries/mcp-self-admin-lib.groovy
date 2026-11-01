@@ -650,7 +650,9 @@ def toolUpdatePackage(args) {
 
 // Scheduled worker for the real repair. The scheduled requestId prevents an old
 // delayed invocation from running or clearing a newer deploy marker.
-def runPackageDeploy(Map job = [:]) {
+def runPackageDeploy(Map job = [:]) { _loadGuardTimed { _runPackageDeployBody(job) } }
+
+def _runPackageDeployBody(Map job = [:]) {
     String requestId = job?.requestId?.toString()
     Map marker = null
     synchronized (WRITE_RESERVATION_LOCK) {

@@ -190,6 +190,23 @@ def test_reset_fails_the_step_on_any_other_json_rpc_error_without_retrying(tmp_p
     assert "::error::Runtime-statistics reset for app 38 failed" in result.stdout and "Internal error: boom" in result.stdout
 
 
+_RESET_UNANSWERED = {"success": False, "error": "GET /hub/advanced/resetAppRuntimeStats got no HTTP answer "
+                     "(timeout or dead web stack), so the counters may not have reset."}
+
+
+def test_reset_retries_a_reset_the_hub_did_not_answer_then_warns_and_continues(tmp_path):
+    result, calls = _run_reset(tmp_path, [_tool_answer(_RESET_UNANSWERED)])
+    assert "RC=0" in result.stdout and calls == 3, (calls, result.stdout, result.stderr)
+    assert "::warning::" in result.stdout and "hub did not answer the reset" in result.stdout, result.stdout
+    assert "::error::" not in result.stdout, result.stdout
+
+
+def test_reset_lands_after_the_hub_did_not_answer_once(tmp_path):
+    result, calls = _run_reset(tmp_path, [_tool_answer(_RESET_UNANSWERED), _tool_answer(_RESET_OK)])
+    assert "RC=0" in result.stdout and calls == 2, (calls, result.stdout, result.stderr)
+    assert "Runtime statistics reset for app 38: before 936332 ms, after 0 ms" in result.stdout, result.stdout
+
+
 def test_reset_fails_the_step_on_an_explicit_refusal(tmp_path):
     refused = _tool_answer({"success": False, "error": "GET /hub/advanced/resetAppRuntimeStats answered 'no'"})
     result, calls = _run_reset(tmp_path, [refused])

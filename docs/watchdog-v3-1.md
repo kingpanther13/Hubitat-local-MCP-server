@@ -1,6 +1,7 @@
 # E2E watchdog v3.2 (file `e2e-deadman-watchdog-v3-1.groovy`)
 
-Watchdog v3.2 keeps the v3.1 file name, so it can be reverted to 3.1 by reinstalling the older source.
+Watchdog v3.2 is v3.1 updated in place (same file and Apps Code class), so reinstalling the 3.1 source
+reverts it.
 `e2e-deadman-watchdog-v3-1.groovy` is a clone of v3 (`e2e-deadman-watchdog-v3.groovy`) that can
 install the built package of issue #522. Everything in [watchdog-v3.md](watchdog-v3.md) applies to
 it unchanged except what is listed here.
@@ -24,10 +25,9 @@ it unchanged except what is listed here.
   start of every run and when the limiter trips mid-run, because disabling and re-enabling the app
   does not clear them. `verified` is true only when the named app's total was read before and
   after the reset and dropped (or was already 0), and `limitMs` is the busy budget
-  (hub uptime x the excessive-load threshold %) the limiter compares that total against, counted
-  twice when the app produces its own events.
-
-3.2 adds hub_delete_app_runtime_stats; nothing else changed from 3.1.
+  (hub uptime x the excessive-load threshold %). The limiter compares an app's busy time plus that of the app or device it calls (its own a second time when it calls itself)
+  against it. This tool, the version bump and the code-protection check covering both names are
+  what 3.2 changed from 3.1.
 
 ## Wiring
 

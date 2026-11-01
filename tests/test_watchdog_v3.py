@@ -354,6 +354,14 @@ def test_the_watchdog_is_discovered_from_its_app_page_while_the_secret_points_at
     assert hub.calls == []
 
 
+def test_a_watchdog_instance_still_named_v3_1_is_discovered(module, tmp_path):
+    # Between the 3.2 source landing in the repo and the maintenance install, the hub still lists v3.1.
+    instances = [{"id": 48028, "type": "E2E Dead-Man Watchdog v3.1"}, {"id": 7, "type": "E2E Dead-Man Watchdog v3"},
+                 {"id": 38, "type": "MCP Rule Server"}]
+    hub = Discovery(3, instances, V3_PAGE, "3.1")
+    assert module.resolve_v3_url(hub, "main", "configured", tmp_path / "endpoint") == V3_URL
+
+
 @pytest.mark.parametrize("instances,page,message", [
     ([], V3_PAGE, "found 0"),
     ([*V3_INSTANCE, {"id": 5, "type": "E2E Dead-Man Watchdog v3.1"}], V3_PAGE, "found 2"),

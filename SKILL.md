@@ -240,7 +240,7 @@ case "tool_name": return toolMyNewTool(args)
 - Some tools pass the entire `args` map: `return toolBar(args)`
 - Default values use the Elvis operator `?:` inline
 - Tools are grouped by category with comment headers
-- `executeTool()` runs every leaf tool inside `_executeToolWithLoadLimiterRetry`: a call the hub's per-app load limiter refused ("generates excessive hub load", thrown or as a `success:false` result) resets the hub's app runtime statistics and is repeated once when the tool is in `getIdempotentToolNames()`; any other write is returned with a note instead of repeated. `handleMcpRequest()` adds each request's duration to a class-memory estimate of this app's busy time and schedules `_resetAppRuntimeStatsJob` at 80 % of uptime × threshold.
+- `executeTool()` runs every leaf tool inside `_executeToolWithLoadLimiterRetry`: a call the hub's per-app load limiter refused ("generates excessive hub load", thrown or as a `success:false` result) resets the hub's app runtime statistics and, when that reset answered ok and the tool is in `getIdempotentToolNames()`, is repeated once; any other write is returned with a note instead of repeated. The limiter compares this app's busy time plus that of the app or device it calls (its own a second time when it calls itself) with uptime × threshold. `handleMcpRequest()` and every scheduled handler (through `_loadGuardTimed`) add their wall time to a class-memory estimate of this app's busy time; at 50 % of uptime × threshold `_loadGuardCheckJob` reads the hub's own total for this app from the Logs page, replaces the estimate with it, and resets only when that real total is at 50 %.
 
 ### Tool Implementation Pattern
 
