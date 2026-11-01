@@ -18,6 +18,12 @@ class HubBaseUriSpec extends ToolSpecBase {
     static final String PROBE_PATH = '/hub/advanced/freeOSMemory'
     static final String LOOP = 'http://127.0.0.1:8080'
     static final String LAN = 'http://192.168.1.13:8080'
+    // The hub's login page markup, trimmed (see HubSecurityCredentialsSpec).
+    static final String LOGIN_PAGE = '<html><head><title>Login - Test Hub</title></head><body><form method="POST">' +
+        '<input type="text" name="username" class="mdl-textfield__input" size="4" id="username" required="required" maxlength="64"/>' +
+        '<input type="password" name="password" class="mdl-textfield__input" size="4" id="password" required="required" maxlength="120"/>' +
+        '<input type="submit" name="submit" value="Login" class="mdl-button mdl-js-button mdl-button--raised"/>' +
+        '</form></body></html>'
 
     @Shared private TestLocation sharedLocation = new TestLocation()
     @Shared Closure httpGetHandler = null
@@ -196,7 +202,7 @@ class HubBaseUriSpec extends ToolSpecBase {
         where:
         answer                 | note                          | handler
         'a 302'                | 'redirects LAN requests'      | { Map p, Closure cb -> throw new RedirectException('https://192.168.1.13/hub/advanced/freeOSMemory') }
-        'the login page'       | 'redirects LAN requests'      | { Map p, Closure cb -> cb.call([status: 200, data: '<html><form action="/login" method="post"></form></html>']) }
+        'the login page'       | 'redirects LAN requests'      | { Map p, Closure cb -> cb.call([status: 200, data: LOGIN_PAGE]) }
         'a non-numeric body'   | 'unexpected answer'           | { Map p, Closure cb -> cb.call([status: 200, data: 'oops']) }
         'an HTTP 500'          | 'unexpected answer (HTTP 500)' | { Map p, Closure cb -> throw new StatusException(500) }
     }
@@ -423,14 +429,13 @@ class HubBaseUriSpec extends ToolSpecBase {
         given: 'the LAN route was probed OK, then Hub Login Security was turned on (the flag still reads off here)'
         loginSecurity(false)
         assert script.hubBaseUri() == LAN
-        def loginPage = '<html><form action="/login" method="post"></form></html>'
-        probeHandler = { Map p, Closure cb -> cb.call([status: 200, data: loginPage]) }
+        probeHandler = { Map p, Closure cb -> cb.call([status: 200, data: LOGIN_PAGE]) }
         def logs = captureLogs()
         def sent = []
         Closure answer = { Map params, Closure cb ->
             sent << params.uri
             if (params.uri == LOOP) return cb.call([status: 200, data: 'BODY'])
-            if (shape == 'login page') return cb.call([status: 200, data: loginPage])
+            if (shape == 'login page') return cb.call([status: 200, data: LOGIN_PAGE])
             throw new RedirectException('http://192.168.1.13:8080/login')
         }
         if (method == 'GET') httpGetHandler = answer else httpPostHandler = answer
@@ -456,15 +461,37 @@ class HubBaseUriSpec extends ToolSpecBase {
         given:
         loginSecurity(false)
         assert script.hubBaseUri() == LAN
-        def loginPage = '<html><form action="/login" method="post"></form></html>'
         def sent = []
-        httpGetHandler = { Map params, Closure cb -> sent << params.uri; cb.call([status: 200, data: loginPage]) }
+        httpGetHandler = { Map params, Closure cb -> sent << params.uri; cb.call([status: 200, data: LOGIN_PAGE]) }
 
         when: 'the re-probe still passes, so the repeat goes to the LAN again and gets the login page again'
         def body = script._hubRequest('GET', '/hub2/hubData', [returnShape: 'text'])
 
         then:
-        body == loginPage
+        body == LOGIN_PAGE
         sent == [LAN, LAN]
+    }
+
+    @Unroll
+    def 'a LAN page that only resembles a login form is returned as is, never replayed: #label'() {
+        given:
+        loginSecurity(false)
+        assert script.hubBaseUri() == LAN
+        def sent = []
+        httpPostHandler = { Map params, Closure cb -> sent << params.uri; cb.call([status: 200, data: page]) }
+
+        when:
+        def body = script._hubRequest('POST', '/installedapp/update/json', [returnShape: 'text', body: 'x=1'])
+
+        then: 'one POST only: a replay of a write that ran would run it twice'
+        body == page
+        sent == [LAN]
+        script.HUB_LAN_PROBE.get(LAN)?.ok == true
+
+        where:
+        label                     | page
+        'no password input'       | '<html><head><title>Login - Hub</title></head><body><form method="POST"><input type="text" name="username"/><a href="/login">Login</a></form></body></html>'
+        'an app page with a form' | '<html><head><title>Rule</title></head><body><form action="/login" method="post"><input name="username"></form></body></html>'
+        'no POST form'            | '<html><head><title>Login - Hub</title></head><body><input type="text" name="username"/><input type="password" name="password"/></body></html>'
     }
 }

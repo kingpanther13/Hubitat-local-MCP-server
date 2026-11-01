@@ -18,7 +18,13 @@ class HubSecurityCredentialsSpec extends ToolSpecBase {
     static final String PROBE_PATH = '/hub/advanced/freeOSMemory'
     static final String LOOP = 'http://127.0.0.1:8080'
     static final String LAN = 'http://192.168.1.13:8080'
-    static final String LOGIN_PAGE = '<html><body><form action="/login" method="post"><input name="username"></form></body></html>'
+    // The hub's login page markup, trimmed: a "Login" title and an action-less POST form with
+    // username and password inputs.
+    static final String LOGIN_PAGE = '<html><head><title>Login - Test Hub</title></head><body><form method="POST">' +
+        '<input type="text" name="username" class="mdl-textfield__input" size="4" id="username" required="required" maxlength="64"/>' +
+        '<input type="password" name="password" class="mdl-textfield__input" size="4" id="password" required="required" maxlength="120"/>' +
+        '<input type="submit" name="submit" value="Login" class="mdl-button mdl-js-button mdl-button--raised"/>' +
+        '</form></body></html>'
 
     @Shared private TestChildApp sharedAppStub = new TestChildApp(id: 1L, label: 'MCP')
     @Shared private TestLocation sharedLocation = new TestLocation()

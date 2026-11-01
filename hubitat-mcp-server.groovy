@@ -7651,11 +7651,15 @@ private String _hubLanProbeFailed(String lan, String reason) {
     return reason
 }
 
-// The hub's login page, as a followed redirect to /login returns it with a 200.
+// The hub's login page, as a followed redirect to /login returns it with a 200, matched on its own
+// markup: a "Login" title and a POST form (it has no action) with username and password inputs.
 private boolean _looksLikeLoginPage(body) {
     if (!(body instanceof CharSequence)) return false
     String t = body.toString()
-    return t.contains("/login") && t.toLowerCase().contains("<form")
+    return (t =~ /(?is)<title>\s*Login\b/).find() &&
+        (t =~ /(?i)<form\b[^>]*\bmethod\s*=\s*"post"/).find() &&
+        (t =~ /(?i)<input\b[^>]*\bname\s*=\s*"username"/).find() &&
+        (t =~ /(?i)<input\b(?=[^>]*\btype\s*=\s*"password")(?=[^>]*\bname\s*=\s*"password")[^>]*>/).find()
 }
 
 // A failure to open the connection at all, with no HTTP response: the request never reached the
@@ -8032,6 +8036,8 @@ private _hubRequest(String method, String path, Map opts = [:]) {
     // string that downstream code would treat as a real body (matches the hardened deploy path).
     if (readError != null) throw readError
     // A login filter refusing the LAN route comes back as the followed redirect: the login page.
+    // Replaying is safe only then: the hub's login filter halts before the route runs, so a request
+    // answered with the login page was never executed.
     if (!opts.isRetry && params.uri != hubLoopbackUri() && _looksLikeLoginPage(result instanceof Map ? result.data : result)) {
         _forgetLanRouteAfterLoginRefusal(method, path, cookie)
         return _hubRequest(method, path, opts + [isRetry: true])
