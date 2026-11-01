@@ -113,7 +113,7 @@ class ToolNativeVirtualDevicesSpec extends ToolSpecBase {
             JsonOutput.toJson([devices: ids.collect { id ->
                 def d = models[id]?.device ?: [id: id.toInteger(), name: "Device ${id}"]
                 [key: "DEV-${id}", data: [id: d.id, name: d.label ?: d.name, secondaryName: d.label ? d.name : '',
-                    type: d.deviceTypeName, dni: d.deviceNetworkId, isVirtual: true,
+                    type: d.deviceTypeName, dni: d.deviceNetworkId, isVirtual: true, disabled: false, roomName: null, lastActivity: null,
                     currentStates: (d.currentStates ?: [:]).collect { k, v -> [key: k, value: v.value] }], children: []]
             }])
         }
@@ -219,18 +219,20 @@ class ToolNativeVirtualDevicesSpec extends ToolSpecBase {
         [surface, bypass] << ['direct', 'dispatch'].collectMany { surface -> [false, true].collect { [surface, it] } }
     }
 
-    def 'owned cursor bounds use the filtered total'() {
+    def 'owned cursor bounds use the filtered total: a cursor past it is an empty last page'() {
         given:
         ['77', '78', '79'].each { owned(it) }
         models['77'].device.label = 'Only match'
         page(['77', '78', '79'])
 
         when:
-        script.toolListDevices([scope: 'owned', labelFilter: 'Only', cursor: '2', limit: 1])
+        def page = script.toolListDevices([scope: 'owned', labelFilter: 'Only', cursor: '2', limit: 1])
 
         then:
-        def error = thrown(IllegalArgumentException)
-        error.message.contains('out of range')
+        page.total == 1
+        page.devices == []
+        page.hasMore == false
+        !page.containsKey('nextCursor')
     }
 
     @Unroll
