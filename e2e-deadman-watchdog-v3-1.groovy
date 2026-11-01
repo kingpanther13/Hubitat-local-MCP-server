@@ -2003,7 +2003,7 @@ def adminDeleteAppRuntimeStats(args) {
         appId = raw.toInteger().toString()
     }
     def beforeDoc = _parseJsonBody(hubGet("/logs/json", [:]))
-    Map before = appId ? appRuntimeRow(beforeDoc, appId) : null
+    Map before = appId ? appRuntimeRow(beforeDoc, appId, false) : null
     String appPart = appId ? "; app ${appId} total ${before.totalMs} ms" : ""
     mcpAdminLog "Resetting app runtime stats (/hub/advanced/resetAppRuntimeStats)${appPart}"
     Map resetResp = hubGetStatus("/hub/advanced/resetAppRuntimeStats", [:])
@@ -2015,7 +2015,7 @@ def adminDeleteAppRuntimeStats(args) {
         return failed
     }
     def afterDoc = _parseJsonBody(hubGet("/logs/json", [:]))
-    Map after = appId ? appRuntimeRow(afterDoc, appId) : null
+    Map after = appId ? appRuntimeRow(afterDoc, appId, true) : null
 
     Map result = [success: true, message: "App runtime statistics reset."]
     List notes = []
@@ -2046,7 +2046,9 @@ def adminDeleteAppRuntimeStats(args) {
         String afterText = after.totalMs == null ? "unknown" : "${after.totalMs} ms"
         result += [appId: appId, before: before, after: after,
                    message: "App runtime statistics reset; app ${appId} total ${beforeText} -> ${afterText}.".toString()]
-        if (before.totalMs == null) {
+        if (before.totalMs == null && appStatsRows(beforeDoc) != null) {
+            notes.add(0, "The reset was accepted but there was no App Stats row for app ${appId} before it, so the drop is unverified; check the app id.".toString())
+        } else if (before.totalMs == null) {
             notes.add(0, "The reset was accepted but the App Stats read before it was unavailable, so the drop is unverified.")
         } else if (after.totalMs == null) {
             notes.add(0, "The reset was accepted but the App Stats read-back was unavailable.")
@@ -2068,18 +2070,22 @@ Map resetFailure(Integer st, String body) {
     String retry = "Retry once the hub answers /hub/advanced reads (hub_get_metrics); repeating the reset is harmless."
     if (st == null) return [error: "${path} got no HTTP answer (timeout or dead web stack), so the counters may not have reset.".toString(), note: retry]
     String hint = st == 404 ? "A 404 means the firmware predates the endpoint: reboot the hub (hub_reboot) to reset the statistics." :
-        (st in [301, 302, 401, 403] ? "Hub Security login failed: check the watchdog's Hub Security username/password, then retry." :
+        (st in [301, 302, 401, 403] ? "HTTP ${st} can be a login refusal: if this hub still requires the watchdog's Hub Security credentials (older firmware), check them; otherwise retry.".toString() :
             "${retry} If it keeps failing, reboot the hub (hub_reboot) to reset the statistics.".toString())
-    return [error: "${path} answered HTTP ${st} '${body?.trim()}' (expected ok).".toString(), note: hint]
+    String bodyPart = body == null ? "" : " '${body.trim()}'"
+    return [error: "${path} answered HTTP ${st}${bodyPart} (expected ok).".toString(), note: hint]
 }
 
-// An absent row in a readable /logs/json is total 0: the hub lists only apps with activity since the last reset.
-Map appRuntimeRow(doc, String appId) {
-    def rows = (doc instanceof Map && doc.appStats instanceof List) ? doc.appStats : null
-    if (rows == null) return [totalMs: null, count: null]
-    def row = rows.find { it?.id?.toString() == appId }
-    return row != null ? [totalMs: row.total, count: row.count] : [totalMs: 0, count: 0]
+// After the reset an absent row is total 0 (the hub lists only apps with activity since the last
+// reset); before it, an absent row stays unknown so a wrong app id cannot verify.
+Map appRuntimeRow(doc, String appId, boolean absentIsZero) {
+    def rows = appStatsRows(doc)
+    def row = rows?.find { it?.id?.toString() == appId }
+    if (row != null) return [totalMs: row.total, count: row.count]
+    return (rows != null && absentIsZero) ? [totalMs: 0, count: 0] : [totalMs: null, count: null]
 }
+
+List appStatsRows(doc) { (doc instanceof Map && doc.appStats instanceof List) ? doc.appStats : null }
 
 
 // hub_get_metrics: probe-grade current metrics + the hub's own health alerts. Mirrors the main

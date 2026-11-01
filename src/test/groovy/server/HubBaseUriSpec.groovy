@@ -183,11 +183,12 @@ class HubBaseUriSpec extends ToolSpecBase {
     }
 
     @Unroll
-    def 'a LAN probe answered by #answer keeps hub calls on loopback, says why, and logs once'() {
-        given:
+    def 'a LAN probe answered by #answer keeps hub calls on loopback, says why, logs once, and is retried only if transient'() {
+        given: 'the first probe gets the answer under test; any later probe passes'
         loginSecurity(false)
         def logs = captureLogs()
-        probeHandler = handler
+        def probes = 0
+        probeHandler = { Map p, Closure cb -> probes++; probes == 1 ? handler(p, cb) : cb.call([status: 200, data: '123456']) }
 
         when:
         def uris = (1..3).collect { script.hubBaseUri() }
@@ -195,16 +196,40 @@ class HubBaseUriSpec extends ToolSpecBase {
 
         then:
         uris == [LOOP, LOOP, LOOP]
+        probes == 1
         info.hubRequestRoute == 'loopback'
         info.hubRequestRouteNote.contains(note)
         logs.count { it.level == 'warn' && it.message.contains(note) } == 1
 
+        when: 'the retry window has passed'
+        def verdict = script.HUB_LAN_PROBE.get(LAN)
+        verdict.at = (verdict.at as long) - script.HUB_LAN_ROUTE_RETRY_MS
+
+        then: 'a redirect verdict lasts; anything else is probed again'
+        script.hubBaseUri() == (lasting ? LOOP : LAN)
+        probes == (lasting ? 1 : 2)
+
         where:
-        answer                 | note                          | handler
-        'a 302'                | 'redirects LAN requests'      | { Map p, Closure cb -> throw new RedirectException('https://192.168.1.13/hub/advanced/freeOSMemory') }
-        'the login page'       | 'redirects LAN requests'      | { Map p, Closure cb -> cb.call([status: 200, data: LOGIN_PAGE]) }
-        'a non-numeric body'   | 'unexpected answer'           | { Map p, Closure cb -> cb.call([status: 200, data: 'oops']) }
-        'an HTTP 500'          | 'unexpected answer (HTTP 500)' | { Map p, Closure cb -> throw new StatusException(500) }
+        answer               | note                           | lasting | handler
+        'a 302'              | 'redirects LAN requests'       | true    | { Map p, Closure cb -> throw new RedirectException('https://192.168.1.13/hub/advanced/freeOSMemory') }
+        'the login page'     | 'redirects LAN requests'       | true    | { Map p, Closure cb -> cb.call([status: 200, data: LOGIN_PAGE]) }
+        'a non-numeric body' | 'unexpected answer'            | false   | { Map p, Closure cb -> cb.call([status: 200, data: 'oops']) }
+        'an HTTP 500'        | 'unexpected answer (HTTP 500)' | false   | { Map p, Closure cb -> throw new StatusException(500) }
+        'a read timeout'     | 'unexpected answer (HTTP none)' | false  | { Map p, Closure cb -> throw new java.net.SocketTimeoutException('Read timed out') }
+    }
+
+    def 'a second caller during a running probe gets loopback and nothing is cached'() {
+        given: 'another thread is probing'
+        loginSecurity(false)
+        script.HUB_LAN_PROBING.put('probing', true)
+        def probes = 0
+        probeHandler = { Map p, Closure cb -> probes++; cb.call([status: 200, data: '1']) }
+
+        expect:
+        script.hubBaseUri() == LOOP
+        script.toolGetHubInfo().hubRequestRouteNote.contains('being probed')
+        probes == 0
+        script.HUB_LAN_PROBE.isEmpty()
     }
 
     def 'a LAN probe that cannot connect opens the loopback window instead of caching a verdict'() {
@@ -457,19 +482,25 @@ class HubBaseUriSpec extends ToolSpecBase {
         '302 to /login'       | 'POST'
     }
 
-    def 'a login page on the LAN repeat is returned as is, not retried again'() {
-        given:
+    @Unroll
+    def 'a LAN #method answered with the real login page is replayed once, and a second login page throws'() {
+        given: 'the re-probe still passes, so the replay goes to the LAN again and gets the login page again'
         loginSecurity(false)
         assert script.hubBaseUri() == LAN
         def sent = []
-        httpGetHandler = { Map params, Closure cb -> sent << params.uri; cb.call([status: 200, data: LOGIN_PAGE]) }
+        Closure answer = { Map params, Closure cb -> sent << params.uri; cb.call([status: 200, data: LOGIN_PAGE]) }
+        if (method == 'GET') httpGetHandler = answer else httpPostHandler = answer
 
-        when: 'the re-probe still passes, so the repeat goes to the LAN again and gets the login page again'
-        def body = script._hubRequest('GET', '/hub2/hubData', [returnShape: 'text'])
+        when:
+        script._hubRequest(method, '/installedapp/update/json', [returnShape: 'text', body: method == 'POST' ? 'x=1' : null])
 
-        then:
-        body == LOGIN_PAGE
+        then: 'never a result: a struct caller would read the 200 as a write that ran'
+        def e = thrown(IllegalStateException)
+        e.message.contains("refused this request twice")
         sent == [LAN, LAN]
+
+        where:
+        method << ['GET', 'POST']
     }
 
     @Unroll
@@ -493,5 +524,49 @@ class HubBaseUriSpec extends ToolSpecBase {
         'no password input'       | '<html><head><title>Login - Hub</title></head><body><form method="POST"><input type="text" name="username"/><a href="/login">Login</a></form></body></html>'
         'an app page with a form' | '<html><head><title>Rule</title></head><body><form action="/login" method="post"><input name="username"></form></body></html>'
         'no POST form'            | '<html><head><title>Login - Hub</title></head><body><input type="text" name="username"/><input type="password" name="password"/></body></html>'
+    }
+
+    def 'a non-/login redirect on the LAN route after a passed probe is not replayed and leaves the verdict alone'() {
+        given:
+        loginSecurity(false)
+        assert script.hubBaseUri() == LAN
+        def sent = []
+        httpPostHandler = { Map params, Closure cb -> sent << params.uri; throw new RedirectException('http://192.168.1.13:8080/installedapp/configure/9') }
+
+        when:
+        script._hubRequest('POST', '/installedapp/update/json', [returnShape: 'text', body: 'x=1'])
+
+        then:
+        thrown(RedirectException)
+        sent == [LAN]
+        script.HUB_LAN_PROBE.get(LAN)?.ok == true
+    }
+
+    static class HttpHostConnectException extends RuntimeException { HttpHostConnectException() { super('refused') } }
+    static class ConnectTimeoutException extends RuntimeException { ConnectTimeoutException() { super('connect timed out') } }
+    /** A wrapper that carries an HTTP response: the request reached the hub. */
+    static class ResponseWrapper extends RuntimeException {
+        final def response = [status: 502]
+        ResponseWrapper(Throwable cause) { super('HTTP 502', cause) }
+    }
+
+    @Unroll
+    def '_isConnectFailure(#label) == #expected'() {
+        expect:
+        script._isConnectFailure(e) == expected
+
+        where:
+        label                                    | expected | e
+        'bare ConnectException'                  | true     | new java.net.ConnectException('Connection refused')
+        'ConnectException, wrapped once'         | true     | new java.lang.reflect.UndeclaredThrowableException(new java.net.ConnectException('refused'))
+        'ConnectException, wrapped twice'        | true     | new RuntimeException(new java.lang.reflect.UndeclaredThrowableException(new java.net.ConnectException('refused')))
+        'HttpHostConnectException'               | true     | new HttpHostConnectException()
+        'NoRouteToHostException'                 | true     | new java.net.NoRouteToHostException('no route')
+        'UnknownHostException'                   | true     | new java.net.UnknownHostException('nohost')
+        'ConnectTimeoutException'                | true     | new ConnectTimeoutException()
+        'SocketTimeoutException connect'         | true     | new java.net.SocketTimeoutException('connect timed out')
+        'SocketTimeoutException read'            | false    | new java.net.SocketTimeoutException('Read timed out')
+        'a wrapper carrying a response status'   | false    | new ResponseWrapper(new java.net.ConnectException('refused'))
+        'a chain deeper than three levels'       | false    | new RuntimeException(new RuntimeException(new RuntimeException(new java.net.ConnectException('refused'))))
     }
 }

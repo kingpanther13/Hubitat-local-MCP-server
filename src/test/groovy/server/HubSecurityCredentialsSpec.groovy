@@ -46,6 +46,13 @@ class HubSecurityCredentialsSpec extends ToolSpecBase {
         }
     }
 
+    /** A header object whose toString() carries the header name, as the platform client's headers do. */
+    static class HeaderLike {
+        final String value
+        HeaderLike(String value) { this.value = value }
+        String toString() { "Set-Cookie: ${value}".toString() }
+    }
+
     def setupSpec() {
         appExecutor.getApp() >> sharedAppStub
         appExecutor.getLocation() >> sharedLocation
@@ -186,7 +193,7 @@ class HubSecurityCredentialsSpec extends ToolSpecBase {
         atomicStateMap.hubSecurityCookie == 'HUBSESSION=s1'
     }
 
-    def 'a login page on the repeat is returned as is, not retried again'() {
+    def 'a login page on the replay is a refusal, never a result: it throws after one re-login'() {
         given:
         configureCredentials()
         atomicStateMap.hubSecurityCookie = 'HUBSESSION=old'
@@ -195,10 +202,11 @@ class HubSecurityCredentialsSpec extends ToolSpecBase {
         httpGetHandler = { Map params, Closure cb -> sent++; cb.call([status: 200, data: LOGIN_PAGE]) }
 
         when:
-        def body = script._hubRequest('GET', '/hub2/hubData', [returnShape: 'text'])
+        script._hubRequest('GET', '/hub2/hubData', [returnShape: 'text'])
 
         then:
-        body == LOGIN_PAGE
+        def e = thrown(IllegalStateException)
+        e.message.contains('Hub Login Security')
         sent == 2
         logins.size() == 1
     }
@@ -313,10 +321,11 @@ class HubSecurityCredentialsSpec extends ToolSpecBase {
         loginHandler = handler
 
         when:
-        def cookie = script._hubSignIn()
+        def signIn = script._hubSignIn()
 
         then:
-        cookie == expected
+        signIn.cookie == expected
+        signIn.answered == (answer != 'a connection failure')
         logins*.followRedirects == [false]
 
         where:
@@ -326,6 +335,66 @@ class HubSecurityCredentialsSpec extends ToolSpecBase {
         '302 back to /login'         | null                | { Map p, Closure c -> throw new RedirectException('/login?error=1', 'HUBSESSION=anon; Path=/') }
         '200 login page with cookie' | null                | { Map p, Closure c -> c([status: 200, data: LOGIN_PAGE, headers: ['Set-Cookie': 'HUBSESSION=anon; Path=/']]) }
         '302 without a cookie'       | null                | { Map p, Closure c -> throw new RedirectException('/') }
+        'a Header-like Set-Cookie'   | 'HUBSESSION=h'      | { Map p, Closure c -> c([status: 302, headers: ['Location': '/', 'Set-Cookie': new HeaderLike('HUBSESSION=h; Path=/')]]) }
+        'a list of Set-Cookie'       | 'HUBSESSION=b'      | { Map p, Closure c -> c([status: 302, headers: ['Location': '/', 'Set-Cookie': ['JSESSIONID=a; Path=/', 'HUBSESSION=b; Path=/']]]) }
         'a connection failure'       | null                | { Map p, Closure c -> throw new IllegalStateException('no route') }
+    }
+
+    def 'with Hub Login Security off, stored credentials are not used: LAN route, no sign-in, no note'() {
+        given: 'wrong credentials stored, but the login is off, so no request needs a cookie'
+        script.metaClass.isHubitatUISecurityEnabled = { -> false }
+        configureCredentials()
+        refuseSignIn = true
+        def sent = []
+        httpGetHandler = { Map params, Closure cb ->
+            sent << [uri: params.uri, cookie: params.headers?.Cookie]
+            cb.call([status: 200, data: 'BODY'])
+        }
+
+        when:
+        def body = script._hubRequest('GET', '/hub2/hubData', [returnShape: 'text'])
+        def info = script.toolGetHubInfo([:])
+
+        then:
+        body == 'BODY'
+        sent == [[uri: LAN, cookie: null]]
+        logins.isEmpty()
+        probes == [[uri: LAN, cookie: null]]
+        info.hubRequestRoute == 'lan'
+        !info.containsKey('hubRequestRouteNote')
+    }
+
+    def 'a sign-in with no answer starts no backoff and is not reported as refused credentials'() {
+        given:
+        configureCredentials()
+        loginHandler = { Map p, Closure c -> throw new IllegalStateException('no route') }
+        def logs = []
+        script.metaClass.mcpLog = { String level, String component, String message, String ruleId = null, Map extra = null ->
+            logs << [level: level, message: message]
+        }
+
+        when: 'two sign-in attempts in a row'
+        def first = script.getHubSecurityCookie()
+        def second = script.getHubSecurityCookie()
+
+        then: 'both tried: no backoff held the second one back'
+        first == null
+        second == null
+        logins.size() == 2
+        script.HUB_SIGNIN_FAILED_AT.isEmpty()
+
+        and: 'one warning, about the missing answer, none about refused credentials'
+        logs.count { it.level == 'warn' && it.message.contains('sign-in got no answer') } == 1
+        !logs.any { it.message.contains('credentials were refused') }
+    }
+
+    def 'hubSecurityConfigured is false while the toggle is on but a credential is blank'() {
+        given:
+        settingsMap.hubSecurityEnabled = true
+        settingsMap.hubSecurityUser = 'hubadmin'
+        settingsMap.hubSecurityPassword = ''
+
+        expect:
+        script.toolGetHubInfo([:]).hubSecurityConfigured == false
     }
 }

@@ -726,7 +726,8 @@ def toolCreateHubBackup(args) {
         // stamped -- blocking every destructive tool despite a fresh recovery point.
         Long preEpoch = _latestLocalHubBackupEpoch("database")
         long confirmT0 = now()
-        def asyncParams = [uri: hubBaseUri(), path: "/hub/backupDB", query: [fileName: "latest"], timeout: 300]
+        // Loopback: a large or one-off transfer gets none of _hubRequest's LAN fallbacks, and its busy time is irrelevant.
+        def asyncParams = [uri: hubLoopbackUri(), path: "/hub/backupDB", query: [fileName: "latest"], timeout: 300]
         def cookie = getHubSecurityCookie()
         if (cookie) asyncParams.headers = [Cookie: cookie]
         asynchttpGet("backupResponseSink", asyncParams)
@@ -1020,7 +1021,8 @@ private Map _applyNetworkBackup(Map spec, boolean test, Map cur) {
 private Map _createFullLocalBackup(boolean scheduleUpdated, networkBackup) {
     Long pre = _latestLocalHubBackupEpoch("full")
     long t0 = now()
-    def params = [uri: hubBaseUri(), path: "/hub2/createFullLocalBackup", timeout: 600]
+    // Loopback: a large or one-off transfer gets none of _hubRequest's LAN fallbacks, and its busy time is irrelevant.
+    def params = [uri: hubLoopbackUri(), path: "/hub2/createFullLocalBackup", timeout: 600]
     def cookie = getHubSecurityCookie()
     if (cookie) params.headers = [Cookie: cookie]
     asynchttpGet("backupResponseSink", params)

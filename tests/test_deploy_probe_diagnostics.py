@@ -183,6 +183,13 @@ def test_reset_warns_on_a_watchdog_that_predates_the_tool(tmp_path):
     assert "::warning::The standing watchdog predates hub_delete_app_runtime_stats" in result.stdout
 
 
+def test_reset_fails_the_step_on_any_other_json_rpc_error_without_retrying(tmp_path):
+    internal = json.dumps({"jsonrpc": "2.0", "id": 1, "error": {"code": -32603, "message": "Internal error: boom"}})
+    result, calls = _run_reset(tmp_path, [internal])
+    assert "RC=1" in result.stdout and calls == 1, (calls, result.stdout, result.stderr)
+    assert "::error::Runtime-statistics reset for app 38 failed" in result.stdout and "Internal error: boom" in result.stdout
+
+
 def test_reset_fails_the_step_on_an_explicit_refusal(tmp_path):
     refused = _tool_answer({"success": False, "error": "GET /hub/advanced/resetAppRuntimeStats answered 'no'"})
     result, calls = _run_reset(tmp_path, [refused])
@@ -196,6 +203,13 @@ def test_reset_reports_an_unknown_budget_without_the_short_uptime_warning(tmp_pa
     assert "RC=0" in result.stdout, result.stdout + result.stderr
     assert "busy budget unknown (threshold/uptime unreadable: threshold read failed)" in result.stdout, result.stdout
     assert "1,400,000" not in result.stdout, result.stdout
+
+
+def test_reset_warns_when_uptime_is_too_short_for_a_full_run(tmp_path):
+    short = dict(_RESET_OK, uptimeSeconds=3600, limitMs=1188000)
+    result, _ = _run_reset(tmp_path, [_tool_answer(short)])
+    assert "RC=0" in result.stdout, result.stdout + result.stderr
+    assert "::warning::Busy budget after the reset is 1188000 ms (< 1,400,000 ms" in result.stdout, result.stdout
 
 
 def test_reset_warns_when_the_read_back_was_unavailable(tmp_path):

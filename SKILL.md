@@ -373,7 +373,7 @@ All three:
 
 ### Hub Security Cookie Pattern
 
-Optional. Without credentials every hub call goes over loopback, which the hub's login filter exempts.
+Optional. With Hub Login Security off the LAN route needs no credentials; with it on and no credentials, every hub call goes over loopback, which the hub's login filter exempts.
 
 ```groovy
 def getHubSecurityCookie() {
@@ -389,7 +389,7 @@ def getHubSecurityCookie() {
 
 The cookie is cached in `atomicState.hubSecurityCookie` with expiry in `atomicState.hubSecurityCookieExpiry`.
 
-Hub calls use loopback (`http://127.0.0.1:8080`) or, once `_hubLanProbe()` has proved it answers, the hub's own LAN address, because the hub does not count HTTP wait on a non-loopback host toward the app's busy time (the per-app load limiter); with Hub Login Security on, the LAN route needs these credentials. The sign-in is posted over loopback and the session cookie rides the hub calls, which never leave the hub; requests that read a redirect stay on loopback, and an expired session on the LAN route (the login page comes back) gets one re-login and retry. Without credentials the server uses loopback and everything works. The connection is plaintext either way, so it trusts the hub's operating system and locally installed code: install only trusted apps/drivers, restrict hub administration, and never route credentials to a remote HTTP address.
+The `_hubRequest`-based hub calls use loopback (`http://127.0.0.1:8080`) or, once `_hubLanProbe()` has proved it answers, the hub's own LAN address, because the hub does not count HTTP wait on a non-loopback host toward the app's busy time (the per-app load limiter); with Hub Login Security on, the LAN route needs these credentials. The sign-in is posted over loopback and the session cookie rides the hub calls, which never leave the hub; requests that read a redirect, and the large one-off transfers that bypass `_hubRequest`, stay on loopback, and a `_hubRequest` call refused on the LAN route (the login page or a 302 to /login comes back) gets one re-login and replay. With Hub Login Security on and no credentials the server uses loopback and everything works. The connection is plaintext either way, so it trusts the hub's operating system and locally installed code: install only trusted apps/drivers, restrict hub administration, and never route credentials to a remote HTTP address.
 
 ### State Management
 

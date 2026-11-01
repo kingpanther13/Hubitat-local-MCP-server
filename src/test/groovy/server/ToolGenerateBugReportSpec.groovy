@@ -1053,7 +1053,7 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         def result = script.toolGenerateBugReport(baseArgs())
 
         then:
-        result.report.contains('- **Hub security enabled:** true')
+        result.report.contains('- **Hub Login Security credentials configured:** true')
         !result.report.contains('hubadminlogin')
         !result.report.contains('correcthorsebatterystaple')
         !result.report.toLowerCase().contains('password')

@@ -997,19 +997,26 @@ class WatchdogV31ManualSpec extends WatchdogSpec {
         'row dropped until it runs again' | []
     }
 
-    def "hub_delete_app_runtime_stats verifies an app with no runtime yet at zero"() {
+    @Unroll
+    def "hub_delete_app_runtime_stats verifies a zero total but not an app missing from the stats (#scenario)"() {
         given:
         def hub = scriptOnHub(26475G)
-        stubStatsHub(hub, [], [before: logsJson('1m 0s', [])])
+        stubStatsHub(hub, [], [before: logsJson('1m 0s', beforeRows)])
 
         when:
         def r = hub.adminDeleteAppRuntimeStats([appId: '194', confirm: true])
 
         then:
         r.success == true
-        r.verified == true
-        r.before == [totalMs: 0, count: 0]
+        r.verified == verified
+        r.before == before
         r.after == [totalMs: 0, count: 0]
+        (noteLine == null) || r.note.contains(noteLine)
+
+        where:
+        scenario             | beforeRows                         || verified | before                      | noteLine
+        'a row with total 0' | [[id: 194, total: 0, count: 0]]    || true     | [totalMs: 0, count: 0]      | null
+        'no row for the app' | [[id: 7, total: 5, count: 1]]      || false    | [totalMs: null, count: null] | 'no App Stats row for app 194'
     }
 
     @Unroll
@@ -1025,6 +1032,7 @@ class WatchdogV31ManualSpec extends WatchdogSpec {
         r.success == false
         r.error.contains(RESET_PATH)
         r.error.contains(errorPart)
+        !r.error.contains("'null'")
         r.note.contains(hint)
         r.before == [totalMs: 936332, count: 16257]
         paths == ['/logs/json', RESET_PATH]
@@ -1033,8 +1041,8 @@ class WatchdogV31ManualSpec extends WatchdogSpec {
         scenario              | status | body                 || errorPart          | hint
         'no HTTP answer'      | null   | null                 || 'no HTTP answer'   | 'Retry once the hub answers /hub/advanced reads'
         'endpoint missing'    | 404    | null                 || 'HTTP 404'         | 'firmware predates the endpoint'
-        'login refused'       | 401    | null                 || 'HTTP 401'         | 'Hub Security'
-        'login redirect'      | 302    | null                 || 'HTTP 302'         | 'Hub Security'
+        'login refused'       | 401    | null                 || 'HTTP 401'         | 'if this hub still requires the watchdog'
+        'login redirect'      | 302    | null                 || 'HTTP 302'         | 'otherwise retry'
         'answered other text' | 200    | 'error'              || "HTTP 200 'error'" | 'If it keeps failing, reboot the hub'
         'answered a page'     | 200    | '<html>login</html>' || 'HTTP 200'         | 'If it keeps failing, reboot the hub'
     }

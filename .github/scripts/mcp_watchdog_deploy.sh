@@ -94,9 +94,10 @@ echo "::add-mask::${WATCHDOG_URL##*access_token=}"
 #    Disabling and re-enabling the app does not change that counter; a reboot zeroes it and uptime.
 #    The reset zeroes every app's total while apps keep serving and leaves uptime alone.
 # ===========================================================================
-# reset_runtime_stats <app-id> -- the tool is idempotent, so an empty answer or a busy refusal (both
-# scheduled nothing) is retried; if that persists, or the watchdog predates the tool, the run continues
-# with a warning (the suite resets in-run on a limiter trip). Returns 1 only on an explicit failure.
+# reset_runtime_stats <app-id> -- an empty answer or a busy refusal is retried (a busy refusal scheduled
+# nothing; a lost answer may have run, harmless because the reset is idempotent); if that persists, or
+# the watchdog predates the tool, the run continues with a warning (the suite resets in-run on a limiter
+# trip). Returns 1 only on an explicit failure.
 reset_runtime_stats() {
   local app_id="$1" rpc text rpc_err err_file busy why attempt=1 summary limit_ms
   rpc=$(jq -nc --arg id "$app_id" '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_delete_app_runtime_stats",arguments:{appId:$id,confirm:true}}}')

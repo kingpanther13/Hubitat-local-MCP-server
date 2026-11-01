@@ -206,7 +206,8 @@ def toolExportBundle(args) {
     try {
         def cookie = getHubSecurityCookie()
         def params = [
-            uri: hubBaseUri(),
+            // Loopback: a large or one-off transfer gets none of _hubRequest's LAN fallbacks, and its busy time is irrelevant.
+            uri: hubLoopbackUri(),
             path: "/bundle/export/${bundleId}",
             textParser: false,
             ignoreSSLIssues: true,

@@ -13435,34 +13435,41 @@ def updated() {}
     def test_hub_calls_not_charged_as_app_busy_time(self) -> None:
         """With Hub Login Security off (hubRequestRoute "lan"), the server's hub HTTP calls are not
         charged as its busy time (App Stats total), which is what trips the per-app load limiter. The
-        watchdog reads the stats directly; a hub_list_modes control removes transport/relay time from the
-        denominator, so busy/wall is hardware-independent (charged ~0.9, uncharged ~0.15-0.3)."""
+        watchdog reads the stats directly; an interleaved hub_list_modes control removes transport/relay
+        time from the denominator, so busy/wall is hardware-independent: charged waits push it towards 1,
+        an uncharged route stays well under 0.6."""
         if not (self.watchdog_url and self.server_app_id):
             raise SkipTest("WATCHDOG_URL/HUBITAT_APP_ID not set -- cannot reset the runtime statistics")
-        route = self.client.call_tool("hub_get_info", {}).get("hubRequestRoute")
+        info = self.client.call_tool("hub_get_info", {})
+        route = info.get("hubRequestRoute")
         if route != "lan":
-            raise SkipTest(f"hub calls stay on loopback (hubRequestRoute={route!r}): Hub Login Security is on, "
-                           "the hub's LAN address is unreadable, or the Read master is off")
-        t0 = time.monotonic()
-        for _ in range(5):
-            self.client.call_tool("hub_list_modes", {})
-        wall_control = time.monotonic() - t0
+            raise SkipTest(f"hub calls stay on loopback (hubRequestRoute={route!r}): {info.get('hubRequestRouteNote')}")
         reset_args = {"appId": self.server_app_id, "confirm": True}
         zeroed = self._watchdog_tool("hub_delete_app_runtime_stats", reset_args)
         assert zeroed.get("success") is True, f"runtime-statistics reset failed: {zeroed}"
-        t0 = time.monotonic()
+        # Interleaved so relay drift lands on both sides of the subtraction alike.
+        wall = wall_control = 0.0
         for i in range(5):
+            t0 = time.monotonic()
+            self.client.call_tool("hub_list_modes", {})
+            t1 = time.monotonic()
             res = self.client.call_tool("hub_read_devices", {"tool": "hub_list_devices", "args": {}})
+            wall_control += t1 - t0
+            wall += time.monotonic() - t1
             assert isinstance(res, (dict, list)) and not (isinstance(res, dict) and res.get("success") is False), \
                 f"hub_list_devices call {i + 1}: {res}"
-        wall = time.monotonic() - t0
         measured = self._watchdog_tool("hub_delete_app_runtime_stats", reset_args)
         if measured.get("verified") is False:
             raise SkipTest("stats read-back unavailable")
         busy_ms = (measured.get("before") or {}).get("totalMs")
         if not isinstance(busy_ms, (int, float)):
             raise SkipTest(f"watchdog reset reported no numeric before.totalMs: {str(measured)[:300]}")
-        share = busy_ms / max(1.0, (wall - wall_control) * 1000)
+        assert busy_ms > 0, \
+            f"app {self.server_app_id} shows 0 ms busy after 5 hub_list_devices calls, which always cost busy " \
+            "time -- the stats row is not the server app's (stale HUBITAT_APP_ID?)"
+        if wall - wall_control < max(1.0, 0.3 * wall):
+            raise SkipTest(f"measurement window too small (wall {wall:.1f} s, control {wall_control:.1f} s)")
+        share = busy_ms / ((wall - wall_control) * 1000)
         print(f"    [BUSY] server app {self.server_app_id}: {busy_ms} ms busy over 5 hub_list_devices calls "
               f"({wall:.1f}s wall, {wall_control:.1f}s hub_list_modes control), busy share {share:.2f}")
         assert share < 0.6, \
@@ -17577,8 +17584,8 @@ _IPV4 = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
 _ephemeral_literals: set[str] = set()
 
 
-# The ephemeral test hub runs without a watchdog and may report its Z-Wave radio offline; its hubs
-# route hub calls over loopback, and a watchdog-equipped provider may lack the stats read-back
+# The ephemeral lane runs without a watchdog, may report its Z-Wave radio offline and routes hub calls
+# over loopback; a provider that supplies a watchdog may still lack the stats read-back
 # (docs/ephemeral-hub-e2e.md, Coverage). Only these documented skips pass there. Every other skip,
 # and every skip on the physical hub, still fails.
 EPHEMERAL_ACCEPTED_SKIPS = ("WATCHDOG_URL/HUBITAT_APP_ID not set", "Z-Wave radio offline on this hub",
