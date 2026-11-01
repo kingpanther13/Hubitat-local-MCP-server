@@ -662,7 +662,7 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
     def 'data values are written after an enable and before a disable (enabled: #enabled)'() {
         given:
         def model = fixture()
-        model.device.disabled = !enabled
+        model.device.disabled = enabled
         registerFixture(model, true)
         def posts = stubPosts { path, body ->
             if (path == '/device/runmethod') model.device.data.put(body.args[0].value, body.args[1].value)
