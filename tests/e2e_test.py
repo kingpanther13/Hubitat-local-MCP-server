@@ -3094,11 +3094,16 @@ class TestRunner:
                     continue
             raise AssertionError(f"unparseable lastActivity {value!r}")
 
+        unavailable = set(stale.get("metadataUnavailableIds") or []) | set(everything.get("metadataUnavailableIds") or [])
         ages = {d["id"]: (_age_seconds(d["lastActivity"]) if d.get("lastActivity") else None)
-                for d in everything.get("devices", [])}
-        settled = {i for i, age in ages.items() if age is None or abs(age - 3600) > 60}
-        expected = {i for i in settled if ages[i] is None or ages[i] >= 3600} - set(stale.get("metadataUnavailableIds") or [])
-        got = {d["id"] for d in stale.get("devices", [])} & settled
+                for d in everything.get("devices", []) if d["id"] not in unavailable}
+        # A device that reported between the two reads is judged on two different timestamps; leave it out too.
+        stale_stamp = {d["id"]: d.get("lastActivity") for d in stale.get("devices", [])}
+        all_stamp = {d["id"]: d.get("lastActivity") for d in everything.get("devices", [])}
+        settled = {i for i, age in ages.items() if (age is None or abs(age - 3600) > 60)
+                   and stale_stamp.get(i, all_stamp.get(i)) == all_stamp.get(i)}
+        expected = {i for i in settled if ages[i] is None or ages[i] >= 3600}
+        got = set(stale_stamp) & settled
         assert got == expected, f"staleHours=1 kept {sorted(got - expected)} and dropped {sorted(expected - got)}"
         # A credential-named attribute cannot be matched: a filter on it would confirm a guess.
         self._expect_tool_refusal("hub_list_devices", {"stateFilter": {"lockCodes": "1234"}}, "hidden while")
@@ -3772,9 +3777,13 @@ class TestRunner:
                 empty = _tool_error_payload(exc)
             assert "dataValues must be a non-empty object" in str(empty.get("error")), \
                 f"an empty dataValues must be refused, not reported as a successful no-op: {empty}"
-            # A disabled device drops data values, so an enable is sent before them and both land.
-            disabled = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"enabled": False}})
-            assert disabled.get("success") is True, f"could not disable the fixture: {disabled}"
+            # A disabled device drops data values, so a disable goes after them and an enable before them.
+            disabled = self.client.call_tool("hub_update_device", {
+                "deviceId": dev_id, "fields": {"enabled": False, "dataValues": {"beforeDisable": "1"}}})
+            assert disabled.get("success") is True and not disabled.get("errors"), \
+                f"dataValues + disable must land both: {disabled}"
+            assert {row.get("property") for row in disabled.get("changes", [])} == {"enabled", "dataValue.beforeDisable"}, \
+                f"both the disable and the data value must report as changes: {disabled}"
             re_enabled = self.client.call_tool("hub_update_device", {
                 "deviceId": dev_id, "fields": {"enabled": True, "dataValues": {"afterEnable": "1"}}})
             assert re_enabled.get("success") is True and not re_enabled.get("errors"), \
@@ -3791,12 +3800,28 @@ class TestRunner:
             lock_dni = str(lock_dev.get("deviceNetworkId") or "")
             assert lock_id and lock_dni, f"could not create {lock_label}: {lock}"
             try:
+                # The snapshot reports the state at read time, so wait until the lock has set the code,
+                # then take the snapshot from a second (idempotent) setCode.
+                self.client.call_tool("hub_call_device_command", {
+                    "deviceId": lock_id, "command": "setCode", "parameters": ["1", "4321", "Guest"], "includeState": False})
+                for _ in range(20):
+                    attrs = {a.get("name"): a.get("value")
+                             for a in self.client.call_tool("hub_get_device", {"deviceId": lock_id}).get("attributes", [])}
+                    if attrs.get("lockCodes"):
+                        break
+                    time.sleep(0.5)
+                assert attrs.get("lockCodes") == "***redacted (password)***", f"hub_get_device must hide lockCodes: {attrs}"
                 sent = self.client.call_tool("hub_call_device_command", {
                     "deviceId": lock_id, "command": "setCode", "parameters": ["1", "4321", "Guest"], "includeState": True})
                 snap = (sent.get("state") or {}).get("lockCodes") or {}
                 assert snap.get("value") == "***redacted (password)***", f"the command snapshot must hide lockCodes: {sent}"
-                rows = [e for e in self.client.call_tool("hub_list_device_events", {
-                    "deviceId": lock_id, "hoursBack": 1, "limit": 30}).get("events", []) if e.get("name") == "lockCodes"]
+                rows = []
+                for _ in range(20):
+                    rows = [e for e in self.client.call_tool("hub_list_device_events", {
+                        "deviceId": lock_id, "hoursBack": 1, "limit": 30}).get("events", []) if e.get("name") == "lockCodes"]
+                    if rows:
+                        break
+                    time.sleep(0.5)
                 assert rows and all(e.get("value") == "***redacted (password)***" and "4321" not in str(e.get("description"))
                                     for e in rows), f"event rows must hide lockCodes: {rows}"
             finally:
