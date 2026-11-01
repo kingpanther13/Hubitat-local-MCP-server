@@ -7592,11 +7592,19 @@ String hubBaseUri() {
 
 // A failure to open the connection at all, with no HTTP response: the request never reached the
 // hub, so repeating it on loopback cannot run a write twice. A read timeout does not qualify.
+// The connect exception may arrive wrapped, so up to three levels of the cause chain are checked.
 private boolean _isConnectFailure(Exception e) {
-    if (_httpStatusOf(e) != null) return false
-    String n = e.class.simpleName
-    if (n in ["ConnectException", "HttpHostConnectException", "NoRouteToHostException", "UnknownHostException", "ConnectTimeoutException"]) return true
-    return n == "SocketTimeoutException" && e.message?.toLowerCase()?.contains("connect")
+    def t = e
+    for (int i = 0; i < 3 && t != null; i++) {
+        def st = null
+        try { st = t.response?.status } catch (Exception ignore) { st = null }
+        if (st != null) return false
+        String n = t.class.simpleName
+        if (n in ["ConnectException", "HttpHostConnectException", "NoRouteToHostException", "UnknownHostException", "ConnectTimeoutException"]) return true
+        if (n == "SocketTimeoutException" && t.message?.toLowerCase()?.contains("connect")) return true
+        t = t.cause
+    }
+    return false
 }
 
 def _noteHubLoopbackFallback(String reason) {
@@ -7985,7 +7993,7 @@ private _hubRequest(String method, String path, Map opts = [:]) {
             catch (Exception logErr) { log.warn "[hubrt] diagnostic logging failed: ${logErr.message}" }
             return _hubRequest(method, path, opts + [loopbackRetry: true])
         }
-        if (shouldRetryWithFreshCookie(e, opts.isRetry)) {
+        if (shouldRetryWithFreshCookie(e, opts.isRetry == true)) {
             // Log this attempt on its own before recursing, so the outer finally does not
             // fold the retry's duration into the failed attempt's line.
             _hubRtLogged = true

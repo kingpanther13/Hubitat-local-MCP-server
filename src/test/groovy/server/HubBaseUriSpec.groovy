@@ -363,8 +363,9 @@ class HubBaseUriSpec extends ToolSpecBase {
         when:
         script._hubRequest('POST', '/installedapp/update/json', [returnShape: 'text', body: 'x=1'])
 
-        then:
-        thrown(java.net.SocketTimeoutException)
+        then: 'the harness may wrap the checked exception, so look one level down too'
+        def err = thrown(Exception)
+        err instanceof java.net.SocketTimeoutException || err.cause instanceof java.net.SocketTimeoutException
         sent == ['http://192.168.1.13:8080']
         script.HUB_LAN_ROUTE_FAILED_AT.isEmpty()
     }
