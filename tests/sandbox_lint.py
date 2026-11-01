@@ -46,7 +46,7 @@ GROOVY_FILES = [
     # forbidden patterns here rather than discovering a violation only at live install time.
     # The v1, v2 and v3 watchdogs are retired: not deployed, linted or tested. Their files stay so a
     # revert of #485's e2e scripts could bring v2 back (re-enable together with the @Ignore on their
-    # specs); the hub keeps its v2 instance disabled. v3.1 is the active watchdog.
+    # specs); the hub keeps its v2 instance disabled. v3.2 (file v3-1) is the active watchdog.
     # REPO_ROOT / "e2e-deadman-watchdog.groovy",
     # REPO_ROOT / "e2e-deadman-watchdog-v2.groovy",
     # REPO_ROOT / "e2e-deadman-watchdog-v3.groovy",

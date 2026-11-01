@@ -8,7 +8,7 @@ import support.PermissiveLog
 import support.TestHub
 import support.TestLocation
 
-// Coverage of the manual tools in the active v3.1 watchdog.
+// Coverage of the manual tools in the active v3.2 watchdog.
 class WatchdogV31ManualSpec extends WatchdogSpec {
     HubitatAppScript script
     List<List<Object>> runInCalls = []     // captures (delaySeconds, handler[, opts]) of every runIn
@@ -313,7 +313,7 @@ class WatchdogV31ManualSpec extends WatchdogSpec {
 
     // ---- self-update guard: the MCP server is the watchdog's only repair path -------------------
 
-    private static final String V31_SOURCE = 'definition(\n    name: "E2E Dead-Man Watchdog v3.1",\n    namespace: "mcp")\n'
+    private static final String V31_SOURCE = 'definition(\n    name: "E2E Dead-Man Watchdog v3.2",\n    namespace: "mcp")\n'
 
     @Unroll
     def "the watchdog's own code is replaced only while the MCP endpoint answers (available=#available)"() {
