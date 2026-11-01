@@ -193,6 +193,29 @@ class LoadLimiterGuardSpec extends ToolSpecBase {
             "load guard check: hub total 100000 ms of ${LIMIT} ms limit (estimate was ${HALF + 500_000L} ms); reset: no".toString()]
     }
 
+    def 'after a check that found the hub total under 50 %, the next check waits 60 s'() {
+        given:
+        seeded()
+        script.LOAD_GUARD.checkPending = NOW
+        logsJsonWithOwnTotal { HALF - 1_000L }
+        script._loadGuardCheckJob()
+        runInCalls.clear()
+        busy(HALF + 5_000L)
+
+        when: 'the estimate is back over the line within the minute'
+        script._loadGuardBeforeRequest()
+
+        then:
+        handlers() == []
+
+        when: 'a minute later'
+        NOW_OVERRIDE.set({ -> NOW + 60_001L })
+        script._loadGuardBeforeRequest()
+
+        then:
+        handlers() == ['_loadGuardCheckJob']
+    }
+
     def 'the check job resets when the hub total is at 50 %, zeroes the estimate and logs one warning'() {
         given:
         script._loadGuardBeforeRequest()
