@@ -8716,6 +8716,7 @@ def toolGetHubInfo(args = null) {
         }
         info.headerValidation = hv
     }
+    info.hubRequestRoute = (hubBaseUri() == hubLoopbackUri()) ? "loopback" : "lan"
     if (settings.enableRead != false) {
         info.name = hub?.name
         info.localIP = hub?.localIP
@@ -32823,14 +32824,26 @@ def getSelectedDevices() {
 }
 String hubLoopbackUri() { "http://127.0.0.1:8080" }
 String hubBaseUri() {
-    boolean secured = true
-    try { secured = isHubitatUISecurityEnabled() != false } catch (Exception ignored) { }
-    if (!secured) {
-        String ip = null
-        try { ip = location?.hub?.localIP?.toString() } catch (Exception ignored) { }
-        if (ip && ip ==~ /\d{1,3}(\.\d{1,3}){3}/) return "http://${ip}:8080"
+    if (settings.hubSecurityEnabled && !_hubSecurityObsolete()) return hubLoopbackUri()
+    def secured = null
+    try { secured = isHubitatUISecurityEnabled() } catch (Exception ignored) { }
+    if (secured == true) return hubLoopbackUri()
+    if (secured != false) {
+        _noteHubLoopbackFallback("the Hub Login Security switch is unreadable")
+        return hubLoopbackUri()
     }
+    String ip = null
+    try { ip = location?.hub?.localIP?.toString() } catch (Exception ignored) { }
+    if (ip && ip ==~ /\d{1,3}(\.\d{1,3}){3}/ && !ip.startsWith("0.") && !ip.startsWith("127.")) return "http://${ip}:8080"
+    _noteHubLoopbackFallback("location.hub.localIP is unreadable, absent or not a usable LAN address")
     return hubLoopbackUri()
+}
+@groovy.transform.Field static final java.util.concurrent.ConcurrentHashMap HUB_LOOPBACK_FALLBACK_NOTED = new java.util.concurrent.ConcurrentHashMap()
+def _noteHubLoopbackFallback(String reason) {
+    try {
+        if (HUB_LOOPBACK_FALLBACK_NOTED.putIfAbsent(reason, true) != null) return
+        mcpLog("warn", "server", "Hub calls stay on loopback because ${reason}; their HTTP wait counts toward this app's busy time, which the hub's per-app load limiter compares against uptime")
+    } catch (Exception ignored) { }
 }
 def _firmwareAtLeast(fw, String target) {
     if (fw == null || !fw.toString().trim()) return true
@@ -33013,7 +33026,7 @@ private _hubRequest(String method, String path, Map opts = [:]) {
     }
     def cookie = getHubSecurityCookie()
     def params = [
-        uri: (opts.followRedirects == false) ? hubLoopbackUri() : hubBaseUri(),
+        uri: (opts.followRedirects == false || cookie || opts.cookie) ? hubLoopbackUri() : hubBaseUri(),
         path: path,
         textParser: true,
         ignoreSSLIssues: true,
@@ -35480,7 +35493,7 @@ Creates a device from a driver TYPE id (the `id` from `hub_list_drivers(include=
 
 ### hub_get_info
 
-Read-only diagnostics tool. Beyond the default payload (model, firmware, uptime, memory, temperature, DB size, MCP stats, security/toggle settings), it always returns three extra fields and supports two optional deep-dive flags. Use it for health checks, version lookups, or when triaging hub performance.
+Read-only diagnostics tool. Beyond the default payload (model, firmware, uptime, memory, temperature, DB size, MCP stats, security/toggle settings), it always returns four extra fields and supports two optional deep-dive flags. Use it for health checks, version lookups, or when triaging hub performance.
 
 **Hardware identity (part of the default payload):**
 - `model` — the hub HARDWARE model string (e.g. "C-7", "C-8 Pro"), read from /hub/details/json (hardwareVersion). Null if that read fails or hardwareVersion is missing or blank — never a placeholder.
@@ -35489,6 +35502,7 @@ Read-only diagnostics tool. Beyond the default payload (model, firmware, uptime,
 **Always returned (regardless of the flags below):**
 - `platformUpdate` — the pending hub FIRMWARE/platform update (see the hub_update_firmware entry above, which installs it). On firmware 2.5.2.129 and later, which dropped the pending-update flag, `available` comes from the hub's PLATFORM_UPDATE_AVAILABLE alert, or from the platform's latest-version check when that alert is absent or dismissed (true only when that version is newer than the running one); it is null when the hub data is unreadable or neither answers.
 - `safeMode` — whether the hub is running in Safe Mode (from /hub2/hubData; absent if /hub2/hubData was unreadable).
+- `hubRequestRoute` — `lan` when the server's hub calls use the hub's LAN address (Hub Login Security off), `loopback` otherwise.
 - `mcpClient` — the client that sent THIS request, derived from the request itself and never stored: under `client`, the name/version/title as this request declared them (all null when it declared none), `wrapper` (computed from that name and version) true when the name is a stdio-to-HTTP bridge rather than the host app, the protocol version and, on an `initialize` call, the version the client asked for, plus the era (modern/legacy) and the source (cloud/local). `client` is null when the request carried no message that could name one, and an `error` key is present instead when the read failed.
 
 **On a per-client access token only:** `clientAccess` -- what this token may use: `client` (the name the hub owner gave it), `readEnabled`, `writeEnabled`, `localAccessEnabled`, `cloudAccessEnabled`, and `tools` (the tools it can call right now). `recentWrites` then lists only this token's writes. A call the token may not make is refused with a message that names the client and what blocks it, so an agent can ask the hub owner for that access instead of retrying. A client token cannot read or change the MCP Rule Server app itself, and access tokens are always masked in its results.
