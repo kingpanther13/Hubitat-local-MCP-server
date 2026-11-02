@@ -382,11 +382,9 @@ private Map _listDeviceRecord(Map rec, Map opts, List attrNames, Map caps, Set c
     }
     boolean capsMissing = f.contains("capabilities") && caps != null && !caps.containsKey(rec.id)
     if (f.contains("capabilities") && caps != null && !capsMissing) row.capabilities = caps.get(rec.id)
-    // Marked only for a missing field the record shows or a filter asked about.
-    Map shownBy = [disabled: f.contains("disabled") || opts.disabled != null,
-                   room: f.contains("room") || f.contains("roomId") || opts.roomFilter != null,
-                   lastActivity: f.contains("lastActivity") || opts.staleHours != null || opts.sinceDate != null,
-                   currentStates: f.contains("currentStates") || opts.stateFilter != null]
+    // Marked only for a missing field the record shows; a filter on one excludes the device before this.
+    Map shownBy = [disabled: f.contains("disabled"), room: f.contains("room") || f.contains("roomId"),
+                   lastActivity: f.contains("lastActivity"), currentStates: f.contains("currentStates")]
     if (capsMissing || rec.missingFields.any { shownBy.get(it) }) row.metadataUnavailable = true
     if (!opts.wantFull) return row
     Map detail = null
@@ -1186,7 +1184,8 @@ private _readBypassAttrValue(deviceId, attribute) {
     return _readBypassAttrValueFrom(_fetchDeviceFullJson(deviceId), attribute)
 }
 
-// Polls compare the stored value; only the value a read returns is masked.
+// A credential-named attribute's value as a read returns it: masked while credentials are hidden,
+// when a wait on one is refused instead.
 private _devicePublicAttributeValue(name, value) {
     return value != null && _redactsCredentials() && _deviceConfigurationSecretKey(name) ? _appConfigRedactedMarker() : value
 }
@@ -2239,12 +2238,12 @@ def _evalAttrCondition(value, comparator, matchSet, numericThreshold, betweenLow
 // says so. The request clock rides in as __reqT0 and never reaches the engine's arg check.
 def toolPollUntilAttribute(args) {
     if (args instanceof Map) _refuseCredentialPoll(args.attribute)
-    if (!(args instanceof Map) || !args.containsKey("__reqT0")) return _maskPolledAttribute(_pollUntilAttributeCore(args), args)
+    if (!(args instanceof Map) || !args.containsKey("__reqT0")) return _pollUntilAttributeCore(args)
     Map pollArgs = [:] + (args as Map)
     def t0 = pollArgs.remove("__reqT0")
     long budget = _isCloudRequest() ? _relayBudgetMs() : _lanBudgetMs()
     def asked = pollArgs.containsKey("timeoutMs") ? pollArgs.timeoutMs : 5000
-    if (!(t0 instanceof Number) || budget <= 0L || !(asked instanceof Number) || asked < 100 || asked > 60000) return _maskPolledAttribute(_pollUntilAttributeCore(pollArgs), pollArgs)
+    if (!(t0 instanceof Number) || budget <= 0L || !(asked instanceof Number) || asked < 100 || asked > 60000) return _pollUntilAttributeCore(pollArgs)
     long deadline = (t0 as long) + budget
     long left = deadline - now()
     String why = _isCloudRequest() ? 'the cloud relay drops a request that runs much longer' : 'the LAN time budget is set'
@@ -2263,7 +2262,7 @@ def toolPollUntilAttribute(args) {
         result.budgetLimited = true
         result.budgetNote = "The poll stopped after ${result.elapsedMs ?: 0} ms instead of waiting ${asked} ms: ${why}. Poll again to keep waiting.".toString()
     }
-    return _maskPolledAttribute(result, pollArgs)
+    return result
 }
 
 // A wait for a hidden value would confirm a guess at it, one call per guess.
@@ -2271,13 +2270,6 @@ private void _refuseCredentialPoll(attribute) {
     if (attribute != null && _redactsCredentials() && _deviceConfigurationSecretKey(attribute)) {
         throw new IllegalArgumentException("Cannot wait for a value of ${attribute}: credential-named attributes are hidden while 'Hide passwords and credentials' is on")
     }
-}
-
-private _maskPolledAttribute(result, Map args) {
-    if (!(result instanceof Map)) return result
-    if (result.containsKey('finalValue')) result.finalValue = _devicePublicAttributeValue(args.attribute, result.finalValue)
-    if (result.devices instanceof List) result.devices.each { if (it instanceof Map) it.finalValue = _devicePublicAttributeValue(args.attribute, it.finalValue) }
-    return result
 }
 
 // The refusal a budgeted poll gives a stableForMs that cannot settle in the request time left, else null.
@@ -4219,8 +4211,8 @@ def toolDeleteDevice(args) {
     if (recentEvents == null) {
         warnings << "EVENT HISTORY UNAVAILABLE: Recent events could not be read; do not assume this device is quiet."
     } else if (recentEvents) {
-        def lastEvent = recentEvents[0] instanceof Map ? _mapBypassEventRow(recentEvents[0]) : [:]
-        warnings << "HAS RECENT EVENTS: Last event was ${lastEvent.name}=${lastEvent.value} at ${lastEvent.date}"
+        def lastEvent = recentEvents[0]
+        warnings << "HAS RECENT EVENTS: Last event was ${lastEvent.name}=${_devicePublicAttributeValue(lastEvent.name, lastEvent.value)} at ${lastEvent.date}"
     }
 
 

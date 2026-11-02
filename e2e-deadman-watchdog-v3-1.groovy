@@ -4,19 +4,19 @@
  * Callers must hold the exclusive hub lease before deploying.
  */
 definition(
-    name: "E2E Dead-Man Watchdog v3.1",
+    name: "E2E Dead-Man Watchdog v3.2",
     namespace: "mcp",
     author: "kingpanther13",
     description: "Manual hub administration and MCP package deployment with live progress. E2E test hub only.",
     category: "Utility",
     iconUrl: "https://raw.githubusercontent.com/hubitat/HubitatPublic/master/app-dev/icon.png",
     iconX2Url: "https://raw.githubusercontent.com/hubitat/HubitatPublic/master/app-dev/icon.png",
-    oauth: [displayName: "E2E Dead-Man Watchdog v3.1", displayLink: ""],
+    oauth: [displayName: "E2E Dead-Man Watchdog v3.2", displayLink: ""],
     singleInstance: true
 )
 
 preferences {
-    page(name: "mainPage", title: "E2E Dead-Man Watchdog v3.1", install: true, uninstall: true) {
+    page(name: "mainPage", title: "E2E Dead-Man Watchdog v3.2", install: true, uninstall: true) {
         section("Watchdog") {
             input "debugLogging", "bool", title: "Debug logging", defaultValue: false, required: false
             input "autoRebootOnWedge", "bool", title: "Auto-reboot when the hub's loopback HTTP stays dead for 4+ minutes (the web stack is wedged)", defaultValue: true, required: false
@@ -97,13 +97,13 @@ private boolean maybeAutoRebootWedgedHub() {
     Long downUntil = null
     try { downUntil = atomicState.expectedDownUntil as Long } catch (Exception ignore) { downUntil = null }
     if (downUntil != null && now() < downUntil) {
-        log.warn "E2E Dead-Man Watchdog v3.1: loopback is down but a deliberate reboot/platform update is in progress for another ${((downUntil - now()) / 1000) as long}s -- not rebooting into it."
+        log.warn "E2E Dead-Man Watchdog v3.2: loopback is down but a deliberate reboot/platform update is in progress for another ${((downUntil - now()) / 1000) as long}s -- not rebooting into it."
         return false
     }
     // Never act on accumulated counters alone: a live probe must also fail right now. Outside the
     // monitor on purpose -- a 10s probe under it would hold every queued tick.
     if (probeLoopbackAlive()) {
-        log.warn "E2E Dead-Man Watchdog v3.1: the wedge counters were stale -- a live probe answered, so the hub is healthy. NOT rebooting."
+        log.warn "E2E Dead-Man Watchdog v3.2: the wedge counters were stale -- a live probe answered, so the hub is healthy. NOT rebooting."
         return false
     }
     long nowMs = now()
@@ -111,18 +111,18 @@ private boolean maybeAutoRebootWedgedHub() {
         Long lastReboot = null
         try { lastReboot = atomicState.lastAutoRebootAt as Long } catch (Exception ignore) { lastReboot = null }
         if (lastReboot != null && (nowMs - lastReboot) < 1800000L) {
-            log.warn "E2E Dead-Man Watchdog v3.1: hub still looks wedged but an auto-reboot fired ${((nowMs - lastReboot) / 1000) as long}s ago -- not rebooting again within 30 minutes. The hub may need a physical power cycle."
+            log.warn "E2E Dead-Man Watchdog v3.2: hub still looks wedged but an auto-reboot fired ${((nowMs - lastReboot) / 1000) as long}s ago -- not rebooting again within 30 minutes. The hub may need a physical power cycle."
             return false
         }
         // Re-validate under the lock: another tick's probe may have answered, or an operator may
         // have started a reboot or platform update, since the checks above.
         if (!hubLooksWedged()) {
-            log.warn "E2E Dead-Man Watchdog v3.1: the hub recovered while the reboot slot was being claimed -- NOT rebooting."
+            log.warn "E2E Dead-Man Watchdog v3.2: the hub recovered while the reboot slot was being claimed -- NOT rebooting."
             return false
         }
         try { downUntil = atomicState.expectedDownUntil as Long } catch (Exception ignore) { downUntil = null }
         if (downUntil != null && nowMs < downUntil) {
-            log.warn "E2E Dead-Man Watchdog v3.1: a deliberate reboot/platform update began while the reboot slot was being claimed -- not rebooting into it."
+            log.warn "E2E Dead-Man Watchdog v3.2: a deliberate reboot/platform update began while the reboot slot was being claimed -- not rebooting into it."
             return false
         }
         // Claim under the lock so an overlapping tick cannot also reach the POST; the POST itself
@@ -131,19 +131,19 @@ private boolean maybeAutoRebootWedgedHub() {
         Long stampBack = null
         try { stampBack = atomicState.lastAutoRebootAt as Long } catch (Exception ignore) { stampBack = null }
         if (stampBack != nowMs) {
-            log.error "E2E Dead-Man Watchdog v3.1: the auto-reboot rate-limit stamp did NOT persist (state holds ${stampBack}); rebooting anyway, but a following tick could fire a second reboot."
+            log.error "E2E Dead-Man Watchdog v3.2: the auto-reboot rate-limit stamp did NOT persist (state holds ${stampBack}); rebooting anyway, but a following tick could fire a second reboot."
         }
     }
     // A loopback call already in flight can answer in the gap; never reboot a hub that just came back.
     if (!hubLooksWedged()) {
-        log.warn "E2E Dead-Man Watchdog v3.1: the hub answered while the reboot was being prepared -- NOT rebooting, and the rate-limit slot is given back."
+        log.warn "E2E Dead-Man Watchdog v3.2: the hub answered while the reboot was being prepared -- NOT rebooting, and the rate-limit slot is given back."
         try { atomicState.lastAutoRebootAt = null } catch (Exception ignore) { }
         return false
     }
-    log.error "E2E Dead-Man Watchdog v3.1: hub loopback HTTP has been dead for at least ${loopbackState().failStreak} consecutive calls with no success in over 4 minutes -- the web stack is wedged and nothing in-process recovers from that. AUTO-REBOOTING."
+    log.error "E2E Dead-Man Watchdog v3.2: hub loopback HTTP has been dead for at least ${loopbackState().failStreak} consecutive calls with no success in over 4 minutes -- the web stack is wedged and nothing in-process recovers from that. AUTO-REBOOTING."
     def r = adminRebootHub([confirm: true])
     if (!r?.success) {
-        log.error "E2E Dead-Man Watchdog v3.1: auto-reboot POST did not confirm (${r?.error})."
+        log.error "E2E Dead-Man Watchdog v3.2: auto-reboot POST did not confirm (${r?.error})."
         // An ambiguous POST may have landed, so its stamp keeps the 30-minute limit; an answered
         // rejection proves nothing rebooted, so the slot is freed for a real retry.
         if (r?.ambiguous != true) {
@@ -240,7 +240,7 @@ def handleInitialize(msg) {
     return jsonRpcResult(msg.id, [
         protocolVersion: negotiated,
         capabilities: [tools: [:]],
-        serverInfo: [name: "e2e-deadman-watchdog-v3-1", version: "3.1"],
+        serverInfo: [name: "e2e-deadman-watchdog-v3-1", version: "3.2"],
         instructions: "Manual administration and package deployment with live progress. Reserve the E2E hub before changes. Restoration requires an explicit request; the only automatic action is a reboot when the hub's web stack has been wedged for 4+ minutes."
     ])
 }
@@ -333,7 +333,7 @@ boolean manualToolWrites(String toolName, Map args) {
     if (toolName == "hub_manage_variables") return args.action in ["set", "hub_set_variable"] && args.name != testHubLeaseVariable()
     return toolName in ["hub_update_app", "hub_set_mcp_developer_mode", "hub_update_mcp_settings", "hub_create_library",
         "hub_update_library", "hub_delete_item", "hub_force_delete_app", "hub_purge_e2e_artifacts",
-        "hub_reboot", "hub_set_app_disabled", "hub_install_bundle", "hub_delete_bundle",
+        "hub_reboot", "hub_set_app_disabled", "hub_delete_app_runtime_stats", "hub_install_bundle", "hub_delete_bundle",
         "hub_write_file", "hub_create_backup"]
 }
 
@@ -831,6 +831,7 @@ def executeManualTool(String toolName, Map args) {
         case "hub_purge_e2e_artifacts": return adminPurgeE2eArtifacts(args)
         case "hub_reboot": return adminRebootHub(args)
         case "hub_set_app_disabled": return adminSetAppDisabled(args)
+        case "hub_delete_app_runtime_stats": return adminDeleteAppRuntimeStats(args)
         case "hub_get_metrics":      return adminGetMetrics(args)
         case "hub_update_platform":  return adminUpdatePlatform(args)
         case "hub_get_memory_history": return adminGetMemoryHistory(args)
@@ -857,9 +858,9 @@ boolean isOwnInstance(id) {
     try { return id != null && id.toString() == app?.id?.toString() } catch (Exception ignore) { return false }
 }
 
-// v3 still runs beside v3.1 until v3 is retired, so both watchdogs' code is protected.
+// v3 can still run beside this app, which is named v3.1 or v3.2 depending on the installed source.
 boolean isWatchdogSource(source) {
-    return source instanceof String && (source =~ /definition\s*\(\s*name:\s*"E2E Dead-Man Watchdog v3(\.1)?"/).find()
+    return source instanceof String && (source =~ /definition\s*\(\s*name:\s*"E2E Dead-Man Watchdog v3(\.[12])?"/).find()
 }
 
 // Whether the MCP server could repair this watchdog right now: installed once, enabled, and its
@@ -1621,7 +1622,7 @@ private boolean renewPurgeClaim(String claim) {
             // would carry on deleting alongside it believing it still owns the lease.
             Long back = atomicState.purgeInFlightAt as Long
             if (back != stamp) {
-                log.error "E2E Dead-Man Watchdog v3.1: the purge lease renewal did not persist (state holds ${back}) -- stopping this sweep rather than racing a successor."
+                log.error "E2E Dead-Man Watchdog v3.2: the purge lease renewal did not persist (state holds ${back}) -- stopping this sweep rather than racing a successor."
                 return false
             }
             return true
@@ -1990,6 +1991,103 @@ def adminSetAppDisabled(args) {
             error: "POST accepted (HTTP ${st}) but the read-back shows disabled=${observed} (wanted ${disable})."]
 }
 
+// hub_delete_app_runtime_stats: zero every app's Logs > App Stats total/count. The per-app load
+// limiter compares an app's busy time plus that of the app or device it calls (its own a second time
+// when it calls itself) against hub uptime x threshold %, and a disable/enable keeps it.
+// The reset restarts the App Stats appsUptime window but not hub uptime, so limitMs uses location.hub.uptime.
+def adminDeleteAppRuntimeStats(args) {
+    requireConfirm(args)
+    String appId = null
+    if (args.appId != null) {
+        String raw = args.appId.toString()
+        if (!raw.isInteger() || raw.toInteger() <= 0) throw new IllegalArgumentException("appId must be a positive integer (got: '${raw}')")
+        appId = raw.toInteger().toString()
+    }
+    def beforeDoc = _parseJsonBody(hubGet("/logs/json", [:]))
+    Map before = appId ? appRuntimeRow(beforeDoc, appId, false) : null
+    String appPart = appId ? "; app ${appId} total ${before.totalMs} ms" : ""
+    mcpAdminLog "Resetting app runtime stats (/hub/advanced/resetAppRuntimeStats)${appPart}"
+    Map resetResp = hubGetStatus("/hub/advanced/resetAppRuntimeStats", [:])
+    Integer st = resetResp?.status as Integer
+    String reset = resetResp?.data?.toString()
+    if (st == null || st >= 300 || reset?.trim() != "ok") {
+        Map failed = [success: false] + resetFailure(st, reset)
+        if (appId) failed += [appId: appId, before: before]
+        return failed
+    }
+    def afterDoc = _parseJsonBody(hubGet("/logs/json", [:]))
+    Map after = appId ? appRuntimeRow(afterDoc, appId, true) : null
+
+    Map result = [success: true, message: "App runtime statistics reset."]
+    List notes = []
+    String rawThreshold = hubGet("/hub/advanced/getExcessiveLoadThreshold", [:])
+    def threshold = hubNumber(rawThreshold)
+    Long thresholdPct = threshold instanceof Number ? (threshold as long) : null
+    if (thresholdPct == null) result.thresholdError = (rawThreshold == null ? "GET /hub/advanced/getExcessiveLoadThreshold did not answer." :
+        "GET /hub/advanced/getExcessiveLoadThreshold answered '${rawThreshold.trim()}', not a number.").toString()
+    def uptimeSeconds = null
+    try {
+        def up = location.hub?.uptime
+        if (up instanceof Number) uptimeSeconds = up
+        else result.uptimeError = "location.hub.uptime is not a number (${up}).".toString()
+    } catch (Exception e) { result.uptimeError = "location.hub.uptime could not be read: ${e.message ?: e.toString()}".toString() }
+    Long limitMs = (uptimeSeconds != null && thresholdPct != null) ?
+        (((uptimeSeconds as long) * 1000L * thresholdPct / 100) as long) : null
+    result += [uptimeSeconds: uptimeSeconds,
+               uptimeText: (beforeDoc instanceof Map ? beforeDoc.uptime : null) ?: (afterDoc instanceof Map ? afterDoc.uptime : null),
+               appsUptimeBeforeText: beforeDoc instanceof Map ? beforeDoc.appsUptime : null,
+               thresholdPct: thresholdPct, limitMs: limitMs]
+    notes << "limitMs is the busy budget the load limiter compares an app's busy time plus that of the app or device it calls (its own a second time when it calls itself) against."
+
+    boolean verified = false
+    if (!appId) {
+        notes.add(0, "Pass appId to verify the reset against an app's total.")
+    } else {
+        String beforeText = before.totalMs == null ? "unknown" : "${before.totalMs} ms"
+        String afterText = after.totalMs == null ? "unknown" : "${after.totalMs} ms"
+        result += [appId: appId, before: before, after: after,
+                   message: "App runtime statistics reset; app ${appId} total ${beforeText} -> ${afterText}.".toString()]
+        if (before.totalMs == null && appStatsRows(beforeDoc) != null) {
+            notes.add(0, "The reset was accepted but there was no App Stats row for app ${appId} before it, so the drop is unverified; check the app id.".toString())
+        } else if (before.totalMs == null) {
+            notes.add(0, "The reset was accepted but the App Stats read before it was unavailable, so the drop is unverified.")
+        } else if (after.totalMs == null) {
+            notes.add(0, "The reset was accepted but the App Stats read-back was unavailable.")
+        } else if (before.totalMs > 0 && !(after.totalMs < before.totalMs)) {
+            result += [success: false, error: "The reset did not take: app ${appId} total ${before.totalMs} ms before, ${after.totalMs} ms after.".toString()]
+            notes = ["Read Logs > App Stats; if the total is still climbing another app is busy. A reboot (hub_reboot) resets the statistics and uptime."]
+        } else {
+            verified = true
+        }
+    }
+    result.verified = verified
+    result.note = notes.join(" ")
+    return result
+}
+
+// error + recovery note for a reset the hub did not answer with ok.
+Map resetFailure(Integer st, String body) {
+    String path = "GET /hub/advanced/resetAppRuntimeStats"
+    String retry = "Retry once the hub answers /hub/advanced reads (hub_get_metrics); repeating the reset is harmless."
+    if (st == null) return [error: "${path} got no HTTP answer (timeout or dead web stack), so the counters may not have reset.".toString(), note: retry]
+    String hint = st == 404 ? "A 404 means the firmware predates the endpoint: reboot the hub (hub_reboot) to reset the statistics." :
+        (st in [301, 302, 401, 403] ? "HTTP ${st} can be a login refusal: if this hub still requires the watchdog's Hub Security credentials (older firmware), check them; otherwise retry.".toString() :
+            "${retry} If it keeps failing, reboot the hub (hub_reboot) to reset the statistics.".toString())
+    String bodyPart = body == null ? "" : " '${body.trim()}'"
+    return [error: "${path} answered HTTP ${st}${bodyPart} (expected ok).".toString(), note: hint]
+}
+
+// After the reset an absent row is total 0 (the hub lists only apps with activity since the last
+// reset); before it, an absent row stays unknown so a wrong app id cannot verify.
+Map appRuntimeRow(doc, String appId, boolean absentIsZero) {
+    def rows = appStatsRows(doc)
+    def row = rows?.find { it?.id?.toString() == appId }
+    if (row != null) return [totalMs: row.total, count: row.count]
+    return (rows != null && absentIsZero) ? [totalMs: 0, count: 0] : [totalMs: null, count: null]
+}
+
+List appStatsRows(doc) { (doc instanceof Map && doc.appStats instanceof List) ? doc.appStats : null }
+
 
 // hub_get_metrics: probe-grade current metrics + the hub's own health alerts. Mirrors the main
 // server's toolGetHubPerformance current block (/hub/advanced/* reads) and _healthAlertsFromHub2
@@ -2345,7 +2443,7 @@ def adminGetInfo(args) {
         if (freeMemory) info.freeMemoryKB = hubNumber(freeMemory)
     } catch (Exception e) { info.freeMemoryKB = "unavailable" }
     info.watchdogEndpoint = true
-    info.watchdogVersion = "3.1"
+    info.watchdogVersion = "3.2"
     info.automaticRecovery = false
     info.autoRebootOnWedge = settings?.autoRebootOnWedge != false
     if (args?.peer == true) info.peerEndpoint = peerEndpointStatus()
@@ -2700,6 +2798,10 @@ def getManualToolDefinitions() {
          inputSchema: [type: "object", properties: [prefix: [type: "string", description: "Name prefix to purge; default BAT_E2E_."], confirm: [type: "boolean"]], required: ["confirm"]]],
         [name: "hub_set_app_disabled", annotations: [title: "Set App Disabled", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false], description: "Toggle an installed app's disabled flag (the admin UI red-X) via POST /installedapp/disable; verified by read-back. Refuses to disable the watchdog's own instance. confirm:true required.",
          inputSchema: [type: "object", properties: [appId: [type: "string"], disable: [type: "boolean"], confirm: [type: "boolean"]], required: ["appId", "disable", "confirm"]]],
+        [name: "hub_delete_app_runtime_stats", annotations: [title: "Delete App Runtime Stats", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false], description: "Reset the hub's per-app runtime statistics (the Logs > App Stats totals) through /hub/advanced/resetAppRuntimeStats; every app keeps running. The hub's per-app load limiter compares an app's busy time since boot plus that of the app or device it calls (its own a second time when it calls itself) against uptime x the excessive-load threshold %, and disabling and re-enabling the app does not clear that counter, while this reset does. The reset also restarts the App Stats uptime window; hub uptime, which the limiter compares against, does not change. Reports the named app's total before and after the reset plus the current busy budget (limitMs); verified is true only when that total was read on both sides and dropped or was already 0. Irreversible: every app's App Stats totals are zeroed and cannot be restored; confirm:true required.",
+         inputSchema: [type: "object", properties: [
+            appId: [type: "string", description: "Installed-app id whose runtime total to report before and after the reset (optional)."],
+            confirm: [type: "boolean", description: "Must be true."]], required: ["confirm"]]],
         [name: "hub_get_metrics", annotations: [title: "Get Metrics", readOnlyHint: true, idempotentHint: true, openWorldHint: false], inputSchema: [type: "object", properties: [:]], description: "Current hub metrics (free memory, temp, DB size, uptime) + the hub's own health alerts. Read-only."],
         [name: "hub_reboot", annotations: [title: "Reboot", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false], description: "Reboot the hub (POST /hub/reboot; 1-3 min downtime). The only in-band recovery from a wedged web stack -- if loopback HTTP is already dead this call cannot land either and the hub needs a physical power cycle. The watchdog also reboots on its own when loopback HTTP has been dead for 4+ minutes (at most once per 30 minutes; the autoRebootOnWedge setting). Refused during a package deployment hold or while another manual write runs, unless force:true. Requires confirm=true.", inputSchema: [type: "object", properties: [confirm: [type: "boolean", description: "Must be true."], force: [type: "boolean", description: "Reboot even during a package deployment hold, another manual write, or a platform update the hub accepted that is still installing (all refused otherwise)."]], required: ["confirm"]]],
         [name: "hub_update_platform", annotations: [title: "Update Platform", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true], description: "Apply the hub's pending platform update (downloads + installs + REBOOTS the hub; requires confirm=true). statusOnly=true polls update progress without confirm.", inputSchema: [type: "object", properties: [confirm: [type: "boolean", description: "Must be true to apply (the hub reboots itself)."], statusOnly: [type: "boolean", description: "Poll /hub/cloud/checkUpdateStatus only; no confirm needed."]]]],
@@ -2849,7 +2951,7 @@ private boolean markExpectedDowntime(long ms, String reason) {
                 atomicState.expectedDownUntil = priorUntil
                 atomicState.expectedDownReason = priorReason
             } catch (Exception ignore) { }
-            log.error "E2E Dead-Man Watchdog v3.1: the expected-downtime window (${reason}) did not persist -- state holds ${readBack}/${reasonBack}. Later reboot requests cannot rely on this window."
+            log.error "E2E Dead-Man Watchdog v3.2: the expected-downtime window (${reason}) did not persist -- state holds ${readBack}/${reasonBack}. Later reboot requests cannot rely on this window."
             return false
         }
         mcpAdminLog "Expecting the hub to be unreachable for up to ${(ms / 60000) as long} min (${reason}); manual reboot requests respect this window."
@@ -2859,7 +2961,7 @@ private boolean markExpectedDowntime(long ms, String reason) {
             atomicState.expectedDownUntil = priorUntil
             atomicState.expectedDownReason = priorReason
         } catch (Exception ignore) { }
-        log.error "E2E Dead-Man Watchdog v3.1: could not persist the expected-downtime window (${reason}): ${e.message}"
+        log.error "E2E Dead-Man Watchdog v3.2: could not persist the expected-downtime window (${reason}): ${e.message}"
         return false
     }
 }
@@ -2883,7 +2985,7 @@ private boolean releaseExpectedDowntime(Long ourStamp, Long priorWindow, String 
         }
         return true      // someone else's window: correctly left alone
     } catch (Exception e) {
-        log.error "E2E Dead-Man Watchdog v3.1: could not release the expected-downtime window: ${e.message}"
+        log.error "E2E Dead-Man Watchdog v3.2: could not release the expected-downtime window: ${e.message}"
         return false
     }
     }
@@ -3063,5 +3165,5 @@ String secCookie() {
 
 // ---- helpers ----
 void mcpAdminLog(String m) { logInfo "[mcp-admin] ${m}" }
-void logInfo(String m)  { log.info  "[watchdog-v3.1] ${m}" }
-void logDebug(String m) { if (settings?.debugLogging != false) log.debug "[watchdog-v3.1] ${m}" }
+void logInfo(String m)  { log.info  "[watchdog-v3.2] ${m}" }
+void logDebug(String m) { if (settings?.debugLogging != false) log.debug "[watchdog-v3.2] ${m}" }

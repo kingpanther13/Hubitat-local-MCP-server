@@ -381,6 +381,27 @@ class AppLifecycleMigrationSpec extends ToolSpecBase {
     // handleUpdateCheckResponse writes; null == never checked == first install.
     // -----------------------------------------------------------------------
 
+    def "initialize() frees the load guard's job latches once unschedule() has dropped their jobs"() {
+        given:
+        stateMap.accessToken = 'tok'
+        stateMap.updateCheck = [checkedAt: 1L]
+        script.metaClass.checkForUpdate = { -> }
+        script.metaClass._subscribeToAllHubVariables = { -> }
+        script.metaClass._refreshHubVarInUseRegistrations = { -> }
+        def guard = scriptStaticField('LOAD_GUARD') as Map
+        guard.seedScheduled = 1234567890000L
+        guard.checkPending = 1234567890000L
+        guard.busyMs = 42L
+
+        when:
+        script.initialize()
+
+        then: 'both latches are free, the estimate is untouched'
+        !guard.containsKey('seedScheduled')
+        !guard.containsKey('checkPending')
+        guard.busyMs == 42L
+    }
+
     def "initialize() runs the immediate version check on first install (state.updateCheck null)"() {
         given:
         lifecycleCalls.clear()

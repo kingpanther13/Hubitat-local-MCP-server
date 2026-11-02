@@ -224,6 +224,27 @@ class McpError(Exception):
         super().__init__(message)
 
 
+def _uptime_seconds(text: Any) -> int | None:
+    """Seconds in a hub uptime string such as "1h 2m 3s" or "0m 6s"; None when it is not one."""
+    m = re.fullmatch(r"\s*(?:(\d+)d\s*)?(?:(\d+)h\s*)?(?:(\d+)m\s*)?(\d+)s\s*", str(text or ""))
+    if not m:
+        return None
+    d, h, mi, se = (int(g or 0) for g in m.groups())
+    return ((d * 24 + h) * 60 + mi) * 60 + se
+
+
+def _limiter_retry_applies(exc: BaseException) -> bool:
+    """A limiter refusal, or an HTTP 500-503 by the status the client attached (a write's lost-response
+    error carries it too). Chosen before the relay-504 path."""
+    return "excessive hub load" in str(exc) or getattr(exc, "http_status", None) in (500, 501, 502, 503)
+
+
+def _with_http_status(exc: Exception, status: int) -> Exception:
+    """Attach the HTTP status the hub or relay answered, so recovery is chosen by status, not text."""
+    exc.http_status = status
+    return exc
+
+
 class RelayLostResponseError(McpError, requests.HTTPError):
     """A write's response was lost while the hub may have committed it.
 
@@ -725,10 +746,12 @@ class HubitatMcpClient:
         if leaf == "hub_update_mcp_settings":
             replay_safe = True
 
-        # Optional pre-send gap (E2E_REQUEST_GAP_SECONDS, default 0). It caps the server app's
-        # short-window duty cycle, which the platform's per-app load limiter measures ("App <id>
-        # generates excessive hub load"); set it if the limiter cascades the native_apps RM group
-        # into 500s. E2E_PACE_SECONDS adds further per-TEST spacing.
+        # Optional pre-send gap (E2E_REQUEST_GAP_SECONDS, default 0). It spaces the server app's
+        # calls out over uptime; the platform's per-app load limiter ("App <id> generates excessive
+        # hub load") compares the app's busy time since boot or the last runtime-statistics reset, plus
+        # that of the app or device it calls (its own a second time when it calls itself), with
+        # uptime x threshold.
+        # E2E_PACE_SECONDS adds further per-TEST spacing.
         time.sleep(REQUEST_GAP_SECONDS)
 
         # Chaos mode (E2E_CHAOS_504=<0..1>): after a WRITE completes, discard its response and
@@ -765,12 +788,13 @@ class HubitatMcpClient:
                 if 500 <= resp.status_code < 600:
                     # Hub or cloud relay returned a transient error. Heavy
                     # queries (e.g. hub_get_logs Logs-page modes) sometimes 504.
-                    last_exc = requests.HTTPError(f"{resp.status_code} {resp.reason} on {method}")
+                    last_exc = _with_http_status(
+                        requests.HTTPError(f"{resp.status_code} {resp.reason} on {method}"), resp.status_code)
                     if not replay_safe:
                         # Write: unknown-commit. Never replay the request; hand back the typed
                         # error so the caller can recover the result from the op journal.
-                        raise RelayLostResponseError(
-                            f"{resp.status_code} {resp.reason} on {method} (504-class: response lost)")
+                        raise _with_http_status(RelayLostResponseError(
+                            f"{resp.status_code} {resp.reason} on {method} (504-class: response lost)"), resp.status_code)
                     self._transport_retries += 1
                     self._log(f"<< HTTP {resp.status_code} (attempt {attempt + 1}/{_attempts}) — retrying")
                     # Exponential backoff with jitter to avoid thundering-herd if
@@ -877,7 +901,8 @@ class HubitatMcpClient:
                     timeout=60,
                 )
                 if 500 <= resp.status_code < 600:
-                    last_exc = requests.HTTPError(f"{resp.status_code} {resp.reason} on raw_request")
+                    last_exc = _with_http_status(
+                        requests.HTTPError(f"{resp.status_code} {resp.reason} on raw_request"), resp.status_code)
                     time.sleep((2 ** attempt) + random.uniform(0, 1))
                     continue
                 return resp
@@ -1143,8 +1168,8 @@ class LegacyEraClient:
         """
         method = payload.get("method")
         self._log(f">> {method} {json.dumps(payload.get('params') or {})[:300]}")
-        # Same pre-send gap as _send: the pacing caps the server app's short-window
-        # duty cycle, which is what the platform's per-app load limiter measures.
+        # Same pre-send gap as _send: it spaces the server app's calls out over uptime,
+        # which the platform's per-app load limiter weighs the app's busy time against.
         time.sleep(REQUEST_GAP_SECONDS)
         attempts = 3 if replay_safe else 1
         last_exc: Exception | None = None
@@ -1170,11 +1195,11 @@ class LegacyEraClient:
                     self._log(f"<< HTTP {resp.status_code} {resp.text[:300]}")
                     return resp
                 if not replay_safe:
-                    raise RelayLostResponseError(
+                    raise _with_http_status(RelayLostResponseError(
                         f"{resp.status_code} {resp.reason} on legacy {method} "
-                        "(504-class: response lost)")
-                last_exc = requests.HTTPError(
-                    f"{resp.status_code} {resp.reason} on legacy {method}")
+                        "(504-class: response lost)"), resp.status_code)
+                last_exc = _with_http_status(requests.HTTPError(
+                    f"{resp.status_code} {resp.reason} on legacy {method}"), resp.status_code)
                 self._log(f"<< HTTP {resp.status_code} (attempt {attempt + 1}/{attempts}) -- retrying")
             if attempt < attempts - 1:
                 time.sleep((2 ** attempt) + random.uniform(0, 1))
@@ -1372,19 +1397,16 @@ class TestRunner:
         # Legacy rule-engine variables live in app state, out of the purge's reach: always deleted inline.
         self.rule_engine_variable_names: set[str] = set()
 
-        # Dispatch-dependent tests may attempt a watchdog disable/enable before
-        # one retry. Only the retried operation/readback establishes recovery;
-        # a verified re-enable alone is not a passing test.
+        # Dispatch-dependent tests may reset the hub's per-app runtime statistics through
+        # the watchdog before one retry. Only the retried operation/readback establishes
+        # recovery; a successful reset alone is not a passing test.
         self.watchdog_url = os.environ.get("WATCHDOG_URL", "")
         self.server_app_id = os.environ.get("HUBITAT_APP_ID", "")
-        self.throttle_bounces = 0
+        self.limiter_resets = 0
+        self.limiter_reset_failures = 0
         self._soft_passes: list[str] = []
         # Optional per-test spacing, in addition to the per-call gap in _send.
         self.pace_seconds = float(os.environ.get("E2E_PACE_SECONDS", "0"))
-        # Reboot escalation is opt-in and disabled in normal CI. A zero threshold
-        # leaves repeated failures to the caller's assertions; it does not grant a pass.
-        self.limiter_reboot_after = int(os.environ.get("E2E_LIMITER_REBOOT_AFTER", "0"))
-        self._limiter_reboots = 0
 
         self._current_test = ""
 
@@ -1514,23 +1536,6 @@ class TestRunner:
             return True
         return False
 
-    def _watchdog_set_app_disabled(self, disable: bool) -> bool:
-        """One leg of the throttle bounce via the watchdog endpoint. True only on a
-        verified flag read-back (the tool re-reads /installedapp/json after the write)."""
-        try:
-            resp = requests.post(self.watchdog_url, json={
-                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-                "params": {"name": "hub_set_app_disabled",
-                           "arguments": {"appId": self.server_app_id,
-                                         "disable": disable, "confirm": True}},
-            }, timeout=30)
-            text = resp.json().get("result", {}).get("content", [{}])[0].get("text", "")
-            parsed = json.loads(text) if text else {}
-            return parsed.get("success") is True and parsed.get("disabled") is disable
-        except Exception as exc:
-            print(f"    [THROTTLE] watchdog bounce leg (disable={disable}) failed: {exc}")
-            return False
-
     def _watchdog_tool(self, name: str, arguments: dict) -> dict:
         """Call one watchdog v3 tool and return its decoded result. Any unusable answer -- HTTP
         error, JSON-RPC error, tool error, malformed body -- raises AssertionError."""
@@ -1560,57 +1565,45 @@ class TestRunner:
             "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}, timeout=60)
         return {tool.get("name") for tool in resp.json().get("result", {}).get("tools", [])}
 
-    def _clear_load_throttle(self, reason: str) -> bool:
-        """Attempt watchdog disable/enable; True verifies those flags, not recovery.
-
-        The caller must verify its single retried dispatch. Attempts are logged
-        and counted even when the retry remains blocked.
-        """
+    def _reset_app_runtime_stats(self, reason: str) -> bool:
+        """Zero the hub's per-app runtime statistics through the watchdog, clearing the busy time the
+        load limiter weighs against uptime. True means the reset succeeded, not that the blocked call
+        recovered; a failed reset is counted and returns False. Never raises."""
         if not (self.watchdog_url and self.server_app_id):
-            print(f"    [THROTTLE] suspected load-limiter block ({reason}) but "
-                  "WATCHDOG_URL/HUBITAT_APP_ID not set -- cannot bounce, failing as-is.")
+            print(f"    [LIMITER] suspected load-limiter block ({reason}) but "
+                  "WATCHDOG_URL/HUBITAT_APP_ID not set -- cannot reset, failing as-is.")
             return False
-        print(f"    [THROTTLE] suspected platform load-limiter block: {reason}")
-        if getattr(self, "_load_diagnostics", False) and not self.throttle_bounces:
+        print(f"    [LIMITER] suspected platform load-limiter block: {reason}")
+        if getattr(self, "_load_diagnostics", False) and not (self.limiter_resets or self.limiter_reset_failures):
             self._record_load_snapshot("first limiter recovery")
-        print(f"    [THROTTLE] bouncing server app {self.server_app_id} via the watchdog (disable/enable)...")
-        if not self._watchdog_set_app_disabled(True):
-            print("    [THROTTLE] disable leg did not verify -- not retrying the enable; failing as-is.")
+        try:
+            res = self._watchdog_tool("hub_delete_app_runtime_stats",
+                                      {"appId": self.server_app_id, "confirm": True})
+        except AssertionError as exc:
+            res = {"error": str(exc)}
+        if res.get("success") is not True:
+            self.limiter_reset_failures += 1
+            print(f"    [LIMITER] runtime-statistics reset failed: {str(res)[:300]} -- failing as-is.")
             return False
-        time.sleep(3)
-        enabled = False
-        for _ in range(5):
-            if self._watchdog_set_app_disabled(False):
-                enabled = True
-                break
-            time.sleep(5)
-        if not enabled:
-            # Never leave the app disabled: that converts one flaky test into a
-            # whole-suite wipeout. Surface and bail hard.
-            raise RuntimeError(
-                f"[THROTTLE] server app {self.server_app_id} was disabled for a bounce and could "
-                "not be re-enabled -- re-enable via the watchdog (hub_set_app_disabled disable=false) NOW.")
-        time.sleep(3)
-        self.throttle_bounces += 1
-        print(f"    [THROTTLE] bounce #{self.throttle_bounces} complete -- retrying the blocked dispatch once.")
-        # Escalate to a full hub reboot once the limiter has tripped enough times this run (opt-in via
-        # E2E_LIMITER_REBOOT_AFTER), so a recurring limiter is actively recovered instead of soft-passed
-        # forever. Trigger at each multiple of the threshold, capped at 3 reboots/run (never loops).
-        if (self.limiter_reboot_after > 0
-                and self.throttle_bounces >= self.limiter_reboot_after * (self._limiter_reboots + 1)
-                and self._limiter_reboots < 3):
-            self._reboot_hub_for_limiter()
+        before = (res.get("before") or {}).get("totalMs")
+        after = (res.get("after") or {}).get("totalMs")
+        unverified = "" if res.get("verified") is not False else \
+            f" (NOT verified: {res.get('note') or 'stats read-back unavailable'})"
+        self.limiter_resets += 1
+        print(f"    [LIMITER] reset #{self.limiter_resets} of app {self.server_app_id}'s runtime "
+              f"statistics: total {before} -> {after} ms, limit {res.get('limitMs')} ms{unverified} "
+              "-- retrying the blocked dispatch once.")
         return True
 
-    def _call_with_limiter_bounce(self, gateway: str, tool: str, args: dict, label: str,
-                                  bounces: int = 1) -> tuple[Any, str | None]:
+    def _call_with_limiter_reset(self, gateway: str, tool: str, args: dict, label: str,
+                                 resets: int = 1) -> tuple[Any, str | None]:
         """One gateway call under the platform load-limiter contract: (envelope, limiter_message).
         The limiter reaches us in TWO shapes -- some tools RAISE it, the RMUtils-backed ones
         (hub_set_rule_paused, hub_call_rule, hub_set_rule_private_boolean) return it inside a
         {'success': False, 'error': '...excessive hub load'} envelope -- so both are normalized
-        into the second element. Each trip bounces the app and retries, up to `bounces` rounds.
-        A non-None second element can survive the retry; the caller decides whether
-        a converged read-back means the write landed anyway. Other errors propagate."""
+        into the second element. Each trip resets the runtime statistics and retries, up to
+        `resets` rounds. A non-None second element can survive the retry; the caller decides
+        whether a converged read-back means the write landed anyway. Other errors propagate."""
 
         def _attempt():
             try:
@@ -1625,56 +1618,11 @@ class TestRunner:
             return envelope, None
 
         res, limited = _attempt()
-        for _round in range(bounces):
-            if not limited or not self._clear_load_throttle(f"{label}: {limited}"):
+        for _round in range(resets):
+            if not limited or not self._reset_app_runtime_stats(f"{label}: {limited}"):
                 break
             res, limited = _attempt()
         return res, limited
-
-    def _reboot_hub_for_limiter(self) -> bool:
-        """Escalation for a recurring per-app load limiter: REBOOT the hub to reset the platform's
-        load counters (an app-bounce only clears the app instance; a reboot clears the whole platform).
-        Opt-in via E2E_LIMITER_REBOOT_AFTER. Fired through MCP_URL's hub_reboot -- the hub-level
-        /hub/reboot goes through even when device dispatch is throttled (verified live); the call is
-        retried a few times in case the tool dispatch itself is briefly throttled. Counts the ATTEMPT
-        up front so the caller's cap bounds total reboots regardless of outcome. Returns True on a
-        verified recovery. (The watchdog has no plain reboot tool today; if MCP_URL ever proves
-        unreliable here, mirror hub_reboot into the watchdog and switch to WATCHDOG_URL.)"""
-        self._limiter_reboots += 1
-        print(f"    [THROTTLE] limiter tripped {self.throttle_bounces}x this run -- escalating to a HUB REBOOT "
-              f"#{self._limiter_reboots} (E2E_LIMITER_REBOOT_AFTER={self.limiter_reboot_after}) to reset the "
-              "platform load counters.")
-        fired = False
-        for attempt in range(1, 4):
-            try:
-                resp = self.client.call_tool("hub_manage_destructive_ops",
-                                             {"tool": "hub_reboot", "args": {"confirm": True}})
-                if isinstance(resp, dict) and resp.get("success"):
-                    fired = True
-                    break
-                print(f"    [THROTTLE] hub_reboot attempt {attempt} did not confirm: {str(resp)[:160]}")
-            except Exception as exc:
-                # Broad on purpose: firing a reboot inherently drops the connection (ConnectionError /
-                # Timeout from requests, which are NOT McpError), so catch + retry instead of crashing
-                # the runner. This is a recovery loop, not an assertion path.
-                print(f"    [THROTTLE] hub_reboot attempt {attempt} errored ({str(exc)[:120]}) -- retrying")
-            time.sleep(5)
-        if not fired:
-            print("    [THROTTLE] could not fire hub_reboot -- continuing (soft-pass still applies).")
-            return False
-        print("    [THROTTLE] hub_reboot accepted; waiting ~60s for the hub to go down, then polling for recovery...")
-        time.sleep(60)
-        for _ in range(32):
-            try:
-                info = self.client.call_tool("hub_get_info", {})
-                if isinstance(info, dict) and info:
-                    print(f"    [THROTTLE] hub is back after reboot #{self._limiter_reboots}.")
-                    return True
-            except Exception:
-                pass
-            time.sleep(15)
-        print("    [THROTTLE] hub did not come back within ~8 min of the reboot -- continuing.")
-        return False
 
     def get_test_switch_id(self) -> str:
         """Get or create the persistent BAT_E2E_ virtual switch scaffold that rule
@@ -2290,8 +2238,8 @@ class TestRunner:
         #     per-app load limiter a wizard write throws hub-side because LimitExceededException
         #     aborts a sub-step, surfacing as a 500 the 504 path missed -- which is what cascaded
         #     the native_apps group into hard reds on the full lane. For the 5xx case we first
-        #     recover the app (bounce via the watchdog, escalating to a hub reboot per
-        #     E2E_LIMITER_REBOOT_AFTER) so the re-run hits a healthy app instance.
+        #     reset the hub's per-app runtime statistics through the watchdog so the re-run
+        #     starts with the app's busy time cleared.
         # Both re-run the WHOLE test on its own fresh fixtures -- never a transport replay. A
         # second transient failure is then an honest red.
         retry_reason = ""
@@ -2330,22 +2278,20 @@ class TestRunner:
             except Exception as exc:
                 elapsed = time.monotonic() - t0
                 es = str(exc)
+                # Reset the runtime statistics and re-run once on fresh fixtures, but only when the
+                # reset went through; otherwise the failure stands.
+                if attempt == 1 and _limiter_retry_applies(exc):
+                    print(f"    [RETRY] {name} failed on a server 5xx or limiter refusal ({es[:80]}) -- "
+                          "resetting the runtime statistics and re-running once")
+                    if self._reset_app_runtime_stats(f"server 5xx on {name}: {es[:120]}"):
+                        retry_reason = "limiter 5xx"
+                        continue
                 if "504" in es and attempt == 1:
                     retry_reason = "relay 504"
                     print(f"    [RETRY] {name} failed on a relay 504 -- re-running the test once")
                     failed_at = datetime.now(UTC)
                     self._settle_before_504_retry(name)
                     self._capture_504_context(name, exc, failed_at)
-                    continue
-                # Server 5xx that is NOT a 504 (500/501/502/503): suspected per-app load limiter.
-                # Bounce/recover the app (which escalates to a reboot at the configured threshold),
-                # then re-run once on fresh fixtures. _clear_load_throttle raises only if the app is
-                # left disabled -- that is a genuine emergency and is allowed to propagate loudly.
-                if attempt == 1 and re.search(r"\b50[0-3]\b", es):
-                    retry_reason = "limiter 5xx"
-                    print(f"    [RETRY] {name} failed on a server 5xx ({es[:80]}) -- suspected load "
-                          "limiter; recovering the app and re-running once")
-                    self._clear_load_throttle(f"server 5xx on {name}: {es[:120]}")
                     continue
                 # The summary table stays readable with a 200-char message, but the FULL
                 # failure goes to the run log here -- a truncated structured response
@@ -3278,7 +3224,7 @@ class TestRunner:
             start = cur.get("value") if isinstance(cur, dict) else None
             a, b = ("off", "on") if start == "on" else ("on", "off")
             for v in (a, b):
-                if not _drive(v) and self._clear_load_throttle(
+                if not _drive(v) and self._reset_app_runtime_stats(
                         f"'{v}' on scaffold {dev_id} never landed (since-bookmark seed)"):
                     _drive(v)
             hist = _read_history()
@@ -4969,7 +4915,7 @@ class TestRunner:
             result = _drive(first)
             # Existing recovery may retry once; a command must still produce the requested state.
             if (result.get("timedOut") is not False or result.get("finalValue") != first) \
-                    and self._clear_load_throttle(f"'{first}' on fresh device {dev_id} never landed: {result}"):
+                    and self._reset_app_runtime_stats(f"'{first}' on fresh device {dev_id} never landed: {result}"):
                 result = _drive(first)
             if result.get("timedOut") is not False or result.get("finalValue") != first:
                 assert False, \
@@ -4979,7 +4925,7 @@ class TestRunner:
             # Toggle back the other way
             result = _drive(second, with_wait=True)
             if (result.get("timedOut") is not False or result.get("finalValue") != second) \
-                    and self._clear_load_throttle(f"'{second}' on fresh device {dev_id} never landed: {result}"):
+                    and self._reset_app_runtime_stats(f"'{second}' on fresh device {dev_id} never landed: {result}"):
                 result = _drive(second, with_wait=True)
             if result.get("timedOut") is not False or result.get("finalValue") != second:
                 assert False, \
@@ -5132,10 +5078,10 @@ class TestRunner:
 
         # Confirm the group with the multi-device poll -- one batch to fire, one poll to confirm.
         poll = _confirm()
-        # Bounce the throttle and re-drive once before believing a non-convergence, the same way
-        # the sibling multi-device poll does: a limiter trip late in a run is a capacity signal,
-        # not a product failure, and re-running on a cleared throttle tells the two apart.
-        if poll.get("success") is not True and self._clear_load_throttle(
+        # Reset the runtime statistics and re-drive once before believing a non-convergence, the
+        # same way the sibling multi-device poll does: a limiter trip late in a run is a capacity
+        # signal, not a product failure, and re-running after the reset tells the two apart.
+        if poll.get("success") is not True and self._reset_app_runtime_stats(
                 f"batched '{target}' never landed on both: {poll}"):
             self._native_device_command({"commands": [
                 {"deviceId": sw_a, "command": target},
@@ -5206,9 +5152,9 @@ class TestRunner:
 
         # This assertion is about the REJECTED batch leaving the switch alone, so it can only be
         # trusted if leg 1's "on" actually landed. A platform limiter that swallowed that event
-        # would present as switch=off -- indistinguishable here from a partial send. Clear the
-        # throttle and re-poll, but never issue a command that could mask a partial send.
-        if after.get("success") is not True and self._clear_load_throttle(
+        # would present as switch=off -- indistinguishable here from a partial send. Reset the
+        # runtime statistics and re-poll, but never issue a command that could mask a partial send.
+        if after.get("success") is not True and self._reset_app_runtime_stats(
                 f"batched 'on' never landed on {sw_a}: {after}"):
             after = _poll_on()
 
@@ -11787,17 +11733,18 @@ def updated() {}
                 f"type=Number listing is wrong: {typed_names}"
             assert typed.get("ruleVariables") == [], "a typed listing must leave rule-engine variables out"
             # increment adds atomically on the hub and reports both values. Right after the bulk
-            # create the platform load limiter can refuse the call: bounce it, and retry only when
-            # the read-back shows the first attempt added nothing (a retry must never add twice).
-            # The penalty window can outlast one bounce, so a refused call is retried after a
-            # bounce and then two short waits.
+            # create the platform load limiter can refuse the call: reset the runtime statistics,
+            # and retry only when the read-back shows the first attempt added nothing (a retry must
+            # never add twice). A refused call is retried after the reset and then after two short
+            # waits, which stay for runs whose reset fails (no watchdog): the busy budget grows with
+            # uptime, so a call just over the limit can clear without one.
             inc = self.client.call_tool("hub_manage_variables", {
                 "tool": "hub_set_variable", "args": {"name": names[0], "increment": 5}})
             for wait_s in (0, 10, 20):
                 if "excessive hub load" not in str(inc.get("error", "")):
                     break
                 if wait_s == 0:
-                    self._clear_load_throttle(f"increment: {inc.get('error')}")
+                    self._reset_app_runtime_stats(f"increment: {inc.get('error')}")
                 else:
                     time.sleep(wait_s)
                 now_val = self.client.call_tool("hub_manage_variables", {
@@ -12559,9 +12506,9 @@ def updated() {}
         #   6 rejection gates (cheap, fail before any hub write): delete-without-confirm, missing/unknown
         #     action, activate missing/unknown, rename unknown target, invalid manager, no-arg manager
         #   7 delete WITH confirm -> asserts success + deletedModeId + the mode is gone
-        # Every server-app write goes through _mode_call: on an "excessive hub load" block it bounces
-        # the app via the watchdog and retries once (the limiter contract the dispatch tests use) --
-        # coverage is unchanged, only a throttled call is retried. The hub is sacrificial +
+        # Every server-app write goes through _mode_call: on an "excessive hub load" block it resets
+        # the runtime statistics via the watchdog and retries once (the limiter contract the dispatch
+        # tests use) -- coverage is unchanged, only a limited call is retried. The hub is sacrificial +
         # watchdog-recoverable; the runner's startup backup satisfies the delete confirm gate.
         # NOTE: the SDK fallback in hub_list_modes and the structured create/delete write-FAILURE
         # contracts need fault injection / firmware-dependent states (a duplicate-name or
@@ -12578,7 +12525,7 @@ def updated() {}
             try:
                 return self.client.call_tool(name, args)
             except McpToolError as exc:
-                if "excessive hub load" in str(exc) and self._clear_load_throttle(f"{label}: {exc}"):
+                if "excessive hub load" in str(exc) and self._reset_app_runtime_stats(f"{label}: {exc}"):
                     return self.client.call_tool(name, args)
                 raise
 
@@ -13007,13 +12954,13 @@ def updated() {}
         #   2 out-of-range latitude is rejected by validation (-32602) before any hub write
         #   3 the timeZone leg's confirm gate REJECTS without confirm AND the hub's timeZone is
         #     unchanged afterward (no reboot, nothing mutated)
-        # Every write goes through _set_call so an "excessive hub load" limiter trip bounces the app via
-        # the watchdog and retries once -- the same contract the mode-lifecycle test uses.
+        # Every write goes through _set_call so an "excessive hub load" limiter trip resets the runtime
+        # statistics via the watchdog and retries once -- the same contract the mode-lifecycle test uses.
         def _set_call(args: dict, label: str) -> Any:
             try:
                 return self.client.call_tool("hub_set_system_settings", args)
             except McpToolError as exc:
-                if "excessive hub load" in str(exc) and self._clear_load_throttle(f"{label}: {exc}"):
+                if "excessive hub load" in str(exc) and self._reset_app_runtime_stats(f"{label}: {exc}"):
                     return self.client.call_tool("hub_set_system_settings", args)
                 raise
 
@@ -13095,7 +13042,7 @@ def updated() {}
                 return self.client.call_tool("hub_set_system_settings", args)
             except McpToolError as exc:
                 msg = str(exc)
-                if "excessive hub load" in msg and self._clear_load_throttle(f"darkMode={on}: {exc}"):
+                if "excessive hub load" in msg and self._reset_app_runtime_stats(f"darkMode={on}: {exc}"):
                     return self.client.call_tool("hub_set_system_settings", args)
                 # A darkMode failure can also surface as an isError-raised McpToolError; a
                 # firmware-absent endpoint is a clean skip, a relay 504 a retryable failure.
@@ -13563,7 +13510,8 @@ def updated() {}
 
     @test("system_tools")
     def test_delete_logs_mcp_starts_a_new_log(self) -> None:
-        """Clearing the MCP log starts a new log: no entry from before the clear comes back."""
+        """Clearing the MCP log starts a new log: no entry from before the clear comes back. Deleting
+        the app runtime statistics needs confirm and leaves the server app's total at 0."""
         # A refusal writes a validation-error line, so the log holds at least one entry to clear.
         self._expect_tool_refusal("hub_read_diagnostics", {"tool": "hub_get_logs", "args": {"mode": "mcp", "source": "x"}},
                                   "Unknown parameter for hub_get_logs: source")
@@ -13579,6 +13527,40 @@ def updated() {}
         assert isinstance(after.get("entries"), list), f"MCP log after clear: {after}"
         assert all((e.get("timestamp") or 0) > last for e in after["entries"]), \
             f"entries from before the clear came back: {after}"
+        # The app runtime statistics (Logs > App Stats) are deleted only with confirm, and the reset
+        # is read back: the server app's own total drops (to 0 unless other server work ran meanwhile).
+        self._expect_tool_refusal("hub_manage_logs", {
+            "tool": "hub_delete_logs", "args": {"mode": "appRuntimeStats", "confirm": False}}, "confirm")
+        # App Stats' own uptime (time since its last reset) before the reset, for a fallback proof below.
+        uptime_before = self._apps_uptime_seconds()
+        stats = self.client.call_tool("hub_manage_logs", {
+            "tool": "hub_delete_logs", "args": {"mode": "appRuntimeStats", "confirm": True}})
+        assert stats.get("success") is True, f"appRuntimeStats reset: {stats}"
+        if stats.get("verified") is not True:
+            # Over the cloud both Logs reads share the request's time budget; a large hub can leave one
+            # still in progress. Then prove this reset another way: App Stats' uptime went DOWN, which
+            # only a reset does (it otherwise only grows).
+            assert "still in progress" in str(stats.get("note", "")), f"appRuntimeStats reset not verified: {stats}"
+            uptime_after = self._apps_uptime_seconds()
+            assert uptime_before is not None and uptime_after is not None and uptime_after < uptime_before, \
+                f"App Stats did not restart at the reset (appsUptime {uptime_before} s -> {uptime_after} s): {stats}"
+            return
+        before_ms = (stats.get("before") or {}).get("totalMs")
+        after_ms = (stats.get("after") or {}).get("totalMs")
+        assert isinstance(before_ms, (int, float)) and isinstance(after_ms, (int, float)) and \
+            (after_ms == 0 or after_ms < before_ms), f"the reset must drop the server app's total: {stats}"
+
+    def _apps_uptime_seconds(self) -> int | None:
+        """App Stats' uptime (since its last reset) from hub_get_logs(mode='apps'), polled up to 60 s."""
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline:
+            summary = (self.client.call_tool("hub_read_diagnostics", {
+                "tool": "hub_get_logs", "args": {"mode": "apps"}}) or {}).get("summary") or {}
+            seconds = _uptime_seconds(summary.get("appsUptime"))
+            if seconds is not None:
+                return seconds
+            time.sleep(5)
+        return None
 
     @test("system_tools")
     def test_manage_rooms_list(self) -> None:
@@ -14011,7 +13993,7 @@ def updated() {}
                 # the pass criterion. An independent hub_list_files cross-check is nice for the
                 # log, but it MUST NOT gate the test: under peak full-suite load the File
                 # Manager listing degrades to a blind empty page (hub-wide saturation, which a
-                # per-app bounce cannot restore in-run). The only listing outcome worth failing
+                # runtime-statistics reset cannot restore in-run). The only listing outcome worth failing
                 # on is an AUTHORITATIVE listing that enumerates files while omitting THIS one --
                 # a real contradiction of the affirmed success, not a load artifact.
                 result = outcome["response"]
@@ -15166,11 +15148,13 @@ def updated() {}
         def _authorized_ids(devices: list[dict] | None = None) -> set[str]:
             rows = devices if devices is not None else (self._device_allowlist_inventory().get("devices") or [])
             return {str(d["id"]) for d in rows if d.get("mcpAuthorized")}
-        def _scope(mode: str, ids: list[str]) -> dict:
+        def _scope(mode: str, ids: list[str], allow_empty: bool = False) -> dict:
+            scope: dict = {"mode": mode, "ids": ids}
+            if allow_empty:
+                scope["allowEmpty"] = True
             return self.client.call_tool("hub_manage_mcp", {
                 "tool": "hub_update_mcp_settings",
-                "args": {"settings": {"selectedDevices": {"mode": mode, "ids": ids}},
-                         "confirm": True},
+                "args": {"settings": {"selectedDevices": scope}, "confirm": True},
             })
 
         all_devices = self._device_allowlist_inventory().get("devices") or []
@@ -15188,6 +15172,7 @@ def updated() {}
             raise SkipTest("no unauthorized device available to exercise the selectedDevices scope")
 
         added_ok = False
+        was_empty = False
         try:
             add = _scope("add", [unauth])
             assert add.get("success") is True, f"add did not succeed: {add}"
@@ -15195,13 +15180,17 @@ def updated() {}
             assert scope.get("mode") == "add", f"mode not echoed: {add}"
             assert unauth in (scope.get("added") or []), f"added list missing the id: {add}"
             assert unauth in (scope.get("authorizedDeviceIds") or []), f"resulting set missing the id: {add}"
+            # The selected set was empty before the add when it now holds only the added id.
+            was_empty = set(scope.get("authorizedDeviceIds") or []) == {unauth}
             added_ok = True
             # The device now reads back as authorized.
             assert unauth in _authorized_ids(), "device did not become mcpAuthorized after add"
         finally:
-            # Always restore: remove the id we added so the scope returns to its original set.
+            # Always restore: remove the id we added so the scope returns to its original set. An
+            # originally empty selected set is restored to empty, which the self-lockout guard only
+            # allows with allowEmpty.
             if added_ok:
-                rem = _scope("remove", [unauth])
+                rem = _scope("remove", [unauth], allow_empty=was_empty)
                 assert rem.get("success") is True, f"remove (restore) did not succeed: {rem}"
                 scope = rem.get("selectedDevices") or {}
                 assert unauth in (scope.get("removed") or []), f"removed list missing the id: {rem}"
@@ -16117,7 +16106,7 @@ def updated() {}
                 "expectedValue": "on", "mode": "all", "timeoutMs": 5000,
             })
             assert isinstance(all_poll, dict), f"multi-device all poll unexpected: {all_poll!r}"
-            if all_poll.get("success") is not True and self._clear_load_throttle(
+            if all_poll.get("success") is not True and self._reset_app_runtime_stats(
                     f"multi-device 'on' never landed on both: {all_poll}"):
                 for did in (a_id, b_id):
                     self._native_device_command({
@@ -17511,11 +17500,15 @@ def updated() {}
               f"{total_fail} failed, {total_skip} skipped  "
               f"({total_dur:.1f}s)")
 
-        if self.throttle_bounces:
-            print(f"\n  [THROTTLE] {self.throttle_bounces} watchdog bounce(s) of app "
-                  f"{self.server_app_id or '?'} were attempted after load-limiter errors. "
-                  "A verified app re-enable does not prove dispatch recovered; "
+        if self.limiter_resets:
+            print(f"\n  [LIMITER] {self.limiter_resets} runtime-statistics reset(s) for app "
+                  f"{self.server_app_id or '?'} followed load-limiter errors. "
+                  "A successful reset does not prove dispatch recovered; "
                   "the individual test results above record the outcome.")
+        if self.limiter_reset_failures:
+            print(f"\n  [LIMITER] {self.limiter_reset_failures} runtime-statistics reset(s) for app "
+                  f"{self.server_app_id or '?'} FAILED after load-limiter errors; "
+                  "the [LIMITER] lines above name each one.")
 
         if self._fixture_reset_failures:
             print(f"\n  [FIXTURE-RESET] {len(self._fixture_reset_failures)} permanent-fixture reset(s) FAILED -- "

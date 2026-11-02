@@ -11,6 +11,7 @@ class WatchdogV31ParitySpec extends WatchdogV31Harness {
         hub_update_library: 'adminUpdateLibrary', hub_delete_item: 'adminDeleteItem',
         hub_force_delete_app: 'adminForceDeleteInstalledApp', hub_purge_e2e_artifacts: 'adminPurgeE2eArtifacts',
         hub_reboot: 'adminRebootHub', hub_set_app_disabled: 'adminSetAppDisabled',
+        hub_delete_app_runtime_stats: 'adminDeleteAppRuntimeStats',
         hub_get_metrics: 'adminGetMetrics', hub_update_platform: 'adminUpdatePlatform',
         hub_get_memory_history: 'adminGetMemoryHistory', hub_get_hub_logs: 'adminGetHubLogs',
         hub_list_app_instances: 'adminListAppInstances', hub_install_bundle: 'adminInstallBundle',
@@ -20,7 +21,7 @@ class WatchdogV31ParitySpec extends WatchdogV31Harness {
         hub_create_backup: 'adminCreateBackup', hub_manage_variables: 'adminManageVariables'
     ]
 
-    def 'v3.1 advertises every manual tool plus the three package tools'() {
+    def 'v3.2 advertises every manual tool plus the three package tools'() {
         expect:
         script.getAdminToolDefinitions()*.name as Set ==
             (MANUAL_TOOLS.keySet() + ['hub_update_package', 'hub_get_package_deployment', 'hub_set_package_deployment']) as Set
@@ -39,14 +40,16 @@ class WatchdogV31ParitySpec extends WatchdogV31Harness {
         watchdogKeys == serverKeys - ['mcpLogLevel', 'redactCredentials']
     }
 
-    def 'v3.1 names itself apart from v3 and protects the code of both watchdogs'() {
+    def 'v3.2 names itself apart from v3 and protects the code of every v3 watchdog'() {
         expect:
         script.processJsonRpcMessage([jsonrpc: '2.0', id: 1, method: 'initialize', params: [:]]).result.serverInfo ==
-            [name: 'e2e-deadman-watchdog-v3-1', version: '3.1']
+            [name: 'e2e-deadman-watchdog-v3-1', version: '3.2']
+        script.isWatchdogSource('definition(\n    name: "E2E Dead-Man Watchdog v3.2",\n    namespace: "mcp")\n')
         script.isWatchdogSource('definition(\n    name: "E2E Dead-Man Watchdog v3.1",\n    namespace: "mcp")\n')
         script.isWatchdogSource('definition(\n    name: "E2E Dead-Man Watchdog v3",\n    namespace: "mcp")\n')
         !script.isWatchdogSource('definition(\n    name: "E2E Dead-Man Watchdog v2",\n    namespace: "mcp")\n')
         !script.isWatchdogSource('definition(name: "E2E Dead-Man Watchdog v3.10")')
+        !script.isWatchdogSource('definition(name: "E2E Dead-Man Watchdog v3.3")')
     }
 
     @Unroll
@@ -97,7 +100,7 @@ class WatchdogV31ParitySpec extends WatchdogV31Harness {
         where:
         tool << ['hub_update_app', 'hub_create_library', 'hub_update_library', 'hub_delete_item',
                  'hub_force_delete_app', 'hub_purge_e2e_artifacts', 'hub_reboot', 'hub_set_app_disabled',
-                 'hub_update_platform', 'hub_install_bundle', 'hub_delete_bundle', 'hub_write_file',
+                 'hub_delete_app_runtime_stats', 'hub_update_platform', 'hub_install_bundle', 'hub_delete_bundle', 'hub_write_file',
                  'hub_create_backup', 'hub_set_mcp_developer_mode', 'hub_update_mcp_settings', 'hub_get_source']
     }
 

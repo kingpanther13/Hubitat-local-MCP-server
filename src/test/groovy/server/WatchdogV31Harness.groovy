@@ -7,7 +7,7 @@ import me.biocomp.hubitat_ci.app.HubitatAppScript
 import support.WatchdogSpec
 import support.PermissiveLog
 
-// Fake hub for the v3.1 package-deployment specs.
+// Fake hub for the v3.2 package-deployment specs.
 abstract class WatchdogV31Harness extends WatchdogSpec {
     HubitatAppScript script
     Map persisted = new PublicationMap()
@@ -34,7 +34,7 @@ abstract class WatchdogV31Harness extends WatchdogSpec {
     boolean failCompile = false
     List inventory = [[id: 178, namespace: 'mcp', name: 'MCP Rule Server'],
                       [id: 179, namespace: 'mcp', name: 'MCP Rule'],
-                      [id: 254, namespace: 'mcp', name: 'E2E Dead-Man Watchdog v3.1']]
+                      [id: 254, namespace: 'mcp', name: 'E2E Dead-Man Watchdog v3.2']]
 
     static class PublicationMap extends HashMap {
         List publications = []

@@ -38,10 +38,8 @@ if rpc["method"] == "tools/list":
 params = rpc["params"]
 name = params["name"]
 arguments = params["arguments"]
-if name == "hub_list_apps":
-    emit({"success": True, "apps": [
-        {"id": "41", "namespace": "mcp", "name": "E2E Dead-Man Watchdog v3"},
-        {"id": "42", "namespace": "mcp", "name": "E2E Dead-Man Watchdog v3.1"}]})
+if name in ("hub_list_apps", "hub_read_apps_code"):
+    emit({"success": True, "apps": fixture["classes"]})
 elif name == "hub_get_source":
     offset = arguments["offset"]
     assert arguments == {"type": "app", "id": "42", "offset": offset,
@@ -73,10 +71,12 @@ else:
 '''
 
 
-IDLE_V3 = {"watchdogVersion": "3.1", "packageDeployment": None}
+IDLE_V3 = {"watchdogVersion": "3.2", "packageDeployment": None}
+V3 = {"id": "41", "namespace": "mcp", "name": "E2E Dead-Man Watchdog v3"}
+CLASSES = [V3, {"id": "42", "namespace": "mcp", "name": "E2E Dead-Man Watchdog v3.2"}]
 
 
-def run_maintenance(tmp_path, *, info=IDLE_V3, pages=None, prepare_only=False, damage=None):
+def run_maintenance(tmp_path, *, info=IDLE_V3, pages=None, prepare_only=False, damage=None, classes=CLASSES):
     if pages is None:
         pages = {}
         offset = 0
@@ -87,7 +87,7 @@ def run_maintenance(tmp_path, *, info=IDLE_V3, pages=None, prepare_only=False, d
                 "nextOffset": offset + len(source),
             }
             offset += len(source)
-    (tmp_path / "fixture.json").write_text(json.dumps({"info": info, "pages": pages}))
+    (tmp_path / "fixture.json").write_text(json.dumps({"info": info, "pages": pages, "classes": classes}))
     bindir = tmp_path / "bin"
     bindir.mkdir()
     curl = bindir / "curl"
@@ -128,22 +128,40 @@ def run_maintenance(tmp_path, *, info=IDLE_V3, pages=None, prepare_only=False, d
 @pytest.mark.parametrize("info", [
     {"watchdogVersion": 2},
     {"watchdogVersion": 3, "packageDeployment": None},
+    {"watchdogVersion": "3.0", "packageDeployment": None},
     {},
-    {"watchdogVersion": "3.1", "packageDeployment": {"requestId": "held", "phase": "stopped", "hold": True}},
+    {"watchdogVersion": "3.2", "packageDeployment": {"requestId": "held", "phase": "stopped", "hold": True}},
     {"watchdogVersion": "3.1", "packageDeployment": {"requestId": "held", "phase": "interrupted"}},
-], ids=["v2-endpoint", "v3-endpoint", "unidentified-endpoint", "held-deployment", "hold-unknown"])
-def test_maintenance_refuses_a_non_v3_1_or_held_watchdog_before_any_deploy(tmp_path, info):
+], ids=["v2-endpoint", "v3-endpoint", "v3-0-endpoint", "unidentified-endpoint", "held-deployment", "hold-unknown"])
+def test_maintenance_refuses_a_non_v3_2_or_v3_1_or_held_watchdog_before_any_deploy(tmp_path, info):
     result, calls = run_maintenance(tmp_path, info=info)
     assert result.returncode != 0, result.stdout + result.stderr
     assert [call["params"]["name"] for call in calls] == ["hub_get_info"]
     assert not (tmp_path / "deployed").exists()
 
 
-def test_maintenance_proceeds_after_a_released_deployment(tmp_path):
-    info = {"watchdogVersion": "3.1", "packageDeployment": {"requestId": "done", "phase": "complete", "hold": False}}
+@pytest.mark.parametrize("version", ["3.2", "3.1"])
+def test_maintenance_proceeds_after_a_released_deployment(tmp_path, version):
+    info = {"watchdogVersion": version, "packageDeployment": {"requestId": "done", "phase": "complete", "hold": False}}
     result, _ = run_maintenance(tmp_path, info=info)
     assert result.returncode == 0, result.stdout + result.stderr
     assert (tmp_path / "deployed").exists()
+
+
+def test_maintenance_finds_the_class_still_named_v3_1(tmp_path):
+    classes = [V3, {"id": "42", "namespace": "mcp", "name": "E2E Dead-Man Watchdog v3.1"}]
+    result, calls = run_maintenance(tmp_path, info={"watchdogVersion": "3.1", "packageDeployment": None}, classes=classes)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (tmp_path / "deployed").exists()
+    assert next(call["params"]["arguments"]["id"] for call in calls
+                if call["params"].get("name") == "hub_get_source") == "42"
+
+
+def test_maintenance_stops_when_neither_class_name_exists(tmp_path):
+    result, calls = run_maintenance(tmp_path, classes=[V3])
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "E2E Dead-Man Watchdog v3.1" in result.stderr
+    assert not any(call["params"].get("name") == "hub_get_source" for call in calls)
 
 
 @pytest.mark.parametrize("page", [

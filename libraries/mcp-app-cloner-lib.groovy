@@ -680,7 +680,7 @@ private Map _appClonerStagePlan(Integer newAppId) {
     // Primary enumeration: ONE /hub2/appsList read carries the complete nested
     // app tree -- no per-node configPage render (which for a cloned Button
     // Controller with N children turned one read into N+1 expensive renders on
-    // the same per-app load counters the sticky limiter watches).
+    // the busy-time counter the per-app load limiter compares against uptime x its threshold).
     try {
         def responseText = hubInternalGet("/hub2/appsList")
         def parsed = new groovy.json.JsonSlurper().parseText(responseText)

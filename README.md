@@ -537,7 +537,7 @@ Whole-hub backup *creation* is the flat core tool `hub_create_backup`.
 | Tool | Description |
 |------|-------------|
 | `hub_get_logs` | Read one tab, or a list of tabs, of the hub's Logs page with the hub's own field names (`mode`: `past` log history (default), `devices`/`apps` runtime stats, `cloudCalls`, `locationEvents`, `hubEvents` (reboots, low memory), `scheduledJobs`, `runningJobs`, `hubActions`), or the MCP log (`mode='mcp'`) and its status (`mode='status'`). Jobs, running jobs and hub actions name their owner app or device when the hub links one (system jobs have none). (also in `hub_read_diagnostics`) |
-| `hub_delete_logs` | Clear the MCP log (`mode='mcp'`), or delete one scheduled job like the Delete button on the Logs page (`mode='scheduledJobs'`, `jobId`, `confirm=true`). Past logs have no delete; the Reboot dialog's log purge is `hub_reboot(confirm=true, purgeLogs=true)` |
+| `hub_delete_logs` | Clear the MCP log (`mode='mcp'`), delete one scheduled job like the Delete button on the Logs page (`mode='scheduledJobs'`, `jobId`, `confirm=true`), or reset every app's runtime statistics, the busy time the per-app load limiter counts (`mode='appRuntimeStats'`, `confirm=true`; returns this app's App Stats row before and after). Past logs have no delete; the Reboot dialog's log purge is `hub_reboot(confirm=true, purgeLogs=true)` |
 | `hub_set_log_level` | Set MCP log level (debug/info/warn/error) |
 
 Read tools are gated by the Read master; the delete and set-level writes by the Write master (both ON by default).
@@ -924,6 +924,7 @@ Requests use the fixed loopback address inside the hub, never the LAN or cloud e
 - **Hubitat Cloud responses** — 128KB maximum (AWS MQTT limit). Use pagination for large device lists.
 - No real-time event streaming (MCP responses only)
 - Sunrise/sunset times are recalculated daily
+- **Per-app load limiter** — The hub refuses an app's calls ("generates excessive hub load") once this app's busy time since boot plus that of the app or device it calls (its own a second time when it calls itself) passes uptime × the hub's excessive-load threshold (stock 33 %), after 15 minutes of uptime. The server watches its own busy time, checks the hub's real count at half the limit, and resets the hub's app runtime statistics before it trips; when a call is refused anyway, the statistics are reset and a refused read or retry-safe write is repeated once. A device command the limiter drops can still report success, so the early reset is what protects device commands; read the device back to confirm. The reset clears the **Logs › App Stats** tab for every app, not only this one, and restarts every app's limiter count; Device Stats are not touched. The guard watches only this app's own total, so a busy app or device it calls can still trip the limiter first. The automatic reset can be turned off under Advanced settings ("Reset the hub's app runtime statistics automatically", default on) and only runs while the Write master is on. `hub_delete_logs(mode='appRuntimeStats', confirm=true)` resets them by hand.
 
 </details>
 
