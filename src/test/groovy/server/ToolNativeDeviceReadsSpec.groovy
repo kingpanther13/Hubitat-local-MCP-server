@@ -187,7 +187,7 @@ class ToolNativeDeviceReadsSpec extends ToolSpecBase {
     }
 
     @Unroll
-    def 'lockCodes reads masked=#hide in the summary, the attribute read, a poll, a command snapshot and the event rows'() {
+    def 'lockCodes reads masked=#hide in the summary, the attribute read, a command snapshot and the event rows; a poll on it is refused only while masked'() {
         given:
         fixture('selected')
         settingsMap.redactCredentials = hide
@@ -202,7 +202,10 @@ class ToolNativeDeviceReadsSpec extends ToolSpecBase {
         when:
         def summary = script.toolGetDevice('10')
         def attribute = script.toolGetAttribute('10', 'lockCodes')
-        def poll = hide ? [success: true, finalValue: shown] : script.toolPollUntilAttribute([deviceId: '10', attribute: 'lockCodes', expectedValue: stored])
+        def poll = null
+        String pollRefusal = null
+        try { poll = script.toolPollUntilAttribute([deviceId: '10', attribute: 'lockCodes', expectedValue: stored]) }
+        catch (IllegalArgumentException e) { pollRefusal = e.message }
         def snapshot = script._snapshotBypassDeviceState('10', 'fixture')
         def events = script.toolGetDeviceEvents('10', 10).events
         def history = script.toolGetDeviceHistory([deviceId: '10', since: '2026-09-10T10:00:00Z']).events
@@ -211,8 +214,7 @@ class ToolNativeDeviceReadsSpec extends ToolSpecBase {
         summary.attributes.find { it.name == 'lockCodes' }.value == shown
         summary.attributes.find { it.name == 'switch' }.value == 'on'
         attribute.value == shown
-        poll.success == true
-        poll.finalValue == shown
+        hide ? (poll == null && pollRefusal.contains('Cannot wait for a value of lockCodes')) : (pollRefusal == null && poll.success == true && poll.finalValue == stored)
         snapshot.lockCodes.value == shown
         snapshot.switch.value == 'on'
 
