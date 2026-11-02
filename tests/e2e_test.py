@@ -224,6 +224,12 @@ class McpError(Exception):
         super().__init__(message)
 
 
+def _with_http_status(exc: Exception, status: int) -> Exception:
+    """Attach the HTTP status the hub or relay answered, so recovery is chosen by status, not text."""
+    exc.http_status = status
+    return exc
+
+
 class RelayLostResponseError(McpError, requests.HTTPError):
     """A write's response was lost while the hub may have committed it.
 
@@ -767,12 +773,13 @@ class HubitatMcpClient:
                 if 500 <= resp.status_code < 600:
                     # Hub or cloud relay returned a transient error. Heavy
                     # queries (e.g. hub_get_logs Logs-page modes) sometimes 504.
-                    last_exc = requests.HTTPError(f"{resp.status_code} {resp.reason} on {method}")
+                    last_exc = _with_http_status(
+                        requests.HTTPError(f"{resp.status_code} {resp.reason} on {method}"), resp.status_code)
                     if not replay_safe:
                         # Write: unknown-commit. Never replay the request; hand back the typed
                         # error so the caller can recover the result from the op journal.
-                        raise RelayLostResponseError(
-                            f"{resp.status_code} {resp.reason} on {method} (504-class: response lost)")
+                        raise _with_http_status(RelayLostResponseError(
+                            f"{resp.status_code} {resp.reason} on {method} (504-class: response lost)"), resp.status_code)
                     self._transport_retries += 1
                     self._log(f"<< HTTP {resp.status_code} (attempt {attempt + 1}/{_attempts}) — retrying")
                     # Exponential backoff with jitter to avoid thundering-herd if
@@ -879,7 +886,8 @@ class HubitatMcpClient:
                     timeout=60,
                 )
                 if 500 <= resp.status_code < 600:
-                    last_exc = requests.HTTPError(f"{resp.status_code} {resp.reason} on raw_request")
+                    last_exc = _with_http_status(
+                        requests.HTTPError(f"{resp.status_code} {resp.reason} on raw_request"), resp.status_code)
                     time.sleep((2 ** attempt) + random.uniform(0, 1))
                     continue
                 return resp
@@ -1172,11 +1180,11 @@ class LegacyEraClient:
                     self._log(f"<< HTTP {resp.status_code} {resp.text[:300]}")
                     return resp
                 if not replay_safe:
-                    raise RelayLostResponseError(
+                    raise _with_http_status(RelayLostResponseError(
                         f"{resp.status_code} {resp.reason} on legacy {method} "
-                        "(504-class: response lost)")
-                last_exc = requests.HTTPError(
-                    f"{resp.status_code} {resp.reason} on legacy {method}")
+                        "(504-class: response lost)"), resp.status_code)
+                last_exc = _with_http_status(requests.HTTPError(
+                    f"{resp.status_code} {resp.reason} on legacy {method}"), resp.status_code)
                 self._log(f"<< HTTP {resp.status_code} (attempt {attempt + 1}/{attempts}) -- retrying")
             if attempt < attempts - 1:
                 time.sleep((2 ** attempt) + random.uniform(0, 1))
@@ -2255,6 +2263,16 @@ class TestRunner:
             except Exception as exc:
                 elapsed = time.monotonic() - t0
                 es = str(exc)
+                # A limiter refusal, or an HTTP 500-503 (by the status the client attached; a write's
+                # lost-response error carries it too): reset the runtime statistics and re-run once on
+                # fresh fixtures, but only when the reset went through; otherwise the failure stands.
+                status = getattr(exc, "http_status", None)
+                if attempt == 1 and ("excessive hub load" in es or status in (500, 501, 502, 503)):
+                    print(f"    [RETRY] {name} failed on a server 5xx or limiter refusal ({es[:80]}) -- "
+                          "resetting the runtime statistics and re-running once")
+                    if self._reset_app_runtime_stats(f"server 5xx on {name}: {es[:120]}"):
+                        retry_reason = "limiter 5xx"
+                        continue
                 if "504" in es and attempt == 1:
                     retry_reason = "relay 504"
                     print(f"    [RETRY] {name} failed on a relay 504 -- re-running the test once")
@@ -2262,15 +2280,6 @@ class TestRunner:
                     self._settle_before_504_retry(name)
                     self._capture_504_context(name, exc, failed_at)
                     continue
-                # A limiter refusal, or an HTTP 500-503 answer (the client raises "<status> <reason> on
-                # <method>"): reset the runtime statistics and re-run once on fresh fixtures, but only
-                # when the reset went through; otherwise the failure stands.
-                if attempt == 1 and ("excessive hub load" in es or re.match(r"50[0-3] ", es)):
-                    print(f"    [RETRY] {name} failed on a server 5xx or limiter refusal ({es[:80]}) -- "
-                          "resetting the runtime statistics and re-running once")
-                    if self._reset_app_runtime_stats(f"server 5xx on {name}: {es[:120]}"):
-                        retry_reason = "limiter 5xx"
-                        continue
                 # The summary table stays readable with a 200-char message, but the FULL
                 # failure goes to the run log here -- a truncated structured response
                 # (error/repairHints/settingsSkipped all cut off) has repeatedly forced an
@@ -13511,7 +13520,12 @@ def updated() {}
             "tool": "hub_delete_logs", "args": {"mode": "appRuntimeStats", "confirm": False}}, "confirm")
         stats = self.client.call_tool("hub_manage_logs", {
             "tool": "hub_delete_logs", "args": {"mode": "appRuntimeStats", "confirm": True}})
-        assert stats.get("success") is True and stats.get("verified") is True, f"appRuntimeStats reset: {stats}"
+        assert stats.get("success") is True, f"appRuntimeStats reset: {stats}"
+        if stats.get("verified") is not True:
+            # Over the cloud both Logs reads share the request's time budget; a large hub can leave
+            # one still in progress. That is the only acceptable reason for an unverified reset.
+            assert "still in progress" in str(stats.get("note", "")), f"appRuntimeStats reset not verified: {stats}"
+            return
         before_ms = (stats.get("before") or {}).get("totalMs")
         after_ms = (stats.get("after") or {}).get("totalMs")
         assert isinstance(before_ms, (int, float)) and isinstance(after_ms, (int, float)) and \

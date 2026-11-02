@@ -35,6 +35,12 @@ class LoadLimiterGuardSpec extends ToolSpecBase {
 
     def setup() {
         sharedLocation.hub = new TestHub(uptime: 10000G)
+        hubGet.register(THRESHOLD) { p -> '33' }
+    }
+
+    def cleanup() {
+        script.callerClient = null
+        script.requestStartedAt = null
     }
 
     private void busy(long ms) { script.LOAD_GUARD.busyMs = ms }
@@ -311,6 +317,7 @@ class LoadLimiterGuardSpec extends ToolSpecBase {
     def 'the threshold is the hub value when readable; an unreadable one is 33 and read again next time: #label'() {
         given:
         if (answer != null) hubGet.register(THRESHOLD) { p -> answer }
+        else hubGet.register(THRESHOLD) { p -> throw new RuntimeException('no answer') }
         def logs = captureLogs()
 
         when:
@@ -726,5 +733,168 @@ class LoadLimiterGuardSpec extends ToolSpecBase {
         result.error.contains('denied')
         result.verified == false
         logs.any { it.level == 'warn' && it.message.contains('failed (hub_delete_logs): denied') }
+    }
+
+    // ---- review round: the off switch, latch ownership, fresh threshold, missing row, time budget ----
+
+    @Unroll
+    def 'with #label nothing is scheduled, however high the estimate'() {
+        given:
+        settingsMap[setting] = false
+        busy(HALF * 2)
+
+        when:
+        script._loadGuardBeforeRequest()
+
+        then:
+        handlers() == []
+
+        where:
+        label                       | setting
+        'the automatic reset off'   | 'autoResetAppRuntimeStats'
+        'the Write master off'      | 'enableWrite'
+    }
+
+    def 'a check job that runs after the automatic reset was turned off resets nothing'() {
+        given:
+        settingsMap.autoResetAppRuntimeStats = false
+        script.LOAD_GUARD.checkPending = NOW
+        logsJsonWithOwnTotal { HALF * 2 }
+        hubGet.register(RESET) { p -> 'ok' }
+
+        when:
+        script._loadGuardCheckJob([stamp: NOW])
+
+        then:
+        resets() == 0
+        !script.LOAD_GUARD.containsKey('checkPending')
+    }
+
+    @Unroll
+    def 'a refused call is not reset or repeated when #label, and the error names the manual reset'() {
+        given:
+        if (setting) settingsMap[setting] = false
+        if (client) {
+            script.callerClient = [id: 'c1', label: 'phone']
+            settingsMap['clientWrite_c1'] = false
+        }
+        hubGet.register(RESET) { p -> 'ok' }
+        int calls = 0
+        script.metaClass.toolGetHsmStatus = { -> calls++; return [success: false, error: 'App 1 generates excessive hub load'] }
+
+        when:
+        def result = script.executeTool('hub_get_hsm_status', [:])
+
+        then:
+        calls == 1
+        resets() == 0
+        result.success == false
+        result.error.contains(reason)
+        result.error.contains("hub_delete_logs")
+
+        where:
+        label                              | setting                    | client || reason
+        'the automatic reset is off'       | 'autoResetAppRuntimeStats' | false  || 'automatic reset is off'
+        'the calling client may not write' | null                       | true   || 'this client may not write'
+    }
+
+    def 'a refused read is reset but not repeated once half the request time budget is spent'() {
+        given:
+        script.metaClass._isCloudRequest = { -> true }
+        script.requestStartedAt = NOW - 4_000L   // relay budget 6000 ms: past half of it
+        hubGet.register(RESET) { p -> 'ok' }
+        int calls = 0
+        script.metaClass.toolGetHsmStatus = { -> calls++; return [success: false, error: 'App 1 generates excessive hub load'] }
+
+        when:
+        def result = script.executeTool('hub_get_hsm_status', [:])
+
+        then:
+        calls == 1
+        resets() == 1
+        result.error.contains('not repeated within this request')
+    }
+
+    def 'a job frees only its own latch, never one a later job took over'() {
+        given:
+        script.LOAD_GUARD.checkPending = NOW + 61_000L   // a newer job's stamp
+        logsJsonWithOwnTotal { 100L }
+
+        when:
+        script._loadGuardCheckJob([stamp: NOW])
+
+        then:
+        script.LOAD_GUARD.checkPending == NOW + 61_000L
+
+        when:
+        script._loadGuardCheckJob([stamp: NOW + 61_000L])
+
+        then:
+        !script.LOAD_GUARD.containsKey('checkPending')
+    }
+
+    def 'the scheduler hands the job its latch stamp'() {
+        given:
+        seeded()
+        busy(HALF)
+
+        when:
+        script._loadGuardBeforeRequest()
+
+        then:
+        runInCalls.find { it[1] == '_loadGuardCheckJob' }[2] == [data: [stamp: NOW]]
+        script.LOAD_GUARD.checkPending == NOW
+    }
+
+    def 'each check reads the threshold again, so a changed hub setting is used'() {
+        given:
+        script.LOAD_GUARD.thresholdPct = 33
+        script.LOAD_GUARD.lastUptimeS = 10000L
+        hubGet.register(THRESHOLD) { p -> '20' }   // 10000 s x 20 % = 2,000,000 ms; 50 % = 1,000,000 ms
+        logsJsonWithOwnTotal { 1_100_000L }
+        hubGet.register(RESET) { p -> 'ok' }
+
+        when:
+        script._loadGuardCheckJob()
+
+        then:
+        script.LOAD_GUARD.thresholdPct == 20
+        resets() == 1
+    }
+
+    def 'a missing App Stats row counts as 0 for the seed and the check, with no backoff'() {
+        given:
+        logsJsonWithoutOwnRow()
+        busy(HALF + 1_000L)
+
+        when:
+        script._seedLoadGuardJob()
+        script._loadGuardCheckJob()
+
+        then:
+        script.LOAD_GUARD.seeded == true
+        !script.LOAD_GUARD.containsKey('seedFailedAt')
+        !script.LOAD_GUARD.containsKey('resetFailedAt')
+        script._loadGuardBusyMs() == 0L
+        resets() == 0
+    }
+
+    def 'appRuntimeStats reads before and after the reset within one observation window'() {
+        given:
+        hubGet.register(RESET) { p -> 'ok' }
+        List windows = []
+        script.metaClass._logsJsonOwnAppStat = { boolean fresh, Map args ->
+            windows << args?.__reqT0
+            return [totalMs: windows.size() == 1 ? 5000L : 0L, count: 1L]
+        }
+
+        when:
+        def result = script.toolDeleteLogs([mode: 'appRuntimeStats', confirm: true])
+
+        then:
+        result.verified == true
+        windows.size() == 2
+        windows[0] != null
+        windows[0] == windows[1]
     }
 }

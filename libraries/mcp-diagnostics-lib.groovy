@@ -1149,12 +1149,14 @@ private Map _deleteAppRuntimeStats(Map args) {
         return [success: false, isError: true, mode: "appRuntimeStats",
                 error: "Resetting the hub's app runtime statistics needs confirm=true: it zeroes the busy time of every app on the Logs page's App Stats tab, not only this one."]
     }
+    // Both reads share one observation window from here, so the call stays within the request's budget.
+    Map window = [__reqT0: now()]
     _logsJsonInvalidate()
-    Map before = _logsJsonOwnAppStat()
+    Map before = _logsJsonOwnAppStat(false, window)
     String reply = _resetAppRuntimeStatsNow()
     mcpLog("warn", "monitoring", reply == "ok" ? "The hub's app runtime statistics were reset (hub_delete_logs)"
                                                : "Resetting the hub's app runtime statistics failed (hub_delete_logs): ${reply ?: 'empty reply'}")
-    Map after = _logsJsonOwnAppStat()
+    Map after = _logsJsonOwnAppStat(false, window)
     // After the reset an absent row is total 0 (the hub lists only apps with activity since the last reset).
     if (after.missing == true) after = [totalMs: 0L, count: 0L]
     Long uptimeS = null
@@ -1405,9 +1407,9 @@ def _logsJsonSnapshot(Map args) {
 // This app's App Stats row from the Logs page: [totalMs, count], or [error] when unreadable.
 // fresh: read the page inline, as the load guard's scheduled jobs need -- outside a request a LAN
 // time budget would route them through the background fetch and its retained failure.
-Map _logsJsonOwnAppStat(boolean fresh = false) {
+Map _logsJsonOwnAppStat(boolean fresh = false, Map args = null) {
     try {
-        Map snap = fresh ? [state: "ready", snapshot: _logsJsonFetchAndPublish()] : _logsJsonSnapshot([:])
+        Map snap = fresh ? [state: "ready", snapshot: _logsJsonFetchAndPublish()] : _logsJsonSnapshot(args ?: [:])
         if (snap.state != "ready") return [error: snap.state == "failed" ? "Logs page read failed: ${snap.error}".toString() : "Logs page read still in progress"]
         def row = (snap.snapshot.appStats ?: []).find { it.id?.toString() == app.id?.toString() }
         if (row == null) return [error: "no App Stats row for app ${app.id}".toString(), missing: true]
