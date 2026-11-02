@@ -3014,51 +3014,17 @@ class TestRunner:
 
     @test("devices")
     def test_list_devices_scope_all(self) -> None:
-        # Item 1 (#257): scope='all' lists EVERY hub device with an mcpAuthorized flag, sourced from
-        # the hub-wide inventory, not the authorization-scoped Groovy model: from
-        # /device/listWithCapabilities/json where it exists, else (platform 2.5.1.173 and later)
-        # the /hub2/devicesList tree unioned with the /hub2/vrb/devices picker feed for capabilities.
+        # scope='all' lists EVERY hub device from the hub's own Devices page list with an
+        # mcpAuthorized flag; identity only (no states), counts over the filtered set.
         result = self.client.call_tool("hub_list_devices", {"scope": "all"})
         assert isinstance(result, dict), "scope='all' did not return an object"
         assert result.get("scope") == "all", f"scope='all' not echoed: {result}"
-        # The fallback contract: the response names its source, and only the capability-less last
-        # resort flags partial capabilities rather than letting an empty list read as "none".
-        assert result.get("source") in (
-            "/device/listWithCapabilities/json",
-            "/hub2/vrb/devices",
-            "/hub2/devicesList",
-        ), f"scope='all' must report which inventory endpoint answered: {result.get('source')!r}"
-        if result.get("source") == "/hub2/devicesList":
-            assert result.get("capabilitiesPartial") is True and result.get("capabilitiesNote"), \
-                f"the /hub2/devicesList fallback must flag partial capabilities: {result}"
-        elif result.get("source") == "/hub2/vrb/devices":
-            # The feed carries capabilities; partial is flagged when either source omitted a device
-            # the other lists, or when the tree could not be read (feed alone), and the note names
-            # the endpoint at fault and which of those it was.
-            if result.get("capabilitiesPartial"):
-                note = result.get("capabilitiesNote") or ""
-                assert "/hub2/devicesList" in note and "/hub2/vrb/devices" in note, \
-                    f"a partial /hub2/vrb/devices inventory must name both endpoints: {result}"
-                assert "omitted" in note or "could not be read" in note or "not trusted" in note, \
-                    f"a partial /hub2/vrb/devices inventory must say what was omitted or why the tree was not usable: {result}"
-            else:
-                assert result.get("capabilitiesPartial") is None, \
-                    f"/hub2/vrb/devices carries capabilities, so nothing may be flagged partial: {result}"
         devices = result.get("devices", [])
         assert isinstance(devices, list) and len(devices) > 0, "scope='all' returned no devices"
-        assert all("mcpAuthorized" in d for d in devices), \
-            "scope='all' devices missing the mcpAuthorized flag"
-        assert "mcpAuthorizedCount" in result and "unauthorizedCount" in result, \
-            "scope='all' missing mcpAuthorizedCount/unauthorizedCount"
-        # idsComplete is present ONLY to say the record SET could not be vouched for, and every
-        # inventory that cannot vouch for its ids also lacks capabilities -- so a response with no
-        # capabilitiesPartial must not carry the flag at all, and a present one is always false.
-        if result.get("capabilitiesPartial"):
-            assert result.get("idsComplete", False) is False, \
-                f"idsComplete may only ever be present as false: {result.get('idsComplete')!r}"
-        else:
-            assert "idsComplete" not in result, \
-                f"a complete inventory must omit idsComplete rather than assert it: {result}"
+        assert all("mcpAuthorized" in d and "id" in d and "label" in d and "driver" in d for d in devices),             f"scope='all' records must carry id/label/driver/mcpAuthorized: {devices[:2]}"
+        assert not any("currentStates" in d for d in devices), "scope='all' records must not carry device state"
+        assert result.get("mcpAuthorizedCount", -1) + result.get("unauthorizedCount", -1) == result.get("total"),             f"mcpAuthorizedCount + unauthorizedCount must equal total: {result}"
+        self._expect_tool_refusal("hub_list_devices", {"scope": "all", "stateFilter": {"switch": "on"}}, "scope")
 
     @test("devices")
     def test_list_devices_context_format(self) -> None:
@@ -3098,20 +3064,52 @@ class TestRunner:
                 f"attributeNames=['switch'] leaked other attributes: {ln!r}"
 
     @test("devices")
-    def test_list_devices_only_on_filter(self) -> None:
-        # onlyOn=true keeps only devices whose switch currently reads on. Asserted against
-        # the summary shape's currentStates so the filter's claim is checked per device.
-        result = self.client.call_tool("hub_list_devices", {"onlyOn": True})
-        assert result.get("onlyOn") is True, f"onlyOn not echoed: {list(result)}"
+    def test_list_devices_state_filter(self) -> None:
+        # stateFilter keeps only devices whose named attributes currently read the given values.
+        # Asserted against the summary shape's currentStates so the filter's claim is checked per device.
+        result = self.client.call_tool("hub_list_devices", {"stateFilter": {"switch": "on"}})
+        assert result.get("stateFilter") == {"switch": "on"}, f"stateFilter not echoed: {list(result)}"
         assert "unfilteredTotal" in result, "active filter must report unfilteredTotal"
-        if not result.get("devices"):
-            # Nothing on right now is a legitimate hub state; say so instead of passing
-            # a loop that never ran (mirrors test_list_devices_room_filter's guard).
-            print("    [INFO] no device is currently on; per-device assertion body did not run")
-            return
-        for dev in result["devices"]:
+        for dev in result.get("devices") or []:
             sw = (dev.get("currentStates") or {}).get("switch")
-            assert sw == "on", f"onlyOn=true returned {dev.get('label')!r} with switch={sw!r}"
+            assert sw == "on", f"stateFilter switch=on returned {dev.get('label')!r} with switch={sw!r}"
+        if not result.get("devices"):
+            print("    [INFO] no device is currently on; per-device assertion body did not run")
+        # disabled and staleHours filter on the same page read; each echoes itself.
+        enabled_only = self.client.call_tool("hub_list_devices", {"disabled": False})
+        assert enabled_only.get("disabled") is False and all(d.get("disabled") is False for d in enabled_only.get("devices") or []),             f"disabled=false must keep only enabled devices: {enabled_only}"
+        stale = self.client.call_tool("hub_list_devices", {"staleHours": 1, "fields": ["id", "lastActivity"]})
+        assert stale.get("staleHours") == 1, f"staleHours not echoed: {list(stale)}"
+        everything = self.client.call_tool("hub_list_devices", {"fields": ["id", "lastActivity"]})
+        # The stale set is exactly the devices quiet for an hour or never active, judged from the
+        # inventory's own lastActivity values; a device within a minute of the boundary may flip
+        # between the two reads and is left out of the comparison.
+        now = datetime.now(UTC)
+
+        def _age_seconds(value):
+            for fmt in ("%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%S.%f%z"):
+                try:
+                    return (now - datetime.strptime(value, fmt)).total_seconds()
+                except ValueError:
+                    continue
+            raise AssertionError(f"unparseable lastActivity {value!r}")
+
+        unavailable = set(stale.get("metadataUnavailableIds") or []) | set(everything.get("metadataUnavailableIds") or [])
+        ages = {d["id"]: (_age_seconds(d["lastActivity"]) if d.get("lastActivity") else None)
+                for d in everything.get("devices", []) if d["id"] not in unavailable}
+        # A device that reported between the two reads is judged on two different timestamps; leave it out too.
+        stale_stamp = {d["id"]: d.get("lastActivity") for d in stale.get("devices", [])}
+        all_stamp = {d["id"]: d.get("lastActivity") for d in everything.get("devices", [])}
+        settled = {i for i, age in ages.items() if (age is None or abs(age - 3600) > 60)
+                   and stale_stamp.get(i, all_stamp.get(i)) == all_stamp.get(i)}
+        expected = {i for i in settled if ages[i] is None or ages[i] >= 3600}
+        got = set(stale_stamp) & settled
+        assert got == expected, f"staleHours=1 kept {sorted(got - expected)} and dropped {sorted(expected - got)}"
+        # A credential-named attribute cannot be matched: a filter on it would confirm a guess.
+        self._expect_tool_refusal("hub_list_devices", {"stateFilter": {"lockCodes": "1234"}}, "hidden while")
+        # Removed arguments are refused, not silently ignored.
+        self._expect_tool_refusal("hub_list_devices", {"detailed": True}, "detailed")
+        self._expect_tool_refusal("hub_list_devices", {"offset": 1, "limit": 2}, "offset")
 
     @test("devices")
     def test_list_devices_changed_since(self) -> None:
@@ -3779,6 +3777,69 @@ class TestRunner:
                 empty = _tool_error_payload(exc)
             assert "dataValues must be a non-empty object" in str(empty.get("error")), \
                 f"an empty dataValues must be refused, not reported as a successful no-op: {empty}"
+            # A disabled device drops data values, so a disable goes after them and an enable before them.
+            disabled = self.client.call_tool("hub_update_device", {
+                "deviceId": dev_id, "fields": {"enabled": False, "dataValues": {"beforeDisable": "1"}}})
+            assert disabled.get("success") is True and not disabled.get("errors"), \
+                f"dataValues + disable must land both: {disabled}"
+            assert {row.get("property") for row in disabled.get("changes", [])} == {"enabled", "dataValue.beforeDisable"}, \
+                f"both the disable and the data value must report as changes: {disabled}"
+            # Data values alone on a disabled device would never land, so they are refused before any write.
+            self._expect_tool_refusal("hub_update_device", {"deviceId": dev_id, "fields": {"dataValues": {"whileDisabled": "1"}}},
+                                      "data values never land on a disabled device")
+            re_enabled = self.client.call_tool("hub_update_device", {
+                "deviceId": dev_id, "fields": {"enabled": True, "dataValues": {"afterEnable": "1"}}})
+            assert re_enabled.get("success") is True and not re_enabled.get("errors"), \
+                f"enable + dataValues on a disabled device must land both: {re_enabled}"
+            assert {row.get("property") for row in re_enabled.get("changes", [])} == {"enabled", "dataValue.afterEnable"}, \
+                f"both the enable and the data value must report as changes: {re_enabled}"
+            # A credential-named ATTRIBUTE (a lock's lockCodes) hides the same way in the command
+            # snapshot and the event rows, where the description repeats the value.
+            lock_label = f"{PREFIX}LockCodes"
+            lock = self.client.call_tool("hub_manage_virtual_device", {
+                "action": "create", "deviceType": "Virtual Lock", "deviceLabel": lock_label, "confirm": True})
+            lock_dev = lock.get("device") or {}
+            lock_id = str(lock_dev.get("id") or lock.get("deviceId") or "")
+            lock_dni = str(lock_dev.get("deviceNetworkId") or "")
+            assert lock_id and lock_dni, f"could not create {lock_label}: {lock}"
+            try:
+                # The snapshot reports the state at read time, so wait until the lock has set the code,
+                # then take the snapshot from a second (idempotent) setCode.
+                self.client.call_tool("hub_call_device_command", {
+                    "deviceId": lock_id, "command": "setCode", "parameters": ["1", "4321", "Guest"], "includeState": False})
+                for _ in range(20):
+                    attrs = {a.get("name"): a.get("value")
+                             for a in self.client.call_tool("hub_get_device", {"deviceId": lock_id}).get("attributes", [])}
+                    if attrs.get("lockCodes"):
+                        break
+                    time.sleep(0.5)
+                assert attrs.get("lockCodes") == "***redacted (password)***", f"hub_get_device must hide lockCodes: {attrs}"
+                sent = self.client.call_tool("hub_call_device_command", {
+                    "deviceId": lock_id, "command": "setCode", "parameters": ["1", "4321", "Guest"], "includeState": True})
+                snap = (sent.get("state") or {}).get("lockCodes") or {}
+                assert snap.get("value") == "***redacted (password)***", f"the command snapshot must hide lockCodes: {sent}"
+                rows = []
+                for _ in range(20):
+                    rows = [e for e in self.client.call_tool("hub_list_device_events", {
+                        "deviceId": lock_id, "hoursBack": 1, "limit": 30}).get("events", []) if e.get("name") == "lockCodes"]
+                    if rows:
+                        break
+                    time.sleep(0.5)
+                assert rows and all(e.get("value") == "***redacted (password)***" and "4321" not in str(e.get("description"))
+                                    for e in rows), f"event rows must hide lockCodes: {rows}"
+                # Waiting for a hidden value would confirm a guess, so a poll or waitFor on it is refused.
+                self._expect_tool_refusal("hub_get_device_attribute", {
+                    "deviceId": lock_id, "attribute": "lockCodes", "expectedValue": "4321", "timeoutMs": 500},
+                    "Cannot wait for a value of lockCodes")
+                self._expect_tool_refusal("hub_call_device_command", {
+                    "deviceId": lock_id, "command": "lock", "waitFor": {"attribute": "lockCodes", "expectedValue": "4321"}},
+                    "Cannot wait for a value of lockCodes")
+            finally:
+                try:
+                    self.client.call_tool("hub_manage_virtual_device", {
+                        "action": "delete", "deviceNetworkId": lock_dni, "confirm": True})
+                except (McpError, McpToolError):
+                    pass
         finally:
             if dni:
                 try:
@@ -3988,6 +4049,11 @@ class TestRunner:
                     )
 
         native, baseline = capture()
+        if baseline.get("largeReadProbePresent"):
+            # A run cancelled between seedLargeReadProbe and clearLargeReadProbe leaves the probe on
+            # the persistent fixture; clear it here so one cancelled run does not fail the next.
+            command("clearLargeReadProbe")
+            native, baseline = capture()
         metadata_baseline = preserved_metadata()
         cfg = configuration()
         assert_native_preferences(native, cfg, expected)
@@ -4874,7 +4940,7 @@ class TestRunner:
         def _assert_filtered_switch(value: str) -> None:
             label = own_label
             inventory = self.client.call_tool("hub_list_devices", {
-                "labelFilter": label, "onlyOn": True,
+                "labelFilter": label, "stateFilter": {"switch": "on"},
             })
             devices = inventory.get("devices")
             assert isinstance(devices, list), f"Filtered native inventory unavailable: {inventory}"
@@ -4884,10 +4950,10 @@ class TestRunner:
             if value == "on":
                 assert devices[0].get("currentStates", {}).get("switch") == value, inventory
             owned = self.client.call_tool("hub_list_devices", {
-                "filter": "virtual", "labelFilter": label, "capabilityFilter": "Switch",
+                "scope": "owned", "labelFilter": label, "capabilityFilter": "Switch",
             })
             assert [str(row["id"]) for row in owned.get("devices", [])] == [dev_id], (
-                f"Virtual label/capability filters lost the owned switch: {owned}"
+                f"Owned-scope label/capability filters lost the owned switch: {owned}"
             )
             assert owned["devices"][0].get("currentStates", {}).get("switch") == value, owned
 
@@ -5286,7 +5352,7 @@ class TestRunner:
         assert found, f"{self.virtual_switch_label} not found in virtual device list"
 
     @test("virtual_device_lifecycle")
-    def test_list_virtual_devices_honors_limit_offset_and_cursor(self) -> None:
+    def test_list_owned_devices_honors_limit_and_cursor(self) -> None:
         suffix = f"{_run_artifact_suffix()}_{time.time_ns()}"
         owned_labels = [f"{PREFIX}Virtual_Page_{suffix}_{index}" for index in range(4)]
         owned_dnis: list[str] = []
@@ -5298,7 +5364,7 @@ class TestRunner:
             self.get_test_switch_id()
             self.get_test_temperature_ids()
             self.get_test_shade_id()
-            full = self.client.call_tool("hub_list_devices", {"filter": "virtual"})
+            full = self.client.call_tool("hub_list_devices", {"scope": "owned"})
             shortfall = max(0, 4 - len(full.get("devices", [])))
             for label in owned_labels[:shortfall]:
                 created = self._soft_write(
@@ -5323,50 +5389,33 @@ class TestRunner:
                 self.created_device_dnis.append(dni)
 
             if shortfall:
-                full = self.client.call_tool("hub_list_devices", {"filter": "virtual"})
+                full = self.client.call_tool("hub_list_devices", {"scope": "owned"})
             full_devices = full.get("devices", [])
             assert len(full_devices) >= 4, \
                 f"virtual pagination fixtures missing, got {len(full_devices)} devices"
 
-            limited = self.client.call_tool("hub_list_devices", {"filter": "virtual", "limit": 3})
+            limited = self.client.call_tool("hub_list_devices", {"scope": "owned", "limit": 3})
             assert limited.get("count") == 3, f"limit=3 was ignored: {limited}"
             assert limited.get("total") == len(full_devices), f"virtual total mismatch: {limited}"
-            assert limited.get("hasMore") is True and limited.get("nextOffset") == 3, \
-                f"classic virtual pagination metadata missing: {limited}"
+            assert limited.get("hasMore") is True and limited.get("nextCursor") == "3", \
+                f"owned-scope pagination metadata missing: {limited}"
             assert [d.get("id") for d in limited.get("devices", [])] == \
                 [d.get("id") for d in full_devices[:3]], f"limit page changed ordering: {limited}"
 
-            offset_page = self.client.call_tool(
-                "hub_list_devices", {"filter": "virtual", "offset": 1, "limit": 2})
-            assert [d.get("id") for d in offset_page.get("devices", [])] == \
-                [d.get("id") for d in full_devices[1:3]], f"offset was ignored: {offset_page}"
-
             maximum_limit_page = self.client.call_tool(
-                "hub_list_devices", {
-                    "filter": "virtual", "offset": 1, "limit": 2147483647,
-                })
-            assert [d.get("id") for d in maximum_limit_page.get("devices", [])] == \
-                [d.get("id") for d in full_devices[1:]], \
-                f"maximum integer limit overflowed instead of clamping: {maximum_limit_page}"
-            assert maximum_limit_page.get("hasMore") is False and \
-                "nextOffset" not in maximum_limit_page, \
-                f"maximum integer terminal page advertised a continuation: {maximum_limit_page}"
+                "hub_list_devices", {"scope": "owned", "cursor": "1", "limit": 2147483647})
+            assert [d.get("id") for d in maximum_limit_page.get("devices", [])] ==                 [d.get("id") for d in full_devices[1:]],                 f"maximum integer limit overflowed instead of clamping: {maximum_limit_page}"
+            assert maximum_limit_page.get("hasMore") is False and "nextCursor" not in maximum_limit_page,                 f"maximum integer terminal page advertised a continuation: {maximum_limit_page}"
 
             cursor_page = self.client.call_tool(
-                "hub_list_devices", {"filter": "virtual", "cursor": "", "limit": 3})
+                "hub_list_devices", {"scope": "owned", "cursor": "", "limit": 3})
             assert cursor_page.get("nextCursor") == "3", f"cursor metadata missing: {cursor_page}"
             next_page = self.client.call_tool(
-                "hub_list_devices", {"filter": "virtual", "cursor": "3", "limit": 3})
+                "hub_list_devices", {"scope": "owned", "cursor": "3", "limit": 3})
             assert [d.get("id") for d in next_page.get("devices", [])] == \
                 [d.get("id") for d in full_devices[3:6]], f"cursor page wrong: {next_page}"
 
-            try:
-                self.client.call_tool(
-                    "hub_list_devices", {"filter": "virtual", "cursor": "1", "offset": 1, "limit": 2})
-                raise AssertionError("virtual listing accepted conflicting cursor and offset")
-            except McpError as exc:
-                assert "cursor and offset are mutually exclusive" in str(exc), \
-                    f"conflict error was not actionable: {exc}"
+            self._expect_tool_refusal("hub_list_devices", {"scope": "owned", "cursor": "x"}, "cursor")
         finally:
             # Recover any committed create whose response/DNI lookup failed, then remove
             # every fixture this scenario can identify. Global cleanup retains the DNIs
@@ -6456,7 +6505,7 @@ def updated() {}
                 "appId": instance_id, "force": True, "confirm": True}})
             assert gone.get("success") is True, f"deleting the password app instance failed: {gone}"
             instance_id = None
-            # The delete's own snapshot is the app's newest backup, which retention never evicts; on a
+            # The delete's own snapshot is the newest backup, so oldest-first retention evicts it last; on a
             # hub at its storage budget the earlier snapshot may already be gone.
             recreate_key = (gone.get("backup") or {}).get("backupKey") or key
             try:
@@ -8971,7 +9020,8 @@ def updated() {}
             keys = {name: backup["backupKey"] for name, backup in backups.items()}
             for backup in backups.values():
                 note = str(backup.get("retentionNote"))
-                assert "retention" not in backup and "oldest first" in note and "newest backup is never removed" in note, \
+                assert "retention" not in backup and "oldest first" in note \
+                    and "active restore target are never removed" in note and "stay over it" in note, \
                     f"a rule write's snapshot must state the plain eviction rule and no retention kind: {backup}"
             assert self._rm_restore(keys["Den"]).get("success") is True
             assert labels["Kitchen"] in json.dumps(self._native_rule_document(app_id)["conditions"])
@@ -12232,7 +12282,7 @@ def updated() {}
             f"source-backup listing must report the storage budget: {src}"
         policy = str(src.get("retentionPolicy"))
         assert "maxBackups" not in src and "10 MB storage budget" in policy and "oldest first" in policy \
-            and "newest backup" in policy, f"source-backup listing must describe the budget-only retention policy: {src}"
+            and "stay over it" in policy, f"source-backup listing must describe the budget-only retention policy: {src}"
         for entry in src["backups"]:
             assert "retention" not in entry, f"a backup entry must carry no retention kind: {entry}"
 
@@ -17915,7 +17965,7 @@ def main() -> None:
                 assert read.get("value") is not None, \
                     f"fixture '{label}' did not report '{attr}' after priming -- polling tests would throw: {read}"
             print(f"  {key:<10} id={dev_id:<6} '{label}' ({driver}) -- readable, primed")
-        children = client.call_tool("hub_list_devices", {"filter": "virtual"}).get("devices") or []
+        children = client.call_tool("hub_list_devices", {"scope": "owned"}).get("devices") or []
         child_ids = {str(d.get("id")) for d in children}
         overlap = {k: v for k, v in runner._perm_fixture_ids.items() if v in child_ids}
         assert not overlap, \

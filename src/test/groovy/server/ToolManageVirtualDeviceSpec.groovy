@@ -477,7 +477,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         capturedArgs.hubId     == null  // always null per 5-arg form convention
         capturedArgs.props?.label == 'Kitchen Humidifier Test'  // label propagates to addChildDevice props map
         capturedArgs.props?.name  == 'Levoit Classic 200S Humidifier'  // driver type name propagates to props
-        // Verify namespace was persisted as a data value so hub_list_devices(filter:'virtual') can read it back
+        // Verify namespace was persisted as a data value so hub_list_devices(scope:'owned') can read it back
         capturedDataValues['mcpDriverNamespace'] == 'level99-vesync'
         result.success == true
         result.device.id == '77'
@@ -813,7 +813,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         capturedArgs.name      == 'Virtual Switch'
         capturedArgs.props?.label == 'BAT Test Switch'  // label propagates to addChildDevice props map
         capturedArgs.props?.name  == 'Virtual Switch'   // driver type name propagates to props
-        // Verify namespace was persisted as a data value so hub_list_devices(filter:'virtual') can read it back
+        // Verify namespace was persisted as a data value so hub_list_devices(scope:'owned') can read it back
         capturedDataValues['mcpDriverNamespace'] == 'hubitat'
         result.success == true
         result.device.id == '42'
@@ -912,79 +912,57 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    // -------- toolListVirtualDevices --------
+    // -------- hub_list_devices(scope='owned') --------
 
-    def "list_virtual_devices honors limit offset and cursor and rejects conflicting starts"() {
+    def "the owned inventory honors limit and cursor and clamps the maximum limit"() {
         given:
         (0..<6).each { int index ->
-            def device = new support.TestDevice(
-                id: 200 + index,
-                name: 'Virtual Switch',
-                label: "Paged Virtual ${index}",
-                deviceNetworkId: "mcp-virtual-page-${index}",
-                typeName: 'Virtual Switch'
-            )
-            device.dataValues['mcpDriverNamespace'] = 'hubitat'
-            childDevicesList << device
-            hubGet.register("/device/fullJson/${200 + index}") {
-                JsonOutput.toJson([device: [id: 200 + index, name: 'Virtual Switch', label: "Paged Virtual ${index}",
-                    deviceNetworkId: "mcp-virtual-page-${index}", deviceTypeName: 'Virtual Switch',
-                    deviceTypeNamespace: 'hubitat', data: [mcpDriverNamespace: 'hubitat'],
-                    capabilities: [], currentStates: [:]], commands: []])
-            }
+            childDevicesList << new support.TestDevice(id: 200 + index, name: 'Virtual Switch', label: "Paged Virtual ${index}",
+                deviceNetworkId: "mcp-virtual-page-${index}", typeName: 'Virtual Switch')
         }
+        support.NativeInventoryFixture.registerDevicesPage(hubGet) { -> childDevicesList }
 
-        when: 'the declared limit is smaller than the virtual inventory'
-        def first = script.toolListVirtualDevices([limit: 3])
+        when: 'the limit is smaller than the virtual inventory'
+        def first = script.toolListDevices([scope: 'owned', limit: 3])
 
         then:
         first.devices*.id == ['200', '201', '202']
+        first.devices[0].driver == 'Virtual Switch'
         first.count == 3
         first.total == 6
         first.offset == 0
         first.limit == 3
         first.hasMore == true
-        first.nextOffset == 3
+        first.nextCursor == '3'
 
-        when: 'offset and limit select the requested classic page'
-        def offsetPage = script.toolListVirtualDevices([offset: 2, limit: 2])
-
-        then:
-        offsetPage.devices*.id == ['202', '203']
-        offsetPage.nextOffset == 4
-
-        when: 'the maximum declared integer limit would overflow startIndex plus limit'
-        def maximumLimitPage = script.toolListVirtualDevices([offset: 1, limit: Integer.MAX_VALUE])
+        when: 'the maximum declared integer limit would overflow start plus limit'
+        def maximumLimitPage = script.toolListDevices([scope: 'owned', cursor: '1', limit: Integer.MAX_VALUE])
 
         then: 'the end is clamped to the inventory without wrapping negative'
         maximumLimitPage.devices*.id == ['201', '202', '203', '204', '205']
-        maximumLimitPage.count == 5
         maximumLimitPage.offset == 1
         maximumLimitPage.limit == Integer.MAX_VALUE
         maximumLimitPage.hasMore == false
-        !maximumLimitPage.containsKey('nextOffset')
+        !maximumLimitPage.containsKey('nextCursor')
 
-        when: 'cursor selects the same page and emits the next cursor'
-        def cursorPage = script.toolListVirtualDevices([cursor: '2', limit: 2])
+        when: 'cursor selects the next page and emits the next cursor'
+        def cursorPage = script.toolListDevices([scope: 'owned', cursor: '2', limit: 2])
 
         then:
         cursorPage.devices*.id == ['202', '203']
         cursorPage.nextCursor == '4'
-
-        when: 'two different starting controls are supplied together'
-        script.toolListVirtualDevices([cursor: '2', offset: 1, limit: 2])
-
-        then:
-        def error = thrown(IllegalArgumentException)
-        error.message.contains('cursor and offset are mutually exclusive')
     }
 
     @spock.lang.Unroll
-    def "virtual list preserves native namespace precedence and distinct driver type (data=#stored, native=#namespace, gateway=#gateway)"() {
+    def "owned detail prefers the saved driver namespace over the native one (data=#stored, native=#namespace, gateway=#gateway)"() {
         given:
         settingsMap.useGateways = gateway
-        def child = new support.TestDevice(id: 99, name: 'SDK stale', deviceNetworkId: 'mcp-99')
-        childDevicesList << child
+        childDevicesList << new support.TestDevice(id: 99, name: 'SDK stale', deviceNetworkId: 'mcp-99')
+        hubGet.register('/hub2/devicesList') {
+            JsonOutput.toJson([devices: [[key: 'DEV-99', data: [id: 99, name: 'Native label', secondaryName: 'Generic Component',
+                type: 'My Custom Driver', dni: 'mcp-99', isVirtual: true], children: []]]])
+        }
+        hubGet.register('/hub2/vrb/devices') { JsonOutput.toJson([[id: 99, capabilities: []]]) }
         hubGet.register('/device/fullJson/99') {
             JsonOutput.toJson([device: [id: 99, name: 'Generic Component', label: 'Native label',
                 deviceNetworkId: 'mcp-99', deviceTypeName: 'My Custom Driver', deviceTypeNamespace: namespace,
@@ -992,7 +970,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('hub_list_devices', [filter: 'virtual'])
+        def response = mcpDriver.callTool('hub_list_devices', [scope: 'owned', format: 'detailed'])
 
         then:
         response.error == null
@@ -1000,10 +978,10 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         def result = mcpDriver.parseInner(response)
         result.devices.size() == 1
         result.devices[0].id == '99'
+        result.devices[0].label == 'Native label'
         result.devices[0].name == 'Generic Component'
         result.devices[0].driverNamespace == expected
-        result.devices[0].driverType == 'My Custom Driver'
-        result.devices[0].typeName == 'My Custom Driver'
+        result.devices[0].driver == 'My Custom Driver'
         result.devices[0].deviceNetworkId == 'mcp-99'
 
         where:

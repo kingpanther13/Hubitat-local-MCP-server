@@ -29,20 +29,18 @@ class TestDevice {
     // through currentStates (the source the poll engine and the snapshot both read).
     private List _currentStatesOverride = null
 
-    // Hub property read by toolListVirtualDevices (device.typeName ?: device.name).
-    // Default null so callers that don't set it fall through to the device.name fallback.
+    // Driver type name; NativeInventoryFixture.pageNode reports typeName ?: name as the page `type`.
     String typeName = null
 
     // The device's disabled flag. Default null = unset (the device exposes no explicit value).
     Boolean disabled = null
 
-    // Last-activity timestamp read via getLastActivity() (safeLastActivity in the
-    // devices lib). Default null = never reported, which is what the real accessor
-    // yields for a device with no activity record.
+    // Last-activity timestamp (getLastActivity()). Default null = never reported, which is
+    // what the real accessor yields for a device with no activity record.
     Date lastActivity = null
 
     // Device data values -- backing store for getDataValue/updateDataValue.
-    // toolCreateVirtualDevice persists mcpDriverNamespace here; toolListVirtualDevices reads it back.
+    // toolCreateVirtualDevice persists mcpDriverNamespace here.
     Map dataValues = [:]
 
     Object getDataValue(String key) {

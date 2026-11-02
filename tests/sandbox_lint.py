@@ -2567,10 +2567,7 @@ DEVICE_NATIVE_ACCESS_TOKENS = (
     "_saveDeviceInfoForm(",
     "_fireBypassCommand(",
     # whole-population (bulk) helpers: the path the device tools now read through
-    "_mcpVisibleDevices(",
-    "_fetchAllHubDeviceRecords(",
-    "_seedNativeInventoryFromTree(",
-    "_loadContextResourcePopulation(",
+    "_readDevicesPage(",
 )
 # Endpoint paths live inside string literals, which the body scan blanks; they are matched on a
 # comments-blanked copy of the body instead, and only as the path argument of a native request
@@ -2598,13 +2595,14 @@ def _device_gate_libraries() -> list[str]:
 # tool method -> why it reaches native device endpoints without the per-device gate.
 # Every entry is a documented scope decision, not a convenience.
 DEVICE_GATE_EXEMPT = {
-    "toolListDevices": "population is _mcpVisibleDevices (selection + MCP children, or the bypass inventory); no caller-supplied device id",
+    "toolListDevices": "population is the Devices page scoped by _mcpAuthorizedIds (selection + MCP children, or every device with bypass); no caller-supplied device id",
+    "toolGetRoom": "room devices are served from the Devices page only for ids in _mcpAuthorizedIds (or every device with bypass); any other id gets the accessible=false row; no caller-supplied device id",
     "toolDeleteDevice": "administrative force-delete keeps its documented broader scope behind confirm + backup",
     "toolCreateDevice": "creates the device it then reads; there is no pre-existing device to authorize",
     "toolCreateVirtualDevice": "MCP-child ownership scoped (reads only the child it created)",
-    "toolListVirtualDevices": "MCP-child ownership scoped",
     "toolDeleteVirtualDevice": "MCP-child ownership scoped",
     "toolGetHubLogs": "hub-wide diagnostics by design; deviceId is a log filter and the identity probe returns a boolean only",
+    "toolGetHubInfo": "reads the Devices page only with the allowlist bypassed (every device reachable) and returns a count, never device data; no caller-supplied device id",
     "toolListHubDrivers": "/device/drivers is the driver catalog, not a device",
     "toolUpdateHubMesh": "the /device/ Hub Mesh endpoints (setHubMeshFullRefreshInterval, followModes, setHubMeshToken) configure HUB-WIDE mesh settings; no caller-supplied device id is involved",
 }
@@ -2756,7 +2754,7 @@ DEVICE_GATE_SELF_TEST_CASES = [
     ),
     (
         "bulk-population read without the gate -- must-catch",
-        {"libraries/x.groovy": 'def toolCountDevices(args) {\n    return [count: _mcpVisibleDevices().size()]\n}\n'},
+        {"libraries/x.groovy": 'def toolCountDevices(args) {\n    return [count: _readDevicesPage().size()]\n}\n'},
         {"device-tool-access-gate-missing"},
     ),
     (

@@ -186,6 +186,80 @@ class ToolNativeDeviceReadsSpec extends ToolSpecBase {
         script.toolPollUntilAttribute([deviceId: '10', attribute: 'temperature', expectedValue: '74.29']).finalValue == 74.29
     }
 
+    @Unroll
+    def 'lockCodes reads masked=#hide in the summary, the attribute read, a poll, a command snapshot and the event rows'() {
+        given:
+        fixture('selected')
+        settingsMap.redactCredentials = hide
+        String stored = '{"1":{"name":"Guest","code":"1234"}}'
+        nativeModel.device.currentStates.lockCodes = [value: stored, dataType: 'STRING']
+        hubGet.register('/device/eventsJson/10') { JsonOutput.toJson([
+            [name: 'lockCodes', value: stored, date: '2026-09-10T10:02:00+0000', descriptionText: "lockCodes is ${stored}".toString()],
+            [name: 'switch', value: 'on', date: '2026-09-10T10:01:00+0000', descriptionText: 'turned on']
+        ]) }
+        def shown = hide ? script._appConfigRedactedMarker() : stored
+
+        when:
+        def summary = script.toolGetDevice('10')
+        def attribute = script.toolGetAttribute('10', 'lockCodes')
+        def poll = hide ? [success: true, finalValue: shown] : script.toolPollUntilAttribute([deviceId: '10', attribute: 'lockCodes', expectedValue: stored])
+        def snapshot = script._snapshotBypassDeviceState('10', 'fixture')
+        def events = script.toolGetDeviceEvents('10', 10).events
+        def history = script.toolGetDeviceHistory([deviceId: '10', since: '2026-09-10T10:00:00Z']).events
+
+        then:
+        summary.attributes.find { it.name == 'lockCodes' }.value == shown
+        summary.attributes.find { it.name == 'switch' }.value == 'on'
+        attribute.value == shown
+        poll.success == true
+        poll.finalValue == shown
+        snapshot.lockCodes.value == shown
+        snapshot.switch.value == 'on'
+
+        and: 'an event row hides the value and the description that repeats it'
+        [events, history].every { rows ->
+            def code = rows.find { it.name == 'lockCodes' }
+            code.value == shown && code.description == (hide ? shown : "lockCodes is ${stored}".toString()) &&
+                rows.find { it.name == 'switch' }.description == 'turned on'
+        }
+
+        where:
+        hide << [true, false]
+    }
+
+    @Unroll
+    def 'a wait for a credential-named attribute is refused before any read while redaction is on (#surface)'() {
+        given:
+        fixture('selected')
+        nativeModel.device.currentStates.lockCodes = [value: '{"1":{"code":"1234"}}', dataType: 'STRING']
+        def commands = []
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false -> commands << path; [success: true] }
+        hubGet.calls.clear()
+
+        when:
+        if (surface == 'poll') script.toolPollUntilAttribute([deviceId: '10', attribute: 'lockCodes', expectedValue: '{"1":{"code":"1234"}}'])
+        else script.toolSendCommand('10', 'on', [], [attribute: 'lockCodes', expectedValue: '{"1":{"code":"1234"}}'])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('Cannot wait for a value of lockCodes')
+        commands.empty
+        !hubGet.calls.any { it.path.startsWith('/device/fullJson/') && surface == 'poll' }
+
+        where:
+        surface << ['poll', 'waitFor']
+    }
+
+    def 'with redaction off a wait for a credential-named attribute matches the stored value'() {
+        given:
+        fixture('selected')
+        settingsMap.redactCredentials = false
+        nativeModel.device.currentStates.lockCodes = [value: 'x1', dataType: 'STRING']
+
+        expect:
+        script.toolPollUntilAttribute([deviceId: '10', attribute: 'lockCodes', expectedValue: 'x1']).success == true
+    }
+
     def 'unreported attribute discovery stays empty while an explicit read remains distinguishable from fetch failure'() {
         given:
         fixture('selected')

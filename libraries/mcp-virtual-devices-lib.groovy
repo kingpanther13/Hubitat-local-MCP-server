@@ -1,4 +1,4 @@
-library(name: "McpVirtualDevicesLib", namespace: "mcp", author: "kingpanther13", description: "MCP-managed virtual device tool implementations (hub_manage_virtual_device + the hub_list_devices filter=virtual listing) for the MCP Rule Server; #include'd by the main app. Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.")
+library(name: "McpVirtualDevicesLib", namespace: "mcp", author: "kingpanther13", description: "MCP-managed virtual device tool implementations (hub_manage_virtual_device) for the MCP Rule Server; #include'd by the main app. Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.")
 
 def toolManageVirtualDevice(args) {
     def action = args.action
@@ -25,7 +25,7 @@ def toolManageVirtualDevice(args) {
             if (!args.deviceLabel) throw new IllegalArgumentException("deviceLabel is required for action='create'.")
             return toolCreateVirtualDevice(args)
         case "delete":
-            if (!args.deviceNetworkId) throw new IllegalArgumentException("deviceNetworkId is required for action='delete'. Use hub_list_devices(filter='virtual') to find the DNI.")
+            if (!args.deviceNetworkId) throw new IllegalArgumentException("deviceNetworkId is required for action='delete'. Use hub_list_devices(scope='owned') to find the DNI.")
             return toolDeleteVirtualDevice(args)
         default:
             throw new IllegalArgumentException("Unknown action '${action}'. Use 'create' or 'delete'.")
@@ -141,7 +141,7 @@ def toolCreateVirtualDevice(args) {
     }
 
     if (!newDevice) {
-        throw new RuntimeException("Failed to create virtual device -- addChildDevice returned null. A device with DNI '${dni}' may have been partially registered. Check hub_list_devices(filter='virtual') and Hubitat UI before retrying with the same DNI.")
+        throw new RuntimeException("Failed to create virtual device -- addChildDevice returned null. A device with DNI '${dni}' may have been partially registered. Check hub_list_devices(scope='owned') and Hubitat UI before retrying with the same DNI.")
     }
 
     def deviceId = newDevice.id.toString()
@@ -195,141 +195,6 @@ def toolCreateVirtualDevice(args) {
 
 }
 
-def toolListVirtualDevices(args) {
-    def labelFilter = args?.labelFilter
-    def capabilityFilter = args?.capabilityFilter
-    if (labelFilter != null && !(labelFilter instanceof String)) {
-        throw new IllegalArgumentException("labelFilter must be a string")
-    }
-    if (capabilityFilter != null && !(capabilityFilter instanceof String)) {
-        throw new IllegalArgumentException("capabilityFilter must be a string")
-    }
-    boolean filtering = labelFilter || capabilityFilter
-    def childDevs = getChildDevices() ?: []
-    def cursor = args?.cursor
-    int offset = args?.offset != null ? (args.offset as Integer) : 0
-    int limit = args?.limit != null ? (args.limit as Integer) : 0
-    if (cursor != null) {
-        if (offset > 0) {
-            throw new IllegalArgumentException("cursor and offset are mutually exclusive (got cursor=${cursor}, offset=${offset}); pick one")
-        }
-        offset = _parseListCursor(cursor, Integer.MAX_VALUE, "hub_list_devices(filter='virtual')")
-        if (limit <= 0) limit = 50
-    }
-    if (offset < 0) offset = 0
-
-    if (!childDevs) {
-        if (cursor != null) _parseListCursor(cursor, 0, "hub_list_devices(filter='virtual')")
-        def empty = [
-            devices: [],
-            count: 0,
-            total: 0,
-            message: "No MCP-managed virtual devices found. Use hub_manage_virtual_device(action=\"create\") to create one."
-        ]
-        if (limit > 0) {
-            empty.offset = 0
-            empty.limit = limit
-            empty.hasMore = false
-        }
-        return empty
-    }
-
-    def readNativeDevice = { device ->
-        def deviceId = device.id.toString()
-        try {
-            def fullJson = _fetchDeviceFullJson(deviceId)
-            if (!(fullJson?.device instanceof Map) || !fullJson.device) {
-                return [id: deviceId, success: false, isError: true,
-                    error: "Native device information unavailable from /device/fullJson/${deviceId}.",
-                    note: "The device remains MCP-owned. Inspect this device in the Hubitat UI and retry the read."]
-            }
-            def nativeDevice = fullJson.device
-            def summary = _getDeviceFromFullJson(deviceId, fullJson)
-            def persistedNamespace = nativeDevice.data instanceof Map ? nativeDevice.data.mcpDriverNamespace : null
-            def namespace = persistedNamespace ?: nativeDevice.deviceTypeNamespace
-            def typeName = nativeDevice.deviceTypeName
-            def info = [id: deviceId, name: summary.name, label: summary.label,
-                deviceNetworkId: nativeDevice.deviceNetworkId,
-                driverNamespace: namespace, driverType: typeName, typeName: typeName,
-                capabilities: summary.capabilities, commands: summary.commands.collect { it.name },
-                currentStates: [:]]
-            summary.attributes.each { attr ->
-                if (attr.value != null) info.currentStates[attr.name] = attr.value
-            }
-            if (!namespace || !typeName) {
-                info.warnings = ['Native driver namespace or type metadata is unavailable; no driver identity was inferred.']
-            }
-            return info
-        } catch (Exception ignored) {
-            return [id: deviceId, success: false, isError: true,
-                error: "Native device information could not be interpreted from /device/fullJson/${deviceId}.",
-                note: "The device remains MCP-owned. Inspect this device in the Hubitat UI and retry the read."]
-        }
-    }
-    // Filtering needs native content across the owned population; unfiltered pages stay lazy.
-    def matching = childDevs
-    if (filtering) {
-        def needle = labelFilter?.toLowerCase()
-        matching = childDevs.collect(readNativeDevice).findAll { info ->
-            // An unreadable child cannot be proved not to match. Keep its identity and error.
-            if (info.success == false) return true
-            boolean labelMatches = !labelFilter || (info.label ?: info.name ?: '').toString().toLowerCase().contains(needle)
-            boolean capabilityMatches = !capabilityFilter || info.capabilities.any { it?.toString()?.equalsIgnoreCase(capabilityFilter) }
-            return labelMatches && capabilityMatches
-        }
-    }
-    int total = matching.size()
-    if (cursor != null) offset = _parseListCursor(cursor, total, "hub_list_devices(filter='virtual')")
-    int startIndex = Math.min(offset, total)
-    int endIndex = limit > 0 ? (int) Math.min(((long) startIndex) + limit, total) : total
-    def selectedPage = matching.subList(startIndex, endIndex)
-    def page = filtering ? selectedPage : selectedPage.collect(readNativeDevice)
-    def readFailures = (filtering ? matching : page).findAll { it.success == false }
-    def result = [
-        devices: page,
-        count: page.size(),
-        total: total,
-        message: "Found ${total} MCP-managed virtual ${total == 1 ? 'device' : 'devices'}${filtering ? ' matching the requested filters' : ''}. These are automatically accessible to all MCP device tools."
-    ]
-    if (filtering) {
-        result.unfilteredTotal = childDevs.size()
-        if (labelFilter) result.labelFilter = labelFilter
-        if (capabilityFilter) result.capabilityFilter = capabilityFilter
-    }
-    if (readFailures) {
-        boolean hasReadableDevices = (filtering ? matching : page).any { it.success != false }
-        result.success = hasReadableDevices
-        if (hasReadableDevices) {
-            result.partialSuccess = true
-            result.warnings = ['Native information could not be read for one or more MCP-managed virtual devices.']
-        } else {
-            result.isError = true
-            result.error = 'Native information could not be read for any requested MCP-managed virtual devices.'
-        }
-        result.note = 'Device IDs and counts include unreadable devices. Inspect the failed entries and retry the read.'
-        if (filtering) {
-            result.unreadableDeviceIds = readFailures.collect { it.id }
-            result.message = "Found ${total - readFailures.size()} matching MCP-managed virtual devices and ${readFailures.size()} unreadable owned devices whose filter match could not be determined."
-        }
-    }
-    if (page.any { it.warnings }) {
-        result.success = true
-        result.partialSuccess = true
-    }
-    if (limit > 0) {
-        result.offset = startIndex
-        result.limit = limit
-        result.hasMore = endIndex < total
-        if (endIndex < total) {
-            result.nextOffset = endIndex
-            if (cursor != null) result.nextCursor = endIndex.toString()
-        }
-    }
-    return result
-
-
-}
-
 def toolDeleteVirtualDevice(args) {
     requireDestructiveConfirm(args.confirm)
 
@@ -338,7 +203,7 @@ def toolDeleteVirtualDevice(args) {
 
     def childDevice = getChildDevices()?.find { it.deviceNetworkId == dni }
     if (!childDevice) {
-        throw new IllegalArgumentException("No MCP-managed virtual device found with network ID '${dni}'. Use hub_list_devices(filter='virtual') to see available devices.")
+        throw new IllegalArgumentException("No MCP-managed virtual device found with network ID '${dni}'. Use hub_list_devices(scope='owned') to see available devices.")
     }
 
     def deviceId = childDevice.id.toString()
@@ -397,7 +262,7 @@ action="delete": provide the target deviceNetworkId.
                         required: ["namespace", "name"]
                     ],
                     deviceLabel: [type: "string", description: "Display label (required for create)"],
-                    deviceNetworkId: [type: "string", description: "Device network ID; auto-generated on create when omitted, REQUIRED for delete (find via hub_list_devices(filter='virtual'))."],
+                    deviceNetworkId: [type: "string", description: "Device network ID; auto-generated on create when omitted, REQUIRED for delete (find via hub_list_devices(scope='owned'))."],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true to confirm the operation."],
                     args: [type: "object"]
                 ],
