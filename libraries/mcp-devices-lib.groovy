@@ -1184,7 +1184,8 @@ private _readBypassAttrValue(deviceId, attribute) {
     return _readBypassAttrValueFrom(_fetchDeviceFullJson(deviceId), attribute)
 }
 
-// A credential-named attribute's value as a read returns it (a wait for one is refused instead).
+// A credential-named attribute's value as a read returns it: masked while credentials are hidden,
+// when a wait on one is refused instead.
 private _devicePublicAttributeValue(name, value) {
     return value != null && _redactsCredentials() && _deviceConfigurationSecretKey(name) ? _appConfigRedactedMarker() : value
 }

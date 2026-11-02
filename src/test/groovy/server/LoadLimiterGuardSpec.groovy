@@ -431,6 +431,7 @@ class LoadLimiterGuardSpec extends ToolSpecBase {
 
         then:
         script._loadGuardBusyMs() > 0L
+        script.requestStartedAt > 1_000_000L
     }
 
     def 'a scheduled handler adds its wall time to the estimate and keeps its result'() {
@@ -735,7 +736,7 @@ class LoadLimiterGuardSpec extends ToolSpecBase {
         logs.any { it.level == 'warn' && it.message.contains('failed (hub_delete_logs): denied') }
     }
 
-    // ---- review round: the off switch, latch ownership, fresh threshold, missing row, time budget ----
+    // ---- the off switch, latch ownership, fresh threshold, missing row, time budget ----
 
     @Unroll
     def 'with #label nothing is scheduled, however high the estimate'() {
@@ -771,7 +772,7 @@ class LoadLimiterGuardSpec extends ToolSpecBase {
     }
 
     @Unroll
-    def 'a refused call is not reset or repeated when #label, and the error names the manual reset'() {
+    def 'a refused call is not reset or repeated when #label, and the error names a remedy this caller can use'() {
         given:
         if (setting) settingsMap[setting] = false
         if (client) {
@@ -790,13 +791,35 @@ class LoadLimiterGuardSpec extends ToolSpecBase {
         calls == 1
         resets() == 0
         result.success == false
-        result.error.contains(reason)
-        result.error.contains("hub_delete_logs")
+        texts.every { result.error.contains(it) }
+        result.error.contains("Reset them with hub_manage_logs") == selfReset
 
         where:
-        label                              | setting                    | client || reason
-        'the automatic reset is off'       | 'autoResetAppRuntimeStats' | false  || 'automatic reset is off'
-        'the calling client may not write' | null                       | true   || 'this client may not write'
+        label                                                | setting                    | client || selfReset | texts
+        'the automatic reset is off'                         | 'autoResetAppRuntimeStats' | false  || true      | ['automatic reset is off in Advanced settings', 'hub_delete_logs']
+        'the automatic reset is off for a client that may not write' | 'autoResetAppRuntimeStats' | true || false | ['this client may not write', 'allow writes for this client', 'from a client that may write', "Reset the hub's app runtime statistics automatically"]
+        'the Write master is off'                            | 'enableWrite'              | false  || false     | ['the Write master is off', "turn on 'Write Tools'"]
+    }
+
+    def 'a refused read from a client that may not write is still reset and repeated while the automatic reset is on'() {
+        given:
+        script.callerClient = [id: 'c1', label: 'phone']
+        settingsMap['clientWrite_c1'] = false
+        settingsMap['clientTools_c1'] = ['hub_get_hsm_status']
+        hubGet.register(RESET) { p -> 'ok' }
+        int calls = 0
+        script.metaClass.toolGetHsmStatus = { ->
+            calls++
+            return calls == 1 ? [success: false, error: 'App 1 generates excessive hub load'] : [success: true]
+        }
+
+        when:
+        def result = script.executeTool('hub_get_hsm_status', [:])
+
+        then:
+        calls == 2
+        resets() == 1
+        result == [success: true]
     }
 
     def 'a refused read is reset but not repeated once half the request time budget is spent'() {
@@ -919,5 +942,107 @@ class LoadLimiterGuardSpec extends ToolSpecBase {
         'cloud (6000 ms)' | true  | null || 6
         'LAN (6000 ms)'   | false | 6000 || 6
         'LAN, none'       | false | null || 10
+    }
+
+    // ---- refusal gates, budgets, threshold fallback, older jobs ----
+
+    def 'a refused read still inside half the request time budget is reset and repeated'() {
+        given:
+        script.metaClass._isCloudRequest = { -> true }
+        script.requestStartedAt = NOW - 1_000L
+        hubGet.register(RESET) { p -> 'ok' }
+        int calls = 0
+        script.metaClass.toolGetHsmStatus = { ->
+            calls++
+            return calls == 1 ? [success: false, error: 'App 1 generates excessive hub load'] : [success: true]
+        }
+
+        when:
+        def result = script.executeTool('hub_get_hsm_status', [:])
+
+        then:
+        calls == 2
+        result == [success: true]
+    }
+
+    def 'on a LAN request the repeat follows the LAN time budget'() {
+        given:
+        script.metaClass._isCloudRequest = { -> false }
+        settingsMap.lanBudgetMs = 6000L
+        script.requestStartedAt = NOW - 4_000L
+        hubGet.register(RESET) { p -> 'ok' }
+        int calls = 0
+        script.metaClass.toolGetHsmStatus = { -> calls++; return [success: false, error: 'App 1 generates excessive hub load'] }
+
+        when:
+        def result = script.executeTool('hub_get_hsm_status', [:])
+
+        then:
+        calls == 1
+        result.error.contains('not repeated within this request')
+    }
+
+    def 'a failed fresh threshold read keeps the last good value'() {
+        given:
+        script.LOAD_GUARD.thresholdPct = 20
+        boolean fail = true
+        hubGet.register(THRESHOLD) { p -> if (fail) throw new RuntimeException('no answer'); '25' }
+        when:
+        def first = script._loadGuardThresholdPct(true)
+        def second = script._loadGuardThresholdPct(true)
+
+        then:
+        first == 20
+        second == 20
+
+        when: 'a read works, then fails again'
+        fail = false
+        def third = script._loadGuardThresholdPct(true)
+        fail = true
+        script._loadGuardThresholdPct(true)
+
+        then: 'the new value replaces the cached one and a later failure keeps it'
+        third == 25
+        script.LOAD_GUARD.thresholdPct == 25
+    }
+
+    @Unroll
+    def 'appRuntimeStats gives the reset what is left of the budget after a #spentMs ms read'() {
+        given:
+        script.metaClass._isCloudRequest = { -> true }
+        script.requestStartedAt = NOW
+        long clock = NOW
+        NOW_OVERRIDE.set({ -> clock })
+        List timeouts = []
+        script.metaClass._resetAppRuntimeStatsNow = { int t -> timeouts << t; return 'ok' }
+        int reads = 0
+        script.metaClass._logsJsonOwnAppStat = { boolean fresh, Map args ->
+            reads++
+            if (reads == 1) clock += spentMs
+            return [totalMs: reads == 1 ? 5000L : 0L, count: 1L]
+        }
+
+        when:
+        script.toolDeleteLogs([mode: 'appRuntimeStats', confirm: true])
+
+        then:
+        timeouts == [expected]
+
+        where:
+        spentMs || expected
+        1_500L  || 4
+        4_500L  || 2
+    }
+
+    def 'a job scheduled without a stamp (by older code) still frees its latch'() {
+        given:
+        script.LOAD_GUARD.checkPending = NOW
+        logsJsonWithOwnTotal { 100L }
+
+        when:
+        script._loadGuardCheckJob(null)
+
+        then:
+        !script.LOAD_GUARD.containsKey('checkPending')
     }
 }

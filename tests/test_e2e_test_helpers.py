@@ -3382,3 +3382,22 @@ def test_run_one_records_one_failure_when_the_backup_toggle_fails(monkeypatch):
     runner._run_one("native_apps", "test_proves", "test_proves")
     assert [(r["name"], r["status"]) for r in runner.results] == [("test_proves", "fail")]
     assert "could not turn pre-edit backups on" in runner.results[0]["message"]
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("0m 6s", 6), ("52m 20s", 3140), ("8h 37m 31s", 31051), ("1d 2h 3m 4s", 93784),
+    ("", None), (None, None), ("about an hour", None),
+])
+def test_uptime_seconds_reads_hub_uptime_text(text, expected):
+    assert et._uptime_seconds(text) == expected
+
+
+@pytest.mark.parametrize("exc,expected", [
+    (et._with_http_status(requests.HTTPError("500 Internal Server Error on tools/call"), 500), True),
+    (et._with_http_status(et.RelayLostResponseError("503 Service Unavailable on tools/call (504-class: response lost)"), 503), True),
+    (et._with_http_status(et.RelayLostResponseError("504 Gateway Timeout on tools/call (504-class: response lost)"), 504), False),
+    (RuntimeError("App 38 generates excessive hub load"), True),
+    (RuntimeError("device 500 did not answer"), False),
+])
+def test_limiter_retry_is_chosen_by_status_or_refusal_text(exc, expected):
+    assert et._limiter_retry_applies(exc) is expected

@@ -1579,7 +1579,8 @@ def handleMcpGet() {
 // resetAppRuntimeStats zeroes every app's busy counter and leaves uptime alone. The server keeps a
 // cheap estimate of its own busy time (request and scheduled-handler wall time, which over-counts:
 // the hub does not charge pauseExecution and some HTTP waits); at 50 % of the limit a check job reads
-// the hub's own total and resets only when that real total is at 50 %. Class memory only.
+// the hub's own total and resets only when that real total is at 50 %. Off while the Advanced
+// toggle autoResetAppRuntimeStats or the Write master is off. Class memory only.
 @groovy.transform.Field static final java.util.concurrent.ConcurrentHashMap LOAD_GUARD = new java.util.concurrent.ConcurrentHashMap()
 @groovy.transform.Field static final long LOAD_GUARD_MIN_UPTIME_S = 900L
 @groovy.transform.Field static final int LOAD_GUARD_DEFAULT_THRESHOLD_PCT = 33
@@ -1788,8 +1789,9 @@ String _resetAppRuntimeStatsNow(int timeoutS = 10) {
 }
 
 // A tool the limiter refused is reset and repeated once when it is a read or a retry-safe write.
-// Any other write may have run earlier steps before the refusal, so it is not repeated blindly,
-// and nothing is repeated when the reset itself did not answer ok.
+// Any other write may have run earlier steps before the refusal, so it is not repeated blindly.
+// Nothing is reset while the automatic reset or the Write master is off; nothing is repeated when
+// the reset did not answer ok or half the request's time budget is spent.
 private _executeToolWithLoadLimiterRetry(toolName, args, boolean bpsChecked) {
     def failure
     try {
@@ -1802,10 +1804,19 @@ private _executeToolWithLoadLimiterRetry(toolName, args, boolean bpsChecked) {
         if (!_loadLimiterRefusedMessage(e.message)) throw e
         failure = e
     }
-    if (!_loadGuardAutoResetEnabled() || (callerClient != null && !_clientAllows(callerClient.id.toString(), "clientWrite"))) {
-        String why = callerClient != null && _loadGuardAutoResetEnabled() ? "this client may not write" :
-            "the server's automatic reset is off (Advanced settings, or the Write master)"
-        return _loadLimiterFailure(failure, "The hub's per-app load limiter refused this call and ${why}, so the hub's app runtime statistics were not reset; reset them with hub_manage_logs(tool='hub_delete_logs', args={mode:'appRuntimeStats', confirm:true}) and retry.")
+    if (!_loadGuardAutoResetEnabled()) {
+        String manual = "hub_manage_logs(tool='hub_delete_logs', args={mode:'appRuntimeStats', confirm:true})"
+        String turnOn = "turn on 'Reset the hub's app runtime statistics automatically' under Advanced in the MCP Rule Server app settings"
+        String msg
+        // hub_delete_logs is itself a write, so each caller is told the remedy it can actually use.
+        if (settings?.enableWrite == false) {
+            msg = "the Write master is off, so the hub's app runtime statistics were not reset. The hub owner can turn on 'Write Tools' in the MCP Rule Server app settings (the server then resets them itself while the automatic reset is on) and retry."
+        } else if (callerClient != null && !_clientAllows(callerClient.id.toString(), "clientWrite")) {
+            msg = "the automatic reset is off in Advanced settings, so the hub's app runtime statistics were not reset, and this client may not write, so it cannot reset them itself. The hub owner can ${turnOn}, allow writes for this client, or reset them from a client that may write with ${manual}; then retry."
+        } else {
+            msg = "the automatic reset is off in Advanced settings, so the hub's app runtime statistics were not reset. Reset them with ${manual} and retry, or have the hub owner ${turnOn}."
+        }
+        return _loadLimiterFailure(failure, "The hub's per-app load limiter refused this call and ${msg}")
     }
     String reply = _resetAppRuntimeStatsNow()
     boolean resetOk = reply == "ok"
@@ -1815,7 +1826,7 @@ private _executeToolWithLoadLimiterRetry(toolName, args, boolean bpsChecked) {
     if (!getIdempotentToolNames().contains(toolName?.toString())) {
         return _loadLimiterFailure(failure, "${resetNote} This write is not repeated automatically because it may have run some steps before the refusal; check its target, then call it again.")
     }
-    // A repeat that would outrun the request's time budget is left to the client.
+    // Past half the request's time budget the repeat could outrun it, so it is left to the client.
     long budget = _isCloudRequest() ? _relayBudgetMs() : _lanBudgetMs()
     if (budget > 0L && requestStartedAt != null && now() - requestStartedAt > budget.intdiv(2)) {
         return _loadLimiterFailure(failure, "${resetNote} The call is not repeated within this request's time budget; call it again.")
@@ -12855,7 +12866,7 @@ Renaming a room preserves device assignments, but may require updating automatio
 The cloud relay can end a request while the hub keeps working; a modern client continues the call by itself. Each slow-operation response (`in_progress`, `continuation_limit`, `too_many_writes_in_flight`, `slow_read_timeout`) says what to do next.
 
 - Make writes one at a time and split a large Rule Machine change batch; parallel writes are refused once the hub's write cap is full.
-- The hub's per-app load limiter refuses an app's calls ("generates excessive hub load") once this app's busy time plus that of the app or device it calls (its own a second time when it calls itself) passes uptime x the hub's threshold. The server watches its own busy time and resets the hub's app runtime statistics before that point. When a call is refused anyway, the statistics are reset and a refused read or retry-safe write is repeated once; any other write is not repeated, because it may have run some steps first -- check its target before calling it again. A device command the limiter drops can still report success, so the early reset is what protects device commands; read the device back to confirm. The reset clears the Logs > App Stats tab for every app, not only this one, and restarts every app's limiter count; Device Stats are not touched. The guard watches only this app's own total, so a busy app or device it calls can still trip the limiter first. The automatic reset can be turned off under Advanced settings ("Reset the hub's app runtime statistics automatically", default on) and only runs while the Write master is on, and for a client token only when that client may write. To reset the statistics by hand, use hub_delete_logs(mode='appRuntimeStats', confirm=true); it returns this app's App Stats row before and after.
+- The hub's per-app load limiter refuses an app's calls ("generates excessive hub load") once this app's busy time plus that of the app or device it calls (its own a second time when it calls itself) passes uptime x the hub's threshold. The server watches its own busy time and resets the hub's app runtime statistics before that point. When a call is refused anyway, the statistics are reset and a refused read or retry-safe write is repeated once; any other write is not repeated, because it may have run some steps first -- check its target before calling it again. A device command the limiter drops can still report success, so the early reset is what protects device commands; read the device back to confirm. The reset clears the Logs > App Stats tab for every app, not only this one, and restarts every app's limiter count; Device Stats are not touched. The guard watches only this app's own total, so a busy app or device it calls can still trip the limiter first. The automatic reset can be turned off under Advanced settings ("Reset the hub's app runtime statistics automatically", default on) and only runs while the Write master is on. To reset the statistics by hand, use hub_delete_logs(mode='appRuntimeStats', confirm=true); it returns this app's App Stats row before and after.
 - A write that fails with no result body, or whose response is lost, may still be running on the hub or may already have finished. Wait about 15 seconds. A continuation write from a 2026-07-28 client shows in `recentWrites` in `hub_get_info`, and an identical repeat while it is still active joins it instead of running it twice. Every other write leaves started and finished records in `hub_get_logs(mode="mcp", component="write")`, each carrying the JSON-RPC id you sent and the outcome (completed, failed, partial, accepted or unknown). A missing record does not prove the write never ran: read the target before repeating it, because repeating a finished write performs it again.
 '''
     ]

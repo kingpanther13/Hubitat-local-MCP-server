@@ -1149,12 +1149,12 @@ private Map _deleteAppRuntimeStats(Map args) {
         return [success: false, isError: true, mode: "appRuntimeStats",
                 error: "Resetting the hub's app runtime statistics needs confirm=true: it zeroes the busy time of every app on the Logs page's App Stats tab, not only this one."]
     }
-    // Both reads share one observation window from here, so the call stays within the request's budget.
+    // Both reads share one observation window from here, which keeps the call near the request's budget.
     Map window = [__reqT0: now()]
     _logsJsonInvalidate()
     Map before = _logsJsonOwnAppStat(false, window)
-    // On a request with a time budget the reset gets what is left of it (2-10 s), so the reply still
-    // reaches the client; a reset that timed out may still run, which a retry repeats harmlessly.
+    // On a request with a time budget the reset gets what is left of it, floored at 2 s (so it can
+    // overrun by up to that); a reset that timed out may still run, which a retry repeats harmlessly.
     long budget = _isCloudRequest() ? _relayBudgetMs() : _lanBudgetMs()
     int resetTimeoutS = budget > 0L ? Math.max(2L, Math.min(10L, (budget - (now() - (window.__reqT0 as long))).intdiv(1000L))) as int : 10
     String reply = _resetAppRuntimeStatsNow(resetTimeoutS)
@@ -1411,6 +1411,7 @@ def _logsJsonSnapshot(Map args) {
 // This app's App Stats row from the Logs page: [totalMs, count], or [error] when unreadable.
 // fresh: read the page inline, as the load guard's scheduled jobs need -- outside a request a LAN
 // time budget would route them through the background fetch and its retained failure.
+// args: the observation window (__reqT0) a budgeted read waits against; two reads can share one.
 Map _logsJsonOwnAppStat(boolean fresh = false, Map args = null) {
     try {
         Map snap = fresh ? [state: "ready", snapshot: _logsJsonFetchAndPublish()] : _logsJsonSnapshot(args ?: [:])

@@ -233,6 +233,12 @@ def _uptime_seconds(text: Any) -> int | None:
     return ((d * 24 + h) * 60 + mi) * 60 + se
 
 
+def _limiter_retry_applies(exc: BaseException) -> bool:
+    """A limiter refusal, or an HTTP 500-503 by the status the client attached (a write's lost-response
+    error carries it too). Chosen before the relay-504 path."""
+    return "excessive hub load" in str(exc) or getattr(exc, "http_status", None) in (500, 501, 502, 503)
+
+
 def _with_http_status(exc: Exception, status: int) -> Exception:
     """Attach the HTTP status the hub or relay answered, so recovery is chosen by status, not text."""
     exc.http_status = status
@@ -2272,11 +2278,9 @@ class TestRunner:
             except Exception as exc:
                 elapsed = time.monotonic() - t0
                 es = str(exc)
-                # A limiter refusal, or an HTTP 500-503 (by the status the client attached; a write's
-                # lost-response error carries it too): reset the runtime statistics and re-run once on
-                # fresh fixtures, but only when the reset went through; otherwise the failure stands.
-                status = getattr(exc, "http_status", None)
-                if attempt == 1 and ("excessive hub load" in es or status in (500, 501, 502, 503)):
+                # Reset the runtime statistics and re-run once on fresh fixtures, but only when the
+                # reset went through; otherwise the failure stands.
+                if attempt == 1 and _limiter_retry_applies(exc):
                     print(f"    [RETRY] {name} failed on a server 5xx or limiter refusal ({es[:80]}) -- "
                           "resetting the runtime statistics and re-running once")
                     if self._reset_app_runtime_stats(f"server 5xx on {name}: {es[:120]}"):
@@ -13527,29 +13531,36 @@ def updated() {}
         # is read back: the server app's own total drops (to 0 unless other server work ran meanwhile).
         self._expect_tool_refusal("hub_manage_logs", {
             "tool": "hub_delete_logs", "args": {"mode": "appRuntimeStats", "confirm": False}}, "confirm")
+        # App Stats' own uptime (time since its last reset) before the reset, for a fallback proof below.
+        uptime_before = self._apps_uptime_seconds()
         stats = self.client.call_tool("hub_manage_logs", {
             "tool": "hub_delete_logs", "args": {"mode": "appRuntimeStats", "confirm": True}})
         assert stats.get("success") is True, f"appRuntimeStats reset: {stats}"
         if stats.get("verified") is not True:
             # Over the cloud both Logs reads share the request's time budget; a large hub can leave one
-            # still in progress. Then prove the reset another way: App Stats' own uptime restarted.
+            # still in progress. Then prove this reset another way: App Stats' uptime went DOWN, which
+            # only a reset does (it otherwise only grows).
             assert "still in progress" in str(stats.get("note", "")), f"appRuntimeStats reset not verified: {stats}"
-            reset_at = time.monotonic()
-            apps_uptime = None
-            while time.monotonic() - reset_at < 60:
-                summary = (self.client.call_tool("hub_read_diagnostics", {
-                    "tool": "hub_get_logs", "args": {"mode": "apps"}}) or {}).get("summary") or {}
-                apps_uptime = _uptime_seconds(summary.get("appsUptime"))
-                if apps_uptime is not None:
-                    break
-                time.sleep(5)
-            assert apps_uptime is not None and apps_uptime <= time.monotonic() - reset_at + 120, \
-                f"App Stats did not restart at the reset (appsUptime {apps_uptime} s): {stats}"
+            uptime_after = self._apps_uptime_seconds()
+            assert uptime_before is not None and uptime_after is not None and uptime_after < uptime_before, \
+                f"App Stats did not restart at the reset (appsUptime {uptime_before} s -> {uptime_after} s): {stats}"
             return
         before_ms = (stats.get("before") or {}).get("totalMs")
         after_ms = (stats.get("after") or {}).get("totalMs")
         assert isinstance(before_ms, (int, float)) and isinstance(after_ms, (int, float)) and \
             (after_ms == 0 or after_ms < before_ms), f"the reset must drop the server app's total: {stats}"
+
+    def _apps_uptime_seconds(self) -> int | None:
+        """App Stats' uptime (since its last reset) from hub_get_logs(mode='apps'), polled up to 60 s."""
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline:
+            summary = (self.client.call_tool("hub_read_diagnostics", {
+                "tool": "hub_get_logs", "args": {"mode": "apps"}}) or {}).get("summary") or {}
+            seconds = _uptime_seconds(summary.get("appsUptime"))
+            if seconds is not None:
+                return seconds
+            time.sleep(5)
+        return None
 
     @test("system_tools")
     def test_manage_rooms_list(self) -> None:

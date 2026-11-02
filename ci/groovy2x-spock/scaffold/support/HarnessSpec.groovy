@@ -284,6 +284,7 @@ abstract class HarnessSpec extends Specification {
         (scriptStaticField('LOGS_JSON_SNAPSHOT') as Map).clear()
         // The per-app load limiter guard's estimate, latches and threshold.
         (scriptStaticField('LOAD_GUARD') as Map).clear()
+        script.requestStartedAt = null
         (scriptStaticField('NATIVE_LOG_SNAPSHOTS') as Map).clear()
         (scriptStaticField('DEVICE_READ_SNAPSHOTS') as Map).clear()
         (scriptStaticField('DEBUG_LOG_BUFFERS') as Map).clear()
