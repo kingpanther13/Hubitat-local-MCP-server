@@ -37,7 +37,9 @@ private String _effectiveBackupSetting(String key) {
 @groovy.transform.Field static volatile Map MRTR_CLEANUP_CHECK_AT = [:]
 @groovy.transform.Field Long mrtrWorkerSliceStartedAt = null
 @groovy.transform.Field Map deviceReadContext = null
+@groovy.transform.Field boolean loadLimiterRetryActive = false
 @groovy.transform.Field Map callerClient = null
+@groovy.transform.Field Long requestStartedAt = null
 @groovy.transform.Field static final Map LOGS_JSON_SNAPSHOT = new java.util.HashMap()
 @groovy.transform.Field static final Map NATIVE_LOG_SNAPSHOTS = new java.util.HashMap()
 @groovy.transform.Field static final Map DEVICE_READ_SNAPSHOTS = new java.util.LinkedHashMap()
@@ -6255,7 +6257,8 @@ private Map _observeHubReadSnapshot(String key, String fetchId, Map job, Map arg
         remainingBudget -= waitMs
     }
 }
-def runNativeLogFetch(Map job = [:]) {
+def runNativeLogFetch(Map job = [:]) { _loadGuardTimed { _runNativeLogFetchBody(job) } }
+def _runNativeLogFetchBody(Map job = [:]) {
     if (job.owner != (app?.id?.toString() ?: "0")) return
     Map work = null
     synchronized (NATIVE_LOG_SNAPSHOTS) {
@@ -6724,9 +6727,10 @@ private Date _pastLogTime(Map entry, TimeZone zone) {
 }
 def toolDeleteLogs(args) {
     String mode = args.mode?.toString()
-    if (!(mode in ["mcp", "scheduledJobs"])) {
-        throw new IllegalArgumentException("mode must be 'mcp' (clear the MCP log) or 'scheduledJobs' (delete one scheduled job). The hub's past logs have no delete; its Reboot dialog offers a log purge: hub_reboot(confirm=true, purgeLogs=true).")
+    if (!(mode in ["mcp", "scheduledJobs", "appRuntimeStats"])) {
+        throw new IllegalArgumentException("mode must be 'mcp' (clear the MCP log), 'scheduledJobs' (delete one scheduled job) or 'appRuntimeStats' (reset every app's runtime statistics). The hub's past logs have no delete; its Reboot dialog offers a log purge: hub_reboot(confirm=true, purgeLogs=true).")
     }
+    if (mode == "appRuntimeStats") return _deleteAppRuntimeStats(args)
     if (mode == "mcp") {
         def stray = ["jobId", "confirm"].findAll(this.&_argPresent.curry(args))
         if (stray) throw new IllegalArgumentException("Parameters ${stray.join(', ')} apply to mode='scheduledJobs' only")
@@ -6784,6 +6788,48 @@ def toolDeleteLogs(args) {
     }
     return [success: false, isError: true, jobId: jobId, error: "The hub did not delete ${jobId}: ${reply ?: 'empty reply'}"]
 }
+private Map _deleteAppRuntimeStats(Map args) {
+    if (_argPresent(args, "jobId")) throw new IllegalArgumentException("Parameter jobId applies to mode='scheduledJobs' only")
+    if (args.confirm != true) {
+        return [success: false, isError: true, mode: "appRuntimeStats",
+                error: "Resetting the hub's app runtime statistics needs confirm=true: it zeroes the busy time of every app on the Logs page's App Stats tab, not only this one."]
+    }
+    Map window = [__reqT0: now()]
+    _logsJsonInvalidate()
+    Map before = _logsJsonOwnAppStat(false, window)
+    long budget = _isCloudRequest() ? _relayBudgetMs() : _lanBudgetMs()
+    int resetTimeoutS = budget > 0L ? Math.max(2L, Math.min(10L, (budget - (now() - (window.__reqT0 as long))).intdiv(1000L))) as int : 10
+    String reply = _resetAppRuntimeStatsNow(resetTimeoutS)
+    mcpLog("warn", "monitoring", reply == "ok" ? "The hub's app runtime statistics were reset (hub_delete_logs)"
+                                               : "Resetting the hub's app runtime statistics failed (hub_delete_logs): ${reply ?: 'empty reply'}")
+    Map after = _logsJsonOwnAppStat(false, window)
+    if (after.missing == true) after = [totalMs: 0L, count: 0L]
+    Long uptimeS = null
+    try { def up = location?.hub?.uptime; if (up != null) uptimeS = up as long } catch (Exception ignored) { }
+    int pct = _loadGuardThresholdPct()
+    Map out = [success: reply == "ok", mode: "appRuntimeStats",
+               before: before.totalMs != null ? [totalMs: before.totalMs, count: before.count] : null,
+               after: after.totalMs != null ? [totalMs: after.totalMs, count: after.count] : null,
+               verified: after.totalMs != null && before.totalMs != null &&
+                   ((after.totalMs as long) < (before.totalMs as long) || ((before.totalMs as long) == 0L && (after.totalMs as long) == 0L)),
+               uptimeSeconds: uptimeS, thresholdPct: pct,
+               limitMs: uptimeS != null ? uptimeS * pct * 10L : null]
+    if (reply != "ok") {
+        out.isError = true
+        out.error = "The hub did not reset its app runtime statistics: ${reply ?: 'empty reply'}".toString()
+    } else if (before.totalMs != null && after.totalMs != null && (before.totalMs as long) > 0L
+               && (after.totalMs as long) >= (before.totalMs as long)) {
+        out.success = false
+        out.isError = true
+        out.error = "The reset did not take: this app's App Stats total was ${before.totalMs} ms before and ${after.totalMs} ms after."
+    }
+    List unread = []
+    if (before.totalMs == null) unread << "before: ${before.error}"
+    if (after.totalMs == null) unread << "after: ${after.error}"
+    if (unread) out.note = "This app's App Stats row could not be read (${unread.join('; ')}), so the reset is not verified; read it with hub_get_logs(mode='apps')."
+    else mcpLog("info", "monitoring", "App runtime statistics reset: this app ${before.totalMs} ms -> ${after.totalMs} ms")
+    return out
+}
 def _logsJsonSnapshotTtlMs() { 30000L }
 def _logsJsonFetchStaleMs() { 45000L }
 def _logsJsonObserveWaitMs() {
@@ -6831,6 +6877,13 @@ def _logsJsonFetchAndPublish(Long fetchId = null, boolean background = false) {
         if (_logsJsonFetchId() != fetchId) return snap
         LOGS_JSON_SNAPSHOT.snapshot = snap
         LOGS_JSON_SNAPSHOT.remove("fetchError")
+        try {
+            String appId = app?.id?.toString()
+            def own = appId ? snap.appStats.find { it.id?.toString() == appId } : null
+            if (own?.total != null) {
+                synchronized (LOAD_GUARD) { LOAD_GUARD.busyMs = Math.max(_loadGuardBusyMs(), own.total as long) }
+            }
+        } catch (Exception ignored) { }
     }
     return snap
 }
@@ -6877,7 +6930,8 @@ private void _logsJsonEnsureFetchScheduled() {
         throw scheduleErr
     }
 }
-def runLogsJsonFetch(Map job = [:]) {
+def runLogsJsonFetch(Map job = [:]) { _loadGuardTimed { _runLogsJsonFetchBody(job) } }
+def _runLogsJsonFetchBody(Map job = [:]) {
     Long fetchId = null
     try { fetchId = job?.fetchId as Long } catch (Exception ignored) { fetchId = null }
     try {
@@ -6937,6 +6991,17 @@ def _logsJsonSnapshot(Map args) {
             return [state: "pending"]
         }
         remainingBudget -= sleepMs
+    }
+}
+Map _logsJsonOwnAppStat(boolean fresh = false, Map args = null) {
+    try {
+        Map snap = fresh ? [state: "ready", snapshot: _logsJsonFetchAndPublish()] : _logsJsonSnapshot(args ?: [:])
+        if (snap.state != "ready") return [error: snap.state == "failed" ? "Logs page read failed: ${snap.error}".toString() : "Logs page read still in progress"]
+        def row = (snap.snapshot.appStats ?: []).find { it.id?.toString() == app.id?.toString() }
+        if (row == null) return [error: "no App Stats row for app ${app.id}".toString(), missing: true]
+        return [totalMs: (row.total ?: 0) as long, count: (row.count ?: 0) as long]
+    } catch (Exception e) {
+        return [error: "Logs page read failed: ${e.message ?: e.class.simpleName}".toString()]
     }
 }
 private Map _logsJsonInProgress(String tool) {
@@ -8246,13 +8311,13 @@ def _getAllToolDefinitions_partDiagnostics() {
         ],
         [
             name: "hub_delete_logs",
-            description: """Clear the MCP app's own log (mode='mcp'), or delete one scheduled job like the Logs page's Delete button (mode='scheduledJobs'). Only that timer goes; its app or device schedules it again only if its own code does. Cannot be undone. The hub's past logs have no delete; its Reboot dialog offers a log purge: hub_reboot(confirm=true, purgeLogs=true).""",
+            description: """Clear the MCP app's own log (mode='mcp'), delete one scheduled job like the Logs page's Delete button (mode='scheduledJobs'), or reset the hub's app runtime statistics (mode='appRuntimeStats'). A scheduled-job delete removes only that timer; its app or device schedules it again only if its own code does. The runtime-statistics reset zeroes every app's App Stats busy time[[FLAT_TRIM]] -- the hub's per-app load limiter compares this app's busy time plus that of the app or device it calls (its own a second time when it calls itself) against uptime x its threshold, refusing an app's calls with "generates excessive hub load" once over -- and returns this app's row before and after[[/FLAT_TRIM]]. Cannot be undone. The hub's past logs have no delete; its Reboot dialog offers a log purge: hub_reboot(confirm=true, purgeLogs=true).""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    mode: [type: "string", enum: ["mcp", "scheduledJobs"]],
+                    mode: [type: "string", enum: ["mcp", "scheduledJobs", "appRuntimeStats"]],
                     jobId: [type: "string", description: "Job id from hub_get_logs(mode='scheduledJobs')."],
-                    confirm: [type: "boolean", description: "Must be true to delete a job."]
+                    confirm: [type: "boolean", description: "Must be true to delete a job or reset the app runtime statistics."]
                 ],
                 required: ["mode"]
             ]
@@ -8469,7 +8534,7 @@ def _openWorldToolNames_partDiagnostics() {
 def _toolDisplayMeta_partDiagnostics() {
     return [
         hub_get_logs: [title: "Get Logs", summary: "Any Logs page tab (log history, stats, cloud calls, events, jobs, hub actions) or the MCP log."],
-        hub_delete_logs: [title: "Delete Logs", summary: "Clear the MCP log or delete one scheduled job, as the Logs page's Delete button does."],
+        hub_delete_logs: [title: "Delete Logs", summary: "Clear the MCP log, delete one scheduled job, or reset the hub's app runtime statistics."],
         hub_get_metrics: [title: "Get Hub Metrics", summary: "Hub metrics with CSV trend history."],
         hub_get_memory_history: [title: "Get Memory History", summary: "Free-memory and CPU-load history with summary stats."],
         hub_call_gc: [title: "Force Garbage Collection", summary: "Force JVM garbage collection and report freed memory."],
@@ -10195,10 +10260,8 @@ private Map _listDeviceRecord(Map rec, Map opts, List attrNames, Map caps, Set c
     }
     boolean capsMissing = f.contains("capabilities") && caps != null && !caps.containsKey(rec.id)
     if (f.contains("capabilities") && caps != null && !capsMissing) row.capabilities = caps.get(rec.id)
-    Map shownBy = [disabled: f.contains("disabled") || opts.disabled != null,
-                   room: f.contains("room") || f.contains("roomId") || opts.roomFilter != null,
-                   lastActivity: f.contains("lastActivity") || opts.staleHours != null || opts.sinceDate != null,
-                   currentStates: f.contains("currentStates") || opts.stateFilter != null]
+    Map shownBy = [disabled: f.contains("disabled"), room: f.contains("room") || f.contains("roomId"),
+                   lastActivity: f.contains("lastActivity"), currentStates: f.contains("currentStates")]
     if (capsMissing || rec.missingFields.any { shownBy.get(it) }) row.metadataUnavailable = true
     if (!opts.wantFull) return row
     Map detail = null
@@ -11689,12 +11752,12 @@ def _evalAttrCondition(value, comparator, matchSet, numericThreshold, betweenLow
 }
 def toolPollUntilAttribute(args) {
     if (args instanceof Map) _refuseCredentialPoll(args.attribute)
-    if (!(args instanceof Map) || !args.containsKey("__reqT0")) return _maskPolledAttribute(_pollUntilAttributeCore(args), args)
+    if (!(args instanceof Map) || !args.containsKey("__reqT0")) return _pollUntilAttributeCore(args)
     Map pollArgs = [:] + (args as Map)
     def t0 = pollArgs.remove("__reqT0")
     long budget = _isCloudRequest() ? _relayBudgetMs() : _lanBudgetMs()
     def asked = pollArgs.containsKey("timeoutMs") ? pollArgs.timeoutMs : 5000
-    if (!(t0 instanceof Number) || budget <= 0L || !(asked instanceof Number) || asked < 100 || asked > 60000) return _maskPolledAttribute(_pollUntilAttributeCore(pollArgs), pollArgs)
+    if (!(t0 instanceof Number) || budget <= 0L || !(asked instanceof Number) || asked < 100 || asked > 60000) return _pollUntilAttributeCore(pollArgs)
     long deadline = (t0 as long) + budget
     long left = deadline - now()
     String why = _isCloudRequest() ? 'the cloud relay drops a request that runs much longer' : 'the LAN time budget is set'
@@ -11712,18 +11775,12 @@ def toolPollUntilAttribute(args) {
         result.budgetLimited = true
         result.budgetNote = "The poll stopped after ${result.elapsedMs ?: 0} ms instead of waiting ${asked} ms: ${why}. Poll again to keep waiting.".toString()
     }
-    return _maskPolledAttribute(result, pollArgs)
+    return result
 }
 private void _refuseCredentialPoll(attribute) {
     if (attribute != null && _redactsCredentials() && _deviceConfigurationSecretKey(attribute)) {
         throw new IllegalArgumentException("Cannot wait for a value of ${attribute}: credential-named attributes are hidden while 'Hide passwords and credentials' is on")
     }
-}
-private _maskPolledAttribute(result, Map args) {
-    if (!(result instanceof Map)) return result
-    if (result.containsKey('finalValue')) result.finalValue = _devicePublicAttributeValue(args.attribute, result.finalValue)
-    if (result.devices instanceof List) result.devices.each { if (it instanceof Map) it.finalValue = _devicePublicAttributeValue(args.attribute, it.finalValue) }
-    return result
 }
 private String _pollStableRefusal(Map pollArgs, t0) {
     long budget = _isCloudRequest() ? _relayBudgetMs() : _lanBudgetMs()
@@ -13251,8 +13308,8 @@ def toolDeleteDevice(args) {
     if (recentEvents == null) {
         warnings << "EVENT HISTORY UNAVAILABLE: Recent events could not be read; do not assume this device is quiet."
     } else if (recentEvents) {
-        def lastEvent = recentEvents[0] instanceof Map ? _mapBypassEventRow(recentEvents[0]) : [:]
-        warnings << "HAS RECENT EVENTS: Last event was ${lastEvent.name}=${lastEvent.value} at ${lastEvent.date}"
+        def lastEvent = recentEvents[0]
+        warnings << "HAS RECENT EVENTS: Last event was ${lastEvent.name}=${_devicePublicAttributeValue(lastEvent.name, lastEvent.value)} at ${lastEvent.date}"
     }
     def isRadioDevice = false
     try {
@@ -15077,7 +15134,7 @@ private Map _incrementHubVariable(String name, increment) {
     } catch (Exception e) {
         mcpLogError("variables", "addValueToGlobalVar failed for '${name}'", e)
         String why = e.message?.toString() ?: ""
-        def note = why.contains("excessive hub load") ? "The hub's load limiter refused the call. Wait a moment, check the value with hub_get_variable, then retry if it did not change." :
+        def note = why.contains("excessive hub load") ? "The hub's per-app load limiter refused the call. Check the value with hub_get_variable; retry only if it did not change." :
                    "Check the value with hub_get_variable before retrying."
         if (why.toLowerCase().contains("mesh") || why.toLowerCase().contains("linked")) note += " A variable linked from another hub over Hub Mesh is changed on its source hub."
         return [success: false, name: name, error: "Increment failed: ${why}", note: note]
@@ -19916,7 +19973,8 @@ def toolUpdatePackage(args) {
         note: "Do not submit it again. Read hub_get_info.lastSelfDeploy until its requestId matches this response; success/error then carries the final outcome."
     ]
 }
-def runPackageDeploy(Map job = [:]) {
+def runPackageDeploy(Map job = [:]) { _loadGuardTimed { _runPackageDeployBody(job) } }
+def _runPackageDeployBody(Map job = [:]) {
     String requestId = job?.requestId?.toString()
     Map marker = null
     synchronized (WRITE_RESERVATION_LOCK) {
@@ -27516,6 +27574,12 @@ def advancedOverridesPage() {
                   description: "Pause a slow multi-step write on a LAN request once this many ms have elapsed (default: 0 = off; positive values below 6000 use 6000; set below your MCP client's request timeout).",
                   defaultValue: 0, range: "0..300000", required: false
         }
+        section("Per-app load limiter") {
+            paragraph "The hub refuses an app's calls (\"generates excessive hub load\") once its busy time on Logs > App Stats passes a share of the hub's uptime. With this on, the server resets the hub's app runtime statistics before that happens, and once more if a call is refused anyway. The reset clears the App Stats tab for every app, not only this one, and restarts every app's limiter count. It runs only while the Write master is on."
+            input "autoResetAppRuntimeStats", "bool", title: "Reset the hub's app runtime statistics automatically",
+                  description: "ON (default): the server keeps itself clear of the per-app load limiter. OFF: nothing is reset automatically; a refused call names hub_delete_logs(mode='appRuntimeStats') for a manual reset.",
+                  defaultValue: true
+        }
         section("Access tokens in responses") {
             paragraph "App pages show their OAuth access tokens in plain text, including this server's own endpoint URLs and the URLs of apps such as Maker API. MCP clients read those pages, so the tokens reach the AI client and its transcripts. Turn this on to hide them in what this server returns. Leave it off if you want the AI to read an endpoint URL for you, for example to set up another app."
             input "redactAccessTokens", "bool", title: "Hide access tokens in MCP responses",
@@ -27826,7 +27890,11 @@ def initialize() {
     if (!state.ruleVariables) {
         state.ruleVariables = [:]
     }
-    try { unschedule() }
+    try {
+        unschedule()
+        LOAD_GUARD.remove("seedScheduled")
+        LOAD_GUARD.remove("checkPending")
+    }
     catch (Exception e) { setupComplete = false; mcpLog("warn", "server", "unschedule() before re-schedule failed: ${e.message} -- duplicate schedules may persist") }
     _mrtrEnsureCleanupScheduled(true)
     schedule("0 0 3 ? * *", "checkForUpdate")
@@ -27898,7 +27966,237 @@ def handleMcpGet() {
                   data: groovy.json.JsonOutput.toJson(jsonRpcError(null, -32600,
                       "This MCP endpoint is request-response only (POST). SSE/GET streaming is not supported.")))
 }
+@groovy.transform.Field static final java.util.concurrent.ConcurrentHashMap LOAD_GUARD = new java.util.concurrent.ConcurrentHashMap()
+@groovy.transform.Field static final long LOAD_GUARD_MIN_UPTIME_S = 900L
+@groovy.transform.Field static final int LOAD_GUARD_DEFAULT_THRESHOLD_PCT = 33
+@groovy.transform.Field static final long LOAD_GUARD_CHECK_PCT = 50L
+@groovy.transform.Field static final long LOAD_GUARD_RESET_RETRY_MS = 5L * 60L * 1000L
+@groovy.transform.Field static final long LOAD_GUARD_CHECK_SPACING_MS = 60000L
+@groovy.transform.Field static final long LOAD_GUARD_LATCH_STALE_MS = 60000L
+@groovy.transform.Field static final String LOAD_LIMITER_TWICE_HINT = "The hub's per-app load limiter refused this call twice; reset the hub's app runtime statistics with hub_manage_logs(tool='hub_delete_logs', args={mode:'appRuntimeStats', confirm:true}) and retry."
+boolean _loadGuardAutoResetEnabled() {
+    return settings?.autoResetAppRuntimeStats != false && settings?.enableWrite != false
+}
 def handleMcpRequest() {
+    long t0 = now()
+    requestStartedAt = t0
+    _loadGuardBeforeRequest()
+    try {
+        return _handleMcpRequestBody()
+    } finally {
+        _loadGuardAdd(now() - t0)
+    }
+}
+def _loadGuardTimed(Closure body) {
+    long t0 = now()
+    try {
+        return body.call()
+    } finally {
+        _loadGuardAdd(now() - t0)
+    }
+}
+long _loadGuardBusyMs() { (LOAD_GUARD.busyMs ?: 0L) as long }
+private void _loadGuardAdd(long ms) {
+    if (ms <= 0L) return
+    synchronized (LOAD_GUARD) { LOAD_GUARD.busyMs = _loadGuardBusyMs() + ms }
+}
+void _loadGuardZero() {
+    synchronized (LOAD_GUARD) { LOAD_GUARD.busyMs = 0L }
+}
+long _loadGuardLimitMs(long uptimeS) {
+    return uptimeS * ((LOAD_GUARD.thresholdPct ?: LOAD_GUARD_DEFAULT_THRESHOLD_PCT) as long) * 10L
+}
+private Long _loadGuardClaim(String key) {
+    long t = now()
+    def prev = LOAD_GUARD.putIfAbsent(key, t)
+    if (prev == null) return t
+    if (!(prev instanceof Number) || t - (prev as long) < LOAD_GUARD_LATCH_STALE_MS) return null
+    return LOAD_GUARD.replace(key, prev, t) ? t : null
+}
+private void _loadGuardSchedule(String key, String handler) {
+    Long stamp = _loadGuardClaim(key)
+    if (stamp == null) return
+    try {
+        runIn(0, handler, [data: [stamp: stamp]])
+    } catch (Exception e) {
+        LOAD_GUARD.remove(key, stamp)
+        mcpLog("warn", "server", "Could not schedule ${handler}: ${e.message}")
+    }
+}
+private void _loadGuardRelease(String key, Map data) {
+    if (data?.stamp instanceof Number) LOAD_GUARD.remove(key, data.stamp as long)
+    else LOAD_GUARD.remove(key)
+}
+private void _loadGuardBeforeRequest() {
+    long upS
+    try {
+        def raw = location?.hub?.uptime
+        if (raw == null) return
+        upS = raw as long
+    } catch (Exception ignored) { return }
+    def last = LOAD_GUARD.lastUptimeS
+    if (last != null && upS < (last as long)) _loadGuardZero()
+    LOAD_GUARD.lastUptimeS = upS
+    if (!_loadGuardAutoResetEnabled()) return
+    def seedFailedAt = LOAD_GUARD.seedFailedAt
+    if (LOAD_GUARD.seeded != true && (seedFailedAt == null || now() - (seedFailedAt as long) >= LOAD_GUARD_RESET_RETRY_MS)) {
+        _loadGuardSchedule("seedScheduled", "_seedLoadGuardJob")
+    }
+    if (upS < LOAD_GUARD_MIN_UPTIME_S || _loadGuardBusyMs() * 100L < _loadGuardLimitMs(upS) * LOAD_GUARD_CHECK_PCT) return
+    def failedAt = LOAD_GUARD.resetFailedAt
+    if (failedAt != null && now() - (failedAt as long) < LOAD_GUARD_RESET_RETRY_MS) return
+    def checkedAt = LOAD_GUARD.checkedAt
+    if (checkedAt != null && now() - (checkedAt as long) < LOAD_GUARD_CHECK_SPACING_MS) return
+    _loadGuardSchedule("checkPending", "_loadGuardCheckJob")
+}
+int _loadGuardThresholdPct(boolean fresh = false) {
+    def cached = LOAD_GUARD.thresholdPct
+    if (cached != null && !fresh) return cached as int
+    Integer pct = null
+    String why = null
+    try {
+        def m = (hubInternalGet("/hub/advanced/getExcessiveLoadThreshold", null, 10)?.toString() ?: "") =~ /(\d+)/
+        if (m.find()) pct = m.group(1) as Integer
+        if (pct == null || pct <= 0 || pct > 100) why = "the hub answered ${pct == null ? 'no number' : pct + ' %'}".toString()
+    } catch (Exception e) {
+        why = "${e.class.simpleName}: ${e.message}".toString()
+    }
+    if (why != null) {
+        int fallback = cached != null ? (cached as int) : LOAD_GUARD_DEFAULT_THRESHOLD_PCT
+        mcpLog("warn", "server", "The hub's excessive-load threshold is unreadable (${why}); using ${fallback} % until a later read works")
+        return fallback
+    }
+    LOAD_GUARD.thresholdPct = pct
+    return pct
+}
+def _seedLoadGuardJob(Map data = null) {
+    _loadGuardThresholdPct()
+    Map own = _logsJsonOwnAppStat(true)
+    if (own.missing == true) own = [totalMs: 0L]
+    if (own.totalMs != null) {
+        synchronized (LOAD_GUARD) { LOAD_GUARD.busyMs = Math.max(_loadGuardBusyMs(), own.totalMs as long) }
+        LOAD_GUARD.seeded = true
+        LOAD_GUARD.remove("seedFailedAt")
+    } else {
+        LOAD_GUARD.seedFailedAt = now()
+        mcpLog("warn", "server", "The load-limiter estimate could not be seeded from the Logs page (${own.error}); it is tried again in ${LOAD_GUARD_RESET_RETRY_MS / 60000L} minutes")
+    }
+    _loadGuardRelease("seedScheduled", data)
+}
+def _loadGuardCheckJob(Map data = null) {
+    try {
+        if (!_loadGuardAutoResetEnabled()) return
+        _loadGuardThresholdPct(true)
+        Map own = _logsJsonOwnAppStat(true)
+        if (own.missing == true) own = [totalMs: 0L]
+        if (own.totalMs == null) {
+            LOAD_GUARD.resetFailedAt = now()
+            mcpLog("warn", "server", "The load-limiter check could not read this app's App Stats row (${own.error}); it is tried again in ${LOAD_GUARD_RESET_RETRY_MS / 60000L} minutes")
+            return
+        }
+        long total = own.totalMs as long
+        long estimate
+        synchronized (LOAD_GUARD) {
+            estimate = _loadGuardBusyMs()
+            LOAD_GUARD.busyMs = total
+        }
+        def up = LOAD_GUARD.lastUptimeS
+        long limit = up != null ? _loadGuardLimitMs(up as long) : 0L
+        boolean due = limit > 0L && total * 100L >= limit * LOAD_GUARD_CHECK_PCT
+        mcpLog("debug", "server", "load guard check: hub total ${total} ms of ${limit} ms limit (estimate was ${estimate} ms); reset: ${due ? 'yes' : 'no'}")
+        if (!due) {
+            LOAD_GUARD.checkedAt = now()
+            return
+        }
+        String reply = _resetAppRuntimeStatsNow()
+        if (reply == "ok") {
+            LOAD_GUARD.remove("resetFailedAt")
+            LOAD_GUARD.remove("resetFailNoted")
+            mcpLog("warn", "server", "The hub's app runtime statistics were reset before the per-app load limiter tripped: busy ${total} ms of ${limit} ms")
+        } else {
+            LOAD_GUARD.resetFailedAt = now()
+            if (LOAD_GUARD.putIfAbsent("resetFailNoted", true) == null) {
+                mcpLog("warn", "server", "The hub did not reset its app runtime statistics (${reply ?: 'empty reply'}); the server tries again in ${LOAD_GUARD_RESET_RETRY_MS / 60000L} minutes")
+            }
+        }
+    } finally {
+        _loadGuardRelease("checkPending", data)
+    }
+}
+String _resetAppRuntimeStatsNow(int timeoutS = 10) {
+    String reply
+    try {
+        reply = hubInternalGet("/hub/advanced/resetAppRuntimeStats", null, timeoutS)?.toString()?.trim()
+    } catch (Exception e) {
+        return "${e.class.simpleName}: ${e.message}".toString()
+    } finally {
+        _logsJsonInvalidate()
+    }
+    if (reply == "ok") _loadGuardZero()
+    return reply
+}
+private _executeToolWithLoadLimiterRetry(toolName, args, boolean bpsChecked) {
+    def failure
+    try {
+        def result = executeTool(toolName, args, bpsChecked)
+        if (!_loadLimiterRefusedResult(result)) return result
+        failure = result
+    } catch (IllegalArgumentException e) {
+        throw e
+    } catch (Exception e) {
+        if (!_loadLimiterRefusedMessage(e.message)) throw e
+        failure = e
+    }
+    if (!_loadGuardAutoResetEnabled()) {
+        String manual = "hub_manage_logs(tool='hub_delete_logs', args={mode:'appRuntimeStats', confirm:true})"
+        String turnOn = "turn on 'Reset the hub's app runtime statistics automatically' under Advanced in the MCP Rule Server app settings"
+        String msg
+        if (settings?.enableWrite == false) {
+            msg = "the Write master is off, so the hub's app runtime statistics were not reset. The hub owner can turn on 'Write Tools' in the MCP Rule Server app settings (the server then resets them itself while the automatic reset is on) and retry."
+        } else if (callerClient != null && !_clientAllows(callerClient.id.toString(), "clientWrite")) {
+            msg = "the automatic reset is off in Advanced settings, so the hub's app runtime statistics were not reset, and this client may not write, so it cannot reset them itself. The hub owner can ${turnOn}, allow writes for this client, or reset them from a client that may write with ${manual}; then retry."
+        } else {
+            msg = "the automatic reset is off in Advanced settings, so the hub's app runtime statistics were not reset. Reset them with ${manual} and retry, or have the hub owner ${turnOn}."
+        }
+        return _loadLimiterFailure(failure, "The hub's per-app load limiter refused this call and ${msg}")
+    }
+    String reply = _resetAppRuntimeStatsNow()
+    boolean resetOk = reply == "ok"
+    String resetNote = resetOk ? "The hub's app runtime statistics were reset." : "Resetting the hub's app runtime statistics failed (${reply ?: 'empty reply'})."
+    mcpLog("warn", "server", "The per-app load limiter refused ${toolName}. ${resetNote}")
+    if (!resetOk) return _loadLimiterFailure(failure, "${resetNote} The call is not repeated; retry it once the hub answers.")
+    if (!getIdempotentToolNames().contains(toolName?.toString())) {
+        return _loadLimiterFailure(failure, "${resetNote} This write is not repeated automatically because it may have run some steps before the refusal; check its target, then call it again.")
+    }
+    long budget = _isCloudRequest() ? _relayBudgetMs() : _lanBudgetMs()
+    if (budget > 0L && requestStartedAt != null && now() - requestStartedAt > budget.intdiv(2)) {
+        return _loadLimiterFailure(failure, "${resetNote} The call is not repeated within this request's time budget; call it again.")
+    }
+    try {
+        def result = executeTool(toolName, args, bpsChecked)
+        if (!_loadLimiterRefusedResult(result)) return result
+        failure = result
+    } catch (IllegalArgumentException e) {
+        throw e
+    } catch (Exception e) {
+        if (!_loadLimiterRefusedMessage(e.message)) throw e
+        failure = e
+    }
+    return _loadLimiterFailure(failure, LOAD_LIMITER_TWICE_HINT)
+}
+private boolean _loadLimiterRefusedMessage(msg) {
+    return msg != null && msg.toString().toLowerCase().contains("excessive hub load")
+}
+private boolean _loadLimiterRefusedResult(result) {
+    return result instanceof Map && result.success == false && _loadLimiterRefusedMessage(result.error)
+}
+private _loadLimiterFailure(failure, String hint) {
+    if (failure instanceof Exception) throw new RuntimeException("${failure.message} ${hint}".toString(), failure)
+    Map out = [:] + (failure as Map)
+    out.error = "${out.error} ${hint}".toString()
+    return out
+}
+def _handleMcpRequestBody() {
     if (!_transportEnabled()) return _transportDisabledResponse()
     if (!_originAllowed()) {
         boolean enforcing = settings.enforceOriginValidation == true
@@ -29366,7 +29664,8 @@ def _mrtrEnsureCleanupScheduled(boolean reset = false) {
         }
     }
 }
-def runMrtrCleanup() {
+def runMrtrCleanup() { _loadGuardTimed { _runMrtrCleanupBody() } }
+def _runMrtrCleanupBody() {
     List cleanup = []
     synchronized (WRITE_RESERVATION_LOCK) {
         Map hint = _mrtrCleanupScheduleLocked()
@@ -29998,7 +30297,8 @@ private Map _mrtrScheduleSlice(String stateId, Map rec, Map claim, Map execution
         return [accepted: false, failure: failure]
     }
 }
-def runMrtrSlice(Map job = [:]) {
+def runMrtrSlice(Map job = [:]) { _loadGuardTimed { _runMrtrSliceBody(job) } }
+def _runMrtrSliceBody(Map job = [:]) {
     String stateId = job?.stateId?.toString()
     String claimId = job?.claimId?.toString()
     def generationRaw = job?.generation
@@ -30115,7 +30415,8 @@ private void _mrtrScheduleAutoContinue(String stateId, Map rec) {
     mcpLog("error", "mrtr",
         "Server-side continuation of ${rec.leafTool} is not scheduled; the checkpoint waits for a client requestState until it expires")
 }
-def runMrtrAutoContinue(Map job = [:]) {
+def runMrtrAutoContinue(Map job = [:]) { _loadGuardTimed { _runMrtrAutoContinueBody(job) } }
+def _runMrtrAutoContinueBody(Map job = [:]) {
     String stateId = job?.stateId?.toString()
     def generationRaw = job?.generation
     Integer generation = (generationRaw instanceof Number) ? generationRaw.intValue() : null
@@ -30796,12 +31097,12 @@ def getGatewayConfig() {
             tools: ["hub_get_logs", "hub_delete_logs", "hub_set_log_level"],
             summaries: [
                 hub_get_logs: "Read Logs page tabs or the MCP log. Args: mode (one tab or a list: past default, devices, apps, cloudCalls, locationEvents, hubEvents, scheduledJobs, runningJobs, hubActions, mcp, status), level, deviceId|appId, pattern/patterns, since/until, sortBy, limit, cursor, pageSize (50 per tab when several are listed)",
-                hub_delete_logs: "Clear the MCP log, or delete one scheduled job like the Logs page's Delete button; past logs have no delete, only the reboot's log purge: hub_reboot(confirm=true, purgeLogs=true). Args: mode (mcp|scheduledJobs), jobId, confirm",
+                hub_delete_logs: "Clear the MCP log, delete one scheduled job like the Logs page's Delete button, or reset the hub's app runtime statistics (the per-app load limiter's busy counter); past logs have no delete, only the reboot's log purge: hub_reboot(confirm=true, purgeLogs=true). Args: mode (mcp|scheduledJobs|appRuntimeStats), jobId, confirm",
                 hub_set_log_level: "Set minimum log level threshold. Args: level (debug/info/warn/error)"
             ],
             searchHints: [
                 hub_get_logs: "errors warnings trace syslog recent device app regex time window since until performance stats slow cpu busy hog state size cloud calls location events mode hsm hub events reboot low memory scheduled jobs cron timer recurring running hub actions mcp internal status",
-                hub_delete_logs: "wipe reset clear mcp log remove cancel unschedule scheduled job timer",
+                hub_delete_logs: "wipe reset clear mcp log remove cancel unschedule scheduled job timer app runtime stats busy excessive hub load limiter",
                 hub_set_log_level: "verbosity debug trace quiet"
             ]
         ],
@@ -31529,6 +31830,11 @@ def _isDeviceReplaceOptionsOnlyCall(toolName, args) {
     return toolName == 'hub_call_device_replace' && (args instanceof Map) && args.list_options == true
 }
 def executeTool(toolName, args, boolean bpsChecked = false) {
+    if (!loadLimiterRetryActive && !getGatewayConfig().containsKey(toolName)) {
+        loadLimiterRetryActive = true
+        try { return _executeToolWithLoadLimiterRetry(toolName, args, bpsChecked) }
+        finally { loadLimiterRetryActive = false }
+    }
     if (args instanceof Map && args.containsKey("opToken")) {
         throw new IllegalArgumentException("opToken was removed: slow writes now continue automatically via standard MCP requestState, which also provides the idempotent replay opToken used to. Remove the opToken argument and update your client's tool catalog. See hub_get_tool_guide(section='slow_ops').")
     }
@@ -33434,7 +33740,8 @@ private void _scheduleDebugLogHistory(Map buffer) {
         throw e
     }
 }
-def runDebugLogHistoryFetch(Map job = [:]) {
+def runDebugLogHistoryFetch(Map job = [:]) { _loadGuardTimed { _runDebugLogHistoryFetchBody(job) } }
+def _runDebugLogHistoryFetchBody(Map job = [:]) {
     def buffer = initDebugLogs()
     synchronized (buffer) {
         if (job.appId != buffer.appId || job.generation != buffer.generation ||
@@ -35490,7 +35797,7 @@ Only query devices the user has mentioned or that are relevant to their request.
 
 Get a device attribute's current value, or block-poll until it reaches an expected value. Polls one device, or several at once via deviceIds.
 
-One-shot read by default (deviceId + attribute). Provide expectedValue and/or expectedValues to block-poll until currentValue matches, returning immediately on match or when timeoutMs elapses.
+One-shot read by default (deviceId + attribute). Provide expectedValue and/or expectedValues to block-poll until currentValue matches, returning immediately on match or when timeoutMs elapses. A credential-named attribute (lockCodes, a PIN or code) reads as the redaction marker while Hide passwords and credentials is on, and a poll or `hub_call_device_command` `waitFor` on one is refused, since a match would confirm a guess.
 
 A single round-trip that replaces N client-side reads + sleeps (verify a command took effect, wait for a sensor threshold, detect Z-Wave inclusion finished). comparator controls the match: eq (default, in-set), ne (not in-set), gt/gte/lt/lte (numeric threshold via expectedValue), between (numeric inclusive range via expectedValues [low, high]). stableForMs requires the condition to hold continuously for that many ms before converging (debounce). For MULTI-DEVICE convergence pass deviceIds (a list, mutually exclusive with deviceId, max 20) instead of deviceId: the same condition is applied to every device and mode controls the aggregate -- "all" (default) converges when every device matches, "any" on the first to match; the result is a compact per-device array (not full device objects) plus convergedCount. Poll mode BLOCKS up to timeoutMs (default 5000ms, max 60000ms) and queues concurrent MCP requests; prefer event-driven flows where possible. First read fires immediately; subsequent reads are spaced by pollIntervalMs.
 
@@ -35927,6 +36234,7 @@ Renaming a room preserves device assignments, but may require updating automatio
 The cloud relay can end a request while the hub keeps working; a modern client continues the call by itself. Each slow-operation response (`in_progress`, `continuation_limit`, `too_many_writes_in_flight`, `slow_read_timeout`) says what to do next.
 
 - Make writes one at a time and split a large Rule Machine change batch; parallel writes are refused once the hub's write cap is full.
+- The hub's per-app load limiter refuses an app's calls ("generates excessive hub load") once this app's busy time plus that of the app or device it calls (its own a second time when it calls itself) passes uptime x the hub's threshold. The server watches its own busy time and resets the hub's app runtime statistics before that point. When a call is refused anyway, the statistics are reset and a refused read or retry-safe write is repeated once; any other write is not repeated, because it may have run some steps first -- check its target before calling it again. A device command the limiter drops can still report success, so the early reset is what protects device commands; read the device back to confirm. The reset clears the Logs > App Stats tab for every app, not only this one, and restarts every app's limiter count; Device Stats are not touched. The guard watches only this app's own total, so a busy app or device it calls can still trip the limiter first. The automatic reset can be turned off under Advanced settings ("Reset the hub's app runtime statistics automatically", default on) and only runs while the Write master is on. To reset the statistics by hand, use hub_delete_logs(mode='appRuntimeStats', confirm=true); it returns this app's App Stats row before and after.
 - A write that fails with no result body, or whose response is lost, may still be running on the hub or may already have finished. Wait about 15 seconds. A continuation write from a 2026-07-28 client shows in `recentWrites` in `hub_get_info`, and an identical repeat while it is still active joins it instead of running it twice. Every other write leaves started and finished records in `hub_get_logs(mode="mcp", component="write")`, each carrying the JSON-RPC id you sent and the outcome (completed, failed, partial, accepted or unknown). A missing record does not prove the write never ran: read the target before repeating it, because repeating a finished write performs it again.
 '''
     ]
