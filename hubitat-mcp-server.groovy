@@ -1774,10 +1774,10 @@ def _loadGuardCheckJob(Map data = null) {
 }
 
 // GETs the reset over loopback; "ok" zeroes the guard's estimate. Returns the reply, or the failure.
-String _resetAppRuntimeStatsNow() {
+String _resetAppRuntimeStatsNow(int timeoutS = 10) {
     String reply
     try {
-        reply = hubInternalGet("/hub/advanced/resetAppRuntimeStats", null, 10)?.toString()?.trim()
+        reply = hubInternalGet("/hub/advanced/resetAppRuntimeStats", null, timeoutS)?.toString()?.trim()
     } catch (Exception e) {
         return "${e.class.simpleName}: ${e.message}".toString()
     } finally {

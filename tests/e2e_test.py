@@ -224,6 +224,15 @@ class McpError(Exception):
         super().__init__(message)
 
 
+def _uptime_seconds(text: Any) -> int | None:
+    """Seconds in a hub uptime string such as "1h 2m 3s" or "0m 6s"; None when it is not one."""
+    m = re.fullmatch(r"\s*(?:(\d+)d\s*)?(?:(\d+)h\s*)?(?:(\d+)m\s*)?(\d+)s\s*", str(text or ""))
+    if not m:
+        return None
+    d, h, mi, se = (int(g or 0) for g in m.groups())
+    return ((d * 24 + h) * 60 + mi) * 60 + se
+
+
 def _with_http_status(exc: Exception, status: int) -> Exception:
     """Attach the HTTP status the hub or relay answered, so recovery is chosen by status, not text."""
     exc.http_status = status
@@ -13522,9 +13531,20 @@ def updated() {}
             "tool": "hub_delete_logs", "args": {"mode": "appRuntimeStats", "confirm": True}})
         assert stats.get("success") is True, f"appRuntimeStats reset: {stats}"
         if stats.get("verified") is not True:
-            # Over the cloud both Logs reads share the request's time budget; a large hub can leave
-            # one still in progress. That is the only acceptable reason for an unverified reset.
+            # Over the cloud both Logs reads share the request's time budget; a large hub can leave one
+            # still in progress. Then prove the reset another way: App Stats' own uptime restarted.
             assert "still in progress" in str(stats.get("note", "")), f"appRuntimeStats reset not verified: {stats}"
+            reset_at = time.monotonic()
+            apps_uptime = None
+            while time.monotonic() - reset_at < 60:
+                summary = (self.client.call_tool("hub_read_diagnostics", {
+                    "tool": "hub_get_logs", "args": {"mode": "apps"}}) or {}).get("summary") or {}
+                apps_uptime = _uptime_seconds(summary.get("appsUptime"))
+                if apps_uptime is not None:
+                    break
+                time.sleep(5)
+            assert apps_uptime is not None and apps_uptime <= time.monotonic() - reset_at + 120, \
+                f"App Stats did not restart at the reset (appsUptime {apps_uptime} s): {stats}"
             return
         before_ms = (stats.get("before") or {}).get("totalMs")
         after_ms = (stats.get("after") or {}).get("totalMs")

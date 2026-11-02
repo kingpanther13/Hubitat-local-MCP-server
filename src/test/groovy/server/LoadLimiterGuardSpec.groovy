@@ -898,4 +898,26 @@ class LoadLimiterGuardSpec extends ToolSpecBase {
         windows[0] != null
         windows[0] == windows[1]
     }
+
+    @Unroll
+    def 'appRuntimeStats gives the reset what is left of a #label time budget'() {
+        given:
+        script.metaClass._isCloudRequest = { -> cloud }
+        if (lan != null) settingsMap.lanBudgetMs = lan
+        List timeouts = []
+        script.metaClass._resetAppRuntimeStatsNow = { int t -> timeouts << t; return 'ok' }
+        script.metaClass._logsJsonOwnAppStat = { boolean fresh, Map args -> [totalMs: 0L, count: 0L] }
+
+        when:
+        script.toolDeleteLogs([mode: 'appRuntimeStats', confirm: true])
+
+        then:
+        timeouts == [expected]
+
+        where:
+        label             | cloud | lan  || expected
+        'cloud (6000 ms)' | true  | null || 6
+        'LAN (6000 ms)'   | false | 6000 || 6
+        'LAN, none'       | false | null || 10
+    }
 }

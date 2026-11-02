@@ -1153,7 +1153,11 @@ private Map _deleteAppRuntimeStats(Map args) {
     Map window = [__reqT0: now()]
     _logsJsonInvalidate()
     Map before = _logsJsonOwnAppStat(false, window)
-    String reply = _resetAppRuntimeStatsNow()
+    // On a request with a time budget the reset gets what is left of it (2-10 s), so the reply still
+    // reaches the client; a reset that timed out may still run, which a retry repeats harmlessly.
+    long budget = _isCloudRequest() ? _relayBudgetMs() : _lanBudgetMs()
+    int resetTimeoutS = budget > 0L ? Math.max(2L, Math.min(10L, (budget - (now() - (window.__reqT0 as long))).intdiv(1000L))) as int : 10
+    String reply = _resetAppRuntimeStatsNow(resetTimeoutS)
     mcpLog("warn", "monitoring", reply == "ok" ? "The hub's app runtime statistics were reset (hub_delete_logs)"
                                                : "Resetting the hub's app runtime statistics failed (hub_delete_logs): ${reply ?: 'empty reply'}")
     Map after = _logsJsonOwnAppStat(false, window)
