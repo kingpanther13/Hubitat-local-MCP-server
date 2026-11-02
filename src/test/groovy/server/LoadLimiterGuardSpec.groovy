@@ -777,6 +777,7 @@ class LoadLimiterGuardSpec extends ToolSpecBase {
         if (client) {
             script.callerClient = [id: 'c1', label: 'phone']
             settingsMap['clientWrite_c1'] = false
+            settingsMap['clientTools_c1'] = ['hub_get_hsm_status']
         }
         hubGet.register(RESET) { p -> 'ok' }
         int calls = 0
