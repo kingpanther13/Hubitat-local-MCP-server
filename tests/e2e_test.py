@@ -12796,6 +12796,7 @@ def updated() {}
             "- **Protocol version:** ",
             "- **Model:** ",
             "## MCP Server Settings",
+            "- **Reset app runtime statistics automatically:** ",
             "## Verbatim Tool Calls",
             "## Client-Side Logs",
             "## Recent Error/Warning Logs",
