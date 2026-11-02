@@ -16,6 +16,7 @@ class NativeRuleRecoveryExportSpec extends ToolSpecBase {
         List calls = []
         Map source = payload()
         source.appReplacements['42'].appTypeName = ruleType
+        source.appData['42'].appSettings << [name: 'startingA1', type: 'time', value: '']
         String exported = JsonOutput.toJson(source)
         script.metaClass._nrHandle = { Long id -> [exportAppData: { List ids -> calls << ['export', ids]; exported }] }
         byte[] stored
@@ -31,6 +32,7 @@ class NativeRuleRecoveryExportSpec extends ToolSpecBase {
         def saved = new groovy.json.JsonSlurper().parseText(new String(stored, 'UTF-8'))
         saved.configJson.app.appType.name == ruleType
         saved.configJson.configPage.name == (ruleType == 'Button Rule-5.1' ? 'selectActions' : 'mainPage')
+        saved.configJson.settings.startingA1 == ''
         where:
         ruleType << ['Rule-5.1', 'Button Rule-5.1']
     }
