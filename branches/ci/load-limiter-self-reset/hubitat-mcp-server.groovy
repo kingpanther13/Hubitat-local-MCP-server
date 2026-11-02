@@ -39,6 +39,7 @@ private String _effectiveBackupSetting(String key) {
 @groovy.transform.Field Map deviceReadContext = null
 @groovy.transform.Field boolean loadLimiterRetryActive = false
 @groovy.transform.Field Map callerClient = null
+@groovy.transform.Field Long requestStartedAt = null
 @groovy.transform.Field static final Map LOGS_JSON_SNAPSHOT = new java.util.HashMap()
 @groovy.transform.Field static final Map NATIVE_LOG_SNAPSHOTS = new java.util.HashMap()
 @groovy.transform.Field static final Map DEVICE_READ_SNAPSHOTS = new java.util.LinkedHashMap()
@@ -6793,12 +6794,13 @@ private Map _deleteAppRuntimeStats(Map args) {
         return [success: false, isError: true, mode: "appRuntimeStats",
                 error: "Resetting the hub's app runtime statistics needs confirm=true: it zeroes the busy time of every app on the Logs page's App Stats tab, not only this one."]
     }
+    Map window = [__reqT0: now()]
     _logsJsonInvalidate()
-    Map before = _logsJsonOwnAppStat()
+    Map before = _logsJsonOwnAppStat(false, window)
     String reply = _resetAppRuntimeStatsNow()
     mcpLog("warn", "monitoring", reply == "ok" ? "The hub's app runtime statistics were reset (hub_delete_logs)"
                                                : "Resetting the hub's app runtime statistics failed (hub_delete_logs): ${reply ?: 'empty reply'}")
-    Map after = _logsJsonOwnAppStat()
+    Map after = _logsJsonOwnAppStat(false, window)
     if (after.missing == true) after = [totalMs: 0L, count: 0L]
     Long uptimeS = null
     try { def up = location?.hub?.uptime; if (up != null) uptimeS = up as long } catch (Exception ignored) { }
@@ -6989,9 +6991,9 @@ def _logsJsonSnapshot(Map args) {
         remainingBudget -= sleepMs
     }
 }
-Map _logsJsonOwnAppStat(boolean fresh = false) {
+Map _logsJsonOwnAppStat(boolean fresh = false, Map args = null) {
     try {
-        Map snap = fresh ? [state: "ready", snapshot: _logsJsonFetchAndPublish()] : _logsJsonSnapshot([:])
+        Map snap = fresh ? [state: "ready", snapshot: _logsJsonFetchAndPublish()] : _logsJsonSnapshot(args ?: [:])
         if (snap.state != "ready") return [error: snap.state == "failed" ? "Logs page read failed: ${snap.error}".toString() : "Logs page read still in progress"]
         def row = (snap.snapshot.appStats ?: []).find { it.id?.toString() == app.id?.toString() }
         if (row == null) return [error: "no App Stats row for app ${app.id}".toString(), missing: true]
@@ -27578,6 +27580,12 @@ def advancedOverridesPage() {
                   description: "Pause a slow multi-step write on a LAN request once this many ms have elapsed (default: 0 = off; positive values below 6000 use 6000; set below your MCP client's request timeout).",
                   defaultValue: 0, range: "0..300000", required: false
         }
+        section("Per-app load limiter") {
+            paragraph "The hub refuses an app's calls (\"generates excessive hub load\") once its busy time on Logs > App Stats passes a share of the hub's uptime. With this on, the server resets the hub's app runtime statistics before that happens, and once more if a call is refused anyway. The reset clears the App Stats tab for every app, not only this one, and restarts every app's limiter count. It runs only while the Write master is on."
+            input "autoResetAppRuntimeStats", "bool", title: "Reset the hub's app runtime statistics automatically",
+                  description: "ON (default): the server keeps itself clear of the per-app load limiter. OFF: nothing is reset automatically; a refused call names hub_delete_logs(mode='appRuntimeStats') for a manual reset.",
+                  defaultValue: true
+        }
         section("Access tokens in responses") {
             paragraph "App pages show their OAuth access tokens in plain text, including this server's own endpoint URLs and the URLs of apps such as Maker API. MCP clients read those pages, so the tokens reach the AI client and its transcripts. Turn this on to hide them in what this server returns. Leave it off if you want the AI to read an endpoint URL for you, for example to set up another app."
             input "redactAccessTokens", "bool", title: "Hide access tokens in MCP responses",
@@ -27972,8 +27980,12 @@ def handleMcpGet() {
 @groovy.transform.Field static final long LOAD_GUARD_CHECK_SPACING_MS = 60000L
 @groovy.transform.Field static final long LOAD_GUARD_LATCH_STALE_MS = 60000L
 @groovy.transform.Field static final String LOAD_LIMITER_TWICE_HINT = "The hub's per-app load limiter refused this call twice; reset the hub's app runtime statistics with hub_manage_logs(tool='hub_delete_logs', args={mode:'appRuntimeStats', confirm:true}) and retry."
+boolean _loadGuardAutoResetEnabled() {
+    return settings?.autoResetAppRuntimeStats != false && settings?.enableWrite != false
+}
 def handleMcpRequest() {
     long t0 = now()
+    requestStartedAt = t0
     _loadGuardBeforeRequest()
     try {
         return _handleMcpRequestBody()
@@ -28000,21 +28012,26 @@ void _loadGuardZero() {
 long _loadGuardLimitMs(long uptimeS) {
     return uptimeS * ((LOAD_GUARD.thresholdPct ?: LOAD_GUARD_DEFAULT_THRESHOLD_PCT) as long) * 10L
 }
-private boolean _loadGuardClaim(String key) {
+private Long _loadGuardClaim(String key) {
     long t = now()
     def prev = LOAD_GUARD.putIfAbsent(key, t)
-    if (prev == null) return true
-    if (!(prev instanceof Number) || t - (prev as long) < LOAD_GUARD_LATCH_STALE_MS) return false
-    return LOAD_GUARD.replace(key, prev, t)
+    if (prev == null) return t
+    if (!(prev instanceof Number) || t - (prev as long) < LOAD_GUARD_LATCH_STALE_MS) return null
+    return LOAD_GUARD.replace(key, prev, t) ? t : null
 }
 private void _loadGuardSchedule(String key, String handler) {
-    if (!_loadGuardClaim(key)) return
+    Long stamp = _loadGuardClaim(key)
+    if (stamp == null) return
     try {
-        runIn(0, handler)
+        runIn(0, handler, [data: [stamp: stamp]])
     } catch (Exception e) {
-        LOAD_GUARD.remove(key)
+        LOAD_GUARD.remove(key, stamp)
         mcpLog("warn", "server", "Could not schedule ${handler}: ${e.message}")
     }
+}
+private void _loadGuardRelease(String key, Map data) {
+    if (data?.stamp instanceof Number) LOAD_GUARD.remove(key, data.stamp as long)
+    else LOAD_GUARD.remove(key)
 }
 private void _loadGuardBeforeRequest() {
     long upS
@@ -28026,6 +28043,7 @@ private void _loadGuardBeforeRequest() {
     def last = LOAD_GUARD.lastUptimeS
     if (last != null && upS < (last as long)) _loadGuardZero()
     LOAD_GUARD.lastUptimeS = upS
+    if (!_loadGuardAutoResetEnabled()) return
     def seedFailedAt = LOAD_GUARD.seedFailedAt
     if (LOAD_GUARD.seeded != true && (seedFailedAt == null || now() - (seedFailedAt as long) >= LOAD_GUARD_RESET_RETRY_MS)) {
         _loadGuardSchedule("seedScheduled", "_seedLoadGuardJob")
@@ -28037,9 +28055,9 @@ private void _loadGuardBeforeRequest() {
     if (checkedAt != null && now() - (checkedAt as long) < LOAD_GUARD_CHECK_SPACING_MS) return
     _loadGuardSchedule("checkPending", "_loadGuardCheckJob")
 }
-int _loadGuardThresholdPct() {
+int _loadGuardThresholdPct(boolean fresh = false) {
     def cached = LOAD_GUARD.thresholdPct
-    if (cached != null) return cached as int
+    if (cached != null && !fresh) return cached as int
     Integer pct = null
     String why = null
     try {
@@ -28050,15 +28068,17 @@ int _loadGuardThresholdPct() {
         why = "${e.class.simpleName}: ${e.message}".toString()
     }
     if (why != null) {
-        mcpLog("warn", "server", "The hub's excessive-load threshold is unreadable (${why}); using ${LOAD_GUARD_DEFAULT_THRESHOLD_PCT} % until a later read works")
-        return LOAD_GUARD_DEFAULT_THRESHOLD_PCT
+        int fallback = cached != null ? (cached as int) : LOAD_GUARD_DEFAULT_THRESHOLD_PCT
+        mcpLog("warn", "server", "The hub's excessive-load threshold is unreadable (${why}); using ${fallback} % until a later read works")
+        return fallback
     }
     LOAD_GUARD.thresholdPct = pct
     return pct
 }
-def _seedLoadGuardJob() {
+def _seedLoadGuardJob(Map data = null) {
     _loadGuardThresholdPct()
     Map own = _logsJsonOwnAppStat(true)
+    if (own.missing == true) own = [totalMs: 0L]
     if (own.totalMs != null) {
         synchronized (LOAD_GUARD) { LOAD_GUARD.busyMs = Math.max(_loadGuardBusyMs(), own.totalMs as long) }
         LOAD_GUARD.seeded = true
@@ -28067,12 +28087,14 @@ def _seedLoadGuardJob() {
         LOAD_GUARD.seedFailedAt = now()
         mcpLog("warn", "server", "The load-limiter estimate could not be seeded from the Logs page (${own.error}); it is tried again in ${LOAD_GUARD_RESET_RETRY_MS / 60000L} minutes")
     }
-    LOAD_GUARD.remove("seedScheduled")
+    _loadGuardRelease("seedScheduled", data)
 }
-def _loadGuardCheckJob() {
+def _loadGuardCheckJob(Map data = null) {
     try {
-        _logsJsonInvalidate()
+        if (!_loadGuardAutoResetEnabled()) return
+        _loadGuardThresholdPct(true)
         Map own = _logsJsonOwnAppStat(true)
+        if (own.missing == true) own = [totalMs: 0L]
         if (own.totalMs == null) {
             LOAD_GUARD.resetFailedAt = now()
             mcpLog("warn", "server", "The load-limiter check could not read this app's App Stats row (${own.error}); it is tried again in ${LOAD_GUARD_RESET_RETRY_MS / 60000L} minutes")
@@ -28104,7 +28126,7 @@ def _loadGuardCheckJob() {
             }
         }
     } finally {
-        LOAD_GUARD.remove("checkPending")
+        _loadGuardRelease("checkPending", data)
     }
 }
 String _resetAppRuntimeStatsNow() {
@@ -28131,6 +28153,11 @@ private _executeToolWithLoadLimiterRetry(toolName, args, boolean bpsChecked) {
         if (!_loadLimiterRefusedMessage(e.message)) throw e
         failure = e
     }
+    if (!_loadGuardAutoResetEnabled() || (callerClient != null && !_clientAllows(callerClient.id.toString(), "clientWrite"))) {
+        String why = callerClient != null && _loadGuardAutoResetEnabled() ? "this client may not write" :
+            "the server's automatic reset is off (Advanced settings, or the Write master)"
+        return _loadLimiterFailure(failure, "The hub's per-app load limiter refused this call and ${why}, so the hub's app runtime statistics were not reset; reset them with hub_manage_logs(tool='hub_delete_logs', args={mode:'appRuntimeStats', confirm:true}) and retry.")
+    }
     String reply = _resetAppRuntimeStatsNow()
     boolean resetOk = reply == "ok"
     String resetNote = resetOk ? "The hub's app runtime statistics were reset." : "Resetting the hub's app runtime statistics failed (${reply ?: 'empty reply'})."
@@ -28138,6 +28165,10 @@ private _executeToolWithLoadLimiterRetry(toolName, args, boolean bpsChecked) {
     if (!resetOk) return _loadLimiterFailure(failure, "${resetNote} The call is not repeated; retry it once the hub answers.")
     if (!getIdempotentToolNames().contains(toolName?.toString())) {
         return _loadLimiterFailure(failure, "${resetNote} This write is not repeated automatically because it may have run some steps before the refusal; check its target, then call it again.")
+    }
+    long budget = _isCloudRequest() ? _relayBudgetMs() : _lanBudgetMs()
+    if (budget > 0L && requestStartedAt != null && now() - requestStartedAt > budget.intdiv(2)) {
+        return _loadLimiterFailure(failure, "${resetNote} The call is not repeated within this request's time budget; call it again.")
     }
     try {
         def result = executeTool(toolName, args, bpsChecked)
@@ -36201,7 +36232,7 @@ Renaming a room preserves device assignments, but may require updating automatio
 The cloud relay can end a request while the hub keeps working; a modern client continues the call by itself. Each slow-operation response (`in_progress`, `continuation_limit`, `too_many_writes_in_flight`, `slow_read_timeout`) says what to do next.
 
 - Make writes one at a time and split a large Rule Machine change batch; parallel writes are refused once the hub's write cap is full.
-- The hub's per-app load limiter refuses an app's calls ("generates excessive hub load") once this app's busy time plus that of the app or device it calls (its own a second time when it calls itself) passes uptime x the hub's threshold. The server watches its own busy time and resets the hub's app runtime statistics before that point. When a call is refused anyway, the statistics are reset and a refused read or retry-safe write is repeated once; any other write is not repeated, because it may have run some steps first -- check its target before calling it again. A device command the limiter drops can still report success, so the early reset is what protects device commands; read the device back to confirm. To reset the statistics by hand, use hub_delete_logs(mode='appRuntimeStats', confirm=true); it returns this app's App Stats row before and after.
+- The hub's per-app load limiter refuses an app's calls ("generates excessive hub load") once this app's busy time plus that of the app or device it calls (its own a second time when it calls itself) passes uptime x the hub's threshold. The server watches its own busy time and resets the hub's app runtime statistics before that point. When a call is refused anyway, the statistics are reset and a refused read or retry-safe write is repeated once; any other write is not repeated, because it may have run some steps first -- check its target before calling it again. A device command the limiter drops can still report success, so the early reset is what protects device commands; read the device back to confirm. The reset clears the Logs > App Stats tab for every app, not only this one, and restarts every app's limiter count; Device Stats are not touched. The guard watches only this app's own total, so a busy app or device it calls can still trip the limiter first. The automatic reset can be turned off under Advanced settings ("Reset the hub's app runtime statistics automatically", default on) and only runs while the Write master is on, and for a client token only when that client may write. To reset the statistics by hand, use hub_delete_logs(mode='appRuntimeStats', confirm=true); it returns this app's App Stats row before and after.
 - A write that fails with no result body, or whose response is lost, may still be running on the hub or may already have finished. Wait about 15 seconds. A continuation write from a 2026-07-28 client shows in `recentWrites` in `hub_get_info`, and an identical repeat while it is still active joins it instead of running it twice. Every other write leaves started and finished records in `hub_get_logs(mode="mcp", component="write")`, each carrying the JSON-RPC id you sent and the outcome (completed, failed, partial, accepted or unknown). A missing record does not prove the write never ran: read the target before repeating it, because repeating a finished write performs it again.
 '''
     ]
