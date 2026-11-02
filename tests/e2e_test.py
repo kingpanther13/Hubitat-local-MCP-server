@@ -9048,9 +9048,27 @@ def updated() {}
         # Reads, help and unconfirmed probes take no recovery point; with backups off an edit reports
         # the skip; back on, an update takes exactly one, and a form workflow takes one before its
         # first render and reuses it. After that restore the workflow's context is gone and a stale
-        # submit is refused.
-        app_id, _ = self._rm_rule("CaptureControl", [native_log("capture control")])
+        # submit is refused. The rule carries a date condition saved in the editor with its optional
+        # time left empty, which the hub stores as an empty time setting: edits and restores keep it.
+        app_id = None
         try:
+            app_id, _ = self._rm_rule("CaptureControl", [native_log("capture control")])
+            form = self._rm_open(app_id, "selectConditions")
+            form = self._rm_submit(app_id, form, control=self._rm_control(form, title="Create New Condition"))
+            capability = next(row["name"] for row in form["fields"] if row["name"].startswith("rCapab"))
+            form = self._rm_submit(app_id, form, fields={capability: "Between two dates"})
+            for _ in range(6):  # each date picker appears after the one before it is set
+                if any(row["name"].startswith("timeStart") for row in form["fields"]):
+                    break
+                unset = next(row for row in form["fields"] if row.get("type") == "enum"
+                             and row.get("value") in (None, "") and row.get("options"))
+                form = self._rm_submit(app_id, form, fields={unset["name"]: unset["options"][0]["value"]})
+            time_field = next(row["name"] for row in form["fields"] if row["name"].startswith("timeStart"))
+            form = self._rm_submit(app_id, form, fields={time_field: ""})
+            self._rm_submit(app_id, form, control=self._rm_control(form, name="hasAll"))
+            blank_times = {name for name, row in self._rm_settings(app_id).items()
+                           if row["type"] == "time" and row.get("value") == ""}
+            assert blank_times == {time_field}, f"the empty optional time was not saved empty: {blank_times}"
             keys = self._rm_backup_keys(app_id)
             self._native_rule_document(app_id)
             self._rm_call({})
@@ -9062,6 +9080,8 @@ def updated() {}
             finally:
                 self._rule_edit_backups(True)
             assert self._rm_backup_keys(app_id) == keys, "a read or a skipped edit took a recovery point"
+            assert blank_times <= {name for name, row in self._rm_settings(app_id).items()
+                                   if row["type"] == "time" and row.get("value") == ""}
             protected = self._rm_update(app_id, [native_log("protected edit")])["backup"]["backupKey"]
             page = self._rm_open(app_id)
             key = page["backup"]["backupKey"]
@@ -9069,13 +9089,22 @@ def updated() {}
                 page = self._rm_submit(app_id, page, fields={"comments": value})
                 assert page["backup"]["backupKey"] == key, page["backup"]
             assert self._rm_backup_keys(app_id) - keys == {protected, key}
+            # Give the time a value, so the restore has to write the empty setting back.
+            timed = self._rm_open(app_id, "selectConditions")
+            timed = self._rm_submit(app_id, timed, control=self._rm_control(timed, title="Edit Condition"))
+            timed = self._rm_submit(app_id, timed, fields={time_field: "2026-01-01T09:15:00.000+0000"})
+            self._rm_submit(app_id, timed, control=self._rm_control(timed, name="hasAll"))
+            assert self._rm_settings(app_id)[time_field].get("value") not in (None, ""), "the time was not set"
             assert self._rm_restore(key).get("success") is True
+            assert blank_times <= {name for name, row in self._rm_settings(app_id).items()
+                                   if row["type"] == "time" and row.get("value") == ""}
             assert self._rm_values(app_id).get("comments") in (None, "")
             self._rm_refused(self._rm_call({"operation": "form", "rule_id": app_id, "confirm": True, "args": {
                 "steps": [self._rm_step(page, fields={"comments": "stale edit must not apply"})]}}))
             assert self._rm_values(app_id).get("comments") in (None, "")
         finally:
-            self._delete_native(app_id)
+            if app_id is not None:
+                self._delete_native(app_id)
 
     def _native_form_control(self, app_id: Any, page: str, name: str) -> dict:
         opened = self.client.call_tool("hub_set_rule", {"operation": "form", "rule_id": int(app_id),
@@ -12796,6 +12825,7 @@ def updated() {}
             "- **Protocol version:** ",
             "- **Model:** ",
             "## MCP Server Settings",
+            "- **Reset app runtime statistics automatically:** ",
             "## Verbatim Tool Calls",
             "## Client-Side Logs",
             "## Recent Error/Warning Logs",

@@ -29,5 +29,7 @@ jobs:
           python-version: '3.x'
       - name: Run PR guard
         env:
-          BASE_REF: origin/${{ env.BASE_BRANCH }}
+          # The base the checked-out merge commit was built on: a re-run after a release lands
+          # on the base would otherwise read the release bump as this PR's change.
+          BASE_REF: ${{ github.event.pull_request.base.sha || format('origin/{0}', env.BASE_BRANCH) }}
         run: python .github/scripts/pr_guard.py
