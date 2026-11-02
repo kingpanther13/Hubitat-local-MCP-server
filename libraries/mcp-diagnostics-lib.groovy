@@ -1403,9 +1403,11 @@ def _logsJsonSnapshot(Map args) {
 }
 
 // This app's App Stats row from the Logs page: [totalMs, count], or [error] when unreadable.
-Map _logsJsonOwnAppStat() {
+// fresh: read the page inline, as the load guard's scheduled jobs need -- outside a request a LAN
+// time budget would route them through the background fetch and its retained failure.
+Map _logsJsonOwnAppStat(boolean fresh = false) {
     try {
-        Map snap = _logsJsonSnapshot([:])
+        Map snap = fresh ? [state: "ready", snapshot: _logsJsonFetchAndPublish()] : _logsJsonSnapshot([:])
         if (snap.state != "ready") return [error: snap.state == "failed" ? "Logs page read failed: ${snap.error}".toString() : "Logs page read still in progress"]
         def row = (snap.snapshot.appStats ?: []).find { it.id?.toString() == app.id?.toString() }
         if (row == null) return [error: "no App Stats row for app ${app.id}".toString(), missing: true]

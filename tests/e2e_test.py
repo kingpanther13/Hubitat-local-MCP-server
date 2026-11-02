@@ -2262,15 +2262,15 @@ class TestRunner:
                     self._settle_before_504_retry(name)
                     self._capture_504_context(name, exc, failed_at)
                     continue
-                # Server 5xx that is NOT a 504 (500/501/502/503): suspected per-app load limiter.
-                # Reset the runtime statistics, then re-run once on fresh fixtures (a failed reset
-                # only logs; the re-run's outcome decides).
-                if attempt == 1 and re.search(r"\b50[0-3]\b", es):
-                    retry_reason = "limiter 5xx"
-                    print(f"    [RETRY] {name} failed on a server 5xx ({es[:80]}) -- suspected load "
-                          "limiter; resetting the runtime statistics and re-running once")
-                    self._reset_app_runtime_stats(f"server 5xx on {name}: {es[:120]}")
-                    continue
+                # A limiter refusal, or an HTTP 500-503 answer (the client raises "<status> <reason> on
+                # <method>"): reset the runtime statistics and re-run once on fresh fixtures, but only
+                # when the reset went through; otherwise the failure stands.
+                if attempt == 1 and ("excessive hub load" in es or re.match(r"50[0-3] ", es)):
+                    print(f"    [RETRY] {name} failed on a server 5xx or limiter refusal ({es[:80]}) -- "
+                          "resetting the runtime statistics and re-running once")
+                    if self._reset_app_runtime_stats(f"server 5xx on {name}: {es[:120]}"):
+                        retry_reason = "limiter 5xx"
+                        continue
                 # The summary table stays readable with a 200-char message, but the FULL
                 # failure goes to the run log here -- a truncated structured response
                 # (error/repairHints/settingsSkipped all cut off) has repeatedly forced an

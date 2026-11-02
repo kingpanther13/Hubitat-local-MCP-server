@@ -1697,7 +1697,7 @@ int _loadGuardThresholdPct() {
 // costs a fetch per request.
 def _seedLoadGuardJob() {
     _loadGuardThresholdPct()
-    Map own = _logsJsonOwnAppStat()
+    Map own = _logsJsonOwnAppStat(true)
     if (own.totalMs != null) {
         synchronized (LOAD_GUARD) { LOAD_GUARD.busyMs = Math.max(_loadGuardBusyMs(), own.totalMs as long) }
         LOAD_GUARD.seeded = true
@@ -1714,7 +1714,7 @@ def _seedLoadGuardJob() {
 def _loadGuardCheckJob() {
     try {
         _logsJsonInvalidate()
-        Map own = _logsJsonOwnAppStat()
+        Map own = _logsJsonOwnAppStat(true)
         if (own.totalMs == null) {
             LOAD_GUARD.resetFailedAt = now()
             mcpLog("warn", "server", "The load-limiter check could not read this app's App Stats row (${own.error}); it is tried again in ${LOAD_GUARD_RESET_RETRY_MS / 60000L} minutes")

@@ -193,6 +193,23 @@ class LoadLimiterGuardSpec extends ToolSpecBase {
             "load guard check: hub total 100000 ms of ${LIMIT} ms limit (estimate was ${HALF + 500_000L} ms); reset: no".toString()]
     }
 
+    def 'with a LAN time budget and a retained Logs fetch failure, the check job still reads the page inline'() {
+        given:
+        settingsMap.lanBudgetMs = 6000L
+        script.LOGS_JSON_SNAPSHOT.fetchError = [at: NOW, message: 'an earlier background fetch failed']
+        busy(HALF + 5_000L)
+        script.LOAD_GUARD.checkPending = NOW
+        logsJsonWithOwnTotal { 100_000L }
+
+        when:
+        script._loadGuardCheckJob()
+
+        then:
+        script._loadGuardBusyMs() == 100_000L
+        !script.LOAD_GUARD.containsKey('resetFailedAt')
+        resets() == 0
+    }
+
     def 'after a check that found the hub total under 50 %, the next check waits 60 s'() {
         given:
         seeded()
