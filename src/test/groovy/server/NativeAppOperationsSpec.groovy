@@ -558,7 +558,23 @@ class NativeAppOperationsSpec extends ToolSpecBase {
         'unknown device id' | [switches: ['99']]     | 'Invalid native choice for switches'
         'required emptied'  | [origLabel: '']        | 'Required field: origLabel'
         'object value'      | [logging: [a: 1]]      | 'Scalar values are required for logging'
-        'masked read back'  | [origLabel: '***redacted (password)***'] | 'origLabel is the redaction marker'
+    }
+
+    def 'a masked read passed back is refused before the backup and before any page render'() {
+        given:
+        settingsMap.backupBeforeRuleEdits = true
+        script.metaClass._rmBackupBeforeEdit = { Integer id, String reason, String page = null -> gets << "backup:${id}".toString(); [backupKey: "k${id}".toString()] }
+        existing(70L)
+        pages['/installedapp/configure/json/70'] = page(70L, notifierInputs(), [settings: [origLabel: 'N']])
+
+        when:
+        update(70L, [fields: [origLabel: script._appConfigRedactedMarker()]])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains('origLabel is the redaction marker')
+        !gets.any { it.startsWith('backup:') || it.startsWith('/installedapp/configure/json/70') }
+        posts.isEmpty()
     }
 
     def 'a device input takes the {id: label} map a configuration read returns, posted as its ids'() {

@@ -38,35 +38,35 @@ def toolGetRoom(String roomIdentifier) {
         throw new IllegalArgumentException("Room '${roomIdentifier}' not found. Available rooms: ${available.join(', ')}")
     }
 
-    // Get device details for each device in the room
-    def devices = []
-    def allDevices = (settings.selectedDevices ?: []).toList()
-    def childDevs = getChildDevices() ?: []
-    def selectedIds = allDevices.collect { it.id.toString() } as Set
-    childDevs.each { cd -> if (!selectedIds.contains(cd.id.toString())) { allDevices.add(cd) } }
-
-    room.deviceIds?.each { devId ->
-        def device = allDevices?.find { it?.id?.toString() == devId.toString() }
-        if (device) {
-            def devInfo = [
-                id: device.id.toString(),
-                label: device.label ?: device.name ?: "unknown",
-                name: device.name ?: "unknown"
-            ]
-            // Add common current states
-            def states = [:]
-            try {
-                device.currentStates?.each { st ->
-                    states.put(st.name, st.value)
-                }
-            } catch (Exception e) {
-                mcpLog("debug", "room", "hub_get_room: currentStates read failed for device ${device.id}: ${e.message}")
-            }
-            if (states) devInfo.currentStates = states
-            devices << devInfo
-        } else {
-            devices << [id: devId.toString(), label: "(device not accessible via MCP)", name: "unknown", accessible: false]
+    List roomIds = (room.deviceIds ?: []).collect { it.toString() }
+    Map pageById = [:]
+    if (roomIds) {
+        try {
+            for (pageRec in _readDevicesPage(roomIds as Set)) pageById.put(pageRec.id, pageRec)
+        } catch (IllegalStateException e) {
+            return [success: false, isError: true, error: "The hub's device list (/hub2/devicesList) could not be read: ${e.message}".toString(),
+                    note: "Retry; if it persists check the hub's Devices page."]
         }
+    }
+    Set authorized = _mcpAuthorizedIds(getChildDevices() ?: [])
+    boolean redact = _redactsCredentials()
+    def devices = []
+    for (id in roomIds) {
+        if (authorized != null && !authorized.contains(id)) {
+            devices << [id: id, label: "(device not accessible via MCP)", name: "unknown", accessible: false]
+            continue
+        }
+        Map rec = pageById.get(id)
+        if (!rec) {
+            devices << [id: id, label: "(device not on the hub's Devices page)", name: "unknown", accessible: true, metadataUnavailable: true]
+            continue
+        }
+        def devInfo = [id: id, label: rec.label, name: rec.name]
+        Map states = [:]
+        for (st in rec.currentStates) states.put(st.key, _listStateValue(st.key, st.value, redact))
+        if (states) devInfo.currentStates = states
+        if ("currentStates" in rec.missingFields) devInfo.metadataUnavailable = true
+        devices << devInfo
     }
 
     return [

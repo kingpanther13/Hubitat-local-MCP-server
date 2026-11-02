@@ -616,6 +616,74 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
         'unlisted' | true
     }
 
+    @Unroll
+    def 'data values for a device that is already disabled are refused before any write unless enabled is sent (#label)'() {
+        given:
+        def model = fixture()
+        model.device.disabled = true
+        registerFixture(model, true)
+        def posts = stubPosts()
+
+        when:
+        script.toolUpdateDevice([deviceId: '10', fields: fields])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('is disabled, and data values never land on a disabled device')
+        posts.empty
+
+        where:
+        label                     | fields
+        'data values alone'       | [dataValues: [probe: '0007']]
+        'with enabled: false'     | [enabled: false, dataValues: [probe: '0007']]
+    }
+
+    def 'a failed enable leaves the data values unwritten and says why'() {
+        given:
+        def model = fixture()
+        model.device.disabled = true
+        registerFixture(model, true)
+        def posts = stubPosts { path, body ->
+            if (path == '/device/disable') throw new IOException('refused')
+            null
+        }
+
+        when:
+        def result = script.toolUpdateDevice([deviceId: '10', fields: [enabled: true, dataValues: [probe: '0007']]])
+
+        then:
+        result.success == false
+        posts*.path == ['/device/disable']
+        result.errors.find { it.property == 'dataValues' }.error.contains('Not written: the enable failed')
+        result.errors.find { it.property == 'enabled' }
+    }
+
+    @Unroll
+    def 'data values are written after an enable and before a disable (enabled: #enabled)'() {
+        given:
+        def model = fixture()
+        model.device.disabled = enabled
+        registerFixture(model, true)
+        def posts = stubPosts { path, body ->
+            if (path == '/device/runmethod') model.device.data.put(body.args[0].value, body.args[1].value)
+            if (path == '/device/disable') model.device.disabled = body.disable
+            null
+        }
+
+        when:
+        def result = script.toolUpdateDevice([deviceId: '10', fields: [enabled: enabled, dataValues: [probe: '0007']]])
+
+        then:
+        result.success == true
+        posts*.path == order
+        posts.find { it.path == '/device/disable' }.body == [id: 10, disable: !enabled]
+
+        where:
+        enabled | order
+        false   | ['/device/runmethod', '/device/disable']
+        true    | ['/device/disable', '/device/runmethod']
+    }
+
     def 'a data value the driver accepts without storing is an error that keeps secrets redacted'() {
         given:
         registerFixture(fixture(), false)
@@ -1099,9 +1167,26 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
         then:
         result.success == true
         result.changes*.property == ['preference.apiToken']
-        result.changes[0].newValue == [type: 'password', value: '[REDACTED]']
+        result.changes[0].newValue == [type: 'password', value: script._appConfigRedactedMarker()]
         !JsonOutput.toJson(result).contains('new-fixture-secret')
         !JsonOutput.toJson(result).contains('old-fixture-secret')
+    }
+
+    def 'the echoed secret preference value is refused before any write'() {
+        given:
+        def model = fixture()
+        model.settings << [name: 'apiToken', type: 'password', value: 'fixture-secret']
+        registerFixture(model, true)
+        def posts = stubPosts()
+
+        when:
+        script.toolUpdateDevice([deviceId: '10', preferences: [apiToken: [type: 'password', value: script._appConfigRedactedMarker()]]])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("Preference 'apiToken' is the redaction marker")
+        posts.empty
+        model.settings.find { it.name == 'apiToken' }.value == 'fixture-secret'
     }
 
     def 'with Hide passwords and credentials off, the configuration read shows a password preference as stored'() {
