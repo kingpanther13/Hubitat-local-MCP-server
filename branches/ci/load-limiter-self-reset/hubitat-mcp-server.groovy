@@ -6987,9 +6987,9 @@ def _logsJsonSnapshot(Map args) {
         remainingBudget -= sleepMs
     }
 }
-Map _logsJsonOwnAppStat() {
+Map _logsJsonOwnAppStat(boolean fresh = false) {
     try {
-        Map snap = _logsJsonSnapshot([:])
+        Map snap = fresh ? [state: "ready", snapshot: _logsJsonFetchAndPublish()] : _logsJsonSnapshot([:])
         if (snap.state != "ready") return [error: snap.state == "failed" ? "Logs page read failed: ${snap.error}".toString() : "Logs page read still in progress"]
         def row = (snap.snapshot.appStats ?: []).find { it.id?.toString() == app.id?.toString() }
         if (row == null) return [error: "no App Stats row for app ${app.id}".toString(), missing: true]
@@ -28605,7 +28605,7 @@ int _loadGuardThresholdPct() {
 }
 def _seedLoadGuardJob() {
     _loadGuardThresholdPct()
-    Map own = _logsJsonOwnAppStat()
+    Map own = _logsJsonOwnAppStat(true)
     if (own.totalMs != null) {
         synchronized (LOAD_GUARD) { LOAD_GUARD.busyMs = Math.max(_loadGuardBusyMs(), own.totalMs as long) }
         LOAD_GUARD.seeded = true
@@ -28619,7 +28619,7 @@ def _seedLoadGuardJob() {
 def _loadGuardCheckJob() {
     try {
         _logsJsonInvalidate()
-        Map own = _logsJsonOwnAppStat()
+        Map own = _logsJsonOwnAppStat(true)
         if (own.totalMs == null) {
             LOAD_GUARD.resetFailedAt = now()
             mcpLog("warn", "server", "The load-limiter check could not read this app's App Stats row (${own.error}); it is tried again in ${LOAD_GUARD_RESET_RETRY_MS / 60000L} minutes")
