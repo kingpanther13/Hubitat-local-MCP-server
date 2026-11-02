@@ -9049,8 +9049,20 @@ def updated() {}
         # the skip; back on, an update takes exactly one, and a form workflow takes one before its
         # first render and reuses it. After that restore the workflow's context is gone and a stale
         # submit is refused.
-        app_id, _ = self._rm_rule("CaptureControl", [native_log("capture control")])
+        start_var = f"{PREFIX}CaptureStart_{_run_artifact_suffix()}"
+        end_var = f"{PREFIX}CaptureEnd_{_run_artifact_suffix()}"
+        app_id = None
         try:
+            self._create_hub_variable_visible(start_var, "DateTime", "2026-01-01T12:30:00")
+            self._create_hub_variable_visible(end_var, "DateTime", "2026-01-01T13:00:00")
+            app_id, _ = self._rm_rule("CaptureControl", [native_change("condition", capability="Between two times", fields=[
+                native_field("starting#", "enum", "Variable time"),
+                native_field("startVarTime#", "enum", start_var),
+                native_field("ending#", "enum", "Variable time"),
+                native_field("endVarTime#", "enum", end_var)]), native_log("capture control")])
+            blank_times = {name for name, row in self._rm_settings(app_id).items()
+                           if row["type"] == "time" and row.get("value") == ""}
+            assert blank_times, "time-variable condition did not leave a blank optional time setting"
             keys = self._rm_backup_keys(app_id)
             self._native_rule_document(app_id)
             self._rm_call({})
@@ -9062,6 +9074,8 @@ def updated() {}
             finally:
                 self._rule_edit_backups(True)
             assert self._rm_backup_keys(app_id) == keys, "a read or a skipped edit took a recovery point"
+            assert blank_times <= {name for name, row in self._rm_settings(app_id).items()
+                                   if row["type"] == "time" and row.get("value") == ""}
             protected = self._rm_update(app_id, [native_log("protected edit")])["backup"]["backupKey"]
             page = self._rm_open(app_id)
             key = page["backup"]["backupKey"]
@@ -9070,12 +9084,19 @@ def updated() {}
                 assert page["backup"]["backupKey"] == key, page["backup"]
             assert self._rm_backup_keys(app_id) - keys == {protected, key}
             assert self._rm_restore(key).get("success") is True
+            assert blank_times <= {name for name, row in self._rm_settings(app_id).items()
+                                   if row["type"] == "time" and row.get("value") == ""}
             assert self._rm_values(app_id).get("comments") in (None, "")
             self._rm_refused(self._rm_call({"operation": "form", "rule_id": app_id, "confirm": True, "args": {
                 "steps": [self._rm_step(page, fields={"comments": "stale edit must not apply"})]}}))
             assert self._rm_values(app_id).get("comments") in (None, "")
         finally:
-            self._delete_native(app_id)
+            try:
+                if app_id is not None:
+                    self._delete_native(app_id)
+            finally:
+                self._delete_variable_safe(start_var)
+                self._delete_variable_safe(end_var)
 
     def _native_form_control(self, app_id: Any, page: str, name: str) -> dict:
         opened = self.client.call_tool("hub_set_rule", {"operation": "form", "rule_id": int(app_id),
