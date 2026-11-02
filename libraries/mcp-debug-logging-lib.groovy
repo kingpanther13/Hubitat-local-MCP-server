@@ -423,7 +423,7 @@ private List _bugReportSettingsLines(String privacyMode) {
             "- **Max concurrent writes:** ${effNum(settings.maxConcurrentWrites, _maxConcurrentWrites())}",
             "- **Cloud-relay budget (ms):** ${effNum(settings.relayBudgetMs, _relayBudgetMs())}",
             "- **LAN budget (ms):** ${effNum(settings.lanBudgetMs, _lanBudgetMs())}",
-            "- **Reset app runtime statistics automatically:** ${eff(settings.autoResetAppRuntimeStats, true)}",
+            "- **Reset app runtime statistics automatically:** ${eff(settings.autoResetAppRuntimeStats, true)}${settings.enableWrite == false ? ' (inactive: Write tools are off)' : ''}",
             "- **Back up native apps before edits:** ${eff(settings.backupBeforeRuleEdits, true)}",
             "- **Back up before every native app edit:** ${eff(settings.backupEveryRuleWrite, false)}",
             "- **Backup storage budget (MB):** ${effNum(settings.backupBudgetMb, _itemBackupBudgetMb())}",

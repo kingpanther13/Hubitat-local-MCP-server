@@ -9060,7 +9060,7 @@ def updated() {}
             for _ in range(6):  # each date picker appears after the one before it is set
                 if any(row["name"].startswith("timeStart") for row in form["fields"]):
                     break
-                unset = next(row for row in form["fields"] if row.get("type") == "enum" and row.get("required")
+                unset = next(row for row in form["fields"] if row.get("type") == "enum"
                              and row.get("value") in (None, "") and row.get("options"))
                 form = self._rm_submit(app_id, form, fields={unset["name"]: unset["options"][0]["value"]})
             time_field = next(row["name"] for row in form["fields"] if row["name"].startswith("timeStart"))
@@ -9089,6 +9089,12 @@ def updated() {}
                 page = self._rm_submit(app_id, page, fields={"comments": value})
                 assert page["backup"]["backupKey"] == key, page["backup"]
             assert self._rm_backup_keys(app_id) - keys == {protected, key}
+            # Give the time a value, so the restore has to write the empty setting back.
+            timed = self._rm_open(app_id, "selectConditions")
+            timed = self._rm_submit(app_id, timed, control=self._rm_control(timed, title="Edit Condition"))
+            timed = self._rm_submit(app_id, timed, fields={time_field: "2026-01-01T09:15:00.000+0000"})
+            self._rm_submit(app_id, timed, control=self._rm_control(timed, name="hasAll"))
+            assert self._rm_settings(app_id)[time_field].get("value") not in (None, ""), "the time was not set"
             assert self._rm_restore(key).get("success") is True
             assert blank_times <= {name for name, row in self._rm_settings(app_id).items()
                                    if row["type"] == "time" and row.get("value") == ""}

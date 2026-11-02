@@ -987,6 +987,19 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
 
     // ---------- MCP Server Settings section ----------
 
+    def "the automatic reset line says it is inactive while Write tools are off"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+        settingsMap.enableWrite = false
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs())
+
+        then:
+        result.report.contains('- **Reset app runtime statistics automatically:** true (default) (inactive: Write tools are off)')
+    }
+
     def "settings section renders configured values and marks unset ones as default"() {
         given:
         sharedLocation.hub = new TestHub()
