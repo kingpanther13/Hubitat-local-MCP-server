@@ -5463,6 +5463,7 @@ private List _bugReportSettingsLines(String privacyMode) {
             "- **Max concurrent writes:** ${effNum(settings.maxConcurrentWrites, _maxConcurrentWrites())}",
             "- **Cloud-relay budget (ms):** ${effNum(settings.relayBudgetMs, _relayBudgetMs())}",
             "- **LAN budget (ms):** ${effNum(settings.lanBudgetMs, _lanBudgetMs())}",
+            "- **Reset app runtime statistics automatically:** ${eff(settings.autoResetAppRuntimeStats, true)}${settings.enableWrite == false ? ' (inactive: Write tools are off)' : ''}",
             "- **Back up native apps before edits:** ${eff(settings.backupBeforeRuleEdits, true)}",
             "- **Back up before every native app edit:** ${eff(settings.backupEveryRuleWrite, false)}",
             "- **Backup storage budget (MB):** ${effNum(settings.backupBudgetMb, _itemBackupBudgetMb())}",
@@ -21320,7 +21321,14 @@ private Map _rmRestoreNativeEdit(Map snapshot, String sourceBackupKey) {
         if (_nrState(id).stopped != true) _nrHandle(id).appButtonHandler('stopRule')
         def wantedNames = plan.collect { it.name }
         _rmUnredactedSettings(id, redacted).each { row -> if (!(row.name in wantedNames) || !plan.any { it.name == row.name && it.type == row.type && it.multiple == (row.multiple == true) }) _nrHandle(id).removeSetting(row.name) }
-        plan.each { row -> _nrHandle(id).updateSetting(row.name, [type: row.type, value: row.value]) }
+        plan.each { row ->
+            if (row.type == 'time' && row.value?.toString() == '') {
+                _rmPostSettings(id.toString().toInteger(), [id: id.toString(), ("settings[${row.name}]".toString()): '', ("${row.name}.type".toString()): 'time',
+                    ("${row.name}.multiple".toString()): 'false', formAction: 'update', currentPage: 'mainPage'])
+            } else {
+                _nrHandle(id).updateSetting(row.name, [type: row.type, value: row.value])
+            }
+        }
         if (_rmNativeComparable(_rmNativeSettingsSignature(_rmUnredactedSettings(id, redacted))) != _rmNativeComparable(_rmNativeSettingsSignature(data.appSettings))) throw new IllegalStateException('Native typed settings did not restore exactly')
         Map restoreState = [:] + expectedState + [stopped: true]
         _nrStatePatch(id, restoreState, _nrState(id).keySet().findAll { !restoreState.containsKey(it) }.collect { it.toString() })
@@ -24958,6 +24966,7 @@ private Object _nrComparableSetting(String type, Object value) {
     if (type == 'bool') return value.toString().toLowerCase()
     if (type == 'time') {
         String clock = value.toString()
+        if (clock == '') return clock
         if (clock ==~ /(?:[01][0-9]|2[0-3]):[0-5][0-9]/) return clock + ':00.000'
         return toDateTime(clock).format('HH:mm:ss.SSS', location.timeZone)
     }
@@ -28157,6 +28166,9 @@ private _executeToolWithLoadLimiterRetry(toolName, args, boolean bpsChecked) {
             msg = "the automatic reset is off in Advanced settings, so the hub's app runtime statistics were not reset, and this client may not write, so it cannot reset them itself. The hub owner can ${turnOn}, allow writes for this client, or reset them from a client that may write with ${manual}; then retry."
         } else {
             msg = "the automatic reset is off in Advanced settings, so the hub's app runtime statistics were not reset. Reset them with ${manual} and retry, or have the hub owner ${turnOn}."
+        }
+        if (!getIdempotentToolNames().contains(toolName?.toString())) {
+            msg += " This write may have run some steps before the refusal; check its target before calling it again."
         }
         return _loadLimiterFailure(failure, "The hub's per-app load limiter refused this call and ${msg}")
     }
@@ -36234,7 +36246,7 @@ Renaming a room preserves device assignments, but may require updating automatio
 The cloud relay can end a request while the hub keeps working; a modern client continues the call by itself. Each slow-operation response (`in_progress`, `continuation_limit`, `too_many_writes_in_flight`, `slow_read_timeout`) says what to do next.
 
 - Make writes one at a time and split a large Rule Machine change batch; parallel writes are refused once the hub's write cap is full.
-- The hub's per-app load limiter refuses an app's calls ("generates excessive hub load") once this app's busy time plus that of the app or device it calls (its own a second time when it calls itself) passes uptime x the hub's threshold. The server watches its own busy time and resets the hub's app runtime statistics before that point. When a call is refused anyway, the statistics are reset and a refused read or retry-safe write is repeated once; any other write is not repeated, because it may have run some steps first -- check its target before calling it again. A device command the limiter drops can still report success, so the early reset is what protects device commands; read the device back to confirm. The reset clears the Logs > App Stats tab for every app, not only this one, and restarts every app's limiter count; Device Stats are not touched. The guard watches only this app's own total, so a busy app or device it calls can still trip the limiter first. The automatic reset can be turned off under Advanced settings ("Reset the hub's app runtime statistics automatically", default on) and only runs while the Write master is on. To reset the statistics by hand, use hub_delete_logs(mode='appRuntimeStats', confirm=true); it returns this app's App Stats row before and after.
+- The hub's per-app load limiter refuses an app's calls ("generates excessive hub load") once this app's busy time plus that of the app or device it calls (its own a second time when it calls itself) passes uptime x the hub's threshold. The server watches its own busy time and resets the hub's app runtime statistics before that point. When a call is refused anyway and the automatic reset is on, the statistics are reset and, once the reset answers, a refused read or retry-safe write is repeated once unless half the request's time budget is spent; any other write is not repeated, because it may have run some steps first -- check its target before calling it again. A device command the limiter drops can still report success, so the early reset is what protects device commands; read the device back to confirm. The reset clears the Logs > App Stats tab for every app, not only this one, and restarts every app's limiter count; Device Stats are not touched. The guard watches only this app's own total, so a busy app or device it calls can still trip the limiter first. The automatic reset can be turned off under Advanced settings ("Reset the hub's app runtime statistics automatically", default on) and only runs while the Write master is on. To reset the statistics by hand, use hub_delete_logs(mode='appRuntimeStats', confirm=true); it returns this app's App Stats row before and after.
 - A write that fails with no result body, or whose response is lost, may still be running on the hub or may already have finished. Wait about 15 seconds. A continuation write from a 2026-07-28 client shows in `recentWrites` in `hub_get_info`, and an identical repeat while it is still active joins it instead of running it twice. Every other write leaves started and finished records in `hub_get_logs(mode="mcp", component="write")`, each carrying the JSON-RPC id you sent and the outcome (completed, failed, partial, accepted or unknown). A missing record does not prove the write never ran: read the target before repeating it, because repeating a finished write performs it again.
 '''
     ]
