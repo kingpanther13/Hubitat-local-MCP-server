@@ -1008,6 +1008,7 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         result.report.contains('- **Read tools:** true (default)')
         result.report.contains('- **Max concurrent writes:** 2 (default)')
         result.report.contains('- **LAN budget (ms):** 0 (default)')
+        result.report.contains('- **Reset app runtime statistics automatically:** true (default)')
         result.report.contains('- **Loop guard max executions:** 30 (default)')
         result.report.contains('- **Loop guard window (sec):** 60 (default)')
         result.report.contains('- **Max captured states:** 20 (default)')

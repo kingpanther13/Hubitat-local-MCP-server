@@ -1045,4 +1045,23 @@ class LoadLimiterGuardSpec extends ToolSpecBase {
         then:
         !script.LOAD_GUARD.containsKey('checkPending')
     }
+
+    def 'with the automatic reset off, a refused write that is not retry-safe also says to check its target'() {
+        given:
+        settingsMap.autoResetAppRuntimeStats = false
+        int calls = 0
+        script.metaClass.toolSendCommand = { a, b, c, d, e, f ->
+            calls++
+            [success: false, error: 'App 1 generates excessive hub load']
+        }
+
+        when:
+        def result = script.executeTool('hub_call_device_command', [deviceId: '5', command: 'on'])
+
+        then:
+        calls == 1
+        resets() == 0
+        result.error.contains('automatic reset is off')
+        result.error.contains('check its target before calling it again')
+    }
 }
