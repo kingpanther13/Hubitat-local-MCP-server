@@ -6797,7 +6797,9 @@ private Map _deleteAppRuntimeStats(Map args) {
     Map window = [__reqT0: now()]
     _logsJsonInvalidate()
     Map before = _logsJsonOwnAppStat(false, window)
-    String reply = _resetAppRuntimeStatsNow()
+    long budget = _isCloudRequest() ? _relayBudgetMs() : _lanBudgetMs()
+    int resetTimeoutS = budget > 0L ? Math.max(2L, Math.min(10L, (budget - (now() - (window.__reqT0 as long))).intdiv(1000L))) as int : 10
+    String reply = _resetAppRuntimeStatsNow(resetTimeoutS)
     mcpLog("warn", "monitoring", reply == "ok" ? "The hub's app runtime statistics were reset (hub_delete_logs)"
                                                : "Resetting the hub's app runtime statistics failed (hub_delete_logs): ${reply ?: 'empty reply'}")
     Map after = _logsJsonOwnAppStat(false, window)
@@ -28129,10 +28131,10 @@ def _loadGuardCheckJob(Map data = null) {
         _loadGuardRelease("checkPending", data)
     }
 }
-String _resetAppRuntimeStatsNow() {
+String _resetAppRuntimeStatsNow(int timeoutS = 10) {
     String reply
     try {
-        reply = hubInternalGet("/hub/advanced/resetAppRuntimeStats", null, 10)?.toString()?.trim()
+        reply = hubInternalGet("/hub/advanced/resetAppRuntimeStats", null, timeoutS)?.toString()?.trim()
     } catch (Exception e) {
         return "${e.class.simpleName}: ${e.message}".toString()
     } finally {
