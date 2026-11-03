@@ -6380,10 +6380,12 @@ def updated() {}
             named = config.get("settings") or {}
             assert named.get("apiKey") == "***redacted (password)***" and named.get("disarmPin") == "***redacted (password)***", \
                 f"includeSettings returned credential-named values in clear: {named}"
-            # Page inputs read the stored values (the page JSON carries only code defaults), masked the same way.
+            # Page inputs read the stored values (the page JSON carries only code defaults), masked as the form
+            # engine masks them: a password input carries no value, a credential-named one the marker.
             page = self._app_config_input_values(config)
-            assert page.get("doorLedPin") == "13" and page.get("p") == "***redacted (password)***" and \
-                page.get("apiKey") == "***redacted (password)***", f"page inputs did not read the stored values: {page}"
+            inputs = {i.get("name"): i for s in (config.get("page") or {}).get("sections", []) for i in s.get("inputs", [])}
+            assert page.get("doorLedPin") == "13" and page.get("apiKey") == "***redacted (password)***" and \
+                inputs["p"].get("redacted") is True and "value" not in inputs["p"], f"page inputs did not read the stored values: {inputs}"
             # A board pin and a status code next to a credential word are not credentials.
             assert named.get("doorLedPin") == "13" and named.get("lockErrorCode") == "E42", \
                 f"includeSettings hid a board pin or status code: {named}"

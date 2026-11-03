@@ -313,13 +313,14 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
 
     // Room Lighting's motion/illuminance inputs live on sub-pages; without the links in the
     // result an AI had no way to know those pages exist.
-    def "page.hrefs lists the sub-pages the page links to; a page with no links omits it"() {
+    def "page.hrefs lists the page's sub-page and external links with their summaries; a page with no links omits it"() {
         given:
         settingsMap.enableRead = true
         def sections = [[title: '', input: [], body: [
             [element: 'paragraph', description: 'Set up Automation for the Lights in a Room'],
-            [element: 'href', page: 'onMeansPage', title: 'Select Means to Activate Lights'],
-            [element: 'href', page: 'offMeansPage', title: '<b>Select Means to Turn Off Lights</b>']
+            [element: 'href', page: 'onMeansPage', title: 'Select Means to Activate Lights', description: 'Motion <b>active</b>'],
+            [element: 'href', page: 'offMeansPage', title: '<b>Select Means to Turn Off Lights</b>', description: 'Click to set'],
+            [element: 'href', url: 'https://docs.example/lights', title: 'Documentation']
         ]]]
         hubGet.register('/installedapp/configure/json/35') { params ->
             makeAppConfigJson([configPage: [name: 'mainPage', title: 'Kitchen Lights', install: true, refreshInterval: null, sections: sections]])
@@ -331,8 +332,10 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         def unlinked = script.toolGetAppConfig([appId: 36])
 
         then:
-        linked.page.hrefs == [[page: 'onMeansPage', title: 'Select Means to Activate Lights'],
-                              [page: 'offMeansPage', title: 'Select Means to Turn Off Lights']]
+        linked.page.hrefs == [[page: 'onMeansPage', title: 'Select Means to Activate Lights', description: 'Motion active'],
+                              [page: 'offMeansPage', title: 'Select Means to Turn Off Lights'],
+                              [url: 'https://docs.example/lights', title: 'Documentation']]
+        linked.page.sections[0].paragraphs == ['Set up Automation for the Lights in a Room']
         !unlinked.page.containsKey('hrefs')
     }
 
@@ -380,6 +383,41 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
 
         and: 'endpoint field present for debugging'
         result.endpoint == '/installedapp/configure/json/35'
+    }
+
+    def "inputs read as form fields, with the page's child devices, mode restriction and components (#575)"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/35') { params ->
+            makeAppConfigJson([
+                app: [id: 35, trueLabel: 'My Rule', label: 'My Rule', name: 'Rule-5.1', disabled: false, installed: true, parentAppId: null,
+                      restrictedModes: ['1', '3'], appType: [name: 'Rule Machine', namespace: 'hubitat', system: true, menu: 'Automations']],
+                modeMap: ['1': 'Day', '2': 'Evening', '3': 'Night'],
+                childDevices: [[id: 7, name: 'Child <b>one</b>']],
+                settings: [lights: ['7': 'Kitchen'], onDate: '2026-11-10'],
+                configPage: [name: 'mainPage', title: 'Rule Settings', install: true, refreshInterval: null, sections: [[title: 'S', input: [], body: [
+                    [element: 'input', name: 'lights', type: 'capability.switch', title: 'Lights', multiple: true, submitOnChange: true, description: 'Kitchen'],
+                    [element: 'input', name: 'onDate', type: 'date', title: 'Date'],
+                    [element: 'input', name: 'level', type: 'number', title: 'Level', range: '1..100', defaultValue: 50],
+                    [element: 'input', name: 'export', type: 'download-text', title: 'Export', filename: 'rule.json', filecontent: '{"a":1}'],
+                    [element: 'component', name: 'schedule-grid', title: 'Schedule', description: '<i>grid</i>']
+                ]]]]
+            ])
+        }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35])
+        def inputs = result.page.sections[0].inputs.collectEntries { [(it.name): it] }
+
+        then:
+        result.success
+        inputs.lights.value == ['7'] && inputs.lights.submit_on_change && inputs.lights.selected == [[value: '7', label: 'Kitchen']]
+        inputs.onDate.value == '2026-11-10' && inputs.onDate.value_source == 'stored'
+        inputs.level.value == 50 && inputs.level.value_source == 'default' && inputs.level.range == '1..100'
+        inputs.export.filename == 'rule.json' && inputs.export.value == '{"a":1}' && inputs.export.supported == false
+        result.page.sections[0].components == [[name: 'schedule-grid', title: 'Schedule', description: 'grid']]
+        result.childDevices == [[id: 7, name: 'Child one']]
+        result.app.restrictedModes == [[value: '1', label: 'Day'], [value: '3', label: 'Night']]
     }
 
     def "appType.menu is null when the app type declares no menu"() {
@@ -2531,7 +2569,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         result.page.sections[0].paragraphs == ['Warning: battery low']
     }
 
-    def "a page the form engine cannot model still reads, with controlsError instead of controls"() {
+    def "a page the form engine cannot model still reads its inputs' identity, with formError instead of controls and no values"() {
         given:
         settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params ->
@@ -2545,9 +2583,9 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
 
         then:
         result.success == true
-        result.page.sections[0].inputs*.title == ['First', 'Second']
+        result.page.sections[0].inputs == [[name: 'dup', type: 'text', title: 'First']]
         !result.containsKey('controls')
-        result.controlsError == 'Native form contains ambiguous fields'
+        result.formError == 'Native form contains ambiguous fields'
     }
 
     @spock.lang.Unroll
