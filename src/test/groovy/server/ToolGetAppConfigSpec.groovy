@@ -16,7 +16,7 @@ import support.ToolSpecBase
  *  - pageName arg: URL includes the page segment
  *  - includeSettings=false (default): settings key absent, settingsNote present
  *  - includeSettings=true: settings key populated
- *  - summary=true: identity-only fast path via /installedapp/json (pass-through + error paths)
+ *  - summary=true: identity-only fast path via /installedapp/json (pass-through + namespace + error paths)
  *  - Empty hub response: returns success=false
  *  - Unknown appId (hub returns {app:null}): 'missing app' fingerprint, success=false
  *  - Not-found 404/410 throw (deleted / mid-delete / install shell whose config page
@@ -106,7 +106,18 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         ]
         // Merge overrides at top level
         overrides.each { k, v -> base[k] = v }
-        return JsonOutput.toJson(base)
+        return JsonOutput.toJson(withElements(base))
+    }
+
+    // The hub tags every page element: section inputs are element 'input', and a fixture body entry
+    // without a tag is a paragraph.
+    private static Map withElements(Map page) {
+        (page.configPage instanceof Map ? page.configPage.sections : null)?.each { section ->
+            if (!(section instanceof Map)) return
+            (section.input ?: []).each { if (it instanceof Map && !it.element) it.element = 'input' }
+            (section.body ?: []).each { if (it instanceof Map && !it.element) it.element = 'paragraph' }
+        }
+        page
     }
 
     // /installedapp/statusJson/<id>: appSettings types every setting of the app, whichever page
@@ -313,13 +324,15 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
 
     // Room Lighting's motion/illuminance inputs live on sub-pages; without the links in the
     // result an AI had no way to know those pages exist.
-    def "page.hrefs lists the sub-pages the page links to; a page with no links omits it"() {
+    def "page.hrefs lists the page's sub-page and external links with their summaries; a page with no links omits it"() {
         given:
         settingsMap.enableRead = true
         def sections = [[title: '', input: [], body: [
             [element: 'paragraph', description: 'Set up Automation for the Lights in a Room'],
-            [element: 'href', page: 'onMeansPage', title: 'Select Means to Activate Lights'],
-            [element: 'href', page: 'offMeansPage', title: '<b>Select Means to Turn Off Lights</b>']
+            [element: 'href', page: 'onMeansPage', title: 'Select Means to Activate Lights', description: 'Motion <b>active</b>'],
+            [element: 'href', page: 'offMeansPage', title: '<b>Select Means to Turn Off Lights</b>', description: 'Click to set'],
+            [element: 'href', url: 'https://docs.example/lights', title: 'Documentation'],
+            [element: 'href', page: 'helpPage', url: 'https://docs.example/help', title: 'Help', description: 'Click to show']
         ]]]
         hubGet.register('/installedapp/configure/json/35') { params ->
             makeAppConfigJson([configPage: [name: 'mainPage', title: 'Kitchen Lights', install: true, refreshInterval: null, sections: sections]])
@@ -331,8 +344,11 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         def unlinked = script.toolGetAppConfig([appId: 36])
 
         then:
-        linked.page.hrefs == [[page: 'onMeansPage', title: 'Select Means to Activate Lights'],
-                              [page: 'offMeansPage', title: 'Select Means to Turn Off Lights']]
+        linked.page.hrefs == [[page: 'onMeansPage', title: 'Select Means to Activate Lights', description: 'Motion active'],
+                              [page: 'offMeansPage', title: 'Select Means to Turn Off Lights'],
+                              [url: 'https://docs.example/lights', title: 'Documentation'],
+                              [url: 'https://docs.example/help', title: 'Help']]
+        linked.page.sections[0].paragraphs == ['Set up Automation for the Lights in a Room']
         !unlinked.page.containsKey('hrefs')
     }
 
@@ -375,12 +391,108 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         result.childApps[0].id == 101
         result.childApps[0].label == 'Sub Rule'
 
-        and: 'appType summary carries built-in flag and the declared menu tab (#5/#6)'
-        result.app.appType.system == true
-        result.app.appType.menu == 'Automations'
+        and: 'appType carries the namespace and name of the type, built-in flag and declared menu tab, and nothing else (#5/#6, #575)'
+        result.app.appType == [namespace: 'hubitat', name: 'Rule Machine', system: true, menu: 'Automations']
 
         and: 'endpoint field present for debugging'
         result.endpoint == '/installedapp/configure/json/35'
+    }
+
+    def "inputs read as form fields, with the page's child devices, mode restriction and components (#575)"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/35') { params ->
+            makeAppConfigJson([
+                app: [id: 35, trueLabel: 'My Rule', label: 'My Rule', name: 'Rule-5.1', disabled: false, installed: true, parentAppId: null,
+                      restrictedModes: ['1', '3'], appType: [name: 'Rule Machine', namespace: 'hubitat', system: true, menu: 'Automations']],
+                modeMap: ['1': 'Day', '2': 'Evening', '3': 'Night'],
+                childDevices: [[id: 7, name: 'Child <b>one</b>']],
+                settings: [lights: ['7': 'Kitchen'], onDate: '2026-11-10'],
+                configPage: [name: 'mainPage', title: 'Rule Settings', install: true, refreshInterval: null, sections: [[title: 'S', input: [], body: [
+                    [element: 'input', name: 'lights', type: 'capability.switch', title: 'Lights', multiple: true, submitOnChange: true, description: 'Kitchen'],
+                    [element: 'input', name: 'onDate', type: 'date', title: 'Date'],
+                    [element: 'input', name: 'level', type: 'number', title: 'Level', range: '1..100', defaultValue: 50],
+                    [element: 'input', name: 'export', type: 'download-text', title: 'Export', filename: 'rule.json', filecontent: '{"a":1}'],
+                    [element: 'component', name: 'schedule-grid', title: 'Schedule', description: '<i>grid</i>']
+                ]]]]
+            ])
+        }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35])
+        def inputs = result.page.sections[0].inputs.collectEntries { [(it.name): it] }
+
+        then:
+        result.success
+        inputs.lights.value == ['7'] && inputs.lights.submit_on_change && inputs.lights.selected == [[value: '7', label: 'Kitchen']]
+        inputs.onDate.value == '2026-11-10' && inputs.onDate.value_source == 'stored'
+        inputs.level.value == 50 && inputs.level.value_source == 'default' && inputs.level.range == '1..100'
+        inputs.export.filename == 'rule.json' && inputs.export.value == '{"a":1}' && inputs.export.supported == false
+        result.page.sections[0].components == [[name: 'schedule-grid', title: 'Schedule', description: 'grid']]
+        result.childDevices == [[id: 7, name: 'Child one']]
+        result.app.restrictedModes == [[value: '1', label: 'Day'], [value: '3', label: 'Night']]
+    }
+
+    def "a page with more inputs than a form workflow caches still reads every value"() {
+        given:
+        settingsMap.enableRead = true
+        def inputs = (1..260).collect { [name: "f${it}".toString(), type: 'text', title: "Field ${it}".toString()] }
+        hubGet.register('/installedapp/configure/json/35') { params ->
+            makeAppConfigJson([settings: [f1: 'one', f260: 'last'], configPage: [name: 'mainPage', title: 'Big', install: true, refreshInterval: null,
+                sections: [[title: 'S', input: inputs, body: []]]]])
+        }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35])
+        def read = result.page.sections[0].inputs.collectEntries { [(it.name): it] }
+
+        then:
+        !result.containsKey('formError')
+        read.size() == 260
+        read.f1.value == 'one' && read.f260.value == 'last'
+    }
+
+    def "label and mode page elements read as the app's own name and mode fields; an input in body and input reads once"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/35') { params ->
+            makeAppConfigJson([
+                app: [id: 35, trueLabel: 'My App', label: 'My App', name: 'Community App', disabled: false, installed: true, parentAppId: null,
+                      restrictedModes: ['2'], appType: [name: 'Community App', namespace: 'acme', system: false]],
+                modeMap: ['1': 'Day', '2': 'Night'],
+                settings: [note: 'kept'],
+                configPage: [name: 'mainPage', title: 'Main', install: true, refreshInterval: null, sections: [[title: 'S',
+                    input: [[element: 'input', name: 'note', type: 'text', title: 'Note']],
+                    body: [[element: 'input', name: 'note', type: 'text', title: 'Note'],
+                           [element: 'label', title: 'Name this app'], [element: 'mode', title: 'Only in modes']]]]]
+            ])
+        }
+
+        when:
+        def inputs = script.toolGetAppConfig([appId: 35]).page.sections[0].inputs
+
+        then:
+        inputs*.name == ['note', 'label', 'mode[mode]']
+        inputs[0].value == 'kept'
+        inputs[1].value == 'My App' && inputs[1].type == 'text'
+        inputs[2].value == ['2'] && inputs[2].options == [[value: '1', label: 'Day'], [value: '2', label: 'Night']]
+        inputs.every { !it.containsKey('app_field') && !it.containsKey('sidecars') }
+    }
+
+    def "a community parent's create button is listed in unsupported, not dropped"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/35') { params ->
+            makeAppConfigJson([configPage: [name: 'mainPage', title: 'Main', install: true, refreshInterval: null, sections: [[title: 'S', input: [], body: [
+                [element: 'app', name: 'childRules', appName: 'Community Rule', namespace: 'acme', title: '+ Add New Rule']]]]]])
+        }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35])
+
+        then:
+        result.unsupported == ['Native element: app']
+        !result.controls.any { it.kind == 'create_child' }
     }
 
     def "appType.menu is null when the app type declares no menu"() {
@@ -436,15 +548,17 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         def result = script.toolGetAppConfig([appId: 35])
         def inputs = result.page.sections[0].inputs
 
-        then: 'the stored list is the value; an unset mode input has none; no side list or note'
+        then: 'the stored list is the value; an unset mode input reads null from its default; no side list or note'
         result.success == true
         inputs.find { it.name == 'mode1Override' }.value == ['1', '3']
-        !inputs.find { it.name == 'mode2Override' }.containsKey('value')
+        def unsetMode = inputs.find { it.name == 'mode2Override' }
+        unsetMode.value == null
+        unsetMode.value_source == 'default'
         !result.containsKey('modeInputs')
         !result.containsKey('modeInputsNote')
     }
 
-    def "a page input reads its stored setting over the code default; a device input keeps its description"() {
+    def "a page input reads its stored setting over the code default; a device input reads its stored ids and labels"() {
         given:
         settingsMap.enableRead = true
 
@@ -468,13 +582,14 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         when:
         def inputs = script.toolGetAppConfig([appId: 35]).page.sections[0].inputs.collectEntries { [(it.name): it] }
 
-        then: 'stored values win; an unset input shows its default; the device input is unchanged'
+        then: 'stored values win; an unset input shows its default; the device input reads its ids with their labels'
         inputs.debugLogging.value == 'true'
         inputs.flagOn.value == 'false'
         inputs.logLevel.value == 'debug'
         inputs.origLabel.value == 'Kitchen'
         inputs.retries.value == 3
-        !inputs.lights.containsKey('value')
+        inputs.lights.value == '12'
+        inputs.lights.selected == [[value: '12', label: 'Lamp']]
         inputs.lights.description == 'Lamp'
     }
 
@@ -760,32 +875,23 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     // summary=true — identity-only fast path via /installedapp/json/<id>
     // -------------------------------------------------------------------------
 
-    def "summary=true passes the thin identity record through with success=true and never renders the config page"() {
+    def "summary=true passes the thin identity record through with the type's namespace and never renders the config page"() {
         given:
         settingsMap.enableRead = true
         // configure/json deliberately NOT registered -- if summary mode rendered the
         // config page, HubInternalGetMock would throw on the unregistered path.
         // extraField proves unknown hub fields pass through untouched.
         hubGet.register('/installedapp/json/35') { params ->
-            JsonOutput.toJson([id: 35, name: 'My Rule', type: 'Rule Machine', disabled: false, user: false, extraField: 'future-firmware-key'])
+            JsonOutput.toJson([id: 35, name: 'My Rule', type: 'Rule-5.1', disabled: false, user: false, extraField: 'future-firmware-key'])
         }
+        script.metaClass.getAppByAppId = { Long id -> id == 35L ? [id: id, appType: [namespace: 'hubitat', name: 'Rule-5.1']] : null }
 
         when:
         def result = script.toolGetAppConfig([appId: 35, summary: true])
 
-        then: 'identity fields pass through as-is'
-        result.success == true
-        result.id == 35
-        result.name == 'My Rule'
-        result.type == 'Rule Machine'
-        result.disabled == false
-        result.user == false
-        result.extraField == 'future-firmware-key'
-        result.endpoint == '/installedapp/json/35'
-
-        and: 'no full-mode keys'
-        !result.containsKey('page')
-        !result.containsKey('settingsKeyCount')
+        then: 'identity fields pass through as-is, with the namespace the installed app carries'
+        result == [id: 35, name: 'My Rule', type: 'Rule-5.1', disabled: false, user: false, extraField: 'future-firmware-key',
+                   namespace: 'hubitat', success: true, endpoint: '/installedapp/json/35']
 
         and: 'only the thin endpoint was hit'
         hubGet.calls.every { it.path == '/installedapp/json/35' }
@@ -797,8 +903,9 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         settingsMap.useGateways = useGateways
         settingsMap.enableRead = true
         hubGet.register('/installedapp/json/35') { params ->
-            JsonOutput.toJson([id: 35, name: 'My Rule', type: 'Rule Machine', disabled: false, user: false])
+            JsonOutput.toJson([id: 35, name: 'My Rule', type: 'Rule-5.1', disabled: false, user: false])
         }
+        script.metaClass.getAppByAppId = { Long id -> [id: id, appType: [namespace: 'hubitat', name: 'Rule-5.1']] }
 
         when:
         def response = mcpDriver.callTool('hub_get_app_config', [appId: 35, summary: true])
@@ -810,7 +917,8 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         inner.success == true
         inner.id == 35
         inner.name == 'My Rule'
-        inner.type == 'Rule Machine'
+        inner.type == 'Rule-5.1'
+        inner.namespace == 'hubitat'
         inner.disabled == false
         inner.user == false
         inner.endpoint == '/installedapp/json/35'
@@ -818,6 +926,21 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
 
         where:
         useGateways << [true, false]
+    }
+
+    def "summary=true still answers when the installed app cannot be looked up, without a namespace"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/json/35') { params -> JsonOutput.toJson([id: 35, name: 'My Rule', type: 'Rule-5.1']) }
+        script.metaClass.getAppByAppId = { Long id -> throw new IllegalStateException('lookup refused') }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, summary: true])
+
+        then:
+        result.success == true
+        result.type == 'Rule-5.1'
+        result.namespace == null
     }
 
     def "summary=true returns success=false when hub returns empty body"() {
@@ -893,10 +1016,10 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         when: 'includeSettings is NOT set (default false) -- the structured inputs path still runs'
         def result = script.toolGetAppConfig([appId: 35])
 
-        then: 'the password input is still listed (so the AI knows it is set) but its value is redacted, not the raw secret'
+        then: 'the password input is still listed (so the AI knows it is set) but carries no value, as the form engine reads it'
         def pw = result.page.sections[0].inputs.find { it.name == 'apiKey' }
         pw != null
-        pw.value == '***redacted (password)***'
+        pw.redacted == true && pw.has_value == true && !pw.containsKey('value')
 
         and: 'non-password inputs keep their real values'
         result.page.sections[0].inputs.find { it.name == 'username' }.value == 'alice'
@@ -931,7 +1054,9 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         def result = script.toolGetAppConfig([appId: 35])
 
         then:
-        result.page.sections[0].inputs.find { it.name == 'apiKey' }.value == '***redacted (password)***'
+        def apiKeyInput = result.page.sections[0].inputs.find { it.name == 'apiKey' }
+        apiKeyInput.redacted == true
+        !apiKeyInput.containsKey('value')
         !JsonOutput.toJson(result).contains('hunter2-SECRET')
 
         cleanup:
@@ -973,7 +1098,9 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         response.error == null
         def inner = mcpDriver.parseInner(response)
         inner.settings.apiKey == '***redacted (password)***'
-        inner.page.sections[0].inputs.find { it.name == 'apiKey' }.value == '***redacted (password)***'
+        def apiKeyInput = inner.page.sections[0].inputs.find { it.name == 'apiKey' }
+        apiKeyInput.redacted == true
+        !apiKeyInput.containsKey('value')
         !JsonOutput.toJson(inner).contains('hunter2-SECRET')
 
         where:
@@ -1002,8 +1129,11 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         then: 'the settings map redacts the password key even though the input carried no value'
         result.settings.apiKey == '***redacted (password)***'
 
-        and: 'the structured input reads the stored value, masked'
-        result.page.sections[0].inputs.find { it.name == 'apiKey' }.value == '***redacted (password)***'
+        and: 'the structured input reports a stored value without reading it'
+        def apiKeyInput = result.page.sections[0].inputs.find { it.name == 'apiKey' }
+        apiKeyInput.redacted == true
+        apiKeyInput.has_value == true
+        !apiKeyInput.containsKey('value')
 
         and: 'no secret anywhere in the result'
         !JsonOutput.toJson(result).contains('hunter2-SECRET')
@@ -1151,13 +1281,13 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
                     input: [
                         [name: 'brokerPassword', type: 'text', title: 'Password', defaultValue: 'plain-text-pw'],
                         [name: 'brokerUser', type: 'text', title: 'User', defaultValue: 'mqttuser'],
-                        [name: 'tokenDevice', type: 'capability.switch', title: 'Device', defaultValue: 'Porch Light'],
+                        [name: 'tokenDevice', type: 'capability.switch', title: 'Device'],
                         [name: 'requirePassword', type: 'bool', title: 'Require password', defaultValue: true]
                     ],
                     body: []
                 ]]
             ],
-            settings: [brokerPassword: 'plain-text-pw', brokerUser: 'mqttuser']
+            settings: [brokerPassword: 'plain-text-pw', brokerUser: 'mqttuser', tokenDevice: ['5': 'Porch Light']]
         ]) }
 
         when:
@@ -1167,7 +1297,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         then:
         inputs.brokerPassword.value == '***redacted (password)***'
         inputs.brokerUser.value == 'mqttuser'
-        inputs.tokenDevice.value == 'Porch Light'
+        inputs.tokenDevice.value == '5' && inputs.tokenDevice.selected == [[value: '5', label: 'Porch Light']]
         inputs.requirePassword.value == true
         !JsonOutput.toJson(result).contains('plain-text-pw')
     }
@@ -1767,7 +1897,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         settingsMap.enableRead = true
         // Room Lighting scenes and RM rule references use List<Map> options --
         // each entry is a single-key map {value: label} where label may have HTML badges.
-        def json = JsonOutput.toJson([
+        def json = JsonOutput.toJson(withElements([
             app       : [id: 35, trueLabel: 'My Rule', label: 'My Rule',
                          name: 'Rule-5.1', disabled: false, installed: true,
                          parentAppId: null, appType: null],
@@ -1793,7 +1923,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
             ],
             settings  : [modeSelect: 'day'],
             childApps : []
-        ])
+        ]))
         hubGet.register('/installedapp/configure/json/35') { params -> json }
 
         when:
@@ -1803,12 +1933,8 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         result.success == true
         def modeInput = result.page.sections[0].inputs.find { it.name == 'modeSelect' }
         modeInput != null
-        modeInput.options instanceof List
-        // HTML stripped from 'Day' label
-        def dayEntry = modeInput.options.find { it.containsKey('day') }
-        dayEntry != null
-        dayEntry['day'] == 'Day'
-        !dayEntry['day'].contains('<span')
+        // Options read as the form engine lists them, labels without HTML
+        modeInput.options == [[value: 'day', label: 'Day'], [value: 'night', label: 'Night']]
     }
 
     @spock.lang.Unroll
@@ -1816,7 +1942,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableRead = true
-        def json = JsonOutput.toJson([
+        def json = JsonOutput.toJson(withElements([
             app       : [id: 35, trueLabel: 'My Rule', label: 'My Rule',
                          name: 'Rule-5.1', disabled: false, installed: true,
                          parentAppId: null, appType: null],
@@ -1848,7 +1974,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
             ],
             settings  : [modeSelect: 'day'],
             childApps : []
-        ])
+        ]))
         hubGet.register('/installedapp/configure/json/35') { params -> json }
 
         when:
@@ -1861,21 +1987,11 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         inner.success == true
         def modeInput = inner.page.sections[0].inputs.find { it.name == 'modeSelect' }
         modeInput != null
-        modeInput.options instanceof List
-        def dayEntry = modeInput.options.find { it.containsKey('day') }
-        dayEntry != null
-        dayEntry['day'] == 'Day'
-        !dayEntry['day'].contains('<span')
-
-        and: 'Map keys stay data and non-string option values retain their types'
-        ['fields': 'Lowercase', 'Fields': 'Uppercase', 'class': 'Class data',
-         'metaClass': 'Metaclass data', 'getClass': 'Method name data'].each { key, label ->
-            assert modeInput.options.find { it.containsKey(key) }.get(key) == label
-        }
-        def values = modeInput.options.find { it.containsKey('unset') }
-        values.get('disabled').is(false)
-        values.get('count') == 0
-        values.get('unset') == null
+        and: 'Map keys stay data and every label reads as the text the page shows'
+        modeInput.options == [[value: 'day', label: 'Day'], [value: 'night', label: 'Night'], [value: 'fields', label: 'Lowercase'],
+                              [value: 'Fields', label: 'Uppercase'], [value: 'class', label: 'Class data'],
+                              [value: 'metaClass', label: 'Metaclass data'], [value: 'getClass', label: 'Method name data'],
+                              [value: 'disabled', label: 'false'], [value: 'count', label: '0'], [value: 'unset', label: '']]
 
         where:
         useGateways << [true, false]
@@ -1885,7 +2001,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         given:
         settingsMap.enableRead = true
         // Some capability inputs encode options as a plain Map {value: label}.
-        def json = JsonOutput.toJson([
+        def json = JsonOutput.toJson(withElements([
             app       : [id: 35, trueLabel: 'My Rule', label: 'My Rule',
                          name: 'Rule-5.1', disabled: false, installed: true,
                          parentAppId: null, appType: null],
@@ -1915,7 +2031,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
             ],
             settings  : [sceneSelect: 'on'],
             childApps : []
-        ])
+        ]))
         hubGet.register('/installedapp/configure/json/35') { params -> json }
 
         when:
@@ -1925,16 +2041,10 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         result.success == true
         def sceneInput = result.page.sections[0].inputs.find { it.name == 'sceneSelect' }
         sceneInput != null
-        sceneInput.options instanceof Map
-        // HTML stripped from 'On' label
-        sceneInput.options['on'] == 'On'
-        !sceneInput.options['on'].contains('<span')
-        sceneInput.options.get('fields') == 'Lowercase'
-        sceneInput.options.get('metaClass') == 'Metaclass data'
-        sceneInput.options.get('disabled').is(false)
-        sceneInput.options.get('count') == 0
-        sceneInput.options.containsKey('unset')
-        sceneInput.options.get('unset') == null
+        // Map keys stay data; labels read without HTML, as the text the page shows
+        sceneInput.options == [[value: 'on', label: 'On'], [value: 'off', label: 'Off'], [value: 'fields', label: 'Lowercase'],
+                               [value: 'metaClass', label: 'Metaclass data'], [value: 'disabled', label: 'false'],
+                               [value: 'count', label: '0'], [value: 'unset', label: '']]
     }
 
     @spock.lang.Unroll
@@ -1942,7 +2052,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableRead = true
-        def json = JsonOutput.toJson([
+        def json = JsonOutput.toJson(withElements([
             app       : [id: 35, trueLabel: 'My Rule', label: 'My Rule',
                          name: 'Rule-5.1', disabled: false, installed: true,
                          parentAppId: null, appType: null],
@@ -1969,7 +2079,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
             ],
             settings  : [sceneSelect: 'on'],
             childApps : []
-        ])
+        ]))
         hubGet.register('/installedapp/configure/json/35') { params -> json }
 
         when:
@@ -1982,9 +2092,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         inner.success == true
         def sceneInput = inner.page.sections[0].inputs.find { it.name == 'sceneSelect' }
         sceneInput != null
-        sceneInput.options instanceof Map
-        sceneInput.options['on'] == 'On'
-        !sceneInput.options['on'].contains('<span')
+        sceneInput.options == [[value: 'on', label: 'On'], [value: 'off', label: 'Off']]
 
         where:
         useGateways << [true, false]
@@ -2075,7 +2183,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         // i.value==true is the legitimate "checkbox enabled" state for type="bool".
         // Before the fix, this would be filtered out (sentinel path), making the
         // AI believe the setting was unconfigured.
-        def json = JsonOutput.toJson([
+        def json = JsonOutput.toJson(withElements([
             app       : [id: 35, trueLabel: 'My Rule', label: 'My Rule',
                          name: 'Rule-5.1', disabled: false, installed: true,
                          parentAppId: null, appType: null],
@@ -2098,7 +2206,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
             ],
             settings  : [logging: true],
             childApps : []
-        ])
+        ]))
         hubGet.register('/installedapp/configure/json/35') { params -> json }
 
         when:
@@ -2117,7 +2225,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableRead = true
-        def json = JsonOutput.toJson([
+        def json = JsonOutput.toJson(withElements([
             app       : [id: 35, trueLabel: 'My Rule', label: 'My Rule',
                          name: 'Rule-5.1', disabled: false, installed: true,
                          parentAppId: null, appType: null],
@@ -2140,7 +2248,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
             ],
             settings  : [logging: true],
             childApps : []
-        ])
+        ]))
         hubGet.register('/installedapp/configure/json/35') { params -> json }
 
         when:
@@ -2163,7 +2271,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     def "bool input with value=false is preserved"() {
         given:
         settingsMap.enableRead = true
-        def json = JsonOutput.toJson([
+        def json = JsonOutput.toJson(withElements([
             app       : [id: 35, trueLabel: 'My Rule', label: 'My Rule',
                          name: 'Rule-5.1', disabled: false, installed: true,
                          parentAppId: null, appType: null],
@@ -2186,7 +2294,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
             ],
             settings  : [logging: false],
             childApps : []
-        ])
+        ]))
         hubGet.register('/installedapp/configure/json/35') { params -> json }
 
         when:
@@ -2205,7 +2313,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableRead = true
-        def json = JsonOutput.toJson([
+        def json = JsonOutput.toJson(withElements([
             app       : [id: 35, trueLabel: 'My Rule', label: 'My Rule',
                          name: 'Rule-5.1', disabled: false, installed: true,
                          parentAppId: null, appType: null],
@@ -2228,7 +2336,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
             ],
             settings  : [logging: false],
             childApps : []
-        ])
+        ]))
         hubGet.register('/installedapp/configure/json/35') { params -> json }
 
         when:
@@ -2251,9 +2359,9 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     def "non-bool input with defaultValue=true is still filtered (sentinel preserved)"() {
         given:
         settingsMap.enableRead = true
-        // capability.* inputs use defaultValue=true as a "has configured value" sentinel --
-        // NOT as the actual selection. The output's value field should be absent for these.
-        def json = JsonOutput.toJson([
+        // capability.* inputs use defaultValue=true as a "has configured value" sentinel -- NOT as the
+        // selection: with nothing stored the picker reads null (value_source 'default'), never true.
+        def json = JsonOutput.toJson(withElements([
             app       : [id: 35, trueLabel: 'My Rule', label: 'My Rule',
                          name: 'Rule-5.1', disabled: false, installed: true,
                          parentAppId: null, appType: null],
@@ -2277,7 +2385,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
             ],
             settings  : [:],
             childApps : []
-        ])
+        ]))
         hubGet.register('/installedapp/configure/json/35') { params -> json }
 
         when:
@@ -2287,8 +2395,8 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         result.success == true
         def sensorInput = result.page.sections[0].inputs.find { it.name == 'mySensor' }
         sensorInput != null
-        // Sentinel: value must NOT be emitted as bare 'true' for non-bool capability types
-        !sensorInput.containsKey('value')
+        // Sentinel: a device picker's defaultValue true is never its value; the page fills a picker only from settings
+        sensorInput.value == null && sensorInput.value_source == 'default'
     }
 
     @spock.lang.Unroll
@@ -2296,7 +2404,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableRead = true
-        def json = JsonOutput.toJson([
+        def json = JsonOutput.toJson(withElements([
             app       : [id: 35, trueLabel: 'My Rule', label: 'My Rule',
                          name: 'Rule-5.1', disabled: false, installed: true,
                          parentAppId: null, appType: null],
@@ -2320,7 +2428,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
             ],
             settings  : [:],
             childApps : []
-        ])
+        ]))
         hubGet.register('/installedapp/configure/json/35') { params -> json }
 
         when:
@@ -2333,7 +2441,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         inner.success == true
         def sensorInput = inner.page.sections[0].inputs.find { it.name == 'mySensor' }
         sensorInput != null
-        !sensorInput.containsKey('value')
+        sensorInput.value == null && sensorInput.value_source == 'default'
 
         where:
         useGateways << [true, false]
@@ -2405,6 +2513,26 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         !result.containsKey('disabledActions')
         !result.containsKey('disabledActionsNote')
         !result.page.sections[0].containsKey('embeddedActions')
+    }
+
+    def "a Rule Machine main page's action link lists the disabled rows its summary holds"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/35') { params ->
+            makeAppConfigJson([configPage: [name: 'mainPage', title: 'Rule', install: true, refreshInterval: null,
+                sections: [[title: '', input: [], body: [
+                    [element: 'href', page: 'selectTriggers', title: 'Select Trigger Events', description: 'When time is 3:35 PM'],
+                    [element: 'href', page: 'selectActions', title: 'Select Actions to Run', description: RM_ACTIONS_PARAGRAPH]
+                ]]]]])
+        }
+
+        when:
+        def hrefs = script.toolGetAppConfig([appId: 35]).page.hrefs
+
+        then:
+        hrefs[0] == [page: 'selectTriggers', title: 'Select Trigger Events', description: 'When time is 3:35 PM']
+        hrefs[1].disabled == ["Notify Pushover: 'Fixed mismatch'"]
+        hrefs[1].description.contains("Notify Pushover: 'still cooling'") && !hrefs[1].description.contains('<span')
     }
 
     def "selectActions controls name each row's buttons; a disabled action's disable<N> reads 'Enable Action'"() {
@@ -2520,7 +2648,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         result.page.sections[0].paragraphs == ['Warning: battery low']
     }
 
-    def "a page the form engine cannot model still reads, with controlsError instead of controls"() {
+    def "a page the form engine cannot model still reads its inputs' identity, with formError instead of controls and no values"() {
         given:
         settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params ->
@@ -2534,9 +2662,10 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
 
         then:
         result.success == true
-        result.page.sections[0].inputs*.title == ['First', 'Second']
+        result.page.sections[0].inputs == [[name: 'dup', type: 'text', title: 'First']]
         !result.containsKey('controls')
-        result.controlsError == 'Native form contains ambiguous fields'
+        result.formError == 'Native form contains ambiguous fields'
+        result.note.contains('Input values and controls are withheld') && result.note.contains('includeSettings=true')
     }
 
     @spock.lang.Unroll
