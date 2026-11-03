@@ -2515,6 +2515,23 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         !result.page.sections[0].containsKey('embeddedActions')
     }
 
+    def "disabled rows read the same when firmware classes the spans, and only while Rule Machine's state lists one"() {
+        given: 'the 2.5.3 markup: theme classes instead of inline colors'
+        settingsMap.enableRead = true
+        String classed = RM_ACTIONS_PARAGRAPH.replace("style='color:red'", "class='text-hubitat-danger'").replace("style='color:green'", "class='text-hubitat-success'")
+        hubGet.register('/installedapp/configure/json/35') { params -> rmActionsPageJson(classed) }
+        script.metaClass._nrState = { Long id -> [disabledActions: disabled, disabledTriggers: []] }
+
+        when:
+        def para = script.toolGetAppConfig([appId: 35]).page.sections[0].paragraphs[0]
+
+        then:
+        disabled ? para.disabled == ["Notify Pushover: 'Fixed mismatch'"] : (para instanceof String && !para.contains('<span'))
+
+        where:
+        disabled << [['2'], []]
+    }
+
     def "a Rule Machine main page's action link lists the disabled rows its summary holds"() {
         given:
         settingsMap.enableRead = true

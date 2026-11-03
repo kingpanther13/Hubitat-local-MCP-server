@@ -214,20 +214,23 @@ per-action; `<N>` is the action index unless noted.
   `cut<N>` / `chkBox<N>` / `I<N>` buttons and its `<N>.0.false` edit (`doAct`)
   button — not its row position (after `removeAction` of index 2 on a 3-action
   rule the rows are `disable1`, `disable3`; there is no `disable2`). The
-  `settings[disable<N>]` input stays `""`; the state lives in RM app state and is
-  NOT in `settings`. Its `submitOnChange` div's `title` flips between `Disable
+  `settings[disable<N>]` input stays `""`; the state lives in RM app state as
+  `disabledActions` / `disabledTriggers` (lists of index strings, served by
+  `/app/ruleBuilderJson/<id>`), NOT in `settings`. Its `submitOnChange` div's `title` flips between `Disable
   Action` (icon `he-checkbox-unchecked`) and `Enable Action` (`he-checkbox-checked`).
-  The row text is wrapped in a red italic span —
-  `<span style='color:red'><i>Notify ...</i></span>` — on both the `mainPage` actions
+  The row text is wrapped in an italic status span — `<span style='color:red'><i>Notify ...</i></span>`
+  on fw 2.5.2, `<span class='text-hubitat-danger'><i>…</i></span>` on fw 2.5.3, which swapped every
+  inline status color for a theme class (`text-hubitat-danger` / `-success` / `-warning`,
+  `text-color` for a condition's current-value span) — on both the `mainPage` actions
   paragraph and the `selectActions` row (`data-stateAttribute='doAct'` div); a live
-  action is plain text. On `selectActions` the button title and icon also carry the
-  state; on `mainPage` the span is the only carrier. The table header's legend uses
+  action is plain text. The table header's legend uses
   the same markup around the literal `Disabled Action` / `Disabled Actions`
-  (pluralized by count); `*BROKEN*` is red but not italic. Clicking `disable<N>`
+  (pluralized by count); `*BROKEN*` is a status span but not italic. Clicking `disable<N>`
   via `/installedapp/btn` (no `stateAttribute`) TOGGLES it (live-verified; a second
   click re-enables, and a click on a nonexistent `disable<N>` still reports
-  success). A `hub_set_rule(operation:'form')` control is what clicks it; `hub_get_app_config` only
-  reads the span: on a Rule Machine rule, a paragraph that holds disabled rows is returned as
+  success). A `hub_set_rule(operation:'form')` control is what clicks it; `hub_get_app_config`
+  lists rows only while RM's state lists a disabled one, taking each row's text from its span: on a
+  Rule Machine rule, a paragraph that holds disabled rows is returned as
   `{text, disabled: [<row text>...]}` (the `Disabled Action(s)` legend is excluded).
 - **String `*contains*` comparator** — for a STRING-typed variable or a
   free-valued Custom Attribute, the comparator field (`RelrDev_<N>` on the

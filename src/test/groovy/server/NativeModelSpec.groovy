@@ -850,7 +850,7 @@ class NativeModelSpec extends ToolSpecBase {
             // The native input renderer consumes the prior operation's Done flag.
             nativeState.remove('capabDone')
             if (nativeState.hasAll == true) {
-                nativeState.capabsfalse['1'] = reject ? 'BROKEN' : compiledLabel
+                nativeState.capabsfalse['1'] = compiledLabel
                 // Native string membership checks can append a String beside an Integer ID.
                 nativeState.predCapabs = nativeState.predCapabs + ['1']
                 nativeState.capabDone = true
@@ -874,16 +874,20 @@ class NativeModelSpec extends ToolSpecBase {
         settings.state_1.value == (reject ? 'on' : 'off')
         if (reject) {
             assert edited.rolledBack
-            assert edited.compiledLabel == 'BROKEN'
+            assert edited.compiledLabel == compiledLabel
             assert nativeState.isPredicate == false
             assert !settings.containsKey('rDev_1')
         } else assert settings.rDev_1.value == ['7']
         where:
         reject | compiledLabel
         false  | 'Switch A off'
-        true   | 'Switch A off'
-        // A device that has no current value yet: RM renders it as null inside its value span.
+        true   | 'BROKEN'
+        // A device that has no current value yet: RM renders it as null inside its value span, styled
+        // inline on 2.5.2 firmware and classed on 2.5.3.
         false  | "Switch A(<span style='color:black'>null</span>) is off"
+        false  | "Switch A(<span class='text-color'>null</span>) is off"
+        // A status span is not a value span: its marker still refuses the row.
+        true   | "Switch A off <span class='text-hubitat-danger'>*BROKEN*</span>"
     }
 
     def 'trigger deletion uses native delete callback and verifies setting cleanup'() {
@@ -1550,7 +1554,7 @@ class NativeModelSpec extends ToolSpecBase {
             nativeState.broken = settings.get('ruleAct.1').value.isEmpty()
             nativeState.nestedLabel = ['temporary label scope']
             nativeState.actLabelIndent = 'changed by label render'
-            nativeState.broken ? "<span style='color:red'>**Broken Action**</span>" : 'Run Actions: target'
+            nativeState.broken ? brokenLabel : 'Run Actions: target'
         }
         nativeRule.broken = { ->
             pageValidations++
@@ -1575,7 +1579,12 @@ class NativeModelSpec extends ToolSpecBase {
         pageValidations == 1
         if (unhealthyAfterRestore) assert result.cleanupError.contains('health was not restored')
         where:
-        unhealthyAfterRestore << [false, true]
+        // Rule Machine's state flag decides, whatever the firmware's markup around the label.
+        unhealthyAfterRestore | brokenLabel
+        false                 | "<span style='color:red'>**Broken Action**</span>"
+        true                  | "<span style='color:red'>**Broken Action**</span>"
+        false                 | "<span class='text-hubitat-danger'>**Broken Action**</span>"
+        false                 | 'Run Actions: '
     }
 
     def 'rejected dependent fields recover stale broken health through native validation rather than a state flag patch'() {

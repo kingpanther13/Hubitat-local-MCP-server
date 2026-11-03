@@ -499,7 +499,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
         result.success == !brokenEditor
         result.rule_id == 42L
         events.take(3) == ['action', 'selectTriggers', 'selectActionsX']
-        events.contains('selectActions') == !brokenEditor
+        events.contains('selectActions')
         events.any { it instanceof Map && it.path == '/installedapp/update/json' } == !brokenEditor
         !events.contains('mainPage')
         !events.contains('initState')
@@ -1163,17 +1163,20 @@ class NativeDocumentsSpec extends ToolSpecBase {
         !events.any { it instanceof Map }
     }
 
-    def 'native red broken diagnostic blocks Done but a user text marker does not'() {
+    def "Rule Machine's broken flag blocks Done, and a user's text that reads like its marker does not"() {
         given:
         script.metaClass._nrHandle = { Long id -> new NativeDocumentDiagnosticChild(events, lifecycle, true) }
         when:
         def failed = script.toolUpdateRuleDocument([rule_id: 42, changes: [logChange()], confirm: true])
         then:
         !failed.success
-        failed.error.contains('broken condition')
+        failed.partial
+        failed.broken == true
+        failed.error.contains('health is broken')
         !events.any { it instanceof Map }
         when:
         events.clear()
+        lifecycle.broken = false
         script.metaClass._nrHandle = { Long id -> new NativeDocumentDiagnosticChild(events, lifecycle, false) }
         def passed = script.toolUpdateRuleDocument([rule_id: 42, changes: [logChange()], confirm: true])
         then:
@@ -1421,9 +1424,11 @@ class NativeDocumentChild {
 class NativeDocumentDiagnosticChild extends NativeDocumentChild {
     boolean diagnostic
     NativeDocumentDiagnosticChild(List events, Map lifecycle, boolean diagnostic) { super(events, lifecycle); this.diagnostic = diagnostic }
+    // Rendering a broken rule sets Rule Machine's broken flag; the page marker's markup varies by firmware.
     Object selectActions(Map params) {
         events << 'selectActions'
-        [name: 'selectActions', sections: [[input: [[name: 'logmsg.1', value: '**Broken Condition**']], body: [[type: 'paragraph', description: diagnostic ? '<span style=color:red>**Broken Condition**</span>' : 'Log: **Broken Condition**']]]]]
+        if (diagnostic) lifecycle.broken = true
+        [name: 'selectActions', sections: [[input: [[name: 'logmsg.1', value: '**Broken Condition**']], body: [[type: 'paragraph', description: diagnostic ? "<span class='text-hubitat-danger'>**Broken Condition**</span>" : 'Log: **Broken Condition**']]]]]
     }
 }
 
@@ -1441,6 +1446,7 @@ class NativeDocumentButtonChild extends NativeDocumentChild {
     Object selectActionsX() {
         events << 'selectActionsX'
         if (nativeState.actNdx == null && !nativeState.actions && !nativeState.actionList) nativeState.actNdx = 1
+        if (brokenEditor) lifecycle.broken = true
         [name: 'selectActionsX', sections: [[body: brokenEditor ? [[type: 'paragraph', description: '<span style="color:red">**Broken Action**</span>']] : []]]]
     }
 }

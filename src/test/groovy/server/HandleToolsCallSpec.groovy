@@ -202,32 +202,6 @@ class HandleToolsCallSpec extends ToolSpecBase {
         inner.count == 0
     }
 
-    def "tool result rendering keeps nested brokenBefore metadata internal without mutating cached results"() {
-        given:
-        def canonicalBackup = [backupKey: 'rm-rule_7_baseline', brokenBefore: true,
-                               baselineReused: true]
-        def nestedBackup = [backupKey: 'rm-rule_7_required', brokenBefore: false]
-        def canonicalResult = [success: true, backup: canonicalBackup,
-                               patches: [[success: true, backup: nestedBackup]]]
-        settingsMap.useGateways = true
-        script.metaClass.toolGetHubInfo = { a -> canonicalResult }
-
-        when:
-        def response = mcpDriver.callTool('hub_get_info', [:])
-        def inner = mcpDriver.parseInner(response)
-
-        then: 'the internal diagnostic is absent from the public text payload'
-        inner.backup == [backupKey: 'rm-rule_7_baseline', baselineReused: true]
-        inner.patches[0].backup == [backupKey: 'rm-rule_7_required']
-        !response.result.containsKey('structuredContent')
-
-        and: 'recursive path copies leave internal consumers and terminal replay untouched'
-        canonicalBackup.brokenBefore == true
-        nestedBackup.brokenBefore == false
-        canonicalResult.backup.is(canonicalBackup)
-        canonicalResult.patches[0].backup.is(nestedBackup)
-    }
-
     def "tool result rendering preserves nested fields and arbitrary driver keys without mutating the source"() {
         given: 'a device-catalog-shaped result containing fields and other driver-controlled keys'
         def preferenceValues = new LinkedHashMap()
@@ -238,7 +212,7 @@ class HandleToolsCallSpec extends ToolSpecBase {
             preferences: preferenceValues,
             data: ['fields': 'literal data value', 'custom:data-key': 0]
         ]
-        def canonicalBackup = [backupKey: 'device_42', brokenBefore: true]
+        def canonicalBackup = [backupKey: 'device_42']
         def canonicalResult = [success: true, fields: fields, backup: canonicalBackup]
         script.metaClass.toolGetHubInfo = { a -> canonicalResult }
 
@@ -246,7 +220,7 @@ class HandleToolsCallSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_get_info', [:])
         def inner = mcpDriver.parseInner(response)
 
-        then: 'every supported public key survives exactly while internal backup metadata is filtered'
+        then: 'every supported public key survives exactly'
         inner.fields.preferences.keySet() == preferenceValues.keySet()
         inner.fields.preferences['fields'] == [value: 'all']
         inner.fields.preferences['getClass'] == [value: 'driver supplied']
@@ -258,7 +232,7 @@ class HandleToolsCallSpec extends ToolSpecBase {
         canonicalResult.fields.is(fields)
         fields.preferences.is(preferenceValues)
         preferenceValues['getClass'] == [value: 'driver supplied']
-        canonicalBackup.brokenBefore == true
+        canonicalResult.backup.is(canonicalBackup)
     }
 
     def "handleToolsCall returns a __preserialized sentinel on the under-cap success path (serialize-once)"() {

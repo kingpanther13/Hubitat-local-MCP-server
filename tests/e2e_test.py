@@ -8486,6 +8486,15 @@ def updated() {}
             assert "temperature of" in self._rm_page(app_id).lower()
             self._rm_refuse_all(app_id, [[native_change("condition", id=condition, capability="Temperature", fields=[
                 *fields(temp_a, ">", -2, relative_to=temp_b), native_field("state_#", "decimal", 70)])]])
+            # With "Display current values" on, RM prints each device's value in its condition label; a
+            # sensor with no reading yet (the Omni fixture never reports energy) shows null there and compiles.
+            self._rm_form(app_id, self._rm_step(self._rm_open(app_id), fields={"dValues": True}))
+            omni = self._ensure_perm_fixture("omni")
+            energy = self._rm_ids(self._rm_update(app_id, [native_change("condition", capability="Energy meter", fields=[
+                native_field("rDev_#", "capability.energyMeter", [str(omni)]), native_field("RelrDev_#", "enum", ">"),
+                native_field("state_#", "decimal", 70)])]))[0]
+            label = str(self._native_rule_document(app_id)["conditions"][energy])
+            assert "null" in label, f"the Omni fixture reported an energy value, so the no-reading label was not exercised: {label}"
         finally:
             self._delete_native(app_id)
 

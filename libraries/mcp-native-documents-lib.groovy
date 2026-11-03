@@ -86,10 +86,7 @@ private List _ndPageIssues(Object node) {
     def issues = []
     if (node instanceof List) node.each { child -> issues.addAll(_ndPageIssues(child)) }
     else if (node instanceof Map) {
-        if ((node.type ?: node.element) in ['paragraph', 'href']) {
-            def description = node.description?.toString() ?: ''
-            if (description =~ /(?is)<span\b[^>]*color\s*:\s*red[^>]*>[^<]*\*\*Broken [^*]+\*\*/) issues << 'Native editor reports a broken condition, trigger or action'
-        }
+        // A broken row is read from the rule's state (_ndRuleHealth), not from the rendered page.
         if (node.error || node.errors) issues << 'Native editor returned an error'
         ['sections', 'body', 'children'].each { key -> if (node.get(key) != null) issues.addAll(_ndPageIssues(node.get(key))) }
     }
