@@ -16854,6 +16854,7 @@ def toolGetAppConfig(args) {
     }
     def passwordInputNames = [] as Set
     def sections = []
+    def pageHrefs = []
     for (s in parsed.configPage.sections) {
         if (!(s instanceof Map)) continue
         def section = [title: stripAppConfigHtml(s.title), inputs: []]
@@ -16872,18 +16873,19 @@ def toolGetAppConfig(args) {
                 section.inputs << formFields.get(element == 'mode' ? 'mode[mode]' : 'label')
             } else if (element == 'component' && b.name) {
                 components << [name: b.name, title: stripAppConfigHtml(b.title), description: stripAppConfigHtml(b.description)].findAll { k, v -> v }
+            } else if (element == 'href' && (b.page || b.url)) {
+                Map link = b.page ? [page: b.page.toString()] : [url: b.url.toString()]
+                link.title = _uiPlainTitle(b.title)
+                def description = stripAppConfigHtml(b.description)
+                if (description && description != "Click to set") link.description = description
+                List disabled = isRmRule ? _appConfigDisabledRows(b.description) : []
+                if (disabled) link.disabled = disabled
+                pageHrefs << link
             } else if (element == 'paragraph') {
                 def rawHtml = (b.description ?: b.title)?.toString()
                 def text = stripAppConfigHtml(rawHtml)
                 if (!text || text == "Click to set") continue
-                List disabled = []
-                if (isRmRule) {
-                    def rows = rawHtml =~ /(?is)<span\s+style=['"]\s*color:\s*red;?\s*['"]\s*>\s*<i>(.*?)<\/i>\s*<\/span>/
-                    while (rows.find()) {
-                        String row = stripAppConfigHtml(rows.group(1))?.trim()
-                        if (row && !(row ==~ /(?i)Disabled Actions?/)) disabled << row
-                    }
-                }
+                List disabled = isRmRule ? _appConfigDisabledRows(rawHtml) : []
                 paragraphs << (disabled ? [text: text, disabled: disabled] : text)
             }
         }
@@ -16916,7 +16918,6 @@ def toolGetAppConfig(args) {
         endpoint: path
     ]
     if (parsed.configPage.error) result.configPageError = parsed.configPage.error
-    def pageHrefs = _rmPageHrefs(parsed.configPage as Map)
     if (pageHrefs) result.page.hrefs = pageHrefs
     if (pageName && parsed.configPage.name != null && parsed.configPage.name.toString() != pageName) {
         String formTool = isRmRule ? "hub_set_rule" : "hub_set_native_app"
@@ -16956,6 +16957,16 @@ def toolGetAppConfig(args) {
         result.settingsNote = "Raw settings omitted; pass includeSettings=true to include them."
     }
     return result
+}
+private List _appConfigDisabledRows(Object html) {
+    List disabled = []
+    if (!html) return disabled
+    def rows = html.toString() =~ /(?is)<span\s+style=['"]\s*color:\s*red;?\s*['"]\s*>\s*<i>(.*?)<\/i>\s*<\/span>/
+    while (rows.find()) {
+        String row = stripAppConfigHtml(rows.group(1))?.trim()
+        if (row && !(row ==~ /(?i)Disabled Actions?/)) disabled << row
+    }
+    return disabled
 }
 private Map _appConfigInput(Map element, Map field, Object settings) {
     if (field == null) return [name: element.name, type: element.type, title: stripAppConfigHtml(element.title)]
@@ -34620,21 +34631,6 @@ private Map _rmCollectInputSchema(Map configPage) {
     }
     return schema
 }
-private List _rmPageHrefs(Map configPage) {
-    def out = []
-    for (s in (configPage?.sections ?: [])) {
-        for (b in (s?.body ?: [])) {
-            if (b instanceof Map && b.element == "href" && (b.page || b.url)) {
-                Map link = b.page ? [page: b.page.toString()] : [url: b.url.toString()]
-                link.title = _uiPlainTitle(b.title)
-                def description = stripAppConfigHtml(b.description)
-                if (description && description != "Click to set") link.description = description
-                out << link
-            }
-        }
-    }
-    return out
-}
 private List _uiNavigationViolations(Map schema, Map values) {
     def problems = []
     schema?.each { rawName, meta ->
@@ -35887,7 +35883,7 @@ A single tool can also be switched off under **Advanced: Per-tool Overrides**. A
 - **hub_get_app_config** renders one page as opening it in the UI does, which runs the app's page code.
   - The page's links are in `page.hrefs`: `{page, title}` for a sub-page, `{url, title}` for an external link, with the summary the page prints under a link as `description`. A sub-page's own links are in its `page.hrefs` (Room Lighting's optionsOnPage is linked from onMeansPage). A linked page's inputs are not in `sections`: read them with `pageName`.
   - `controls` are the page's buttons and links as hub_set_rule(operation='form') (Rule Machine) or hub_set_native_app(operation='form') returns them; activate one there by its control_id after opening the same page.
-  - On a Rule Machine rule a paragraph holding a disabled action or trigger reads `{text, disabled: [...]}`, listing the text of each disabled row it holds. On selectActions (Button Rule: selectActionsX) a disabled action's `disable<N>` control reads 'Enable Action', and the control named `<N>.0.<bool>` carries that action's text; N is the action index, not the row position. The button toggles: never replay a click whose response was lost. hub_set_app_disabled disables the whole app.
+  - On a Rule Machine rule a paragraph holding a disabled action or trigger reads `{text, disabled: [...]}`, listing the text of each disabled row it holds; a `page.hrefs` entry whose summary holds one (the main page's action link) carries the same `disabled` list. On selectActions (Button Rule: selectActionsX) a disabled action's `disable<N>` control reads 'Enable Action', and the control named `<N>.0.<bool>` carries that action's text; N is the action index, not the row position. The button toggles: never replay a click whose response was lost. hub_set_app_disabled disables the whole app.
   - `pageNote` appears when the hub rendered another page than `pageName`: the app reaches that page only through its link, so open it in a form workflow.
   - `appType.system` and `appType.menu` are the fields hub_list_apps(scope='types') gives for every type at once.
   - `includeSettings=true` adds the raw settings map: 500-1000 app-encoded keys on large apps (Room Lighting stores per-device scene levels as `dm~<deviceId>~<scene>`). Secrets read `***redacted (password)***`: every setting the hub types as a password, on any page, and free-text settings with credential-shaped names (password, pass, secret, token, API key, credential, PIN, lock or alarm code, ...). OAuth accessToken settings follow the Hide access tokens setting. Page inputs are redacted the same way. With Hide passwords and credentials turned off in the MCP app's settings they read as stored. When the setting types cannot be read the map is withheld and `settingsNote` says why.
