@@ -11206,6 +11206,10 @@ def updated() {}
             assert len(rm_types) == 1, f"expected exactly one built-in 'Rule Machine' app type: {rm_types}"
             assert str(rm_types[0].get("id")) == str(parent_row["appTypeId"]), \
                 f"Rule Machine appTypeId {parent_row['appTypeId']} != its scope='types' id {rm_types[0].get('id')}"
+            parent_summary = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config", "args": {"appId": str(parent_row["id"]), "summary": True}})
+            assert (parent_summary.get("type"), parent_summary.get("namespace")) == ("Rule Machine", "hubitat"), \
+                f"the Rule Machine parent's summary should name its type and namespace (#575): {parent_summary}"
 
             self._set_rule(app_id, [{"part": "delete", "value": {"part": "action", "id": self._native_rule_document(app_id)["actions"][1]["id"]}}], strict=True)
 

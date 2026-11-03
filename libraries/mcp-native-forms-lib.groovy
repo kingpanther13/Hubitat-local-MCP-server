@@ -202,13 +202,13 @@ private void _nfWalk(Object node, Map fields, Map controls, List messages, List 
                 if (!exists && type != 'password' && current != null && current != '' && !(current instanceof Collection && current.isEmpty())) field.default_value = current
                 field.present = exists && current != null && current != '' && (!(current instanceof Collection) || !current.empty)
                 // The browser checks every stored value again on each navigation. Only the verdict is kept with
-                // the form, never the value, and a secret's verdict does not repeat it.
+                // the form: a secret's verdict does not repeat its value, and any verdict is bounded.
                 if (field.present && !device) {
                     Map checks = [:], storedValue = [:]
                     checks.put(name, [type: type, range: field.range, pattern: node.pattern])
                     storedValue.put(name, current)
                     List problems = _uiNavigationViolations(checks, storedValue)
-                    if (problems) field.nav_problem = _appConfigIsSecretSetting(name, type, current) ? 'the stored value fails the page check' : problems[0].problem
+                    if (problems) field.nav_problem = _appConfigIsSecretSetting(name, type, current) ? 'the stored value fails the page check' : problems[0].problem.toString().take(200)
                 }
                 field.options = _nfOptions(type == 'mode' ? model.modeMap : node.options)
                 if (device) {

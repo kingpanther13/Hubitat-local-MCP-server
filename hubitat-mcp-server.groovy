@@ -11111,8 +11111,7 @@ private boolean _uiValueIsEmpty(v, Map meta = null) {
 
 // A classic-app device picker: `capability.<name>` or a driver-specific `device.<DriverName>`.
 private boolean _isDevicePickerType(type) {
-    def t = type?.toString()
-    return t != null && (t.startsWith("capability.") || t.startsWith("device."))
+    return _nrIsDeviceType(type?.toString())
 }
 
 // A device picker value as the id list the update endpoint takes. configure/json renders it as an
