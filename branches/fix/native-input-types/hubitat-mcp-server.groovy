@@ -26617,7 +26617,7 @@ private void _nfWalk(Object node, Map fields, Map controls, List messages, List 
                     checks.put(name, [type: type, range: field.range, pattern: node.pattern])
                     storedValue.put(name, current)
                     List problems = _uiNavigationViolations(checks, storedValue)
-                    if (problems) field.nav_problem = _appConfigIsSecretSetting(name, type, current) ? 'the stored value fails the page check' : problems[0].problem
+                    if (problems) field.nav_problem = _appConfigIsSecretSetting(name, type, current) ? 'the stored value fails the page check' : problems[0].problem.toString().take(200)
                 }
                 field.options = _nfOptions(type == 'mode' ? model.modeMap : node.options)
                 if (device) {
@@ -34712,8 +34712,7 @@ private boolean _uiValueIsEmpty(v, Map meta = null) {
     return s.isEmpty() || s == "[]" || s == "null"
 }
 private boolean _isDevicePickerType(type) {
-    def t = type?.toString()
-    return t != null && (t.startsWith("capability.") || t.startsWith("device."))
+    return _nrIsDeviceType(type?.toString())
 }
 private _devicePickerIds(v) {
     if (v instanceof Map) return v.keySet().collect { it?.toString() }
