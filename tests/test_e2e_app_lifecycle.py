@@ -8,7 +8,6 @@ pytest.importorskip("requests")
 
 import e2e_test as et
 
-
 UPDATE_APP_ARGS = {"appId", "source", "sourceFile", "importUrl", "resave", "backup",
                    "expectedVersion", "triggerUpdated", "oauth", "confirm"}
 
