@@ -106,7 +106,18 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         ]
         // Merge overrides at top level
         overrides.each { k, v -> base[k] = v }
-        return JsonOutput.toJson(base)
+        return JsonOutput.toJson(withElements(base))
+    }
+
+    // The hub tags every page element: section inputs are element 'input', and a fixture body entry
+    // without a tag is a paragraph.
+    private static Map withElements(Map page) {
+        (page.configPage instanceof Map ? page.configPage.sections : null)?.each { section ->
+            if (!(section instanceof Map)) return
+            (section.input ?: []).each { if (it instanceof Map && !it.element) it.element = 'input' }
+            (section.body ?: []).each { if (it instanceof Map && !it.element) it.element = 'paragraph' }
+        }
+        page
     }
 
     // /installedapp/statusJson/<id>: appSettings types every setting of the app, whichever page
@@ -942,10 +953,10 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         when: 'includeSettings is NOT set (default false) -- the structured inputs path still runs'
         def result = script.toolGetAppConfig([appId: 35])
 
-        then: 'the password input is still listed (so the AI knows it is set) but its value is redacted, not the raw secret'
+        then: 'the password input is still listed (so the AI knows it is set) but carries no value, as the form engine reads it'
         def pw = result.page.sections[0].inputs.find { it.name == 'apiKey' }
         pw != null
-        pw.value == '***redacted (password)***'
+        pw.redacted == true && pw.has_value == true && !pw.containsKey('value')
 
         and: 'non-password inputs keep their real values'
         result.page.sections[0].inputs.find { it.name == 'username' }.value == 'alice'
@@ -980,7 +991,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         def result = script.toolGetAppConfig([appId: 35])
 
         then:
-        result.page.sections[0].inputs.find { it.name == 'apiKey' }.value == '***redacted (password)***'
+        result.page.sections[0].inputs.find { it.name == 'apiKey' }.with { redacted == true && !containsKey('value') }
         !JsonOutput.toJson(result).contains('hunter2-SECRET')
 
         cleanup:
@@ -1022,7 +1033,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         response.error == null
         def inner = mcpDriver.parseInner(response)
         inner.settings.apiKey == '***redacted (password)***'
-        inner.page.sections[0].inputs.find { it.name == 'apiKey' }.value == '***redacted (password)***'
+        inner.page.sections[0].inputs.find { it.name == 'apiKey' }.with { redacted == true && !containsKey('value') }
         !JsonOutput.toJson(inner).contains('hunter2-SECRET')
 
         where:
@@ -1051,8 +1062,8 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         then: 'the settings map redacts the password key even though the input carried no value'
         result.settings.apiKey == '***redacted (password)***'
 
-        and: 'the structured input reads the stored value, masked'
-        result.page.sections[0].inputs.find { it.name == 'apiKey' }.value == '***redacted (password)***'
+        and: 'the structured input reports a stored value without reading it'
+        result.page.sections[0].inputs.find { it.name == 'apiKey' }.with { redacted == true && has_value == true && !containsKey('value') }
 
         and: 'no secret anywhere in the result'
         !JsonOutput.toJson(result).contains('hunter2-SECRET')
@@ -1498,12 +1509,12 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         // 'missing app'), distinct from the 404/410-THROW not-found below (fingerprint
         // 'app not found (404)') where the page never renders at all.
         hubGet.register('/installedapp/configure/json/9999') { params ->
-            JsonOutput.toJson([
+            JsonOutput.toJson(withElements([
                 app       : null,
                 configPage: [:],
                 settings  : [:],
                 childApps : []
-            ])
+            ]))
         }
 
         when:
@@ -1523,12 +1534,12 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         settingsMap.useGateways = useGateways
         settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/9999') { params ->
-            JsonOutput.toJson([
+            JsonOutput.toJson(withElements([
                 app       : null,
                 configPage: [:],
                 settings  : [:],
                 childApps : []
-            ])
+            ]))
         }
 
         when:
@@ -1713,11 +1724,11 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         // Hub returns a well-formed app object but no configPage key -- can happen
         // for apps that have been partially uninstalled or on edge-case firmware builds.
         hubGet.register('/installedapp/configure/json/35') { params ->
-            JsonOutput.toJson([
+            JsonOutput.toJson(withElements([
                 app      : [id: 35, label: 'My Rule', name: 'Rule-5.1', disabled: false],
                 childApps: []
                 // configPage intentionally absent
-            ])
+            ]))
         }
 
         when:
@@ -1735,10 +1746,10 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         settingsMap.useGateways = useGateways
         settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params ->
-            JsonOutput.toJson([
+            JsonOutput.toJson(withElements([
                 app      : [id: 35, label: 'My Rule', name: 'Rule-5.1', disabled: false],
                 childApps: []
-            ])
+            ]))
         }
 
         when:
@@ -1760,12 +1771,12 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         given:
         settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params ->
-            JsonOutput.toJson([
+            JsonOutput.toJson(withElements([
                 app       : [id: 35, label: 'X', name: 'X', disabled: false],
                 configPage: [name: 'mainPage', title: 'X', sections: 'not-a-list'],
                 settings  : [:],
                 childApps : []
-            ])
+            ]))
         }
 
         when:
@@ -1784,12 +1795,12 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         settingsMap.useGateways = useGateways
         settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params ->
-            JsonOutput.toJson([
+            JsonOutput.toJson(withElements([
                 app       : [id: 35, label: 'X', name: 'X', disabled: false],
                 configPage: [name: 'mainPage', title: 'X', sections: 'not-a-list'],
                 settings  : [:],
                 childApps : []
-            ])
+            ]))
         }
 
         when:

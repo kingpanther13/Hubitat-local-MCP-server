@@ -27,10 +27,10 @@ class AccessTokenRedactionSpec extends ToolSpecBase {
                   installed: true, appType: [name: 'MCP Rule Server', namespace: 'mcp']],
             configPage: [name: 'mainPage', title: 'MCP Rule Server', install: true, sections: [[
                 title: 'Endpoints',
-                input: [[name: 'accessToken', type: 'text', title: 'Token', value: TOKEN]],
+                input: [[element: 'input', name: 'accessToken', type: 'text', title: 'Token', value: TOKEN]],
                 body: [
-                    [description: "<code>http://192.168.1.2/apps/api/35/mcp?access_token=${TOKEN}&debug=1</code>"],
-                    [description: 'Version: 4.5.2']
+                    [element: 'paragraph', description: "<code>http://192.168.1.2/apps/api/35/mcp?access_token=${TOKEN}&debug=1</code>"],
+                    [element: 'paragraph', description: 'Version: 4.5.2']
                 ]
             ]]],
             settings: [accessToken: TOKEN, pinToken: '1234',
