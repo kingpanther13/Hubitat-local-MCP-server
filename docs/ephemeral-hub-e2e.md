@@ -182,6 +182,9 @@ tests, `test_endpoint_access_toggles_block_their_own_transport` and
 In Actions, select **Hub E2E (ephemeral beta test hub)** and choose **Run workflow**.
 This separate workflow requests the beta test channel for both hub kinds.
 The provider must support the requested channel before it can be used.
+To test a PR branch, choose that branch in **Run workflow** (or use its name
+with `--ref` below). The branch must contain this workflow; update older PR
+branches from main first. One dispatch runs both beta jobs, JVM and OS.
 
 ```sh
 gh workflow run hub-e2e-ephemeral-beta.yml --ref main
