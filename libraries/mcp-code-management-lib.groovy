@@ -465,10 +465,9 @@ def toolGetAppConfig(args) {
 
     boolean includeSettings = args?.includeSettings == true
 
-    // The app's status record renders no page, so it stays cheap on apps with expensive pages. It also
-    // carries the app's state and the type's credentials, so only identity fields leave it.
+    // The thin per-app record renders no page, so it stays cheap on apps with expensive pages.
     if (args?.summary == true) {
-        def summaryPath = "/installedapp/statusJson/${appIdStr}"
+        def summaryPath = "/installedapp/json/${appIdStr}"
         mcpLog("info", "hub-admin", "hub_get_app_config appId=${appIdStr} summary mode")
         def summaryText
         try {
@@ -492,14 +491,14 @@ def toolGetAppConfig(args) {
         if (!(summaryParsed instanceof Map)) {
             return [success: false, error: "Unexpected response shape: the app summary is not a JSON object.", note: _appConfigNote('Retry once; if it fails again, read the app without summary=true'), appId: appIdStr as Integer, fingerprint: "top-level not a Map"]
         }
-        def installed = summaryParsed.installedApp
-        // The hub answers an unknown id with an empty record instead of a 404.
-        if (!(installed instanceof Map) || installed.id == null) {
-            return [success: false, error: "App ${appIdStr} not found (no installed app in ${summaryPath}).", note: _appConfigNote("Check the id with hub_list_apps(scope='instances')"), appId: appIdStr as Integer, fingerprint: 'app not found (404)']
-        }
-        def type = installed.appType instanceof Map ? installed.appType : [:]
-        return [success: true, id: installed.id, name: stripAppConfigHtml(installed.trueLabel ?: installed.label), type: type.name, namespace: type.namespace,
-                disabled: installed.disabled == true, user: type.user == true, parentAppId: installed.parentAppId, endpoint: summaryPath]
+        def summaryResult = [:]
+        summaryResult.putAll(summaryParsed)
+        // The record names the app's type but not its namespace; the installed app itself carries both.
+        try { summaryResult.namespace = getAppByAppId(appIdStr as Long)?.appType?.namespace?.toString() }
+        catch (Exception lookup) { mcpLog("warn", "hub-admin", "hub_get_app_config app ${appIdStr}: type namespace unreadable: ${lookup.message}") }
+        summaryResult.success = true
+        summaryResult.endpoint = summaryPath
+        return summaryResult
     }
 
     def path = "/installedapp/configure/json/${appIdStr}"
@@ -554,21 +553,22 @@ def toolGetAppConfig(args) {
         installed: parsed.app.installed == true
     ]
 
-    def redactedPw = _appConfigRedactedMarker()
     boolean isRmRule = _rmIsRuleAppType((appTypeRaw instanceof Map ? appTypeRaw.name : null)?.toString()) ||
         _rmIsRuleAppType(parsed.app.name?.toString())
     // Inputs and controls read as hub_set_native_app / hub_set_rule(operation:'form') return them, with the
     // same redaction: a page input is redacted by its own type or by a credential-shaped name.
     Map formFields = null
-    List formControls = null
+    Map form = null
     String formError = null
     try {
-        Map form = _nfPublic(_nfContext(appIdStr as Long, parsed as Map), [])
+        form = _nfPublic(_nfContext(appIdStr as Long, parsed as Map), [])
         formFields = form.get('fields').collectEntries { [(it.name): it] }
-        formControls = form.get('controls')
-    } catch (Exception unreadable) {
-        mcpLog("warn", "hub-admin", "hub_get_app_config app ${appIdStr}: page form unreadable: ${unreadable.message}")
-        formError = unreadable.message
+    } catch (IllegalStateException unmodelled) {
+        mcpLog("warn", "hub-admin", "hub_get_app_config app ${appIdStr}: page form unreadable: ${unmodelled.message}")
+        formError = unmodelled.message
+    } catch (Exception unexpected) {
+        mcpLogError("hub-admin", "hub_get_app_config app ${appIdStr}: page form read failed", unexpected)
+        formError = "${unexpected.class.simpleName}: ${unexpected.message}".toString()
     }
     def passwordInputNames = [] as Set
     def sections = []
@@ -578,7 +578,8 @@ def toolGetAppConfig(args) {
         def section = [title: stripAppConfigHtml(s.title), inputs: []]
         def paragraphs = []
         def components = []
-        // The page renders a section from its body; input repeats the body's inputs and nothing else.
+        // The page renders a section from its body. Each input also appears in the section's input list,
+        // which is read too, once per name, for a page whose body leaves an input out.
         List elements = (s.body instanceof List ? s.body : []) + (s.input instanceof List ? s.input.findAll { it instanceof Map && (it.element ?: 'input') == 'input' } : [])
         Set seen = [] as Set
         for (b in elements) {
@@ -588,23 +589,25 @@ def toolGetAppConfig(args) {
                 if (!seen.add(b.name.toString())) continue
                 if (b.type == 'password') passwordInputNames << b.name.toString()
                 section.inputs << _appConfigInput(b, formFields?.get(b.name.toString()), parsed.settings)
-            } else if (element in ['label', 'mode'] && formFields?.get(element == 'mode' ? 'mode[mode]' : 'label')) {
-                section.inputs << formFields.get(element == 'mode' ? 'mode[mode]' : 'label')
+            } else if (element in ['label', 'mode']) {
+                Map appField = formFields?.get(element == 'mode' ? 'mode[mode]' : 'label')
+                if (appField) section.inputs << appField
             } else if (element == 'component' && b.name) {
                 components << [name: b.name, title: stripAppConfigHtml(b.title), description: stripAppConfigHtml(b.description)].findAll { k, v -> v }
             } else if (element == 'href' && (b.page || b.url)) {
-                // A link to a sub-page or an external page, with the summary the page prints under it.
-                Map link = b.page ? [page: b.page.toString()] : [url: b.url.toString()]
+                // A link to an external page or a sub-page, with the summary the page prints under it. The page
+                // renders the external link whenever it has a url.
+                Map link = b.url ? [url: b.url.toString()] : [page: b.page.toString()]
                 link.title = _uiPlainTitle(b.title)
-                def description = stripAppConfigHtml(b.description)
-                if (description && description != "Click to set") link.description = description
+                def description = _appConfigShownText(b.description)
+                if (description) link.description = description
                 List disabled = isRmRule ? _appConfigDisabledRows(b.description) : []
                 if (disabled) link.disabled = disabled
                 pageHrefs << link
             } else if (element == 'paragraph') {
                 def rawHtml = (b.description ?: b.title)?.toString()
-                def text = stripAppConfigHtml(rawHtml)
-                if (!text || text == "Click to set") continue
+                def text = _appConfigShownText(rawHtml)
+                if (!text) continue
                 List disabled = isRmRule ? _appConfigDisabledRows(rawHtml) : []
                 paragraphs << (disabled ? [text: text, disabled: disabled] : text)
             }
@@ -614,10 +617,8 @@ def toolGetAppConfig(args) {
         sections << section
     }
 
-    def children = []
-    for (c in (parsed.childApps ?: [])) {
-        if (!(c instanceof Map)) continue
-        children << [id: c.id, label: stripAppConfigHtml(c.label ?: c.name), name: c.name]
+    def children = (parsed.childApps instanceof List ? parsed.childApps : []).findAll { it instanceof Map }.collect { c ->
+        [id: c.id, label: stripAppConfigHtml(c.label ?: c.name), name: c.name]
     }
     def childDevices = (parsed.childDevices instanceof List ? parsed.childDevices : []).findAll { it instanceof Map }.collect { d ->
         [id: d.id, name: stripAppConfigHtml(d.label ?: d.name)]
@@ -645,9 +646,14 @@ def toolGetAppConfig(args) {
         String formTool = isRmRule ? "hub_set_rule" : "hub_set_native_app"
         result.pageNote = "The hub rendered '${parsed.configPage.name}' instead of '${pageName}'; this app reaches that page only through its own link: open it with ${formTool}(operation:'form') and activate the href.".toString()
     }
-    // The controls hub_set_native_app / hub_set_rule(operation:'form') would offer on this page.
-    if (formControls != null) result.controls = formControls
-    else result.formError = formError
+    if (form != null) {
+        result.controls = form.get('controls')
+        // The page parts a form workflow cannot drive, such as another app's create button.
+        if (form.get('unsupported')) result.unsupported = form.get('unsupported')
+    } else {
+        result.formError = formError
+        result.note = _appConfigNote("Input values and controls are withheld: ${formError}. Read the stored values with includeSettings=true")
+    }
 
     int settingsCount = (parsed.settings instanceof Map) ? parsed.settings.size() : 0
     result.settingsKeyCount = settingsCount
@@ -673,6 +679,7 @@ def toolGetAppConfig(args) {
                 mcpLog("warn", "hub-admin", "hub_get_app_config: statusJson for app ${appIdStr} types none of ${untyped}; raw settings withheld")
                 result.settingsNote = "Raw settings withheld: /installedapp/statusJson/${appIdStr} carries no type for ${untyped.take(5).join(', ')}${untyped.size() > 5 ? " and ${untyped.size() - 5} more" : ''}, so a password among them could not be told apart. Retry; the config page above is unaffected.".toString()
             } else {
+                def redactedPw = _appConfigRedactedMarker()
                 def redacted = [:]
                 rawSettings.each { k, v ->
                     String key = k?.toString()
@@ -704,15 +711,22 @@ private List _appConfigDisabledRows(Object html) {
     return disabled
 }
 
+// The page's text without HTML, or null for the placeholder it prints under an input or link that holds nothing.
+private String _appConfigShownText(Object html) {
+    String text = stripAppConfigHtml(html)
+    return (text && !(text in ["Click to set", "Click to show"])) ? text : null
+}
+
 // One page input: the form engine's field, with a device picker's selected labels and HTML-free
-// description. When the form engine cannot model the page, only the input's identity, never its value.
-private Map _appConfigInput(Map element, Map field, Object settings) {
+// description. When the form engine has no field for it (the page could not be modelled), only the
+// input's identity, never its value.
+private Map _appConfigInput(Map element, Map field, Object storedSettings) {
     if (field == null) return [name: element.name, type: element.type, title: stripAppConfigHtml(element.title)]
     Map input = [:] + field
-    def description = stripAppConfigHtml(field.description)
-    if (description && description != "Click to set") input.description = description
+    def description = _appConfigShownText(field.description)
+    if (description) input.description = description
     else input.remove('description')
-    def stored = settings instanceof Map ? settings.get(field.name) : null
+    def stored = storedSettings instanceof Map ? storedSettings.get(field.name) : null
     if (_nrIsDeviceType(field.type?.toString()) && stored instanceof Map) input.selected = stored.collect { id, label -> [value: id.toString(), label: stripAppConfigHtml(label)] }
     return input
 }
@@ -888,7 +902,8 @@ private Map _submitAppDoneForm(Integer instanceId, String pageName, boolean requ
             if (i instanceof Map && i.name) {
                 def nm = i.name.toString()
                 if (i.value != null) pageValues.put(nm, i.value)
-                else if (i.defaultValue != null) pageValues.put(nm, i.defaultValue)
+                // A menu and a device picker show only their stored value; the page never fills them from defaultValue.
+                else if (i.defaultValue != null && i.type != "menu" && !_isDevicePickerType(i.type)) pageValues.put(nm, i.defaultValue)
             }
         }
     }
@@ -3187,7 +3202,7 @@ A transport drop can lose the response while the hub still commits this write; v
                     appId: [type: "string", description: "Installed-app ID (decimal). From hub_list_apps (scope='instances'), hub_list_rules, or the numeric id in the Hubitat UI URL (/installedapp/configure/<id>)."],
                     pageName: [type: "string", description: "The page to read instead of the default page: a page.hrefs[].page name from a page of this app already read."],
                     includeSettings: [type: "boolean", description: "Include the raw app-internal settings key-value map (default false). Set true only for power-user inspection.", default: false],
-                    summary: [type: "boolean", description: "Fast identity-only read: returns the app record (id, name, type, namespace, disabled, user, parentAppId), no config page; pageName/includeSettings ignored.", default: false]
+                    summary: [type: "boolean", description: "Fast identity-only read: returns the thin app record (id, name, type, disabled, user) and the type's namespace, no config page; pageName/includeSettings ignored.", default: false]
                 ],
                 required: ["appId"]
             ]

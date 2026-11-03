@@ -16,7 +16,7 @@ import support.ToolSpecBase
  *  - pageName arg: URL includes the page segment
  *  - includeSettings=false (default): settings key absent, settingsNote present
  *  - includeSettings=true: settings key populated
- *  - summary=true: identity-only fast path via /installedapp/statusJson (identity projection + error paths)
+ *  - summary=true: identity-only fast path via /installedapp/json (pass-through + namespace + error paths)
  *  - Empty hub response: returns success=false
  *  - Unknown appId (hub returns {app:null}): 'missing app' fingerprint, success=false
  *  - Not-found 404/410 throw (deleted / mid-delete / install shell whose config page
@@ -331,7 +331,8 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
             [element: 'paragraph', description: 'Set up Automation for the Lights in a Room'],
             [element: 'href', page: 'onMeansPage', title: 'Select Means to Activate Lights', description: 'Motion <b>active</b>'],
             [element: 'href', page: 'offMeansPage', title: '<b>Select Means to Turn Off Lights</b>', description: 'Click to set'],
-            [element: 'href', url: 'https://docs.example/lights', title: 'Documentation']
+            [element: 'href', url: 'https://docs.example/lights', title: 'Documentation'],
+            [element: 'href', page: 'helpPage', url: 'https://docs.example/help', title: 'Help', description: 'Click to show']
         ]]]
         hubGet.register('/installedapp/configure/json/35') { params ->
             makeAppConfigJson([configPage: [name: 'mainPage', title: 'Kitchen Lights', install: true, refreshInterval: null, sections: sections]])
@@ -345,7 +346,8 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         then:
         linked.page.hrefs == [[page: 'onMeansPage', title: 'Select Means to Activate Lights', description: 'Motion active'],
                               [page: 'offMeansPage', title: 'Select Means to Turn Off Lights'],
-                              [url: 'https://docs.example/lights', title: 'Documentation']]
+                              [url: 'https://docs.example/lights', title: 'Documentation'],
+                              [url: 'https://docs.example/help', title: 'Help']]
         linked.page.sections[0].paragraphs == ['Set up Automation for the Lights in a Room']
         !unlinked.page.containsKey('hrefs')
     }
@@ -431,6 +433,68 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         result.app.restrictedModes == [[value: '1', label: 'Day'], [value: '3', label: 'Night']]
     }
 
+    def "a page with more inputs than a form workflow caches still reads every value"() {
+        given:
+        settingsMap.enableRead = true
+        def inputs = (1..260).collect { [name: "f${it}".toString(), type: 'text', title: "Field ${it}".toString()] }
+        hubGet.register('/installedapp/configure/json/35') { params ->
+            makeAppConfigJson([settings: [f1: 'one', f260: 'last'], configPage: [name: 'mainPage', title: 'Big', install: true, refreshInterval: null,
+                sections: [[title: 'S', input: inputs, body: []]]]])
+        }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35])
+        def read = result.page.sections[0].inputs.collectEntries { [(it.name): it] }
+
+        then:
+        !result.containsKey('formError')
+        read.size() == 260
+        read.f1.value == 'one' && read.f260.value == 'last'
+    }
+
+    def "label and mode page elements read as the app's own name and mode fields; an input in body and input reads once"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/35') { params ->
+            makeAppConfigJson([
+                app: [id: 35, trueLabel: 'My App', label: 'My App', name: 'Community App', disabled: false, installed: true, parentAppId: null,
+                      restrictedModes: ['2'], appType: [name: 'Community App', namespace: 'acme', system: false]],
+                modeMap: ['1': 'Day', '2': 'Night'],
+                settings: [note: 'kept'],
+                configPage: [name: 'mainPage', title: 'Main', install: true, refreshInterval: null, sections: [[title: 'S',
+                    input: [[element: 'input', name: 'note', type: 'text', title: 'Note']],
+                    body: [[element: 'input', name: 'note', type: 'text', title: 'Note'],
+                           [element: 'label', title: 'Name this app'], [element: 'mode', title: 'Only in modes']]]]]
+            ])
+        }
+
+        when:
+        def inputs = script.toolGetAppConfig([appId: 35]).page.sections[0].inputs
+
+        then:
+        inputs*.name == ['note', 'label', 'mode[mode]']
+        inputs[0].value == 'kept'
+        inputs[1].value == 'My App' && inputs[1].type == 'text'
+        inputs[2].value == ['2'] && inputs[2].options == [[value: '1', label: 'Day'], [value: '2', label: 'Night']]
+        inputs.every { !it.containsKey('app_field') && !it.containsKey('sidecars') }
+    }
+
+    def "a community parent's create button is listed in unsupported, not dropped"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/35') { params ->
+            makeAppConfigJson([configPage: [name: 'mainPage', title: 'Main', install: true, refreshInterval: null, sections: [[title: 'S', input: [], body: [
+                [element: 'app', name: 'childRules', appName: 'Community Rule', namespace: 'acme', title: '+ Add New Rule']]]]]])
+        }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35])
+
+        then:
+        result.unsupported == ['Native element: app']
+        !result.controls.any { it.kind == 'create_child' }
+    }
+
     def "appType.menu is null when the app type declares no menu"() {
         given:
         settingsMap.enableRead = true
@@ -487,7 +551,9 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         then: 'the stored list is the value; an unset mode input reads null from its default; no side list or note'
         result.success == true
         inputs.find { it.name == 'mode1Override' }.value == ['1', '3']
-        inputs.find { it.name == 'mode2Override' }.with { value == null && value_source == 'default' }
+        def unsetMode = inputs.find { it.name == 'mode2Override' }
+        unsetMode.value == null
+        unsetMode.value_source == 'default'
         !result.containsKey('modeInputs')
         !result.containsKey('modeInputsNote')
     }
@@ -806,51 +872,29 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     }
 
     // -------------------------------------------------------------------------
-    // summary=true — identity-only fast path via /installedapp/statusJson/<id>
+    // summary=true — identity-only fast path via /installedapp/json/<id>
     // -------------------------------------------------------------------------
 
-    private static String statusRecord(Map installedApp) {
-        JsonOutput.toJson([installedApp: installedApp, appState: [[name: 'accessToken', value: 'state-secret']],
-                           appSettings: [[name: 'password', value: 'setting-secret']]])
-    }
-
-    private static Map ruleInstalledApp() {
-        [id: 35, name: 'Rule-5.1', label: 'My Rule <span style="color:red">(Paused)</span>', trueLabel: 'My Rule', disabled: false, parentAppId: 10,
-         appType: [name: 'Rule-5.1', namespace: 'hubitat', user: false, system: true, oauthClientSecret: 'type-secret']]
-    }
-
-    def "summary=true returns the identity fields of the status record and never renders the config page"() {
+    def "summary=true passes the thin identity record through with the type's namespace and never renders the config page"() {
         given:
         settingsMap.enableRead = true
         // configure/json deliberately NOT registered -- if summary mode rendered the
         // config page, HubInternalGetMock would throw on the unregistered path.
-        hubGet.register('/installedapp/statusJson/35') { params -> statusRecord(ruleInstalledApp()) }
+        // extraField proves unknown hub fields pass through untouched.
+        hubGet.register('/installedapp/json/35') { params ->
+            JsonOutput.toJson([id: 35, name: 'My Rule', type: 'Rule-5.1', disabled: false, user: false, extraField: 'future-firmware-key'])
+        }
+        script.metaClass.getAppByAppId = { Long id -> id == 35L ? [id: id, appType: [namespace: 'hubitat', name: 'Rule-5.1']] : null }
 
         when:
         def result = script.toolGetAppConfig([appId: 35, summary: true])
 
-        then: 'identity fields, the type with its namespace, and nothing else'
-        result == [success: true, id: 35, name: 'My Rule', type: 'Rule-5.1', namespace: 'hubitat', disabled: false, user: false,
-                   parentAppId: 10, endpoint: '/installedapp/statusJson/35']
-        !JsonOutput.toJson(result).contains('secret')
+        then: 'identity fields pass through as-is, with the namespace the installed app carries'
+        result == [id: 35, name: 'My Rule', type: 'Rule-5.1', disabled: false, user: false, extraField: 'future-firmware-key',
+                   namespace: 'hubitat', success: true, endpoint: '/installedapp/json/35']
 
-        and: 'only the status record was read'
-        hubGet.calls.every { it.path == '/installedapp/statusJson/35' }
-    }
-
-    def "summary=true reports an unknown id that the hub answers with an empty status record as not found"() {
-        given:
-        settingsMap.enableRead = true
-        hubGet.register('/installedapp/statusJson/9999') { params -> '{}' }
-
-        when:
-        def result = script.toolGetAppConfig([appId: 9999, summary: true])
-
-        then:
-        result.success == false
-        result.fingerprint == 'app not found (404)'
-        result.appId == 9999
-        result.error.toLowerCase().contains('not found')
+        and: 'only the thin endpoint was hit'
+        hubGet.calls.every { it.path == '/installedapp/json/35' }
     }
 
     @spock.lang.Unroll
@@ -858,7 +902,10 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableRead = true
-        hubGet.register('/installedapp/statusJson/35') { params -> statusRecord(ruleInstalledApp()) }
+        hubGet.register('/installedapp/json/35') { params ->
+            JsonOutput.toJson([id: 35, name: 'My Rule', type: 'Rule-5.1', disabled: false, user: false])
+        }
+        script.metaClass.getAppByAppId = { Long id -> [id: id, appType: [namespace: 'hubitat', name: 'Rule-5.1']] }
 
         when:
         def response = mcpDriver.callTool('hub_get_app_config', [appId: 35, summary: true])
@@ -874,17 +921,32 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         inner.namespace == 'hubitat'
         inner.disabled == false
         inner.user == false
-        inner.endpoint == '/installedapp/statusJson/35'
+        inner.endpoint == '/installedapp/json/35'
         !inner.containsKey('page')
 
         where:
         useGateways << [true, false]
     }
 
+    def "summary=true still answers when the installed app cannot be looked up, without a namespace"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/json/35') { params -> JsonOutput.toJson([id: 35, name: 'My Rule', type: 'Rule-5.1']) }
+        script.metaClass.getAppByAppId = { Long id -> throw new IllegalStateException('lookup refused') }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, summary: true])
+
+        then:
+        result.success == true
+        result.type == 'Rule-5.1'
+        result.namespace == null
+    }
+
     def "summary=true returns success=false when hub returns empty body"() {
         given:
         settingsMap.enableRead = true
-        hubGet.register('/installedapp/statusJson/99') { params -> '' }
+        hubGet.register('/installedapp/json/99') { params -> '' }
 
         when:
         def result = script.toolGetAppConfig([appId: 99, summary: true])
@@ -898,7 +960,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     def "summary=true returns success=false with fingerprint when response is not a JSON object"() {
         given:
         settingsMap.enableRead = true
-        hubGet.register('/installedapp/statusJson/35') { params -> '"just a string"' }
+        hubGet.register('/installedapp/json/35') { params -> '"just a string"' }
 
         when:
         def result = script.toolGetAppConfig([appId: 35, summary: true])
@@ -992,7 +1054,9 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         def result = script.toolGetAppConfig([appId: 35])
 
         then:
-        result.page.sections[0].inputs.find { it.name == 'apiKey' }.with { redacted == true && !containsKey('value') }
+        def apiKeyInput = result.page.sections[0].inputs.find { it.name == 'apiKey' }
+        apiKeyInput.redacted == true
+        !apiKeyInput.containsKey('value')
         !JsonOutput.toJson(result).contains('hunter2-SECRET')
 
         cleanup:
@@ -1034,7 +1098,9 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         response.error == null
         def inner = mcpDriver.parseInner(response)
         inner.settings.apiKey == '***redacted (password)***'
-        inner.page.sections[0].inputs.find { it.name == 'apiKey' }.with { redacted == true && !containsKey('value') }
+        def apiKeyInput = inner.page.sections[0].inputs.find { it.name == 'apiKey' }
+        apiKeyInput.redacted == true
+        !apiKeyInput.containsKey('value')
         !JsonOutput.toJson(inner).contains('hunter2-SECRET')
 
         where:
@@ -1064,7 +1130,10 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         result.settings.apiKey == '***redacted (password)***'
 
         and: 'the structured input reports a stored value without reading it'
-        result.page.sections[0].inputs.find { it.name == 'apiKey' }.with { redacted == true && has_value == true && !containsKey('value') }
+        def apiKeyInput = result.page.sections[0].inputs.find { it.name == 'apiKey' }
+        apiKeyInput.redacted == true
+        apiKeyInput.has_value == true
+        !apiKeyInput.containsKey('value')
 
         and: 'no secret anywhere in the result'
         !JsonOutput.toJson(result).contains('hunter2-SECRET')
@@ -1510,12 +1579,12 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         // 'missing app'), distinct from the 404/410-THROW not-found below (fingerprint
         // 'app not found (404)') where the page never renders at all.
         hubGet.register('/installedapp/configure/json/9999') { params ->
-            JsonOutput.toJson(withElements([
+            JsonOutput.toJson([
                 app       : null,
                 configPage: [:],
                 settings  : [:],
                 childApps : []
-            ]))
+            ])
         }
 
         when:
@@ -1535,12 +1604,12 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         settingsMap.useGateways = useGateways
         settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/9999') { params ->
-            JsonOutput.toJson(withElements([
+            JsonOutput.toJson([
                 app       : null,
                 configPage: [:],
                 settings  : [:],
                 childApps : []
-            ]))
+            ])
         }
 
         when:
@@ -1629,9 +1698,9 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     def "summary=true returns a clean not-found when the identity fetch throws a 404"() {
         given:
         settingsMap.enableRead = true
-        // A 404 from the status record gets the same graceful degrade as the full-mode
-        // path, via the summary catch block.
-        hubGet.register('/installedapp/statusJson/9999') { params ->
+        // The thin /installedapp/json record 404s when the app is gone -- same graceful
+        // degrade as the full-mode path, via the summary catch block.
+        hubGet.register('/installedapp/json/9999') { params ->
             throw new FakeHttpException(404)
         }
 
@@ -1725,11 +1794,11 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         // Hub returns a well-formed app object but no configPage key -- can happen
         // for apps that have been partially uninstalled or on edge-case firmware builds.
         hubGet.register('/installedapp/configure/json/35') { params ->
-            JsonOutput.toJson(withElements([
+            JsonOutput.toJson([
                 app      : [id: 35, label: 'My Rule', name: 'Rule-5.1', disabled: false],
                 childApps: []
                 // configPage intentionally absent
-            ]))
+            ])
         }
 
         when:
@@ -1747,10 +1816,10 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         settingsMap.useGateways = useGateways
         settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params ->
-            JsonOutput.toJson(withElements([
+            JsonOutput.toJson([
                 app      : [id: 35, label: 'My Rule', name: 'Rule-5.1', disabled: false],
                 childApps: []
-            ]))
+            ])
         }
 
         when:
@@ -1772,12 +1841,12 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         given:
         settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params ->
-            JsonOutput.toJson(withElements([
+            JsonOutput.toJson([
                 app       : [id: 35, label: 'X', name: 'X', disabled: false],
                 configPage: [name: 'mainPage', title: 'X', sections: 'not-a-list'],
                 settings  : [:],
                 childApps : []
-            ]))
+            ])
         }
 
         when:
@@ -1796,12 +1865,12 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         settingsMap.useGateways = useGateways
         settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params ->
-            JsonOutput.toJson(withElements([
+            JsonOutput.toJson([
                 app       : [id: 35, label: 'X', name: 'X', disabled: false],
                 configPage: [name: 'mainPage', title: 'X', sections: 'not-a-list'],
                 settings  : [:],
                 childApps : []
-            ]))
+            ])
         }
 
         when:
@@ -2290,8 +2359,8 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     def "non-bool input with defaultValue=true is still filtered (sentinel preserved)"() {
         given:
         settingsMap.enableRead = true
-        // capability.* inputs use defaultValue=true as a "has configured value" sentinel --
-        // NOT as the actual selection. The output's value field should be absent for these.
+        // capability.* inputs use defaultValue=true as a "has configured value" sentinel -- NOT as the
+        // selection: with nothing stored the picker reads null (value_source 'default'), never true.
         def json = JsonOutput.toJson(withElements([
             app       : [id: 35, trueLabel: 'My Rule', label: 'My Rule',
                          name: 'Rule-5.1', disabled: false, installed: true,
@@ -2596,6 +2665,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         result.page.sections[0].inputs == [[name: 'dup', type: 'text', title: 'First']]
         !result.containsKey('controls')
         result.formError == 'Native form contains ambiguous fields'
+        result.note.contains('Input values and controls are withheld') && result.note.contains('includeSettings=true')
     }
 
     @spock.lang.Unroll
