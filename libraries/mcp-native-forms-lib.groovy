@@ -188,7 +188,7 @@ private void _nfWalk(Object node, Map fields, Map controls, List messages, List 
                 field.filename = node.filename
                 field.value = node.filecontent
             } else {
-                ['range', 'min', 'max', 'step', 'description'].each { key -> if (node.containsKey(key)) field[key] = node[key] }
+                ['range', 'min', 'max', 'step', 'pattern', 'description'].each { key -> if (node.containsKey(key)) field[key] = node[key] }
                 def stored = model.settings instanceof Map ? model.settings.get(name) : null
                 boolean exists = model.settings instanceof Map && model.settings.containsKey(name)
                 def current = exists ? stored : node.defaultValue
@@ -200,6 +200,8 @@ private void _nfWalk(Object node, Map fields, Map controls, List messages, List 
                 // The page default the browser posts for an input with no stored value; a password's default is never posted.
                 if (!exists && type != 'password' && current != null && current != '' && !(current instanceof Collection && current.isEmpty())) field.default_value = current
                 field.present = exists && current != null && current != '' && (!(current instanceof Collection) || !current.empty)
+                // The browser checks a stored number, email or patterned value again on every navigation.
+                if (field.present && type != 'password' && (type in ['number', 'decimal', 'email'] || node.pattern) && !_appConfigMasksSetting(name, type, current)) field.nav_value = current
                 field.options = _nfOptions(type == 'mode' ? model.modeMap : node.options)
                 if (device) {
                     field.capability = type
@@ -278,7 +280,7 @@ private void _nfCache(String key, Map context) {
     Map cached = [app_id: context.app_id, page: [name: context.page.name], envelope: context.envelope, expires: context.expires,
                   fields: [:], controls: [:], backup: context.backup]
     context.get('fields').each { name, field ->
-        Map descriptor = field.findAll { k, v -> k in ['name', 'type', 'multiple', 'required', 'supported', 'device', 'disabled', 'present', 'capability', 'ignore', 'range', 'min', 'max', 'step', 'default_value', 'app_field', 'sidecars', 'hub_default'] }
+        Map descriptor = field.findAll { k, v -> k in ['name', 'type', 'multiple', 'required', 'supported', 'device', 'disabled', 'present', 'capability', 'ignore', 'range', 'min', 'max', 'step', 'pattern', 'default_value', 'app_field', 'sidecars', 'hub_default', 'nav_value'] }
         descriptor.option_keys = field.options == null ? null : field.options*.value
         if (field.app_field && name == 'label') descriptor.value = field.value
         cached.get('fields').put(name, descriptor)
@@ -330,7 +332,7 @@ private String _nfValue(Map field, Object value) {
 private Map _nfPublic(Map context, List optionsFor) {
     List fields = context.get('fields').values().collect { field ->
         Map result = [:] + field
-        ['device', 'ignore', 'capability', 'present', 'default_value', 'app_field', 'sidecars', 'hub_default'].each { result.remove(it) }
+        ['device', 'ignore', 'capability', 'present', 'default_value', 'app_field', 'sidecars', 'hub_default', 'nav_value'].each { result.remove(it) }
         if (field.type == 'password' && _redactsCredentials()) result.redacted = true
         // The whole-result pass keys on a setting's name, and here the token sits under value.
         else if (field.name ==~ /(?i)access_?token/ && result.value instanceof CharSequence && result.value && _redactsAccessTokens()) result.value = _accessTokenRedactedMarker()
@@ -419,11 +421,17 @@ private Map _nfPrepare(Long id, Map context, Map supplied, String activate, Stri
         if (control.kind == 'button' && !control.submit_on_change && supplied) throw new IllegalArgumentException('Submit fields separately before a button that reloads the native page')
         if (control.kind == 'button' && !control.submit_on_change) reloadPath = _nfReloadPath(id, context)
         if (control.kind in ['href', 'navigation'] && control.value != 'Cancel') {
-            List missing = context.get('fields').values().findAll { field ->
+            // The page validates the whole form before it navigates: what this submit posts, and what is stored.
+            Map schema = [:], values = [:]
+            context.get('fields').each { name, field ->
                 String key = _nfWire(field, '').keySet().first()
-                field.required && !field.disabled && !(body.containsKey(key) ? !(body[key] in ['', '[]']) : field.present)
-            }*.name
-            if (missing) throw new IllegalArgumentException("Complete required native fields before navigating: ${missing.join(', ')}")
+                if (!body.containsKey(key) && field.present && !field.containsKey('nav_value')) return
+                schema.put(name, [type: field.type, required: field.required, range: field.range, pattern: field.pattern, disabled: field.disabled, title: name])
+                values.put(name, body.containsKey(key) ? body[key] : field.nav_value)
+            }
+            List problems = _uiNavigationViolations(schema, values)
+            if (problems && problems.every { it.problem == 'required but empty' }) throw new IllegalArgumentException("Complete required native fields before navigating: ${problems*.name.join(', ')}")
+            if (problems) throw new IllegalArgumentException("Fix native fields before navigating: ${problems.collect { "${it.name}: ${it.problem}" }.join('; ')}")
         }
     }
     [body: body, control: control, reload: reloadPath, defaults: defaults, rejected: rejected, envelope: context.envelope, relabel: relabel]

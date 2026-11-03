@@ -171,6 +171,45 @@ class NativeFormsSpec extends ToolSpecBase {
         calls[0].body['settings[pick]'] == 'y'
     }
 
+    def 'navigation runs the page form checks on posted and stored values; a plain submit does not'() {
+        given:
+        model.settings.mail = 'not-an-email'
+        model.configPage.sections[0].input += [
+            [element: 'input', name: 'mail', type: 'email'],
+            [element: 'input', name: 'zip', type: 'text', pattern: '[0-9]{5}'],
+            [element: 'input', name: 'pick', type: 'menu', required: true, options: [['x': 'Ex']]],
+            [element: 'input', name: 'import', type: 'file-text', required: true]
+        ]
+        assert open().success
+        calls.clear()
+
+        when: 'a field submit saves a value the page would not navigate with, as the browser does'
+        def saved = submit([zip: 'abc'])
+        then:
+        saved.success
+        calls*.path == ['/installedapp/update/json']
+
+        when: 'Done is refused for the posted pattern miss and the stored email; hidden menu and file-text inputs are not checked'
+        assert open().success
+        calls.clear()
+        def done = submit([zip: 'abc'], '_action_update|Done|')
+        then:
+        !done.success
+        done.error.contains("zip: 'abc' does not match the required format")
+        done.error.contains("mail: 'not-an-email' is not a valid email address")
+        !done.error.contains('pick') && !done.error.contains('import')
+        calls.empty
+
+        when: 'valid values navigate'
+        model.settings.mail = 'a@example.com'
+        assert open().success
+        calls.clear()
+        def fixed = submit([zip: '12345'], '_action_update|Done|')
+        then:
+        fixed.success
+        calls.find { it.path == '/installedapp/update/json' }.body._action_update == 'Done'
+    }
+
     @Unroll
     def 'native #type value #value is refused before the request'() {
         given:

@@ -11013,14 +11013,19 @@ private Map _rmCollectInputSchema(Map configPage) {
     return schema
 }
 
-// The sub-pages a classic configPage links to, in page order: [[page, title], ...]. Links live
-// only in each section's `body` (element "href"); `input` carries no hrefs.
+// The links a classic configPage shows, in page order: a sub-page as [page, title] or an external
+// link as [url, title], with the summary the page prints under it. Links live only in each section's
+// `body` (element "href"); `input` carries no hrefs.
 private List _rmPageHrefs(Map configPage) {
     def out = []
     for (s in (configPage?.sections ?: [])) {
         for (b in (s?.body ?: [])) {
-            if (b instanceof Map && b.element == "href" && b.page) {
-                out << [page: b.page.toString(), title: _uiPlainTitle(b.title)]
+            if (b instanceof Map && b.element == "href" && (b.page || b.url)) {
+                Map link = b.page ? [page: b.page.toString()] : [url: b.url.toString()]
+                link.title = _uiPlainTitle(b.title)
+                def description = stripAppConfigHtml(b.description)
+                if (description && description != "Click to set") link.description = description
+                out << link
             }
         }
     }
@@ -11045,7 +11050,8 @@ private List _uiNavigationViolations(Map schema, Map values) {
     def problems = []
     schema?.each { rawName, meta ->
         def name = rawName.toString()
-        if (meta?.disabled == true || meta?.type == "button") return
+        // The browser's form check skips hidden inputs: a menu, a file-text and a download-text input are hidden.
+        if (meta?.disabled == true || meta?.type in ["button", "menu", "file-text", "download-text"]) return
         // The page pre-fills an unset input with its defaultValue, so navigation and Done see it alike.
         def v = _uiValueOrDefault(values?.get(name), meta as Map)
         def empty = _uiValueIsEmpty(v, meta as Map)
@@ -11097,7 +11103,7 @@ private _uiValueOrDefault(v, Map meta) {
     return (_uiValueIsEmpty(v, meta) && meta?.defaultValue != null) ? meta.defaultValue : v
 }
 
-// Empty as the browser sees it (appUI.js jsonSubmit). Enum selects and device pickers are empty with
+// Empty as the browser sees it (appUI.js jsonSubmit). Enum and mode selects and device pickers are empty with
 // no selection; they reach here as a List, a JSON-array string ("[]" from statusJson), or a device
 // id->label Map. A number input's whitespace sanitizes to "". Any other typed input is empty only at
 // zero length, so required text holding "null", "[]" or "  " passes, as in the browser.
@@ -11106,7 +11112,7 @@ private boolean _uiValueIsEmpty(v, Map meta = null) {
     if (v instanceof Collection) return v.findAll { it != null && it.toString().trim() }.isEmpty()
     if (v instanceof Map) return v.isEmpty()
     def t = meta?.type?.toString()
-    if (t != null && t != "enum" && !_isDevicePickerType(t)) {
+    if (t != null && !(t in ["enum", "mode"]) && !_isDevicePickerType(t)) {
         return (t in ["number", "decimal"]) ? v.toString().trim().isEmpty() : v.toString().isEmpty()
     }
     def s = v.toString().trim()
@@ -12482,7 +12488,7 @@ A single tool can also be switched off under **Advanced: Per-tool Overrides**. A
 - **hub_list_apps(scope='types')** lists community types (Apps Code, first) and built-in types. Each row adds `system`/`isBuiltIn` (true for built-in) and `menu`, the Apps/Automations/Integrations tab the type declares, null when it declares none or for a community type outside the hub's apps catalog (a child-app template). If the catalog read fails, community types still list, with `menu` null, no built-ins and a note.
 - **hub_list_device_dependents** — check it before deleting, disabling or replacing a device. `appsUsing` rows carry id, name (the app type), label, trueLabel and disabled.
 - **hub_get_app_config** renders one page as opening it in the UI does, which runs the app's page code.
-  - The pages a page links to are in `page.hrefs` as `{page, title}`; a sub-page's own links are in its `page.hrefs` (Room Lighting's optionsOnPage is linked from onMeansPage). A linked page's inputs are not in `sections`: read them with `pageName`.
+  - The page's links are in `page.hrefs`: `{page, title}` for a sub-page, `{url, title}` for an external link, with the summary the page prints under a link as `description`. A sub-page's own links are in its `page.hrefs` (Room Lighting's optionsOnPage is linked from onMeansPage). A linked page's inputs are not in `sections`: read them with `pageName`.
   - `controls` are the page's buttons and links as hub_set_rule(operation='form') (Rule Machine) or hub_set_native_app(operation='form') returns them; activate one there by its control_id after opening the same page.
   - On a Rule Machine rule a paragraph holding a disabled action or trigger reads `{text, disabled: [...]}`, listing the text of each disabled row it holds. On selectActions (Button Rule: selectActionsX) a disabled action's `disable<N>` control reads 'Enable Action', and the control named `<N>.0.<bool>` carries that action's text; N is the action index, not the row position. The button toggles: never replay a click whose response was lost. hub_set_app_disabled disables the whole app.
   - `pageNote` appears when the hub rendered another page than `pageName`: the app reaches that page only through its link, so open it in a form workflow.
