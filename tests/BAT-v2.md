@@ -4322,7 +4322,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: summary mode returns `success=true` with the thin identity record from `/installedapp/json/<id>` (id/name/type/disabled/user) and no `configPage`; full mode is unchanged. The AI reaches the tool via `hub_read_apps_code` (or `hub_manage_native_rules_and_apps`).
+**Expected**: summary mode returns `success=true` with the thin identity record from `/installedapp/json/<id>` (id/name/type/disabled/user) plus the type's `namespace`, and no `configPage`; full mode is unchanged. The AI reaches the tool via `hub_read_apps_code` (or `hub_manage_native_rules_and_apps`).
 
 **Failure modes**: summary mode returning the full rendered page (mode ignored); missing identity fields; an error on a valid installed-app id; the AI calling `hub_list_apps` and stopping there instead of exercising the summary read.
 
