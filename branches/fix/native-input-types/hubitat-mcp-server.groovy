@@ -16831,7 +16831,7 @@ def toolGetAppConfig(args) {
         id: parsed.app.id,
         label: stripAppConfigHtml(parsed.app.trueLabel ?: parsed.app.label),
         name: parsed.app.name,
-        appType: appTypeRaw instanceof Map ? [system: appTypeRaw.system == true, menu: appTypeRaw.menu] : null,
+        appType: appTypeRaw instanceof Map ? [namespace: appTypeRaw.namespace, name: appTypeRaw.name, system: appTypeRaw.system == true, menu: appTypeRaw.menu] : null,
         disabled: parsed.app.disabled == true,
         parentAppId: parsed.app.parentAppId,
         installed: parsed.app.installed == true
