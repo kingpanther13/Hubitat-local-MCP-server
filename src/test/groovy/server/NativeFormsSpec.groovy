@@ -147,7 +147,10 @@ class NativeFormsSpec extends ToolSpecBase {
         opened.unsupported.every { !it.startsWith('Input type') }
         ['onDate', 'mail', 'phone', 'hubPick', 'pick', 'import'].every { name -> opened.fields.find { it.name == name }.supported }
         opened.fields.find { it.name == 'pick' }.submit_on_change
-        opened.fields.find { it.name == 'export' }.with { !supported && filename == 'rule.json' && value == '{"a":1}' }
+        def exportField = opened.fields.find { it.name == 'export' }
+        !exportField.supported
+        exportField.filename == 'rule.json'
+        exportField.value == '{"a":1}'
 
         when:
         calls.clear()
@@ -208,6 +211,35 @@ class NativeFormsSpec extends ToolSpecBase {
         then:
         fixed.success
         calls.find { it.path == '/installedapp/update/json' }.body._action_update == 'Done'
+    }
+
+    def 'navigation re-checks stored values whatever the redaction setting, keeps only the verdict, and ignores a textarea pattern'() {
+        given:
+        settingsMap.redactCredentials = redact
+        model.settings.count = 11
+        model.settings.alarmCodeMail = 'stored-secret'
+        model.settings.notes = 'abc'
+        model.configPage.sections[0].input += [
+            [element: 'input', name: 'alarmCodeMail', type: 'email'],
+            [element: 'input', name: 'notes', type: 'textarea', pattern: '[0-9]+']
+        ]
+        assert open().success
+        def cached = JsonOutput.toJson(cachedContexts())
+        calls.clear()
+
+        when:
+        def done = submit([:], '_action_update|Done|')
+
+        then:
+        !done.success
+        done.error.contains('count: 11 is above the maximum 10')
+        done.error.contains('alarmCodeMail: the stored value fails the page check')
+        !done.error.contains('stored-secret') && !done.error.contains('notes')
+        !cached.contains('stored-secret') && !cached.contains('"abc"')
+        calls.empty
+
+        where:
+        redact << [true, false]
     }
 
     @Unroll
@@ -620,6 +652,8 @@ class NativeFormsSpec extends ToolSpecBase {
         model.configPage.sections[0].input << [element: 'input', name: 'lockedNumber', type: 'number', defaultValue: 4, disabled: true]
         model.configPage.sections[0].input << [element: 'input', name: 'tint', type: 'color', defaultValue: '#ff0000']
         model.configPage.sections[0].input << [element: 'input', name: 'staleChoice', type: 'enum', options: ['a', 'b'], defaultValue: 'z']
+        model.configPage.sections[0].input << [element: 'input', name: 'flagged', type: 'capability.switch', defaultValue: true]
+        model.configPage.sections[0].input << [element: 'input', name: 'pickOne', type: 'menu', options: [['x': 'Ex']], defaultValue: 'x']
         def opened = open()
         calls.clear()
         when:
@@ -637,6 +671,7 @@ class NativeFormsSpec extends ToolSpecBase {
         body['settings[tint]'] == '#ff0000'
         body['tint.type'] == 'color'
         !body.containsKey('settings[staleChoice]')
+        !body.containsKey('settings[flagged]') && !body.containsKey('settings[pickOne]')
         result.defaults_posted as Set == ['defaultChoice', 'luxOff', 'tint'] as Set
         result.defaults_not_posted*.name == ['staleChoice']
         result.defaults_not_posted[0].reason.contains('staleChoice')

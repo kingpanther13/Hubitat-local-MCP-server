@@ -11022,9 +11022,11 @@ private Map _rmCollectInputSchema(Map configPage) {
 //   number             -> integer (step 1) and >= 0, unless `range` "lo..hi" supplies the bounds
 //   decimal            -> at most two decimals (step 0.01), bounded by `range` when present
 //   range "lo..hi"     -> min/max; "*" leaves that side unbounded
-//   pattern            -> the whole value must match
+//   pattern            -> the whole value must match, on the text-like inputs a browser applies it to
+//                         (a textarea, date, time, color, select or checkbox ignores it)
 //   email              -> browser email syntax
-// Disabled inputs are skipped and empty optional values pass, as in the browser. Value writes
+// Disabled inputs and hidden inputs (menu, file-text, download-text) are skipped and empty optional
+// values pass, as in the browser. Value writes
 // and app-button clicks are never validated by the UI, so callers apply this to navigation only.
 // Returns [[name, title, problem], ...]; empty when the UI would submit.
 private List _uiNavigationViolations(Map schema, Map values) {
@@ -11059,10 +11061,15 @@ private List _uiNavigationViolations(Map schema, Map values) {
             if ((n - base).remainder(step).compareTo(BigDecimal.ZERO) != 0) {
                 problems << [name: name, title: title, problem: (t == "number" ? "${v} is not a whole number" : "${v} has more than two decimal places").toString()]
             }
-        } else if (meta?.pattern) {
+        } else if (meta?.pattern && !(t in ["textarea", "date", "time", "color", "bool", "enum", "mode"]) && !_isDevicePickerType(t)) {
             def matched
             try { matched = (v.toString() ==~ meta.pattern.toString()) }
-            catch (Exception badPattern) { matched = true }
+            catch (Exception badPattern) {
+                // The page's pattern is a browser regex; one Java cannot compile is left unchecked, as a browser
+                // skips a pattern it cannot compile.
+                mcpLog("debug", "hub-admin", "pattern of ${name} not checked: ${badPattern.message}")
+                matched = true
+            }
             if (!matched) problems << [name: name, title: title, problem: "'${v}' does not match the required format".toString()]
         } else if (t == "email" && !(v.toString() ==~ _uiEmailPattern())) {
             problems << [name: name, title: title, problem: "'${v}' is not a valid email address".toString()]
@@ -11081,6 +11088,8 @@ private String _uiEmailPattern() {
 // pre-fills. A Done built without it posts "" where the UI posts the default (a Room Lighting
 // "illuminance rises" condition then saves lux=null instead of the page's 100).
 private _uiValueOrDefault(v, Map meta) {
+    // A menu and a device picker show only their stored value; the page never fills them from defaultValue.
+    if (meta?.type == "menu" || _isDevicePickerType(meta?.type)) return v
     return (_uiValueIsEmpty(v, meta) && meta?.defaultValue != null) ? meta.defaultValue : v
 }
 
@@ -12473,8 +12482,9 @@ A single tool can also be switched off under **Advanced: Per-tool Overrides**. A
   - `controls` are the page's buttons and links as hub_set_rule(operation='form') (Rule Machine) or hub_set_native_app(operation='form') returns them; activate one there by its control_id after opening the same page.
   - On a Rule Machine rule a paragraph holding a disabled action or trigger reads `{text, disabled: [...]}`, listing the text of each disabled row it holds; a `page.hrefs` entry whose summary holds one (the main page's action link) carries the same `disabled` list. On selectActions (Button Rule: selectActionsX) a disabled action's `disable<N>` control reads 'Enable Action', and the control named `<N>.0.<bool>` carries that action's text; N is the action index, not the row position. The button toggles: never replay a click whose response was lost. hub_set_app_disabled disables the whole app.
   - `pageNote` appears when the hub rendered another page than `pageName`: the app reaches that page only through its link, so open it in a form workflow.
-  - `appType.system` and `appType.menu` are the fields hub_list_apps(scope='types') gives for every type at once.
-  - `includeSettings=true` adds the raw settings map: 500-1000 app-encoded keys on large apps (Room Lighting stores per-device scene levels as `dm~<deviceId>~<scene>`). Secrets read `***redacted (password)***`: every setting the hub types as a password, on any page, and free-text settings with credential-shaped names (password, pass, secret, token, API key, credential, PIN, lock or alarm code, ...). OAuth accessToken settings follow the Hide access tokens setting. Page inputs are redacted the same way. With Hide passwords and credentials turned off in the MCP app's settings they read as stored. When the setting types cannot be read the map is withheld and `settingsNote` says why.
+  - Each input is the field hub_set_native_app(operation='form') returns; a device picker adds `selected`, its devices with labels. `unsupported` lists page parts a form cannot drive, such as a community app's create button. When the page cannot be modelled, `formError` says why: inputs carry no values and there are no controls.
+  - `appType.namespace` and `appType.name` name the type; `appType.system` and `appType.menu` are the fields hub_list_apps(scope='types') gives for every type at once.
+  - `includeSettings=true` adds the raw settings map: 500-1000 app-encoded keys on large apps (Room Lighting stores per-device scene levels as `dm~<deviceId>~<scene>`). Secrets read `***redacted (password)***`: every setting the hub types as a password, on any page, and free-text settings with credential-shaped names (password, pass, secret, token, API key, credential, PIN, lock or alarm code, ...). OAuth accessToken settings follow the Hide access tokens setting. Page inputs read as in the form tools: a password input carries no value and `redacted: true`; a credential-named input reads the marker. With Hide passwords and credentials turned off in the MCP app's settings they read as stored. When the setting types cannot be read the map is withheld and `settingsNote` says why.
   - A type='mode' input's `value` is its stored setting. Day Lights uses ten of them for per-mode levels, gated by `useModeOverrides`; most apps use one as an "only during these modes" restriction.
   - **Mode gating in the built-in apps.** The hub has no "modes in use by" list, so read each app; resolve mode IDs with hub_list_modes.
     - **Notifier** — `modes` (mode ids) on `moreOptions`; restricts.

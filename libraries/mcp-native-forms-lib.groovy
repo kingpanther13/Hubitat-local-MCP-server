@@ -191,8 +191,8 @@ private void _nfWalk(Object node, Map fields, Map controls, List messages, List 
                 ['range', 'min', 'max', 'step', 'pattern', 'description'].each { key -> if (node.containsKey(key)) field[key] = node[key] }
                 def stored = model.settings instanceof Map ? model.settings.get(name) : null
                 boolean exists = model.settings instanceof Map && model.settings.containsKey(name)
-                // A device picker shows only its stored selection; the page never fills it from defaultValue.
-                def current = exists ? stored : (device ? null : node.defaultValue)
+                // A device picker and a menu show only their stored value; the page never fills them from defaultValue.
+                def current = exists ? stored : ((device || type == 'menu') ? null : node.defaultValue)
                 if (device && current instanceof Map) current = current.keySet().collect { it.toString() }
                 if (device && !field.multiple && current instanceof List) current = current ? current[0] : null
                 if (type == 'password') field.has_value = current != null && current != ''
@@ -201,8 +201,15 @@ private void _nfWalk(Object node, Map fields, Map controls, List messages, List 
                 // The page default the browser posts for an input with no stored value; a password's default is never posted.
                 if (!exists && type != 'password' && current != null && current != '' && !(current instanceof Collection && current.isEmpty())) field.default_value = current
                 field.present = exists && current != null && current != '' && (!(current instanceof Collection) || !current.empty)
-                // The browser checks a stored number, email or patterned value again on every navigation.
-                if (field.present && type != 'password' && (type in ['number', 'decimal', 'email'] || node.pattern) && !_appConfigMasksSetting(name, type, current)) field.nav_value = current
+                // The browser checks every stored value again on each navigation. Only the verdict is kept with
+                // the form, never the value, and a secret's verdict does not repeat it.
+                if (field.present && !device) {
+                    Map checks = [:], storedValue = [:]
+                    checks.put(name, [type: type, range: field.range, pattern: node.pattern])
+                    storedValue.put(name, current)
+                    List problems = _uiNavigationViolations(checks, storedValue)
+                    if (problems) field.nav_problem = _appConfigIsSecretSetting(name, type, current) ? 'the stored value fails the page check' : problems[0].problem
+                }
                 field.options = _nfOptions(type == 'mode' ? model.modeMap : node.options)
                 if (device) {
                     field.capability = type
@@ -263,7 +270,6 @@ private Map _nfContext(Long id, Map model, String from = null) {
     if (model.paramsForPage instanceof Map) envelope.paramsForPage = _nfEncode(groovy.json.JsonOutput.toJson(model.paramsForPage))
     Map context = [app_id: id, page: [name: page.name ?: '', title: _nfText(page.title)], fields: fields, controls: controls, messages: messages.unique(),
                    unsupported: unsupported.unique(), envelope: envelope, expires: now() + 300000L]
-    if (fields.size() > 256 || controls.size() > 256) throw new IllegalStateException('Native form exceeds 256 fields or controls')
     context
 }
 
@@ -276,12 +282,13 @@ private String _nfReloadPath(Long id, Map context) {
 }
 
 private void _nfCache(String key, Map context) {
+    if (context.get('fields').size() > 256 || context.controls.size() > 256) throw new IllegalStateException('Native form exceeds 256 fields or controls')
     // Retain only execution descriptors. Titles, messages, values and option labels stay in the current response,
     // except the app's label, which a mode[mode] submit posts again.
     Map cached = [app_id: context.app_id, page: [name: context.page.name], envelope: context.envelope, expires: context.expires,
                   fields: [:], controls: [:], backup: context.backup]
     context.get('fields').each { name, field ->
-        Map descriptor = field.findAll { k, v -> k in ['name', 'type', 'multiple', 'required', 'supported', 'device', 'disabled', 'present', 'capability', 'ignore', 'range', 'min', 'max', 'step', 'pattern', 'default_value', 'app_field', 'sidecars', 'hub_default', 'nav_value'] }
+        Map descriptor = field.findAll { k, v -> k in ['name', 'type', 'multiple', 'required', 'supported', 'device', 'disabled', 'present', 'capability', 'ignore', 'range', 'min', 'max', 'step', 'pattern', 'default_value', 'app_field', 'sidecars', 'hub_default', 'nav_problem'] }
         descriptor.option_keys = field.options == null ? null : field.options*.value
         if (field.app_field && name == 'label') descriptor.value = field.value
         cached.get('fields').put(name, descriptor)
@@ -333,7 +340,7 @@ private String _nfValue(Map field, Object value) {
 private Map _nfPublic(Map context, List optionsFor) {
     List fields = context.get('fields').values().collect { field ->
         Map result = [:] + field
-        ['device', 'ignore', 'capability', 'present', 'default_value', 'app_field', 'sidecars', 'hub_default', 'nav_value'].each { result.remove(it) }
+        ['device', 'ignore', 'capability', 'present', 'default_value', 'app_field', 'sidecars', 'hub_default', 'nav_problem'].each { result.remove(it) }
         if (field.type == 'password' && _redactsCredentials()) result.redacted = true
         // The whole-result pass keys on a setting's name, and here the token sits under value.
         else if (field.name ==~ /(?i)access_?token/ && result.value instanceof CharSequence && result.value && _redactsAccessTokens()) result.value = _accessTokenRedactedMarker()
@@ -422,15 +429,20 @@ private Map _nfPrepare(Long id, Map context, Map supplied, String activate, Stri
         if (control.kind == 'button' && !control.submit_on_change && supplied) throw new IllegalArgumentException('Submit fields separately before a button that reloads the native page')
         if (control.kind == 'button' && !control.submit_on_change) reloadPath = _nfReloadPath(id, context)
         if (control.kind in ['href', 'navigation'] && control.value != 'Cancel') {
-            // The page validates the whole form before it navigates: what this submit posts, and what is stored.
+            // The page validates the whole form before it navigates: what this submit posts, required inputs
+            // left empty, and the stored values, whose verdict was taken when the page was read.
             Map schema = [:], values = [:]
+            List stored = []
             context.get('fields').each { name, field ->
                 String key = _nfWire(field, '').keySet().first()
-                if (!body.containsKey(key) && field.present && !field.containsKey('nav_value')) return
-                schema.put(name, [type: field.type, required: field.required, range: field.range, pattern: field.pattern, disabled: field.disabled, title: name])
-                values.put(name, body.containsKey(key) ? body[key] : field.nav_value)
+                if (!body.containsKey(key) && field.present) {
+                    if (field.nav_problem && !field.disabled) stored << [name: name, problem: field.nav_problem]
+                    return
+                }
+                schema.put(name, [type: field.type, required: field.required, range: field.range, pattern: field.pattern, disabled: field.disabled])
+                values.put(name, body.containsKey(key) ? body[key] : null)
             }
-            List problems = _uiNavigationViolations(schema, values)
+            List problems = _uiNavigationViolations(schema, values) + stored
             if (problems && problems.every { it.problem == 'required but empty' }) throw new IllegalArgumentException("Complete required native fields before navigating: ${problems*.name.join(', ')}")
             if (problems) throw new IllegalArgumentException("Fix native fields before navigating: ${problems.collect { "${it.name}: ${it.problem}" }.join('; ')}")
         }

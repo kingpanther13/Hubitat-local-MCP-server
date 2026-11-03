@@ -184,6 +184,20 @@ class NativeRuntimeSpec extends ToolSpecBase {
         value << ['2026-02-30', '2026-11-10T15:35', '10 Nov 2026', 20261110]
     }
 
+    def 'a device.* picker compares as device ids, as capability pickers do'() {
+        expect:
+        script._nrComparableSetting('device.VirtualSwitch', ['7', '12']) == script._nrComparableSetting('device.VirtualSwitch', [12, 7])
+    }
+
+    def 'a change carrying an impossible date is refused when the change is checked, before any write'() {
+        when:
+        script._ndValidateFields([[name: 'atDate#', type: 'date', value: '2026-02-30']], [], 'selector')
+        then:
+        def error = thrown(IllegalArgumentException)
+        error.message == 'Date required as yyyy-MM-dd for atDate#'
+        calls.empty
+    }
+
     def 'setting rows take the type the page declares, with device ids checked for every device picker'() {
         expect:
         ['date', 'email', 'phone', 'hub', 'icon', 'file-text', 'menu', 'some-future-type'].each { type ->

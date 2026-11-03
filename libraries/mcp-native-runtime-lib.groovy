@@ -85,19 +85,19 @@ private Object _nrComparableSetting(String type, Object value) {
 boolean _nrIsDeviceType(String type) { type == 'capability' || type?.startsWith('capability.') == true || type?.startsWith('device.') == true }
 
 // One native setting row: name, type and a non-null scalar or list value, with positive device ids
-// for a device picker. The type is the one the page declares; callers check it against the page.
+// for a device picker. Authoring callers check the type against the page first (_nmValidateInputs);
+// restores and internal writes pass a stored or fixed type.
 private void _nrCheckSettingRow(Object row) {
     if (!(row instanceof Map) || !(row.name instanceof String) || !row.name || !(row.type instanceof String) || !row.type.trim() || !row.containsKey('value') || row.keySet().any { !(it in ['name', 'type', 'value']) }) {
         throw new IllegalArgumentException('Each setting requires name, type and value')
     }
-    boolean device = _nrIsDeviceType(row.type)
     if (row.value == null) throw new IllegalArgumentException('Null setting values are unsupported; they do not reliably clear native settings')
     if (row.value instanceof List) {
         if (row.value.any { !(it instanceof String || it instanceof Number || it instanceof Boolean) }) throw new IllegalArgumentException('Setting lists require scalar values')
     } else if (!(row.value instanceof String || row.value instanceof Number || row.value instanceof Boolean)) {
         throw new IllegalArgumentException('Unsupported native setting value')
     }
-    if (device && (row.value instanceof List ? row.value : [row.value]).any { !it.toString().isLong() || it.toString().toLong() <= 0L }) throw new IllegalArgumentException('Capability settings require positive device IDs')
+    if (_nrIsDeviceType(row.type) && (row.value instanceof List ? row.value : [row.value]).any { !it.toString().isLong() || it.toString().toLong() <= 0L }) throw new IllegalArgumentException('Device picker settings require positive device IDs')
 }
 
 Map _nrWriteSettings(Long ruleId, List rows) {
