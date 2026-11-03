@@ -1601,6 +1601,25 @@ def helperMethod() { return "ok" }
         result.note.contains('syntax errors')
     }
 
+    def "hub_update_library maps the hub's database refusal of a colliding save to a retryable note"() {
+        given:
+        enableWrite()
+        hubGet.register('/library/list/single/data/42') { params -> SAMPLE_RESPONSE_JSON }
+        script.metaClass.uploadHubFile = { String name, byte[] content -> }
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
+            [success: false, message: 'java.sql.SQLException: Failed to update library']
+        }
+
+        when:
+        def result = script.toolUpdateLibraryCode([libraryId: '42', source: SAMPLE_SOURCE, confirm: true])
+
+        then:
+        result.success == false
+        result.retryable == true
+        result.note.contains('retry')
+        !result.note.contains('syntax')
+    }
+
     @spock.lang.Unroll
     def "hub_update_library via dispatch reports failure envelope when saveOrUpdateJson returns success=false (useGateways=#useGateways)"() {
         given:

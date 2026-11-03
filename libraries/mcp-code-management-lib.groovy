@@ -1795,13 +1795,18 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args, Map packa
 
             return successResult
         } else {
-            return [
+            def out = [
                 success: false,
                 error: errorMsg ?: "Update failed - the hub returned an error",
                 (idParam): itemId,
                 note: "Check the Groovy source code for syntax errors or compilation issues.",
                 lastBackup: formatTimestamp(state.lastBackupTimestamp)
             ]
+            if (_isConcurrentSaveRefusal(errorMsg)) {
+                out.note = _concurrentSaveNote(type)
+                out.retryable = true
+            }
+            return out
         }
     } catch (Exception e) {
         mcpLogError("hub-admin", "${type} update failed", e)
@@ -1876,6 +1881,16 @@ private Map _staleVersionRejection(parsed) {
     if (!msg || !(msg =~ /(?i)version does not match/)) return null
     def m = msg =~ /(?i)current version is (\d+)/
     return [currentVersion: m.find() ? (m.group(1) as Integer) : null]
+}
+
+// A database refusal of the save ("java.sql.SQLException: Failed to update device type") comes from
+// another save of the same item landing at the same moment, not from the source, so it is retryable.
+private boolean _isConcurrentSaveRefusal(msg) {
+    return msg != null && (msg.toString() =~ /SQLException/).find()
+}
+
+private String _concurrentSaveNote(String type) {
+    return "The hub's database refused the save, which happens when another save of this ${type} runs at the same moment; the source itself was not rejected. Wait a moment, re-read the ${type} (its version may have changed), then retry. Send saves of the same ${type} one at a time.".toString()
 }
 
 private Map _versionConflictResult(String type, String idParam, itemId, sentVersion, currentVersion) {
@@ -2610,12 +2625,17 @@ def toolUpdateLibraryCode(args) {
         if (result?.success == false) {
             def msg = result?.message ?: "Hub returned failure"
             mcpLog("warn", "hub-admin", "Library update failed: ${msg}")
-            return [
+            def out = [
                 success: false,
                 error: "Library update failed: ${msg}",
                 libraryId: libraryId,
                 note: "Check the Groovy source code for syntax errors or compilation issues."
             ]
+            if (_isConcurrentSaveRefusal(msg)) {
+                out.note = _concurrentSaveNote("library")
+                out.retryable = true
+            }
+            return out
         }
 
         mcpLog("info", "hub-admin", "Library ID ${libraryId} updated successfully (mode: ${sourceMode})")

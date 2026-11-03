@@ -2607,6 +2607,29 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         result.sourceMode == 'source'
     }
 
+    def "hub_update_driver maps the hub's database refusal of a colliding save to a retryable note, not a syntax hint"() {
+        given:
+        enableWrite()
+        hubGet.register('/driver/ajax/code') { params ->
+            '{"status": "ok", "version": 4, "source": "metadata { }"}'
+        }
+        script.metaClass.uploadHubFile = { String name, byte[] content -> }
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
+            [success: false, message: 'java.sql.SQLException: Failed to update device type']
+        }
+
+        when:
+        def result = script.toolUpdateDriverCode([driverId: '55', source: 'metadata { v2 }', confirm: true])
+
+        then:
+        result.success == false
+        result.error.contains('SQLException')
+        result.retryable == true
+        result.note.contains('retry')
+        !result.note.contains('syntax')
+        !result.containsKey('conflict')
+    }
+
     @spock.lang.Unroll
     def "hub_update_driver via dispatch (single mode) delegates with driver paths (useGateways=#useGateways)"() {
         given:
