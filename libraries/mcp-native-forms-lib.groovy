@@ -191,7 +191,8 @@ private void _nfWalk(Object node, Map fields, Map controls, List messages, List 
                 ['range', 'min', 'max', 'step', 'pattern', 'description'].each { key -> if (node.containsKey(key)) field[key] = node[key] }
                 def stored = model.settings instanceof Map ? model.settings.get(name) : null
                 boolean exists = model.settings instanceof Map && model.settings.containsKey(name)
-                def current = exists ? stored : node.defaultValue
+                // A device picker shows only its stored selection; the page never fills it from defaultValue.
+                def current = exists ? stored : (device ? null : node.defaultValue)
                 if (device && current instanceof Map) current = current.keySet().collect { it.toString() }
                 if (device && !field.multiple && current instanceof List) current = current ? current[0] : null
                 if (type == 'password') field.has_value = current != null && current != ''
