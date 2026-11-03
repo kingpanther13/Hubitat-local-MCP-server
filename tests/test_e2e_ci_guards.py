@@ -250,6 +250,38 @@ REQUEST = (ROOT / ".github/workflows/hub-e2e-ephemeral-request.yml").read_text()
 FORK_SHA = "b" * 40
 
 
+@pytest.mark.parametrize("event, channel, dispatched", [
+    ("workflow_dispatch", "beta", True),
+    ("workflow_dispatch", "stable", True),
+    ("push", "", True),
+    ("pull_request_target", "", True),
+    ("push", "beta", False),
+    ("pull_request_target", "beta", False),
+    ("workflow_dispatch", "betaa", False),
+])
+def test_beta_provider_request_requires_explicit_manual_selection(event, channel, dispatched, tmp_path):
+    script = '''
+gh() { printf '%s\\n' "$@" > "$STUB/dispatched"; return 44; }
+export -f gh
+printf 'public key' > "$STUB/key"
+bash "$SCRIPT" hub "$STUB/key" "$STUB/results"
+'''
+    env = {**os.environ, "STUB": tmp_path.as_posix(),
+           "SCRIPT": (ROOT / ".github/scripts/request_ephemeral_hub.sh").as_posix(),
+           "GITHUB_REPOSITORY": "owner/repo", "GITHUB_EVENT_NAME": event,
+           "HUB_KIND": "jvm", "HUB_CHANNEL": channel, "PROVIDER": "owner/provider",
+           "PUBLIC_SHA": FORK_SHA, "PUBLIC_REPO": "owner/repo", "CONSUMER_RUN_ID": "123",
+           "GH_TOKEN": "test-token"}
+    result = subprocess.run([_bash(), "-c", script], env=env, capture_output=True, text=True)
+    assert (tmp_path / "dispatched").exists() is dispatched, result.stdout + result.stderr
+    if dispatched:
+        arguments = (tmp_path / "dispatched").read_text().splitlines()
+        assert ("firmware_channel=beta" in arguments) is (channel == "beta")
+        assert result.returncode == 44
+    else:
+        assert result.returncode != 0
+
+
 def _lane_relevance(file_lists):
     """For each file list (None = unread), lane_gate.js's physical verdict and ephemeral relevance."""
     code = ("const { decide, touchesLane } = require(process.argv[1]);"
@@ -344,6 +376,23 @@ def _run_block(workflow, marker):
 
 def _bash():
     return shutil.which("bash") or "bash"
+
+
+def test_beta_lane_is_a_separate_manual_workflow():
+    beta = (ROOT / ".github/workflows/hub-e2e-ephemeral-beta.yml").read_text()
+    head, jobs = _jobs(beta)
+    triggers = head.split("\non:\n", 1)[1].split("\npermissions:", 1)[0]
+    assert triggers.strip() == "workflow_dispatch:"
+    assert "group: hub-e2e-ephemeral-beta-${{ github.ref }}" in head
+    assert "HUB_CHANNEL: beta" in jobs["request-hub"]
+    assert "if: github.event_name == 'workflow_dispatch'" in jobs["request-hub"]
+    assert "HUB_CHANNEL" not in EPHEMERAL and "inputs.channel" not in EPHEMERAL
+    assert KIND_MATRIX in jobs["request-hub"] and KIND_MATRIX in jobs["e2e"]
+    assert "name: Request ephemeral hub (${{ matrix.kind }})" in jobs["request-hub"]
+    assert 'export JOB="Request ephemeral hub ($KIND)"' in jobs["e2e"]
+    assert "name: e2e (ephemeral beta hub, ${{ matrix.kind }})" in jobs["e2e"]
+    assert "secrets." not in jobs["e2e"] and "contents: write" not in beta
+    assert "Report provider-run results" in jobs["e2e"]
 
 
 def test_ephemeral_pr_code_runs_only_under_pull_request():

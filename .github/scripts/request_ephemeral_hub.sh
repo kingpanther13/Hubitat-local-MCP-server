@@ -17,7 +17,7 @@
 # Env: GITHUB_REPOSITORY; GH_TOKEN (actions:read, or the provider token for `hub`);
 #      HUB_KIND (os|jvm, default os) picks the hub and the test run's key;
 #      `hub` also needs PROVIDER, PUBLIC_SHA, PUBLIC_REPO, CONSUMER_RUN_ID, and takes
-#      RUN_SUITE (true|false, default true).
+#      RUN_SUITE (true|false, default true), HUB_CHANNEL (stable|beta, default stable).
 set -euo pipefail
 
 fail() { echo "::error::$1"; exit 1; }
@@ -110,11 +110,18 @@ hub() {
   : "${PROVIDER:?}" "${PUBLIC_SHA:?}" "${PUBLIC_REPO:?}" "${CONSUMER_RUN_ID:?}" "${GH_TOKEN:?}"
   local suite="${RUN_SUITE:-true}" since run_id="" deadline=$((SECONDS + 1500))
   [[ "$suite" =~ ^(true|false)$ ]] || fail "RUN_SUITE must be true or false."
+  local channel="${HUB_CHANNEL:-stable}"
+  local channel_args=()
+  [[ "$channel" =~ ^(stable|beta)$ ]] || fail "HUB_CHANNEL must be stable or beta."
+  if [ "$channel" = beta ]; then
+    [ "${GITHUB_EVENT_NAME:-}" = workflow_dispatch ] || fail "The beta channel requires a manual dispatch."
+    channel_args=(-f firmware_channel=beta)
+  fi
   since="$(date -u -d '-30 seconds' +%Y-%m-%dT%H:%M:%SZ)"
   gh workflow run ephemeral-hub.yml --repo "$PROVIDER" \
     -f public_key="$(base64 -w0 "$1")" -f public_sha="$PUBLIC_SHA" -f public_repo="$PUBLIC_REPO" \
     -f consumer_repo="$GITHUB_REPOSITORY" -f consumer_run_id="$CONSUMER_RUN_ID" \
-    -f seconds=7200 -f watchdog=false -f kind="$kind" -f run_suite="$suite" >/dev/null
+    -f seconds=7200 -f watchdog=false -f kind="$kind" -f run_suite="$suite" "${channel_args[@]}" >/dev/null
   # The provider's run-name carries "for <consumer repo>#<consumer run id> (<kind>, ...)"; both kinds'
   # runs share the run id, so the kind picks this one.
   export MATCH=" for ${GITHUB_REPOSITORY}#${CONSUMER_RUN_ID} (${kind}," SINCE="$since"
