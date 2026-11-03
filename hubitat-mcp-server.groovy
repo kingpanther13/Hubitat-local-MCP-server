@@ -5783,7 +5783,7 @@ def getGatewayConfig() {
                 hub_create_driver: "Install new driver. To save context prefer importUrl (hub fetches the source) or hub_write_file + sourceFile; inline source for stubs only. For 1: source|sourceFile|importUrl. For >1: USE BULK (single round-trip: installs=[{source|sourceFile|importUrl},...]). confirm=true",
                 hub_update_app: "Modify existing app code (CRITICAL), and/or enable OAuth on it. To save context prefer importUrl (hub fetches the source itself) or hub_write_file + sourceFile over inline source. Args: appId, source|sourceFile|importUrl|resave, oauth ({enabled,client_id?,client_secret?,refresh_secret?} -- enable/configure OAuth, returns the clientId/secret), confirm=true",
                 hub_update_driver: "Modify existing driver code (CRITICAL). For 1 driver: driverId+source|sourceFile|importUrl|resave. For >1 drivers: USE BULK (single round-trip: updates=[{driverId,sourceFile|importUrl},...]). To save context prefer importUrl (hub fetches) or hub_write_file + sourceFile over inline. confirm=true",
-                hub_delete_item: "Permanently delete an app/driver/library (DESTRUCTIVE, auto-backs up). Args: type (app|driver|library), item_id, confirm=true",
+                hub_delete_item: "Permanently delete an app/driver/library (DESTRUCTIVE, auto-backs up). Args: type (app|driver|library), id, confirm=true",
                 hub_create_library: "Install new Groovy library (#include namespace.Name). To save context prefer importUrl (hub fetches the source) or hub_write_file + sourceFile; inline source for stubs only. Args: source|sourceFile|importUrl, confirm=true",
                 hub_update_library: "Modify existing library code. To save context prefer importUrl (hub fetches) or hub_write_file + sourceFile over inline. Args: libraryId, source|sourceFile|importUrl|resave, confirm=true",
                 hub_install_bundle: "Install a code bundle (.zip) from a URL the way HPM does (hub fetches+unpacks into Libraries/Apps/Drivers Code). Args: importUrl (zip), installer?, confirm=true",
@@ -7145,14 +7145,14 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
 
         // Hub Admin App/Driver Management
         case "hub_get_source": return toolGetSource(args)
-        case "hub_create_app": return toolInstallApp(args)
-        case "hub_create_driver": return toolInstallDriver(args)
+        case "hub_create_app": return toolCreateItem(args + [type: "app"])
+        case "hub_create_driver": return toolCreateItem(args + [type: "driver"])
         case "hub_update_app": return toolUpdateAppCode(args)
         case "hub_update_driver": return toolUpdateDriverCode(args)
         case "hub_delete_item": return toolDeleteItem(args)
 
         // Hub Admin Library Management
-        case "hub_create_library": return toolInstallLibrary(args)
+        case "hub_create_library": return toolCreateItem(args + [type: "library"])
         case "hub_update_library": return toolUpdateLibraryCode(args)
         case "hub_install_bundle": return toolInstallBundle(args)
         case "hub_list_bundles": return toolListBundles(args)
@@ -11715,7 +11715,7 @@ Only run Z-Wave radio operations when the user explicitly asks for them.
 **hub_delete_room** - Devices become unassigned (not deleted). List affected devices first.
 Dashboards or automations that reference the room may need updating.
 
-**hub_delete_item (type=app|driver|library)** - Remove app instances via Hubitat UI first (apps). Change devices to different driver first (drivers). For libraries, check that no apps/drivers reference the library via #include namespace.Name before deleting -- deletion breaks any code that still includes it. Auto-backs up before deletion.
+**hub_delete_item (type=app|driver|library)** - Remove app instances via Hubitat UI first (apps). Change devices to different driver first (drivers). For libraries, check that no apps/drivers reference the library via #include namespace.Name before deleting -- deletion breaks any code that still includes it. Auto-backs up before deletion. `id` is the code id; deleting an app id that does not exist returns `success:false`. A reply the hub does not clearly confirm returns `success:false` with `response`; check the list tool.
 
 ### hub_call_zwave (Z-Wave lifecycle action grouping + routing)
 
@@ -11793,9 +11793,9 @@ The radio firmware-flash `action` values (the bullet above summarizes these as "
 
 **Code-install mode (hub_create_app and hub_create_driver):**
 - Supply exactly one of `source`, `sourceFile` or `importUrl`. For large source, write it once with hub_write_file and pass the filename as `sourceFile`, so a retry does not re-send the whole source.
-- `success:false` with a null id: the hub rejected the source on create (for example a compile error). Fix it and retry.
-- `success:false` with the id set: the hub created an item, but it is in an error state or the verification read was empty or unparseable. Inspect it with hub_get_source before retrying, because a retry can create a duplicate.
-- `success:true, verified:false` plus `verifyError`: the verification fetch failed. Confirm the item with hub_get_source.
+- `success:true` carries the new id and `version`.
+- `success:false` with the hub's error (for example a compile error): nothing was saved. Fix the source and retry. A refusal carrying `retryable:true` came from a colliding save, not the source; retry it after a moment.
+- `success:false` saying the install is unverified, or that the request failed: the outcome is unknown. Check hub_list_apps(scope='types'), hub_list_drivers or hub_list_libraries before retrying, because saving the same definition again creates a duplicate at a new id.
 - hub_create_driver bulk mode: `installs=[{source|sourceFile|importUrl}, ...]`, which cannot be combined with the single-item fields. Items run in order and continue past failures. Each item reports its own `driverId`, `success` and `error`, and the top-level `success` is true only when every item succeeded. If the call stops at the time budget, it returns `status:"in_progress"` with `installsRemaining`; send only those again.
 
 

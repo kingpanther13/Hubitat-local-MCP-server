@@ -231,7 +231,7 @@ class IncludeResolverSpec extends Specification {
         'McpVirtualDevicesLib'  | 'toolManageVirtualDevice' | 'VirtualDevices'
         'McpVariablesLib'       | 'toolListVariables'       | 'Variables'
         'McpCustomRulesLib'     | 'toolCreateRule'          | 'CustomRules'
-        'McpCodeManagementLib'  | 'toolInstallApp'          | 'CodeManagement'
+        'McpCodeManagementLib'  | 'toolCreateItem'          | 'CodeManagement'
         'McpHpmLib'             | 'toolListHpmPackages'     | 'Hpm'
         'McpSelfAdminLib'       | 'toolUpdatePackage'       | 'SelfAdmin'
         'McpAppClonerLib'       | 'toolCloneNativeApp'      | 'AppCloner'

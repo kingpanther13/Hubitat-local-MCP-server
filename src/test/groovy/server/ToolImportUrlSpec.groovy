@@ -353,7 +353,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolInstallApp([
+        def result = script.toolCreateItem([type: 'app',
             importUrl: 'https://raw.example.com/new.groovy',
             confirm: true
         ])
@@ -383,7 +383,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolInstallLibrary([
+        def result = script.toolCreateItem([type: 'library',
             importUrl: 'https://raw.example.com/lib.groovy',
             confirm: true
         ])
@@ -405,7 +405,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         enableWrite()
 
         when:
-        script.toolInstallApp([
+        script.toolCreateItem([type: 'app',
             source: 'inline',
             importUrl: 'https://x.com/a.groovy',
             confirm: true
@@ -421,7 +421,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         enableWrite()
 
         when:
-        script.toolInstallLibrary([
+        script.toolCreateItem([type: 'library',
             sourceFile: 'lib.groovy',
             importUrl: 'https://x.com/lib.groovy',
             confirm: true
@@ -449,7 +449,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         def commit = stubInstallCommit()
 
         when:
-        def result = script.toolInstallApp([codeAppId: 310, confirm: true])
+        def result = script.toolCreateItem([type: 'app', codeAppId: 310, confirm: true])
 
         then:
         capturedPath == '/installedapp/create/310'
@@ -476,7 +476,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         def commit = stubInstallCommit()
 
         when:
-        def result = script.toolInstallApp([codeAppId: 313, confirm: true])
+        def result = script.toolCreateItem([type: 'app', codeAppId: 313, confirm: true])
 
         then:
         result.success == true
@@ -496,7 +496,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         stubInstallCommit(doneStatus: 500)
 
         when:
-        def result = script.toolInstallApp([codeAppId: 314, confirm: true])
+        def result = script.toolCreateItem([type: 'app', codeAppId: 314, confirm: true])
 
         then:
         result.success == false
@@ -515,7 +515,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         def commit = stubInstallCommit(sections: [[input: [[name: 'sw', type: 'capability.switch', required: true, title: 'Switch']]]])
 
         when:
-        def result = script.toolInstallApp([codeAppId: 315, confirm: true])
+        def result = script.toolCreateItem([type: 'app', codeAppId: 315, confirm: true])
 
         then: "no Done is posted, and the advice is to fill the shell rather than delete and retry into the same refusal"
         commit.donePath == null
@@ -540,7 +540,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         stubInstallCommit(installedFlag: false)
 
         when:
-        def result = script.toolInstallApp([codeAppId: 314, confirm: true])
+        def result = script.toolCreateItem([type: 'app', codeAppId: 314, confirm: true])
 
         then:
         result.success == false
@@ -561,7 +561,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         stubInstallCommit(statusThrows: true)
 
         when:
-        def result = script.toolInstallApp([codeAppId: 312, confirm: true])
+        def result = script.toolCreateItem([type: 'app', codeAppId: 312, confirm: true])
 
         then:
         result.success == true
@@ -581,7 +581,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         def commit = stubInstallCommit()  // configPage.name == 'mainPage'
 
         when:
-        def result = script.toolInstallApp([codeAppId: 312, confirm: true])
+        def result = script.toolCreateItem([type: 'app', codeAppId: 312, confirm: true])
 
         then:
         result.success == true
@@ -607,7 +607,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         ]])
 
         when:
-        def result = script.toolInstallApp([codeAppId: 312, confirm: true])
+        def result = script.toolCreateItem([type: 'app', codeAppId: 312, confirm: true])
 
         then:
         result.success == true
@@ -632,7 +632,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolInstallApp([codeAppId: 99999, confirm: true])
+        def result = script.toolCreateItem([type: 'app', codeAppId: 99999, confirm: true])
 
         then:
         result.success == false
@@ -652,7 +652,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolInstallApp([codeAppId: 310, confirm: true])
+        def result = script.toolCreateItem([type: 'app', codeAppId: 310, confirm: true])
 
         then:
         result.success == false
@@ -672,7 +672,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         enableWrite()
 
         when:
-        script.toolInstallApp([
+        script.toolCreateItem([type: 'app',
             codeAppId: 310,
             importUrl: 'https://example.com/x.groovy',
             confirm: true
@@ -1307,7 +1307,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         enableWrite()
 
         when:
-        script.toolInstallApp([codeAppId: value, confirm: true])
+        script.toolCreateItem([type: 'app', codeAppId: value, confirm: true])
 
         then:
         def ex = thrown(IllegalArgumentException)
@@ -1326,7 +1326,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         stubInstallCommit()
 
         when:
-        def result = script.toolInstallApp([codeAppId: '310', confirm: true])
+        def result = script.toolCreateItem([type: 'app', codeAppId: '310', confirm: true])
 
         then:
         result.success == true
@@ -1382,7 +1382,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         hubGet.register('/driver/ajax/code') { params -> '{"status":"ok","source":"stub","version":1}' }
 
         when:
-        def result = script.toolInstallDriver([importUrl: 'https://raw.example/d.groovy', confirm: true])
+        def result = script.toolCreateItem([type: 'driver', importUrl: 'https://raw.example/d.groovy', confirm: true])
 
         then:
         result.success == true
@@ -1449,7 +1449,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         hubGet.register('/driver/ajax/code') { params -> '{"status":"ok","source":"stub","version":1}' }
 
         when:
-        def result = script.toolInstallDriver([
+        def result = script.toolCreateItem([type: 'driver',
             installs: [[importUrl: 'https://raw.example/d1.groovy']],
             confirm: true
         ])

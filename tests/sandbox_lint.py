@@ -2751,7 +2751,7 @@ DEVICE_GATE_SELF_TEST_CASES = [
     ),
     (
         "private typed helper is not a tool surface -- must-not-catch",
-        {"libraries/x.groovy": 'private Map toolInstallItem(String type, args) {\n    return _fetchDeviceFullJson(args.id)\n}\n'},
+        {"libraries/x.groovy": 'private Map toolPingItem(String type, args) {\n    return _fetchDeviceFullJson(args.id)\n}\n'},
         set(),
     ),
     (
@@ -2795,7 +2795,6 @@ DEVICE_GATE_SELF_TEST_CASES = [
 # Path-forwarding wrappers the anchor deliberately does NOT read: name -> why a caller-supplied
 # path literal can never reach the hub through them. Every entry is checked for staleness.
 NATIVE_WRAPPER_UNANCHORED = {
-    "_deleteItemViaEndpoint": "path is its third argument and toolDeleteItem fixes it to the app/driver code-editor delete endpoints; no caller-supplied literal reaches it",
     "_nfExecute": "its second argument is the plan _nfPrepare returns; plan.reload is the /installedapp/configure/json page path _nfReloadPath builds from the app's own breadcrumbs, never a caller-supplied path",
 }
 
@@ -2944,12 +2943,12 @@ NATIVE_WRAPPER_SELF_TEST_CASES = [
     ),
     (
         "documented unanchored wrapper -- must-not-catch",
-        {"libraries/x.groovy": 'private Map _deleteItemViaEndpoint(String type, String idParam, String deletePath, args) {\n    return hubInternalGet("${deletePath}${args.id}")\n}\n'},
+        {"libraries/x.groovy": 'private Map _nfExecute(String id, Map plan) {\n    return hubInternalGet(plan.reload)\n}\n'},
         set(),
     ),
     (
         "stale exemption (documented wrapper present but forwards no path) -- must-catch",
-        {"libraries/x.groovy": 'private Map _deleteItemViaEndpoint(String type, args) {\n    return [ok: true]\n}\n'},
+        {"libraries/x.groovy": 'private Map _nfExecute(String id, Map plan) {\n    return [ok: true]\n}\n'},
         {"native-wrapper-stale-exemption"},
     ),
     (

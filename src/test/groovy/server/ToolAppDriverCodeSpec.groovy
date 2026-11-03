@@ -7,8 +7,8 @@ import support.ToolSpecBase
 /**
  * Spec for the hub_manage_code gateway tools in hubitat-mcp-server.groovy:
  *
- * - toolInstallApp          -> hub_create_app         (source|sourceFile; post-install verification)
- * - toolInstallDriver       -> hub_create_driver      (source|sourceFile; bulk installs[]; post-install verification)
+ * - toolCreateItem (type=app)    -> hub_create_app     (source|sourceFile|importUrl; codeAppId)
+ * - toolCreateItem (type=driver) -> hub_create_driver  (source|sourceFile|importUrl; bulk installs[])
  * - toolUpdateAppCode       -> hub_update_app     (three source modes: source, sourceFile, resave)
  * - toolUpdateDriverCode    -> hub_update_driver  (three source modes + bulk updates array)
  * - toolDeleteItem (type=app)    -> hub_delete_item
@@ -58,14 +58,272 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         script.metaClass.uploadHubFile = { String name, byte[] content -> files.put(name, content) }
     }
 
-    // -------- toolInstallApp / toolInstallDriver --------
+    // -------- one save path: the save response is the verdict --------
+
+    @spock.lang.Unroll
+    def "a #type create returns the hub's id and version with no read after the save"() {
+        given:
+        enableWrite()
+        def posts = []
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
+            posts << path
+            [success: true, message: '', id: 77, version: 1]
+        }
+
+        when:
+        def result = script.toolCreateItem([type: type, source: 'code', confirm: true])
+
+        then:
+        posts == ["/${type}/saveOrUpdateJson".toString()]
+        hubGet.calls.isEmpty()
+        result.success == true
+        result[idField] == '77'
+        result.version == 1
+        !result.containsKey('verified')
+        !result.containsKey('verifyError')
+
+        where:
+        type      | idField
+        'app'     | 'appId'
+        'driver'  | 'driverId'
+        'library' | 'libraryId'
+    }
+
+    @spock.lang.Unroll
+    def "a #tool save whose request throws has an unknown outcome and says to check before retrying (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableWrite()
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
+            throw new RuntimeException('Read timed out')
+        }
+
+        when:
+        def inner = mcpDriver.parseInner(mcpDriver.callTool(tool, [source: 'code', confirm: true]))
+
+        then:
+        inner.success == false
+        inner.error.contains('Read timed out')
+        inner.note.contains(listCall)
+        inner.note.contains('duplicate')
+        !inner.note.contains('syntax')
+
+        where:
+        tool                 | listCall             | useGateways
+        'hub_create_app'     | 'hub_list_apps'      | true
+        'hub_create_driver'  | 'hub_list_drivers'   | false
+        'hub_create_library' | 'hub_list_libraries' | true
+    }
+
+    def "an unparseable save response is reported as unverified with the check-before-retry note"() {
+        given:
+        enableWrite()
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
+            [_unparseable: true, message: 'hub returned a non-JSON body from /driver/saveOrUpdateJson: <html>']
+        }
+
+        when:
+        def result = script.toolCreateItem([type: 'driver', source: 'code', confirm: true])
+
+        then:
+        result.success == false
+        result.driverId == null
+        result.error.contains('install unverified')
+        result.error.contains('<html>')
+        result.note.contains('hub_list_drivers')
+        result.note.contains('duplicate')
+    }
+
+    def "a colliding save on create gets the retryable note, not a fix-the-source note"() {
+        given:
+        enableWrite()
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
+            [success: false, message: 'java.sql.SQLException: Failed to update device type']
+        }
+
+        when:
+        def result = script.toolCreateItem([type: 'driver', source: 'code', confirm: true])
+
+        then:
+        result.success == false
+        result.error.contains('SQLException')
+        result.retryable == true
+        result.note.contains('the source itself was not rejected')
+    }
+
+    def "a bulk entry carries the hub's version, no verification fields, and a refused entry's retryable flag"() {
+        given:
+        enableWrite()
+        def calls = 0
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
+            calls++
+            calls == 1 ? [success: true, id: 5, version: 1] : [success: false, message: 'java.sql.SQLException: Failed to update device type']
+        }
+
+        when:
+        def result = script.toolCreateItem([type: 'driver', installs: [[source: 'a'], [source: 'b']], confirm: true])
+
+        then:
+        hubGet.calls.isEmpty()
+        result.success == false
+        result.installs[0] == [driverId: '5', success: true, version: 1, sourceMode: 'source', sourceLength: 1]
+        result.installs[1].retryable == true
+    }
+
+    @spock.lang.Unroll
+    def "#tool rejects a misspelled argument before any hub call (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableWrite()
+        def posted = false
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 -> posted = true; [:] }
+
+        when:
+        def response = mcpDriver.callTool(tool, [source: 'code', sourcefile: 'x.groovy', confirm: true])
+
+        then:
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('Unknown')
+        mcpDriver.parseInner(response).error.contains('sourcefile')
+        !posted
+        hubGet.calls.isEmpty()
+
+        where:
+        tool                 | useGateways
+        'hub_create_app'     | true
+        'hub_create_driver'  | false
+        'hub_create_library' | true
+    }
+
+    // -------- one delete path --------
+
+    @spock.lang.Unroll
+    def "hub_delete_item rejects the retired #param argument (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableWrite()
+
+        when:
+        def response = mcpDriver.callTool('hub_delete_item', [type: 'app', id: '1', (param): '1', confirm: true])
+
+        then:
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains(param)
+        hubGet.calls.isEmpty()
+
+        where:
+        param     | useGateways
+        'item_id' | true
+        'appId'   | false
+    }
+
+    @spock.lang.Unroll
+    def "hub_delete_item rejects id '#badId' before any hub call"() {
+        given:
+        enableWrite()
+
+        when:
+        script.toolDeleteItem([type: 'driver', id: badId, confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('positive integer')
+        hubGet.calls.isEmpty()
+
+        where:
+        badId << ['abc', '0', '-3', '1.5', null]
+    }
+
+    @spock.lang.Unroll
+    def "deleting an app id that does not exist is refused with no delete request (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableWrite()
+        hubGet.register('/app/ajax/code') { params -> '{"id":null,"name":null,"version":null,"source":null,"status":"success"}' }
+        hubGet.register('/app/edit/deleteJsonSafe/999') { params -> '{"status":true}' }
+
+        when:
+        def inner = mcpDriver.parseInner(mcpDriver.callTool('hub_delete_item', [type: 'app', id: '999', confirm: true]))
+
+        then:
+        inner.success == false
+        inner.error == 'App 999 does not exist'
+        inner.note.contains('hub_list_apps')
+        !hubGet.calls.any { it.path.contains('deleteJsonSafe') }
+
+        where:
+        useGateways << [true, false]
+    }
+
+    def "a driver id the hub cannot read still reaches the delete, and the hub's status:false is the answer"() {
+        given:
+        enableWrite()
+        hubGet.register('/driver/ajax/code') { params -> throw new RuntimeException('HTTP 500') }
+        hubGet.register('/driver/editor/deleteJson/999') { params -> '{"status":false}' }
+
+        when:
+        def result = script.toolDeleteItem([type: 'driver', id: '999', confirm: true])
+
+        then:
+        result.success == false
+        result.error == 'The hub refused the delete'
+        result.id == '999'
+        result.type == 'driver'
+        result.response == '{"status":false}'
+        result.note.contains('another driver')
+    }
+
+    @spock.lang.Unroll
+    def "a #type delete with an unrecognizable reply fails closed: '#body'"() {
+        given:
+        enableWrite()
+        script.metaClass.uploadHubFile = { String name, byte[] content -> }
+        hubGet.register('/app/ajax/code') { params -> '{"status":"ok","version":1,"source":"x"}' }
+        hubGet.register('/driver/ajax/code') { params -> '{"status":"ok","version":1,"source":"x"}' }
+        hubGet.register('/library/list/single/data/8') { params -> '[{"id":8,"version":1,"source":"x"}]' }
+        hubGet.register(path) { params -> body }
+
+        when:
+        def result = script.toolDeleteItem([type: type, id: '8', confirm: true])
+
+        then:
+        result.success == false
+        result.error.contains('Could not confirm')
+        result.response == body
+        result.note.contains(listCall)
+
+        where:
+        type      | path                           | body                           | listCall
+        'app'     | '/app/edit/deleteJsonSafe/8'   | '<html>Deleted</html>'         | 'hub_list_apps'
+        'driver'  | '/driver/editor/deleteJson/8'  | 'ok'                           | 'hub_list_drivers'
+        'library' | '/library/edit/deleteJson/8'   | '[]'                           | 'hub_list_libraries'
+        'driver'  | '/driver/editor/deleteJson/8'  | '{"unrelated":true}'           | 'hub_list_drivers'
+    }
+
+    def "a refused app delete carries the hub's message and the remove-instances note"() {
+        given:
+        enableWrite()
+        script.metaClass.uploadHubFile = { String name, byte[] content -> }
+        hubGet.register('/app/ajax/code') { params -> '{"status":"ok","version":1,"source":"x"}' }
+        hubGet.register('/app/edit/deleteJsonSafe/8') { params -> '{"status":false,"message":"App has instances"}' }
+
+        when:
+        def result = script.toolDeleteItem([type: 'app', id: '8', confirm: true])
+
+        then:
+        result.success == false
+        result.error == 'App has instances'
+        result.note.contains('app instances')
+    }
+
+    // -------- toolCreateItem (app, driver) --------
 
     def "hub_create_app throws when confirm is not provided"() {
         given:
         enableWrite()
 
         when:
-        script.toolInstallApp([source: 'definition(name: "X")'])
+        script.toolCreateItem([type: 'app', source: 'definition(name: "X")'])
 
         then:
         def ex = thrown(IllegalArgumentException)
@@ -124,7 +382,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         enableWrite()
 
         when:
-        script.toolInstallApp([confirm: true])
+        script.toolCreateItem([type: 'app', confirm: true])
 
         then:
         def ex = thrown(IllegalArgumentException)
@@ -153,7 +411,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         enableWrite()
 
         when:
-        script.toolInstallApp([source: 'code', sourceFile: 'app.groovy', confirm: true])
+        script.toolCreateItem([type: 'app', source: 'code', sourceFile: 'app.groovy', confirm: true])
 
         then:
         def ex = thrown(IllegalArgumentException)
@@ -177,7 +435,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "hub_create_app (source mode) POSTs to /app/saveOrUpdateJson, verifies via ajax/code, and extracts the new appId"() {
+    def "hub_create_app (source mode) POSTs to /app/saveOrUpdateJson with no read afterwards, and extracts the new appId"() {
         given:
         enableWrite()
         def captured = [:]
@@ -186,12 +444,9 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             captured.body = body
             [success: true, id: 4242, version: 1]
         }
-        hubGet.register('/app/ajax/code') { params ->
-            '{"status": "ok", "source": "stub-app-source", "version": 1}'
-        }
 
         when:
-        def result = script.toolInstallApp([source: 'definition(name: "Hello")', confirm: true])
+        def result = script.toolCreateItem([type: 'app', source: 'definition(name: "Hello")', confirm: true])
 
         then:
         captured.path == '/app/saveOrUpdateJson'
@@ -203,6 +458,10 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         result.appId == '4242'
         result.sourceMode == 'source'
         result.message.contains('installed')
+        result.version == 1
+        !result.containsKey('verified')
+        !result.containsKey('verifyError')
+        hubGet.calls.isEmpty()
     }
 
     @spock.lang.Unroll
@@ -215,9 +474,6 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             captured.path = path
             captured.body = body
             [success: true, id: 4242, version: 1]
-        }
-        hubGet.register('/app/ajax/code') { params ->
-            '{"status": "ok", "source": "stub-app-source", "version": 1}'
         }
 
         when:
@@ -250,12 +506,9 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: true, id: 5555, version: 1]
         }
-        hubGet.register('/app/ajax/code') { params ->
-            '{"status": "ok", "source": "stub-app-source-from-file", "version": 1}'
-        }
 
         when:
-        def result = script.toolInstallApp([sourceFile: 'my-app.groovy', confirm: true])
+        def result = script.toolCreateItem([type: 'app', sourceFile: 'my-app.groovy', confirm: true])
 
         then:
         result.success == true
@@ -274,9 +527,6 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
         script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: true, id: 5555, version: 1]
-        }
-        hubGet.register('/app/ajax/code') { params ->
-            '{"status": "ok", "source": "stub-app-source-from-file", "version": 1}'
         }
 
         when:
@@ -301,7 +551,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         script.metaClass.downloadHubFile = { String fileName -> null }
 
         when:
-        script.toolInstallApp([sourceFile: 'missing.groovy', confirm: true])
+        script.toolCreateItem([type: 'app', sourceFile: 'missing.groovy', confirm: true])
 
         then:
         def ex = thrown(IllegalArgumentException)
@@ -334,7 +584,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolInstallApp([source: 'definition(name: "NoLoc")', confirm: true])
+        def result = script.toolCreateItem([type: 'app', source: 'definition(name: "NoLoc")', confirm: true])
 
         then:
         result.success == false
@@ -368,54 +618,6 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "hub_create_app returns success=false when post-install verification shows an error state"() {
-        given:
-        enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
-            [success: true, id: 9900, version: 1]
-        }
-        hubGet.register('/app/ajax/code') { params ->
-            '{"status": "error", "errorMessage": "Compilation failed: unexpected token"}'
-        }
-
-        when:
-        def result = script.toolInstallApp([source: 'bad source', confirm: true])
-
-        then:
-        result.success == false
-        result.appId == '9900'
-        result.error.contains('Compilation failed')
-        result.note.contains('9900')
-    }
-
-    @spock.lang.Unroll
-    def "hub_create_app via dispatch returns success=false envelope when post-install verification errors (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
-            [success: true, id: 9900, version: 1]
-        }
-        hubGet.register('/app/ajax/code') { params ->
-            '{"status": "error", "errorMessage": "Compilation failed: unexpected token"}'
-        }
-
-        when:
-        def response = mcpDriver.callTool('hub_create_app', [source: 'bad source', confirm: true])
-
-        then:
-        response.error == null
-        !response.result.isError
-        def inner = mcpDriver.parseInner(response)
-        inner.success == false
-        inner.appId == '9900'
-        inner.error.contains('Compilation failed')
-        inner.note.contains('9900')
-
-        where:
-        useGateways << [true, false]
-    }
-
     def "hub_create_app reports failure when the hub POST throws"() {
         given:
         enableWrite()
@@ -424,13 +626,13 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolInstallApp([source: 'bad', confirm: true])
+        def result = script.toolCreateItem([type: 'app', source: 'bad', confirm: true])
 
         then:
         result.success == false
         result.error.contains('installation failed')
         result.error.contains('compile error')
-        result.note.contains('syntax errors')
+        result.note.contains('before retrying')
     }
 
     @spock.lang.Unroll
@@ -452,153 +654,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         inner.success == false
         inner.error.contains('installation failed')
         inner.error.contains('compile error')
-        inner.note.contains('syntax errors')
-
-        where:
-        useGateways << [true, false]
-    }
-
-    def "hub_create_app surfaces qualified success (verified:false, verifyError populated) when post-install verification fetch throws"() {
-        given:
-        enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
-            [success: true, id: 7100, version: 1]
-        }
-        hubGet.register('/app/ajax/code') { params ->
-            throw new RuntimeException('transient error')
-        }
-
-        when:
-        def result = script.toolInstallApp([source: 'definition(name: "Test")', confirm: true])
-
-        then:
-        result.success == true
-        result.appId == '7100'
-        result.verified == false
-        result.verifyError != null
-        result.verifyError.contains('transient error')
-        result.verifyError.contains('7100')
-    }
-
-    @spock.lang.Unroll
-    def "hub_create_app via dispatch surfaces qualified success envelope when verify fetch throws (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
-            [success: true, id: 7100, version: 1]
-        }
-        hubGet.register('/app/ajax/code') { params ->
-            throw new RuntimeException('transient error')
-        }
-
-        when:
-        def response = mcpDriver.callTool('hub_create_app', [source: 'definition(name: "Test")', confirm: true])
-
-        then:
-        response.error == null
-        !response.result.isError
-        def inner = mcpDriver.parseInner(response)
-        inner.success == true
-        inner.appId == '7100'
-        inner.verified == false
-        inner.verifyError != null
-        inner.verifyError.contains('transient error')
-        inner.verifyError.contains('7100')
-
-        where:
-        useGateways << [true, false]
-    }
-
-    def "hub_create_app returns success=false when verify endpoint returns an empty body"() {
-        given:
-        enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
-            [success: true, id: 7200, version: 1]
-        }
-        hubGet.register('/app/ajax/code') { params -> '' }
-
-        when:
-        def result = script.toolInstallApp([source: 'definition(name: "Test")', confirm: true])
-
-        then:
-        result.success == false
-        result.appId == '7200'
-        result.error.contains('empty verify body')
-        result.note.contains('Do NOT retry')
-        result.lastBackup != null
-    }
-
-    @spock.lang.Unroll
-    def "hub_create_app via dispatch returns success=false envelope when verify endpoint returns empty body (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
-            [success: true, id: 7200, version: 1]
-        }
-        hubGet.register('/app/ajax/code') { params -> '' }
-
-        when:
-        def response = mcpDriver.callTool('hub_create_app', [source: 'definition(name: "Test")', confirm: true])
-
-        then:
-        response.error == null
-        !response.result.isError
-        def inner = mcpDriver.parseInner(response)
-        inner.success == false
-        inner.appId == '7200'
-        inner.error.contains('empty verify body')
-        inner.note.contains('Do NOT retry')
-        inner.lastBackup != null
-
-        where:
-        useGateways << [true, false]
-    }
-
-    def "hub_create_app returns success=false when verify endpoint returns unparseable HTML"() {
-        given:
-        enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
-            [success: true, id: 7300, version: 1]
-        }
-        hubGet.register('/app/ajax/code') { params -> '<html><body>Login required</body></html>' }
-
-        when:
-        def result = script.toolInstallApp([source: 'definition(name: "Test")', confirm: true])
-
-        then:
-        result.success == false
-        result.appId == '7300'
-        result.error.contains('unparseable verify body')
-        result.note.contains('not valid JSON')
-        result.note.contains('Do NOT retry')
-        result.lastBackup != null
-    }
-
-    @spock.lang.Unroll
-    def "hub_create_app via dispatch returns success=false envelope when verify returns unparseable HTML (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
-            [success: true, id: 7300, version: 1]
-        }
-        hubGet.register('/app/ajax/code') { params -> '<html><body>Login required</body></html>' }
-
-        when:
-        def response = mcpDriver.callTool('hub_create_app', [source: 'definition(name: "Test")', confirm: true])
-
-        then:
-        response.error == null
-        !response.result.isError
-        def inner = mcpDriver.parseInner(response)
-        inner.success == false
-        inner.appId == '7300'
-        inner.error.contains('unparseable verify body')
-        inner.note.contains('not valid JSON')
-        inner.note.contains('Do NOT retry')
-        inner.lastBackup != null
+        inner.note.contains('before retrying')
 
         where:
         useGateways << [true, false]
@@ -609,12 +665,12 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         enableWrite()
 
         when:
-        script.toolInstallApp([installs: [[source: 'a'], [source: 'b']], confirm: true])
+        script.toolCreateItem([type: 'app', installs: [[source: 'a'], [source: 'b']], confirm: true])
 
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.contains("Bulk mode")
-        ex.message.contains("hub_create_app")
+        ex.message.contains("not supported for apps")
     }
 
     @spock.lang.Unroll
@@ -642,12 +698,9 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             postedPath = path
             [success: true, id: 9001, version: 1]
         }
-        hubGet.register('/driver/ajax/code') { params ->
-            '{"status": "ok", "source": "metadata { }", "version": 1}'
-        }
 
         when:
-        def result = script.toolInstallDriver([source: 'metadata { }', confirm: true])
+        def result = script.toolCreateItem([type: 'driver', source: 'metadata { }', confirm: true])
 
         then:
         postedPath == '/driver/saveOrUpdateJson'
@@ -665,9 +718,6 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             postedPath = path
             [success: true, id: 9001, version: 1]
-        }
-        hubGet.register('/driver/ajax/code') { params ->
-            '{"status": "ok", "source": "metadata { }", "version": 1}'
         }
 
         when:
@@ -695,12 +745,9 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: true, id: 7777, version: 1]
         }
-        hubGet.register('/driver/ajax/code') { params ->
-            '{"status": "ok", "source": "metadata { }", "version": 1}'
-        }
 
         when:
-        def result = script.toolInstallDriver([sourceFile: 'my-driver.groovy', confirm: true])
+        def result = script.toolCreateItem([type: 'driver', sourceFile: 'my-driver.groovy', confirm: true])
 
         then:
         result.success == true
@@ -720,9 +767,6 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: true, id: 7777, version: 1]
         }
-        hubGet.register('/driver/ajax/code') { params ->
-            '{"status": "ok", "source": "metadata { }", "version": 1}'
-        }
 
         when:
         def response = mcpDriver.callTool('hub_create_driver', [sourceFile: 'my-driver.groovy', confirm: true])
@@ -735,192 +779,6 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         inner.driverId == '7777'
         inner.sourceMode == 'sourceFile'
         inner.note.contains('File Manager')
-
-        where:
-        useGateways << [true, false]
-    }
-
-    def "hub_create_driver returns success=false when post-install verification shows an error state"() {
-        given:
-        enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
-            [success: true, id: 8800, version: 1]
-        }
-        hubGet.register('/driver/ajax/code') { params ->
-            '{"status": "error", "errorMessage": "Unknown identifier: xyz"}'
-        }
-
-        when:
-        def result = script.toolInstallDriver([source: 'bad driver', confirm: true])
-
-        then:
-        result.success == false
-        result.driverId == '8800'
-        result.error.contains('Unknown identifier')
-    }
-
-    @spock.lang.Unroll
-    def "hub_create_driver via dispatch returns success=false envelope when verify shows error state (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
-            [success: true, id: 8800, version: 1]
-        }
-        hubGet.register('/driver/ajax/code') { params ->
-            '{"status": "error", "errorMessage": "Unknown identifier: xyz"}'
-        }
-
-        when:
-        def response = mcpDriver.callTool('hub_create_driver', [source: 'bad driver', confirm: true])
-
-        then:
-        response.error == null
-        !response.result.isError
-        def inner = mcpDriver.parseInner(response)
-        inner.success == false
-        inner.driverId == '8800'
-        inner.error.contains('Unknown identifier')
-
-        where:
-        useGateways << [true, false]
-    }
-
-    def "hub_create_driver surfaces qualified success (verified:false, verifyError populated) when post-install verification fetch throws"() {
-        given:
-        enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
-            [success: true, id: 6600, version: 1]
-        }
-        hubGet.register('/driver/ajax/code') { params ->
-            throw new RuntimeException('transient error')
-        }
-
-        when:
-        def result = script.toolInstallDriver([source: 'metadata { }', confirm: true])
-
-        then:
-        result.success == true
-        result.driverId == '6600'
-        result.verified == false
-        result.verifyError != null
-        result.verifyError.contains('transient error')
-        result.verifyError.contains('6600')
-    }
-
-    @spock.lang.Unroll
-    def "hub_create_driver via dispatch surfaces qualified success envelope when verify fetch throws (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
-            [success: true, id: 6600, version: 1]
-        }
-        hubGet.register('/driver/ajax/code') { params ->
-            throw new RuntimeException('transient error')
-        }
-
-        when:
-        def response = mcpDriver.callTool('hub_create_driver', [source: 'metadata { }', confirm: true])
-
-        then:
-        response.error == null
-        !response.result.isError
-        def inner = mcpDriver.parseInner(response)
-        inner.success == true
-        inner.driverId == '6600'
-        inner.verified == false
-        inner.verifyError != null
-        inner.verifyError.contains('transient error')
-        inner.verifyError.contains('6600')
-
-        where:
-        useGateways << [true, false]
-    }
-
-    def "hub_create_driver returns success=false when verify endpoint returns an empty body"() {
-        given:
-        enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
-            [success: true, id: 6700, version: 1]
-        }
-        hubGet.register('/driver/ajax/code') { params -> '' }
-
-        when:
-        def result = script.toolInstallDriver([source: 'metadata { }', confirm: true])
-
-        then:
-        result.success == false
-        result.driverId == '6700'
-        result.error.contains('empty verify body')
-        result.note.contains('Do NOT retry')
-    }
-
-    @spock.lang.Unroll
-    def "hub_create_driver via dispatch returns success=false envelope when verify returns empty body (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
-            [success: true, id: 6700, version: 1]
-        }
-        hubGet.register('/driver/ajax/code') { params -> '' }
-
-        when:
-        def response = mcpDriver.callTool('hub_create_driver', [source: 'metadata { }', confirm: true])
-
-        then:
-        response.error == null
-        !response.result.isError
-        def inner = mcpDriver.parseInner(response)
-        inner.success == false
-        inner.driverId == '6700'
-        inner.error.contains('empty verify body')
-        inner.note.contains('Do NOT retry')
-
-        where:
-        useGateways << [true, false]
-    }
-
-    def "hub_create_driver returns success=false when verify endpoint returns unparseable HTML"() {
-        given:
-        enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
-            [success: true, id: 6800, version: 1]
-        }
-        hubGet.register('/driver/ajax/code') { params -> '<html>not json</html>' }
-
-        when:
-        def result = script.toolInstallDriver([source: 'metadata { }', confirm: true])
-
-        then:
-        result.success == false
-        result.driverId == '6800'
-        result.error.contains('unparseable verify body')
-        result.note.contains('Do NOT retry')
-    }
-
-    @spock.lang.Unroll
-    def "hub_create_driver via dispatch returns success=false envelope when verify returns unparseable HTML (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
-            [success: true, id: 6800, version: 1]
-        }
-        hubGet.register('/driver/ajax/code') { params -> '<html>not json</html>' }
-
-        when:
-        def response = mcpDriver.callTool('hub_create_driver', [source: 'metadata { }', confirm: true])
-
-        then:
-        response.error == null
-        !response.result.isError
-        def inner = mcpDriver.parseInner(response)
-        inner.success == false
-        inner.driverId == '6800'
-        inner.error.contains('unparseable verify body')
-        inner.note.contains('Do NOT retry')
 
         where:
         useGateways << [true, false]
@@ -961,7 +819,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         enableWrite()
 
         when:
-        script.toolInstallDriver([source: 'metadata { }'])
+        script.toolCreateItem([type: 'driver', source: 'metadata { }'])
 
         then:
         def ex = thrown(IllegalArgumentException)
@@ -990,7 +848,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         enableWrite()
 
         when:
-        script.toolInstallDriver([confirm: true])
+        script.toolCreateItem([type: 'driver', confirm: true])
 
         then:
         def ex = thrown(IllegalArgumentException)
@@ -1019,7 +877,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         enableWrite()
 
         when:
-        script.toolInstallDriver([source: 'metadata { }', sourceFile: 'driver.groovy', confirm: true])
+        script.toolCreateItem([type: 'driver', source: 'metadata { }', sourceFile: 'driver.groovy', confirm: true])
 
         then:
         def ex = thrown(IllegalArgumentException)
@@ -1049,7 +907,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         script.metaClass.downloadHubFile = { String fileName -> null }
 
         when:
-        script.toolInstallDriver([sourceFile: 'missing.groovy', confirm: true])
+        script.toolCreateItem([type: 'driver', sourceFile: 'missing.groovy', confirm: true])
 
         then:
         def ex = thrown(IllegalArgumentException)
@@ -1082,7 +940,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolInstallDriver([source: 'metadata { }', confirm: true])
+        def result = script.toolCreateItem([type: 'driver', source: 'metadata { }', confirm: true])
 
         then:
         result.success == false
@@ -1124,13 +982,13 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolInstallDriver([source: 'bad', confirm: true])
+        def result = script.toolCreateItem([type: 'driver', source: 'bad', confirm: true])
 
         then:
         result.success == false
         result.error.contains('installation failed')
         result.error.contains('compile error')
-        result.note.contains('syntax errors')
+        result.note.contains('before retrying')
     }
 
     @spock.lang.Unroll
@@ -1152,7 +1010,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         inner.success == false
         inner.error.contains('installation failed')
         inner.error.contains('compile error')
-        inner.note.contains('syntax errors')
+        inner.note.contains('before retrying')
 
         where:
         useGateways << [true, false]
@@ -1195,7 +1053,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         enableWrite()
 
         when:
-        script.toolInstallDriver([sourceFile: 'x.groovy', installs: [[sourceFile: 'f.groovy']], confirm: true])
+        script.toolCreateItem([type: 'driver', sourceFile: 'x.groovy', installs: [[sourceFile: 'f.groovy']], confirm: true])
 
         then:
         def ex = thrown(IllegalArgumentException)
@@ -1226,7 +1084,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         enableWrite()
 
         when:
-        script.toolInstallDriver([installs: [], confirm: true])
+        script.toolCreateItem([type: 'driver', installs: [], confirm: true])
 
         then:
         def ex = thrown(IllegalArgumentException)
@@ -1259,12 +1117,9 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             callNum++
             [success: true, id: 9000 + callNum, version: 1]
         }
-        hubGet.register('/driver/ajax/code') { params ->
-            '{"status": "ok", "source": "metadata { }", "version": 1}'
-        }
 
         when:
-        def result = script.toolInstallDriver([
+        def result = script.toolCreateItem([type: 'driver',
             installs: [
                 [sourceFile: 'driver-a.groovy'],
                 [sourceFile: 'driver-b.groovy'],
@@ -1292,9 +1147,6 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             callNum++
             [success: true, id: 9000 + callNum, version: 1]
-        }
-        hubGet.register('/driver/ajax/code') { params ->
-            '{"status": "ok", "source": "metadata { }", "version": 1}'
         }
 
         when:
@@ -1334,12 +1186,9 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             callNum++
             [success: true, id: 8000 + callNum, version: 1]
         }
-        hubGet.register('/driver/ajax/code') { params ->
-            '{"status": "ok", "source": "metadata { }", "version": 1}'
-        }
 
         when:
-        def result = script.toolInstallDriver([
+        def result = script.toolCreateItem([type: 'driver',
             installs: [
                 [sourceFile: 'driver-a.groovy'],
                 [sourceFile: 'driver-b.groovy'],
@@ -1374,9 +1223,6 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             callNum++
             [success: true, id: 8000 + callNum, version: 1]
-        }
-        hubGet.register('/driver/ajax/code') { params ->
-            '{"status": "ok", "source": "metadata { }", "version": 1}'
         }
 
         when:
@@ -1418,12 +1264,9 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             callNum++
             [success: true, id: 8500 + callNum, version: 1]
         }
-        hubGet.register('/driver/ajax/code') { params ->
-            '{"status": "ok", "source": "metadata { }", "version": 1}'
-        }
 
         when:
-        def result = script.toolInstallDriver([
+        def result = script.toolCreateItem([type: 'driver',
             installs: [
                 [source: 'metadata { name "inline-1" }'],
                 [sourceFile: 'driver-b.groovy'],
@@ -1450,9 +1293,6 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             callNum++
             [success: true, id: 8500 + callNum, version: 1]
-        }
-        hubGet.register('/driver/ajax/code') { params ->
-            '{"status": "ok", "source": "metadata { }", "version": 1}'
         }
 
         when:
@@ -1485,12 +1325,9 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: true, id: 8900, version: 1]
         }
-        hubGet.register('/driver/ajax/code') { params ->
-            '{"status": "ok", "source": "metadata { }", "version": 1}'
-        }
 
         when:
-        def result = script.toolInstallDriver([
+        def result = script.toolCreateItem([type: 'driver',
             installs: [[source: 'metadata { }']],
             confirm: true
         ])
@@ -1508,9 +1345,6 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         enableWrite()
         script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: true, id: 8900, version: 1]
-        }
-        hubGet.register('/driver/ajax/code') { params ->
-            '{"status": "ok", "source": "metadata { }", "version": 1}'
         }
 
         when:
@@ -1537,12 +1371,9 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: true, id: 9100, version: 1]
         }
-        hubGet.register('/driver/ajax/code') { params ->
-            '{"status": "ok", "source": "metadata { }", "version": 1}'
-        }
 
         when:
-        def result = script.toolInstallDriver([
+        def result = script.toolCreateItem([type: 'driver',
             installs: [
                 [source: 'metadata { }'],
                 'not-a-map',
@@ -1568,9 +1399,6 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         enableWrite()
         script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: true, id: 9100, version: 1]
-        }
-        hubGet.register('/driver/ajax/code') { params ->
-            '{"status": "ok", "source": "metadata { }", "version": 1}'
         }
 
         when:
@@ -1599,112 +1427,18 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "hub_create_driver bulk mode: per-item verify-throw surfaces verified=false and verifyError on the success entry"() {
+    def "hub_create_driver bulk mode: a per-item hub refusal propagates error, note, and lastBackup on the failed entry"() {
         given:
         enableWrite()
         def callNum = 0
         script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             callNum++
-            [success: true, id: 9300 + callNum, version: 1]
-        }
-        hubGet.register('/driver/ajax/code') { params ->
-            // middle item's verify GET throws, outer two return clean JSON
-            if (params?.id?.toString() == '9302') {
-                throw new RuntimeException('hub blip on verify')
-            }
-            '{"status": "ok", "source": "metadata { }", "version": 1}'
+            // the middle item is refused at save, as the hub does for a compile failure
+            callNum == 2 ? [success: false, message: 'compile failed: bad syntax'] : [success: true, id: 9400 + callNum, version: 1]
         }
 
         when:
-        def result = script.toolInstallDriver([
-            installs: [
-                [source: 'metadata { name "a" }'],
-                [source: 'metadata { name "b" }'],
-                [source: 'metadata { name "c" }']
-            ],
-            confirm: true
-        ])
-
-        then: 'all three installs return success=true (POST succeeded for each)'
-        result.success == true
-        result.installs.size() == 3
-        result.installs.every { it.success == true }
-
-        and: 'middle item carries verified=false plus verifyError; outer two are verified=true'
-        result.installs[0].verified == true
-        result.installs[0].verifyError == null
-        result.installs[1].verified == false
-        result.installs[1].verifyError != null
-        result.installs[1].verifyError.contains('hub blip')
-        result.installs[2].verified == true
-        result.installs[2].verifyError == null
-    }
-
-    @spock.lang.Unroll
-    def "hub_create_driver bulk via dispatch per-item verify-throw surfaces verifyError on success entry (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        enableWrite()
-        def callNum = 0
-        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
-            callNum++
-            [success: true, id: 9300 + callNum, version: 1]
-        }
-        hubGet.register('/driver/ajax/code') { params ->
-            if (params?.id?.toString() == '9302') {
-                throw new RuntimeException('hub blip on verify')
-            }
-            '{"status": "ok", "source": "metadata { }", "version": 1}'
-        }
-
-        when:
-        def response = mcpDriver.callTool('hub_create_driver', [
-            installs: [
-                [source: 'metadata { name "a" }'],
-                [source: 'metadata { name "b" }'],
-                [source: 'metadata { name "c" }']
-            ],
-            confirm: true
-        ])
-
-        then:
-        response.error == null
-        !response.result.isError
-        def inner = mcpDriver.parseInner(response)
-        inner.success == true
-        inner.installs.size() == 3
-        inner.installs.every { it.success == true }
-        inner.installs[0].verified == true
-        inner.installs[0].verifyError == null
-        inner.installs[1].verified == false
-        inner.installs[1].verifyError != null
-        inner.installs[1].verifyError.contains('hub blip')
-        inner.installs[2].verified == true
-        inner.installs[2].verifyError == null
-
-        where:
-        useGateways << [true, false]
-    }
-
-    def "hub_create_driver bulk mode: per-item verify status=error propagates error, note, and lastBackup on the failed entry"() {
-        given:
-        enableWrite()
-        def callNum = 0
-        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
-            callNum++
-            [success: true, id: 9400 + callNum, version: 1]
-        }
-        hubGet.register('/driver/ajax/code') { params ->
-            // middle item's verify returns status=error (compile failure surfaced post-install)
-            if (params?.id?.toString() == '9402') {
-                '{"status": "error", "errorMessage": "compile failed: bad syntax"}'
-            } else {
-                '{"status": "ok", "source": "metadata { }", "version": 1}'
-            }
-        }
-
-        when:
-        def result = script.toolInstallDriver([
+        def result = script.toolCreateItem([type: 'driver',
             installs: [
                 [source: 'metadata { name "a" }'],
                 [source: 'metadata { name "b" }'],
@@ -1724,26 +1458,20 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         result.installs[1].error != null
         result.installs[1].error.toLowerCase().contains('compile failed')
         result.installs[1].note != null
-        result.installs[1].note.contains('compilation issues')
+        result.installs[1].note.contains('compiles the source')
         result.installs[1].lastBackup != null
     }
 
     @spock.lang.Unroll
-    def "hub_create_driver bulk via dispatch per-item verify status=error propagates note and lastBackup (useGateways=#useGateways)"() {
+    def "hub_create_driver bulk via dispatch a per-item hub refusal propagates note and lastBackup (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
         def callNum = 0
         script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             callNum++
-            [success: true, id: 9400 + callNum, version: 1]
-        }
-        hubGet.register('/driver/ajax/code') { params ->
-            if (params?.id?.toString() == '9402') {
-                '{"status": "error", "errorMessage": "compile failed: bad syntax"}'
-            } else {
-                '{"status": "ok", "source": "metadata { }", "version": 1}'
-            }
+            // the middle item is refused at save, as the hub does for a compile failure
+            callNum == 2 ? [success: false, message: 'compile failed: bad syntax'] : [success: true, id: 9400 + callNum, version: 1]
         }
 
         when:
@@ -1768,7 +1496,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         inner.installs[1].error != null
         inner.installs[1].error.toLowerCase().contains('compile failed')
         inner.installs[1].note != null
-        inner.installs[1].note.contains('compilation issues')
+        inner.installs[1].note.contains('compiles the source')
         inner.installs[1].lastBackup != null
 
         where:
@@ -3223,58 +2951,6 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "hub_create_driver returns success=false when verify endpoint returns clean JSON with empty source field"() {
-        given:
-        enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
-            [success: true, id: 4444, version: 1]
-        }
-        // Verify response parses cleanly but reports empty source — driver slot created but
-        // no body persisted. Distinct from status:"error" and from empty/unparseable body.
-        hubGet.register('/driver/ajax/code') { params ->
-            '{"status": "ok", "source": "", "version": 1}'
-        }
-
-        when:
-        def result = script.toolInstallDriver([source: 'metadata { }', confirm: true])
-
-        then:
-        result.success == false
-        result.error.toLowerCase().contains('installation failed')
-        result.driverId == '4444'
-        result.note.contains('compilation issues')
-        result.lastBackup != null
-    }
-
-    @spock.lang.Unroll
-    def "hub_create_driver via dispatch returns success=false envelope when verify clean JSON has empty source (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
-            [success: true, id: 4444, version: 1]
-        }
-        hubGet.register('/driver/ajax/code') { params ->
-            '{"status": "ok", "source": "", "version": 1}'
-        }
-
-        when:
-        def response = mcpDriver.callTool('hub_create_driver', [source: 'metadata { }', confirm: true])
-
-        then:
-        response.error == null
-        !response.result.isError
-        def inner = mcpDriver.parseInner(response)
-        inner.success == false
-        inner.error.toLowerCase().contains('installation failed')
-        inner.driverId == '4444'
-        inner.note.contains('compilation issues')
-        inner.lastBackup != null
-
-        where:
-        useGateways << [true, false]
-    }
-
     // -------- toolDeleteItem (app / driver) --------
 
     def "hub_delete_item (app) throws when confirm is not provided"() {
@@ -3282,7 +2958,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         enableWrite()
 
         when:
-        script.toolDeleteItem([type: 'app', item_id: '1'])
+        script.toolDeleteItem([type: 'app', id: '1'])
 
         then:
         def ex = thrown(IllegalArgumentException)
@@ -3296,7 +2972,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         enableWrite()
 
         when:
-        def response = mcpDriver.callTool('hub_delete_item', [type: 'app', item_id: '1'])
+        def response = mcpDriver.callTool('hub_delete_item', [type: 'app', id: '1'])
 
         then:
         response.result.isError == true
@@ -3311,7 +2987,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         settingsMap.enableWrite = false
 
         when:
-        script.executeTool('hub_delete_item', [type: 'app', item_id: '1', confirm: true])
+        script.executeTool('hub_delete_item', [type: 'app', id: '1', confirm: true])
 
         then:
         def ex = thrown(IllegalArgumentException)
@@ -3325,7 +3001,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         settingsMap.enableWrite = false
 
         when:
-        def response = mcpDriver.callTool('hub_delete_item', [type: 'app', item_id: '1', confirm: true])
+        def response = mcpDriver.callTool('hub_delete_item', [type: 'app', id: '1', confirm: true])
 
         then:
         response.error == null
@@ -3336,7 +3012,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "hub_delete_item (app) throws when appId is missing"() {
+    def "hub_delete_item (app) throws when id is missing"() {
         given:
         enableWrite()
 
@@ -3345,11 +3021,11 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('appId is required')
+        ex.message.contains('id is required')
     }
 
     @spock.lang.Unroll
-    def "hub_delete_item (app) via dispatch returns isError validation result envelope when appId missing (useGateways=#useGateways)"() {
+    def "hub_delete_item (app) via dispatch returns isError validation result envelope when id missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -3359,7 +3035,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
         then:
         response.result.isError == true
-        mcpDriver.parseInner(response).error.contains('appId is required')
+        mcpDriver.parseInner(response).error.contains('id is required')
 
         where:
         useGateways << [true, false]
@@ -3382,11 +3058,11 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolDeleteItem([type: 'app', item_id: '33', confirm: true])
+        def result = script.toolDeleteItem([type: 'app', id: '33', confirm: true])
 
         then:
         result.success == true
-        result.appId == '33'
+        result.id == '33'
         result.backupFile == 'mcp-backup-app-33.groovy'
         uploads == ['mcp-backup-app-33.groovy']
         result.restoreHint.contains('hub_create_app')
@@ -3411,14 +3087,14 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         hubGet.register('/app/edit/deleteJsonSafe/33') { params -> '{"status": "true"}' }
 
         when:
-        def response = mcpDriver.callTool('hub_delete_item', [type: 'app', item_id: '33', confirm: true])
+        def response = mcpDriver.callTool('hub_delete_item', [type: 'app', id: '33', confirm: true])
 
         then:
         response.error == null
         !response.result.isError
         def inner = mcpDriver.parseInner(response)
         inner.success == true
-        inner.appId == '33'
+        inner.id == '33'
         inner.backupFile == 'mcp-backup-app-33.groovy'
         uploads == ['mcp-backup-app-33.groovy']
         inner.restoreHint.contains('hub_create_app')
@@ -3438,7 +3114,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolDeleteItem([type: 'app', item_id: '44', confirm: true])
+        def result = script.toolDeleteItem([type: 'app', id: '44', confirm: true])
 
         then: 'delete still succeeds, but the response flags that the backup could not be created'
         result.success == true
@@ -3457,7 +3133,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         hubGet.register('/app/edit/deleteJsonSafe/44') { params -> '{"status": "true"}' }
 
         when:
-        def response = mcpDriver.callTool('hub_delete_item', [type: 'app', item_id: '44', confirm: true])
+        def response = mcpDriver.callTool('hub_delete_item', [type: 'app', id: '44', confirm: true])
 
         then:
         response.error == null
@@ -3483,12 +3159,12 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolDeleteItem([type: 'app', item_id: '55', confirm: true])
+        def result = script.toolDeleteItem([type: 'app', id: '55', confirm: true])
 
         then:
         result.success == false
-        result.error.contains('Delete may have failed')
-        result.appId == '55'
+        result.error == 'in use'
+        result.id == '55'
     }
 
     @spock.lang.Unroll
@@ -3505,15 +3181,15 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('hub_delete_item', [type: 'app', item_id: '55', confirm: true])
+        def response = mcpDriver.callTool('hub_delete_item', [type: 'app', id: '55', confirm: true])
 
         then:
         response.error == null
         !response.result.isError
         def inner = mcpDriver.parseInner(response)
         inner.success == false
-        inner.error.contains('Delete may have failed')
-        inner.appId == '55'
+        inner.error == 'in use'
+        inner.id == '55'
 
         where:
         useGateways << [true, false]
@@ -3533,12 +3209,12 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolDeleteItem([type: 'driver', item_id: '77', confirm: true])
+        def result = script.toolDeleteItem([type: 'driver', id: '77', confirm: true])
 
         then:
         deletePath == '/driver/editor/deleteJson/77'
         result.success == true
-        result.driverId == '77'
+        result.id == '77'
         result.backupFile == 'mcp-backup-driver-77.groovy'
     }
 
@@ -3558,7 +3234,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('hub_delete_item', [type: 'driver', item_id: '77', confirm: true])
+        def response = mcpDriver.callTool('hub_delete_item', [type: 'driver', id: '77', confirm: true])
 
         then:
         deletePath == '/driver/editor/deleteJson/77'
@@ -3566,7 +3242,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         !response.result.isError
         def inner = mcpDriver.parseInner(response)
         inner.success == true
-        inner.driverId == '77'
+        inner.id == '77'
         inner.backupFile == 'mcp-backup-driver-77.groovy'
 
         where:

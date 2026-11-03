@@ -65,7 +65,7 @@ class AppCodeClient:
         elif tool == "hub_get_backup":
             result = {"source": self.backups[args["backupKey"]]}
         elif tool == "hub_delete_item":
-            app_id = str(args["item_id"])
+            app_id = str(args["id"])
             self.deleted.append(app_id)
             del self.apps[app_id]
             result = {"success": True}
