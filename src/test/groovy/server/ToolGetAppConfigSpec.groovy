@@ -2372,7 +2372,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         inner.success == true
         def sensorInput = inner.page.sections[0].inputs.find { it.name == 'mySensor' }
         sensorInput != null
-        !sensorInput.containsKey('value')
+        sensorInput.value == null && sensorInput.value_source == 'default'
 
         where:
         useGateways << [true, false]
