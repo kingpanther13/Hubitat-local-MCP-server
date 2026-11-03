@@ -250,6 +250,38 @@ REQUEST = (ROOT / ".github/workflows/hub-e2e-ephemeral-request.yml").read_text()
 FORK_SHA = "b" * 40
 
 
+@pytest.mark.parametrize("event, channel, dispatched", [
+    ("workflow_dispatch", "beta", True),
+    ("workflow_dispatch", "stable", True),
+    ("push", "", True),
+    ("pull_request_target", "", True),
+    ("push", "beta", False),
+    ("pull_request_target", "beta", False),
+    ("workflow_dispatch", "betaa", False),
+])
+def test_beta_provider_request_requires_explicit_manual_selection(event, channel, dispatched, tmp_path):
+    script = '''
+gh() { printf '%s\\n' "$@" > "$STUB/dispatched"; return 44; }
+export -f gh
+printf 'public key' > "$STUB/key"
+bash "$SCRIPT" hub "$STUB/key" "$STUB/results"
+'''
+    env = {**os.environ, "STUB": tmp_path.as_posix(),
+           "SCRIPT": (ROOT / ".github/scripts/request_ephemeral_hub.sh").as_posix(),
+           "GITHUB_REPOSITORY": "owner/repo", "GITHUB_EVENT_NAME": event,
+           "HUB_KIND": "jvm", "HUB_CHANNEL": channel, "PROVIDER": "owner/provider",
+           "PUBLIC_SHA": FORK_SHA, "PUBLIC_REPO": "owner/repo", "CONSUMER_RUN_ID": "123",
+           "GH_TOKEN": "test-token"}
+    result = subprocess.run([_bash(), "-c", script], env=env, capture_output=True, text=True)
+    assert (tmp_path / "dispatched").exists() is dispatched, result.stdout + result.stderr
+    if dispatched:
+        arguments = (tmp_path / "dispatched").read_text().splitlines()
+        assert ("firmware_channel=beta" in arguments) is (channel == "beta")
+        assert result.returncode == 44
+    else:
+        assert result.returncode != 0
+
+
 def _lane_relevance(file_lists):
     """For each file list (None = unread), lane_gate.js's physical verdict and ephemeral relevance."""
     code = ("const { decide, touchesLane } = require(process.argv[1]);"
@@ -389,7 +421,7 @@ def test_ephemeral_mode_toggle_and_kind_matrix_agree_and_reach_the_script():
         # Exactly one relay per mode: the results, or the encrypted session (plus the suite-mode verdict).
         assert request.count("env.EPHEMERAL_RUN_SUITE == 'true'") == 1 + verdict and request.count("env.EPHEMERAL_RUN_SUITE != 'true'") == 1
     e2e = _jobs(EPHEMERAL)[1]["e2e"]
-    assert KIND_MATRIX in e2e and "    name: e2e (ephemeral hub, ${{ matrix.kind }})\n" in e2e
+    assert KIND_MATRIX in e2e and "    name: e2e (ephemeral hub, ${{ matrix.kind }}${{ inputs.channel == 'beta' && ', beta' || '' }})\n" in e2e
     assert "matrix" not in _jobs(REQUEST)[1]["gate"]
     # The test job finds its own run's request job by the name the matrix renders.
     assert 'export JOB="Request ephemeral hub ($KIND)"' in e2e and "select(.name == $ENV.JOB)" in e2e

@@ -176,3 +176,17 @@ The lane sets `E2E_MRTR_ACTION_COUNT=36` and `E2E_WRITE_CAP_VARIABLE_COUNT=120` 
 continuation and write-cap proofs outlast one HTTP leg on a fast hub, and the watchdog-dependent
 tests, `test_endpoint_access_toggles_block_their_own_transport` and
 `test_bps_refusal_is_error_logged_at_error_and_debug_thresholds`, skip.
+## Manual beta channel
+
+In Actions, select **Hub E2E (ephemeral test hub)**, choose **Run workflow**, and
+set `channel` to `beta`. This requests the beta test channel for both hub kinds.
+The provider must support the requested channel before it can be used.
+
+```sh
+gh workflow run hub-e2e-ephemeral.yml --ref main -f channel=beta
+```
+
+Beta runs use a separate concurrency group, so they do not cancel stable runs
+on the same ref. Pushes and pull requests continue to use stable; the request
+script rejects a beta selection outside `workflow_dispatch`. The normal PR
+verdicts and required gates are unchanged.
