@@ -572,6 +572,7 @@ def toolGetAppConfig(args) {
     }
     def passwordInputNames = [] as Set
     def sections = []
+    def pageHrefs = []
     for (s in parsed.configPage.sections) {
         if (!(s instanceof Map)) continue
         def section = [title: stripAppConfigHtml(s.title), inputs: []]
@@ -591,21 +592,20 @@ def toolGetAppConfig(args) {
                 section.inputs << formFields.get(element == 'mode' ? 'mode[mode]' : 'label')
             } else if (element == 'component' && b.name) {
                 components << [name: b.name, title: stripAppConfigHtml(b.title), description: stripAppConfigHtml(b.description)].findAll { k, v -> v }
+            } else if (element == 'href' && (b.page || b.url)) {
+                // A link to a sub-page or an external page, with the summary the page prints under it.
+                Map link = b.page ? [page: b.page.toString()] : [url: b.url.toString()]
+                link.title = _uiPlainTitle(b.title)
+                def description = stripAppConfigHtml(b.description)
+                if (description && description != "Click to set") link.description = description
+                List disabled = isRmRule ? _appConfigDisabledRows(b.description) : []
+                if (disabled) link.disabled = disabled
+                pageHrefs << link
             } else if (element == 'paragraph') {
                 def rawHtml = (b.description ?: b.title)?.toString()
                 def text = stripAppConfigHtml(rawHtml)
                 if (!text || text == "Click to set") continue
-                // Rule Machine wraps each disabled action or trigger row, and its "Disabled Action" legend, in a
-                // red italic span. The page never strikes a disabled action through; that span is its only marker,
-                // so do not key on <strike>. One paragraph can hold a rule's whole action block.
-                List disabled = []
-                if (isRmRule) {
-                    def rows = rawHtml =~ /(?is)<span\s+style=['"]\s*color:\s*red;?\s*['"]\s*>\s*<i>(.*?)<\/i>\s*<\/span>/
-                    while (rows.find()) {
-                        String row = stripAppConfigHtml(rows.group(1))?.trim()
-                        if (row && !(row ==~ /(?i)Disabled Actions?/)) disabled << row
-                    }
-                }
+                List disabled = isRmRule ? _appConfigDisabledRows(rawHtml) : []
                 paragraphs << (disabled ? [text: text, disabled: disabled] : text)
             }
         }
@@ -640,7 +640,6 @@ def toolGetAppConfig(args) {
         endpoint: path
     ]
     if (parsed.configPage.error) result.configPageError = parsed.configPage.error
-    def pageHrefs = _rmPageHrefs(parsed.configPage as Map)
     if (pageHrefs) result.page.hrefs = pageHrefs
     if (pageName && parsed.configPage.name != null && parsed.configPage.name.toString() != pageName) {
         String formTool = isRmRule ? "hub_set_rule" : "hub_set_native_app"
@@ -689,6 +688,20 @@ def toolGetAppConfig(args) {
     }
 
     return result
+}
+
+// Rule Machine wraps each disabled action or trigger row, and its "Disabled Action" legend, in a red
+// italic span. The page never strikes a disabled action through; that span is its only marker, so do not
+// key on <strike>. One paragraph, or the summary under a rule's action link, can hold the whole block.
+private List _appConfigDisabledRows(Object html) {
+    List disabled = []
+    if (!html) return disabled
+    def rows = html.toString() =~ /(?is)<span\s+style=['"]\s*color:\s*red;?\s*['"]\s*>\s*<i>(.*?)<\/i>\s*<\/span>/
+    while (rows.find()) {
+        String row = stripAppConfigHtml(rows.group(1))?.trim()
+        if (row && !(row ==~ /(?i)Disabled Actions?/)) disabled << row
+    }
+    return disabled
 }
 
 // One page input: the form engine's field, with a device picker's selected labels and HTML-free

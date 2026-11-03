@@ -11132,7 +11132,9 @@ def updated() {}
                         for p in (sect.get("paragraphs") or [])]
 
             def disabled_rows(res: dict) -> list:
-                return [row for p in paragraphs_of(res) if isinstance(p, dict) for row in (p.get("disabled") or [])]
+                # A paragraph or the summary under a link (the main page's action link) can hold the rows.
+                holders = [p for p in paragraphs_of(res) if isinstance(p, dict)] + ((res.get("page") or {}).get("hrefs") or [])
+                return [row for holder in holders for row in (holder.get("disabled") or [])]
 
             def buttons_of(res: dict) -> dict:
                 return {c.get("name"): c for c in (res.get("controls") or []) if c.get("kind") == "button"}
@@ -11158,8 +11160,8 @@ def updated() {}
             marked = disabled_rows(main)
             assert marked == ["Log: 'disabled-mark three'"], \
                 f"expected exactly the third action listed as disabled: {paragraphs_of(main)}"
-            assert not any("[DISABLED]" in str(p) or "<span" in str(p) for p in paragraphs_of(main)), \
-                f"a text mark or HTML leaked into paragraphs: {paragraphs_of(main)}"
+            assert not any("[DISABLED]" in str(p) or "<span" in str(p) for p in paragraphs_of(main) + ((main.get("page") or {}).get("hrefs") or [])), \
+                f"a text mark or HTML leaked into paragraphs or links: {paragraphs_of(main)}"
 
             # (d) selectActions: which action is disabled and the control that re-enables it.
             rows = read("selectActions")

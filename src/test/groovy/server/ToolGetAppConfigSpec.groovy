@@ -2446,6 +2446,26 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         !result.page.sections[0].containsKey('embeddedActions')
     }
 
+    def "a Rule Machine main page's action link lists the disabled rows its summary holds"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/35') { params ->
+            makeAppConfigJson([configPage: [name: 'mainPage', title: 'Rule', install: true, refreshInterval: null,
+                sections: [[title: '', input: [], body: [
+                    [element: 'href', page: 'selectTriggers', title: 'Select Trigger Events', description: 'When time is 3:35 PM'],
+                    [element: 'href', page: 'selectActions', title: 'Select Actions to Run', description: RM_ACTIONS_PARAGRAPH]
+                ]]]]])
+        }
+
+        when:
+        def hrefs = script.toolGetAppConfig([appId: 35]).page.hrefs
+
+        then:
+        hrefs[0] == [page: 'selectTriggers', title: 'Select Trigger Events', description: 'When time is 3:35 PM']
+        hrefs[1].disabled == ["Notify Pushover: 'Fixed mismatch'"]
+        hrefs[1].description.contains("Notify Pushover: 'still cooling'") && !hrefs[1].description.contains('<span')
+    }
+
     def "selectActions controls name each row's buttons; a disabled action's disable<N> reads 'Enable Action'"() {
         given:
         settingsMap.enableRead = true

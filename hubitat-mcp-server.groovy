@@ -11013,25 +11013,6 @@ private Map _rmCollectInputSchema(Map configPage) {
     return schema
 }
 
-// The links a classic configPage shows, in page order: a sub-page as [page, title] or an external
-// link as [url, title], with the summary the page prints under it. Links live only in each section's
-// `body` (element "href"); `input` carries no hrefs.
-private List _rmPageHrefs(Map configPage) {
-    def out = []
-    for (s in (configPage?.sections ?: [])) {
-        for (b in (s?.body ?: [])) {
-            if (b instanceof Map && b.element == "href" && (b.page || b.url)) {
-                Map link = b.page ? [page: b.page.toString()] : [url: b.url.toString()]
-                link.title = _uiPlainTitle(b.title)
-                def description = stripAppConfigHtml(b.description)
-                if (description && description != "Click to set") link.description = description
-                out << link
-            }
-        }
-    }
-    return out
-}
-
 // Mirrors the check Hubitat's classic app UI runs before every page-navigation submit
 // (appUI.js jsonSubmit(validate=true): Done, Next, Back, and following an href into a sub-page).
 // The UI posts nothing until the page passes, so a raw navigation POST that skips it bypasses
@@ -12490,7 +12471,7 @@ A single tool can also be switched off under **Advanced: Per-tool Overrides**. A
 - **hub_get_app_config** renders one page as opening it in the UI does, which runs the app's page code.
   - The page's links are in `page.hrefs`: `{page, title}` for a sub-page, `{url, title}` for an external link, with the summary the page prints under a link as `description`. A sub-page's own links are in its `page.hrefs` (Room Lighting's optionsOnPage is linked from onMeansPage). A linked page's inputs are not in `sections`: read them with `pageName`.
   - `controls` are the page's buttons and links as hub_set_rule(operation='form') (Rule Machine) or hub_set_native_app(operation='form') returns them; activate one there by its control_id after opening the same page.
-  - On a Rule Machine rule a paragraph holding a disabled action or trigger reads `{text, disabled: [...]}`, listing the text of each disabled row it holds. On selectActions (Button Rule: selectActionsX) a disabled action's `disable<N>` control reads 'Enable Action', and the control named `<N>.0.<bool>` carries that action's text; N is the action index, not the row position. The button toggles: never replay a click whose response was lost. hub_set_app_disabled disables the whole app.
+  - On a Rule Machine rule a paragraph holding a disabled action or trigger reads `{text, disabled: [...]}`, listing the text of each disabled row it holds; a `page.hrefs` entry whose summary holds one (the main page's action link) carries the same `disabled` list. On selectActions (Button Rule: selectActionsX) a disabled action's `disable<N>` control reads 'Enable Action', and the control named `<N>.0.<bool>` carries that action's text; N is the action index, not the row position. The button toggles: never replay a click whose response was lost. hub_set_app_disabled disables the whole app.
   - `pageNote` appears when the hub rendered another page than `pageName`: the app reaches that page only through its link, so open it in a form workflow.
   - `appType.system` and `appType.menu` are the fields hub_list_apps(scope='types') gives for every type at once.
   - `includeSettings=true` adds the raw settings map: 500-1000 app-encoded keys on large apps (Room Lighting stores per-device scene levels as `dm~<deviceId>~<scene>`). Secrets read `***redacted (password)***`: every setting the hub types as a password, on any page, and free-text settings with credential-shaped names (password, pass, secret, token, API key, credential, PIN, lock or alarm code, ...). OAuth accessToken settings follow the Hide access tokens setting. Page inputs are redacted the same way. With Hide passwords and credentials turned off in the MCP app's settings they read as stored. When the setting types cannot be read the map is withheld and `settingsNote` says why.
