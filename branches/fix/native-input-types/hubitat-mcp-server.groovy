@@ -16839,55 +16839,56 @@ def toolGetAppConfig(args) {
         installed: parsed.app.installed == true
     ]
     def redactedPw = _appConfigRedactedMarker()
-    def passwordInputNames = [] as Set
     boolean isRmRule = _rmIsRuleAppType((appTypeRaw instanceof Map ? appTypeRaw.name : null)?.toString()) ||
         _rmIsRuleAppType(parsed.app.name?.toString())
+    Map formFields = null
+    List formControls = null
+    String formError = null
+    try {
+        Map form = _nfPublic(_nfContext(appIdStr as Long, parsed as Map), [])
+        formFields = form.get('fields').collectEntries { [(it.name): it] }
+        formControls = form.get('controls')
+    } catch (Exception unreadable) {
+        mcpLog("warn", "hub-admin", "hub_get_app_config app ${appIdStr}: page form unreadable: ${unreadable.message}")
+        formError = unreadable.message
+    }
+    def passwordInputNames = [] as Set
     def sections = []
     for (s in parsed.configPage.sections) {
         if (!(s instanceof Map)) continue
-        def section = [
-            title: stripAppConfigHtml(s.title),
-            inputs: []
-        ]
-        for (i in (s.input ?: [])) {
-            if (!(i instanceof Map)) continue
-            def input = [
-                name: i.name,
-                type: i.type,
-                title: stripAppConfigHtml(i.title)
-            ]
-            if (i.multiple == true) input.multiple = true
-            if (i.required == true) input.required = true
-            def desc = stripAppConfigHtml(i.description)
-            if (desc && desc != "Click to set") input.description = desc
-            if (i.options) input.options = stripOptionsHtml(i.options)
-            if (i.defaultValue != null && (i.defaultValue != true || i.type == "bool")) input.value = i.defaultValue
-            else if (i.value != null && (i.value != true || i.type == "bool")) input.value = i.value
-            String inputType = i.type?.toString() ?: ""
-            if (!inputType.startsWith("capability") && !inputType.startsWith("device.") && parsed.settings instanceof Map && parsed.settings[i.name] != null) input.value = parsed.settings[i.name]
-            if (i.type == "password" && i.name) passwordInputNames << i.name.toString()
-            if (input.containsKey("value") && _appConfigMasksSetting(i.name, i.type, input.value)) input.value = redactedPw
-            else if (input.containsKey("value") && _redactsAccessTokens() && input.value instanceof CharSequence &&
-                     i.name?.toString() ==~ /(?i)access_?token/) input.value = _accessTokenRedactedMarker()
-            section.inputs << input
-        }
+        def section = [title: stripAppConfigHtml(s.title), inputs: []]
         def paragraphs = []
-        for (b in (s.body ?: [])) {
+        def components = []
+        List elements = (s.body instanceof List ? s.body : []) + (s.input instanceof List ? s.input.findAll { it instanceof Map && (it.element ?: 'input') == 'input' } : [])
+        Set seen = [] as Set
+        for (b in elements) {
             if (!(b instanceof Map)) continue
-            def rawHtml = (b.description ?: b.title)?.toString()
-            def text = stripAppConfigHtml(rawHtml)
-            if (!text || text == "Click to set") continue
-            List disabled = []
-            if (isRmRule) {
-                def rows = rawHtml =~ /(?is)<span\s+style=['"]\s*color:\s*red;?\s*['"]\s*>\s*<i>(.*?)<\/i>\s*<\/span>/
-                while (rows.find()) {
-                    String row = stripAppConfigHtml(rows.group(1))?.trim()
-                    if (row && !(row ==~ /(?i)Disabled Actions?/)) disabled << row
+            String element = b.element?.toString() ?: 'input'
+            if (element == 'input' && b.name && b.type != 'button') {
+                if (!seen.add(b.name.toString())) continue
+                if (b.type == 'password') passwordInputNames << b.name.toString()
+                section.inputs << _appConfigInput(b, formFields?.get(b.name.toString()), parsed.settings)
+            } else if (element in ['label', 'mode'] && formFields?.get(element == 'mode' ? 'mode[mode]' : 'label')) {
+                section.inputs << formFields.get(element == 'mode' ? 'mode[mode]' : 'label')
+            } else if (element == 'component' && b.name) {
+                components << [name: b.name, title: stripAppConfigHtml(b.title), description: stripAppConfigHtml(b.description)].findAll { k, v -> v }
+            } else if (element == 'paragraph') {
+                def rawHtml = (b.description ?: b.title)?.toString()
+                def text = stripAppConfigHtml(rawHtml)
+                if (!text || text == "Click to set") continue
+                List disabled = []
+                if (isRmRule) {
+                    def rows = rawHtml =~ /(?is)<span\s+style=['"]\s*color:\s*red;?\s*['"]\s*>\s*<i>(.*?)<\/i>\s*<\/span>/
+                    while (rows.find()) {
+                        String row = stripAppConfigHtml(rows.group(1))?.trim()
+                        if (row && !(row ==~ /(?i)Disabled Actions?/)) disabled << row
+                    }
                 }
+                paragraphs << (disabled ? [text: text, disabled: disabled] : text)
             }
-            paragraphs << (disabled ? [text: text, disabled: disabled] : text)
         }
         if (paragraphs) section.paragraphs = paragraphs
+        if (components) section.components = components
         sections << section
     }
     def children = []
@@ -16895,6 +16896,11 @@ def toolGetAppConfig(args) {
         if (!(c instanceof Map)) continue
         children << [id: c.id, label: stripAppConfigHtml(c.label ?: c.name), name: c.name]
     }
+    def childDevices = (parsed.childDevices instanceof List ? parsed.childDevices : []).findAll { it instanceof Map }.collect { d ->
+        [id: d.id, name: stripAppConfigHtml(d.label ?: d.name)]
+    }
+    Map modeNames = parsed.modeMap instanceof Map ? parsed.modeMap : [:]
+    appObj.restrictedModes = _nfAppValue(parsed as Map, true).collect { id -> [value: id, label: modeNames.get(id)?.toString()] }
     def result = [
         success: true,
         app: appObj,
@@ -16906,6 +16912,7 @@ def toolGetAppConfig(args) {
             sections: sections
         ],
         childApps: children,
+        childDevices: childDevices,
         endpoint: path
     ]
     if (parsed.configPage.error) result.configPageError = parsed.configPage.error
@@ -16915,12 +16922,8 @@ def toolGetAppConfig(args) {
         String formTool = isRmRule ? "hub_set_rule" : "hub_set_native_app"
         result.pageNote = "The hub rendered '${parsed.configPage.name}' instead of '${pageName}'; this app reaches that page only through its own link: open it with ${formTool}(operation:'form') and activate the href.".toString()
     }
-    try {
-        result.controls = _nfPublic(_nfContext(appIdStr as Long, parsed as Map), []).controls
-    } catch (Exception unreadable) {
-        mcpLog("warn", "hub-admin", "hub_get_app_config app ${appIdStr}: page controls unreadable: ${unreadable.message}")
-        result.controlsError = unreadable.message
-    }
+    if (formControls != null) result.controls = formControls
+    else result.formError = formError
     int settingsCount = (parsed.settings instanceof Map) ? parsed.settings.size() : 0
     result.settingsKeyCount = settingsCount
     if (includeSettings) {
@@ -16953,6 +16956,16 @@ def toolGetAppConfig(args) {
         result.settingsNote = "Raw settings omitted; pass includeSettings=true to include them."
     }
     return result
+}
+private Map _appConfigInput(Map element, Map field, Object settings) {
+    if (field == null) return [name: element.name, type: element.type, title: stripAppConfigHtml(element.title)]
+    Map input = [:] + field
+    def description = stripAppConfigHtml(field.description)
+    if (description && description != "Click to set") input.description = description
+    else input.remove('description')
+    def stored = settings instanceof Map ? settings.get(field.name) : null
+    if (field.device && stored instanceof Map) input.selected = stored.collect { id, label -> [value: id.toString(), label: stripAppConfigHtml(label)] }
+    return input
 }
 private Map _appConfigSettingTypes(Integer appId) {
     def status
@@ -18964,7 +18977,7 @@ A transport drop can lose the response while the hub still commits this write; v
         ],
         [
             name: "hub_get_app_config",
-            description: """Read an installed classic app's page as the Hubitat UI renders it: the app's identity, the page's sections with each input's current value, and its child apps. The pages it links to are listed in page.hrefs. controls lists the page's buttons and links with the control_id that hub_set_native_app or hub_set_rule(operation:'form') activates, and pageNote says when the hub rendered another page than pageName. Secret values are redacted unless Hide passwords and credentials is off (always for a per-client token).""",
+            description: """Read an installed classic app's page as the Hubitat UI renders it: the app's identity, the page's sections with each input as hub_set_native_app(operation:'form') returns it, and its child apps and devices. The pages it links to are listed in page.hrefs. controls lists the page's buttons and links with the control_id that hub_set_native_app or hub_set_rule(operation:'form') activates, and pageNote says when the hub rendered another page than pageName. Secret values are redacted unless Hide passwords and credentials is off (always for a per-client token).""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -26569,7 +26582,7 @@ private void _nfWalk(Object node, Map fields, Map controls, List messages, List 
                 field.filename = node.filename
                 field.value = node.filecontent
             } else {
-                ['range', 'min', 'max', 'step', 'description'].each { key -> if (node.containsKey(key)) field[key] = node[key] }
+                ['range', 'min', 'max', 'step', 'pattern', 'description'].each { key -> if (node.containsKey(key)) field[key] = node[key] }
                 def stored = model.settings instanceof Map ? model.settings.get(name) : null
                 boolean exists = model.settings instanceof Map && model.settings.containsKey(name)
                 def current = exists ? stored : node.defaultValue
@@ -26579,6 +26592,7 @@ private void _nfWalk(Object node, Map fields, Map controls, List messages, List 
                 if (type != 'password' || (exists && !_redactsCredentials())) { field.value = current; field.value_source = exists ? 'stored' : 'default' }
                 if (!exists && type != 'password' && current != null && current != '' && !(current instanceof Collection && current.isEmpty())) field.default_value = current
                 field.present = exists && current != null && current != '' && (!(current instanceof Collection) || !current.empty)
+                if (field.present && type != 'password' && (type in ['number', 'decimal', 'email'] || node.pattern) && !_appConfigMasksSetting(name, type, current)) field.nav_value = current
                 field.options = _nfOptions(type == 'mode' ? model.modeMap : node.options)
                 if (device) {
                     field.capability = type
@@ -26650,7 +26664,7 @@ private void _nfCache(String key, Map context) {
     Map cached = [app_id: context.app_id, page: [name: context.page.name], envelope: context.envelope, expires: context.expires,
                   fields: [:], controls: [:], backup: context.backup]
     context.get('fields').each { name, field ->
-        Map descriptor = field.findAll { k, v -> k in ['name', 'type', 'multiple', 'required', 'supported', 'device', 'disabled', 'present', 'capability', 'ignore', 'range', 'min', 'max', 'step', 'default_value', 'app_field', 'sidecars', 'hub_default'] }
+        Map descriptor = field.findAll { k, v -> k in ['name', 'type', 'multiple', 'required', 'supported', 'device', 'disabled', 'present', 'capability', 'ignore', 'range', 'min', 'max', 'step', 'pattern', 'default_value', 'app_field', 'sidecars', 'hub_default', 'nav_value'] }
         descriptor.option_keys = field.options == null ? null : field.options*.value
         if (field.app_field && name == 'label') descriptor.value = field.value
         cached.get('fields').put(name, descriptor)
@@ -26696,7 +26710,7 @@ private String _nfValue(Map field, Object value) {
 private Map _nfPublic(Map context, List optionsFor) {
     List fields = context.get('fields').values().collect { field ->
         Map result = [:] + field
-        ['device', 'ignore', 'capability', 'present', 'default_value', 'app_field', 'sidecars', 'hub_default'].each { result.remove(it) }
+        ['device', 'ignore', 'capability', 'present', 'default_value', 'app_field', 'sidecars', 'hub_default', 'nav_value'].each { result.remove(it) }
         if (field.type == 'password' && _redactsCredentials()) result.redacted = true
         else if (field.name ==~ /(?i)access_?token/ && result.value instanceof CharSequence && result.value && _redactsAccessTokens()) result.value = _accessTokenRedactedMarker()
         else if (_appConfigMasksSetting(field.name, field.type, result.value)) { result.value = _appConfigRedactedMarker(); result.redacted = true }
@@ -26766,11 +26780,16 @@ private Map _nfPrepare(Long id, Map context, Map supplied, String activate, Stri
         if (control.kind == 'button' && !control.submit_on_change && supplied) throw new IllegalArgumentException('Submit fields separately before a button that reloads the native page')
         if (control.kind == 'button' && !control.submit_on_change) reloadPath = _nfReloadPath(id, context)
         if (control.kind in ['href', 'navigation'] && control.value != 'Cancel') {
-            List missing = context.get('fields').values().findAll { field ->
+            Map schema = [:], values = [:]
+            context.get('fields').each { name, field ->
                 String key = _nfWire(field, '').keySet().first()
-                field.required && !field.disabled && !(body.containsKey(key) ? !(body[key] in ['', '[]']) : field.present)
-            }*.name
-            if (missing) throw new IllegalArgumentException("Complete required native fields before navigating: ${missing.join(', ')}")
+                if (!body.containsKey(key) && field.present && !field.containsKey('nav_value')) return
+                schema.put(name, [type: field.type, required: field.required, range: field.range, pattern: field.pattern, disabled: field.disabled, title: name])
+                values.put(name, body.containsKey(key) ? body[key] : field.nav_value)
+            }
+            List problems = _uiNavigationViolations(schema, values)
+            if (problems && problems.every { it.problem == 'required but empty' }) throw new IllegalArgumentException("Complete required native fields before navigating: ${problems*.name.join(', ')}")
+            if (problems) throw new IllegalArgumentException("Fix native fields before navigating: ${problems.collect { "${it.name}: ${it.problem}" }.join('; ')}")
         }
     }
     [body: body, control: control, reload: reloadPath, defaults: defaults, rejected: rejected, envelope: context.envelope, relabel: relabel]
@@ -34605,8 +34624,12 @@ private List _rmPageHrefs(Map configPage) {
     def out = []
     for (s in (configPage?.sections ?: [])) {
         for (b in (s?.body ?: [])) {
-            if (b instanceof Map && b.element == "href" && b.page) {
-                out << [page: b.page.toString(), title: _uiPlainTitle(b.title)]
+            if (b instanceof Map && b.element == "href" && (b.page || b.url)) {
+                Map link = b.page ? [page: b.page.toString()] : [url: b.url.toString()]
+                link.title = _uiPlainTitle(b.title)
+                def description = stripAppConfigHtml(b.description)
+                if (description && description != "Click to set") link.description = description
+                out << link
             }
         }
     }
@@ -34616,7 +34639,7 @@ private List _uiNavigationViolations(Map schema, Map values) {
     def problems = []
     schema?.each { rawName, meta ->
         def name = rawName.toString()
-        if (meta?.disabled == true || meta?.type == "button") return
+        if (meta?.disabled == true || meta?.type in ["button", "menu", "file-text", "download-text"]) return
         def v = _uiValueOrDefault(values?.get(name), meta as Map)
         def empty = _uiValueIsEmpty(v, meta as Map)
         def title = _uiPlainTitle(meta?.title) ?: name
@@ -34663,7 +34686,7 @@ private boolean _uiValueIsEmpty(v, Map meta = null) {
     if (v instanceof Collection) return v.findAll { it != null && it.toString().trim() }.isEmpty()
     if (v instanceof Map) return v.isEmpty()
     def t = meta?.type?.toString()
-    if (t != null && t != "enum" && !_isDevicePickerType(t)) {
+    if (t != null && !(t in ["enum", "mode"]) && !_isDevicePickerType(t)) {
         return (t in ["number", "decimal"]) ? v.toString().trim().isEmpty() : v.toString().isEmpty()
     }
     def s = v.toString().trim()
@@ -35862,7 +35885,7 @@ A single tool can also be switched off under **Advanced: Per-tool Overrides**. A
 - **hub_list_apps(scope='types')** lists community types (Apps Code, first) and built-in types. Each row adds `system`/`isBuiltIn` (true for built-in) and `menu`, the Apps/Automations/Integrations tab the type declares, null when it declares none or for a community type outside the hub's apps catalog (a child-app template). If the catalog read fails, community types still list, with `menu` null, no built-ins and a note.
 - **hub_list_device_dependents** — check it before deleting, disabling or replacing a device. `appsUsing` rows carry id, name (the app type), label, trueLabel and disabled.
 - **hub_get_app_config** renders one page as opening it in the UI does, which runs the app's page code.
-  - The pages a page links to are in `page.hrefs` as `{page, title}`; a sub-page's own links are in its `page.hrefs` (Room Lighting's optionsOnPage is linked from onMeansPage). A linked page's inputs are not in `sections`: read them with `pageName`.
+  - The page's links are in `page.hrefs`: `{page, title}` for a sub-page, `{url, title}` for an external link, with the summary the page prints under a link as `description`. A sub-page's own links are in its `page.hrefs` (Room Lighting's optionsOnPage is linked from onMeansPage). A linked page's inputs are not in `sections`: read them with `pageName`.
   - `controls` are the page's buttons and links as hub_set_rule(operation='form') (Rule Machine) or hub_set_native_app(operation='form') returns them; activate one there by its control_id after opening the same page.
   - On a Rule Machine rule a paragraph holding a disabled action or trigger reads `{text, disabled: [...]}`, listing the text of each disabled row it holds. On selectActions (Button Rule: selectActionsX) a disabled action's `disable<N>` control reads 'Enable Action', and the control named `<N>.0.<bool>` carries that action's text; N is the action index, not the row position. The button toggles: never replay a click whose response was lost. hub_set_app_disabled disables the whole app.
   - `pageNote` appears when the hub rendered another page than `pageName`: the app reaches that page only through its link, so open it in a form workflow.
