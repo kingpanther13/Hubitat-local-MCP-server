@@ -1,5 +1,4 @@
 name: Hub E2E (ephemeral test hub)
-run-name: Ephemeral test hubs (${{ inputs.channel || 'stable' }})
 
 # Runs tests/e2e_test.py and the SDK conformance script against a disposable test hub that an
 # external workflow boots for this run and ends when this run completes (docs/ephemeral-hub-e2e.md).
@@ -17,12 +16,6 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
-    inputs:
-      channel:
-        description: Test hub channel (beta is manual only)
-        type: choice
-        default: stable
-        options: [stable, beta]
 
 permissions:
   contents: read
@@ -33,7 +26,7 @@ env:
   EPHEMERAL_RUN_SUITE: 'true'
 
 concurrency:
-  group: hub-e2e-ephemeral-${{ github.event.pull_request.number || github.ref }}-${{ inputs.channel || 'stable' }}
+  group: hub-e2e-ephemeral-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -87,7 +80,6 @@ jobs:
           CONSUMER_RUN_ID: ${{ github.run_id }}
           HUB_KIND: ${{ matrix.kind }}
           RUN_SUITE: ${{ env.EPHEMERAL_RUN_SUITE }}
-          HUB_CHANNEL: ${{ github.event_name == 'workflow_dispatch' && inputs.channel || 'stable' }}
         run: bash .github/scripts/request_ephemeral_hub.sh hub "$RUNNER_TEMP/pub/session-pub.pem" "$RUNNER_TEMP/hub"
       # Scrubbed by the provider and by the script.
       - uses: actions/upload-artifact@v7
@@ -111,7 +103,7 @@ jobs:
           overwrite: true
 
   e2e:
-    name: e2e (ephemeral hub, ${{ matrix.kind }}${{ inputs.channel == 'beta' && ', beta' || '' }})
+    name: e2e (ephemeral hub, ${{ matrix.kind }})
     strategy:
       fail-fast: false
       matrix:

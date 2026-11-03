@@ -378,6 +378,23 @@ def _bash():
     return shutil.which("bash") or "bash"
 
 
+def test_beta_lane_is_a_separate_manual_workflow():
+    beta = (ROOT / ".github/workflows/hub-e2e-ephemeral-beta.yml").read_text()
+    head, jobs = _jobs(beta)
+    triggers = head.split("\non:\n", 1)[1].split("\npermissions:", 1)[0]
+    assert triggers.strip() == "workflow_dispatch:"
+    assert "group: hub-e2e-ephemeral-beta-${{ github.ref }}" in head
+    assert "HUB_CHANNEL: beta" in jobs["request-hub"]
+    assert "if: github.event_name == 'workflow_dispatch'" in jobs["request-hub"]
+    assert "HUB_CHANNEL" not in EPHEMERAL and "inputs.channel" not in EPHEMERAL
+    assert KIND_MATRIX in jobs["request-hub"] and KIND_MATRIX in jobs["e2e"]
+    assert "name: Request ephemeral hub (${{ matrix.kind }})" in jobs["request-hub"]
+    assert 'export JOB="Request ephemeral hub ($KIND)"' in jobs["e2e"]
+    assert "name: e2e (ephemeral beta hub, ${{ matrix.kind }})" in jobs["e2e"]
+    assert "secrets." not in jobs["e2e"] and "contents: write" not in beta
+    assert "Report provider-run results" in jobs["e2e"]
+
+
 def test_ephemeral_pr_code_runs_only_under_pull_request():
     head, jobs = _jobs(EPHEMERAL)
     assert "\npermissions:\n  contents: read\n" in head
@@ -421,7 +438,7 @@ def test_ephemeral_mode_toggle_and_kind_matrix_agree_and_reach_the_script():
         # Exactly one relay per mode: the results, or the encrypted session (plus the suite-mode verdict).
         assert request.count("env.EPHEMERAL_RUN_SUITE == 'true'") == 1 + verdict and request.count("env.EPHEMERAL_RUN_SUITE != 'true'") == 1
     e2e = _jobs(EPHEMERAL)[1]["e2e"]
-    assert KIND_MATRIX in e2e and "    name: e2e (ephemeral hub, ${{ matrix.kind }}${{ inputs.channel == 'beta' && ', beta' || '' }})\n" in e2e
+    assert KIND_MATRIX in e2e and "    name: e2e (ephemeral hub, ${{ matrix.kind }})\n" in e2e
     assert "matrix" not in _jobs(REQUEST)[1]["gate"]
     # The test job finds its own run's request job by the name the matrix renders.
     assert 'export JOB="Request ephemeral hub ($KIND)"' in e2e and "select(.name == $ENV.JOB)" in e2e
