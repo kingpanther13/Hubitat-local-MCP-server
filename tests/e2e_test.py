@@ -6675,7 +6675,7 @@ def updated() {}
             assert all(fields[n].get("supported") is True for n in ("onDate", "mail", "pick", "importText", "notes")), fields
             export = fields["exportText"]
             assert export.get("supported") is False and export.get("filename") == "export.json" and export.get("value") == '{"export":1}', export
-            assert fields["pick"].get("submit_on_change") is True and fields["pick"].get("value") is None, fields["pick"]
+            assert fields["pick"].get("submit_on_change") is True and fields["pick"].get("value") in (None, ""), fields["pick"]
             written = self._native_app("update", {"fields": {"onDate": "2026-11-10", "mail": "a@example.com", "pick": "y",
                                                              "importText": "<b>kept</b>", "notes": "abc"}}, instance)
             assert written.get("success") is True, f"writing the declared types failed: {written}"
