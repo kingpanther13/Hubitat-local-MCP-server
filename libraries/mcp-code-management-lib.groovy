@@ -2030,6 +2030,7 @@ def toolUpdateDriverCode(args) {
         }
 
         // Bulk mode: apply each update in sequence, continue on per-item errors
+        def bulkEntryKeys = ["driverId", "sourceFile", "source", "importUrl", "resave", "backup", "expectedVersion"]
         def itemResults = []
         def allSucceeded = true
         for (int idx = 0; idx < args.updates.size(); idx++) {
@@ -2043,6 +2044,13 @@ def toolUpdateDriverCode(args) {
             def item = args.updates[idx]
             if (!(item instanceof Map) || !item.driverId) {
                 itemResults << [driverId: item?.driverId?.toString() ?: "item[${idx}]", success: false, error: "Each updates entry must have a 'driverId' field."]
+                allSucceeded = false
+                continue
+            }
+            // A misspelled lock must not fall through to a lock-free save of this entry.
+            def unknownKeys = item.keySet().collect { it as String }.findAll { !(it in bulkEntryKeys) }
+            if (unknownKeys) {
+                itemResults << [driverId: item.driverId.toString(), success: false, error: "Unknown updates[] argument${unknownKeys.size() == 1 ? '' : 's'}: ${unknownKeys.sort().join(', ')}. Nothing was changed for this driver. Valid arguments: ${bulkEntryKeys.join(', ')}."]
                 allSucceeded = false
                 continue
             }
@@ -3052,6 +3060,7 @@ A transport drop can lose the response while the hub still commits this write; v
                     triggerUpdated: [type: "integer", description: "OPTIONAL: running instance appId to refresh via updated() after saving, by re-submitting its mainPage Done form from live settings.[[FLAT_TRIM]] Protected targets require Developer Mode; unreadable live settings refuse the submit; on refusal/failure the code stays deployed (success:true, partial:true, updatedFired:false, repairHints). Omit for the editor's plain Save.[[/FLAT_TRIM]]"],
                     oauth: [type: "object", description: "OPTIONAL: enable/configure OAuth on this app (apps only); e.g. {enabled:true}. Full shape: hub_get_tool_guide(section='hub_admin_write_code')."],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."],
+                    bestPracticeKey: [type: "string"]
                 ],
                 required: ["appId", "confirm"]
             ]
@@ -3083,6 +3092,7 @@ MCP 2026-07-28 clients automatically continue this slow write and can replay its
                         description: "Bulk mode: one round-trip for many drivers. Each entry {driverId, sourceFile|source|importUrl|resave, optional expectedVersion}; cannot mix with single-driver fields; continue-on-error.",
                         items: [
                             type: "object",
+                            additionalProperties: false,
                             properties: [
                                 driverId: [type: "string", description: "The driver ID to update"],
                                 sourceFile: [type: "string", description: "File Manager filename (preferred)."],
@@ -3096,6 +3106,7 @@ MCP 2026-07-28 clients automatically continue this slow write and can replay its
                         ]
                     ],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."],
+                    bestPracticeKey: [type: "string"]
                 ],
                 required: ["confirm"]
             ]
@@ -3169,6 +3180,7 @@ A transport drop can lose the response while the hub still commits this write; v
                     backup: [type: "boolean", description: "false: no pre-save backup.[[FLAT_TRIM]] Default true: the current source goes to File Manager first (hub_list_backups scope=source). Never taken in importUrl mode: the URL's publisher keeps the history.[[/FLAT_TRIM]]"],
                     expectedVersion: [type: "integer", description: "OPTIONAL lock: saves only if the code is still at this version, else conflict:true, no write."],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."],
+                    bestPracticeKey: [type: "string"]
                 ],
                 required: ["libraryId", "confirm"]
             ]

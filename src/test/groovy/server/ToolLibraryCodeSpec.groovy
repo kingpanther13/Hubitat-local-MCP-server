@@ -1415,6 +1415,34 @@ def helperMethod() { return "ok" }
         'non-integer'    | 'v2'    | 'expectedVersion must be an integer'
     }
 
+    @spock.lang.Unroll
+    def "hub_update_library via dispatch rejects expectedVersion #label as an isError validation result (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableWrite()
+        def uploads = []
+        script.metaClass.uploadHubFile = { String name, byte[] content -> uploads << name }
+
+        when:
+        def response = mcpDriver.callTool('hub_update_library', [libraryId: '42', source: SAMPLE_SOURCE, expectedVersion: value, confirm: true])
+
+        then:
+        response.jsonrpc == '2.0'
+        response.id == mcpDriver.lastSentId
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains(message)
+        uploads.isEmpty()
+        hubGet.calls.isEmpty()
+
+        where:
+        label           | value | message                                 | useGateways
+        'explicit null' | null  | 'expectedVersion was supplied as null'  | true
+        'explicit null' | null  | 'expectedVersion was supplied as null'  | false
+        'non-integer'   | 'v2'  | 'expectedVersion must be an integer'    | true
+        'non-integer'   | 'v2'  | 'expectedVersion must be an integer'    | false
+    }
+
     def "hub_update_library (sourceFile mode) reads source from File Manager"() {
         given:
         enableWrite()

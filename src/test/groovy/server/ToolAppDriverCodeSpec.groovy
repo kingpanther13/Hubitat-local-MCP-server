@@ -4529,6 +4529,45 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         result.updates[1].success == true
     }
 
+    def "hub_update_driver bulk mode refuses an entry with a misspelled lock instead of saving it unlocked; siblings still apply"() {
+        given:
+        enableWrite()
+        hubGet.register('/driver/ajax/code') { params -> '{"status": "ok", "version": 4, "source": "metadata { }"}' }
+        script.metaClass.uploadHubFile = { String name, byte[] content -> }
+        def postedIds = []
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
+            postedIds << new groovy.json.JsonSlurper().parseText(body).id?.toString()
+            [success: true]
+        }
+
+        when:
+        def result = script.toolUpdateDriverCode([
+            updates: [
+                [driverId: '301', source: 'a', expectedVerison: 4],
+                [driverId: '302', source: 'b']
+            ],
+            confirm: true
+        ])
+
+        then:
+        postedIds == ['302']
+        result.success == false
+        result.updates[0].success == false
+        result.updates[0].error.contains('Unknown updates[] argument: expectedVerison')
+        result.updates[0].error.contains('Nothing was changed for this driver')
+        result.updates[1].success == true
+    }
+
+    def "the strict code-update schemas declare bestPracticeKey, and bulk driver entries are strict too"() {
+        when:
+        def tools = script.getAllToolDefinitions().findAll { it.name in ['hub_update_app', 'hub_update_driver', 'hub_update_library'] }
+
+        then:
+        tools.size() == 3
+        tools.every { it.inputSchema.additionalProperties == false && it.inputSchema.properties.bestPracticeKey?.type == 'string' }
+        tools.find { it.name == 'hub_update_driver' }.inputSchema.properties.updates.items.additionalProperties == false
+    }
+
     def "hub_update_driver bulk mode mixes a per-item conflict with a per-item thrown error in the same batch"() {
         given:
         enableWrite()
