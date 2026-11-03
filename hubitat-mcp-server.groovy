@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 5.1.4 - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
+ * Version: 5.1.5 - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -11013,20 +11013,6 @@ private Map _rmCollectInputSchema(Map configPage) {
     return schema
 }
 
-// The sub-pages a classic configPage links to, in page order: [[page, title], ...]. Links live
-// only in each section's `body` (element "href"); `input` carries no hrefs.
-private List _rmPageHrefs(Map configPage) {
-    def out = []
-    for (s in (configPage?.sections ?: [])) {
-        for (b in (s?.body ?: [])) {
-            if (b instanceof Map && b.element == "href" && b.page) {
-                out << [page: b.page.toString(), title: _uiPlainTitle(b.title)]
-            }
-        }
-    }
-    return out
-}
-
 // Mirrors the check Hubitat's classic app UI runs before every page-navigation submit
 // (appUI.js jsonSubmit(validate=true): Done, Next, Back, and following an href into a sub-page).
 // The UI posts nothing until the page passes, so a raw navigation POST that skips it bypasses
@@ -11036,16 +11022,19 @@ private List _rmPageHrefs(Map configPage) {
 //   number             -> integer (step 1) and >= 0, unless `range` "lo..hi" supplies the bounds
 //   decimal            -> at most two decimals (step 0.01), bounded by `range` when present
 //   range "lo..hi"     -> min/max; "*" leaves that side unbounded
-//   pattern            -> the whole value must match
+//   pattern            -> the whole value must match, on the text-like inputs a browser applies it to
+//                         (a textarea, date, time, color, select or checkbox ignores it)
 //   email              -> browser email syntax
-// Disabled inputs are skipped and empty optional values pass, as in the browser. Value writes
+// Disabled inputs and hidden inputs (menu, file-text, download-text) are skipped and empty optional
+// values pass, as in the browser. Value writes
 // and app-button clicks are never validated by the UI, so callers apply this to navigation only.
 // Returns [[name, title, problem], ...]; empty when the UI would submit.
 private List _uiNavigationViolations(Map schema, Map values) {
     def problems = []
     schema?.each { rawName, meta ->
         def name = rawName.toString()
-        if (meta?.disabled == true || meta?.type == "button") return
+        // The browser's form check skips hidden inputs: a menu, a file-text and a download-text input are hidden.
+        if (meta?.disabled == true || meta?.type in ["button", "menu", "file-text", "download-text"]) return
         // The page pre-fills an unset input with its defaultValue, so navigation and Done see it alike.
         def v = _uiValueOrDefault(values?.get(name), meta as Map)
         def empty = _uiValueIsEmpty(v, meta as Map)
@@ -11072,10 +11061,15 @@ private List _uiNavigationViolations(Map schema, Map values) {
             if ((n - base).remainder(step).compareTo(BigDecimal.ZERO) != 0) {
                 problems << [name: name, title: title, problem: (t == "number" ? "${v} is not a whole number" : "${v} has more than two decimal places").toString()]
             }
-        } else if (meta?.pattern) {
+        } else if (meta?.pattern && !(t in ["textarea", "date", "time", "color", "bool", "enum", "mode"]) && !_isDevicePickerType(t)) {
             def matched
             try { matched = (v.toString() ==~ meta.pattern.toString()) }
-            catch (Exception badPattern) { matched = true }
+            catch (Exception badPattern) {
+                // The page's pattern is a browser regex; one Java cannot compile is left unchecked, as a browser
+                // skips a pattern it cannot compile.
+                mcpLog("debug", "hub-admin", "pattern of ${name} not checked: ${badPattern.message}")
+                matched = true
+            }
             if (!matched) problems << [name: name, title: title, problem: "'${v}' does not match the required format".toString()]
         } else if (t == "email" && !(v.toString() ==~ _uiEmailPattern())) {
             problems << [name: name, title: title, problem: "'${v}' is not a valid email address".toString()]
@@ -11094,10 +11088,12 @@ private String _uiEmailPattern() {
 // pre-fills. A Done built without it posts "" where the UI posts the default (a Room Lighting
 // "illuminance rises" condition then saves lux=null instead of the page's 100).
 private _uiValueOrDefault(v, Map meta) {
+    // A menu and a device picker show only their stored value; the page never fills them from defaultValue.
+    if (meta?.type == "menu" || _isDevicePickerType(meta?.type)) return v
     return (_uiValueIsEmpty(v, meta) && meta?.defaultValue != null) ? meta.defaultValue : v
 }
 
-// Empty as the browser sees it (appUI.js jsonSubmit). Enum selects and device pickers are empty with
+// Empty as the browser sees it (appUI.js jsonSubmit). Enum and mode selects and device pickers are empty with
 // no selection; they reach here as a List, a JSON-array string ("[]" from statusJson), or a device
 // id->label Map. A number input's whitespace sanitizes to "". Any other typed input is empty only at
 // zero length, so required text holding "null", "[]" or "  " passes, as in the browser.
@@ -11106,7 +11102,7 @@ private boolean _uiValueIsEmpty(v, Map meta = null) {
     if (v instanceof Collection) return v.findAll { it != null && it.toString().trim() }.isEmpty()
     if (v instanceof Map) return v.isEmpty()
     def t = meta?.type?.toString()
-    if (t != null && t != "enum" && !_isDevicePickerType(t)) {
+    if (t != null && !(t in ["enum", "mode"]) && !_isDevicePickerType(t)) {
         return (t in ["number", "decimal"]) ? v.toString().trim().isEmpty() : v.toString().isEmpty()
     }
     def s = v.toString().trim()
@@ -11115,8 +11111,7 @@ private boolean _uiValueIsEmpty(v, Map meta = null) {
 
 // A classic-app device picker: `capability.<name>` or a driver-specific `device.<DriverName>`.
 private boolean _isDevicePickerType(type) {
-    def t = type?.toString()
-    return t != null && (t.startsWith("capability.") || t.startsWith("device."))
+    return _nrIsDeviceType(type?.toString())
 }
 
 // A device picker value as the id list the update endpoint takes. configure/json renders it as an
@@ -11369,7 +11364,7 @@ private Map _rmForceDeleteApp(Integer appId) {
 
 
 def currentVersion() {
-    return "5.1.4"
+    return "5.1.5"
 }
 
 
@@ -12482,12 +12477,13 @@ A single tool can also be switched off under **Advanced: Per-tool Overrides**. A
 - **hub_list_apps(scope='types')** lists community types (Apps Code, first) and built-in types. Each row adds `system`/`isBuiltIn` (true for built-in) and `menu`, the Apps/Automations/Integrations tab the type declares, null when it declares none or for a community type outside the hub's apps catalog (a child-app template). If the catalog read fails, community types still list, with `menu` null, no built-ins and a note.
 - **hub_list_device_dependents** — check it before deleting, disabling or replacing a device. `appsUsing` rows carry id, name (the app type), label, trueLabel and disabled.
 - **hub_get_app_config** renders one page as opening it in the UI does, which runs the app's page code.
-  - The pages a page links to are in `page.hrefs` as `{page, title}`; a sub-page's own links are in its `page.hrefs` (Room Lighting's optionsOnPage is linked from onMeansPage). A linked page's inputs are not in `sections`: read them with `pageName`.
+  - The page's links are in `page.hrefs`: `{page, title}` for a sub-page, `{url, title}` for an external link, with the summary the page prints under a link as `description`. A sub-page's own links are in its `page.hrefs` (Room Lighting's optionsOnPage is linked from onMeansPage). A linked page's inputs are not in `sections`: read them with `pageName`.
   - `controls` are the page's buttons and links as hub_set_rule(operation='form') (Rule Machine) or hub_set_native_app(operation='form') returns them; activate one there by its control_id after opening the same page.
-  - On a Rule Machine rule a paragraph holding a disabled action or trigger reads `{text, disabled: [...]}`, listing the text of each disabled row it holds. On selectActions (Button Rule: selectActionsX) a disabled action's `disable<N>` control reads 'Enable Action', and the control named `<N>.0.<bool>` carries that action's text; N is the action index, not the row position. The button toggles: never replay a click whose response was lost. hub_set_app_disabled disables the whole app.
+  - On a Rule Machine rule a paragraph holding a disabled action or trigger reads `{text, disabled: [...]}`, listing the text of each disabled row it holds; a `page.hrefs` entry whose summary holds one (the main page's action link) carries the same `disabled` list. On selectActions (Button Rule: selectActionsX) a disabled action's `disable<N>` control reads 'Enable Action', and the control named `<N>.0.<bool>` carries that action's text; N is the action index, not the row position. The button toggles: never replay a click whose response was lost. hub_set_app_disabled disables the whole app.
   - `pageNote` appears when the hub rendered another page than `pageName`: the app reaches that page only through its link, so open it in a form workflow.
-  - `appType.system` and `appType.menu` are the fields hub_list_apps(scope='types') gives for every type at once.
-  - `includeSettings=true` adds the raw settings map: 500-1000 app-encoded keys on large apps (Room Lighting stores per-device scene levels as `dm~<deviceId>~<scene>`). Secrets read `***redacted (password)***`: every setting the hub types as a password, on any page, and free-text settings with credential-shaped names (password, pass, secret, token, API key, credential, PIN, lock or alarm code, ...). OAuth accessToken settings follow the Hide access tokens setting. Page inputs are redacted the same way. With Hide passwords and credentials turned off in the MCP app's settings they read as stored. When the setting types cannot be read the map is withheld and `settingsNote` says why.
+  - Each input is the field hub_set_native_app(operation='form') returns; a device picker adds `selected`, its devices with labels. `unsupported` lists page parts a form cannot drive, such as a community app's create button. When the page cannot be modelled, `formError` says why: inputs carry no values and there are no controls.
+  - `appType.namespace` and `appType.name` name the type; `appType.system` and `appType.menu` are the fields hub_list_apps(scope='types') gives for every type at once.
+  - `includeSettings=true` adds the raw settings map: 500-1000 app-encoded keys on large apps (Room Lighting stores per-device scene levels as `dm~<deviceId>~<scene>`). Secrets read `***redacted (password)***`: every setting the hub types as a password, on any page, and free-text settings with credential-shaped names (password, pass, secret, token, API key, credential, PIN, lock or alarm code, ...). OAuth accessToken settings follow the Hide access tokens setting. Page inputs read as in the form tools: a password input carries no value and `redacted: true`; a credential-named input reads the marker. With Hide passwords and credentials turned off in the MCP app's settings they read as stored. When the setting types cannot be read the map is withheld and `settingsNote` says why.
   - A type='mode' input's `value` is its stored setting. Day Lights uses ten of them for per-mode levels, gated by `useModeOverrides`; most apps use one as an "only during these modes" restriction.
   - **Mode gating in the built-in apps.** The hub has no "modes in use by" list, so read each app; resolve mode IDs with hub_list_modes.
     - **Notifier** — `modes` (mode ids) on `moreOptions`; restricts.

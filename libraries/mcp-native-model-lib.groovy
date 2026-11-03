@@ -15,17 +15,7 @@ private List _nmFields(List fields, String id) {
         if (!(row instanceof Map) || !(row.name instanceof String) || !row.name.contains('#') || !(row.type instanceof String) || !row.containsKey('value') || row.keySet().any { !(it in ['name', 'type', 'value']) }) {
             throw new IllegalArgumentException('Fields require native name templates containing #, type and value')
         }
-        boolean device = row.type == 'capability' || row.type.startsWith('capability.')
-        if (!(row.type in ['text', 'textarea', 'password', 'enum', 'mode', 'bool', 'number', 'decimal', 'time']) && !device) throw new IllegalArgumentException('Unsupported native setting type')
-        if (row.value == null) throw new IllegalArgumentException('Null native setting values are unsupported')
-        if (row.value instanceof List) {
-            if (!device && !(row.type in ['enum', 'mode'])) throw new IllegalArgumentException('Setting lists require enum, mode or capability type')
-            if (row.value.any { !(it instanceof String || it instanceof Number || it instanceof Boolean) }) throw new IllegalArgumentException('Setting lists require scalar values')
-        } else if (!(row.value instanceof String || row.value instanceof Number || row.value instanceof Boolean)) throw new IllegalArgumentException('Native settings require scalar values')
-        if (device) {
-            List ids = row.value instanceof List ? row.value : [row.value]
-            if (ids.any { !it.toString().isLong() || it.toString().toLong() <= 0L }) throw new IllegalArgumentException('Capability settings require positive device IDs')
-        }
+        _nrCheckSettingRow(row)
         [name: row.name.replace('#', id), type: row.type, value: row.value]
     }
     if (result.collect { it.name }.unique().size() != result.size()) throw new IllegalArgumentException('Native inputs must not be repeated')
@@ -57,7 +47,7 @@ Map _nmValidateInputs(Object page, List fields) {
             else if (!descriptor.containsKey('multiple') && row.value instanceof List) reason = 'native list cardinality is not exposed'
             else if (descriptor.containsKey('multiple') && descriptor.multiple != (row.value instanceof List)) reason = descriptor.multiple ? 'native input requires a list' : 'native input requires a scalar'
             else if (descriptor.required == true && (row.value == null || (row.value instanceof List && row.value.isEmpty()) || (row.value instanceof String && !row.value.trim()))) reason = 'required native input is empty'
-            else if (descriptor.type in ['text', 'textarea', 'password', 'time'] && !(row.value instanceof String)) reason = 'native text input requires a string value'
+            else if (!(descriptor.type in ['bool', 'number', 'decimal', 'enum', 'mode', 'menu']) && !_nrIsDeviceType(descriptor.type) && !(row.value instanceof String)) reason = 'native text input requires a string value'
             else {
                 try { _nrValidateInput([:] + descriptor + [multiple: descriptor.multiple == true], row.value) }
                 catch (Exception failure) { reason = failure.message ?: 'native descriptor validation failed' }
@@ -247,7 +237,7 @@ private void _nmRestoreSettings(Long ruleId, Map savedSettings) {
         if (current.get(name) != original) {
             if (current.get(name)?.type != original.type) _nrHandle(ruleId).removeSetting(name)
             def value = original.value
-            if (original.type == 'capability' || original.type?.startsWith('capability.')) {
+            if (_nrIsDeviceType(original.type)) {
                 List devices = original.deviceList instanceof Map ? original.deviceList.keySet().collect { it.toString() } : []
                 value = original.multiple == true ? devices : (devices ? devices.get(0) : null)
             } else if (original.multiple == true && value instanceof String) value = new groovy.json.JsonSlurper().parseText(value)

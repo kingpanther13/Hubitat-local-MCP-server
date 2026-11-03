@@ -4177,6 +4177,15 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         'email syntax'                               | [type: 'email']                                             | 'nope'  | ["'nope' is not a valid email address"]
         'disabled input is skipped'                  | [type: 'text', required: true, disabled: true]              | ''      | []
         'buttons are never checked'                  | [type: 'button', required: true]                            | ''      | []
+        'required mode, "[]" is empty'               | [type: 'mode', multiple: true, required: true]              | '[]'    | ['required but empty']
+        'hidden menu input is skipped'               | [type: 'menu', required: true]                              | ''      | []
+        'hidden file-text input is skipped'          | [type: 'file-text', required: true]                         | ''      | []
+        'download-text posts nothing to check'       | [type: 'download-text', required: true]                     | ''      | []
+        'a textarea renders no pattern'              | [type: 'textarea', pattern: '[0-9]+']                       | 'abc'   | []
+        'a date input ignores a pattern'             | [type: 'date', pattern: '[0-9]+']                           | '2026-11-10' | []
+        'a menu is never filled from its default'    | [type: 'menu', defaultValue: 'x']                           | null    | []
+        'a picker is never filled from its default'  | [type: 'capability.switch', required: true, defaultValue: true] | null | ['required but empty']
+        'an uncompilable pattern is left unchecked'  | [type: 'text', pattern: '[']                                | 'x'     | []
     }
 
     def "_rmSubmitSubPageDone refuses a Done the UI would block (required input empty) and posts no Done"() {

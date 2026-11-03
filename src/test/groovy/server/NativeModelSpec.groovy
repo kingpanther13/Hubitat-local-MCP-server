@@ -85,6 +85,32 @@ class NativeModelSpec extends ToolSpecBase {
         nativeForm(selectors + descriptors)
     }
 
+    def 'a dated Certain Time trigger writes atDate as the date type the page declares'() {
+        given:
+        List rows = script._nmFields([
+            [name: 'time#', type: 'enum', value: 'A specific time'],
+            [name: 'atTime#', type: 'time', value: '2026-11-10T15:35:00.000+0000'],
+            [name: 'date#', type: 'bool', value: true],
+            [name: 'atDate#', type: 'date', value: '2026-11-10']], '1')
+        Map page = nativeForm([
+            [name: 'time1', type: 'enum', multiple: false, options: ['A specific time']],
+            [name: 'atTime1', type: 'time', multiple: false],
+            [name: 'date1', type: 'bool', multiple: false],
+            [name: 'atDate1', type: 'date', multiple: false]])
+        expect:
+        rows.find { it.name == 'atDate1' } == [name: 'atDate1', type: 'date', value: '2026-11-10']
+        script._nmValidateInputs(page, rows).success
+
+        when:
+        def mismatched = script._nmValidateInputs(page, [[name: 'atDate1', type: 'text', value: '2026-11-10']])
+        def invalid = script._nmValidateInputs(page, [[name: 'atDate1', type: 'date', value: '2026-11-31']])
+        def numeric = script._nmValidateInputs(page, [[name: 'atDate1', type: 'date', value: 20261110]])
+        then:
+        mismatched.error.contains("expected native type 'date', received 'text'")
+        invalid.error.contains('Date required as yyyy-MM-dd')
+        numeric.error.contains('native text input requires a string value')
+    }
+
     def 'malformed expressions refuse before state write even when native validation would accept'() {
         when:
         script._nmSetExpression(42L, '0', tokens)
