@@ -223,7 +223,7 @@ class NativeRuntimeSpec extends ToolSpecBase {
     def 'all settings validate before the first update'() {
         when:
         script._nrWriteSettings(42L, [[name: 'good', type: 'text', value: 'x'],
-                [name: 'device', type: 'device.custom', value: [1]]])
+                [name: 'device', type: 'device.custom', value: ['not-an-id']]])
         then:
         thrown(IllegalArgumentException)
         calls.empty

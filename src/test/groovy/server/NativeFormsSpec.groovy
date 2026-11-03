@@ -595,9 +595,10 @@ class NativeFormsSpec extends ToolSpecBase {
         !body.containsKey('settings[secret]')
         !body.containsKey('settings[storedNumber]')
         !body.containsKey('settings[lockedNumber]')
-        !body.containsKey('settings[tint]')
+        body['settings[tint]'] == '#ff0000'
+        body['tint.type'] == 'color'
         !body.containsKey('settings[staleChoice]')
-        result.defaults_posted as Set == ['defaultChoice', 'luxOff'] as Set
+        result.defaults_posted as Set == ['defaultChoice', 'luxOff', 'tint'] as Set
         result.defaults_not_posted*.name == ['staleChoice']
         result.defaults_not_posted[0].reason.contains('staleChoice')
         when: 'a supplied value wins over the default'
