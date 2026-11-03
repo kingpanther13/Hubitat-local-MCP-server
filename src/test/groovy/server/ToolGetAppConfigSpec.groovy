@@ -16,7 +16,7 @@ import support.ToolSpecBase
  *  - pageName arg: URL includes the page segment
  *  - includeSettings=false (default): settings key absent, settingsNote present
  *  - includeSettings=true: settings key populated
- *  - summary=true: identity-only fast path via /installedapp/json (pass-through + error paths)
+ *  - summary=true: identity-only fast path via /installedapp/statusJson (identity projection + error paths)
  *  - Empty hub response: returns success=false
  *  - Unknown appId (hub returns {app:null}): 'missing app' fingerprint, success=false
  *  - Not-found 404/410 throw (deleted / mid-delete / install shell whose config page
@@ -756,38 +756,51 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     }
 
     // -------------------------------------------------------------------------
-    // summary=true — identity-only fast path via /installedapp/json/<id>
+    // summary=true — identity-only fast path via /installedapp/statusJson/<id>
     // -------------------------------------------------------------------------
 
-    def "summary=true passes the thin identity record through with success=true and never renders the config page"() {
+    private static String statusRecord(Map installedApp) {
+        JsonOutput.toJson([installedApp: installedApp, appState: [[name: 'accessToken', value: 'state-secret']],
+                           appSettings: [[name: 'password', value: 'setting-secret']]])
+    }
+
+    private static Map ruleInstalledApp() {
+        [id: 35, name: 'Rule-5.1', label: 'My Rule <span style="color:red">(Paused)</span>', trueLabel: 'My Rule', disabled: false, parentAppId: 10,
+         appType: [name: 'Rule-5.1', namespace: 'hubitat', user: false, system: true, oauthClientSecret: 'type-secret']]
+    }
+
+    def "summary=true returns the identity fields of the status record and never renders the config page"() {
         given:
         settingsMap.enableRead = true
         // configure/json deliberately NOT registered -- if summary mode rendered the
         // config page, HubInternalGetMock would throw on the unregistered path.
-        // extraField proves unknown hub fields pass through untouched.
-        hubGet.register('/installedapp/json/35') { params ->
-            JsonOutput.toJson([id: 35, name: 'My Rule', type: 'Rule Machine', disabled: false, user: false, extraField: 'future-firmware-key'])
-        }
+        hubGet.register('/installedapp/statusJson/35') { params -> statusRecord(ruleInstalledApp()) }
 
         when:
         def result = script.toolGetAppConfig([appId: 35, summary: true])
 
-        then: 'identity fields pass through as-is'
-        result.success == true
-        result.id == 35
-        result.name == 'My Rule'
-        result.type == 'Rule Machine'
-        result.disabled == false
-        result.user == false
-        result.extraField == 'future-firmware-key'
-        result.endpoint == '/installedapp/json/35'
+        then: 'identity fields, the type with its namespace, and nothing else'
+        result == [success: true, id: 35, name: 'My Rule', type: 'Rule-5.1', namespace: 'hubitat', disabled: false, user: false,
+                   parentAppId: 10, endpoint: '/installedapp/statusJson/35']
+        !JsonOutput.toJson(result).contains('secret')
 
-        and: 'no full-mode keys'
-        !result.containsKey('page')
-        !result.containsKey('settingsKeyCount')
+        and: 'only the status record was read'
+        hubGet.calls.every { it.path == '/installedapp/statusJson/35' }
+    }
 
-        and: 'only the thin endpoint was hit'
-        hubGet.calls.every { it.path == '/installedapp/json/35' }
+    def "summary=true reports an unknown id that the hub answers with an empty status record as not found"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/statusJson/9999') { params -> '{}' }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 9999, summary: true])
+
+        then:
+        result.success == false
+        result.fingerprint == 'app not found (404)'
+        result.appId == 9999
+        result.error.toLowerCase().contains('not found')
     }
 
     @spock.lang.Unroll
@@ -795,9 +808,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableRead = true
-        hubGet.register('/installedapp/json/35') { params ->
-            JsonOutput.toJson([id: 35, name: 'My Rule', type: 'Rule Machine', disabled: false, user: false])
-        }
+        hubGet.register('/installedapp/statusJson/35') { params -> statusRecord(ruleInstalledApp()) }
 
         when:
         def response = mcpDriver.callTool('hub_get_app_config', [appId: 35, summary: true])
@@ -809,10 +820,11 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         inner.success == true
         inner.id == 35
         inner.name == 'My Rule'
-        inner.type == 'Rule Machine'
+        inner.type == 'Rule-5.1'
+        inner.namespace == 'hubitat'
         inner.disabled == false
         inner.user == false
-        inner.endpoint == '/installedapp/json/35'
+        inner.endpoint == '/installedapp/statusJson/35'
         !inner.containsKey('page')
 
         where:
@@ -822,7 +834,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     def "summary=true returns success=false when hub returns empty body"() {
         given:
         settingsMap.enableRead = true
-        hubGet.register('/installedapp/json/99') { params -> '' }
+        hubGet.register('/installedapp/statusJson/99') { params -> '' }
 
         when:
         def result = script.toolGetAppConfig([appId: 99, summary: true])
@@ -836,7 +848,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     def "summary=true returns success=false with fingerprint when response is not a JSON object"() {
         given:
         settingsMap.enableRead = true
-        hubGet.register('/installedapp/json/35') { params -> '"just a string"' }
+        hubGet.register('/installedapp/statusJson/35') { params -> '"just a string"' }
 
         when:
         def result = script.toolGetAppConfig([appId: 35, summary: true])
@@ -1567,9 +1579,9 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     def "summary=true returns a clean not-found when the identity fetch throws a 404"() {
         given:
         settingsMap.enableRead = true
-        // The thin /installedapp/json record 404s when the app is gone -- same graceful
-        // degrade as the full-mode path, via the summary catch block.
-        hubGet.register('/installedapp/json/9999') { params ->
+        // A 404 from the status record gets the same graceful degrade as the full-mode
+        // path, via the summary catch block.
+        hubGet.register('/installedapp/statusJson/9999') { params ->
             throw new FakeHttpException(404)
         }
 

@@ -11074,6 +11074,8 @@ def updated() {}
             label_blob = " ".join(str(ident.get(k) or "") for k in ("label", "name", "type"))
             assert PREFIX in label_blob, \
                 f"summary identity carries no recognizable name/label for the fixture rule: {result}"
+            assert (ident.get("type"), ident.get("namespace")) == ("Rule-5.1", "hubitat"), \
+                f"summary must name the app type and its namespace (#575): {result}"
             # The point of summary mode: no rendered config page rides along.
             assert not result.get("page") and not result.get("configPage"), \
                 f"summary:true must omit the rendered config page: {sorted(result.keys())}"

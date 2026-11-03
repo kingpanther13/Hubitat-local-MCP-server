@@ -465,9 +465,10 @@ def toolGetAppConfig(args) {
 
     boolean includeSettings = args?.includeSettings == true
 
-    // The thin per-app record renders no page, so it stays cheap on apps with expensive pages.
+    // The app's status record renders no page, so it stays cheap on apps with expensive pages. It also
+    // carries the app's state and the type's credentials, so only identity fields leave it.
     if (args?.summary == true) {
-        def summaryPath = "/installedapp/json/${appIdStr}"
+        def summaryPath = "/installedapp/statusJson/${appIdStr}"
         mcpLog("info", "hub-admin", "hub_get_app_config appId=${appIdStr} summary mode")
         def summaryText
         try {
@@ -491,11 +492,14 @@ def toolGetAppConfig(args) {
         if (!(summaryParsed instanceof Map)) {
             return [success: false, error: "Unexpected response shape: the app summary is not a JSON object.", note: _appConfigNote('Retry once; if it fails again, read the app without summary=true'), appId: appIdStr as Integer, fingerprint: "top-level not a Map"]
         }
-        def summaryResult = [:]
-        summaryResult.putAll(summaryParsed)
-        summaryResult.success = true
-        summaryResult.endpoint = summaryPath
-        return summaryResult
+        def installed = summaryParsed.installedApp
+        // The hub answers an unknown id with an empty record instead of a 404.
+        if (!(installed instanceof Map) || installed.id == null) {
+            return [success: false, error: "App ${appIdStr} not found (no installed app in ${summaryPath}).", note: _appConfigNote("Check the id with hub_list_apps(scope='instances')"), appId: appIdStr as Integer, fingerprint: 'app not found (404)']
+        }
+        def type = installed.appType instanceof Map ? installed.appType : [:]
+        return [success: true, id: installed.id, name: stripAppConfigHtml(installed.trueLabel ?: installed.label), type: type.name, namespace: type.namespace,
+                disabled: installed.disabled == true, user: type.user == true, parentAppId: installed.parentAppId, endpoint: summaryPath]
     }
 
     def path = "/installedapp/configure/json/${appIdStr}"
@@ -3160,7 +3164,7 @@ A transport drop can lose the response while the hub still commits this write; v
                     appId: [type: "string", description: "Installed-app ID (decimal). From hub_list_apps (scope='instances'), hub_list_rules, or the numeric id in the Hubitat UI URL (/installedapp/configure/<id>)."],
                     pageName: [type: "string", description: "The page to read instead of the default page: a page.hrefs[].page name from a page of this app already read."],
                     includeSettings: [type: "boolean", description: "Include the raw app-internal settings key-value map (default false). Set true only for power-user inspection.", default: false],
-                    summary: [type: "boolean", description: "Fast identity-only read: returns the thin app record (id, name, type, disabled, user), no config page; pageName/includeSettings ignored.", default: false]
+                    summary: [type: "boolean", description: "Fast identity-only read: returns the app record (id, name, type, namespace, disabled, user, parentAppId), no config page; pageName/includeSettings ignored.", default: false]
                 ],
                 required: ["appId"]
             ]
