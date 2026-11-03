@@ -7165,6 +7165,32 @@ def updated() {}
                 self._delete_native(app_id)
 
     @test("native_apps")
+    def test_set_rule_dated_certain_time_trigger(self) -> None:
+        # The trigger page declares atDate# as a date input; it is written and read back as one (#575).
+        day = (datetime.now(UTC) + timedelta(days=30)).strftime("%Y-%m-%d")
+        dated = native_change("trigger", capability="Certain Time (and optional date)", fields=[
+            native_field("time#", "enum", "A specific time"),
+            native_field("atTime#", "time", f"{day}T15:35:00.000-0500"),
+            native_field("date#", "bool", True),
+            native_field("atDate#", "date", day)])
+        app_id, created = self._rm_rule("DatedTrigger", [dated, native_log("dated trigger")])
+        try:
+            trigger_id = next(iter(created["triggers"]))
+            setting = self._rm_settings(app_id)[f"atDate{trigger_id}"]
+            assert setting.get("type") == "date" and setting.get("value") == day, setting
+            assert self._rm_health(app_id)["scheduledJobCount"] >= 1, "the dated trigger has no schedule"
+            before = self._rm_snapshot(app_id)
+            error = self._rm_refuse(app_id, [native_change("trigger", id=trigger_id, capability="Certain Time (and optional date)", fields=[
+                native_field("time#", "enum", "A specific time"),
+                native_field("atTime#", "time", f"{day}T15:35:00.000-0500"),
+                native_field("date#", "bool", True),
+                native_field("atDate#", "date", "2026-02-30")])])
+            assert "yyyy-MM-dd" in error, error
+            assert self._rm_snapshot(app_id) == before
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
     def test_set_rule_failloud_wrong_trigger_shape(self) -> None:
         # Malformed or semantically wrong rows are refused and leave the rule exactly as it was. The
         # baseline compiles one valid row of each kind the edits below target, so an edit refusal
