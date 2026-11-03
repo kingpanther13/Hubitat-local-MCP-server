@@ -16964,7 +16964,7 @@ private Map _appConfigInput(Map element, Map field, Object settings) {
     if (description && description != "Click to set") input.description = description
     else input.remove('description')
     def stored = settings instanceof Map ? settings.get(field.name) : null
-    if (field.device && stored instanceof Map) input.selected = stored.collect { id, label -> [value: id.toString(), label: stripAppConfigHtml(label)] }
+    if (_nrIsDeviceType(field.type?.toString()) && stored instanceof Map) input.selected = stored.collect { id, label -> [value: id.toString(), label: stripAppConfigHtml(label)] }
     return input
 }
 private Map _appConfigSettingTypes(Integer appId) {
