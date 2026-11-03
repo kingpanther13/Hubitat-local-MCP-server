@@ -16761,7 +16761,7 @@ def toolGetAppConfig(args) {
     }
     boolean includeSettings = args?.includeSettings == true
     if (args?.summary == true) {
-        def summaryPath = "/installedapp/statusJson/${appIdStr}"
+        def summaryPath = "/installedapp/json/${appIdStr}"
         mcpLog("info", "hub-admin", "hub_get_app_config appId=${appIdStr} summary mode")
         def summaryText
         try {
@@ -16785,13 +16785,13 @@ def toolGetAppConfig(args) {
         if (!(summaryParsed instanceof Map)) {
             return [success: false, error: "Unexpected response shape: the app summary is not a JSON object.", note: _appConfigNote('Retry once; if it fails again, read the app without summary=true'), appId: appIdStr as Integer, fingerprint: "top-level not a Map"]
         }
-        def installed = summaryParsed.installedApp
-        if (!(installed instanceof Map) || installed.id == null) {
-            return [success: false, error: "App ${appIdStr} not found (no installed app in ${summaryPath}).", note: _appConfigNote("Check the id with hub_list_apps(scope='instances')"), appId: appIdStr as Integer, fingerprint: 'app not found (404)']
-        }
-        def type = installed.appType instanceof Map ? installed.appType : [:]
-        return [success: true, id: installed.id, name: stripAppConfigHtml(installed.trueLabel ?: installed.label), type: type.name, namespace: type.namespace,
-                disabled: installed.disabled == true, user: type.user == true, parentAppId: installed.parentAppId, endpoint: summaryPath]
+        def summaryResult = [:]
+        summaryResult.putAll(summaryParsed)
+        try { summaryResult.namespace = getAppByAppId(appIdStr as Long)?.appType?.namespace?.toString() }
+        catch (Exception lookup) { mcpLog("warn", "hub-admin", "hub_get_app_config app ${appIdStr}: type namespace unreadable: ${lookup.message}") }
+        summaryResult.success = true
+        summaryResult.endpoint = summaryPath
+        return summaryResult
     }
     def path = "/installedapp/configure/json/${appIdStr}"
     if (pageName) path += "/${pageName}"
@@ -16838,19 +16838,20 @@ def toolGetAppConfig(args) {
         parentAppId: parsed.app.parentAppId,
         installed: parsed.app.installed == true
     ]
-    def redactedPw = _appConfigRedactedMarker()
     boolean isRmRule = _rmIsRuleAppType((appTypeRaw instanceof Map ? appTypeRaw.name : null)?.toString()) ||
         _rmIsRuleAppType(parsed.app.name?.toString())
     Map formFields = null
-    List formControls = null
+    Map form = null
     String formError = null
     try {
-        Map form = _nfPublic(_nfContext(appIdStr as Long, parsed as Map), [])
+        form = _nfPublic(_nfContext(appIdStr as Long, parsed as Map), [])
         formFields = form.get('fields').collectEntries { [(it.name): it] }
-        formControls = form.get('controls')
-    } catch (Exception unreadable) {
-        mcpLog("warn", "hub-admin", "hub_get_app_config app ${appIdStr}: page form unreadable: ${unreadable.message}")
-        formError = unreadable.message
+    } catch (IllegalStateException unmodelled) {
+        mcpLog("warn", "hub-admin", "hub_get_app_config app ${appIdStr}: page form unreadable: ${unmodelled.message}")
+        formError = unmodelled.message
+    } catch (Exception unexpected) {
+        mcpLogError("hub-admin", "hub_get_app_config app ${appIdStr}: page form read failed", unexpected)
+        formError = "${unexpected.class.simpleName}: ${unexpected.message}".toString()
     }
     def passwordInputNames = [] as Set
     def sections = []
@@ -16869,22 +16870,23 @@ def toolGetAppConfig(args) {
                 if (!seen.add(b.name.toString())) continue
                 if (b.type == 'password') passwordInputNames << b.name.toString()
                 section.inputs << _appConfigInput(b, formFields?.get(b.name.toString()), parsed.settings)
-            } else if (element in ['label', 'mode'] && formFields?.get(element == 'mode' ? 'mode[mode]' : 'label')) {
-                section.inputs << formFields.get(element == 'mode' ? 'mode[mode]' : 'label')
+            } else if (element in ['label', 'mode']) {
+                Map appField = formFields?.get(element == 'mode' ? 'mode[mode]' : 'label')
+                if (appField) section.inputs << appField
             } else if (element == 'component' && b.name) {
                 components << [name: b.name, title: stripAppConfigHtml(b.title), description: stripAppConfigHtml(b.description)].findAll { k, v -> v }
             } else if (element == 'href' && (b.page || b.url)) {
-                Map link = b.page ? [page: b.page.toString()] : [url: b.url.toString()]
+                Map link = b.url ? [url: b.url.toString()] : [page: b.page.toString()]
                 link.title = _uiPlainTitle(b.title)
-                def description = stripAppConfigHtml(b.description)
-                if (description && description != "Click to set") link.description = description
+                def description = _appConfigShownText(b.description)
+                if (description) link.description = description
                 List disabled = isRmRule ? _appConfigDisabledRows(b.description) : []
                 if (disabled) link.disabled = disabled
                 pageHrefs << link
             } else if (element == 'paragraph') {
                 def rawHtml = (b.description ?: b.title)?.toString()
-                def text = stripAppConfigHtml(rawHtml)
-                if (!text || text == "Click to set") continue
+                def text = _appConfigShownText(rawHtml)
+                if (!text) continue
                 List disabled = isRmRule ? _appConfigDisabledRows(rawHtml) : []
                 paragraphs << (disabled ? [text: text, disabled: disabled] : text)
             }
@@ -16893,10 +16895,8 @@ def toolGetAppConfig(args) {
         if (components) section.components = components
         sections << section
     }
-    def children = []
-    for (c in (parsed.childApps ?: [])) {
-        if (!(c instanceof Map)) continue
-        children << [id: c.id, label: stripAppConfigHtml(c.label ?: c.name), name: c.name]
+    def children = (parsed.childApps instanceof List ? parsed.childApps : []).findAll { it instanceof Map }.collect { c ->
+        [id: c.id, label: stripAppConfigHtml(c.label ?: c.name), name: c.name]
     }
     def childDevices = (parsed.childDevices instanceof List ? parsed.childDevices : []).findAll { it instanceof Map }.collect { d ->
         [id: d.id, name: stripAppConfigHtml(d.label ?: d.name)]
@@ -16923,8 +16923,13 @@ def toolGetAppConfig(args) {
         String formTool = isRmRule ? "hub_set_rule" : "hub_set_native_app"
         result.pageNote = "The hub rendered '${parsed.configPage.name}' instead of '${pageName}'; this app reaches that page only through its own link: open it with ${formTool}(operation:'form') and activate the href.".toString()
     }
-    if (formControls != null) result.controls = formControls
-    else result.formError = formError
+    if (form != null) {
+        result.controls = form.get('controls')
+        if (form.get('unsupported')) result.unsupported = form.get('unsupported')
+    } else {
+        result.formError = formError
+        result.note = _appConfigNote("Input values and controls are withheld: ${formError}. Read the stored values with includeSettings=true")
+    }
     int settingsCount = (parsed.settings instanceof Map) ? parsed.settings.size() : 0
     result.settingsKeyCount = settingsCount
     if (includeSettings) {
@@ -16943,6 +16948,7 @@ def toolGetAppConfig(args) {
                 mcpLog("warn", "hub-admin", "hub_get_app_config: statusJson for app ${appIdStr} types none of ${untyped}; raw settings withheld")
                 result.settingsNote = "Raw settings withheld: /installedapp/statusJson/${appIdStr} carries no type for ${untyped.take(5).join(', ')}${untyped.size() > 5 ? " and ${untyped.size() - 5} more" : ''}, so a password among them could not be told apart. Retry; the config page above is unaffected.".toString()
             } else {
+                def redactedPw = _appConfigRedactedMarker()
                 def redacted = [:]
                 rawSettings.each { k, v ->
                     String key = k?.toString()
@@ -16968,13 +16974,17 @@ private List _appConfigDisabledRows(Object html) {
     }
     return disabled
 }
-private Map _appConfigInput(Map element, Map field, Object settings) {
+private String _appConfigShownText(Object html) {
+    String text = stripAppConfigHtml(html)
+    return (text && !(text in ["Click to set", "Click to show"])) ? text : null
+}
+private Map _appConfigInput(Map element, Map field, Object storedSettings) {
     if (field == null) return [name: element.name, type: element.type, title: stripAppConfigHtml(element.title)]
     Map input = [:] + field
-    def description = stripAppConfigHtml(field.description)
-    if (description && description != "Click to set") input.description = description
+    def description = _appConfigShownText(field.description)
+    if (description) input.description = description
     else input.remove('description')
-    def stored = settings instanceof Map ? settings.get(field.name) : null
+    def stored = storedSettings instanceof Map ? storedSettings.get(field.name) : null
     if (_nrIsDeviceType(field.type?.toString()) && stored instanceof Map) input.selected = stored.collect { id, label -> [value: id.toString(), label: stripAppConfigHtml(label)] }
     return input
 }
@@ -17117,7 +17127,7 @@ private Map _submitAppDoneForm(Integer instanceId, String pageName, boolean requ
             if (i instanceof Map && i.name) {
                 def nm = i.name.toString()
                 if (i.value != null) pageValues.put(nm, i.value)
-                else if (i.defaultValue != null) pageValues.put(nm, i.defaultValue)
+                else if (i.defaultValue != null && i.type != "menu" && !_isDevicePickerType(i.type)) pageValues.put(nm, i.defaultValue)
             }
         }
     }
@@ -18995,7 +19005,7 @@ A transport drop can lose the response while the hub still commits this write; v
                     appId: [type: "string", description: "Installed-app ID (decimal). From hub_list_apps (scope='instances'), hub_list_rules, or the numeric id in the Hubitat UI URL (/installedapp/configure/<id>)."],
                     pageName: [type: "string", description: "The page to read instead of the default page: a page.hrefs[].page name from a page of this app already read."],
                     includeSettings: [type: "boolean", description: "Include the raw app-internal settings key-value map (default false). Set true only for power-user inspection.", default: false],
-                    summary: [type: "boolean", description: "Fast identity-only read: returns the app record (id, name, type, namespace, disabled, user, parentAppId), no config page; pageName/includeSettings ignored.", default: false]
+                    summary: [type: "boolean", description: "Fast identity-only read: returns the thin app record (id, name, type, disabled, user) and the type's namespace, no config page; pageName/includeSettings ignored.", default: false]
                 ],
                 required: ["appId"]
             ]
@@ -25003,14 +25013,13 @@ private void _nrCheckSettingRow(Object row) {
     if (!(row instanceof Map) || !(row.name instanceof String) || !row.name || !(row.type instanceof String) || !row.type.trim() || !row.containsKey('value') || row.keySet().any { !(it in ['name', 'type', 'value']) }) {
         throw new IllegalArgumentException('Each setting requires name, type and value')
     }
-    boolean device = _nrIsDeviceType(row.type)
     if (row.value == null) throw new IllegalArgumentException('Null setting values are unsupported; they do not reliably clear native settings')
     if (row.value instanceof List) {
         if (row.value.any { !(it instanceof String || it instanceof Number || it instanceof Boolean) }) throw new IllegalArgumentException('Setting lists require scalar values')
     } else if (!(row.value instanceof String || row.value instanceof Number || row.value instanceof Boolean)) {
         throw new IllegalArgumentException('Unsupported native setting value')
     }
-    if (device && (row.value instanceof List ? row.value : [row.value]).any { !it.toString().isLong() || it.toString().toLong() <= 0L }) throw new IllegalArgumentException('Capability settings require positive device IDs')
+    if (_nrIsDeviceType(row.type) && (row.value instanceof List ? row.value : [row.value]).any { !it.toString().isLong() || it.toString().toLong() <= 0L }) throw new IllegalArgumentException('Device picker settings require positive device IDs')
 }
 Map _nrWriteSettings(Long ruleId, List rows) {
     if (rows == null) throw new IllegalArgumentException('Setting rows are required')
@@ -26596,14 +26605,20 @@ private void _nfWalk(Object node, Map fields, Map controls, List messages, List 
                 ['range', 'min', 'max', 'step', 'pattern', 'description'].each { key -> if (node.containsKey(key)) field[key] = node[key] }
                 def stored = model.settings instanceof Map ? model.settings.get(name) : null
                 boolean exists = model.settings instanceof Map && model.settings.containsKey(name)
-                def current = exists ? stored : (device ? null : node.defaultValue)
+                def current = exists ? stored : ((device || type == 'menu') ? null : node.defaultValue)
                 if (device && current instanceof Map) current = current.keySet().collect { it.toString() }
                 if (device && !field.multiple && current instanceof List) current = current ? current[0] : null
                 if (type == 'password') field.has_value = current != null && current != ''
                 if (type != 'password' || (exists && !_redactsCredentials())) { field.value = current; field.value_source = exists ? 'stored' : 'default' }
                 if (!exists && type != 'password' && current != null && current != '' && !(current instanceof Collection && current.isEmpty())) field.default_value = current
                 field.present = exists && current != null && current != '' && (!(current instanceof Collection) || !current.empty)
-                if (field.present && type != 'password' && (type in ['number', 'decimal', 'email'] || node.pattern) && !_appConfigMasksSetting(name, type, current)) field.nav_value = current
+                if (field.present && !device) {
+                    Map checks = [:], storedValue = [:]
+                    checks.put(name, [type: type, range: field.range, pattern: node.pattern])
+                    storedValue.put(name, current)
+                    List problems = _uiNavigationViolations(checks, storedValue)
+                    if (problems) field.nav_problem = _appConfigIsSecretSetting(name, type, current) ? 'the stored value fails the page check' : problems[0].problem
+                }
                 field.options = _nfOptions(type == 'mode' ? model.modeMap : node.options)
                 if (device) {
                     field.capability = type
@@ -26661,7 +26676,6 @@ private Map _nfContext(Long id, Map model, String from = null) {
     if (model.paramsForPage instanceof Map) envelope.paramsForPage = _nfEncode(groovy.json.JsonOutput.toJson(model.paramsForPage))
     Map context = [app_id: id, page: [name: page.name ?: '', title: _nfText(page.title)], fields: fields, controls: controls, messages: messages.unique(),
                    unsupported: unsupported.unique(), envelope: envelope, expires: now() + 300000L]
-    if (fields.size() > 256 || controls.size() > 256) throw new IllegalStateException('Native form exceeds 256 fields or controls')
     context
 }
 private String _nfReloadPath(Long id, Map context) {
@@ -26672,10 +26686,11 @@ private String _nfReloadPath(Long id, Map context) {
     "/installedapp/configure/json/${id}" + (pages ? '/' + pages.collect { _nfEncode(it) }.join('/') : '')
 }
 private void _nfCache(String key, Map context) {
+    if (context.get('fields').size() > 256 || context.controls.size() > 256) throw new IllegalStateException('Native form exceeds 256 fields or controls')
     Map cached = [app_id: context.app_id, page: [name: context.page.name], envelope: context.envelope, expires: context.expires,
                   fields: [:], controls: [:], backup: context.backup]
     context.get('fields').each { name, field ->
-        Map descriptor = field.findAll { k, v -> k in ['name', 'type', 'multiple', 'required', 'supported', 'device', 'disabled', 'present', 'capability', 'ignore', 'range', 'min', 'max', 'step', 'pattern', 'default_value', 'app_field', 'sidecars', 'hub_default', 'nav_value'] }
+        Map descriptor = field.findAll { k, v -> k in ['name', 'type', 'multiple', 'required', 'supported', 'device', 'disabled', 'present', 'capability', 'ignore', 'range', 'min', 'max', 'step', 'pattern', 'default_value', 'app_field', 'sidecars', 'hub_default', 'nav_problem'] }
         descriptor.option_keys = field.options == null ? null : field.options*.value
         if (field.app_field && name == 'label') descriptor.value = field.value
         cached.get('fields').put(name, descriptor)
@@ -26721,7 +26736,7 @@ private String _nfValue(Map field, Object value) {
 private Map _nfPublic(Map context, List optionsFor) {
     List fields = context.get('fields').values().collect { field ->
         Map result = [:] + field
-        ['device', 'ignore', 'capability', 'present', 'default_value', 'app_field', 'sidecars', 'hub_default', 'nav_value'].each { result.remove(it) }
+        ['device', 'ignore', 'capability', 'present', 'default_value', 'app_field', 'sidecars', 'hub_default', 'nav_problem'].each { result.remove(it) }
         if (field.type == 'password' && _redactsCredentials()) result.redacted = true
         else if (field.name ==~ /(?i)access_?token/ && result.value instanceof CharSequence && result.value && _redactsAccessTokens()) result.value = _accessTokenRedactedMarker()
         else if (_appConfigMasksSetting(field.name, field.type, result.value)) { result.value = _appConfigRedactedMarker(); result.redacted = true }
@@ -26792,13 +26807,17 @@ private Map _nfPrepare(Long id, Map context, Map supplied, String activate, Stri
         if (control.kind == 'button' && !control.submit_on_change) reloadPath = _nfReloadPath(id, context)
         if (control.kind in ['href', 'navigation'] && control.value != 'Cancel') {
             Map schema = [:], values = [:]
+            List stored = []
             context.get('fields').each { name, field ->
                 String key = _nfWire(field, '').keySet().first()
-                if (!body.containsKey(key) && field.present && !field.containsKey('nav_value')) return
-                schema.put(name, [type: field.type, required: field.required, range: field.range, pattern: field.pattern, disabled: field.disabled, title: name])
-                values.put(name, body.containsKey(key) ? body[key] : field.nav_value)
+                if (!body.containsKey(key) && field.present) {
+                    if (field.nav_problem && !field.disabled) stored << [name: name, problem: field.nav_problem]
+                    return
+                }
+                schema.put(name, [type: field.type, required: field.required, range: field.range, pattern: field.pattern, disabled: field.disabled])
+                values.put(name, body.containsKey(key) ? body[key] : null)
             }
-            List problems = _uiNavigationViolations(schema, values)
+            List problems = _uiNavigationViolations(schema, values) + stored
             if (problems && problems.every { it.problem == 'required but empty' }) throw new IllegalArgumentException("Complete required native fields before navigating: ${problems*.name.join(', ')}")
             if (problems) throw new IllegalArgumentException("Fix native fields before navigating: ${problems.collect { "${it.name}: ${it.problem}" }.join('; ')}")
         }
@@ -34660,10 +34679,13 @@ private List _uiNavigationViolations(Map schema, Map values) {
             if ((n - base).remainder(step).compareTo(BigDecimal.ZERO) != 0) {
                 problems << [name: name, title: title, problem: (t == "number" ? "${v} is not a whole number" : "${v} has more than two decimal places").toString()]
             }
-        } else if (meta?.pattern) {
+        } else if (meta?.pattern && !(t in ["textarea", "date", "time", "color", "bool", "enum", "mode"]) && !_isDevicePickerType(t)) {
             def matched
             try { matched = (v.toString() ==~ meta.pattern.toString()) }
-            catch (Exception badPattern) { matched = true }
+            catch (Exception badPattern) {
+                mcpLog("debug", "hub-admin", "pattern of ${name} not checked: ${badPattern.message}")
+                matched = true
+            }
             if (!matched) problems << [name: name, title: title, problem: "'${v}' does not match the required format".toString()]
         } else if (t == "email" && !(v.toString() ==~ _uiEmailPattern())) {
             problems << [name: name, title: title, problem: "'${v}' is not a valid email address".toString()]
@@ -34675,6 +34697,7 @@ private String _uiEmailPattern() {
     return '[a-zA-Z0-9.!#\$%&\'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*'
 }
 private _uiValueOrDefault(v, Map meta) {
+    if (meta?.type == "menu" || _isDevicePickerType(meta?.type)) return v
     return (_uiValueIsEmpty(v, meta) && meta?.defaultValue != null) ? meta.defaultValue : v
 }
 private boolean _uiValueIsEmpty(v, Map meta = null) {
@@ -35885,8 +35908,9 @@ A single tool can also be switched off under **Advanced: Per-tool Overrides**. A
   - `controls` are the page's buttons and links as hub_set_rule(operation='form') (Rule Machine) or hub_set_native_app(operation='form') returns them; activate one there by its control_id after opening the same page.
   - On a Rule Machine rule a paragraph holding a disabled action or trigger reads `{text, disabled: [...]}`, listing the text of each disabled row it holds; a `page.hrefs` entry whose summary holds one (the main page's action link) carries the same `disabled` list. On selectActions (Button Rule: selectActionsX) a disabled action's `disable<N>` control reads 'Enable Action', and the control named `<N>.0.<bool>` carries that action's text; N is the action index, not the row position. The button toggles: never replay a click whose response was lost. hub_set_app_disabled disables the whole app.
   - `pageNote` appears when the hub rendered another page than `pageName`: the app reaches that page only through its link, so open it in a form workflow.
-  - `appType.system` and `appType.menu` are the fields hub_list_apps(scope='types') gives for every type at once.
-  - `includeSettings=true` adds the raw settings map: 500-1000 app-encoded keys on large apps (Room Lighting stores per-device scene levels as `dm~<deviceId>~<scene>`). Secrets read `***redacted (password)***`: every setting the hub types as a password, on any page, and free-text settings with credential-shaped names (password, pass, secret, token, API key, credential, PIN, lock or alarm code, ...). OAuth accessToken settings follow the Hide access tokens setting. Page inputs are redacted the same way. With Hide passwords and credentials turned off in the MCP app's settings they read as stored. When the setting types cannot be read the map is withheld and `settingsNote` says why.
+  - Each input is the field hub_set_native_app(operation='form') returns; a device picker adds `selected`, its devices with labels. `unsupported` lists page parts a form cannot drive, such as a community app's create button. When the page cannot be modelled, `formError` says why: inputs carry no values and there are no controls.
+  - `appType.namespace` and `appType.name` name the type; `appType.system` and `appType.menu` are the fields hub_list_apps(scope='types') gives for every type at once.
+  - `includeSettings=true` adds the raw settings map: 500-1000 app-encoded keys on large apps (Room Lighting stores per-device scene levels as `dm~<deviceId>~<scene>`). Secrets read `***redacted (password)***`: every setting the hub types as a password, on any page, and free-text settings with credential-shaped names (password, pass, secret, token, API key, credential, PIN, lock or alarm code, ...). OAuth accessToken settings follow the Hide access tokens setting. Page inputs read as in the form tools: a password input carries no value and `redacted: true`; a credential-named input reads the marker. With Hide passwords and credentials turned off in the MCP app's settings they read as stored. When the setting types cannot be read the map is withheld and `settingsNote` says why.
   - A type='mode' input's `value` is its stored setting. Day Lights uses ten of them for per-mode levels, gated by `useModeOverrides`; most apps use one as an "only during these modes" restriction.
   - **Mode gating in the built-in apps.** The hub has no "modes in use by" list, so read each app; resolve mode IDs with hub_list_modes.
     - **Notifier** — `modes` (mode ids) on `moreOptions`; restricts.
