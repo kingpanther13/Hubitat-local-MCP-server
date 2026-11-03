@@ -1502,10 +1502,13 @@ Map _rmSubmitMainPageDone(Integer appId) {
         mcpLog("warn", "rm-native", "_rmSubmitMainPageDone: Done POST for app ${appId} returned status ${resp.status}")
         return [done: false, reason: "Done POST returned status ${resp.status}".toString()]
     }
-    // The hub answers an accepted Done with a location; a page in the reply means it rendered the page again.
-    String replyText = resp?.data instanceof Map ? groovy.json.JsonOutput.toJson(resp.data) : (resp?.data?.toString() ?: '')
-    if (replyText.contains('"location"')) return [done: true]
-    return [done: false, reason: (replyText.contains('"configPage"') ? "the hub rendered page '${commitPage}' again instead of accepting its Done" :
+    // The hub answers an accepted Done with a top-level location; a page in the reply means it rendered the page again.
+    def reply = resp?.data
+    if (!(reply instanceof Map)) {
+        try { reply = reply ? new groovy.json.JsonSlurper().parseText(reply.toString()) : null } catch (Exception ignored) { reply = null }
+    }
+    if (reply instanceof Map && reply.location != null) return [done: true]
+    return [done: false, reason: (reply instanceof Map && reply.containsKey('configPage') ? "the hub rendered page '${commitPage}' again instead of accepting its Done" :
         "the hub's reply to the Done named no location").toString()]
 }
 
@@ -1720,8 +1723,8 @@ Map _rmBackupRuleSnapshot(Integer ruleId, String reason, boolean requireNativeEx
     return _withBackupLock("rule ${ruleId} snapshot (${reason})") { _rmWriteRuleSnapshotLocked(ruleId, reason, built.snapshot as Map, built.config as Map, protectedKey) }
 }
 
-// Password-typed settings never reach a File Manager snapshot: their values are dropped and their
-// names returned, so a restore can leave the live value alone or ask for it to be re-entered.
+// Password-typed and credential-named settings never reach a File Manager snapshot: their values are
+// dropped and their names returned, so a restore can leave the live value alone or ask for it to be re-entered.
 private Set _rmRedactSnapshotPasswords(Map config, Map status) {
     Set names = [] as Set
     if (status?.appSettings instanceof List) status.appSettings.each { row ->
@@ -1740,7 +1743,7 @@ private Set _rmRedactSnapshotPasswords(Map config, Map status) {
     names
 }
 
-// The App Cloner export with every password-typed setting value nulled; names collects them.
+// The App Cloner export with every password-typed or credential-named setting value nulled; names collects them.
 private String _rmRedactExportSecrets(String nativeExport, Set names) {
     def payload = new groovy.json.JsonSlurper().parseText(nativeExport)
     boolean changed = false
@@ -2823,14 +2826,20 @@ def toolListRuleLocalVariables(args) {
     def localVariables = []
     lvRead.vars.each { lvName, lvMeta ->
         def live = lvRead.live?.get(lvName?.toString())
-        localVariables << [
-            name: lvName?.toString(),
+        localVariables << _rmPublicLocalVariable(lvName?.toString(), [
             type: (lvMeta instanceof Map ? lvMeta?.type?.toString() : null),
             value: (live instanceof Map && live.containsKey("value")) ? live.value : (lvMeta instanceof Map ? lvMeta?.value : null)
-        ]
+        ])
     }
     localVariables = localVariables.sort { it.name }
     return [appId: appId, localVariables: localVariables, total: localVariables.size()]
+}
+
+// A local variable named like a credential (doorCode, alarmPin) reads with its value hidden, as settings do.
+Map _rmPublicLocalVariable(String name, Map row) {
+    Map result = [name: name, type: row?.type, value: row?.value]
+    if (_appConfigMasksSetting(name, row?.type == 'boolean' ? 'bool' : 'text', row?.value)) { result.value = null; result.redacted = true }
+    result
 }
 
 // ==================== PER-TOOL METADATA (issue #209) ====================
@@ -3001,7 +3010,8 @@ private void _naValidateUpdate(Map args) {
 }
 
 // The page's own Done as the browser posts it: _action_update on a page that installs the app,
-// _action_previous on a sub-page. Null when the page renders no Done.
+// _action_previous on a sub-page, _action_done on a page naming both a next and a done page.
+// Null when the page renders no Done.
 private String _naDone(Map context) { ['_action_update|Done|', '_action_previous|Done|', '_action_done|Done|'].find { context.controls.containsKey(it) } }
 
 // Sets the fields and presses the page's Done as the browser does. A submitOnChange input posts the
@@ -3227,8 +3237,9 @@ private Map _naCreate(Map args) {
         try { back = _naReadBack(childId, child, written) }
         catch (Exception failure) {
             mcpLogError('rm-native', "hub_set_native_app create: reading back new app ${childId} failed", failure)
-            return [success: false, app_type: type, app_id: childId, fields_unverified: written.keySet().collect { it.toString() },
-                    error: "App ${childId} was saved, but reading it back failed: ${failure.message}".toString(),
+            return [success: false, app_type: type, app_id: childId, fields_unverified: written.keySet().collect { it.toString() }] +
+                   (saved.done && !saved.committed ? [committed: false] : [:]) +
+                   [error: "App ${childId} was saved, but reading it back failed: ${failure.message}".toString(),
                     note: "Check it with hub_get_app_config(appId=${childId}, includeSettings=true) before changing it; do not create it again.${guide}".toString()] + report
         }
         Map result = [success: back.not_landed.isEmpty(), app_id: childId, app_type: type, label: back.model.app?.label?.toString(),
@@ -3246,7 +3257,8 @@ private Map _naCreate(Map args) {
         boolean doneSaves = saved.done == '_action_done|Done|' && !saved.committed
         if (doneSaves) {
             result.committed = false
-            notes << "Its first page names both a next and a done page, so the hub answered its Done by saving and rendering the page again; the app did not install. Finish it with operation:'form'."
+            notes << "Its first page names both a next and a done page, so the hub answered its Done by saving and rendering the page again" +
+                (back.model.app?.installed == true ? '.' : "; the app did not install. Finish it with operation:'form'.")
         }
         if (back.model.app?.installed != true) {
             result.installed = false
@@ -3343,6 +3355,8 @@ private Map _naUpdate(Long id, Map args) {
     Map fields = args.get('fields')
     String page = args.page
     String guide = " See hub_get_tool_guide(section='set_native_app_reference')."
+    def marked = fields instanceof Map ? fields.find { k, v -> _isRedactionMarker(v) } : null
+    if (marked) throw new IllegalArgumentException("${marked.key} is the redaction marker, not a value; omit the field to keep the stored one")
     _requireUnprotectedAppMutation(id, 'edit')
     def nativeApp = getAppByAppId(id)
     if (nativeApp?.id?.toString() != id.toString()) throw new IllegalArgumentException('app_id must identify an installed app')

@@ -444,6 +444,40 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         !result.containsKey('modeInputsNote')
     }
 
+    def "a page input reads its stored setting over the code default; a device input keeps its description"() {
+        given:
+        settingsMap.enableRead = true
+
+        and: 'the page JSON carries only the code defaultValue; the stored values are in settings[name]'
+        hubGet.register('/installedapp/configure/json/35') { params ->
+            makeAppConfigJson([
+                settings: [debugLogging: 'true', flagOn: 'false', logLevel: 'debug', origLabel: 'Kitchen', lights: ['12': 'Lamp']],
+                configPage: [name: 'mainPage', title: 'Main', install: true, refreshInterval: null, sections: [
+                    [title: 'S', input: [
+                        [name: 'debugLogging', type: 'bool', title: 'Debug', defaultValue: false],
+                        [name: 'flagOn', type: 'bool', title: 'On', defaultValue: true],
+                        [name: 'logLevel', type: 'enum', title: 'Level', defaultValue: 'error', options: ['error', 'debug']],
+                        [name: 'origLabel', type: 'text', title: 'Label'],
+                        [name: 'retries', type: 'number', title: 'Retries', defaultValue: 3],
+                        [name: 'lights', type: 'capability.switch', title: 'Lights', defaultValue: true, description: 'Lamp']
+                    ], body: []]
+                ]]
+            ])
+        }
+
+        when:
+        def inputs = script.toolGetAppConfig([appId: 35]).page.sections[0].inputs.collectEntries { [(it.name): it] }
+
+        then: 'stored values win; an unset input shows its default; the device input is unchanged'
+        inputs.debugLogging.value == 'true'
+        inputs.flagOn.value == 'false'
+        inputs.logLevel.value == 'debug'
+        inputs.origLabel.value == 'Kitchen'
+        inputs.retries.value == 3
+        !inputs.lights.containsKey('value')
+        inputs.lights.description == 'Lamp'
+    }
+
     @spock.lang.Unroll
     def "hub_get_app_config via dispatch returns app identity, sections, inputs, child apps (useGateways=#useGateways)"() {
         given:
@@ -871,6 +905,39 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         !JsonOutput.toJson(result).contains('hunter2-SECRET')
     }
 
+    def "with Hide passwords and credentials off, inputs and settings read back as stored"() {
+        given:
+        settingsMap.enableRead = true
+        settingsMap.redactCredentials = false
+        hubGet.register('/installedapp/configure/json/35') { params -> makePasswordConfigJson() }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeSettings: true])
+
+        then:
+        result.page.sections[0].inputs.find { it.name == 'apiKey' }.value == 'hunter2-SECRET'
+        result.settings.apiKey == 'hunter2-SECRET'
+        !result.containsKey('settingsRedactionNote')
+    }
+
+    def "a per-client token sees credentials hidden even with Hide passwords and credentials off"() {
+        given:
+        settingsMap.enableRead = true
+        settingsMap.redactCredentials = false
+        script.callerClient = [id: 'c1']
+        hubGet.register('/installedapp/configure/json/35') { params -> makePasswordConfigJson() }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35])
+
+        then:
+        result.page.sections[0].inputs.find { it.name == 'apiKey' }.value == '***redacted (password)***'
+        !JsonOutput.toJson(result).contains('hunter2-SECRET')
+
+        cleanup:
+        script.callerClient = null
+    }
+
     def "redacts password-type keys in the raw settings map when includeSettings=true"() {
         given:
         settingsMap.enableRead = true
@@ -935,8 +1002,8 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         then: 'the settings map redacts the password key even though the input carried no value'
         result.settings.apiKey == '***redacted (password)***'
 
-        and: 'the structured input leaks no value at all'
-        !result.page.sections[0].inputs.find { it.name == 'apiKey' }.containsKey('value')
+        and: 'the structured input reads the stored value, masked'
+        result.page.sections[0].inputs.find { it.name == 'apiKey' }.value == '***redacted (password)***'
 
         and: 'no secret anywhere in the result'
         !JsonOutput.toJson(result).contains('hunter2-SECRET')
@@ -1309,6 +1376,21 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         'pinCodeLength' | 'number'           | 4          | false
         'pinMode'      | 'text'              | 'output'   | false
         'sirenPin'     | 'text'              | '5555'     | true
+        'keypadInputPin' | 'text'            | '1111'     | true
+        'alarmResetPin' | 'number'           | 2222       | true
+        'alarmResetCode' | 'text'            | '2323'     | true
+        'userpin'      | 'text'              | '3333'     | true
+        'alarmcode'    | 'text'              | '4444'     | true
+        'HSMPIN'       | 'text'              | '5555'     | true
+        'installerCode' | 'text'             | '6666'     | true
+        'duressCode'   | 'text'              | '7777'     | true
+        'gateCode'     | 'text'              | '8888'     | true
+        'zipCode'      | 'text'              | '02139'    | false
+        'opcode'       | 'text'              | 'x'        | false
+        'doorLedPin'   | 'text'              | '13'       | false
+        'garageRelayPin' | 'number'          | 5          | false
+        'lockErrorCode' | 'text'             | 'E42'      | false
+        'alarmStatusCode' | 'text'           | 'S7'       | false
         'lockPasscode' | 'number'            | 1234       | true
         'apiTokens'    | null                | ['a', 'b'] | true
         'apiTokens'    | null                | []         | false

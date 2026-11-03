@@ -991,6 +991,35 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
         true   | 'ZIGBEE' | 'zigbee-node'  | '00124B0001234567'
     }
 
+    def "hub_delete_device names a last credential-named event with its value hidden, in the warning and the audit log"() {
+        given:
+        enableWrite()
+        settingsMap.bypassDeviceAllowlist = true
+        def auditLogs = []
+        script.metaClass.mcpLog = { String level, String category, String message -> auditLogs << message }
+        def lookupCalls = 0
+        hubGet.register('/device/fullJson/42') { params ->
+            lookupCalls++
+            lookupCalls == 1 ? groovy.json.JsonOutput.toJson([device: [id: 42, name: 'Door Lock', deviceNetworkId: 'lock-42',
+                deviceTypeName: 'Virtual Lock', deviceTypeNamespace: 'hubitat'], commands: []]) : '{"device":null}'
+        }
+        hubGet.register('/device/eventsJson/42') { params ->
+            '[{"name":"lockCodes","value":"{\\"1\\":{\\"code\\":\\"4321\\"}}","date":"2009-02-13T22:31:30+0000","descriptionText":"codes 4321"}]'
+        }
+        hubGet.register('/hub/zwaveDetails/json') { params -> '{"nodes":[]}' }
+        hubGet.register('/hub/zigbeeDetails/json') { params -> '{"devices":[]}' }
+        hubGet.register('/device/forceDelete/42/yes') { params -> 'ok' }
+
+        when:
+        def result = script.toolDeleteDevice([deviceId: '42', confirm: true])
+
+        then:
+        result.success
+        result.warnings.any { it.contains('HAS RECENT EVENTS: Last event was lockCodes=' + script._appConfigRedactedMarker()) }
+        !groovy.json.JsonOutput.toJson(result).contains('4321')
+        !auditLogs.any { it.contains('4321') }
+    }
+
     private static class DeleteHttpException extends RuntimeException {
         final Map response
         DeleteHttpException(int status) {

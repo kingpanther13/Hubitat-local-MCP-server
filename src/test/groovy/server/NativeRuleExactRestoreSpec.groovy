@@ -101,6 +101,32 @@ class NativeRuleExactRestoreSpec extends ToolSpecBase {
         child.backing.actionList == ['2', '1']
     }
 
+    def 'a blank time setting is restored through the settings page, which the hub accepts empty'() {
+        given:
+        Map payload = new JsonSlurper().parseText(snapshot.nativeExport) as Map
+        payload.appData['42'].appSettings << [name: 'startingA1', type: 'time', value: '']
+        snapshot.nativeExport = JsonOutput.toJson(payload)
+        child.typed.startingA1 = [type: 'time', value: '09:15', multiple: false]
+        List posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer timeout = 420 ->
+            posts << [path: path] + body
+            child.typed.startingA1 = [type: 'time', value: body['settings[startingA1]'], multiple: false]
+            [status: 200]
+        }
+
+        when:
+        Map result = restore()
+
+        then:
+        result.success
+        result.settingsVerified
+        child.typed.startingA1.value == ''
+        posts.size() == 1
+        posts[0].path == '/installedapp/update/json'
+        posts[0]['startingA1.type'] == 'time'
+        !events.contains(['updateSetting', 'startingA1'])
+    }
+
     def 'snapshot file arguments reject #label before reading a file or mutating a rule'() {
         given:
         def reads = []
@@ -607,7 +633,7 @@ class RestoreNativeChild {
     void setState(Map value) { pending = value }
     void saveState() { backing = new JsonSlurper().parseText(JsonOutput.toJson(pending)) as Map }
     void removeSetting(String name) { typed.remove(name); events << ['removeSetting', name] }
-    void updateSetting(String name, Map value) { typed[name] = [type: value.type, value: value.value, multiple: value.value instanceof List]; if (value.type.startsWith('capability.')) typed[name].deviceList = (value.value instanceof List ? value.value : [value.value]).collectEntries { [(it.toString()): 'Switch'] }; events << ['updateSetting', name] }
+    void updateSetting(String name, Map value) { if (value.type == 'time' && value.value == '') throw new RuntimeException('invalid time value '); typed[name] = [type: value.type, value: value.value, multiple: value.value instanceof List]; if (value.type.startsWith('capability.')) typed[name].deviceList = (value.value instanceof List ? value.value : [value.value]).collectEntries { [(it.toString()): 'Switch'] }; events << ['updateSetting', name] }
     void updateLabel(String value) { label = value }
     void appButtonHandler(String name) {
         events << name

@@ -29,6 +29,7 @@ def test_matrix_establishes_pane_values_and_restores_actual_baseline(show, statu
         "retryEnabled": False, "controllerType": "", "groupId": None, "roomId": None, "zigbeeId": None,
     }
     original = deepcopy(info)
+    stored = deepcopy(expected)
     writes, body_starts, files = [], [], []
     snapshot = {}
 
@@ -38,7 +39,7 @@ def test_matrix_establishes_pane_values_and_restores_actual_baseline(show, statu
             "preferences": [{"name": name, "type": kind, "value": value, "valuePresent": True,
                              "valueStatus": "stored", "defaultValue": True, "range": "0..20",
                              "multiple": isinstance(value, list), "options": ["eco"]}
-                            for name, (kind, value) in expected.items()],
+                            for name, (kind, value) in stored.items()],
             "editableFields": [{"name": key, "value": value, "writable": True} for key, value in info.items()]
                               + [{"name": "room", "value": info["roomName"], "writable": True}],
         }
@@ -99,14 +100,15 @@ def test_matrix_establishes_pane_values_and_restores_actual_baseline(show, statu
             nonce = args["parameters"][0]
             snapshot.update(nativeDeviceInfo={**deepcopy(info), "nonce": nonce}, nativeConfiguration={
                 "deviceId": "10", "fixtureVersion": 2, "nonce": nonce,
-                "settings": [{"name": k, "type": kind, "value": value} for k, (kind, value) in expected.items()],
-                "inputValues": [{"name": k, "inputValue": value} for k, (_, value) in expected.items()],
+                "settings": [{"name": k, "type": kind, "value": value} for k, (kind, value) in stored.items()],
+                "inputValues": [{"name": k, "inputValue": value} for k, (_, value) in stored.items()],
                 "runtimeMultiple": ["red"], "runtimeMultipleIsList": True,
             })
             return {"success": True}
         assert name == "hub_update_device", name
-        patch = {k: v for k, v in args.items() if k not in ("deviceId", "confirm", "preferences")}
-        writes.append(deepcopy(patch))
+        patch = dict(args.get("fields", {}))
+        preferences = args.get("preferences", {})
+        writes.append({**deepcopy(patch), **({"preferences": deepcopy(preferences)} if preferences else {})})
         setup = set(patch) == {"showOnHome", "defaultCurrentState"}
         body = str(patch.get("notes", "")).startswith("Native persistence:")
         if body:
@@ -116,11 +118,13 @@ def test_matrix_establishes_pane_values_and_restores_actual_baseline(show, statu
         if not (setup and failure == "setup-noop"):
             for key, value in patch.items():
                 info["roomName" if key == "room" else key] = deepcopy(value)
+            for key, spec in preferences.items():
+                stored[key] = (spec.get("type", stored[key][0]), None if spec.get("clear") else deepcopy(spec.get("value")))
         if setup and failure == "setup-error":
             raise RuntimeError("injected setup failure after mutation")
         if body and failure == "body":
             raise RuntimeError("injected matrix failure after mutation")
-        changes = [{"property": k} for k in patch if k != "dataValues"]
+        changes = [{"property": k} for k in patch if k != "dataValues"] + [{"property": f"preference.{k}"} for k in preferences]
         if failure != "restore-confirmation" or body:
             changes.extend({"property": f"dataValue.{key}"} for key in changed_data)
         return {"success": True, "mrtr": {"continued": True}, "changes": changes}
@@ -157,6 +161,7 @@ def test_matrix_establishes_pane_values_and_restores_actual_baseline(show, statu
         original[key] = original[key] or ""
         info[key] = info[key] or ""
     assert info == original
+    assert stored == expected
 
 
 @pytest.mark.parametrize("drift", ["none", "preferences", "fields", "both", "room", "data"])
@@ -191,7 +196,7 @@ def test_canonical_reconcile_patches_only_what_drifted(drift):
             return {"preferences": [{"name": k, "value": v, "valuePresent": True} for k, v in prefs.items()],
                     "editableFields": [{"name": k, "value": v, "writable": True} for k, v in fields.items()]}
         assert name == "hub_update_device", name
-        writes.append({k: v for k, v in args.items() if k != "deviceId"})
+        writes.append({**args.get("fields", {}), **{k: v for k, v in args.items() if k not in ("deviceId", "fields")}})
         return {"success": True}
 
     runner = et.TestRunner(SimpleNamespace(call_tool=call_tool, app_id="38"))

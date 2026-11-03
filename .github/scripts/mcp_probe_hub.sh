@@ -79,17 +79,17 @@ WATCHDOG_PID=$!
 section "hub_get_info (MAIN server -- also proves the app under test answers)" "$MCP_URL" "$(tool_rpc hub_get_info '{}')"
 
 # Device list (id/label/mcpManaged: one bulk read, no per-device fetch that can outlast the relay),
-# paginated via hasMore/nextOffset so NOTHING is silently dropped. Also
+# paginated via hasMore/nextCursor so NOTHING is silently dropped. Also
 # kept in $ALL_DEVICES for the BAT deep-dive + scaffold lookup below.
 echo "=== hub_list_devices (ALL devices, paginated) ==="
 ALL_DEVICES="[]"
-OFFSET=0
+CURSOR=""
 for page in 1 2 3 4 5 6 7 8 9 10; do
-  PAGE_TEXT=$(mcp_text "$MCP_URL" "$(tool_rpc hub_list_devices "{\"limit\":200,\"offset\":${OFFSET},\"fields\":[\"id\",\"label\",\"mcpManaged\"]}")") || break
+  PAGE_TEXT=$(mcp_text "$MCP_URL" "$(tool_rpc hub_list_devices "{\"limit\":200,\"cursor\":\"${CURSOR}\",\"fields\":[\"id\",\"label\",\"mcpManaged\"]}")") || break
   printf '%s\n' "$PAGE_TEXT"
   ALL_DEVICES=$(jq -nc --argjson acc "$ALL_DEVICES" --argjson page "$(printf '%s' "$PAGE_TEXT" | jq -c '.devices // .')" '$acc + $page' 2>/dev/null || printf '%s' "$ALL_DEVICES")
   HAS_MORE=$(printf '%s' "$PAGE_TEXT" | jq -r '.hasMore // false' 2>/dev/null)
-  OFFSET=$(printf '%s' "$PAGE_TEXT" | jq -r '.nextOffset // 0' 2>/dev/null)
+  CURSOR=$(printf '%s' "$PAGE_TEXT" | jq -r '.nextCursor // ""' 2>/dev/null)
   if [ "$HAS_MORE" != "true" ]; then break; fi
   if [ "$page" = "10" ]; then echo "!! DEVICE LIST STILL hasMore=true AFTER 10 PAGES -- raise the page cap !!"; fi
 done

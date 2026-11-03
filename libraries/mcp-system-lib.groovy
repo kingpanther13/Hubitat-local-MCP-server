@@ -239,17 +239,16 @@ def toolGetHubInfo(args = null) {
     info.setupVersion = state.setupVersion
     info.mcpClient = mcpClientIdentity()
     // Every device the MCP tools reach: the selected devices plus the MCP-managed virtual devices,
-    // or with the allowlist bypassed every device in the hub's device tree.
-    def reachable = ((settings.selectedDevices ?: []) + (getChildDevices() ?: [])).collect { it?.id?.toString() }.findAll { it } as Set
-    if (_bypassEnabled()) {
+    // or with the allowlist bypassed every device on the hub's Devices page.
+    List children = getChildDevices() ?: []
+    Set reachable = _mcpAuthorizedIds(children)
+    if (reachable == null) {
         info.deviceAllowlistBypassed = true
         try {
-            def tree = new groovy.json.JsonSlurper().parseText(hubInternalGet("/hub2/devicesList") ?: "{}")
-            def records = _flattenHub2DeviceTree(tree instanceof Map ? tree.devices : null)
-            if (!(records instanceof List)) throw new IllegalStateException("the device tree was not a list")
-            records.each { r -> if (r?.id != null) reachable << r.id.toString() }
+            reachable = _readDevicesPage().collect { it.id } as Set
         } catch (Exception e) {
             info.mcpDeviceCountNote = "The allowlist is bypassed, so every hub device is reachable, but the hub's device list could not be read (${e.message}); the count covers the selected and MCP-managed devices only.".toString()
+            reachable = _selectedAndChildIds(children)
         }
     }
     info.mcpDeviceCount = reachable.size()
@@ -262,7 +261,7 @@ def toolGetHubInfo(args = null) {
     info.mcpCapturedStates = countCapturedStates()
     // Last hub_create_backup epoch (millis): lets a client decide whether a fresh backup is
     // actually needed (the destructive-confirm gate's 24h window reads this same state key) --
-    // e2e uses it to skip per-run backups, a hub-heavy op the platform's load limiter punishes.
+    // e2e uses it to skip per-run backups, a hub-heavy op that adds to the busy time the per-app load limiter counts.
     info.lastBackupEpoch = state.lastBackupTimestamp ?: null
 
     // Settings visibility (always available). hubSecurityConfigured is whether this app holds
@@ -1083,9 +1082,9 @@ private _modePost(String path, Map body) {
 
 private _modeWriteResult(String op, parsed) {
     if (parsed instanceof Map && parsed.success == true) {
-        // Don't re-read the full mode list here -- that's an extra /modes/json round-trip per write
-        // and the hub's per-app load limiter punishes back-to-back calls. The caller reads via
-        // hub_list_modes when it needs the updated list.
+        // Don't re-read the full mode list here -- that's an extra /modes/json round-trip per write,
+        // and each extra hub call adds to the busy time the per-app load limiter compares against
+        // uptime x its threshold. The caller reads via hub_list_modes when it needs the updated list.
         return [success: true, action: op, note: "Read the updated mode list with hub_list_modes."]
     }
     def err = (parsed instanceof Map) ? (parsed.message ?: parsed.error) : null

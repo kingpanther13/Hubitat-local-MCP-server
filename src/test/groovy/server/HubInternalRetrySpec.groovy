@@ -582,16 +582,16 @@ class HubInternalRetrySpec extends ToolSpecBase {
         httpGetHandler = { Map params, Closure cb -> seen = params; cb.call([status: 200, data: 'true']) }
 
         when:
-        def out = script.hubInternalGetRaw('/device/updateLabel', [deviceId: '777', label: 'Garage Bridge'])
+        def out = script.hubInternalGetRaw('/device/createVirtual', [deviceTypeId: '500', deviceLabel: 'Garage Bridge'])
 
         then:
         out.status == 200
         out.data == 'true'
 
         and: 'the path stays bare and the parameters ride query, verbatim'
-        seen.path == '/device/updateLabel'
+        seen.path == '/device/createVirtual'
         !seen.path.contains('?')
-        seen.query == [deviceId: '777', label: 'Garage Bridge']
+        seen.query == [deviceTypeId: '500', deviceLabel: 'Garage Bridge']
     }
 
     @spock.lang.Unroll

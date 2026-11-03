@@ -629,6 +629,77 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         h.ok == false
     }
 
+    def "an app whose lookup throws still gets its compiled state read, so a broken rule is reported broken"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/app/ruleBuilderJson/100') { ruleBuilderJson([broken: true]) }
+        hubGet.register('/installedapp/statusJson/100') { statusJson(100) }
+        script.metaClass.getAppByAppId = { Long id -> throw new IllegalStateException('lookup failed') }
+        List rendered = []
+        hubGet.register('/installedapp/configure/json/100') { rendered << 'default'; '{}' }
+
+        when:
+        def h = script._rmCheckRuleHealth(100)
+
+        then:
+        rendered.isEmpty()
+        h.ruleFormat == "rm"
+        h.broken == true
+        h.unreadable == false
+        h.ok == false
+    }
+
+    def "an app whose lookup throws is never reported healthy, even when its compiled state reads not broken"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/app/ruleBuilderJson/100') { ruleBuilderJson([broken: false]) }
+        hubGet.register('/installedapp/statusJson/100') { statusJson(100) }
+        script.metaClass.getAppByAppId = { Long id -> throw new IllegalStateException('lookup failed') }
+
+        when:
+        def h = script._rmCheckRuleHealth(100)
+
+        then:
+        h.broken == false
+        h.checkErrors.any { it.contains("could not be identified (lookup failed)") }
+        h.ok == false
+    }
+
+    def "an app id the hub does not know is refused instead of being read as a built-in app"() {
+        given:
+        settingsMap.enableRead = true
+        script.metaClass.getAppByAppId = { Long id -> null }
+        List read = []
+        hubGet.register('/app/ruleBuilderJson/100') { read << 'compiled'; '{}' }
+        hubGet.register('/installedapp/configure/json/100') { read << 'page'; '{}' }
+
+        when:
+        script._rmCheckRuleHealth(100)
+
+        then:
+        def refused = thrown(IllegalArgumentException)
+        refused.message.contains('App 100 not found')
+        read.isEmpty()
+    }
+
+    def "an app without an app type is not read as a built-in app"() {
+        given:
+        settingsMap.enableRead = true
+        script.metaClass.getAppByAppId = { Long id -> [id: id, label: 'Untyped'] }
+        List read = []
+        hubGet.register('/app/ruleBuilderJson/100') { read << 'compiled'; '{"broken":false}' }
+        hubGet.register('/installedapp/configure/json/100') { read << 'page'; '{}' }
+        hubGet.register('/installedapp/statusJson/100') { statusJson(100) }
+
+        when:
+        def h = script._rmCheckRuleHealth(100)
+
+        then:
+        read.isEmpty()
+        h.ruleFormat == "classic-app"
+        h.unreadable == true
+    }
+
     def "auto: a LONE configPage fetch failure is a non-gating checkErrors diagnostic when ruleBuilderJson read clean"() {
         given: 'the compiled source reads clean; the HTML leg alone fails, so the fetch error must remain distinct from evidence of a broken rule'
         settingsMap.enableRead = true

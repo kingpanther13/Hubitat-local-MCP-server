@@ -281,7 +281,7 @@ The server has 115 tools total. To keep the MCP `tools/list` manageable, **13 co
 
 | Tool | Description |
 |------|-------------|
-| `hub_manage_virtual_device` | Create or delete an MCP-managed virtual device (`action`: "create", "delete") -- supports built-in `deviceType` OR `customDriver={namespace, name}` (Write master). To list MCP-managed virtual devices with states, use `hub_list_devices` with `filter='virtual'`. |
+| `hub_manage_virtual_device` | Create or delete an MCP-managed virtual device (`action`: "create", "delete") -- supports built-in `deviceType` OR `customDriver={namespace, name}` (Write master). To list MCP-managed virtual devices with states, use `hub_list_devices` with `scope='owned'`. |
 
 </details>
 
@@ -337,7 +337,7 @@ Call a gateway with no arguments to see full parameter schemas. Call with `tool=
 
 | Tool | Description |
 |------|-------------|
-| `hub_list_devices` | List accessible devices (pagination, server-side labelFilter/capabilityFilter, format=ids, field projection; `filter='virtual'` lists only MCP-managed virtual devices) |
+| `hub_list_devices` | List devices from the hub's Devices page list: filters (label, capability, room, state, disabled, stale, changedSince), formats (summary/detailed/ids/context), field projection, cursor pages; `scope='all'` every hub device, `scope='owned'` this app's virtual devices |
 | `hub_get_device` | Full device details: attributes, commands, capabilities |
 | `hub_get_device_attribute` | Get a specific attribute value. Pass exactly one of `expectedValue` or `expectedValues` to block-poll the attribute until it matches or times out — `timeoutMs` in MILLISECONDS (default 5000ms = 5 seconds, max 60000ms). `comparator` (eq/ne/gt/gte/lt/lte/between) and `stableForMs` (debounce) refine the match; a numeric comparator on a non-numeric attribute times out with `nonNumericAttribute: true`. For multi-device convergence pass `deviceIds` (a list, mutually exclusive with `deviceId`, max 20) with `mode` (all/any), returning a compact per-device array (`{deviceId, device, finalValue, matched}`) plus `convergedCount`. A device whose read throws mid-poll (e.g. removed) is flagged `readError: true` (per-device in multi-device mode) and degraded to unread without aborting the poll for the others. Polling BLOCKS the MCP request; use sparingly and prefer event-driven flows when available. |
 | `hub_list_device_events` | Recent events for a device. Add `hoursBack` for a relative window (up to 7 days) or `since` for an absolute bookmark (events after an exact timestamp; round-trip a returned `date`); the response echoes `sinceMode` (`explicit`/`relative`) and the bounding field (`since` or `hoursBack`). Omit `deviceId` for mode/HSM/hub-variable/sendLocationEvent location events. |
@@ -443,14 +443,14 @@ Monitoring tools are gated by the Read master (ON by default). The network confi
 | `hub_call_device_command` | Send a command (on, off, setLevel, etc.) to one device — or to several at once with `commands` (max 20 `{deviceId, command, parameters?}` entries, mutually exclusive with `deviceId`/`command`, no `waitFor`): one round trip instead of N, which is most of the wall-clock time of a multi-device intent. Entries are independent; a bad one is reported in its own `results[]` slot without abandoning the rest, and malformed input is rejected before anything is sent. Batch entries carry no `state` snapshot — confirm the whole group in one further call with `hub_get_device_attribute`'s `deviceIds` form. For a set you command repeatedly a group or scene is better still; `commands` is for the ad-hoc set nobody defined in advance.<br>Single-device: returns an immediate post-dispatch `state` snapshot ({attr: {value, timestamp}}) that may show the prior or resulting value; pass `waitFor` to block-poll and check `waitFor.converged` to confirm the resulting state (`waitFor` supports `comparator` (eq/ne/gt/gte/lt/lte/between) + `stableForMs` debounce; a bad spec is rejected before the command fires) |
 | `hub_call_device_swap` | Replace a device across ALL apps/rules that reference it (built-in Swap Device tool; compatible replacements only) |
 | `hub_call_device_replace` | Replace a dead/failing device's hardware while KEEPING its id + all app/rule references (re-points to `new_device_id`; `list_options=true` reads compatible candidates). Distinct from swap, which moves references to the new device |
-| `hub_update_device` | Update device properties (label, room, preferences, etc.) |
+| `hub_update_device` | Change a device's settings: Device Info `fields` (label, room, tags, driver, ...), driver `preferences`, assistants, enabled |
 | `hub_create_device` | Create a device from a driver-type id (`deviceTypeId` from `hub_list_drivers(include='all')`); for LAN/integration/software drivers, NOT radio hardware (pair those). Requires `confirm=true`. |
-| `hub_list_devices` | List accessible devices (pagination, server-side labelFilter/capabilityFilter, format=ids, field projection; `filter='virtual'` lists only MCP-managed virtual devices) (also in `hub_read_devices`) |
+| `hub_list_devices` | List devices from the hub's Devices page list: filters (label, capability, room, state, disabled, stale, changedSince), formats (summary/detailed/ids/context), field projection, cursor pages; `scope='all'` every hub device, `scope='owned'` this app's virtual devices (also in `hub_read_devices`) |
 | `hub_get_device` | Full device details: attributes, commands, capabilities (also in `hub_read_devices`) |
 | `hub_get_device_attribute` | Get a specific attribute value. Pass exactly one of `expectedValue` or `expectedValues` to block-poll the attribute until it matches or times out — `timeoutMs` in MILLISECONDS (default 5000ms = 5 seconds, max 60000ms). `comparator` (eq/ne/gt/gte/lt/lte/between) and `stableForMs` (debounce) refine the match; a numeric comparator on a non-numeric attribute times out with `nonNumericAttribute: true`. For multi-device convergence pass `deviceIds` (a list, mutually exclusive with `deviceId`, max 20) with `mode` (all/any), returning a compact per-device array (`{deviceId, device, finalValue, matched}`) plus `convergedCount`. Polling BLOCKS the MCP request; use sparingly and prefer event-driven flows when available. (also in `hub_read_devices`) |
 | `hub_list_device_events` | Recent events for a device. Add `hoursBack` for a relative window (up to 7 days) or `since` for an absolute bookmark (events after an exact timestamp; round-trip a returned `date`); the response echoes `sinceMode` (`explicit`/`relative`) and the bounding field (`since` or `hoursBack`). Omit `deviceId` for mode/HSM/hub-variable/sendLocationEvent location events. (also in `hub_read_devices`) |
 | `hub_get_hub_mesh` | Read Hub Mesh config: enabled state, peer hubs, shared/linked devices + hub variables, sync interval, mode-following hub (also in `hub_read_devices`) |
-| `hub_update_hub_mesh` | Change Hub Mesh settings: `enabled` (⚠️ needs a hub reboot to take effect), `full_refresh_interval` (0/120/300/3600 s), `mode_hub_id` (follow a peer hub's modes, or `'none'` for local modes), and `peer_hub_id`+`peer_token` (store a peer's mesh auth token, needed when that peer has UI login security). Peers are auto-discovered on the LAN so there is no add-peer write; per-DEVICE sharing is `hub_update_device` (`meshEnabled`/`meshFullSync`) |
+| `hub_update_hub_mesh` | Change Hub Mesh settings: `enabled` (⚠️ needs a hub reboot to take effect), `full_refresh_interval` (0/120/300/3600 s), `mode_hub_id` (follow a peer hub's modes, or `'none'` for local modes), and `peer_hub_id`+`peer_token` (store a peer's mesh auth token, needed when that peer has UI login security). Peers are auto-discovered on the LAN so there is no add-peer write; per-DEVICE sharing is `hub_update_device` (`fields.meshEnabled`/`fields.meshFullSync`) |
 
 </details>
 
@@ -537,7 +537,7 @@ Whole-hub backup *creation* is the flat core tool `hub_create_backup`.
 | Tool | Description |
 |------|-------------|
 | `hub_get_logs` | Read one tab, or a list of tabs, of the hub's Logs page with the hub's own field names (`mode`: `past` log history (default), `devices`/`apps` runtime stats, `cloudCalls`, `locationEvents`, `hubEvents` (reboots, low memory), `scheduledJobs`, `runningJobs`, `hubActions`), or the MCP log (`mode='mcp'`) and its status (`mode='status'`). Jobs, running jobs and hub actions name their owner app or device when the hub links one (system jobs have none). (also in `hub_read_diagnostics`) |
-| `hub_delete_logs` | Clear the MCP log (`mode='mcp'`), or delete one scheduled job like the Delete button on the Logs page (`mode='scheduledJobs'`, `jobId`, `confirm=true`). Past logs have no delete; the Reboot dialog's log purge is `hub_reboot(confirm=true, purgeLogs=true)` |
+| `hub_delete_logs` | Clear the MCP log (`mode='mcp'`), delete one scheduled job like the Delete button on the Logs page (`mode='scheduledJobs'`, `jobId`, `confirm=true`), or reset every app's runtime statistics, the busy time the per-app load limiter counts (`mode='appRuntimeStats'`, `confirm=true`; returns this app's App Stats row before and after). Past logs have no delete; the Reboot dialog's log purge is `hub_reboot(confirm=true, purgeLogs=true)` |
 | `hub_set_log_level` | Set MCP log level (debug/info/warn/error) |
 
 Read tools are gated by the Read master; the delete and set-level writes by the Write master (both ON by default).
@@ -872,7 +872,7 @@ When you use `hub_update_app`, `hub_update_driver`, `hub_update_library`, or `hu
 - Persist even if the MCP app is uninstalled
 - Downloadable at `http://<your-hub-ip>/local/<filename>`
 - 1-hour protection window: multiple edits preserve the pre-edit original
-- No count limit: backups are removed only when all MCP backups together exceed the **Backup storage budget (MB)** advanced setting (default 10, range 1 to 1000000), oldest first. An item's newest backup is never removed, so the budget can stay exceeded once every item is down to one. `hub_list_backups` shows the budget
+- No count limit: backups are removed only when all MCP backups together exceed the **Backup storage budget (MB)** advanced setting (default 10, range 1 to 1000000), oldest first across every item and kind. Only the backup being taken and an active restore target are never removed; nothing else is protected, so an item's only backup goes when it is the oldest. When those alone exceed the budget nothing is removed, and the backups stay over it until a later backup's removal reaches them, oldest first. `hub_list_backups` shows the budget
 - **Take a fresh snapshot before every edit** (advanced setting, off by default): a native app edit takes its own snapshot instead of reusing that app's snapshot from the last hour
 - `hub_write_file` and `hub_delete_file` keep the newest 5 `<name>_backup_<timestamp>` copies of each file
 
@@ -918,12 +918,13 @@ Requests use the fixed loopback address inside the hub, never the LAN or cloud e
 <details>
 <summary><b>Known Limits</b></summary>
 
-- **`hub_list_devices` with `detailed=true`** — Can be slow on 50+ devices. Use pagination: `hub_list_devices(detailed=true, limit=25, offset=0)`. Use `labelFilter` or `capabilityFilter` to narrow server-side before pagination. Use `fields=[...]` to skip expensive hub reads -- `currentStates` and `attributes` trigger per-device hub reads and are the ones worth projecting out; `capabilities` and `commands` are in-memory and cheap.
+- **`hub_list_devices` with `format='detailed'`** — reads each listed device individually; page it with `limit`/`cursor` (20-30 per page). Summary, ids and context formats come from one Devices-page read and need no paging for speed; narrow with `labelFilter`/`capabilityFilter`/`roomFilter` and project with `fields=[...]` to keep responses small.
 - **Duration triggers** — Maximum of 2 hours (7200 seconds)
 - **Captured states** — Default limit of 20 (configurable 1-100 in settings)
 - **Hubitat Cloud responses** — 128KB maximum (AWS MQTT limit). Use pagination for large device lists.
 - No real-time event streaming (MCP responses only)
 - Sunrise/sunset times are recalculated daily
+- **Per-app load limiter** — The hub refuses an app's calls ("generates excessive hub load") once this app's busy time since boot plus that of the app or device it calls (its own a second time when it calls itself) passes uptime × the hub's excessive-load threshold (stock 33 %), after 15 minutes of uptime. The server watches its own busy time, checks the hub's real count at half the limit, and resets the hub's app runtime statistics before it trips; when a call is refused anyway and the automatic reset is on, the statistics are reset and, once the reset answers, a refused read or retry-safe write is repeated once, unless half the request's time budget is spent. A device command the limiter drops can still report success, so the early reset is what protects device commands; read the device back to confirm. The reset clears the **Logs › App Stats** tab for every app, not only this one, and restarts every app's limiter count; Device Stats are not touched. The guard watches only this app's own total, so a busy app or device it calls can still trip the limiter first. The automatic reset can be turned off under Advanced settings ("Reset the hub's app runtime statistics automatically", default on) and only runs while the Write master is on. `hub_delete_logs(mode='appRuntimeStats', confirm=true)` resets them by hand.
 
 </details>
 
@@ -978,18 +979,17 @@ Alternatively, the app's Device Access section has a **Bypass Device Allowlist**
 </details>
 
 <details>
-<summary><b>hub_list_devices(detailed=true) fails over Hubitat Cloud</b></summary>
+<summary><b>hub_list_devices(format='detailed') fails over Hubitat Cloud</b></summary>
 
 Hubitat Cloud has a **128KB response size limit** (AWS MQTT limitation). Use pagination and server-side filtering to stay under the limit:
 
 ```
-hub_list_devices(detailed=true, limit=25, offset=0)               // First 25 devices
-hub_list_devices(detailed=true, limit=25, offset=25)              // Next 25 devices
-hub_list_devices(capabilityFilter='Switch', limit=25, offset=0)   // Only Switch devices
-hub_list_devices(fields=['id','label','currentStates'], limit=50) // Slim payload
+hub_list_devices(format='detailed', limit=25, cursor='')            // First 25 devices, then pass nextCursor
+hub_list_devices(capabilityFilter='Switch', limit=25, cursor='')    // Only Switch devices
+hub_list_devices(fields=['id','label','currentStates'], limit=50)   // Slim payload
 ```
 
-The response includes `total`, `hasMore`, and `nextOffset` to help with pagination.
+The response includes `total`, `hasMore`, and `nextCursor` to help with pagination.
 
 </details>
 
@@ -1176,7 +1176,7 @@ For easier bug reporting:
   > *Already implemented.* The existing `device_command` action type accepts any device ID, command, and parameters via dynamic invocation (`device."${command}"(*params)`). This is the "any capability + command" feature.
 
 - [ ] **Disable/Enable a device** — `Difficulty: 1 | Effort: S`
-  > *Feasible (partially done).* The `hub_update_device` MCP tool already supports the `enabled` property via the internal `/device/disable` endpoint. A new `set_device_enabled` rule action type wraps the same call. Requires the Write master. Should warn if the target device is used in active rule triggers.
+  > *Feasible (partially done).* The `hub_update_device` MCP tool already supports the `enabled` field via the internal `/device/disable` endpoint. A new `set_device_enabled` rule action type wraps the same call. Requires the Write master. Should warn if the target device is used in active rule triggers.
   >
   > **Implementation plan:**
   > 1. Add `set_device_enabled` action type with `deviceId` and `enabled` boolean
@@ -1676,6 +1676,10 @@ For easier bug reporting:
 
 ## Version History
 
+- **v5.1.4** - fix: Rule Machine edits and restores keep a blank time setting; load-limiter and PR Guard follow-ups. PRs: [#573](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/573)
+- **v5.1.3** - build(deps): bump gradle/actions from 6.4.0 to 6.4.1 in the github-actions group ([#571](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/571), @app/dependabot); fix: the server resets the hub's app runtime statistics itself before the per-app load limiter trips. PRs: [#571](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/571), [#570](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/570)
+- **v5.1.2** - feat: rebuild hub_list_devices on the hub's Devices page list. PRs: [#568](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/568)
+- **v5.1.1** - feat: rebuild hub_update_device on the device page's native saves. PRs: [#567](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/567)
 - **v5.1.0** - feat: rebuild hub_set_native_app on the native form engine. PRs: [#563](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/563)
 - **v5.0.3** - fix: rename top-level content key in ChatGPT tool results. PRs: [#566](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/566)
 - **v5.0.2** - fix: hub_get_logs event cursors, cache after a job delete, relative-age overflow. PRs: [#564](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/564)

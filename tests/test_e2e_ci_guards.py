@@ -493,6 +493,34 @@ bash "$SCRIPT" verdict 77
     assert "context=Ephemeral e2e verdict (os)" in posted
 
 
+@pytest.mark.parametrize("recorded, expected_rc", [("success", 0), ("failure", 1), ("", 1)])
+def test_ephemeral_verdict_checks_the_recorded_status_when_the_post_reply_is_unreadable(recorded, expected_rc, tmp_path):
+    # Live: the status was recorded but gh exited 1 on the reply ("unexpected end of JSON input").
+    script = '''
+gh() {
+  case "$1 $2" in
+    "run view") echo "completed success" ;;
+    "api -X") echo "unexpected end of JSON input" >&2; return 1 ;;
+    "api repos/owner/repo/commits/$PUBLIC_SHA/statuses") [ "$GH_TOKEN" = status-token ] || return 1
+      [ -n "$RECORDED" ] && echo "$RECORDED" ;;
+    *) return 1 ;;
+  esac
+}
+sleep() { :; }
+export -f gh sleep
+bash "$SCRIPT" verdict 77
+'''
+    env = {**os.environ, "STUB": str(tmp_path), "SCRIPT": str(ROOT / ".github/scripts/request_ephemeral_hub.sh"),
+           "GITHUB_REPOSITORY": "owner/repo", "HUB_KIND": "os", "PROVIDER": "owner/provider",
+           "PUBLIC_SHA": FORK_SHA, "GH_TOKEN": "provider-token", "STATUS_TOKEN": "status-token", "RECORDED": recorded}
+    result = subprocess.run([_bash(), "-c", script], env=env, capture_output=True, text=True)
+    assert result.returncode == expected_rc, result.stdout + result.stderr
+    if expected_rc:
+        assert "could not be posted" in result.stdout
+    else:
+        assert "Ephemeral e2e verdict (os): success" in result.stdout
+
+
 @pytest.mark.parametrize("provider_state, lookup_ok, expected_desc", [
     ("77 in_progress ", True, "did not pass (unfinished)"),
     ("", False, "could not be read"),

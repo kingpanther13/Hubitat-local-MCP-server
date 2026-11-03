@@ -27,7 +27,7 @@ MINIMUM_LOGICAL_SECONDS = 10.0
 # One name for the capacity-recovery callable in the shared hub config: the loader
 # writes it and the MRTR proof reads it through this constant, so a key typo is a
 # NameError in the fast lane instead of silently disabled recovery at hub time.
-CAPACITY_RECOVERY_CONFIG_KEY = "clear_load_throttle"
+CAPACITY_RECOVERY_CONFIG_KEY = "reset_app_runtime_stats"
 
 
 def mrtr_action_count(environ: Mapping[str, str] | None = None) -> int:
@@ -136,10 +136,10 @@ def build_capacity_recovery(e2e_test_module: Any, client: Any) -> Callable[[str]
 
     Lives here (importable without the SDK closure) so the fast-lane unit tests can
     exercise the real construction path: TestRunner construction is plain attribute
-    assignment with no hub I/O, and _clear_load_throttle declines deterministically
+    assignment with no hub I/O, and _reset_app_runtime_stats declines deterministically
     when WATCHDOG_URL is unset.
     """
-    return e2e_test_module.TestRunner(client)._clear_load_throttle
+    return e2e_test_module.TestRunner(client)._reset_app_runtime_stats
 
 
 def extract_bps_acknowledgment_key(guide: Any) -> str:
@@ -466,7 +466,7 @@ class RequestTrace:
         return len(self.legs)
 
     def mark_capacity_recovery(self) -> int:
-        """Record that a platform-capacity recovery (app bounce) happened here.
+        """Record that a platform-capacity recovery (runtime-statistics reset) happened here.
 
         Legs before this boundary may honestly carry relay 504s or unanswered
         requests caused by the hub's per-app load limiter; the served-status
@@ -497,7 +497,7 @@ def summarize_modern_posts(
     The header contract (protocol version + mirrored Mcp-* headers) is a client-side
     fact and always holds for EVERY post. The served contract (answered with 2xx) is
     hub-capacity-sensitive: `served_since` (a RequestTrace capacity-recovery boundary)
-    excuses legs before a verified platform-limiter bounce, whose 504s/aborts are a
+    excuses legs before a successful platform-limiter reset, whose 504s/aborts are a
     capacity event, not a protocol verdict. Excused non-2xx legs are still counted
     and returned so the caller can report them loudly.
     """

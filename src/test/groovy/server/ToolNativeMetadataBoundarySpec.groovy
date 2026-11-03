@@ -22,6 +22,10 @@ class ToolNativeMetadataBoundarySpec extends ToolSpecBase {
             writes << [path: path, body: body]
             [success: true]
         }
+        script.metaClass.hubInternalPostFormRaw = { String path, String body, int timeout = 420, boolean retry = false ->
+            writes << [path: path, body: body]
+            [status: 200, data: '']
+        }
     }
 
     private def read(String operation) {
@@ -32,8 +36,7 @@ class ToolNativeMetadataBoundarySpec extends ToolSpecBase {
             case 'events': return script.toolGetDeviceEvents('10', 10)
             case 'history': return script.toolGetDeviceHistory([deviceId: '10', hoursBack: 1])
             case 'command': return script.toolSendCommand('10', 'on', [])
-            case 'update': return script.toolUpdateDevice([deviceId: '10', label: 'Changed'])
-            case 'virtual': return script.toolListVirtualDevices([:]).devices[0]
+            case 'update': return script.toolUpdateDevice([deviceId: '10', fields: [label: 'Changed']])
             case 'deleteVirtual': return script.toolDeleteVirtualDevice([deviceNetworkId: 'mcp-10', confirm: true])
         }
         throw new AssertionError("Unhandled operation: ${operation}")
@@ -64,9 +67,33 @@ class ToolNativeMetadataBoundarySpec extends ToolSpecBase {
         !hubGet.calls.any { it.path in ['/device/eventsJson/10', '/logs/past/json'] }
 
         where:
-        [operation, identity, bypass] << ['summary', 'attribute', 'poll', 'events', 'history', 'command', 'update', 'virtual'].collectMany { op ->
+        [operation, identity, bypass] << ['summary', 'attribute', 'poll', 'events', 'history', 'command', 'update'].collectMany { op ->
             ['empty', 'missing', 'mismatched'].collectMany { identity -> [false, true].collect { [op, identity, it] } }
         }
+    }
+
+    @Unroll
+    def 'a detailed owned listing marks a #identity native identity unavailable instead of trusting it, bypass #bypass'() {
+        given:
+        settingsMap.bypassDeviceAllowlist = bypass
+        hubGet.register('/hub2/devicesList') { JsonOutput.toJson([devices: [[key: 'DEV-10', data: [id: 10, name: 'Page label'], children: []]]]) }
+        hubGet.register('/hub2/vrb/devices') { JsonOutput.toJson([[id: 10, capabilities: ['Switch']]]) }
+        if (identity == 'empty') model.device = [:]
+        if (identity == 'missing') model.device.remove('id')
+        if (identity == 'mismatched') model.device.id = 11
+
+        when:
+        def result = script.toolListDevices([scope: 'owned', format: 'detailed'])
+
+        then:
+        result.devices*.id == ['10']
+        result.devices[0].metadataUnavailable == true
+        !result.devices[0].containsKey('attributes')
+        result.partial == true
+        writes.empty
+
+        where:
+        [identity, bypass] << ['empty', 'missing', 'mismatched'].collectMany { identity -> [false, true].collect { [identity, it] } }
     }
 
     @Unroll
@@ -87,11 +114,10 @@ class ToolNativeMetadataBoundarySpec extends ToolSpecBase {
         tool                       | args
         'hub_get_device'            | [deviceId: '10']
         'hub_call_device_command'   | [deviceId: '10', command: 'on']
-        'hub_list_devices'          | [filter: 'virtual']
         'hub_get_device_attribute'  | [deviceId: '10', attribute: 'switch']
         'hub_list_device_events'    | [deviceId: '10']
         'hub_list_device_events'    | [deviceId: '10', hoursBack: 1]
-        'hub_update_device'         | [deviceId: '10', label: 'Changed']
+        'hub_update_device'         | [deviceId: '10', fields: [label: 'Changed']]
     }
 
     @Unroll
@@ -233,7 +259,7 @@ class ToolNativeMetadataBoundarySpec extends ToolSpecBase {
     }
 
     @Unroll
-    def 'room clear cannot be confirmed by #room readback'() {
+    def 'room clear is not confirmed while the read-back names room #room'() {
         given:
         model.device.roomName = 'Den'
         model.device.putAll([version: 0, controllerType: null, zigbeeId: null,
@@ -245,13 +271,12 @@ class ToolNativeMetadataBoundarySpec extends ToolSpecBase {
         model.dashboards = []
         script.metaClass.hubInternalPostFormRaw = { String path, String body, int timeout = 420, boolean retry = false ->
             writes << [path: path, body: body]
-            if (room == 'absent') model.device.remove('roomName')
-            else model.device.roomName = room
-            [status: 200]
+            model.device.roomName = room
+            [status: 200, data: '']
         }
 
         when:
-        def result = script.toolUpdateDevice([deviceId: '10', room: 'none'])
+        def result = script.toolUpdateDevice([deviceId: '10', fields: [room: '']])
 
         then:
         result.success == false
@@ -261,7 +286,7 @@ class ToolNativeMetadataBoundarySpec extends ToolSpecBase {
         writes.size() == 1
 
         where:
-        room << ['absent', false, 0, [:], []]
+        room << ['Den', 'Office', [name: 'Den']]
     }
     @Unroll
     def 'missing native metadata is an MCP execution error in #mode mode'() {

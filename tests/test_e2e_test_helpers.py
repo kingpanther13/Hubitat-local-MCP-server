@@ -280,6 +280,7 @@ def test_bypass_boundary_preserves_existing_preferences_and_requires_unknown_nam
     preferences_before = dict(declared)
     preference_attempts = []
     label_attempts = []
+    room_attempts = []
     bypass_changes = []
     bypass = False
     current_label = "Native original"
@@ -328,10 +329,13 @@ def test_bypass_boundary_preserves_existing_preferences_and_requires_unknown_nam
                 assert arguments["attribute"] == "nativeConfiguration"
                 return {"value": json.dumps(native_observations[-1])}
             if name == "hub_update_device":
-                if "label" in arguments:
-                    current_label = arguments["label"]
-                    label_attempts.append(arguments["label"])
+                if "label" in arguments.get("fields", {}):
+                    current_label = arguments["fields"]["label"]
+                    label_attempts.append(current_label)
                     return {"success": True, "changes": [{"property": "label"}]}
+                if "room" in arguments.get("fields", {}):
+                    room_attempts.append(arguments["fields"]["room"])
+                    return {"success": True, "changes": [{"property": "room", "newValue": arguments["fields"]["room"] or "none"}]}
                 patch = arguments["preferences"]
                 preference_attempts.append(patch)
                 assert not set(patch) & set(declared), "Boundary probe attempted an existing preference"
@@ -366,6 +370,7 @@ def test_bypass_boundary_preserves_existing_preferences_and_requires_unknown_nam
     assert preference_attempts == [{prefix + "__": True}]
     assert declared == preferences_before
     assert label_attempts == ["Native original _BWTEST", "Native original"]
+    assert room_attempts == [f"{et.SCAFFOLD_PREFIX}Room", ""]
     assert current_label == "Native original"
     assert len(native_observations) == 1
     assert log_bypasses == [False, True]
@@ -412,8 +417,8 @@ def test_bypass_boundary_restores_exact_native_label_after_a_committed_rename_fa
                 return {"events": [], "count": 0}
             if name == "hub_list_device_dependents":
                 return {"deviceId": "10", "appsUsing": []}
-            if name == "hub_update_device" and "label" in arguments:
-                current_label = arguments["label"]
+            if name == "hub_update_device" and "label" in arguments.get("fields", {}):
+                current_label = arguments["fields"]["label"]
                 label_attempts.append(current_label)
                 if len(label_attempts) == 1:
                     if failure == "exception":
@@ -740,7 +745,8 @@ def test_print_summary_requires_tests_and_fixture_resets_to_succeed(
         "message": "probe result", "duration": 0.1,
     }]
     runner.client = SimpleNamespace(op_timings=[], continuation_timings=[])
-    runner.throttle_bounces = 0
+    runner.limiter_resets = 0
+    runner.limiter_reset_failures = 0
     runner.server_app_id = None
     runner._fixture_reset_failures = reset_failures
     runner._soft_passes = []
@@ -902,14 +908,16 @@ def test_limiter_summary_does_not_claim_retried_dispatches_passed(capsys):
     runner.results = [{"group": "native_apps", "name": "blocked", "status": "fail",
                        "message": "dispatch remained blocked", "duration": 0.1}]
     runner.client = SimpleNamespace(op_timings=[], continuation_timings=[])
-    runner.throttle_bounces = 6
+    runner.limiter_resets = 6
+    runner.limiter_reset_failures = 2
     runner.server_app_id = "38"
     runner._fixture_reset_failures = []
     runner._soft_passes = []
     assert runner._print_summary() is False
     output = capsys.readouterr().out
     assert "retried dispatches passed" not in output
-    assert "6 watchdog bounce(s)" in output
+    assert "6 runtime-statistics reset(s)" in output
+    assert "2 runtime-statistics reset(s) for app 38 FAILED" in output
 
 
 @pytest.mark.parametrize("unavailable", [False, True])
@@ -1025,25 +1033,25 @@ _LIMITED = "RMUtils.sendAction failed: App 38 generates excessive hub load"
 
 
 @pytest.mark.parametrize(
-    "replies, bounces, bounce_ok, expected_calls, expected_bounces, expect_limited",
+    "replies, resets, reset_ok, expected_calls, expected_resets, expect_limited",
     [
-        pytest.param([{"success": True}], 1, True, 1, 0, False, id="clean-call-never-bounces"),
+        pytest.param([{"success": True}], 1, True, 1, 0, False, id="clean-call-never-resets"),
         pytest.param([{"success": False, "error": _LIMITED}, {"success": True}], 1, True, 2, 1, False,
-                     id="envelope-trip-bounces-and-retries"),
+                     id="envelope-trip-resets-and-retries"),
         pytest.param([et.McpToolError("hub_manage_rule_machine", _LIMITED), {"success": True}], 1, True, 2, 1, False,
-                     id="raised-trip-bounces-and-retries"),
+                     id="raised-trip-resets-and-retries"),
         pytest.param([{"success": False, "error": _LIMITED}] * 3, 2, True, 3, 2, True,
-                     id="sticky-limiter-exhausts-bounce-rounds"),
+                     id="sticky-limiter-exhausts-reset-rounds"),
         pytest.param([{"success": False, "error": _LIMITED}], 1, False, 1, 1, True,
-                     id="failed-bounce-does-not-retry"),
+                     id="failed-reset-does-not-retry"),
         pytest.param([{"success": False, "error": "no such rule"}], 1, True, 1, 0, False,
-                     id="other-failure-is-returned-not-bounced"),
+                     id="other-failure-is-returned-not-reset"),
     ],
 )
-def test_call_with_limiter_bounce_retries_only_limiter_trips(
-    replies, bounces, bounce_ok, expected_calls, expected_bounces, expect_limited,
+def test_call_with_limiter_reset_retries_only_limiter_trips(
+    replies, resets, reset_ok, expected_calls, expected_resets, expect_limited,
 ):
-    calls, bounced = [], []
+    calls, reset_reasons = [], []
     replies = iter(replies)
 
     class Client:
@@ -1056,32 +1064,69 @@ def test_call_with_limiter_bounce_retries_only_limiter_trips(
 
     runner = object.__new__(et.TestRunner)
     runner.client = Client()
-    runner._clear_load_throttle = lambda reason: bounced.append(reason) or bounce_ok
+    runner._reset_app_runtime_stats = lambda reason: reset_reasons.append(reason) or reset_ok
 
-    res, limited = runner._call_with_limiter_bounce(
+    res, limited = runner._call_with_limiter_reset(
         "hub_manage_rule_machine", "hub_call_rule", {"ruleId": 7, "action": "actions"},
-        "probe", bounces=bounces)
+        "probe", resets=resets)
 
     assert calls == [("hub_manage_rule_machine",
                       {"tool": "hub_call_rule", "args": {"ruleId": 7, "action": "actions"}})] * expected_calls
-    assert len(bounced) == expected_bounces
-    assert all(reason.startswith("probe: ") for reason in bounced)
+    assert len(reset_reasons) == expected_resets
+    assert all(reason.startswith("probe: ") for reason in reset_reasons)
     assert (limited is not None) is expect_limited
     if not expect_limited:
         assert limited is None and isinstance(res, dict)
 
 
-def test_call_with_limiter_bounce_propagates_non_limiter_errors():
+def _reset_runner(watchdog_tool):
+    runner = object.__new__(et.TestRunner)
+    runner.watchdog_url, runner.server_app_id = "https://watchdog.invalid/mcp", "38"
+    runner.limiter_resets = runner.limiter_reset_failures = 0
+    runner._watchdog_tool = watchdog_tool
+    return runner
+
+
+def _raise_unusable(name, arguments):
+    raise AssertionError(f"watchdog {name} returned no usable result")
+
+
+@pytest.mark.parametrize("watchdog_tool, expected, resets, failures", [
+    pytest.param(_raise_unusable, False, 0, 1, id="unusable-answer-is-a-failed-reset"),
+    pytest.param(lambda name, arguments: {"success": False, "error": "answered 'no'"}, False, 0, 1,
+                 id="refusal-is-a-failed-reset"),
+    pytest.param(lambda name, arguments: {"success": True, "before": {"totalMs": 936332},
+                                          "after": {"totalMs": 0}, "limitMs": 285120000}, True, 1, 0,
+                 id="success-counts-one-reset"),
+])
+def test_reset_app_runtime_stats_reports_and_counts_each_outcome(watchdog_tool, expected, resets, failures):
+    runner = _reset_runner(watchdog_tool)
+    assert runner._reset_app_runtime_stats("probe") is expected
+    assert (runner.limiter_resets, runner.limiter_reset_failures) == (resets, failures)
+
+
+def test_reset_app_runtime_stats_counts_every_failure_and_flags_an_unverified_reset(capsys):
+    runner = _reset_runner(_raise_unusable)
+    assert runner._reset_app_runtime_stats("first") is False
+    assert runner._reset_app_runtime_stats("second") is False
+    assert runner.limiter_reset_failures == 2 and runner.limiter_resets == 0
+    runner._watchdog_tool = lambda name, arguments: {"success": True, "verified": False,
+                                                     "note": "stats read-back failed"}
+    assert runner._reset_app_runtime_stats("third") is True
+    assert "NOT verified: stats read-back failed" in capsys.readouterr().out
+
+
+def test_call_with_limiter_reset_propagates_non_limiter_errors():
     class Client:
         def call_tool(self, name, arguments):
             raise et.McpToolError("hub_manage_rule_machine", "rule 7 not found")
 
     runner = object.__new__(et.TestRunner)
     runner.client = Client()
-    runner._clear_load_throttle = lambda reason: pytest.fail("a non-limiter error must not bounce")
+    runner._reset_app_runtime_stats = lambda reason: pytest.fail("a non-limiter error must not reset")
 
     with pytest.raises(et.McpToolError, match="not found"):
-        runner._call_with_limiter_bounce("hub_manage_rule_machine", "hub_call_rule", {}, "probe")
+        runner._call_with_limiter_reset("hub_manage_rule_machine", "hub_call_rule", {}, "probe")
 
 
 def _logs_body(payload):
@@ -1297,8 +1342,8 @@ def test_send_retains_structured_rpc_error_with_mixed_quotes(send_client):
     }}),
     ("hub_manage_virtual_device", {"action": "create", "deviceType": "Virtual Switch", "confirm": True}),
     ("hub_manage_virtual_device", {"action": "delete", "deviceNetworkId": "test-dni", "confirm": True}),
-    ("hub_update_device", {"deviceId": "88", "label": "Changed"}),
-    ("hub_manage_devices", {"tool": "hub_update_device", "args": {"deviceId": "88", "label": "Changed"}}),
+    ("hub_update_device", {"deviceId": "88", "fields": {"label": "Changed"}}),
+    ("hub_manage_devices", {"tool": "hub_update_device", "args": {"deviceId": "88", "fields": {"label": "Changed"}}}),
 ])
 def test_send_does_not_retry_a_lost_first_mrtr_request(send_client, name, args):
     # The first request of an MRTR write starts the write; a fast one may already be
@@ -2962,13 +3007,13 @@ def test_delete_bundle_uses_logical_write_helper(monkeypatch):
     )]
 
 
-def test_build_capacity_recovery_is_the_conformance_bounce_seam(monkeypatch):
+def test_build_capacity_recovery_is_the_conformance_reset_seam(monkeypatch):
     """sdk_conformance_test._load_hub_config wires the SDK MRTR proof's
     capacity-recovery callable through sdk_conformance_helpers.build_capacity_recovery
     under CAPACITY_RECOVERY_CONFIG_KEY. Exercise that construction path here (the
     helpers module is importable without the SDK closure; the conformance script is
-    not): the builder must hand back TestRunner's bounce, TestRunner construction
-    must do no hub I/O, and with WATCHDOG_URL unset the bounce must decline
+    not): the builder must hand back TestRunner's reset, TestRunner construction
+    must do no hub I/O, and with WATCHDOG_URL unset the reset must decline
     deterministically without touching the network."""
     import sdk_conformance_helpers as sch
 
@@ -2980,13 +3025,13 @@ def test_build_capacity_recovery_is_the_conformance_bounce_seam(monkeypatch):
     )
 
     def _no_network(*args, **kwargs):
-        raise AssertionError("bounce without WATCHDOG_URL must not touch the network")
+        raise AssertionError("reset without WATCHDOG_URL must not touch the network")
 
     monkeypatch.setattr(et.requests, "post", _no_network)
-    bounce = sch.build_capacity_recovery(et, client)
-    assert bounce.__func__ is et.TestRunner._clear_load_throttle
-    assert sch.CAPACITY_RECOVERY_CONFIG_KEY == "clear_load_throttle"
-    assert bounce("interface pin") is False
+    reset = sch.build_capacity_recovery(et, client)
+    assert reset.__func__ is et.TestRunner._reset_app_runtime_stats
+    assert sch.CAPACITY_RECOVERY_CONFIG_KEY == "reset_app_runtime_stats"
+    assert reset("interface pin") is False
 
 
 @pytest.mark.parametrize("initial", ["on", "off"])
@@ -3343,3 +3388,22 @@ def test_run_one_records_one_failure_when_the_backup_toggle_fails(monkeypatch):
     runner._run_one("native_apps", "test_proves", "test_proves")
     assert [(r["name"], r["status"]) for r in runner.results] == [("test_proves", "fail")]
     assert "could not turn pre-edit backups on" in runner.results[0]["message"]
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("0m 6s", 6), ("52m 20s", 3140), ("8h 37m 31s", 31051), ("1d 2h 3m 4s", 93784),
+    ("", None), (None, None), ("about an hour", None),
+])
+def test_uptime_seconds_reads_hub_uptime_text(text, expected):
+    assert et._uptime_seconds(text) == expected
+
+
+@pytest.mark.parametrize("exc,expected", [
+    (et._with_http_status(requests.HTTPError("500 Internal Server Error on tools/call"), 500), True),
+    (et._with_http_status(et.RelayLostResponseError("503 Service Unavailable on tools/call (504-class: response lost)"), 503), True),
+    (et._with_http_status(et.RelayLostResponseError("504 Gateway Timeout on tools/call (504-class: response lost)"), 504), False),
+    (RuntimeError("App 38 generates excessive hub load"), True),
+    (RuntimeError("device 500 did not answer"), False),
+])
+def test_limiter_retry_is_chosen_by_status_or_refusal_text(exc, expected):
+    assert et._limiter_retry_applies(exc) is expected

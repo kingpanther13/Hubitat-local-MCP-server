@@ -8,7 +8,8 @@ bot generates CHANGELOG entries from merged PR titles (and optional
 '## Release notes' sections in PR bodies) at release time.
 
 Reads env:
-  BASE_REF - git ref of PR base branch (e.g., 'origin/main')
+  BASE_REF - git ref of the PR base the checkout was merged onto (the PR
+             event's base SHA; 'origin/main' on a dispatch)
 
 Exits 0 on pass, 1 on fail. Emits ::error:: annotations for CI.
 """

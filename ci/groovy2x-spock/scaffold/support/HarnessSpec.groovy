@@ -279,10 +279,12 @@ abstract class HarnessSpec extends Specification {
         (scriptStaticField('HUB_SECURITY_RETRY_AT') as Map).clear()
         (scriptStaticField('LATEST_VERSION_SEEN') as Map).clear()
         (scriptStaticField('HEADERS_READABLE_SEEN') as Map).clear()
-        (scriptStaticField('LEGACY_DEVICE_LIST_GONE') as Set).clear()
         (scriptStaticField('RETIRED_TOOL_STATE_RETRY_AT') as Map).clear()
         (scriptStaticField('CAPTURE_STORES') as Map).clear()
         (scriptStaticField('LOGS_JSON_SNAPSHOT') as Map).clear()
+        // The per-app load limiter guard's estimate, latches and threshold.
+        (scriptStaticField('LOAD_GUARD') as Map).clear()
+        script.requestStartedAt = null
         (scriptStaticField('NATIVE_LOG_SNAPSHOTS') as Map).clear()
         (scriptStaticField('DEVICE_READ_SNAPSHOTS') as Map).clear()
         (scriptStaticField('DEBUG_LOG_BUFFERS') as Map).clear()

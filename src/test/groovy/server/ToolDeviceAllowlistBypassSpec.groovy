@@ -135,7 +135,7 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
         settingsMap.bypassDeviceAllowlist = false
 
         when:
-        script.toolUpdateDevice([deviceId: UNLISTED_ID, label: 'X'])
+        script.toolUpdateDevice([deviceId: UNLISTED_ID, fields: [label: 'X']])
 
         then:
         def ex = thrown(IllegalArgumentException)
@@ -282,14 +282,13 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false -> writes << path; [success: true] }
 
         when:
-        def result = script.toolUpdateDevice([deviceId: UNLISTED_ID, label: 'X'])
+        def result = script.toolUpdateDevice([deviceId: UNLISTED_ID, fields: [label: 'X']])
 
         then:
         result.success == false
         result.error.contains('/device/fullJson')
         result.note
         writes.empty
-        !hubGet.calls.any { it.path == '/device/updateLabel' }
     }
 
     // ---- toggle ON: events path (/device/eventsJson) ---------------------------
@@ -737,645 +736,162 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
     }
 
     // ---- toggle ON: update path -------------------------------------------------
+    // An unlisted device gets the same native saves as a listed one; these pin the bypass-specific
+    // access path plus the fields whose saves resolve hub state (room, driver preferences).
 
-    def "bypass ON: toolUpdateDevice label falls back to the wholesale POST when its native dedicated setter is absent"() {
-        given: 'the dedicated GET /device/updateLabel 404s on some firmwares (2.5.0.157)'
-        settingsMap.bypassDeviceAllowlist = true
-        hubGet.register("/device/updateLabel?deviceId=${UNLISTED_ID}&label=Renamed") { throw new RuntimeException('Not Found (404)') }
-        def fjLabel = 'Unlisted Switch'
+    private Map stubDeviceSaves(Map fjState, Closure apply = { path, body -> }) {
+        def posts = [:].withDefault { [] }
         hubGet.register("/device/fullJson/${UNLISTED_ID}") { params ->
             def m = fullJsonModel()
-            m.device.label = fjLabel
+            fjState.each { k, v -> if (k == 'settings') m.settings = v else m.device.put(k, v) }
             JsonOutput.toJson(m)
         }
-        def postedBody = null
         script.metaClass.hubInternalPostFormRaw = { String path, String body, int t = 420, boolean r = false ->
-            postedBody = body
-            if (body.contains('label=Renamed')) fjLabel = 'Renamed'   // hub applies the label
-            return [status: 200]
+            posts[path] << body
+            apply(path, body)
+            [status: 200, data: '']
         }
-
-        when:
-        def result = script.toolUpdateDevice([deviceId: UNLISTED_ID, label: 'Renamed'])
-
-        then: 'the fallback form carried the label and fresh read-back verified it'
-        result.success == true
-        result.changes.find { it.property == 'label' }?.newValue == 'Renamed'
-        postedBody.contains('label=Renamed')
-        hubGet.calls.any { it.key == "/device/updateLabel?deviceId=${UNLISTED_ID}&label=Renamed" }
-    }
-
-    def "bypass ON: toolUpdateDevice enabled routes to POST /device/disable"() {
-        given: 'a stateful fullJson whose disabled flag reflects the POST, so the read-back can confirm the flip'
-        settingsMap.bypassDeviceAllowlist = true
-        def disabledState = false
-        hubGet.register("/device/fullJson/${UNLISTED_ID}") { params ->
-            def m = fullJsonModel()
-            m.device.disabled = disabledState
-            JsonOutput.toJson(m)
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false ->
+            def parsed = new JsonSlurper().parseText(body)
+            posts[path] << parsed
+            apply(path, parsed)
+            [success: true]
         }
-        def posted = null
-        script.metaClass.hubInternalPostJson = { String path, String json, int t = 30, boolean r = false ->
-            def body = new groovy.json.JsonSlurper().parseText(json);
-            posted = [path: path, body: body]
-            if (path == '/device/disable') disabledState = (body.disable == true)
-            return ''
-        }
-
-        when:
-        def result = script.toolUpdateDevice([deviceId: UNLISTED_ID, enabled: false])
-
-        then: 'disable:true disables the device and the read-back confirms it'
-        result.success == true
-        posted.path == '/device/disable'
-        posted.body.disable == true
-        posted.body.id instanceof Number
-        result.changes.find { it.property == 'enabled' }?.newValue == false
-    }
-
-    def "bypass ON: toolUpdateDevice enabled read-back MISMATCH records a structured error (no false success)"() {
-        given: 'the POST is a no-op; fullJson still reports disabled:false so the requested disable did not land'
-        settingsMap.bypassDeviceAllowlist = true
-        registerFullJson()   // device.disabled stays false
-        script.metaClass.hubInternalPostJson = { String path, String json, int t = 30, boolean r = false ->
-            def body = new groovy.json.JsonSlurper().parseText(json); '' }
-
-        when:
-        def result = script.toolUpdateDevice([deviceId: UNLISTED_ID, enabled: false])
-
-        then: 'the unflipped read-back is a structured error, NOT a recorded change'
-        result.success == false
-        result.errors.find { it.property == 'enabled' }?.error?.contains('read back as')
-        !(result.changes.find { it.property == 'enabled' })
-    }
-
-    def "bypass ON: toolUpdateDevice enabled read-back FETCH-NULL records the distinct could-not-confirm error"() {
-        given: 'the POST is accepted but the confirming fullJson re-fetch returns no device'
-        settingsMap.bypassDeviceAllowlist = true
-        def calls = 0
-        hubGet.register("/device/fullJson/${UNLISTED_ID}") { params ->
-            // 1st fetch (bypass entry) resolves the device; the 2nd (enabled read-back) returns no device.
-            calls++
-            (calls >= 2) ? JsonOutput.toJson([device: null]) : JsonOutput.toJson(fullJsonModel())
-        }
-        script.metaClass.hubInternalPostJson = { String path, String json, int t = 30, boolean r = false ->
-            def body = new groovy.json.JsonSlurper().parseText(json); '' }
-
-        when:
-        def result = script.toolUpdateDevice([deviceId: UNLISTED_ID, enabled: false])
-
-        then: 'a failed read-back fetch is a DISTINCT error, never a false success'
-        result.success == false
-        result.errors.find { it.property == 'enabled' }?.error?.contains('could not confirm the change -- the read-back fetch failed')
-        !(result.changes.find { it.property == 'enabled' })
-    }
-
-    def "bypass ON: toolUpdateDevice enabled read-back CONFIRMS when fullJson renders disabled as the STRING 'true'"() {
-        given: 'fullJson reports disabled as the JSON string "true" (not a Boolean) -- a real disable must still confirm'
-        settingsMap.bypassDeviceAllowlist = true
-        hubGet.register("/device/fullJson/${UNLISTED_ID}") { params ->
-            def m = fullJsonModel()
-            m.device.disabled = 'true'   // string, not Boolean
-            JsonOutput.toJson(m)
-        }
-        script.metaClass.hubInternalPostJson = { String path, String json, int t = 30, boolean r = false ->
-            def body = new groovy.json.JsonSlurper().parseText(json); '' }
-
-        when: 'request disable; the re-fetch reports disabled:"true" -> confirmed, no false mismatch error'
-        def result = script.toolUpdateDevice([deviceId: UNLISTED_ID, enabled: false])
-
-        then: 'the change is recorded with no error'
-        result.success == true
-        result.changes.find { it.property == 'enabled' }?.newValue == false
-        !(result.errors?.find { it.property == 'enabled' })
-    }
-
-    def "bypass ON: toolUpdateDevice room assign sends the room NAME to /device/updateRoom (NOT an id)"() {
-        given: 'the room exists; updateRoom is keyed on the NAME (sending an id would create a spurious room)'
-        settingsMap.bypassDeviceAllowlist = true
-        registerFullJson()
-        script.metaClass.getRooms = { -> [[id: 7, name: 'Garage', deviceIds: []]] }
-        hubGet.register("/device/updateRoom?deviceId=${UNLISTED_ID}&room=Garage") { params -> 'true' }
-
-        when:
-        def result = script.toolUpdateDevice([deviceId: UNLISTED_ID, room: 'Garage'])
-
-        then: 'the NAME (Garage), not the id (7), is sent'
-        result.success == true
-        result.changes.find { it.property == 'room' }?.newValue == 'Garage'
-        hubGet.calls.any { it.key == "/device/updateRoom?deviceId=${UNLISTED_ID}&room=Garage" }
-        !hubGet.calls.any { it.key == "/device/updateRoom?deviceId=${UNLISTED_ID}&room=7" }
-    }
-
-    def "bypass ON: toolUpdateDevice room with an UNKNOWN name returns Room not found and never calls updateRoom"() {
-        given: 'the requested room is not on the hub -- updateRoom would silently create it, so we must refuse first'
-        settingsMap.bypassDeviceAllowlist = true
-        registerFullJson()
-        script.metaClass.getRooms = { -> [[id: 7, name: 'Garage', deviceIds: []]] }
-        def writes = []
-        script.metaClass.hubInternalPostFormRaw = { String path, String body -> writes << path; '' }
-        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false -> writes << path; [success: true] }
-
-        when:
-        script.toolUpdateDevice([deviceId: UNLISTED_ID, label: 'Must not apply', room: 'Nonexistent'])
-
-        then: 'parity with the listed path: Room not found, and NO updateRoom call (no spurious-room creation)'
-        def ex = thrown(IllegalArgumentException)
-        ex.message.contains('Room \'Nonexistent\' not found')
-        writes.empty
-        !hubGet.calls.any { it.path == '/device/updateLabel' }
-        !hubGet.calls.any { it.path.startsWith('/device/updateRoom') }
-    }
-
-    def "bypass ON: toolUpdateDevice room assign reports 'Unable to list rooms' when getRooms THROWS (distinct from not-found)"() {
-        given: 'the room-existence check can not enumerate rooms (hub blip), so a name can not be resolved'
-        settingsMap.bypassDeviceAllowlist = true
-        registerFullJson()
-        script.metaClass.getRooms = { -> throw new RuntimeException('rooms read exploded') }
-        def writes = []
-        script.metaClass.hubInternalPostFormRaw = { String path, String body -> writes << path; '' }
-        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false -> writes << path; [success: true] }
-
-        when:
-        script.toolUpdateDevice([deviceId: UNLISTED_ID, label: 'Must not apply', room: 'Garage'])
-
-        then: 'the getRooms failure is reported distinctly from "room not found", and updateRoom is never called'
-        def ex = thrown(IllegalArgumentException)
-        ex.message.contains('Unable to list rooms')
-        writes.empty
-        !hubGet.calls.any { it.path == '/device/updateLabel' }
-        !hubGet.calls.any { it.path.startsWith('/device/updateRoom') }
-    }
-
-    def "bypass ON: toolUpdateDevice room assign records 'Hub did not accept' when /device/updateRoom returns non-true"() {
-        given: 'the room exists but updateRoom does not return true (the hub rejected the assign)'
-        settingsMap.bypassDeviceAllowlist = true
-        registerFullJson()
-        script.metaClass.getRooms = { -> [[id: 7, name: 'Garage', deviceIds: []]] }
-        hubGet.register("/device/updateRoom?deviceId=${UNLISTED_ID}&room=Garage") { params -> 'false' }
-
-        when:
-        def result = script.toolUpdateDevice([deviceId: UNLISTED_ID, room: 'Garage'])
-
-        then: 'a non-true response is a structured error, not a recorded change'
-        result.success == false
-        result.errors.find { it.property == 'room' }?.error?.contains('Hub did not accept the room update')
-        !(result.changes.find { it.property == 'room' })
-    }
-
-    def "bypass ON: toolUpdateDevice room assign HAPPY PATH records the change when the re-fetch confirms the room landed"() {
-        given: 'the device starts unassigned; updateRoom returns true and the re-fetch shows it now in Garage'
-        settingsMap.bypassDeviceAllowlist = true
-        def landed = false
-        hubGet.register("/device/fullJson/${UNLISTED_ID}") { params ->
-            def m = fullJsonModel()
-            m.device.roomName = landed ? 'Garage' : null
-            JsonOutput.toJson(m)
-        }
-        script.metaClass.getRooms = { -> [[id: 7, name: 'Garage', deviceIds: []]] }
-        hubGet.register("/device/updateRoom?deviceId=${UNLISTED_ID}&room=Garage") { params -> landed = true; 'true' }
-
-        when:
-        def result = script.toolUpdateDevice([deviceId: UNLISTED_ID, room: 'Garage'])
-
-        then: 'the confirmed assign records the change (oldValue none -> newValue Garage)'
-        result.success == true
-        result.changes.find { it.property == 'room' }?.newValue == 'Garage'
-        result.changes.find { it.property == 'room' }?.oldValue == 'none'
-        !(result.errors?.find { it.property == 'room' })
-    }
-
-    def "bypass ON: toolUpdateDevice room assign LANDING MISMATCH records a structured error when the re-fetch shows a different room"() {
-        given: 'updateRoom returns true but the re-fetch shows the device in a DIFFERENT room (assign did not land)'
-        settingsMap.bypassDeviceAllowlist = true
-        hubGet.register("/device/fullJson/${UNLISTED_ID}") { params ->
-            def m = fullJsonModel()
-            m.device.roomName = 'Office'   // never becomes Garage
-            JsonOutput.toJson(m)
-        }
-        script.metaClass.getRooms = { -> [[id: 7, name: 'Garage', deviceIds: []]] }
-        hubGet.register("/device/updateRoom?deviceId=${UNLISTED_ID}&room=Garage") { params -> 'true' }
-
-        when:
-        def result = script.toolUpdateDevice([deviceId: UNLISTED_ID, room: 'Garage'])
-
-        then: 'the unconfirmed landing is a structured error naming the actual + expected room, NOT a recorded change'
-        result.success == false
-        result.errors.find { it.property == 'room' }?.error?.contains("is in room 'Office' (expected 'Garage')")
-        !(result.changes.find { it.property == 'room' })
-    }
-
-    def "bypass ON: toolUpdateDevice room assign FETCH-NULL records the distinct could-not-confirm error"() {
-        given: 'updateRoom returns true but the confirming re-fetch returns no device'
-        settingsMap.bypassDeviceAllowlist = true
-        def calls = 0
-        hubGet.register("/device/fullJson/${UNLISTED_ID}") { params ->
-            // 1st fetch (bypass entry) resolves the device; the 2nd (assign read-back) returns no device.
-            calls++
-            (calls >= 2) ? JsonOutput.toJson([device: null]) : JsonOutput.toJson(fullJsonModel())
-        }
-        script.metaClass.getRooms = { -> [[id: 7, name: 'Garage', deviceIds: []]] }
-        hubGet.register("/device/updateRoom?deviceId=${UNLISTED_ID}&room=Garage") { params -> 'true' }
-
-        when:
-        def result = script.toolUpdateDevice([deviceId: UNLISTED_ID, room: 'Garage'])
-
-        then: 'a failed read-back fetch is a DISTINCT error, never a false success'
-        result.success == false
-        result.errors.find { it.property == 'room' }?.error?.contains('could not confirm the room change -- the read-back fetch failed')
-        !(result.changes.find { it.property == 'room' })
+        posts
     }
 
     @spock.lang.Unroll
-    def "bypass ON: toolUpdateDevice room unassign (#unassignVal) routes to /device/update roomId=0 (no updateRoom)"() {
-        given: 'an unassign value -- must NOT send an empty name to updateRoom; route through the wholesale form'
-        settingsMap.bypassDeviceAllowlist = true
-        // After the form POST the read-back shows the device unassigned (roomName cleared).
-        def cleared = false
-        hubGet.register("/device/fullJson/${UNLISTED_ID}") { params ->
-            def m = fullJsonModel()
-            if (cleared) m.device.roomName = null
-            JsonOutput.toJson(m)
-        }
-        def postedBody = null
-        script.metaClass.hubInternalPostFormRaw = { String path, String body, int t = 420, boolean r = false ->
-            postedBody = body; cleared = true; return [status: 200]
-        }
-
-        when:
-        def result = script.toolUpdateDevice([deviceId: UNLISTED_ID, room: unassignVal])
-
-        then: 'the wholesale form carried roomId=0 and updateRoom was never called'
-        result.success == true
-        postedBody.contains('roomId=0&')   // '&'-terminated so it can't match roomId=05 etc.
-        result.changes.find { it.property == 'room' }?.newValue == 'none'
-        !hubGet.calls.any { it.path.startsWith('/device/updateRoom') }
-
-        where:
-        unassignVal << ['', 'none', 'null']
-    }
-
-    def "bypass ON: toolUpdateDevice room unassign reports an ERROR when the read-back fetch FAILS (no false success)"() {
-        given: 'the POST is accepted but the confirming read-back fetch fails (null device)'
-        settingsMap.bypassDeviceAllowlist = true
-        def calls = 0
-        hubGet.register("/device/fullJson/${UNLISTED_ID}") { params ->
-            // First fetch (toolUpdateDevice top) + second (model rebuild) return the device; the
-            // read-back fetch (3rd) returns no device, simulating a fetch failure after the POST.
-            calls++
-            (calls >= 3) ? JsonOutput.toJson([device: null]) : JsonOutput.toJson(fullJsonModel())
-        }
-        script.metaClass.hubInternalPostFormRaw = { String path, String body, int t = 420, boolean r = false -> [status: 200] }
-
-        when:
-        def result = script.toolUpdateDevice([deviceId: UNLISTED_ID, room: ''])
-
-        then: 'a null read-back is an error, never recorded as a successful unassign'
-        result.success == false
-        result.errors.find { it.property == 'room' }?.error?.contains('read-back to confirm the unassign failed')
-    }
-
-    def "bypass ON rejects invalid dataValues before an earlier label mutation"() {
+    def "bypass ON: toolUpdateDevice enabled=false confirms a native disabled flag of #disabled"() {
         given:
         settingsMap.bypassDeviceAllowlist = true
-        registerFullJson()
-        def formPosted = false
-        script.metaClass.hubInternalPostFormRaw = { String path, String body, int t = 420, boolean r = false ->
-            formPosted = true; return [status: 200]
-        }
+        def fjState = [disabled: false]
+        def posts = stubDeviceSaves(fjState) { path, body -> fjState.disabled = disabled }
 
         when:
-        script.toolUpdateDevice([deviceId: UNLISTED_ID, label: 'Do not apply', dataValues: [foo: 7]])
+        def result = script.toolUpdateDevice([deviceId: UNLISTED_ID, fields: [enabled: false]])
 
         then:
-        thrown(IllegalArgumentException)
-        !formPosted
-        !hubGet.calls.any { it.path == '/device/updateLabel' }
-    }
-
-    // ---- toggle ON: the wholesale /device/update form (name + deviceNetworkId) ----
-    // The highest-risk leg: the form BLANKS any field it omits, so the full device model must be
-    // reconstructed. A stateful fullJson handler reflects the applied change on the read-back.
-
-    private void registerStatefulFullJson(Map fjState) {
-        hubGet.register("/device/fullJson/${UNLISTED_ID}") { params ->
-            def m = fullJsonModel()
-            m.device.name = fjState.name
-            m.device.deviceNetworkId = fjState.dni
-            JsonOutput.toJson(m)
-        }
-    }
-
-    def "bypass ON: toolUpdateDevice name+dni POST /device/update reconstructs the full model and verifies the read-back"() {
-        given: 'the fullJson read-back reflects the form POST (hub applied it)'
-        settingsMap.bypassDeviceAllowlist = true
-        stateMap.lastBackupTimestamp = System.currentTimeMillis()
-        def fjState = [name: 'Unlisted Switch', dni: 'ABCD']
-        registerStatefulFullJson(fjState)
-        def postedBody = null
-        script.metaClass.hubInternalPostFormRaw = { String path, String body, int t = 420, boolean r = false ->
-            postedBody = body
-            fjState.name = 'NewName'; fjState.dni = 'NEWDNI'   // hub applies the change
-            return [status: 200]
-        }
-
-        when:
-        def result = script.toolUpdateDevice([deviceId: UNLISTED_ID, confirm: true, name: 'NewName', deviceNetworkId: 'NEWDNI'])
-
-        then: 'the form body carries the overrides AND a preserved model field (full reconstruction)'
-        postedBody.contains('name=NewName')
-        postedBody.contains('deviceNetworkId=NEWDNI')
-        postedBody.contains('label=Unlisted+Switch')
-
-        and: 'both fields verified on the read-back and recorded as changes'
+        posts.keySet() == ['/device/disable'] as Set
+        posts['/device/disable'] == [[id: 555, disable: true]]
         result.success == true
-        result.changes.find { it.property == 'name' }?.newValue == 'NewName'
-        result.changes.find { it.property == 'deviceNetworkId' }?.newValue == 'NEWDNI'
+        result.changes.find { it.property == 'enabled' }?.newValue == false
+
+        where:
+        disabled << [true, 'true']
     }
 
-    def "bypass ON: toolUpdateDevice name read-back mismatch records a structured error (errors list)"() {
-        given: 'the hub does NOT apply the change, so the read-back still shows the old name'
+    def "bypass ON: toolUpdateDevice room resolves the room NAME to its id in the Device Info form"() {
+        given:
         settingsMap.bypassDeviceAllowlist = true
-        def fjState = [name: 'Unlisted Switch', dni: 'ABCD']
-        registerStatefulFullJson(fjState)
-        script.metaClass.hubInternalPostFormRaw = { String path, String body, int t = 420, boolean r = false ->
-            return [status: 200]   // POST 'accepted' but nothing changed
+        script.metaClass.getRooms = { -> [[id: 7, name: 'Garage'], [id: 9, name: 'Office']] }
+        def fjState = [roomId: 7, roomName: 'Garage']
+        def posts = stubDeviceSaves(fjState) { path, body ->
+            fjState.roomId = 9
+            fjState.roomName = 'Office'
         }
 
         when:
-        def result = script.toolUpdateDevice([deviceId: UNLISTED_ID, name: 'NewName'])
+        def result = script.toolUpdateDevice([deviceId: UNLISTED_ID, fields: [room: 'office', label: 'NewLabel']])
 
-        then: 'the failure uses the SAME {success, device, deviceId, changes, errors} shape as the listed sibling'
+        then: 'one form carries the room id and the label; nothing goes to a name-keyed room setter'
+        posts.keySet() == ['/device/update'] as Set
+        posts['/device/update'].size() == 1
+        posts['/device/update'][0].contains('roomId=9&')
+        posts['/device/update'][0].contains('label=NewLabel')
+        !posts['/device/update'][0].contains('Office')
+
+        and: 'the room is verified by name; the label did not land and is reported'
         result.success == false
-        result.errors instanceof List
-        result.errors.find { it.property == 'name' }?.error?.contains('read back as')
-    }
-
-    def "bypass ON: toolUpdateDevice label read-back MISMATCH records a structured error (errors list)"() {
-        given: 'the hub does NOT apply the label, so the fresh read-back still shows the old label'
-        settingsMap.bypassDeviceAllowlist = true
-        registerFullJson()   // label stays 'Unlisted Switch'
-        script.metaClass.hubInternalPostFormRaw = { String path, String body, int t = 420, boolean r = false ->
-            return [status: 200]   // POST 'accepted' but nothing changed
-        }
-
-        when:
-        def result = script.toolUpdateDevice([deviceId: UNLISTED_ID, label: 'NewLabel'])
-
-        then: 'the label leg records a per-property read-back error, no change'
-        result.success == false
-        result.errors.find { it.property == 'label' }?.error?.contains('label read back as')
-        !(result.changes.find { it.property == 'label' })
-    }
-
-    def "bypass ON: toolUpdateDevice deviceNetworkId read-back MISMATCH records a structured error (errors list)"() {
-        given: 'the hub does NOT apply the dni, so the read-back still shows the old dni'
-        settingsMap.bypassDeviceAllowlist = true
-        stateMap.lastBackupTimestamp = System.currentTimeMillis()
-        def fjState = [name: 'Unlisted Switch', dni: 'ABCD']
-        registerStatefulFullJson(fjState)
-        script.metaClass.hubInternalPostFormRaw = { String path, String body, int t = 420, boolean r = false ->
-            return [status: 200]   // no-op
-        }
-
-        when:
-        def result = script.toolUpdateDevice([deviceId: UNLISTED_ID, confirm: true, deviceNetworkId: 'NEWDNI'])
-
-        then: 'the dni leg records a per-property read-back error, no change'
-        result.success == false
-        result.errors.find { it.property == 'deviceNetworkId' }?.error?.contains('deviceNetworkId read back as')
-        !(result.changes.find { it.property == 'deviceNetworkId' })
-    }
-
-    def "bypass ON: toolUpdateDevice name leg surfaces the reworded read-back-failure error when the model re-fetch returns no device"() {
-        given: 'bypass entry resolves the device, but the _postBypassDeviceModel re-fetch returns no device'
-        settingsMap.bypassDeviceAllowlist = true
-        def calls = 0
-        hubGet.register("/device/fullJson/${UNLISTED_ID}") { params ->
-            // 1st fetch (bypass entry) resolves the device; the 2nd (model rebuild inside
-            // _postBypassDeviceModel) returns no device, so the form is never POSTed.
-            calls++
-            (calls >= 2) ? JsonOutput.toJson([device: null]) : JsonOutput.toJson(fullJsonModel())
-        }
-        def formPosted = false
-        script.metaClass.hubInternalPostFormRaw = { String path, String body, int t = 420, boolean r = false ->
-            formPosted = true; return [status: 200]
-        }
-
-        when:
-        def result = script.toolUpdateDevice([deviceId: UNLISTED_ID, name: 'NewName'])
-
-        then: 'the deviceModel error names the PRE-write model-read failure (distinct from the post-write read-back legs); the form was never POSTed'
-        result.success == false
-        result.errors.find { it.property == 'deviceModel' }?.error?.contains('Could not read the device model')
-        !(result.changes.find { it.property == 'name' })
-        !formPosted
-    }
-
-    // ---- multi-leg: the form must rebuild from FRESH fullJson so a prior leg isn't reverted (B1) ---
-    // label now rides the same /device/update form as name (the dedicated GET /device/updateLabel
-    // 404s on some firmwares), so a label+name edit is ONE post carrying both. When a SECOND post
-    // follows (label+room-unassign), the stateful handler tracks the label the first post applied so
-    // the guard can prove the second form rebuilds from FRESH fullJson and re-sends the just-applied
-    // label. With the stale-fj bug the second form would carry the ORIGINAL label (label=Unlisted+
-    // Switch), reverting it -- that guard goes RED in that case.
-
-    def "bypass ON: toolUpdateDevice label+name ride ONE wholesale /device/update form carrying both"() {
-        given: 'a label+name edit posts a single form with both overrides'
-        settingsMap.bypassDeviceAllowlist = true
-        def fjState = [label: 'Unlisted Switch', name: 'Unlisted Switch']
-        hubGet.register("/device/fullJson/${UNLISTED_ID}") { params ->
-            def m = fullJsonModel()
-            m.device.label = fjState.label
-            m.device.name = fjState.name
-            JsonOutput.toJson(m)
-        }
-        def postedBody = null
-        script.metaClass.hubInternalPostFormRaw = { String path, String body, int t = 420, boolean r = false ->
-            postedBody = body
-            if (body.contains('label=NewLabel')) fjState.label = 'NewLabel'
-            if (body.contains('name=NewName')) fjState.name = 'NewName'
-            return [status: 200]
-        }
-
-        when:
-        def result = script.toolUpdateDevice([deviceId: UNLISTED_ID, label: 'NewLabel', name: 'NewName'])
-
-        then: 'the single form carries BOTH label and name (full model, nothing blanked) and updateLabel is never called'
-        postedBody.contains('label=NewLabel')
-        postedBody.contains('name=NewName')
-        !hubGet.calls.any { it.path.startsWith('/device/updateLabel') }
-
-        and: 'both legs recorded as successful changes'
-        result.success == true
-        result.changes.find { it.property == 'label' }?.newValue == 'NewLabel'
-        result.changes.find { it.property == 'name' }?.newValue == 'NewName'
-    }
-
-    def "bypass ON: toolUpdateDevice label+room-unassign re-sends the FRESH label in the roomId=0 form (no clobber)"() {
-        given: 'label rides the first /device/update form, then the unassign rebuilds a SECOND form with roomId=0'
-        settingsMap.bypassDeviceAllowlist = true
-        def fjState = [label: 'Unlisted Switch', roomName: 'Garage']
-        hubGet.register("/device/fullJson/${UNLISTED_ID}") { params ->
-            def m = fullJsonModel()
-            m.device.label = fjState.label
-            m.device.roomName = fjState.roomName
-            JsonOutput.toJson(m)
-        }
-        def postedBody = null
-        script.metaClass.hubInternalPostFormRaw = { String path, String body, int t = 420, boolean r = false ->
-            postedBody = body                                              // capture the LAST post (the roomId=0 form)
-            if (body.contains('label=NewLabel')) fjState.label = 'NewLabel'   // first post applies the label
-            if (body.contains('roomId=0')) fjState.roomName = null            // second post unassigns the room
-            return [status: 200]
-        }
-
-        when:
-        def result = script.toolUpdateDevice([deviceId: UNLISTED_ID, label: 'NewLabel', room: ''])
-
-        then: 'the SECOND (unassign) form carries roomId=0 AND the fresh label -- the label is NOT reverted by a stale model'
-        postedBody.contains('roomId=0&')
-        postedBody.contains('label=NewLabel')
-        !postedBody.contains('label=Unlisted+Switch')
-
-        and: 'both legs succeed'
-        result.success == true
-        result.changes.find { it.property == 'label' }?.newValue == 'NewLabel'
-        result.changes.find { it.property == 'room' }?.newValue == 'none'
-    }
-
-    // ---- preferences leg (W6 / B-PREF) ----
-    // Driver prefs MUST ride the preferences:[{name,type,value}] ARRAY; a flat top-level key is a
-    // silent no-op that still returns {success:true}, so a read-back against fullJson `settings` is
-    // mandatory. The stateful mock here only HONORS the array shape (like the live hub) -- a flat-key
-    // revert would not apply the pref, the read-back would mismatch, and this spec would go RED.
-
-    def "bypass ON: toolUpdateDevice preferences POSTs the {preferences:[{name,type,value}]} ARRAY and read-back verifies"() {
-        given: 'the hub applies only the ARRAY shape; the read-back reflects it via fullJson settings'
-        settingsMap.bypassDeviceAllowlist = true
-        def applied = [tempOffset: '0']
-        hubGet.register("/device/fullJson/${UNLISTED_ID}") { params ->
-            def m = fullJsonModel()
-            m.settings = applied.collect { k, v -> [name: k, type: 'number', value: v] }
-            JsonOutput.toJson(m)
-        }
-        def posts = []
-        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false ->
-            posts << [path: path, body: body]
-            def parsed = new JsonSlurper().parseText(body)
-            if (parsed.preferences instanceof List) {   // live hub only honors the array shape
-                parsed.preferences.each { p -> applied[p.name] = p.value?.toString() }
-            }
-            return [success: true]
-        }
-
-        when:
-        def result = script.toolUpdateDevice([deviceId: UNLISTED_ID, preferences: [tempOffset: [type: 'number', value: 3]]])
-
-        then: 'the body is the ARRAY shape (NOT a flat top-level key)'
-        posts.size() == 1
-        posts[0].path == '/device/preference/save'
-        def body = new JsonSlurper().parseText(posts[0].body)
-        body.deviceId == 555
-        body.preferences instanceof List
-        body.preferences[0].name == 'tempOffset'
-        body.preferences[0].type == 'number'
-        body.preferences[0].value == 3
-        !body.containsKey('tempOffset')
-
-        and: 'the read-back confirmed the change, so it is recorded'
-        result.success == true
-        result.changes.find { it.property == 'preference.tempOffset' } != null
+        result.changes == [[property: 'room', oldValue: 'Garage', newValue: 'Office']]
+        result.errors*.property == ['label']
     }
 
     @spock.lang.Unroll
-    def "bypass ON: toolUpdateDevice preferences CLEAR (#clearVal) succeeds and is NOT a false error"() {
-        given: 'clearing a pref removes its stored identity while retaining its declaration'
+    def "bypass ON: toolUpdateDevice refuses a room that #failure before any write"() {
+        given:
         settingsMap.bypassDeviceAllowlist = true
-        def applied = [logEnable: [value: 'true', id: 1, deviceId: 555]]
-        hubGet.register("/device/fullJson/${UNLISTED_ID}") { params ->
-            def m = fullJsonModel()
-            m.settings = applied.collect { k, v -> [name: k, type: 'bool'] + v }
-            JsonOutput.toJson(m)
-        }
-        def posts = []
-        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false ->
-            posts << body
-            def parsed = new JsonSlurper().parseText(body)
-            if (parsed.preferences instanceof List) parsed.preferences.each { p ->
-                applied[p.name] = p.value == '' ? [value: null, id: null, deviceId: null] : [value: p.value, id: 1, deviceId: 555]
-            }
-            return [success: true]
+        script.metaClass.getRooms = rooms
+        def posts = stubDeviceSaves([:])
+
+        when:
+        script.toolUpdateDevice([deviceId: UNLISTED_ID, fields: [label: 'Must not apply', room: 'Nonexistent']])
+
+        then: 'the hub would create an unknown room, so the name must resolve first'
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains(fragment)
+        posts.isEmpty()
+
+        where:
+        failure            | rooms                                                     | fragment
+        'does not exist'   | { -> [[id: 7, name: 'Garage']] }                          | "Room 'Nonexistent' not found. Available rooms: Garage"
+        'cannot be listed' | { -> throw new RuntimeException('rooms read exploded') } | 'Unable to list rooms'
+    }
+
+    def "bypass ON: toolUpdateDevice name+dni ride one complete form and are verified on the read-back"() {
+        given:
+        settingsMap.bypassDeviceAllowlist = true
+        stateMap.lastBackupTimestamp = System.currentTimeMillis()
+        def fjState = [name: 'Unlisted Switch', deviceNetworkId: 'ABCD']
+        def posts = stubDeviceSaves(fjState) { path, body ->
+            fjState.name = 'NewName'
+            fjState.deviceNetworkId = 'NEWDNI'
         }
 
         when:
-        def result = script.toolUpdateDevice([deviceId: UNLISTED_ID, preferences: [logEnable: clearVal]])
+        def result = script.toolUpdateDevice([deviceId: UNLISTED_ID, confirm: true, fields: [name: 'NewName', deviceNetworkId: 'NEWDNI']])
 
-        then: 'a successful clear records a change, NOT a false "read back as null" error'
+        then: 'the form carries both overrides and the untouched model fields'
+        posts['/device/update'].size() == 1
+        def body = posts['/device/update'][0]
+        body.contains('name=NewName')
+        body.contains('deviceNetworkId=NEWDNI')
+        body.contains('label=Unlisted+Switch')
+        body.contains('roomId=7&')
+        !body.contains('notes=')
+
+        and:
         result.success == true
-        result.changes.find { it.property == 'preference.logEnable' } != null
-        !(result.errors?.find { it.property == 'preference.logEnable' })
-
-        and: 'the wire body sends value:"" (not null) for the clear'
-        new JsonSlurper().parseText(posts[0]).preferences[0].value == ''
-
-        where: 'only the explicit marker requests a clear, with an optional declared type'
-        clearVal << [[clear: true], [type: 'bool', clear: true]]
+        result.changes*.property == ['name', 'deviceNetworkId']
+        hubGet.calls.count { it.path == "/device/fullJson/${UNLISTED_ID}" } == 2
     }
 
-    def "bypass ON: toolUpdateDevice preferences read-back MISMATCH records a structured error (no false success on a silent no-op)"() {
-        given: 'the POST returns {success:true} but the pref never appears in fullJson settings (the no-op class)'
+    def "bypass ON: toolUpdateDevice preferences ride the pane save as a {name,type,value} array"() {
+        given:
         settingsMap.bypassDeviceAllowlist = true
-        registerFullJson()   // no settings array -> the pref never reads back
-        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false -> [success: true] }
+        def fjState = [settings: [[name: 'logEnable', type: 'bool', value: 'true', id: 1, deviceId: 555],
+                                  [name: 'tempOffset', type: 'number', value: '0']]]
+        def posts = stubDeviceSaves(fjState) { path, body ->
+            // The hub only honours the array shape.
+            body.preferences.each { p ->
+                def row = fjState.settings.find { it.name == p.name }
+                if (p.value == '') row.putAll([value: null, id: null, deviceId: null])
+                else row.value = p.value.toString()
+            }
+        }
+
+        when:
+        def result = script.toolUpdateDevice([deviceId: UNLISTED_ID, preferences: [tempOffset: [type: 'number', value: 3], logEnable: [clear: true]]])
+
+        then:
+        posts.keySet() == ['/device/preference/save'] as Set
+        posts['/device/preference/save'] == [[deviceId: 555, defaultCurrentState: '', commandRetry: false, showOnHome: false,
+            preferences: [[name: 'tempOffset', type: 'number', value: 3], [name: 'logEnable', type: 'bool', value: '']]]]
+        result.success == true
+        result.changes*.property == ['preference.tempOffset', 'preference.logEnable']
+    }
+
+    def "bypass ON: toolUpdateDevice preference the hub did not store is a mismatch, not a change"() {
+        given:
+        settingsMap.bypassDeviceAllowlist = true
+        stubDeviceSaves([:])
 
         when:
         def result = script.toolUpdateDevice([deviceId: UNLISTED_ID, preferences: [logEnable: [type: 'bool', value: true]]])
 
-        then: 'the {success:true}-but-no-op is caught by the read-back -> structured error, not a false change'
+        then:
         result.success == false
-        result.errors.find { it.property == 'preference.logEnable' }?.error?.contains('read back as')
-        !(result.changes.find { it.property == 'preference.logEnable' })
-    }
-
-    def "bypass ON: toolUpdateDevice preferences records a per-key error when the save throws"() {
-        given:
-        settingsMap.bypassDeviceAllowlist = true
-        registerFullJson()
-        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false ->
-            throw new RuntimeException('pref save rejected')
-        }
-
-        when:
-        def result = script.toolUpdateDevice([deviceId: UNLISTED_ID, preferences: [tempOffset: [type: 'number', value: 3]]])
-
-        then: 'the per-key error identifies the failed stage without exposing a raw exception'
-        result.success == false
-        result.errors.find { it.property == 'preference.tempOffset' }?.stage == 'write'
-        result.errors.find { it.property == 'preference.tempOffset' }?.status == 'failed'
-        result.errors.find { it.property == 'preference.tempOffset' }?.error?.contains('Preference update or verification failed')
-        !result.toString().contains('pref save rejected')
-    }
-
-    def "bypass ON: toolUpdateDevice preference CLEAR with a FAILED read-back fetch records the distinct could-not-confirm error (no false success)"() {
-        given: 'an explicit CLEAR; the POST is accepted but the confirming fullJson re-fetch returns no device'
-        settingsMap.bypassDeviceAllowlist = true
-        def calls = 0
-        hubGet.register("/device/fullJson/${UNLISTED_ID}") { params ->
-            // 1st fetch resolves the device; the 2nd preserves the preference pane; the 3rd verifies.
-            // A FAILED re-fetch must NOT read as a confirmed clear -- that is the bug this pin guards.
-            calls++
-            (calls >= 3) ? JsonOutput.toJson([device: null]) : JsonOutput.toJson(fullJsonModel())
-        }
-        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false -> [success: true] }
-
-        when:
-        def result = script.toolUpdateDevice([deviceId: UNLISTED_ID, preferences: [logEnable: [clear: true]]])
-
-        then: 'a CLEAR whose read-back fetch failed is a DISTINCT error, never a recorded change'
-        result.success == false
-        result.errors.find { it.property == 'preference.logEnable' }?.error?.contains('could not confirm the preference -- the read-back fetch failed')
-        !(result.changes.find { it.property == 'preference.logEnable' })
+        result.changes.empty
+        result.errors.find { it.property == 'preference.logEnable' }?.status == 'mismatch'
     }
 
     // ---- regression guard: listed and bypass devices both use native transport ----
@@ -1419,12 +935,13 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/10') { params -> '{"device":{"id":10,"label":"Listed Switch","disabled":false}}' }
 
         when: 'enable the already-enabled device (no-op flip; the listed read-back stays disabled:false == wanted)'
-        def result = script.toolUpdateDevice([deviceId: '10', enabled: true])
+        def result = script.toolUpdateDevice([deviceId: '10', fields: [enabled: true]])
 
-        then: 'the native write is recorded and an independent read confirms the requested flag'
+        then: 'the native write is recorded and an independent read confirms the flag, reported unchanged'
         posted.path == '/device/disable'
         posted.body == [id: 10, disable: false]
-        result.changes.find { it.property == 'enabled' }?.newValue == true
+        result.changes.empty
+        result.unchanged == ['enabled']
         result.success == true
         hubGet.calls.count { it.path == '/device/fullJson/10' } == 2
     }

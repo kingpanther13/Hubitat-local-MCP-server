@@ -10,16 +10,19 @@ case "$PHASE" in
   *) echo '::error::Expected prepare or deploy maintenance phase.'; exit 1 ;;
 esac
 
-# The update is a watchdog self-update, so the configured endpoint must be v3.1 itself, and it must
-# not be holding a package deployment: v3.1 blocks manual writes during a hold.
+# The update is a watchdog self-update, so the configured endpoint must be the watchdog itself (v3.2,
+# or v3.1 after a revert), and it must not be holding a package deployment: it blocks manual writes
+# during a hold.
 INFO=$(call_tool_retry '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_get_info","arguments":{}}}')
-printf '%s' "$INFO" | jq -e '.watchdogVersion == "3.1"' >/dev/null || {
-  echo '::error::WATCHDOG31_MCP_URL does not answer as watchdog v3.1; no code changed.'; exit 1;
+printf '%s' "$INFO" | jq -e '.watchdogVersion == "3.2" or .watchdogVersion == "3.1"' >/dev/null || {
+  echo '::error::WATCHDOG31_MCP_URL does not answer as watchdog v3.2 or v3.1; no code changed.'; exit 1;
 }
 printf '%s' "$INFO" | jq -e '.packageDeployment == null or .packageDeployment.hold == false' >/dev/null || {
   echo '::error::A package deployment is held; release it before watchdog maintenance. No code changed.'; exit 1;
 }
-CLASS_ID=$(resolve_class_id mcp 'E2E Dead-Man Watchdog v3.1')
+# The class is named v3.2 once that source is installed, v3.1 if the older source is reinstalled.
+CLASS_ID=$(resolve_class_id mcp 'E2E Dead-Man Watchdog v3.2' 2>/dev/null) ||
+  CLASS_ID=$(resolve_class_id mcp 'E2E Dead-Man Watchdog v3.1')
 SOURCE_URL="https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$GITHUB_SHA/e2e-deadman-watchdog-v3-1.groovy"
 
 if [ "$PHASE" = prepare ]; then

@@ -86,7 +86,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `hub_list_devices` with `detailed=true, limit=10`.
+**Expected**: Calls `hub_list_devices` with `format='detailed', limit=10`.
 
 ### T02b — hub_list_devices (server-side filtering)
 
@@ -122,7 +122,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `hub_list_devices` with `format='context'` (one call). Answer is built from the returned `summary` text (mode header + per-device lines) rather than iterating `detailed=true` pages or per-device reads.
+**Expected**: Calls `hub_list_devices` with `format='context'` (one call). Answer is built from the returned `summary` text (mode header + per-device lines) rather than iterating `format='detailed'` pages or per-device reads.
 
 ```json
 {
@@ -130,7 +130,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `hub_list_devices` with `onlyOn=true` (optionally `format='context'`). Does NOT fetch the whole inventory and filter client-side.
+**Expected**: Calls `hub_list_devices` with `stateFilter={"switch":"on"}` (optionally `format='context'`). Does NOT fetch the whole inventory and filter client-side.
 
 ```json
 {
@@ -400,7 +400,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `hub_update_device` with `label` parameter. Verifies with `hub_get_device`.
+**Expected**: Calls `hub_update_device` with `fields.label`. Verifies with `hub_get_device`.
 
 ### T13b — hub_update_device (hide from Home page)
 
@@ -412,7 +412,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `hub_update_device` with `showOnHome=false`. Reports the device no longer shows on the Home page.
+**Expected**: Calls `hub_update_device` with `fields.showOnHome=false`. Reports the device no longer shows on the Home page.
 
 ### T13c — hub_update_device (default status attribute)
 
@@ -424,7 +424,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `hub_update_device` with `defaultCurrentState="switch"`. Reports the status attribute was set.
+**Expected**: Calls `hub_update_device` with `fields.defaultCurrentState="switch"`. Reports the status attribute was set.
 
 ### T13d — hub_update_device (tags)
 
@@ -436,7 +436,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `hub_update_device` with `tags=["kitchen","downstairs"]`. The wholesale device-edit form preserves the device's label/name; the response confirms the tags were applied (read back from the device).
+**Expected**: Calls `hub_update_device` with `fields.tags=["kitchen","downstairs"]`. The Device Info save keeps the device's label/name; the response confirms the tags were applied (read back from the device).
 
 ### T14 — hub_get_info
 
@@ -649,7 +649,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `hub_list_devices` with `filter='virtual'`. Lists MCP-managed virtual devices.
+**Expected**: Calls `hub_list_devices` with `scope='owned'`. Lists MCP-managed virtual devices.
 
 ### T19c — hub_manage_virtual_device (delete)
 
@@ -1420,7 +1420,7 @@ Complex scenarios spanning multiple tools and gateways.
 }
 ```
 
-**Expected (v0.8.0)**: All core tools: `hub_manage_virtual_device(action="create")`, `hub_list_devices(filter='virtual')`, `hub_call_device_command`, `hub_get_device_attribute`, `hub_manage_virtual_device(action="delete")`.
+**Expected (v0.8.0)**: All core tools: `hub_manage_virtual_device(action="create")`, `hub_list_devices(scope='owned')`, `hub_call_device_command`, `hub_get_device_attribute`, `hub_manage_virtual_device(action="delete")`.
 
 ### T82 — Room management workflow
 
@@ -1450,7 +1450,7 @@ Complex scenarios spanning multiple tools and gateways.
 }
 ```
 
-**Expected (v0.8.0)**: Uses gateways plus core: `hub_manage_rooms` (hub_list_rooms), `hub_read_devices` (`hub_list_devices(filter='virtual')`), `hub_manage_variables` (hub_list_variables), `hub_manage_files` (hub_list_files), `hub_read_apps_code` (hub_list_backups), core (`hub_get_info`), `hub_manage_diagnostics` (hub_get_device_health).
+**Expected (v0.8.0)**: Uses gateways plus core: `hub_manage_rooms` (hub_list_rooms), `hub_read_devices` (`hub_list_devices(scope='owned')`), `hub_manage_variables` (hub_list_variables), `hub_manage_files` (hub_list_files), `hub_read_apps_code` (hub_list_backups), core (`hub_get_info`), `hub_manage_diagnostics` (hub_get_device_health).
 
 ### T85 — Rule with virtual device end-to-end
 
@@ -1683,7 +1683,7 @@ Tests that an agent verifies a rule write from the rule itself and never repeats
 }
 ```
 
-**Expected**: Agent calls `hub_get_app_config` (via `hub_read_apps_code`) with `includeSettings=true`. Password-type fields come back **redacted** (`***redacted (password)***`), never cleartext, on BOTH the structured `inputs[].value` and the raw `settings` map. The agent reports it cannot read the stored secret.
+**Expected**: Agent calls `hub_get_app_config` (via `hub_read_apps_code`) with `includeSettings=true`. With Hide passwords and credentials on (the default), password-type fields come back **redacted** (`***redacted (password)***`), never cleartext, on BOTH the structured `inputs[].value` and the raw `settings` map. The agent reports it cannot read the stored secret.
 
 **What an agent must NOT do**:
 - Report a cleartext password / API-key value back to the user.
@@ -1832,7 +1832,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `hub_list_devices` with `detailed=false`. Returns count and names.
+**Expected**: `hub_list_devices` (summary format). Returns count and names.
 **Equivalent to**: T01
 
 #### T201 — Show me everything about a device
@@ -1907,7 +1907,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `hub_list_devices` with `detailed=true`, paginated.
+**Expected**: `hub_list_devices` with `format='detailed'`, paginated.
 **Equivalent to**: T02
 
 ---
@@ -2065,7 +2065,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `hub_list_devices` with `filter='virtual'`.
+**Expected**: `hub_list_devices` with `scope='owned'`.
 **Equivalent to**: T19b
 
 #### T222 — Remove a test device
@@ -2581,7 +2581,7 @@ Multi-tool scenarios phrased as user stories, not numbered checklists. The LLM m
 }
 ```
 
-**Expected**: `hub_manage_virtual_device(action="create")` → `hub_list_devices(filter='virtual')` (or `hub_get_device`) → `hub_call_device_command` → `hub_get_device_attribute` → `hub_manage_virtual_device(action="delete")`.
+**Expected**: `hub_manage_virtual_device(action="create")` → `hub_list_devices(scope='owned')` (or `hub_get_device`) → `hub_call_device_command` → `hub_get_device_attribute` → `hub_manage_virtual_device(action="delete")`.
 **Equivalent to**: T81
 
 #### T297 — Room management end-to-end
@@ -2614,7 +2614,7 @@ Multi-tool scenarios phrased as user stories, not numbered checklists. The LLM m
 }
 ```
 
-**Expected**: `hub_list_rooms` + `hub_list_devices(filter='virtual')` + `hub_list_variables` + `hub_list_files` + `hub_list_backups` + `hub_get_info` + `hub_get_device_health`.
+**Expected**: `hub_list_rooms` + `hub_list_devices(scope='owned')` + `hub_list_variables` + `hub_list_files` + `hub_list_backups` + `hub_get_info` + `hub_get_device_health`.
 **Equivalent to**: T84
 
 #### T300 — Motion-activated light from scratch
@@ -2694,7 +2694,7 @@ These operations are too destructive for automated testing. Test manually with e
 | Cloud controller disable/enable | `hub_call_destructive_ops` (target=cloud, disable\|enable) | hub_manage_destructive_ops | Disabling severs Alexa/Google, cloud dashboards, cloud firmware updates, subscriptions |
 | Network config (static IP / DHCP / Ethernet autoneg / WiFi) | `hub_set_system_settings` (network=...) | core | Can disconnect the hub; confirm-gated |
 | Enable/disable Hub Mesh | `hub_update_hub_mesh` (enabled=...) | hub_manage_devices | Needs a hub reboot to take effect; hub-wide sharing change |
-| Share a device / variable over Hub Mesh | `hub_update_device` (meshEnabled) / `hub_set_variable` (mesh_shared) | hub_manage_devices | Reversible; shares one entity into the LAN mesh |
+| Share a device / variable over Hub Mesh | `hub_update_device` (`fields.meshEnabled`) / `hub_set_variable` (mesh_shared) | hub_manage_devices | Reversible; shares one entity into the LAN mesh |
 | Link a peer hub's shared device / variable | `hub_create_device` / `hub_create_variable` (mesh_source_*) | hub_manage_devices | Creates a local proxy; needs the peer's mesh token if it has UI login security |
 | Unlink a Hub Mesh linked device | `hub_delete_device` | hub_manage_destructive_ops | Removes only the local link; the peer's source device is untouched |
 | Unlink a Hub Mesh linked variable | `hub_delete_variable` (decorated `"<var> on <peer>"` name) | hub_manage_variables | Removes only the local mirror; peer source untouched; `force` only if a real local app uses it (`inUseByApps`) |

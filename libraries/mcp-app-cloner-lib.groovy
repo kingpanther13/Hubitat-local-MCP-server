@@ -680,7 +680,7 @@ private Map _appClonerStagePlan(Integer newAppId) {
     // Primary enumeration: ONE /hub2/appsList read carries the complete nested
     // app tree -- no per-node configPage render (which for a cloned Button
     // Controller with N children turned one read into N+1 expensive renders on
-    // the same per-app load counters the sticky limiter watches).
+    // the busy-time counter the per-app load limiter compares against uptime x its threshold).
     try {
         def responseText = hubInternalGet("/hub2/appsList")
         def parsed = new groovy.json.JsonSlurper().parseText(responseText)
@@ -1225,7 +1225,15 @@ private Map _rmRestoreNativeEdit(Map snapshot, String sourceBackupKey) {
         if (_nrState(id).stopped != true) _nrHandle(id).appButtonHandler('stopRule')
         def wantedNames = plan.collect { it.name }
         _rmUnredactedSettings(id, redacted).each { row -> if (!(row.name in wantedNames) || !plan.any { it.name == row.name && it.type == row.type && it.multiple == (row.multiple == true) }) _nrHandle(id).removeSetting(row.name) }
-        plan.each { row -> _nrHandle(id).updateSetting(row.name, [type: row.type, value: row.value]) }
+        plan.each { row ->
+            // updateSetting refuses an empty time; the settings page saves it the way the rule editor does.
+            if (row.type == 'time' && row.value?.toString() == '') {
+                _rmPostSettings(id.toString().toInteger(), [id: id.toString(), ("settings[${row.name}]".toString()): '', ("${row.name}.type".toString()): 'time',
+                    ("${row.name}.multiple".toString()): 'false', formAction: 'update', currentPage: 'mainPage'])
+            } else {
+                _nrHandle(id).updateSetting(row.name, [type: row.type, value: row.value])
+            }
+        }
         if (_rmNativeComparable(_rmNativeSettingsSignature(_rmUnredactedSettings(id, redacted))) != _rmNativeComparable(_rmNativeSettingsSignature(data.appSettings))) throw new IllegalStateException('Native typed settings did not restore exactly')
         Map restoreState = [:] + expectedState + [stopped: true]
         _nrStatePatch(id, restoreState, _nrState(id).keySet().findAll { !restoreState.containsKey(it) }.collect { it.toString() })

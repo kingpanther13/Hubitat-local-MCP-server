@@ -307,7 +307,8 @@ def checkFile = { String path ->
             rc = 1
         }
         println "CLASS SIZE ${path}: ${size.name} uses ${size.cp} constant-pool entries (budget ${CLASS_CP_BUDGET}); " +
-            "largest method ${size.method.name} is ${size.method.code} bytes (budget ${METHOD_CODE_BUDGET})"
+            "largest method ${size.method.name} is ${size.method.code} bytes (budget ${METHOD_CODE_BUDGET}); " +
+            "${size.classes} classes generated (closures included)"
     }
 
     return rc
@@ -328,7 +329,7 @@ def classSize(String name, String source) {
     def sizes = cu.classes.collect { gc -> classFileSizes(gc.name, gc.bytes) }
     if (!sizes) return [error: 'no classes generated']
     def out = sizes.max { it.cp }
-    return [name: out.name, cp: out.cp, method: sizes*.method.max { it.code }]
+    return [name: out.name, cp: out.cp, method: sizes*.method.max { it.code }, classes: sizes.size()]
 }
 
 // Walk a class file: the constant pool (count at bytes 8-9), then fields and methods, reading each

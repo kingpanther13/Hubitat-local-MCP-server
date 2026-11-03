@@ -59,7 +59,8 @@ def toolUpdateMcpSettings(args) {
         "backupBudgetMb":         "number",
         "enableLocalAccess":      "bool",
         "enableCloudAccess":      "bool",
-        "redactAccessTokens":     "bool"
+        "redactAccessTokens":     "bool",
+        "redactCredentials":      "bool"
     ]
     // Allowed keys for the not-allowed error message = scalar allowlist + the special selectedDevices key.
     def allowedKeyNames = ((allowedSettings.keySet() + ["selectedDevices"]) as List).sort()
@@ -357,47 +358,20 @@ private Map _validateMcpDeviceScope(scopeValue) {
     } as List
     def currentSet = currentIds as Set
 
-    // ATOMIC validation: for replace/add, every requested id must resolve to a real hub device
-    // (validated against the hub-wide device inventory -- the only view of every device,
-    // authorized or not; the one exception is an already-authorized id on an add against an
-    // incomplete inventory, below). Validate ALL before any write so a single bad id can't leave a
-    // half-applied scope. remove does NOT validate membership BECAUSE removing an id that isn't
-    // present (or no longer exists on the hub) is a harmless no-op, and forcing an unknown-id read
-    // fetch there would block a legitimate cleanup of a since-deleted device.
+    // ATOMIC validation: for replace/add, every requested id must be a device on the hub's Devices
+    // page, checked before any write so one bad id cannot leave a half-applied scope. remove does
+    // not validate: removing an absent or since-deleted id is a harmless no-op.
     if (mode in ["replace", "add"] && !requestedIds.isEmpty()) {
-        // The same inventory as hub_list_devices scope='all' (_fetchAllHubDeviceRecords): the
-        // /hub2/devicesList tree unioned with the /hub2/vrb/devices feed where the old
-        // capabilities endpoint is gone. Only ids matter here, and capabilities being partial
-        // does not affect validation -- but the ID SET can be partial too: whenever the two
-        // sources disagree about it (the feed lists a device the tree lacks, the tree could not be
-        // read or answered empty) the inventory is flagged idsComplete:false, and an id it does not
-        // contain is "could not validate", never "unknown" -- rejecting off a knowingly incomplete
-        // set would send the operator to hub_list_devices(scope='all'), which returns the same
-        // incomplete set.
-        // isError:true on the failure paths so handleToolsCall hoists them onto the JSON-RPC
-        // envelope -- a failed validation that wrote nothing must reach the client AS an error,
-        // not a quiet result.
-        def inventory = _fetchAllHubDeviceRecords("developer-mode", "hub_update_mcp_settings selectedDevices")
-        if (inventory.failure == "fetch") {
-            return [success: false, isError: true, error: "Failed to fetch the all-hub device list (${inventory.source}) to validate selectedDevices: ${inventory.fetchError}", note: "Endpoint may be unavailable on this firmware; nothing was changed."]
+        Set hubDeviceIds
+        try {
+            hubDeviceIds = _readDevicesPage().collect { it.id } as Set
+        } catch (IllegalStateException e) {
+            // isError so handleToolsCall surfaces it as an error: validation failed and nothing was written.
+            return [success: false, isError: true, error: "The hub's device list (/hub2/devicesList) could not be read to validate selectedDevices: ${e.message}".toString(),
+                    note: "Retry; if it persists check the hub's Devices page. Nothing was changed."]
         }
-        if (inventory.failure) {
-            return [success: false, isError: true, error: "Unexpected ${inventory.source} response; cannot validate selectedDevices.", note: "Hub firmware may have changed the endpoint contract; nothing was changed."]
-        }
-        def hubDeviceIds = (inventory.records.findAll { it instanceof Map }.collect { it.id?.toString() }.findAll { it != null }) as Set
         def unknown = requestedIds.findAll { !hubDeviceIds.contains(it) }
-        // An incomplete inventory must not refuse an add over ids that are already authorized
-        // (re-adding them is a no-op). A complete inventory still rejects stale ids, including
-        // authorized ones.
-        if (inventory.idsComplete == false && mode == "add") {
-            unknown = unknown.findAll { !currentSet.contains(it) }
-        }
         if (!unknown.isEmpty()) {
-            if (inventory.idsComplete == false) {
-                return [success: false, isError: true,
-                        error: "Could not validate device id(s) ${unknown.join(', ')}: the all-hub device inventory is incomplete, so they may be real devices it omitted. ${inventory.partialNote ?: ''}".toString().trim(),
-                        note: "Nothing was changed. Retry once /hub2/devicesList answers; hub_list_devices(scope='all') reports the same inventory and its capabilitiesNote says what is missing."]
-            }
             throw new IllegalArgumentException("Unknown device id(s): ${unknown.join(', ')}. Use hub_list_devices(scope='all') to see valid ids. Nothing was changed.")
         }
     }
@@ -649,7 +623,9 @@ def toolUpdatePackage(args) {
 
 // Scheduled worker for the real repair. The scheduled requestId prevents an old
 // delayed invocation from running or clearing a newer deploy marker.
-def runPackageDeploy(Map job = [:]) {
+def runPackageDeploy(Map job = [:]) { _loadGuardTimed { _runPackageDeployBody(job) } }
+
+def _runPackageDeployBody(Map job = [:]) {
     String requestId = job?.requestId?.toString()
     Map marker = null
     synchronized (WRITE_RESERVATION_LOCK) {
@@ -1059,7 +1035,7 @@ def _getAllToolDefinitions_partSelfAdmin() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    settings: [type: "object", description: "Map of setting key → new value[[FLAT_TRIM]] (e.g. {\"mcpLogLevel\":\"warn\",\"enableCustomRuleEngine\":true})[[/FLAT_TRIM]]. Unlisted keys are rejected. bypassDeviceAllowlist (bool, default OFF): DANGEROUS escape hatch — when ON native device reads, writes, commands, inventory, health, dependents, swaps and replacements reach ANY hub device by id, IGNORING selectedDevices. Allowlisted keys: mcpLogLevel, debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableRead, enableCustomRuleEngine, useGateways, enableMandatoryBPS, bypassDeviceAllowlist, maxConcurrentWrites, backupBeforeRuleEdits, backupEveryRuleWrite, backupBudgetMb, enableLocalAccess, enableCloudAccess, redactAccessTokens, selectedDevices.[[FLAT_TRIM]] enableLocalAccess / enableCloudAccess (bool): allow requests over the LAN / Hubitat cloud endpoint; a call cannot turn off the connection it arrived on.[[/FLAT_TRIM]] mcpLogLevel: debug|info|warn|error. maxConcurrentWrites: integer 0-100[[FLAT_TRIM]] (default 2; 0 disables the server-side all-write concurrency cap)[[/FLAT_TRIM]]. backupBeforeRuleEdits (bool, default ON): take one fresh snapshot per native rule edit batch or form workflow. backupEveryRuleWrite (bool, default OFF): take a fresh snapshot before every edit instead of reusing the app's snapshot from the last hour.[[FLAT_TRIM]] backupBudgetMb: whole number of MB from 1 to 1000000 (default 10): code and rule backups are evicted only when together they exceed it, oldest first, and an item's newest backup is never evicted; see hub_get_tool_guide(section='backup').[[/FLAT_TRIM]][[FLAT_TRIM]] bypassDeviceAllowlist is independent of Developer Mode.[[/FLAT_TRIM]] selectedDevices = the device-access scope[[FLAT_TRIM]]: {mode:replace|add|remove, ids:[device id strings]}; a bare array is shorthand for a destructive replace[[/FLAT_TRIM]] — see hub_get_tool_guide(section='hub_admin_write_system') for per-mode semantics."],
+                    settings: [type: "object", description: "Map of setting key → new value[[FLAT_TRIM]] (e.g. {\"mcpLogLevel\":\"warn\",\"enableCustomRuleEngine\":true})[[/FLAT_TRIM]]. Unlisted keys are rejected. bypassDeviceAllowlist (bool, default OFF): DANGEROUS escape hatch — when ON native device reads, writes, commands, inventory, health, dependents, swaps and replacements reach ANY hub device by id, IGNORING selectedDevices. Allowlisted keys: mcpLogLevel, debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableRead, enableCustomRuleEngine, useGateways, enableMandatoryBPS, bypassDeviceAllowlist, maxConcurrentWrites, backupBeforeRuleEdits, backupEveryRuleWrite, backupBudgetMb, enableLocalAccess, enableCloudAccess, redactAccessTokens, redactCredentials, selectedDevices.[[FLAT_TRIM]] enableLocalAccess / enableCloudAccess (bool): allow requests over the LAN / Hubitat cloud endpoint; a call cannot turn off the connection it arrived on.[[/FLAT_TRIM]] mcpLogLevel: debug|info|warn|error. maxConcurrentWrites: integer 0-100[[FLAT_TRIM]] (default 2; 0 disables the server-side all-write concurrency cap)[[/FLAT_TRIM]]. backupBeforeRuleEdits (bool, default ON): take one fresh snapshot per native rule edit batch or form workflow. backupEveryRuleWrite (bool, default OFF): take a fresh snapshot before every edit instead of reusing the app's snapshot from the last hour.[[FLAT_TRIM]] backupBudgetMb: whole number of MB from 1 to 1000000 (default 10): code and rule backups are evicted only when together they exceed it, oldest first across every item, and only the backup being taken and an active restore target are kept; see hub_get_tool_guide(section='backup').[[/FLAT_TRIM]][[FLAT_TRIM]] bypassDeviceAllowlist is independent of Developer Mode.[[/FLAT_TRIM]] selectedDevices = the device-access scope[[FLAT_TRIM]]: {mode:replace|add|remove, ids:[device id strings]}; a bare array is shorthand for a destructive replace[[/FLAT_TRIM]] — see hub_get_tool_guide(section='hub_admin_write_system') for per-mode semantics."],
                     clientToken: [type: "object", description: "Per-client tokens, instead of settings: see hub_get_tool_guide(section='hub_admin_write_system').[[FLAT_TRIM]] {action: list|create|update|rotate|revoke, ...}. Shape: clientId (update/rotate/revoke), label (create), access? {tools: [names]|\"all\", read, write, local, cloud, toolNumber: main|none|0-9}. create and rotate return the new token; a new client starts with every grantable tool on and access narrows it.[[/FLAT_TRIM]]"],
                     confirm: [type: "boolean", description: "REQUIRED: must be true to confirm the operation"]
                 ],

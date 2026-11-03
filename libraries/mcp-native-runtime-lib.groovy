@@ -74,6 +74,7 @@ private Object _nrComparableSetting(String type, Object value) {
     // Rule Machine keeps a time setting as the hub-local clock: a dated or offset input is converted to the hub timezone and its date dropped, so compare hub-local clocks only.
     if (type == 'time') {
         String clock = value.toString()
+        if (clock == '') return clock
         if (clock ==~ /(?:[01][0-9]|2[0-3]):[0-5][0-9]/) return clock + ':00.000'
         return toDateTime(clock).format('HH:mm:ss.SSS', location.timeZone)
     }

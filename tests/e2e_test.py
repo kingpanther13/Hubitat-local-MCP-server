@@ -52,7 +52,7 @@ from sdk_conformance_helpers import (
 
 PREFIX = "BAT_E2E_"
 # Persistent scaffold FIXTURES (the shared switch + temp sensors that rule fixtures reference and the
-# poll tests read, plus the BAT_E2E_KEEP_Room the /device/updateRoom scenario moves a device into)
+# poll tests read, plus the BAT_E2E_KEEP_Room the room-assignment scenario moves a device into)
 # carry this marker so the cleanup sweeps SKIP them by name -- created once and reused across runs,
 # never deleted. Under-test fixtures use the bare PREFIX and are still reaped. A missing KEEP_
 # fixture is a hub-provisioning problem, not a test bug: the owning scenario says how to recreate it.
@@ -209,12 +209,40 @@ def _summarize_mrtr_e2e_proof(
 # ---------------------------------------------------------------------------
 
 
+def device_update_args(device_id, patch):
+    """hub_update_device arguments for a flat patch: device fields go in `fields`, the rest stay top-level."""
+    top = {k: v for k, v in patch.items() if k in ("preferences", "confirm", "bestPracticeKey")}
+    fields = {k: v for k, v in patch.items() if k not in top}
+    return {"deviceId": device_id, **({"fields": fields} if fields else {}), **top}
+
+
 class McpError(Exception):
     """JSON-RPC level error from the MCP endpoint."""
 
     def __init__(self, message: str, *, rpc_error: dict | None = None):
         self.rpc_error = rpc_error
         super().__init__(message)
+
+
+def _uptime_seconds(text: Any) -> int | None:
+    """Seconds in a hub uptime string such as "1h 2m 3s" or "0m 6s"; None when it is not one."""
+    m = re.fullmatch(r"\s*(?:(\d+)d\s*)?(?:(\d+)h\s*)?(?:(\d+)m\s*)?(\d+)s\s*", str(text or ""))
+    if not m:
+        return None
+    d, h, mi, se = (int(g or 0) for g in m.groups())
+    return ((d * 24 + h) * 60 + mi) * 60 + se
+
+
+def _limiter_retry_applies(exc: BaseException) -> bool:
+    """A limiter refusal, or an HTTP 500-503 by the status the client attached (a write's lost-response
+    error carries it too). Chosen before the relay-504 path."""
+    return "excessive hub load" in str(exc) or getattr(exc, "http_status", None) in (500, 501, 502, 503)
+
+
+def _with_http_status(exc: Exception, status: int) -> Exception:
+    """Attach the HTTP status the hub or relay answered, so recovery is chosen by status, not text."""
+    exc.http_status = status
+    return exc
 
 
 class RelayLostResponseError(McpError, requests.HTTPError):
@@ -718,10 +746,12 @@ class HubitatMcpClient:
         if leaf == "hub_update_mcp_settings":
             replay_safe = True
 
-        # Optional pre-send gap (E2E_REQUEST_GAP_SECONDS, default 0). It caps the server app's
-        # short-window duty cycle, which the platform's per-app load limiter measures ("App <id>
-        # generates excessive hub load"); set it if the limiter cascades the native_apps RM group
-        # into 500s. E2E_PACE_SECONDS adds further per-TEST spacing.
+        # Optional pre-send gap (E2E_REQUEST_GAP_SECONDS, default 0). It spaces the server app's
+        # calls out over uptime; the platform's per-app load limiter ("App <id> generates excessive
+        # hub load") compares the app's busy time since boot or the last runtime-statistics reset, plus
+        # that of the app or device it calls (its own a second time when it calls itself), with
+        # uptime x threshold.
+        # E2E_PACE_SECONDS adds further per-TEST spacing.
         time.sleep(REQUEST_GAP_SECONDS)
 
         # Chaos mode (E2E_CHAOS_504=<0..1>): after a WRITE completes, discard its response and
@@ -758,12 +788,13 @@ class HubitatMcpClient:
                 if 500 <= resp.status_code < 600:
                     # Hub or cloud relay returned a transient error. Heavy
                     # queries (e.g. hub_get_logs Logs-page modes) sometimes 504.
-                    last_exc = requests.HTTPError(f"{resp.status_code} {resp.reason} on {method}")
+                    last_exc = _with_http_status(
+                        requests.HTTPError(f"{resp.status_code} {resp.reason} on {method}"), resp.status_code)
                     if not replay_safe:
                         # Write: unknown-commit. Never replay the request; hand back the typed
                         # error so the caller can recover the result from the op journal.
-                        raise RelayLostResponseError(
-                            f"{resp.status_code} {resp.reason} on {method} (504-class: response lost)")
+                        raise _with_http_status(RelayLostResponseError(
+                            f"{resp.status_code} {resp.reason} on {method} (504-class: response lost)"), resp.status_code)
                     self._transport_retries += 1
                     self._log(f"<< HTTP {resp.status_code} (attempt {attempt + 1}/{_attempts}) — retrying")
                     # Exponential backoff with jitter to avoid thundering-herd if
@@ -870,7 +901,8 @@ class HubitatMcpClient:
                     timeout=60,
                 )
                 if 500 <= resp.status_code < 600:
-                    last_exc = requests.HTTPError(f"{resp.status_code} {resp.reason} on raw_request")
+                    last_exc = _with_http_status(
+                        requests.HTTPError(f"{resp.status_code} {resp.reason} on raw_request"), resp.status_code)
                     time.sleep((2 ** attempt) + random.uniform(0, 1))
                     continue
                 return resp
@@ -1136,8 +1168,8 @@ class LegacyEraClient:
         """
         method = payload.get("method")
         self._log(f">> {method} {json.dumps(payload.get('params') or {})[:300]}")
-        # Same pre-send gap as _send: the pacing caps the server app's short-window
-        # duty cycle, which is what the platform's per-app load limiter measures.
+        # Same pre-send gap as _send: it spaces the server app's calls out over uptime,
+        # which the platform's per-app load limiter weighs the app's busy time against.
         time.sleep(REQUEST_GAP_SECONDS)
         attempts = 3 if replay_safe else 1
         last_exc: Exception | None = None
@@ -1163,11 +1195,11 @@ class LegacyEraClient:
                     self._log(f"<< HTTP {resp.status_code} {resp.text[:300]}")
                     return resp
                 if not replay_safe:
-                    raise RelayLostResponseError(
+                    raise _with_http_status(RelayLostResponseError(
                         f"{resp.status_code} {resp.reason} on legacy {method} "
-                        "(504-class: response lost)")
-                last_exc = requests.HTTPError(
-                    f"{resp.status_code} {resp.reason} on legacy {method}")
+                        "(504-class: response lost)"), resp.status_code)
+                last_exc = _with_http_status(requests.HTTPError(
+                    f"{resp.status_code} {resp.reason} on legacy {method}"), resp.status_code)
                 self._log(f"<< HTTP {resp.status_code} (attempt {attempt + 1}/{attempts}) -- retrying")
             if attempt < attempts - 1:
                 time.sleep((2 ** attempt) + random.uniform(0, 1))
@@ -1365,19 +1397,16 @@ class TestRunner:
         # Legacy rule-engine variables live in app state, out of the purge's reach: always deleted inline.
         self.rule_engine_variable_names: set[str] = set()
 
-        # Dispatch-dependent tests may attempt a watchdog disable/enable before
-        # one retry. Only the retried operation/readback establishes recovery;
-        # a verified re-enable alone is not a passing test.
+        # Dispatch-dependent tests may reset the hub's per-app runtime statistics through
+        # the watchdog before one retry. Only the retried operation/readback establishes
+        # recovery; a successful reset alone is not a passing test.
         self.watchdog_url = os.environ.get("WATCHDOG_URL", "")
         self.server_app_id = os.environ.get("HUBITAT_APP_ID", "")
-        self.throttle_bounces = 0
+        self.limiter_resets = 0
+        self.limiter_reset_failures = 0
         self._soft_passes: list[str] = []
         # Optional per-test spacing, in addition to the per-call gap in _send.
         self.pace_seconds = float(os.environ.get("E2E_PACE_SECONDS", "0"))
-        # Reboot escalation is opt-in and disabled in normal CI. A zero threshold
-        # leaves repeated failures to the caller's assertions; it does not grant a pass.
-        self.limiter_reboot_after = int(os.environ.get("E2E_LIMITER_REBOOT_AFTER", "0"))
-        self._limiter_reboots = 0
 
         self._current_test = ""
 
@@ -1507,23 +1536,6 @@ class TestRunner:
             return True
         return False
 
-    def _watchdog_set_app_disabled(self, disable: bool) -> bool:
-        """One leg of the throttle bounce via the watchdog endpoint. True only on a
-        verified flag read-back (the tool re-reads /installedapp/json after the write)."""
-        try:
-            resp = requests.post(self.watchdog_url, json={
-                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-                "params": {"name": "hub_set_app_disabled",
-                           "arguments": {"appId": self.server_app_id,
-                                         "disable": disable, "confirm": True}},
-            }, timeout=30)
-            text = resp.json().get("result", {}).get("content", [{}])[0].get("text", "")
-            parsed = json.loads(text) if text else {}
-            return parsed.get("success") is True and parsed.get("disabled") is disable
-        except Exception as exc:
-            print(f"    [THROTTLE] watchdog bounce leg (disable={disable}) failed: {exc}")
-            return False
-
     def _watchdog_tool(self, name: str, arguments: dict) -> dict:
         """Call one watchdog v3 tool and return its decoded result. Any unusable answer -- HTTP
         error, JSON-RPC error, tool error, malformed body -- raises AssertionError."""
@@ -1553,57 +1565,45 @@ class TestRunner:
             "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}, timeout=60)
         return {tool.get("name") for tool in resp.json().get("result", {}).get("tools", [])}
 
-    def _clear_load_throttle(self, reason: str) -> bool:
-        """Attempt watchdog disable/enable; True verifies those flags, not recovery.
-
-        The caller must verify its single retried dispatch. Attempts are logged
-        and counted even when the retry remains blocked.
-        """
+    def _reset_app_runtime_stats(self, reason: str) -> bool:
+        """Zero the hub's per-app runtime statistics through the watchdog, clearing the busy time the
+        load limiter weighs against uptime. True means the reset succeeded, not that the blocked call
+        recovered; a failed reset is counted and returns False. Never raises."""
         if not (self.watchdog_url and self.server_app_id):
-            print(f"    [THROTTLE] suspected load-limiter block ({reason}) but "
-                  "WATCHDOG_URL/HUBITAT_APP_ID not set -- cannot bounce, failing as-is.")
+            print(f"    [LIMITER] suspected load-limiter block ({reason}) but "
+                  "WATCHDOG_URL/HUBITAT_APP_ID not set -- cannot reset, failing as-is.")
             return False
-        print(f"    [THROTTLE] suspected platform load-limiter block: {reason}")
-        if getattr(self, "_load_diagnostics", False) and not self.throttle_bounces:
+        print(f"    [LIMITER] suspected platform load-limiter block: {reason}")
+        if getattr(self, "_load_diagnostics", False) and not (self.limiter_resets or self.limiter_reset_failures):
             self._record_load_snapshot("first limiter recovery")
-        print(f"    [THROTTLE] bouncing server app {self.server_app_id} via the watchdog (disable/enable)...")
-        if not self._watchdog_set_app_disabled(True):
-            print("    [THROTTLE] disable leg did not verify -- not retrying the enable; failing as-is.")
+        try:
+            res = self._watchdog_tool("hub_delete_app_runtime_stats",
+                                      {"appId": self.server_app_id, "confirm": True})
+        except AssertionError as exc:
+            res = {"error": str(exc)}
+        if res.get("success") is not True:
+            self.limiter_reset_failures += 1
+            print(f"    [LIMITER] runtime-statistics reset failed: {str(res)[:300]} -- failing as-is.")
             return False
-        time.sleep(3)
-        enabled = False
-        for _ in range(5):
-            if self._watchdog_set_app_disabled(False):
-                enabled = True
-                break
-            time.sleep(5)
-        if not enabled:
-            # Never leave the app disabled: that converts one flaky test into a
-            # whole-suite wipeout. Surface and bail hard.
-            raise RuntimeError(
-                f"[THROTTLE] server app {self.server_app_id} was disabled for a bounce and could "
-                "not be re-enabled -- re-enable via the watchdog (hub_set_app_disabled disable=false) NOW.")
-        time.sleep(3)
-        self.throttle_bounces += 1
-        print(f"    [THROTTLE] bounce #{self.throttle_bounces} complete -- retrying the blocked dispatch once.")
-        # Escalate to a full hub reboot once the limiter has tripped enough times this run (opt-in via
-        # E2E_LIMITER_REBOOT_AFTER), so a recurring limiter is actively recovered instead of soft-passed
-        # forever. Trigger at each multiple of the threshold, capped at 3 reboots/run (never loops).
-        if (self.limiter_reboot_after > 0
-                and self.throttle_bounces >= self.limiter_reboot_after * (self._limiter_reboots + 1)
-                and self._limiter_reboots < 3):
-            self._reboot_hub_for_limiter()
+        before = (res.get("before") or {}).get("totalMs")
+        after = (res.get("after") or {}).get("totalMs")
+        unverified = "" if res.get("verified") is not False else \
+            f" (NOT verified: {res.get('note') or 'stats read-back unavailable'})"
+        self.limiter_resets += 1
+        print(f"    [LIMITER] reset #{self.limiter_resets} of app {self.server_app_id}'s runtime "
+              f"statistics: total {before} -> {after} ms, limit {res.get('limitMs')} ms{unverified} "
+              "-- retrying the blocked dispatch once.")
         return True
 
-    def _call_with_limiter_bounce(self, gateway: str, tool: str, args: dict, label: str,
-                                  bounces: int = 1) -> tuple[Any, str | None]:
+    def _call_with_limiter_reset(self, gateway: str, tool: str, args: dict, label: str,
+                                 resets: int = 1) -> tuple[Any, str | None]:
         """One gateway call under the platform load-limiter contract: (envelope, limiter_message).
         The limiter reaches us in TWO shapes -- some tools RAISE it, the RMUtils-backed ones
         (hub_set_rule_paused, hub_call_rule, hub_set_rule_private_boolean) return it inside a
         {'success': False, 'error': '...excessive hub load'} envelope -- so both are normalized
-        into the second element. Each trip bounces the app and retries, up to `bounces` rounds.
-        A non-None second element can survive the retry; the caller decides whether
-        a converged read-back means the write landed anyway. Other errors propagate."""
+        into the second element. Each trip resets the runtime statistics and retries, up to
+        `resets` rounds. A non-None second element can survive the retry; the caller decides
+        whether a converged read-back means the write landed anyway. Other errors propagate."""
 
         def _attempt():
             try:
@@ -1618,56 +1618,11 @@ class TestRunner:
             return envelope, None
 
         res, limited = _attempt()
-        for _round in range(bounces):
-            if not limited or not self._clear_load_throttle(f"{label}: {limited}"):
+        for _round in range(resets):
+            if not limited or not self._reset_app_runtime_stats(f"{label}: {limited}"):
                 break
             res, limited = _attempt()
         return res, limited
-
-    def _reboot_hub_for_limiter(self) -> bool:
-        """Escalation for a recurring per-app load limiter: REBOOT the hub to reset the platform's
-        load counters (an app-bounce only clears the app instance; a reboot clears the whole platform).
-        Opt-in via E2E_LIMITER_REBOOT_AFTER. Fired through MCP_URL's hub_reboot -- the hub-level
-        /hub/reboot goes through even when device dispatch is throttled (verified live); the call is
-        retried a few times in case the tool dispatch itself is briefly throttled. Counts the ATTEMPT
-        up front so the caller's cap bounds total reboots regardless of outcome. Returns True on a
-        verified recovery. (The watchdog has no plain reboot tool today; if MCP_URL ever proves
-        unreliable here, mirror hub_reboot into the watchdog and switch to WATCHDOG_URL.)"""
-        self._limiter_reboots += 1
-        print(f"    [THROTTLE] limiter tripped {self.throttle_bounces}x this run -- escalating to a HUB REBOOT "
-              f"#{self._limiter_reboots} (E2E_LIMITER_REBOOT_AFTER={self.limiter_reboot_after}) to reset the "
-              "platform load counters.")
-        fired = False
-        for attempt in range(1, 4):
-            try:
-                resp = self.client.call_tool("hub_manage_destructive_ops",
-                                             {"tool": "hub_reboot", "args": {"confirm": True}})
-                if isinstance(resp, dict) and resp.get("success"):
-                    fired = True
-                    break
-                print(f"    [THROTTLE] hub_reboot attempt {attempt} did not confirm: {str(resp)[:160]}")
-            except Exception as exc:
-                # Broad on purpose: firing a reboot inherently drops the connection (ConnectionError /
-                # Timeout from requests, which are NOT McpError), so catch + retry instead of crashing
-                # the runner. This is a recovery loop, not an assertion path.
-                print(f"    [THROTTLE] hub_reboot attempt {attempt} errored ({str(exc)[:120]}) -- retrying")
-            time.sleep(5)
-        if not fired:
-            print("    [THROTTLE] could not fire hub_reboot -- continuing (soft-pass still applies).")
-            return False
-        print("    [THROTTLE] hub_reboot accepted; waiting ~60s for the hub to go down, then polling for recovery...")
-        time.sleep(60)
-        for _ in range(32):
-            try:
-                info = self.client.call_tool("hub_get_info", {})
-                if isinstance(info, dict) and info:
-                    print(f"    [THROTTLE] hub is back after reboot #{self._limiter_reboots}.")
-                    return True
-            except Exception:
-                pass
-            time.sleep(15)
-        print("    [THROTTLE] hub did not come back within ~8 min of the reboot -- continuing.")
-        return False
 
     def get_test_switch_id(self) -> str:
         """Get or create the persistent BAT_E2E_ virtual switch scaffold that rule
@@ -2283,8 +2238,8 @@ class TestRunner:
         #     per-app load limiter a wizard write throws hub-side because LimitExceededException
         #     aborts a sub-step, surfacing as a 500 the 504 path missed -- which is what cascaded
         #     the native_apps group into hard reds on the full lane. For the 5xx case we first
-        #     recover the app (bounce via the watchdog, escalating to a hub reboot per
-        #     E2E_LIMITER_REBOOT_AFTER) so the re-run hits a healthy app instance.
+        #     reset the hub's per-app runtime statistics through the watchdog so the re-run
+        #     starts with the app's busy time cleared.
         # Both re-run the WHOLE test on its own fresh fixtures -- never a transport replay. A
         # second transient failure is then an honest red.
         retry_reason = ""
@@ -2323,22 +2278,20 @@ class TestRunner:
             except Exception as exc:
                 elapsed = time.monotonic() - t0
                 es = str(exc)
+                # Reset the runtime statistics and re-run once on fresh fixtures, but only when the
+                # reset went through; otherwise the failure stands.
+                if attempt == 1 and _limiter_retry_applies(exc):
+                    print(f"    [RETRY] {name} failed on a server 5xx or limiter refusal ({es[:80]}) -- "
+                          "resetting the runtime statistics and re-running once")
+                    if self._reset_app_runtime_stats(f"server 5xx on {name}: {es[:120]}"):
+                        retry_reason = "limiter 5xx"
+                        continue
                 if "504" in es and attempt == 1:
                     retry_reason = "relay 504"
                     print(f"    [RETRY] {name} failed on a relay 504 -- re-running the test once")
                     failed_at = datetime.now(UTC)
                     self._settle_before_504_retry(name)
                     self._capture_504_context(name, exc, failed_at)
-                    continue
-                # Server 5xx that is NOT a 504 (500/501/502/503): suspected per-app load limiter.
-                # Bounce/recover the app (which escalates to a reboot at the configured threshold),
-                # then re-run once on fresh fixtures. _clear_load_throttle raises only if the app is
-                # left disabled -- that is a genuine emergency and is allowed to propagate loudly.
-                if attempt == 1 and re.search(r"\b50[0-3]\b", es):
-                    retry_reason = "limiter 5xx"
-                    print(f"    [RETRY] {name} failed on a server 5xx ({es[:80]}) -- suspected load "
-                          "limiter; recovering the app and re-running once")
-                    self._clear_load_throttle(f"server 5xx on {name}: {es[:120]}")
                     continue
                 # The summary table stays readable with a 200-char message, but the FULL
                 # failure goes to the run log here -- a truncated structured response
@@ -3007,51 +2960,17 @@ class TestRunner:
 
     @test("devices")
     def test_list_devices_scope_all(self) -> None:
-        # Item 1 (#257): scope='all' lists EVERY hub device with an mcpAuthorized flag, sourced from
-        # the hub-wide inventory, not the authorization-scoped Groovy model: from
-        # /device/listWithCapabilities/json where it exists, else (platform 2.5.1.173 and later)
-        # the /hub2/devicesList tree unioned with the /hub2/vrb/devices picker feed for capabilities.
+        # scope='all' lists EVERY hub device from the hub's own Devices page list with an
+        # mcpAuthorized flag; identity only (no states), counts over the filtered set.
         result = self.client.call_tool("hub_list_devices", {"scope": "all"})
         assert isinstance(result, dict), "scope='all' did not return an object"
         assert result.get("scope") == "all", f"scope='all' not echoed: {result}"
-        # The fallback contract: the response names its source, and only the capability-less last
-        # resort flags partial capabilities rather than letting an empty list read as "none".
-        assert result.get("source") in (
-            "/device/listWithCapabilities/json",
-            "/hub2/vrb/devices",
-            "/hub2/devicesList",
-        ), f"scope='all' must report which inventory endpoint answered: {result.get('source')!r}"
-        if result.get("source") == "/hub2/devicesList":
-            assert result.get("capabilitiesPartial") is True and result.get("capabilitiesNote"), \
-                f"the /hub2/devicesList fallback must flag partial capabilities: {result}"
-        elif result.get("source") == "/hub2/vrb/devices":
-            # The feed carries capabilities; partial is flagged when either source omitted a device
-            # the other lists, or when the tree could not be read (feed alone), and the note names
-            # the endpoint at fault and which of those it was.
-            if result.get("capabilitiesPartial"):
-                note = result.get("capabilitiesNote") or ""
-                assert "/hub2/devicesList" in note and "/hub2/vrb/devices" in note, \
-                    f"a partial /hub2/vrb/devices inventory must name both endpoints: {result}"
-                assert "omitted" in note or "could not be read" in note or "not trusted" in note, \
-                    f"a partial /hub2/vrb/devices inventory must say what was omitted or why the tree was not usable: {result}"
-            else:
-                assert result.get("capabilitiesPartial") is None, \
-                    f"/hub2/vrb/devices carries capabilities, so nothing may be flagged partial: {result}"
         devices = result.get("devices", [])
         assert isinstance(devices, list) and len(devices) > 0, "scope='all' returned no devices"
-        assert all("mcpAuthorized" in d for d in devices), \
-            "scope='all' devices missing the mcpAuthorized flag"
-        assert "mcpAuthorizedCount" in result and "unauthorizedCount" in result, \
-            "scope='all' missing mcpAuthorizedCount/unauthorizedCount"
-        # idsComplete is present ONLY to say the record SET could not be vouched for, and every
-        # inventory that cannot vouch for its ids also lacks capabilities -- so a response with no
-        # capabilitiesPartial must not carry the flag at all, and a present one is always false.
-        if result.get("capabilitiesPartial"):
-            assert result.get("idsComplete", False) is False, \
-                f"idsComplete may only ever be present as false: {result.get('idsComplete')!r}"
-        else:
-            assert "idsComplete" not in result, \
-                f"a complete inventory must omit idsComplete rather than assert it: {result}"
+        assert all("mcpAuthorized" in d and "id" in d and "label" in d and "driver" in d for d in devices),             f"scope='all' records must carry id/label/driver/mcpAuthorized: {devices[:2]}"
+        assert not any("currentStates" in d for d in devices), "scope='all' records must not carry device state"
+        assert result.get("mcpAuthorizedCount", -1) + result.get("unauthorizedCount", -1) == result.get("total"),             f"mcpAuthorizedCount + unauthorizedCount must equal total: {result}"
+        self._expect_tool_refusal("hub_list_devices", {"scope": "all", "stateFilter": {"switch": "on"}}, "scope")
 
     @test("devices")
     def test_list_devices_context_format(self) -> None:
@@ -3091,20 +3010,52 @@ class TestRunner:
                 f"attributeNames=['switch'] leaked other attributes: {ln!r}"
 
     @test("devices")
-    def test_list_devices_only_on_filter(self) -> None:
-        # onlyOn=true keeps only devices whose switch currently reads on. Asserted against
-        # the summary shape's currentStates so the filter's claim is checked per device.
-        result = self.client.call_tool("hub_list_devices", {"onlyOn": True})
-        assert result.get("onlyOn") is True, f"onlyOn not echoed: {list(result)}"
+    def test_list_devices_state_filter(self) -> None:
+        # stateFilter keeps only devices whose named attributes currently read the given values.
+        # Asserted against the summary shape's currentStates so the filter's claim is checked per device.
+        result = self.client.call_tool("hub_list_devices", {"stateFilter": {"switch": "on"}})
+        assert result.get("stateFilter") == {"switch": "on"}, f"stateFilter not echoed: {list(result)}"
         assert "unfilteredTotal" in result, "active filter must report unfilteredTotal"
-        if not result.get("devices"):
-            # Nothing on right now is a legitimate hub state; say so instead of passing
-            # a loop that never ran (mirrors test_list_devices_room_filter's guard).
-            print("    [INFO] no device is currently on; per-device assertion body did not run")
-            return
-        for dev in result["devices"]:
+        for dev in result.get("devices") or []:
             sw = (dev.get("currentStates") or {}).get("switch")
-            assert sw == "on", f"onlyOn=true returned {dev.get('label')!r} with switch={sw!r}"
+            assert sw == "on", f"stateFilter switch=on returned {dev.get('label')!r} with switch={sw!r}"
+        if not result.get("devices"):
+            print("    [INFO] no device is currently on; per-device assertion body did not run")
+        # disabled and staleHours filter on the same page read; each echoes itself.
+        enabled_only = self.client.call_tool("hub_list_devices", {"disabled": False})
+        assert enabled_only.get("disabled") is False and all(d.get("disabled") is False for d in enabled_only.get("devices") or []),             f"disabled=false must keep only enabled devices: {enabled_only}"
+        stale = self.client.call_tool("hub_list_devices", {"staleHours": 1, "fields": ["id", "lastActivity"]})
+        assert stale.get("staleHours") == 1, f"staleHours not echoed: {list(stale)}"
+        everything = self.client.call_tool("hub_list_devices", {"fields": ["id", "lastActivity"]})
+        # The stale set is exactly the devices quiet for an hour or never active, judged from the
+        # inventory's own lastActivity values; a device within a minute of the boundary may flip
+        # between the two reads and is left out of the comparison.
+        now = datetime.now(UTC)
+
+        def _age_seconds(value):
+            for fmt in ("%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%S.%f%z"):
+                try:
+                    return (now - datetime.strptime(value, fmt)).total_seconds()
+                except ValueError:
+                    continue
+            raise AssertionError(f"unparseable lastActivity {value!r}")
+
+        unavailable = set(stale.get("metadataUnavailableIds") or []) | set(everything.get("metadataUnavailableIds") or [])
+        ages = {d["id"]: (_age_seconds(d["lastActivity"]) if d.get("lastActivity") else None)
+                for d in everything.get("devices", []) if d["id"] not in unavailable}
+        # A device that reported between the two reads is judged on two different timestamps; leave it out too.
+        stale_stamp = {d["id"]: d.get("lastActivity") for d in stale.get("devices", [])}
+        all_stamp = {d["id"]: d.get("lastActivity") for d in everything.get("devices", [])}
+        settled = {i for i, age in ages.items() if (age is None or abs(age - 3600) > 60)
+                   and stale_stamp.get(i, all_stamp.get(i)) == all_stamp.get(i)}
+        expected = {i for i in settled if ages[i] is None or ages[i] >= 3600}
+        got = set(stale_stamp) & settled
+        assert got == expected, f"staleHours=1 kept {sorted(got - expected)} and dropped {sorted(expected - got)}"
+        # A credential-named attribute cannot be matched: a filter on it would confirm a guess.
+        self._expect_tool_refusal("hub_list_devices", {"stateFilter": {"lockCodes": "1234"}}, "hidden while")
+        # Removed arguments are refused, not silently ignored.
+        self._expect_tool_refusal("hub_list_devices", {"detailed": True}, "detailed")
+        self._expect_tool_refusal("hub_list_devices", {"offset": 1, "limit": 2}, "offset")
 
     @test("devices")
     def test_list_devices_changed_since(self) -> None:
@@ -3156,18 +3107,30 @@ class TestRunner:
         assert miss.get("roomFilterMatchedKnownRoom") is False, \
             f"unknown room must report roomFilterMatchedKnownRoom=false: {miss.get('roomFilterMatchedKnownRoom')!r}"
 
-        everything = self.client.call_tool("hub_list_devices")
-        roomed = [d for d in everything.get("devices", []) if d.get("room")]
-        if not roomed:
-            print("    [INFO] no device on this hub has a room assignment; skipping the positive match")
-            return
-        room = roomed[0]["room"]
-        expected = sorted(d["id"] for d in everything["devices"]
-                          if (d.get("room") or "").lower() == room.lower())
-        scoped = self.client.call_tool("hub_list_devices", {"roomFilter": room.lower()})
-        got = sorted(d["id"] for d in scoped.get("devices", []))
-        assert got == expected, \
-            f"roomFilter={room.lower()!r} returned {got}, expected {expected} (case-insensitive exact match)"
+        # The positive match owns its input: the scaffold switch goes into the standing KEEP_ room,
+        # so the test never depends on room assignments other tests left behind.
+        dev_id = self.get_test_switch_id()
+        room = f"{SCAFFOLD_PREFIX}Room"
+        before = self.client.call_tool("hub_get_device", {"deviceId": dev_id})
+        original_room = before.get("room") if isinstance(before, dict) else None
+        try:
+            placed = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"room": room}})
+            assert placed.get("success") is True, f"could not place the scaffold switch in {room}: {placed}"
+            everything =self.client.call_tool("hub_list_devices")
+            expected = sorted(d["id"] for d in everything.get("devices", [])
+                              if (d.get("room") or "").lower() == room.lower())
+            assert str(dev_id) in [str(i) for i in expected], f"{dev_id} is not listed in {room}: {expected}"
+            scoped = self.client.call_tool("hub_list_devices", {"roomFilter": room.lower()})
+            got = sorted(d["id"] for d in scoped.get("devices", []))
+            assert got == expected, \
+                f"roomFilter={room.lower()!r} returned {got}, expected {expected} (case-insensitive exact match)"
+        finally:
+            try:
+                restored = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"room": original_room or ""}})
+            except McpError as exc:
+                restored = exc
+            if not isinstance(restored, dict) or restored.get("success") is not True:
+                self._fixture_reset_failures.append(f"room filter: restoring {dev_id} to {original_room!r} failed: {restored}")
 
     @test("devices")
     def test_list_device_events_since_bookmark(self) -> None:
@@ -3261,7 +3224,7 @@ class TestRunner:
             start = cur.get("value") if isinstance(cur, dict) else None
             a, b = ("off", "on") if start == "on" else ("on", "off")
             for v in (a, b):
-                if not _drive(v) and self._clear_load_throttle(
+                if not _drive(v) and self._reset_app_runtime_stats(
                         f"'{v}' on scaffold {dev_id} never landed (since-bookmark seed)"):
                     _drive(v)
             hist = _read_history()
@@ -3723,9 +3686,14 @@ class TestRunner:
         try:
             # updateDataValue writes arbitrary keys onto device.data; the inClusters marker makes the
             # resolver treat the record as Z-Wave (a bare numeric id with no marker stays unlabelled).
-            self.client.call_tool("hub_update_device", {
+            # userCode is credential-named: Hide passwords and credentials (pinned on) hides it in
+            # the write's echo and in every read.
+            written = self.client.call_tool("hub_update_device", {
                 "deviceId": dev_id,
-                "dataValues": {"manufacturer": "634", "inClusters": "0x5E,0x25,0x70"}})
+                "fields": {"dataValues": {"manufacturer": "634", "inClusters": "0x5E,0x25,0x70", "userCode": "4321"}}})
+            echoed = {row.get("property"): row.get("newValue") for row in written.get("changes", [])}
+            assert echoed.get("dataValue.userCode") == "***redacted (password)***", \
+                f"a credential-named data value must not be echoed: {written}"
             result = self.client.call_tool("hub_get_device", {
                 "deviceId": dev_id, "mode": "details", "sections": ["data"]})
             data = (result.get("sections") or {}).get("data") or {}
@@ -3733,6 +3701,91 @@ class TestRunner:
                 f"raw manufacturer id must be preserved beside manufacturerName: {data}"
             assert data.get("manufacturerName") == "Zooz", \
                 f"manufacturer 634 (0x027A) must resolve to Zooz: {data}"
+            assert data.get("userCode") == "***redacted (password)***", f"userCode must read hidden: {data}"
+            # Writing a masked read back is refused, so the stored credential is never overwritten with the marker.
+            for edit in ({"fields": {"dataValues": {"userCode": "***redacted (password)***"}}},
+                         {"preferences": {"autoOff": "***redacted (password)***"}}):
+                try:
+                    echoed_back = self.client.call_tool("hub_update_device", {"deviceId": dev_id, **edit})
+                except McpToolError as exc:
+                    echoed_back = _tool_error_payload(exc)
+                assert "redaction marker" in str(echoed_back.get("error")), f"the masked value was accepted as a write: {echoed_back}"
+            try:
+                self._mcp_settings({"redactCredentials": False})
+                stored = (self.client.call_tool("hub_get_device", {
+                    "deviceId": dev_id, "mode": "details", "sections": ["data"]}).get("sections") or {}).get("data") or {}
+            finally:
+                self._mcp_settings({"redactCredentials": True})
+            assert stored.get("userCode") == "4321", f"the stored userCode changed: {stored}"
+            try:
+                empty = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"dataValues": {}}})
+            except McpToolError as exc:
+                empty = _tool_error_payload(exc)
+            assert "dataValues must be a non-empty object" in str(empty.get("error")), \
+                f"an empty dataValues must be refused, not reported as a successful no-op: {empty}"
+            # A disabled device drops data values, so a disable goes after them and an enable before them.
+            disabled = self.client.call_tool("hub_update_device", {
+                "deviceId": dev_id, "fields": {"enabled": False, "dataValues": {"beforeDisable": "1"}}})
+            assert disabled.get("success") is True and not disabled.get("errors"), \
+                f"dataValues + disable must land both: {disabled}"
+            assert {row.get("property") for row in disabled.get("changes", [])} == {"enabled", "dataValue.beforeDisable"}, \
+                f"both the disable and the data value must report as changes: {disabled}"
+            # Data values alone on a disabled device would never land, so they are refused before any write.
+            self._expect_tool_refusal("hub_update_device", {"deviceId": dev_id, "fields": {"dataValues": {"whileDisabled": "1"}}},
+                                      "data values never land on a disabled device")
+            re_enabled = self.client.call_tool("hub_update_device", {
+                "deviceId": dev_id, "fields": {"enabled": True, "dataValues": {"afterEnable": "1"}}})
+            assert re_enabled.get("success") is True and not re_enabled.get("errors"), \
+                f"enable + dataValues on a disabled device must land both: {re_enabled}"
+            assert {row.get("property") for row in re_enabled.get("changes", [])} == {"enabled", "dataValue.afterEnable"}, \
+                f"both the enable and the data value must report as changes: {re_enabled}"
+            # A credential-named ATTRIBUTE (a lock's lockCodes) hides the same way in the command
+            # snapshot and the event rows, where the description repeats the value.
+            lock_label = f"{PREFIX}LockCodes"
+            lock = self.client.call_tool("hub_manage_virtual_device", {
+                "action": "create", "deviceType": "Virtual Lock", "deviceLabel": lock_label, "confirm": True})
+            lock_dev = lock.get("device") or {}
+            lock_id = str(lock_dev.get("id") or lock.get("deviceId") or "")
+            lock_dni = str(lock_dev.get("deviceNetworkId") or "")
+            assert lock_id and lock_dni, f"could not create {lock_label}: {lock}"
+            try:
+                # The snapshot reports the state at read time, so wait until the lock has set the code,
+                # then take the snapshot from a second (idempotent) setCode.
+                self.client.call_tool("hub_call_device_command", {
+                    "deviceId": lock_id, "command": "setCode", "parameters": ["1", "4321", "Guest"], "includeState": False})
+                for _ in range(20):
+                    attrs = {a.get("name"): a.get("value")
+                             for a in self.client.call_tool("hub_get_device", {"deviceId": lock_id}).get("attributes", [])}
+                    if attrs.get("lockCodes"):
+                        break
+                    time.sleep(0.5)
+                assert attrs.get("lockCodes") == "***redacted (password)***", f"hub_get_device must hide lockCodes: {attrs}"
+                sent = self.client.call_tool("hub_call_device_command", {
+                    "deviceId": lock_id, "command": "setCode", "parameters": ["1", "4321", "Guest"], "includeState": True})
+                snap = (sent.get("state") or {}).get("lockCodes") or {}
+                assert snap.get("value") == "***redacted (password)***", f"the command snapshot must hide lockCodes: {sent}"
+                rows = []
+                for _ in range(20):
+                    rows = [e for e in self.client.call_tool("hub_list_device_events", {
+                        "deviceId": lock_id, "hoursBack": 1, "limit": 30}).get("events", []) if e.get("name") == "lockCodes"]
+                    if rows:
+                        break
+                    time.sleep(0.5)
+                assert rows and all(e.get("value") == "***redacted (password)***" and "4321" not in str(e.get("description"))
+                                    for e in rows), f"event rows must hide lockCodes: {rows}"
+                # Waiting for a hidden value would confirm a guess, so a poll or waitFor on it is refused.
+                self._expect_tool_refusal("hub_get_device_attribute", {
+                    "deviceId": lock_id, "attribute": "lockCodes", "expectedValue": "4321", "timeoutMs": 500},
+                    "Cannot wait for a value of lockCodes")
+                self._expect_tool_refusal("hub_call_device_command", {
+                    "deviceId": lock_id, "command": "lock", "waitFor": {"attribute": "lockCodes", "expectedValue": "4321"}},
+                    "Cannot wait for a value of lockCodes")
+            finally:
+                try:
+                    self.client.call_tool("hub_manage_virtual_device", {
+                        "action": "delete", "deviceNetworkId": lock_dni, "confirm": True})
+                except (McpError, McpToolError):
+                    pass
         finally:
             if dni:
                 try:
@@ -3901,13 +3954,13 @@ class TestRunner:
             return snapshots
 
         def update(patch, *, require_data_change=True):
-            result = self._write_once("hub_manage_devices", "hub_update_device", {
-                "deviceId": device_id, **patch,
-            }, f"{profile['path']} configuration edit")
+            result = self._write_once("hub_manage_devices", "hub_update_device",
+                                      device_update_args(device_id, patch), f"{profile['path']} configuration edit")
             assert result.get("success") is True, f"Configuration edit failed: {result}"
             assert not result.get("errors"), f"Configuration edit reported success with rejected fields: {result}"
             assert result.get("mrtr", {}).get("continued") is True, f"Device update bypassed MRTR: {result}"
-            changed = {row.get("property") for row in result.get("changes", [])}
+            # Read back as requested: changed, or already that value before the save.
+            changed = {row.get("property") for row in result.get("changes", [])} | set(result.get("unchanged", []))
             pane_fields = {"retryEnabled", "showOnHome", "defaultCurrentState"} & patch.keys()
             assert pane_fields <= changed, f"Configuration pane write was not confirmed: {result}"
             if "dataValues" in patch and require_data_change:
@@ -3942,6 +3995,11 @@ class TestRunner:
                     )
 
         native, baseline = capture()
+        if baseline.get("largeReadProbePresent"):
+            # A run cancelled between seedLargeReadProbe and clearLargeReadProbe leaves the probe on
+            # the persistent fixture; clear it here so one cancelled run does not fail the next.
+            command("clearLargeReadProbe")
+            native, baseline = capture()
         metadata_baseline = preserved_metadata()
         cfg = configuration()
         assert_native_preferences(native, cfg, expected)
@@ -4016,7 +4074,7 @@ class TestRunner:
         negative_fields = []
         for key, decision in {**manifest["nativeFields"], **profile.get("nativeFields", {})}.items():
             field = editable.get(key, {})
-            availability[key] = {"expectation": decision["expectation"], "applicable": field.get("applicable"),
+            availability[key] = {"expectation": decision["expectation"],
                                  "writable": field.get("writable"), "reason": field.get("reason")}
             if decision["expectation"] == "positive":
                 assert field.get("writable") is True and key in baseline, (
@@ -4028,7 +4086,7 @@ class TestRunner:
                 )
                 edits[key] = decision["target"]
             elif decision["expectation"] == "unavailable":
-                assert field.get("applicable") is False and "target" in decision, (
+                assert field.get("writable") is False and field.get("reason") and "target" in decision, (
                     f"Expected unavailable native {key} changed; inspect provisioning: {availability[key]}"
                 )
                 negative_fields.append((key, decision["target"]))
@@ -4083,9 +4141,8 @@ class TestRunner:
                                    if common_contract)
             for patch in invalid_patches:
                 try:
-                    refused = self._write_once("hub_manage_devices", "hub_update_device", {
-                        "deviceId": device_id, **patch,
-                    }, "invalid configuration fixture write")
+                    refused = self._write_once("hub_manage_devices", "hub_update_device",
+                                               device_update_args(device_id, patch), "invalid configuration fixture write")
                     assert refused.get("success") is False, f"Invalid write succeeded: {refused}"
                 except (McpToolError, McpError) as exc:
                     affected = next(iter(patch.get("preferences", patch)))
@@ -4133,6 +4190,9 @@ class TestRunner:
             assert native["runtimeMultipleIsList"] is True and native["runtimeMultiple"] == ["red", "blue"], (
                 f"Driver did not receive a List: {native}"
             )
+            # A whole number sent as a JSON float is the same limit, not a cleared one.
+            same_limit = update({"maxEvents": float(edits["maxEvents"])})
+            assert same_limit.get("unchanged") == ["maxEvents"], f"maxEvents {float(edits['maxEvents'])} was not kept: {same_limit}"
             remaining = desired
             if common_contract:
                 try:
@@ -4377,17 +4437,26 @@ class TestRunner:
         # persistent scaffold switch -- a Home-page flag toggle is idempotent and does not
         # disturb the rule/poll fixtures that also read this device's state.
         dev_id = self.get_test_switch_id()
-        hide = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "showOnHome": False})
+        # Start from shown, so the hide below is a real change whatever an earlier run left.
+        shown = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"showOnHome": True}})
+        assert shown.get("success") is True, f"show-on-home baseline failed: {shown}"
+        hide = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"showOnHome": False}})
         assert hide.get("success") is True, f"hide-from-home failed: {hide}"
         assert any(c.get("property") == "showOnHome" for c in (hide.get("changes") or [])), \
             f"showOnHome change not recorded: {hide}"
         # Restore so the device's Home visibility is unchanged across runs.
-        show = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "showOnHome": True})
+        show = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"showOnHome": True}})
         assert show.get("success") is True, f"show-on-home restore failed: {show}"
+        # A field passed beside fields instead of inside it is refused before any write.
+        try:
+            self.client.call_tool("hub_update_device", {"deviceId": dev_id, "showOnHome": False})
+            raise AssertionError("hub_update_device accepted a top-level field")
+        except (McpToolError, McpError) as exc:
+            assert "Unknown argument" in str(exc), f"Top-level field refusal was not explicit: {exc}"
 
     @test("devices")
     def test_update_device_room_assign_and_unassign(self) -> None:
-        """UNCONDITIONAL live proof of /device/updateRoom (name-keyed room assignment).
+        """UNCONDITIONAL live proof of room assignment through the Device Info save (by name and by id).
 
         The bypass-block leg that also touches this endpoint only runs when the arbitrarily-picked
         unlisted device happens to already be in a room, so it can skip an entire run. This one owns
@@ -4416,10 +4485,14 @@ class TestRunner:
         original_room = (before.get("room") or before.get("roomName")) if isinstance(before, dict) else None
 
         try:
-            # THE surface under test: name-keyed assignment via /device/updateRoom.
-            assigned = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "room": room_name})
+            # THE surface under test: assignment by room name, then by id, through the Device Info save,
+            # each from outside the room so the save has to move the device.
+            if original_room:
+                out = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"room": ""}})
+                assert out.get("success") is True, f"hub_update_device room unassign failed: {out}"
+            assigned =self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"room": room_name}})
             assert assigned.get("success") is True, \
-                f"hub_update_device room assign failed -- /device/updateRoom rejected it: {assigned}"
+                f"hub_update_device room assign failed: {assigned}"
             assert any(c.get("property") == "room" for c in (assigned.get("changes") or [])), \
                 f"room change not recorded: {assigned}"
 
@@ -4429,16 +4502,28 @@ class TestRunner:
             assert any(str(d.get("id")) == str(dev_id) for d in (got.get("devices") or [])), \
                 f"room '{room_name}' does not list device {dev_id} after the assign: {got}"
 
-            # The unassign leg shares the endpoint and has its own read-back guard in production.
-            unassigned = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "room": ""})
+            # By numeric id from outside the room, so the save has to move the device; a number is an id,
+            # and a whole number sent as a decimal is the same id.
+            cleared = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"room": ""}})
+            assert cleared.get("success") is True, f"hub_update_device room unassign failed: {cleared}"
+            by_id = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"room": float(room_id)}})
+            assert by_id.get("success") is True and any(
+                c.get("property") == "room" and c.get("newValue") == room_name for c in (by_id.get("changes") or [])), \
+                f"room assign by id did not read back as '{room_name}': {by_id}"
+            got = self.client.call_tool("hub_manage_rooms", {
+                "tool": "hub_get_room", "args": {"room": room_id}})
+            assert any(str(d.get("id")) == str(dev_id) for d in (got.get("devices") or [])), \
+                f"room '{room_name}' does not list device {dev_id} after the assign by id: {got}"
+
+            unassigned = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"room": ""}})
             assert unassigned.get("success") is True, f"hub_update_device room unassign failed: {unassigned}"
 
-            print(f"    ROOM_ASSIGN ok -- /device/updateRoom moved {dev_id} into '{room_name}' and out again")
+            print(f"    ROOM_ASSIGN ok -- moved {dev_id} into '{room_name}' by name and id, and out again")
         finally:
             # Restore prior membership; if it had none, the unassign above already left it correct.
             if original_room:
                 try:
-                    self.client.call_tool("hub_update_device", {"deviceId": dev_id, "room": str(original_room)})
+                    self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"room": str(original_room)}})
                 except Exception as exc:
                     print(f"  [WARN] room-assign cleanup: restoring device {dev_id} to '{original_room}' failed: {exc}")
 
@@ -4446,10 +4531,16 @@ class TestRunner:
     def test_update_device_default_current_state(self) -> None:
         # Intent: choose which attribute appears in the Status column for a device.
         dev_id = self.get_test_switch_id()
-        result = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "defaultCurrentState": "switch"})
+        cleared = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"defaultCurrentState": ""}})
+        assert cleared.get("success") is True, f"clear default current state failed: {cleared}"
+        result = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"defaultCurrentState": "switch"}})
         assert result.get("success") is True, f"set default current state failed: {result}"
         assert any(c.get("property") == "defaultCurrentState" for c in (result.get("changes") or [])), \
             f"defaultCurrentState change not recorded: {result}"
+        # Saving the value it already has is reported as unchanged, not as a change.
+        again = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"defaultCurrentState": "switch"}})
+        assert again.get("success") is True and again.get("changes") == [] and \
+            again.get("unchanged") == ["defaultCurrentState"], f"a no-op save must report unchanged: {again}"
 
     @test("devices")
     def test_update_device_tags(self) -> None:
@@ -4491,7 +4582,7 @@ class TestRunner:
         try:
             form_before = preserved_form_fields()
             result = self.client.call_tool("hub_update_device", {
-                "deviceId": dev_id, "tags": ["kitchen", "downstairs"],
+                "deviceId": dev_id, "fields": {"tags": ["kitchen", "downstairs"]},
             })
             assert result.get("success") is True, f"tag edit failed: {result}"
             assert any(c.get("property") == "tags" for c in (result.get("changes") or [])), \
@@ -4564,16 +4655,11 @@ class TestRunner:
             assert isinstance(got, dict) and str(got.get("id")) == new_id, \
                 f"the device tools do not reach the created device {new_id}: {str(got)[:300]}"
 
-            # The label leg is /device/updateLabel -- and this is its only UNCONDITIONAL live proof.
-            # (The bypass-block leg that also exercises it is gated on the arbitrarily-picked device
-            # having a label, so it can skip entirely; see the [COVERAGE GAP] print there.) The envelope
-            # reports `label` as the APPLIED label, falling back to the driver's own default when the
-            # dedicated setter AND the wholesale /device/update fallback both missed -- so a requested
-            # label reading back means the leg worked, and a label warning is the tool's own admission
-            # that it did not.
+            # The label rides the native create (or, for a built-in driver, one Device Info save after it).
+            # The envelope reports `label` as the APPLIED label, so a requested label reading back means
+            # the leg worked, and a label warning is the tool's own admission that it did not.
             assert created.get("label") == f"{PREFIX}FromDriver", (
-                "hub_create_device did not apply the requested label -- /device/updateLabel and the "
-                f"wholesale /device/update fallback both missed: label={created.get('label')!r} "
+                f"hub_create_device did not apply the requested label: label={created.get('label')!r} "
                 f"warnings={created.get('warnings')!r}")
             assert not [w for w in (created.get("warnings") or []) if "label" in str(w).lower()], \
                 f"hub_create_device warned about the label: {created.get('warnings')!r}"
@@ -4800,7 +4886,7 @@ class TestRunner:
         def _assert_filtered_switch(value: str) -> None:
             label = own_label
             inventory = self.client.call_tool("hub_list_devices", {
-                "labelFilter": label, "onlyOn": True,
+                "labelFilter": label, "stateFilter": {"switch": "on"},
             })
             devices = inventory.get("devices")
             assert isinstance(devices, list), f"Filtered native inventory unavailable: {inventory}"
@@ -4810,10 +4896,10 @@ class TestRunner:
             if value == "on":
                 assert devices[0].get("currentStates", {}).get("switch") == value, inventory
             owned = self.client.call_tool("hub_list_devices", {
-                "filter": "virtual", "labelFilter": label, "capabilityFilter": "Switch",
+                "scope": "owned", "labelFilter": label, "capabilityFilter": "Switch",
             })
             assert [str(row["id"]) for row in owned.get("devices", [])] == [dev_id], (
-                f"Virtual label/capability filters lost the owned switch: {owned}"
+                f"Owned-scope label/capability filters lost the owned switch: {owned}"
             )
             assert owned["devices"][0].get("currentStates", {}).get("switch") == value, owned
 
@@ -4829,7 +4915,7 @@ class TestRunner:
             result = _drive(first)
             # Existing recovery may retry once; a command must still produce the requested state.
             if (result.get("timedOut") is not False or result.get("finalValue") != first) \
-                    and self._clear_load_throttle(f"'{first}' on fresh device {dev_id} never landed: {result}"):
+                    and self._reset_app_runtime_stats(f"'{first}' on fresh device {dev_id} never landed: {result}"):
                 result = _drive(first)
             if result.get("timedOut") is not False or result.get("finalValue") != first:
                 assert False, \
@@ -4839,7 +4925,7 @@ class TestRunner:
             # Toggle back the other way
             result = _drive(second, with_wait=True)
             if (result.get("timedOut") is not False or result.get("finalValue") != second) \
-                    and self._clear_load_throttle(f"'{second}' on fresh device {dev_id} never landed: {result}"):
+                    and self._reset_app_runtime_stats(f"'{second}' on fresh device {dev_id} never landed: {result}"):
                 result = _drive(second, with_wait=True)
             if result.get("timedOut") is not False or result.get("finalValue") != second:
                 assert False, \
@@ -4992,10 +5078,10 @@ class TestRunner:
 
         # Confirm the group with the multi-device poll -- one batch to fire, one poll to confirm.
         poll = _confirm()
-        # Bounce the throttle and re-drive once before believing a non-convergence, the same way
-        # the sibling multi-device poll does: a limiter trip late in a run is a capacity signal,
-        # not a product failure, and re-running on a cleared throttle tells the two apart.
-        if poll.get("success") is not True and self._clear_load_throttle(
+        # Reset the runtime statistics and re-drive once before believing a non-convergence, the
+        # same way the sibling multi-device poll does: a limiter trip late in a run is a capacity
+        # signal, not a product failure, and re-running after the reset tells the two apart.
+        if poll.get("success") is not True and self._reset_app_runtime_stats(
                 f"batched '{target}' never landed on both: {poll}"):
             self._native_device_command({"commands": [
                 {"deviceId": sw_a, "command": target},
@@ -5066,9 +5152,9 @@ class TestRunner:
 
         # This assertion is about the REJECTED batch leaving the switch alone, so it can only be
         # trusted if leg 1's "on" actually landed. A platform limiter that swallowed that event
-        # would present as switch=off -- indistinguishable here from a partial send. Clear the
-        # throttle and re-poll, but never issue a command that could mask a partial send.
-        if after.get("success") is not True and self._clear_load_throttle(
+        # would present as switch=off -- indistinguishable here from a partial send. Reset the
+        # runtime statistics and re-poll, but never issue a command that could mask a partial send.
+        if after.get("success") is not True and self._reset_app_runtime_stats(
                 f"batched 'on' never landed on {sw_a}: {after}"):
             after = _poll_on()
 
@@ -5212,7 +5298,7 @@ class TestRunner:
         assert found, f"{self.virtual_switch_label} not found in virtual device list"
 
     @test("virtual_device_lifecycle")
-    def test_list_virtual_devices_honors_limit_offset_and_cursor(self) -> None:
+    def test_list_owned_devices_honors_limit_and_cursor(self) -> None:
         suffix = f"{_run_artifact_suffix()}_{time.time_ns()}"
         owned_labels = [f"{PREFIX}Virtual_Page_{suffix}_{index}" for index in range(4)]
         owned_dnis: list[str] = []
@@ -5224,7 +5310,7 @@ class TestRunner:
             self.get_test_switch_id()
             self.get_test_temperature_ids()
             self.get_test_shade_id()
-            full = self.client.call_tool("hub_list_devices", {"filter": "virtual"})
+            full = self.client.call_tool("hub_list_devices", {"scope": "owned"})
             shortfall = max(0, 4 - len(full.get("devices", [])))
             for label in owned_labels[:shortfall]:
                 created = self._soft_write(
@@ -5249,50 +5335,33 @@ class TestRunner:
                 self.created_device_dnis.append(dni)
 
             if shortfall:
-                full = self.client.call_tool("hub_list_devices", {"filter": "virtual"})
+                full = self.client.call_tool("hub_list_devices", {"scope": "owned"})
             full_devices = full.get("devices", [])
             assert len(full_devices) >= 4, \
                 f"virtual pagination fixtures missing, got {len(full_devices)} devices"
 
-            limited = self.client.call_tool("hub_list_devices", {"filter": "virtual", "limit": 3})
+            limited = self.client.call_tool("hub_list_devices", {"scope": "owned", "limit": 3})
             assert limited.get("count") == 3, f"limit=3 was ignored: {limited}"
             assert limited.get("total") == len(full_devices), f"virtual total mismatch: {limited}"
-            assert limited.get("hasMore") is True and limited.get("nextOffset") == 3, \
-                f"classic virtual pagination metadata missing: {limited}"
+            assert limited.get("hasMore") is True and limited.get("nextCursor") == "3", \
+                f"owned-scope pagination metadata missing: {limited}"
             assert [d.get("id") for d in limited.get("devices", [])] == \
                 [d.get("id") for d in full_devices[:3]], f"limit page changed ordering: {limited}"
 
-            offset_page = self.client.call_tool(
-                "hub_list_devices", {"filter": "virtual", "offset": 1, "limit": 2})
-            assert [d.get("id") for d in offset_page.get("devices", [])] == \
-                [d.get("id") for d in full_devices[1:3]], f"offset was ignored: {offset_page}"
-
             maximum_limit_page = self.client.call_tool(
-                "hub_list_devices", {
-                    "filter": "virtual", "offset": 1, "limit": 2147483647,
-                })
-            assert [d.get("id") for d in maximum_limit_page.get("devices", [])] == \
-                [d.get("id") for d in full_devices[1:]], \
-                f"maximum integer limit overflowed instead of clamping: {maximum_limit_page}"
-            assert maximum_limit_page.get("hasMore") is False and \
-                "nextOffset" not in maximum_limit_page, \
-                f"maximum integer terminal page advertised a continuation: {maximum_limit_page}"
+                "hub_list_devices", {"scope": "owned", "cursor": "1", "limit": 2147483647})
+            assert [d.get("id") for d in maximum_limit_page.get("devices", [])] ==                 [d.get("id") for d in full_devices[1:]],                 f"maximum integer limit overflowed instead of clamping: {maximum_limit_page}"
+            assert maximum_limit_page.get("hasMore") is False and "nextCursor" not in maximum_limit_page,                 f"maximum integer terminal page advertised a continuation: {maximum_limit_page}"
 
             cursor_page = self.client.call_tool(
-                "hub_list_devices", {"filter": "virtual", "cursor": "", "limit": 3})
+                "hub_list_devices", {"scope": "owned", "cursor": "", "limit": 3})
             assert cursor_page.get("nextCursor") == "3", f"cursor metadata missing: {cursor_page}"
             next_page = self.client.call_tool(
-                "hub_list_devices", {"filter": "virtual", "cursor": "3", "limit": 3})
+                "hub_list_devices", {"scope": "owned", "cursor": "3", "limit": 3})
             assert [d.get("id") for d in next_page.get("devices", [])] == \
                 [d.get("id") for d in full_devices[3:6]], f"cursor page wrong: {next_page}"
 
-            try:
-                self.client.call_tool(
-                    "hub_list_devices", {"filter": "virtual", "cursor": "1", "offset": 1, "limit": 2})
-                raise AssertionError("virtual listing accepted conflicting cursor and offset")
-            except McpError as exc:
-                assert "cursor and offset are mutually exclusive" in str(exc), \
-                    f"conflict error was not actionable: {exc}"
+            self._expect_tool_refusal("hub_list_devices", {"scope": "owned", "cursor": "x"}, "cursor")
         finally:
             # Recover any committed create whose response/DNI lookup failed, then remove
             # every fixture this scenario can identify. Global cleanup retains the DNIs
@@ -5423,7 +5492,7 @@ class TestRunner:
             lambda: self.client.call_tool("hub_manage_dashboards", {
                 "tool": "hub_create_dashboard",
                 "args": {"name": dash_name, "deviceIds": [str(switch_id)],
-                         "options": {"showClockTile": True, "theme": "dark"}},
+                         "options": {"showClockTile": True, "theme": "dark", "dashboardPin": "4321"}},
             }),
             lambda: self._find_dashboard_id_by_name(dash_name),
             "create dashboard",
@@ -5457,6 +5526,8 @@ class TestRunner:
         # The read reaches the hub's full dashboard list (not the id-and-name fallback), so the
         # theme set on create comes back and a wholesale update can carry it.
         assert got.get("theme") == "dark", f"hub_get_dashboard lost the dashboard's theme: {got}"
+        # Hide passwords and credentials masks the PIN in the read.
+        assert got.get("dashboardPin") == "***redacted (password)***", f"hub_get_dashboard returned the PIN in clear: {got}"
         listed_all = self.client.call_tool("hub_read_dashboards", {"tool": "hub_list_dashboards", "args": {}})
         assert listed_all.get("source") == "dashboard-all", \
             f"hub_list_dashboards fell back to the child-app list: {listed_all.get('source')} {listed_all.get('note')}"
@@ -5469,7 +5540,7 @@ class TestRunner:
             lambda: self.client.call_tool("hub_manage_dashboards", {
                 "tool": "hub_update_dashboard",
                 "args": {"dashboardId": dash_id, "name": dash_name, "deviceIds": upd_devices,
-                         "options": {"showClockTile": new_clock}}}),
+                         "options": {"showClockTile": new_clock, "dashboardPin": got.get("dashboardPin")}}}),
             lambda: bool((self.client.call_tool("hub_manage_dashboards", {
                 "tool": "hub_get_dashboard", "args": {"dashboardId": dash_id}}) or {}).get("showClockTile")) == new_clock,
             "update dashboard",
@@ -5483,6 +5554,13 @@ class TestRunner:
                 "tool": "hub_get_dashboard", "args": {"dashboardId": dash_id}})
             assert bool(reread.get("showClockTile")) == new_clock, \
                 f"hub_update_dashboard reported success but showClockTile didn't change: {reread}"
+        # The masked PIN passed back through the update kept the stored one.
+        try:
+            self._mcp_settings({"redactCredentials": False})
+            stored = self.client.call_tool("hub_manage_dashboards", {"tool": "hub_get_dashboard", "args": {"dashboardId": dash_id}})
+        finally:
+            self._mcp_settings({"redactCredentials": True})
+        assert stored.get("dashboardPin") == "4321", f"the update with the masked PIN changed the stored PIN: {stored}"
 
         # CLONE (clone-by-value: copies the source config into a new dashboard named "<name> (copy)")
         clone = self.client.call_tool("hub_manage_dashboards", {
@@ -6243,6 +6321,8 @@ def pagePw() {
             input "p", "password", title: "Password", required: false
             input "apiKey", "text", title: "API key", required: false
             input "disarmPin", "text", title: "Disarm PIN", required: false
+            input "doorLedPin", "text", title: "Door LED pin", required: false
+            input "lockErrorCode", "text", title: "Lock error code", required: false
             input "note", "text", title: "Note", required: false
             paragraph "p-state: ${settings.p == 'SECRET_VALUE' ? 'kept' : 'changed'}"
             href "pageMore", title: "More", description: "open"
@@ -6259,6 +6339,11 @@ def pageMore() {
 def installed() {}
 def updated() {}
 """
+
+    @staticmethod
+    def _app_config_input_values(config: dict) -> dict:
+        return {i.get("name"): i.get("value") for s in (config.get("page") or {}).get("sections", [])
+                for i in s.get("inputs", []) if "value" in i}
 
     @test("native_apps")
     def test_set_native_app_snapshot_redacts_password_settings(self) -> None:
@@ -6282,17 +6367,50 @@ def updated() {}
             instance_id = inst.get("instanceAppId")
             assert inst.get("committed") is True and instance_id, f"creating the password app instance failed: {inst}"
             api_key, pin = "ak-e2e-5d1f", "pin-9731"
-            first = self._native_app("update", {"fields": {"p": secret, "apiKey": api_key, "disarmPin": pin}}, instance_id)
+            first = self._native_app("update", {"fields": {"p": secret, "apiKey": api_key, "disarmPin": pin,
+                                                           "doorLedPin": "13", "lockErrorCode": "E42"}}, instance_id)
             assert first.get("success") is True, f"setting the password failed: {first}"
             # Credential-named text inputs: the form result masks them like hub_get_app_config does.
             form = self._native_app_form(instance_id, {"kind": "open"})
             shown = {f["name"]: f.get("value") for f in form.get("fields", []) if f["name"] in ("apiKey", "disarmPin")}
             assert shown == {"apiKey": "***redacted (password)***", "disarmPin": "***redacted (password)***"}, \
                 f"the form returned credential-named values in clear: {shown}"
-            named = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config", "args": {
-                "appId": instance_id, "includeSettings": True}}).get("settings") or {}
+            config = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config", "args": {
+                "appId": instance_id, "includeSettings": True}})
+            named = config.get("settings") or {}
             assert named.get("apiKey") == "***redacted (password)***" and named.get("disarmPin") == "***redacted (password)***", \
                 f"includeSettings returned credential-named values in clear: {named}"
+            # Page inputs read the stored values (the page JSON carries only code defaults), masked the same way.
+            page = self._app_config_input_values(config)
+            assert page.get("doorLedPin") == "13" and page.get("p") == "***redacted (password)***" and \
+                page.get("apiKey") == "***redacted (password)***", f"page inputs did not read the stored values: {page}"
+            # A board pin and a status code next to a credential word are not credentials.
+            assert named.get("doorLedPin") == "13" and named.get("lockErrorCode") == "E42", \
+                f"includeSettings hid a board pin or status code: {named}"
+            # A masked read written back is refused by update and by a form submit, so the stored
+            # password is never overwritten with the marker (the reads below still return the secret).
+            for call in (lambda: self._native_app("update", {"fields": {"p": "***redacted (password)***"}}, instance_id),
+                         lambda: self._native_app("form", {"steps": [{"kind": "submit", "expect_page": "pagePw",
+                                                                     "fields": {"apiKey": "***redacted (password)***"}}]}, instance_id)):
+                try:
+                    echoed_back = call()
+                except McpToolError as exc:
+                    echoed_back = _tool_error_payload(exc)
+                assert "redaction marker" in str(echoed_back.get("error")), f"the masked value was accepted as a write: {echoed_back}"
+            # With Hide passwords and credentials off, the form and the settings read every value as stored.
+            try:
+                self._mcp_settings({"redactCredentials": False})
+                plain = {f["name"]: f.get("value") for f in self._native_app_form(instance_id, {"kind": "open"}).get("fields", [])}
+                stored_config = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config", "args": {
+                    "appId": instance_id, "includeSettings": True}})
+                stored = stored_config.get("settings") or {}
+            finally:
+                self._mcp_settings({"redactCredentials": True})
+            assert plain.get("p") == secret and plain.get("apiKey") == api_key, f"with the setting off the form hid a value: {plain}"
+            assert self._app_config_input_values(stored_config).get("p") == secret, \
+                f"with the setting off a page input hid a value: {self._app_config_input_values(stored_config)}"
+            assert stored.get("p") == secret and stored.get("disarmPin") == pin, \
+                f"with the setting off includeSettings hid a value: {stored}"
             more = self._native_app("update", {"fields": {"note2": "sub edit"}, "page": "pageMore"}, instance_id)
             assert more.get("success") is True and more.get("page") == "pageMore", \
                 f"the sub-page update under a root page not named mainPage failed: {more}"
@@ -6333,7 +6451,7 @@ def updated() {}
                 "appId": instance_id, "force": True, "confirm": True}})
             assert gone.get("success") is True, f"deleting the password app instance failed: {gone}"
             instance_id = None
-            # The delete's own snapshot is the app's newest backup, which retention never evicts; on a
+            # The delete's own snapshot is the newest backup, so oldest-first retention evicts it last; on a
             # hub at its storage budget the earlier snapshot may already be gone.
             recreate_key = (gone.get("backup") or {}).get("backupKey") or key
             try:
@@ -7276,6 +7394,12 @@ def updated() {}
             assert page.get("source") == "configPage" and page.get("broken") is None, page
         finally:
             self._delete_native(app_id)
+        # An id no app holds is reported as not found, not read as a built-in app.
+        try:
+            missing = self.client.call_tool("hub_get_rule_health", {"appId": 999999999})
+        except McpToolError as exc:
+            missing = _tool_error_payload(exc)
+        assert isinstance(missing, dict) and "App 999999999 not found" in str(missing.get("error")), missing
 
     @test("native_apps")
     def test_rule_health_broken_true_on_dangling_trigger(self) -> None:
@@ -8081,6 +8205,15 @@ def updated() {}
             assert (typed["decimalProof"]["type"], float(typed["decimalProof"]["value"])) == ("bigdecimal", 3.75), typed
             assert (typed["seenAt"]["type"], typed["seenAt"]["value"]) == ("datetime", timestamp), typed
             assert "seenAt" in self._rm_page(app_id)
+            # A credential-named local variable reads hidden by default and as stored with the toggle off.
+            hidden = self._rm_update(app_id, [native_change("variable", operation="create", name="doorCode",
+                                                            type="string", value="4321")])["document"]["variables"]
+            assert hidden["doorCode"].get("redacted") is True and hidden["doorCode"].get("value") is None, hidden
+            try:
+                self._mcp_settings({"redactCredentials": False})
+                assert self._native_rule_document(app_id)["variables"]["doorCode"]["value"] == "4321"
+            finally:
+                self._mcp_settings({"redactCredentials": True})
             removed = self._rm_update(app_id, [native_delete("action", action),
                                                native_change("variable", operation="delete", name="fields")])
             assert "fields" not in removed["document"]["variables"], removed["document"]["variables"]
@@ -8833,7 +8966,8 @@ def updated() {}
             keys = {name: backup["backupKey"] for name, backup in backups.items()}
             for backup in backups.values():
                 note = str(backup.get("retentionNote"))
-                assert "retention" not in backup and "oldest first" in note and "newest backup is never removed" in note, \
+                assert "retention" not in backup and "oldest first" in note \
+                    and "active restore target are never removed" in note and "stay over it" in note, \
                     f"a rule write's snapshot must state the plain eviction rule and no retention kind: {backup}"
             assert self._rm_restore(keys["Den"]).get("success") is True
             assert labels["Kitchen"] in json.dumps(self._native_rule_document(app_id)["conditions"])
@@ -8914,9 +9048,27 @@ def updated() {}
         # Reads, help and unconfirmed probes take no recovery point; with backups off an edit reports
         # the skip; back on, an update takes exactly one, and a form workflow takes one before its
         # first render and reuses it. After that restore the workflow's context is gone and a stale
-        # submit is refused.
-        app_id, _ = self._rm_rule("CaptureControl", [native_log("capture control")])
+        # submit is refused. The rule carries a date condition saved in the editor with its optional
+        # time left empty, which the hub stores as an empty time setting: edits and restores keep it.
+        app_id = None
         try:
+            app_id, _ = self._rm_rule("CaptureControl", [native_log("capture control")])
+            form = self._rm_open(app_id, "selectConditions")
+            form = self._rm_submit(app_id, form, control=self._rm_control(form, title="Create New Condition"))
+            capability = next(row["name"] for row in form["fields"] if row["name"].startswith("rCapab"))
+            form = self._rm_submit(app_id, form, fields={capability: "Between two dates"})
+            for _ in range(6):  # each date picker appears after the one before it is set
+                if any(row["name"].startswith("timeStart") for row in form["fields"]):
+                    break
+                unset = next(row for row in form["fields"] if row.get("type") == "enum"
+                             and row.get("value") in (None, "") and row.get("options"))
+                form = self._rm_submit(app_id, form, fields={unset["name"]: unset["options"][0]["value"]})
+            time_field = next(row["name"] for row in form["fields"] if row["name"].startswith("timeStart"))
+            form = self._rm_submit(app_id, form, fields={time_field: ""})
+            self._rm_submit(app_id, form, control=self._rm_control(form, name="hasAll"))
+            blank_times = {name for name, row in self._rm_settings(app_id).items()
+                           if row["type"] == "time" and row.get("value") == ""}
+            assert blank_times == {time_field}, f"the empty optional time was not saved empty: {blank_times}"
             keys = self._rm_backup_keys(app_id)
             self._native_rule_document(app_id)
             self._rm_call({})
@@ -8928,6 +9080,8 @@ def updated() {}
             finally:
                 self._rule_edit_backups(True)
             assert self._rm_backup_keys(app_id) == keys, "a read or a skipped edit took a recovery point"
+            assert blank_times <= {name for name, row in self._rm_settings(app_id).items()
+                                   if row["type"] == "time" and row.get("value") == ""}
             protected = self._rm_update(app_id, [native_log("protected edit")])["backup"]["backupKey"]
             page = self._rm_open(app_id)
             key = page["backup"]["backupKey"]
@@ -8935,13 +9089,22 @@ def updated() {}
                 page = self._rm_submit(app_id, page, fields={"comments": value})
                 assert page["backup"]["backupKey"] == key, page["backup"]
             assert self._rm_backup_keys(app_id) - keys == {protected, key}
+            # Give the time a value, so the restore has to write the empty setting back.
+            timed = self._rm_open(app_id, "selectConditions")
+            timed = self._rm_submit(app_id, timed, control=self._rm_control(timed, title="Edit Condition"))
+            timed = self._rm_submit(app_id, timed, fields={time_field: "2026-01-01T09:15:00.000+0000"})
+            self._rm_submit(app_id, timed, control=self._rm_control(timed, name="hasAll"))
+            assert self._rm_settings(app_id)[time_field].get("value") not in (None, ""), "the time was not set"
             assert self._rm_restore(key).get("success") is True
+            assert blank_times <= {name for name, row in self._rm_settings(app_id).items()
+                                   if row["type"] == "time" and row.get("value") == ""}
             assert self._rm_values(app_id).get("comments") in (None, "")
             self._rm_refused(self._rm_call({"operation": "form", "rule_id": app_id, "confirm": True, "args": {
                 "steps": [self._rm_step(page, fields={"comments": "stale edit must not apply"})]}}))
             assert self._rm_values(app_id).get("comments") in (None, "")
         finally:
-            self._delete_native(app_id)
+            if app_id is not None:
+                self._delete_native(app_id)
 
     def _native_form_control(self, app_id: Any, page: str, name: str) -> dict:
         opened = self.client.call_tool("hub_set_rule", {"operation": "form", "rule_id": int(app_id),
@@ -11644,17 +11807,18 @@ def updated() {}
                 f"type=Number listing is wrong: {typed_names}"
             assert typed.get("ruleVariables") == [], "a typed listing must leave rule-engine variables out"
             # increment adds atomically on the hub and reports both values. Right after the bulk
-            # create the platform load limiter can refuse the call: bounce it, and retry only when
-            # the read-back shows the first attempt added nothing (a retry must never add twice).
-            # The penalty window can outlast one bounce, so a refused call is retried after a
-            # bounce and then two short waits.
+            # create the platform load limiter can refuse the call: reset the runtime statistics,
+            # and retry only when the read-back shows the first attempt added nothing (a retry must
+            # never add twice). A refused call is retried after the reset and then after two short
+            # waits, which stay for runs whose reset fails (no watchdog): the busy budget grows with
+            # uptime, so a call just over the limit can clear without one.
             inc = self.client.call_tool("hub_manage_variables", {
                 "tool": "hub_set_variable", "args": {"name": names[0], "increment": 5}})
             for wait_s in (0, 10, 20):
                 if "excessive hub load" not in str(inc.get("error", "")):
                     break
                 if wait_s == 0:
-                    self._clear_load_throttle(f"increment: {inc.get('error')}")
+                    self._reset_app_runtime_stats(f"increment: {inc.get('error')}")
                 else:
                     time.sleep(wait_s)
                 now_val = self.client.call_tool("hub_manage_variables", {
@@ -12139,7 +12303,7 @@ def updated() {}
             f"source-backup listing must report the storage budget: {src}"
         policy = str(src.get("retentionPolicy"))
         assert "maxBackups" not in src and "10 MB storage budget" in policy and "oldest first" in policy \
-            and "newest backup" in policy, f"source-backup listing must describe the budget-only retention policy: {src}"
+            and "stay over it" in policy, f"source-backup listing must describe the budget-only retention policy: {src}"
         for entry in src["backups"]:
             assert "retention" not in entry, f"a backup entry must carry no retention kind: {entry}"
 
@@ -12416,9 +12580,9 @@ def updated() {}
         #   6 rejection gates (cheap, fail before any hub write): delete-without-confirm, missing/unknown
         #     action, activate missing/unknown, rename unknown target, invalid manager, no-arg manager
         #   7 delete WITH confirm -> asserts success + deletedModeId + the mode is gone
-        # Every server-app write goes through _mode_call: on an "excessive hub load" block it bounces
-        # the app via the watchdog and retries once (the limiter contract the dispatch tests use) --
-        # coverage is unchanged, only a throttled call is retried. The hub is sacrificial +
+        # Every server-app write goes through _mode_call: on an "excessive hub load" block it resets
+        # the runtime statistics via the watchdog and retries once (the limiter contract the dispatch
+        # tests use) -- coverage is unchanged, only a limited call is retried. The hub is sacrificial +
         # watchdog-recoverable; the runner's startup backup satisfies the delete confirm gate.
         # NOTE: the SDK fallback in hub_list_modes and the structured create/delete write-FAILURE
         # contracts need fault injection / firmware-dependent states (a duplicate-name or
@@ -12435,7 +12599,7 @@ def updated() {}
             try:
                 return self.client.call_tool(name, args)
             except McpToolError as exc:
-                if "excessive hub load" in str(exc) and self._clear_load_throttle(f"{label}: {exc}"):
+                if "excessive hub load" in str(exc) and self._reset_app_runtime_stats(f"{label}: {exc}"):
                     return self.client.call_tool(name, args)
                 raise
 
@@ -12706,6 +12870,7 @@ def updated() {}
             "- **Protocol version:** ",
             "- **Model:** ",
             "## MCP Server Settings",
+            "- **Reset app runtime statistics automatically:** ",
             "## Verbatim Tool Calls",
             "## Client-Side Logs",
             "## Recent Error/Warning Logs",
@@ -12864,13 +13029,13 @@ def updated() {}
         #   2 out-of-range latitude is rejected by validation (-32602) before any hub write
         #   3 the timeZone leg's confirm gate REJECTS without confirm AND the hub's timeZone is
         #     unchanged afterward (no reboot, nothing mutated)
-        # Every write goes through _set_call so an "excessive hub load" limiter trip bounces the app via
-        # the watchdog and retries once -- the same contract the mode-lifecycle test uses.
+        # Every write goes through _set_call so an "excessive hub load" limiter trip resets the runtime
+        # statistics via the watchdog and retries once -- the same contract the mode-lifecycle test uses.
         def _set_call(args: dict, label: str) -> Any:
             try:
                 return self.client.call_tool("hub_set_system_settings", args)
             except McpToolError as exc:
-                if "excessive hub load" in str(exc) and self._clear_load_throttle(f"{label}: {exc}"):
+                if "excessive hub load" in str(exc) and self._reset_app_runtime_stats(f"{label}: {exc}"):
                     return self.client.call_tool("hub_set_system_settings", args)
                 raise
 
@@ -12942,9 +13107,8 @@ def updated() {}
         # hub_set_system_settings(darkMode) sets the admin-UI theme via an INDEPENDENT setter
         # (GET /hub/applyDarkMode/<bool>, HTTP 200 empty, no read-back -- /hub/details/json has no
         # dark/theme key). FIRMWARE-TOLERANT: /hub/applyDarkMode may not exist on older firmware
-        # (it 404s, the same way /device/setShowOnHome did on 2.5.0.157). The tool then returns a
-        # structured {success:false, error:"Failed to apply dark mode: ..."} envelope (NOT isError,
-        # so call_tool hands it back as a dict). Treat a genuine endpoint-absent failure as a CLEAN
+        # (it 404s there). The tool then returns a structured {success:false, error:"Failed to apply
+        # dark mode: ..."} envelope (NOT isError, so call_tool hands it back as a dict). Treat a genuine endpoint-absent failure as a CLEAN
         # SKIP, distinct from a flaky relay 504 (which the runner retries). Sets dark then reverts to
         # light so the hub theme is left as we found it.
         def _dark_call(on: bool) -> Any:
@@ -12953,7 +13117,7 @@ def updated() {}
                 return self.client.call_tool("hub_set_system_settings", args)
             except McpToolError as exc:
                 msg = str(exc)
-                if "excessive hub load" in msg and self._clear_load_throttle(f"darkMode={on}: {exc}"):
+                if "excessive hub load" in msg and self._reset_app_runtime_stats(f"darkMode={on}: {exc}"):
                     return self.client.call_tool("hub_set_system_settings", args)
                 # A darkMode failure can also surface as an isError-raised McpToolError; a
                 # firmware-absent endpoint is a clean skip, a relay 504 a retryable failure.
@@ -13421,7 +13585,8 @@ def updated() {}
 
     @test("system_tools")
     def test_delete_logs_mcp_starts_a_new_log(self) -> None:
-        """Clearing the MCP log starts a new log: no entry from before the clear comes back."""
+        """Clearing the MCP log starts a new log: no entry from before the clear comes back. Deleting
+        the app runtime statistics needs confirm and leaves the server app's total at 0."""
         # A refusal writes a validation-error line, so the log holds at least one entry to clear.
         self._expect_tool_refusal("hub_read_diagnostics", {"tool": "hub_get_logs", "args": {"mode": "mcp", "source": "x"}},
                                   "Unknown parameter for hub_get_logs: source")
@@ -13437,6 +13602,40 @@ def updated() {}
         assert isinstance(after.get("entries"), list), f"MCP log after clear: {after}"
         assert all((e.get("timestamp") or 0) > last for e in after["entries"]), \
             f"entries from before the clear came back: {after}"
+        # The app runtime statistics (Logs > App Stats) are deleted only with confirm, and the reset
+        # is read back: the server app's own total drops (to 0 unless other server work ran meanwhile).
+        self._expect_tool_refusal("hub_manage_logs", {
+            "tool": "hub_delete_logs", "args": {"mode": "appRuntimeStats", "confirm": False}}, "confirm")
+        # App Stats' own uptime (time since its last reset) before the reset, for a fallback proof below.
+        uptime_before = self._apps_uptime_seconds()
+        stats = self.client.call_tool("hub_manage_logs", {
+            "tool": "hub_delete_logs", "args": {"mode": "appRuntimeStats", "confirm": True}})
+        assert stats.get("success") is True, f"appRuntimeStats reset: {stats}"
+        if stats.get("verified") is not True:
+            # Over the cloud both Logs reads share the request's time budget; a large hub can leave one
+            # still in progress. Then prove this reset another way: App Stats' uptime went DOWN, which
+            # only a reset does (it otherwise only grows).
+            assert "still in progress" in str(stats.get("note", "")), f"appRuntimeStats reset not verified: {stats}"
+            uptime_after = self._apps_uptime_seconds()
+            assert uptime_before is not None and uptime_after is not None and uptime_after < uptime_before, \
+                f"App Stats did not restart at the reset (appsUptime {uptime_before} s -> {uptime_after} s): {stats}"
+            return
+        before_ms = (stats.get("before") or {}).get("totalMs")
+        after_ms = (stats.get("after") or {}).get("totalMs")
+        assert isinstance(before_ms, (int, float)) and isinstance(after_ms, (int, float)) and \
+            (after_ms == 0 or after_ms < before_ms), f"the reset must drop the server app's total: {stats}"
+
+    def _apps_uptime_seconds(self) -> int | None:
+        """App Stats' uptime (since its last reset) from hub_get_logs(mode='apps'), polled up to 60 s."""
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline:
+            summary = (self.client.call_tool("hub_read_diagnostics", {
+                "tool": "hub_get_logs", "args": {"mode": "apps"}}) or {}).get("summary") or {}
+            seconds = _uptime_seconds(summary.get("appsUptime"))
+            if seconds is not None:
+                return seconds
+            time.sleep(5)
+        return None
 
     @test("system_tools")
     def test_manage_rooms_list(self) -> None:
@@ -13869,7 +14068,7 @@ def updated() {}
                 # the pass criterion. An independent hub_list_files cross-check is nice for the
                 # log, but it MUST NOT gate the test: under peak full-suite load the File
                 # Manager listing degrades to a blind empty page (hub-wide saturation, which a
-                # per-app bounce cannot restore in-run). The only listing outcome worth failing
+                # runtime-statistics reset cannot restore in-run). The only listing outcome worth failing
                 # on is an AUTHORITATIVE listing that enumerates files while omitting THIS one --
                 # a real contradiction of the affirmed success, not a load artifact.
                 result = outcome["response"]
@@ -14856,7 +15055,7 @@ def updated() {}
                     steps.append({**pane_and_room, "preferences": record.get("preferences") or {}, "confirm": True})
                 for patch in steps:
                     result = self.client.call_tool("hub_manage_devices", {
-                        "tool": "hub_update_device", "args": {"deviceId": device_id, **patch}})
+                        "tool": "hub_update_device", "args": device_update_args(device_id, patch)})
                     if not isinstance(result, dict) or result.get("success") is not True or result.get("errors"):
                         raise AssertionError(f"restore patch {sorted(patch)} rejected: {result}")
                 readback = self.client.call_tool("hub_get_device", {"deviceId": device_id})
@@ -14895,7 +15094,7 @@ def updated() {}
                 try:
                     self._set_device_bypass(True)
                     result = self.client.call_tool("hub_manage_devices", {
-                        "tool": "hub_update_device", "args": {"deviceId": dev_id, "label": label}})
+                        "tool": "hub_update_device", "args": {"deviceId": dev_id, "fields": {"label": label}}})
                     assert result.get("success") is True and not result.get("errors"), result
                     print(f"    renamed '{candidates[0].get('label')}' (ID: {dev_id}) back to '{label}'")
                     candidates[0]["label"] = label
@@ -14980,7 +15179,7 @@ def updated() {}
                 steps.append(step)
             for patch in steps:
                 result = self.client.call_tool("hub_manage_devices", {
-                    "tool": "hub_update_device", "args": {"deviceId": device_id, **patch}})
+                    "tool": "hub_update_device", "args": device_update_args(device_id, patch)})
                 if not isinstance(result, dict) or result.get("success") is not True or result.get("errors"):
                     raise AssertionError(f"canonical patch {sorted(patch)} rejected: {result}")
             print(f"    reconciled '{profile['label']}' (ID: {device_id}) to the canonical baseline: "
@@ -15024,11 +15223,13 @@ def updated() {}
         def _authorized_ids(devices: list[dict] | None = None) -> set[str]:
             rows = devices if devices is not None else (self._device_allowlist_inventory().get("devices") or [])
             return {str(d["id"]) for d in rows if d.get("mcpAuthorized")}
-        def _scope(mode: str, ids: list[str]) -> dict:
+        def _scope(mode: str, ids: list[str], allow_empty: bool = False) -> dict:
+            scope: dict = {"mode": mode, "ids": ids}
+            if allow_empty:
+                scope["allowEmpty"] = True
             return self.client.call_tool("hub_manage_mcp", {
                 "tool": "hub_update_mcp_settings",
-                "args": {"settings": {"selectedDevices": {"mode": mode, "ids": ids}},
-                         "confirm": True},
+                "args": {"settings": {"selectedDevices": scope}, "confirm": True},
             })
 
         all_devices = self._device_allowlist_inventory().get("devices") or []
@@ -15046,6 +15247,7 @@ def updated() {}
             raise SkipTest("no unauthorized device available to exercise the selectedDevices scope")
 
         added_ok = False
+        was_empty = False
         try:
             add = _scope("add", [unauth])
             assert add.get("success") is True, f"add did not succeed: {add}"
@@ -15053,13 +15255,17 @@ def updated() {}
             assert scope.get("mode") == "add", f"mode not echoed: {add}"
             assert unauth in (scope.get("added") or []), f"added list missing the id: {add}"
             assert unauth in (scope.get("authorizedDeviceIds") or []), f"resulting set missing the id: {add}"
+            # The selected set was empty before the add when it now holds only the added id.
+            was_empty = set(scope.get("authorizedDeviceIds") or []) == {unauth}
             added_ok = True
             # The device now reads back as authorized.
             assert unauth in _authorized_ids(), "device did not become mcpAuthorized after add"
         finally:
-            # Always restore: remove the id we added so the scope returns to its original set.
+            # Always restore: remove the id we added so the scope returns to its original set. An
+            # originally empty selected set is restored to empty, which the self-lockout guard only
+            # allows with allowEmpty.
             if added_ok:
-                rem = _scope("remove", [unauth])
+                rem = _scope("remove", [unauth], allow_empty=was_empty)
                 assert rem.get("success") is True, f"remove (restore) did not succeed: {rem}"
                 scope = rem.get("selectedDevices") or {}
                 assert unauth in (scope.get("removed") or []), f"removed list missing the id: {rem}"
@@ -15179,7 +15385,7 @@ def updated() {}
             ("hub_get_device", {"deviceId": unauth}),
             ("hub_get_device_attribute", {"deviceId": unauth, "attribute": "switch"}),
             ("hub_list_device_events", {"deviceId": unauth}),
-            ("hub_update_device", {"deviceId": unauth, "label": f"{SCAFFOLD_PREFIX}Configuration_StandaloneBypass"}),
+            ("hub_update_device", {"deviceId": unauth, "fields": {"label": f"{SCAFFOLD_PREFIX}Configuration_StandaloneBypass"}}),
             ("hub_call_device_command", {"deviceId": unauth, "command": "captureConfiguration", "parameters": ["0"]}),
             ("hub_list_device_dependents", {"deviceId": unauth}),
         ]
@@ -15238,13 +15444,13 @@ def updated() {}
             })
             label_field = next((field for field in configuration.get("editableFields", [])
                                 if field.get("name") == "label"), {})
-            orig_label = label_field.get("value") if label_field.get("valuePresent") is True else None
+            orig_label = label_field.get("value")
             cmd_names = [c.get("name") for c in (dev.get("commands") or []) if isinstance(c, dict)]
             orig_room = dev.get("room")
 
             assert isinstance(orig_label, str), f"Owned fixture label is not restorable: {label_field}"
             try:
-                up = self.client.call_tool("hub_update_device", {"deviceId": unauth, "label": f"{orig_label} _BWTEST"})
+                up = self.client.call_tool("hub_update_device", {"deviceId": unauth, "fields": {"label": f"{orig_label} _BWTEST"}})
                 assert up.get("success") is True, f"bypass label rename did not succeed: {up}"
                 assert any(c.get("property") == "label" for c in (up.get("changes") or [])), \
                     f"bypass label change not recorded: {up}"
@@ -15253,7 +15459,7 @@ def updated() {}
                 })
                 assert next(row["value"] for row in observed["editableFields"] if row["name"] == "label") == f"{orig_label} _BWTEST"
             finally:
-                restore = self.client.call_tool("hub_update_device", {"deviceId": unauth, "label": orig_label})
+                restore = self.client.call_tool("hub_update_device", {"deviceId": unauth, "fields": {"label": orig_label}})
                 assert restore.get("success") is True, f"bypass label restore did not succeed: {restore}"
                 observed = self.client.call_tool("hub_get_device", {
                     "deviceId": unauth, "mode": "configuration", "fields": ["label"],
@@ -15276,17 +15482,24 @@ def updated() {}
             observed = self.client.call_tool("hub_get_device_attribute", {"deviceId": unauth, "attribute": "nativeConfiguration"})
             assert json.loads(observed["value"]).get("nonce") == nonce, f"Bypass native command did not execute: {observed}"
 
-            # (c) room assign via /device/updateRoom, re-assigning to the SAME room (a no-op move that
-            # proves the NAME-keyed endpoint returns true without relocating the device).
-            if not orig_room:
-                print(f"    [BYPASS LEG SKIPPED] leg (c): device {unauth} is in no room, so the "
-                      f"UNLISTED-device path for /device/updateRoom was not exercised this run "
-                      f"(the endpoint itself is covered unconditionally elsewhere)")
-            if orig_room:
-                rr = self.client.call_tool("hub_update_device", {"deviceId": unauth, "room": orig_room})
-                assert rr.get("success") is True, f"bypass same-room re-assign did not succeed: {rr}"
-                assert any(c.get("property") == "room" for c in (rr.get("changes") or [])), \
-                    f"bypass room change not recorded: {rr}"
+            # (c) room assignment on an unlisted device through the Device Info save. The leg owns its
+            # input: it moves the device into the standing KEEP_ room and puts the original assignment
+            # back; re-saving the room it already has must report it unchanged and move nothing.
+            target_room = orig_room or f"{SCAFFOLD_PREFIX}Room"
+            try:
+                rr = self.client.call_tool("hub_update_device", {"deviceId": unauth, "fields": {"room": target_room}})
+                assert rr.get("success") is True, f"bypass room assign did not succeed: {rr}"
+                if orig_room:
+                    assert rr.get("changes") == [] and rr.get("unchanged") == ["room"], \
+                        f"bypass same-room re-save must report the room unchanged: {rr}"
+                else:
+                    assert any(c.get("property") == "room" and c.get("newValue") == target_room
+                               for c in (rr.get("changes") or [])), f"bypass room change not recorded: {rr}"
+            finally:
+                if not orig_room:
+                    back = self.client.call_tool("hub_update_device", {"deviceId": unauth, "fields": {"room": ""}})
+                    if not isinstance(back, dict) or back.get("success") is not True:
+                        self._fixture_reset_failures.append(f"bypass leg (c): clearing the room on {unauth} failed: {back}")
 
             # (d) reject a guaranteed undeclared preference before mutation. Positive native
             # saves/readback run in the configuration matrix; this boundary test preserves preferences.
@@ -15666,7 +15879,7 @@ def updated() {}
         self._set_bps(enableMandatoryBPS=False)
         try:
             self.client.call_tool("hub_manage_devices", {
-                "tool": "hub_update_device", "args": {"deviceId": "999999999", "label": "BAT_E2E_x"}})
+                "tool": "hub_update_device", "args": {"deviceId": "999999999", "fields": {"label": "BAT_E2E_x"}}})
             raise AssertionError("updating a bogus device should have errored")
         except McpError as e:
             msg = str(e)
@@ -15968,7 +16181,7 @@ def updated() {}
                 "expectedValue": "on", "mode": "all", "timeoutMs": 5000,
             })
             assert isinstance(all_poll, dict), f"multi-device all poll unexpected: {all_poll!r}"
-            if all_poll.get("success") is not True and self._clear_load_throttle(
+            if all_poll.get("success") is not True and self._reset_app_runtime_stats(
                     f"multi-device 'on' never landed on both: {all_poll}"):
                 for did in (a_id, b_id):
                     self._native_device_command({
@@ -17362,11 +17575,15 @@ def updated() {}
               f"{total_fail} failed, {total_skip} skipped  "
               f"({total_dur:.1f}s)")
 
-        if self.throttle_bounces:
-            print(f"\n  [THROTTLE] {self.throttle_bounces} watchdog bounce(s) of app "
-                  f"{self.server_app_id or '?'} were attempted after load-limiter errors. "
-                  "A verified app re-enable does not prove dispatch recovered; "
+        if self.limiter_resets:
+            print(f"\n  [LIMITER] {self.limiter_resets} runtime-statistics reset(s) for app "
+                  f"{self.server_app_id or '?'} followed load-limiter errors. "
+                  "A successful reset does not prove dispatch recovered; "
                   "the individual test results above record the outcome.")
+        if self.limiter_reset_failures:
+            print(f"\n  [LIMITER] {self.limiter_reset_failures} runtime-statistics reset(s) for app "
+                  f"{self.server_app_id or '?'} FAILED after load-limiter errors; "
+                  "the [LIMITER] lines above name each one.")
 
         if self._fixture_reset_failures:
             print(f"\n  [FIXTURE-RESET] {len(self._fixture_reset_failures)} permanent-fixture reset(s) FAILED -- "
@@ -17816,7 +18033,7 @@ def main() -> None:
                 assert read.get("value") is not None, \
                     f"fixture '{label}' did not report '{attr}' after priming -- polling tests would throw: {read}"
             print(f"  {key:<10} id={dev_id:<6} '{label}' ({driver}) -- readable, primed")
-        children = client.call_tool("hub_list_devices", {"filter": "virtual"}).get("devices") or []
+        children = client.call_tool("hub_list_devices", {"scope": "owned"}).get("devices") or []
         child_ids = {str(d.get("id")) for d in children}
         overlap = {k: v for k, v in runner._perm_fixture_ids.items() if v in child_ids}
         assert not overlap, \
@@ -17975,6 +18192,13 @@ def main() -> None:
     assert _cap_res.get("success") is True, \
         f"could not disable the global write cap for the run: {_cap_res}"
     print("Write cap: maxConcurrentWrites=0 for the suite (the cap test sets and restores its own)\n")
+
+    # Credential masking ON (its default) for the run, so a run that stopped inside the one test that
+    # turns it off cannot fail the next run's masking assertions.
+    _mask_res = client.call_tool("hub_manage_mcp", {
+        "tool": "hub_update_mcp_settings",
+        "args": {"settings": {"redactCredentials": True}, "confirm": True}})
+    assert _mask_res.get("success") is True, f"could not pin redactCredentials ON for the run: {_mask_res}"
 
     _grps = [s.strip() for s in args.groups.split(",") if s.strip()] if args.groups else None
     _tsts = [s.strip() for s in args.tests.split(",") if s.strip()] if args.tests else None

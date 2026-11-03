@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 5.1.0 - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
+ * Version: 5.1.4 - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -60,10 +60,14 @@ private String _effectiveBackupSetting(String key) {
 // Per execution: never pass this clock into a destructive inner wizard operation.
 @groovy.transform.Field Long mrtrWorkerSliceStartedAt = null
 @groovy.transform.Field Map deviceReadContext = null
+// Set while executeTool runs a leaf inside the load-limiter retry, so nested calls are not retried again.
+@groovy.transform.Field boolean loadLimiterRetryActive = false
 // Per execution: the per-client token this /mcp request came in on ([id, label]), set by
 // _resolveCaller. Null is the main token and non-request contexts (UI, schedules), except an
 // MRTR worker or server-side resume, which restores the client that started the write.
 @groovy.transform.Field Map callerClient = null
+// When this execution's MCP request started; the load-limiter retry weighs its repeat against the time budget.
+@groovy.transform.Field Long requestStartedAt = null
 // JVM-live /logs/json snapshot behind hub_get_logs' stats and job modes (see _logsJsonSnapshot in
 // McpDiagnosticsLib). Keys: snapshot (the page's tables and summary + at), fetchId
 // (monotonic; fences a stale worker's publish), fetchStartedAt (in-flight marker owned by
@@ -83,7 +87,7 @@ private String _effectiveBackupSetting(String key) {
 // parses and serialises the app's whole state blob.
 @groovy.transform.Field static final String ITEM_BACKUP_INDEX_FILE = "mcp-backup-index.json"
 // Default and ceiling for the backupBudgetMb setting: indexed backup bytes kept across every
-// item before the oldest backups are evicted; each item's newest backup stays. The ceiling
+// item before the oldest backups are evicted, whatever item they belong to. The ceiling
 // (1 TB) keeps the byte count far from long overflow.
 @groovy.transform.Field static final long ITEM_BACKUP_DEFAULT_BUDGET_MB = 10L
 @groovy.transform.Field static final long ITEM_BACKUP_MAX_BUDGET_MB = 1000000L
@@ -143,10 +147,6 @@ private String _effectiveBackupSetting(String key) {
 @groovy.transform.Field static final Map LATEST_VERSION_SEEN = new java.util.HashMap()
 // Per-app last recorded header readability; header lookups touch state only on a transition.
 @groovy.transform.Field static final Map HEADERS_READABLE_SEEN = new java.util.HashMap()
-// Hub-wide flag (not per app): non-empty once /device/listWithCapabilities/json answers 404 (removed
-// in 2.5.1.173). A firmware change reboots the hub and clears it, so inventory reads stop paying for
-// the dead first tier.
-@groovy.transform.Field static final Set LEGACY_DEVICE_LIST_GONE = new java.util.HashSet()
 // Per-app migration completion/backoff; lifecycle resets permit another cleanup attempt.
 // Keep this coordination out of durable state so warm requests do no migration I/O.
 @groovy.transform.Field static final Set RETIRED_TOOL_STATE_CLEANED = new java.util.HashSet()
@@ -217,8 +217,7 @@ definition(
 // delete. findDevice/getSelectedDevices stay in this file (generic spine).
 #include mcp.McpDevicesLib
 
-// Virtual-device tools (issue #209 modularization). hub_list_devices'
-// filter=virtual path routes into this library's toolListVirtualDevices.
+// Virtual-device tools (issue #209 modularization).
 #include mcp.McpVirtualDevicesLib
 
 // Hub variable + connector tools (issue #209 modularization). The subscription
@@ -1064,11 +1063,22 @@ def advancedOverridesPage() {
                   description: "Pause a slow multi-step write on a LAN request once this many ms have elapsed (default: 0 = off; positive values below 6000 use 6000; set below your MCP client's request timeout).",
                   defaultValue: 0, range: "0..300000", required: false
         }
+        section("Per-app load limiter") {
+            paragraph "The hub refuses an app's calls (\"generates excessive hub load\") once its busy time on Logs > App Stats passes a share of the hub's uptime. With this on, the server resets the hub's app runtime statistics before that happens, and once more if a call is refused anyway. The reset clears the App Stats tab for every app, not only this one, and restarts every app's limiter count. It runs only while the Write master is on."
+            input "autoResetAppRuntimeStats", "bool", title: "Reset the hub's app runtime statistics automatically",
+                  description: "ON (default): the server keeps itself clear of the per-app load limiter. OFF: nothing is reset automatically; a refused call names hub_delete_logs(mode='appRuntimeStats') for a manual reset.",
+                  defaultValue: true
+        }
         section("Access tokens in responses") {
             paragraph "App pages show their OAuth access tokens in plain text, including this server's own endpoint URLs and the URLs of apps such as Maker API. MCP clients read those pages, so the tokens reach the AI client and its transcripts. Turn this on to hide them in what this server returns. Leave it off if you want the AI to read an endpoint URL for you, for example to set up another app."
             input "redactAccessTokens", "bool", title: "Hide access tokens in MCP responses",
                   description: "Leave OFF (default): tokens are returned as the hub shows them. ON: access_token= URL values and accessToken / access_token fields in tool results are replaced with ***redacted (access token)***.",
                   defaultValue: false
+        }
+        section("Passwords and credentials in responses") {
+            input "redactCredentials", "bool", title: "Hide passwords and credentials in MCP responses",
+                  description: "ON (default): password settings, and app, device and rule values whose names look like credentials (apiKey, brokerPassword, lockCode, alarmPin), read back hidden; the setting is still listed and can still be written. OFF: they are returned as stored. Per-client tokens always see them hidden. File Manager backups leave out password and credential-named settings either way.",
+                  defaultValue: true
         }
         section("Native app edit backups") {
             paragraph "Rule edits take one fresh File Manager snapshot before each changes batch or native editor workflow. A new rule has no earlier version to back up. Delete backups remain enabled independently."
@@ -1080,7 +1090,7 @@ def advancedOverridesPage() {
                   defaultValue: false
         }
         section("Backup storage") {
-            paragraph "Automatic code and rule backups live in File Manager. File Manager files use hub storage and count toward a full local backup's 100 MiB file limit; database backups leave them out. Backups are removed only when they exceed this budget together, oldest first. An item's newest backup, the backup just taken and a restore in progress are never removed, so the budget can stay exceeded once every item is down to one."
+            paragraph "Automatic code and rule backups live in File Manager. File Manager files use hub storage and count toward a full local backup's 100 MiB file limit; database backups leave them out. Backups are removed only when they exceed this budget together, oldest first across every item. Only the backup just taken and a restore in progress are never removed; an item's only backup goes when it is the oldest. When those alone exceed the budget nothing is removed, and the backups stay over it until a later backup's removal reaches them, oldest first."
             input "backupBudgetMb", "number", title: "Backup storage budget (MB)",
                   description: "Total size of the automatic code and rule backups (default: 10; range 1 to 1000000, values outside it use the nearest end).",
                   defaultValue: 10, required: false
@@ -1440,7 +1450,12 @@ def initialize() {
     // rebuilds the schedule set instead of stacking duplicate cron jobs
     // (mirrors the unsubscribe() symmetry below). Must precede schedule() and
     // checkForUpdate() so the immediate run still fires.
-    try { unschedule() }
+    try {
+        unschedule()
+        // The load guard's pending jobs went with it; free their latches so they can be scheduled again.
+        LOAD_GUARD.remove("seedScheduled")
+        LOAD_GUARD.remove("checkPending")
+    }
     catch (Exception e) { setupComplete = false; mcpLog("warn", "server", "unschedule() before re-schedule failed: ${e.message} -- duplicate schedules may persist") }
     _mrtrEnsureCleanupScheduled(true)
     schedule("0 0 3 ? * *", "checkForUpdate")
@@ -1557,6 +1572,296 @@ def handleMcpGet() {
                       "This MCP endpoint is request-response only (POST). SSE/GET streaming is not supported.")))
 }
 
+// ==================== PER-APP LOAD LIMITER GUARD ====================
+// The hub refuses an app's calls ("generates excessive hub load") once this app's busy time since
+// boot plus that of the app or device it calls (its own a second time when it calls itself) passes
+// uptime x the excessive-load threshold (stock 33 %), enforced once uptime passes 15 minutes.
+// resetAppRuntimeStats zeroes every app's busy counter and leaves uptime alone. The server keeps a
+// cheap estimate of its own busy time (request and scheduled-handler wall time, which over-counts:
+// the hub does not charge pauseExecution and some HTTP waits); at 50 % of the limit a check job reads
+// the hub's own total and resets only when that real total is at 50 %. Off while the Advanced
+// toggle autoResetAppRuntimeStats or the Write master is off. Class memory only.
+@groovy.transform.Field static final java.util.concurrent.ConcurrentHashMap LOAD_GUARD = new java.util.concurrent.ConcurrentHashMap()
+@groovy.transform.Field static final long LOAD_GUARD_MIN_UPTIME_S = 900L
+@groovy.transform.Field static final int LOAD_GUARD_DEFAULT_THRESHOLD_PCT = 33
+// 50 %, not near 100: the limiter adds the called app's busy time (or this app's a second time).
+@groovy.transform.Field static final long LOAD_GUARD_CHECK_PCT = 50L
+// A check or reset that did not answer ok is tried again this long after it, not on every request.
+@groovy.transform.Field static final long LOAD_GUARD_RESET_RETRY_MS = 5L * 60L * 1000L
+// After a check found the hub's total under the line, the next one waits this long: the estimate it
+// set sits just under the line, and real busy time gains at most this much meanwhile.
+@groovy.transform.Field static final long LOAD_GUARD_CHECK_SPACING_MS = 60000L
+// A job latch older than this is free again: its job never ran or died without clearing it.
+@groovy.transform.Field static final long LOAD_GUARD_LATCH_STALE_MS = 60000L
+@groovy.transform.Field static final String LOAD_LIMITER_TWICE_HINT = "The hub's per-app load limiter refused this call twice; reset the hub's app runtime statistics with hub_manage_logs(tool='hub_delete_logs', args={mode:'appRuntimeStats', confirm:true}) and retry."
+
+// The automatic reset follows its Advanced toggle (default on) and the Write master.
+boolean _loadGuardAutoResetEnabled() {
+    return settings?.autoResetAppRuntimeStats != false && settings?.enableWrite != false
+}
+
+def handleMcpRequest() {
+    long t0 = now()
+    requestStartedAt = t0
+    _loadGuardBeforeRequest()
+    try {
+        return _handleMcpRequestBody()
+    } finally {
+        _loadGuardAdd(now() - t0)
+    }
+}
+
+// Runs a scheduled handler's body and adds its wall time to the estimate.
+def _loadGuardTimed(Closure body) {
+    long t0 = now()
+    try {
+        return body.call()
+    } finally {
+        _loadGuardAdd(now() - t0)
+    }
+}
+
+long _loadGuardBusyMs() { (LOAD_GUARD.busyMs ?: 0L) as long }
+
+private void _loadGuardAdd(long ms) {
+    if (ms <= 0L) return
+    synchronized (LOAD_GUARD) { LOAD_GUARD.busyMs = _loadGuardBusyMs() + ms }
+}
+
+void _loadGuardZero() {
+    synchronized (LOAD_GUARD) { LOAD_GUARD.busyMs = 0L }
+}
+
+// uptime s x threshold % / 100 x 1000 ms
+long _loadGuardLimitMs(long uptimeS) {
+    return uptimeS * ((LOAD_GUARD.thresholdPct ?: LOAD_GUARD_DEFAULT_THRESHOLD_PCT) as long) * 10L
+}
+
+// A latch holds the time it was taken; one older than LOAD_GUARD_LATCH_STALE_MS is taken over.
+// Returns the stamp taken, or null when the latch is held.
+private Long _loadGuardClaim(String key) {
+    long t = now()
+    def prev = LOAD_GUARD.putIfAbsent(key, t)
+    if (prev == null) return t
+    if (!(prev instanceof Number) || t - (prev as long) < LOAD_GUARD_LATCH_STALE_MS) return null
+    return LOAD_GUARD.replace(key, prev, t) ? t : null
+}
+
+// The job receives its latch stamp and frees only that latch, never one a later job took over.
+private void _loadGuardSchedule(String key, String handler) {
+    Long stamp = _loadGuardClaim(key)
+    if (stamp == null) return
+    try {
+        runIn(0, handler, [data: [stamp: stamp]])
+    } catch (Exception e) {
+        LOAD_GUARD.remove(key, stamp)
+        mcpLog("warn", "server", "Could not schedule ${handler}: ${e.message}")
+    }
+}
+
+private void _loadGuardRelease(String key, Map data) {
+    if (data?.stamp instanceof Number) LOAD_GUARD.remove(key, data.stamp as long)
+    else LOAD_GUARD.remove(key)
+}
+
+// Per request: a few class-memory reads and one compare; it only schedules, never calls the hub.
+private void _loadGuardBeforeRequest() {
+    long upS
+    try {
+        def raw = location?.hub?.uptime
+        if (raw == null) return
+        upS = raw as long
+    } catch (Exception ignored) { return }
+    def last = LOAD_GUARD.lastUptimeS
+    // Defensive: a reboot restarts the JVM, so class memory is already empty after one.
+    if (last != null && upS < (last as long)) _loadGuardZero()
+    LOAD_GUARD.lastUptimeS = upS
+    if (!_loadGuardAutoResetEnabled()) return
+    def seedFailedAt = LOAD_GUARD.seedFailedAt
+    if (LOAD_GUARD.seeded != true && (seedFailedAt == null || now() - (seedFailedAt as long) >= LOAD_GUARD_RESET_RETRY_MS)) {
+        _loadGuardSchedule("seedScheduled", "_seedLoadGuardJob")
+    }
+    if (upS < LOAD_GUARD_MIN_UPTIME_S || _loadGuardBusyMs() * 100L < _loadGuardLimitMs(upS) * LOAD_GUARD_CHECK_PCT) return
+    def failedAt = LOAD_GUARD.resetFailedAt
+    if (failedAt != null && now() - (failedAt as long) < LOAD_GUARD_RESET_RETRY_MS) return
+    def checkedAt = LOAD_GUARD.checkedAt
+    if (checkedAt != null && now() - (checkedAt as long) < LOAD_GUARD_CHECK_SPACING_MS) return
+    _loadGuardSchedule("checkPending", "_loadGuardCheckJob")
+}
+
+// The hub's excessive-load threshold %. fresh reads the hub even when a value is cached (each check
+// does, so a changed setting is picked up). Only a valid read is cached; a failed one uses the
+// cached value, or 33, this time.
+int _loadGuardThresholdPct(boolean fresh = false) {
+    def cached = LOAD_GUARD.thresholdPct
+    if (cached != null && !fresh) return cached as int
+    Integer pct = null
+    String why = null
+    try {
+        def m = (hubInternalGet("/hub/advanced/getExcessiveLoadThreshold", null, 10)?.toString() ?: "") =~ /(\d+)/
+        if (m.find()) pct = m.group(1) as Integer
+        if (pct == null || pct <= 0 || pct > 100) why = "the hub answered ${pct == null ? 'no number' : pct + ' %'}".toString()
+    } catch (Exception e) {
+        why = "${e.class.simpleName}: ${e.message}".toString()
+    }
+    if (why != null) {
+        int fallback = cached != null ? (cached as int) : LOAD_GUARD_DEFAULT_THRESHOLD_PCT
+        mcpLog("warn", "server", "The hub's excessive-load threshold is unreadable (${why}); using ${fallback} % until a later read works")
+        return fallback
+    }
+    LOAD_GUARD.thresholdPct = pct
+    return pct
+}
+
+// Once per code load: the hub's threshold, and this app's busy time the hub already counted. A
+// failure frees the latch and backs off LOAD_GUARD_RESET_RETRY_MS, so an unreadable Logs page never
+// costs a fetch per request.
+def _seedLoadGuardJob(Map data = null) {
+    _loadGuardThresholdPct()
+    Map own = _logsJsonOwnAppStat(true)
+    if (own.missing == true) own = [totalMs: 0L]   // the hub lists only apps with activity since the last reset
+    if (own.totalMs != null) {
+        synchronized (LOAD_GUARD) { LOAD_GUARD.busyMs = Math.max(_loadGuardBusyMs(), own.totalMs as long) }
+        LOAD_GUARD.seeded = true
+        LOAD_GUARD.remove("seedFailedAt")
+    } else {
+        LOAD_GUARD.seedFailedAt = now()
+        mcpLog("warn", "server", "The load-limiter estimate could not be seeded from the Logs page (${own.error}); it is tried again in ${LOAD_GUARD_RESET_RETRY_MS / 60000L} minutes")
+    }
+    _loadGuardRelease("seedScheduled", data)
+}
+
+// Scheduled at 50 % of the estimate: replaces the estimate with the hub's own total for this app
+// (which may lower it) and resets only when that real total is at 50 % of the limit.
+def _loadGuardCheckJob(Map data = null) {
+    try {
+        if (!_loadGuardAutoResetEnabled()) return
+        _loadGuardThresholdPct(true)
+        Map own = _logsJsonOwnAppStat(true)
+        if (own.missing == true) own = [totalMs: 0L]   // the hub lists only apps with activity since the last reset
+        if (own.totalMs == null) {
+            LOAD_GUARD.resetFailedAt = now()
+            mcpLog("warn", "server", "The load-limiter check could not read this app's App Stats row (${own.error}); it is tried again in ${LOAD_GUARD_RESET_RETRY_MS / 60000L} minutes")
+            return
+        }
+        long total = own.totalMs as long
+        long estimate
+        synchronized (LOAD_GUARD) {
+            estimate = _loadGuardBusyMs()
+            LOAD_GUARD.busyMs = total
+        }
+        def up = LOAD_GUARD.lastUptimeS
+        long limit = up != null ? _loadGuardLimitMs(up as long) : 0L
+        boolean due = limit > 0L && total * 100L >= limit * LOAD_GUARD_CHECK_PCT
+        mcpLog("debug", "server", "load guard check: hub total ${total} ms of ${limit} ms limit (estimate was ${estimate} ms); reset: ${due ? 'yes' : 'no'}")
+        if (!due) {
+            LOAD_GUARD.checkedAt = now()
+            return
+        }
+        String reply = _resetAppRuntimeStatsNow()
+        if (reply == "ok") {
+            LOAD_GUARD.remove("resetFailedAt")
+            LOAD_GUARD.remove("resetFailNoted")
+            mcpLog("warn", "server", "The hub's app runtime statistics were reset before the per-app load limiter tripped: busy ${total} ms of ${limit} ms")
+        } else {
+            LOAD_GUARD.resetFailedAt = now()
+            if (LOAD_GUARD.putIfAbsent("resetFailNoted", true) == null) {
+                mcpLog("warn", "server", "The hub did not reset its app runtime statistics (${reply ?: 'empty reply'}); the server tries again in ${LOAD_GUARD_RESET_RETRY_MS / 60000L} minutes")
+            }
+        }
+    } finally {
+        _loadGuardRelease("checkPending", data)
+    }
+}
+
+// GETs the reset over loopback; "ok" zeroes the guard's estimate. Returns the reply, or the failure.
+String _resetAppRuntimeStatsNow(int timeoutS = 10) {
+    String reply
+    try {
+        reply = hubInternalGet("/hub/advanced/resetAppRuntimeStats", null, timeoutS)?.toString()?.trim()
+    } catch (Exception e) {
+        return "${e.class.simpleName}: ${e.message}".toString()
+    } finally {
+        _logsJsonInvalidate()   // the cached App Stats are stale either way
+    }
+    if (reply == "ok") _loadGuardZero()
+    return reply
+}
+
+// A tool the limiter refused is reset and repeated once when it is a read or a retry-safe write.
+// Any other write may have run earlier steps before the refusal, so it is not repeated blindly.
+// Nothing is reset while the automatic reset or the Write master is off; nothing is repeated when
+// the reset did not answer ok or half the request's time budget is spent.
+private _executeToolWithLoadLimiterRetry(toolName, args, boolean bpsChecked) {
+    def failure
+    try {
+        def result = executeTool(toolName, args, bpsChecked)
+        if (!_loadLimiterRefusedResult(result)) return result
+        failure = result
+    } catch (IllegalArgumentException e) {
+        throw e
+    } catch (Exception e) {
+        if (!_loadLimiterRefusedMessage(e.message)) throw e
+        failure = e
+    }
+    if (!_loadGuardAutoResetEnabled()) {
+        String manual = "hub_manage_logs(tool='hub_delete_logs', args={mode:'appRuntimeStats', confirm:true})"
+        String turnOn = "turn on 'Reset the hub's app runtime statistics automatically' under Advanced in the MCP Rule Server app settings"
+        String msg
+        // hub_delete_logs is itself a write, so each caller is told the remedy it can actually use.
+        if (settings?.enableWrite == false) {
+            msg = "the Write master is off, so the hub's app runtime statistics were not reset. The hub owner can turn on 'Write Tools' in the MCP Rule Server app settings (the server then resets them itself while the automatic reset is on) and retry."
+        } else if (callerClient != null && !_clientAllows(callerClient.id.toString(), "clientWrite")) {
+            msg = "the automatic reset is off in Advanced settings, so the hub's app runtime statistics were not reset, and this client may not write, so it cannot reset them itself. The hub owner can ${turnOn}, allow writes for this client, or reset them from a client that may write with ${manual}; then retry."
+        } else {
+            msg = "the automatic reset is off in Advanced settings, so the hub's app runtime statistics were not reset. Reset them with ${manual} and retry, or have the hub owner ${turnOn}."
+        }
+        if (!getIdempotentToolNames().contains(toolName?.toString())) {
+            msg += " This write may have run some steps before the refusal; check its target before calling it again."
+        }
+        return _loadLimiterFailure(failure, "The hub's per-app load limiter refused this call and ${msg}")
+    }
+    String reply = _resetAppRuntimeStatsNow()
+    boolean resetOk = reply == "ok"
+    String resetNote = resetOk ? "The hub's app runtime statistics were reset." : "Resetting the hub's app runtime statistics failed (${reply ?: 'empty reply'})."
+    mcpLog("warn", "server", "The per-app load limiter refused ${toolName}. ${resetNote}")
+    if (!resetOk) return _loadLimiterFailure(failure, "${resetNote} The call is not repeated; retry it once the hub answers.")
+    if (!getIdempotentToolNames().contains(toolName?.toString())) {
+        return _loadLimiterFailure(failure, "${resetNote} This write is not repeated automatically because it may have run some steps before the refusal; check its target, then call it again.")
+    }
+    // Past half the request's time budget the repeat could outrun it, so it is left to the client.
+    long budget = _isCloudRequest() ? _relayBudgetMs() : _lanBudgetMs()
+    if (budget > 0L && requestStartedAt != null && now() - requestStartedAt > budget.intdiv(2)) {
+        return _loadLimiterFailure(failure, "${resetNote} The call is not repeated within this request's time budget; call it again.")
+    }
+    try {
+        def result = executeTool(toolName, args, bpsChecked)
+        if (!_loadLimiterRefusedResult(result)) return result
+        failure = result
+    } catch (IllegalArgumentException e) {
+        throw e
+    } catch (Exception e) {
+        if (!_loadLimiterRefusedMessage(e.message)) throw e
+        failure = e
+    }
+    return _loadLimiterFailure(failure, LOAD_LIMITER_TWICE_HINT)
+}
+
+private boolean _loadLimiterRefusedMessage(msg) {
+    return msg != null && msg.toString().toLowerCase().contains("excessive hub load")
+}
+
+private boolean _loadLimiterRefusedResult(result) {
+    return result instanceof Map && result.success == false && _loadLimiterRefusedMessage(result.error)
+}
+
+private _loadLimiterFailure(failure, String hint) {
+    if (failure instanceof Exception) throw new RuntimeException("${failure.message} ${hint}".toString(), failure)
+    Map out = [:] + (failure as Map)
+    out.error = "${out.error} ${hint}".toString()
+    return out
+}
+
 // Transport contract: application-level JSON-RPC errors ride HTTP 200 -- do NOT convert them
 // to 4xx, legacy clients expect the error inside the body. Every non-200 is spec-mandated
 // except the per-client token refusals, which are the app's own authorization:
@@ -1579,7 +1884,8 @@ def handleMcpGet() {
 // "MODERN" = the header's VALUE is a modern-era version (2026-07-28 or later), not its
 // presence (see the era split below). Legacy revisions keep every pre-2026 behaviour,
 // batch included.
-def handleMcpRequest() {
+// The load guard (handleMcpRequest above) runs before the transport check below.
+def _handleMcpRequestBody() {
     if (!_transportEnabled()) return _transportDisabledResponse()
     // Streamable HTTP security MUST: validate Origin on every inbound POST to
     // block DNS rebinding. Right after the transport check, so a rejected request costs
@@ -2477,14 +2783,14 @@ def _resourceCatalog() {
             uri: "hubitat://context-summary",
             name: "context-summary",
             title: "Live Context Summary",
-            description: "One-read plain-text house snapshot: current mode (+ HSM when available) and one line per MCP-visible device -- 'Label (id, room) - capabilities; attr=value, ...'. Served from one bulk hub read: attribute values are strings with NO unit suffix; devices the bulk read does not cover are read one by one up to a cap of 20 and the rest are marked '(state unavailable)'. Truncates on very large inventories (with an explicit marker). hub_list_devices format='context' is the paginated/filtered form and differs: it reads each page's devices natively and appends units to values.",
+            description: "Plain-text house snapshot: current mode (+ HSM when available) and one line per MCP-visible device -- 'Label (id, room) - capabilities; attr=value, ...', with values as the hub's Devices page shows them (no units). Truncates on very large inventories (with an explicit marker); hub_list_devices format='context' is the same snapshot with filters and cursor paging.",
             mimeType: "text/plain"
         ]
         entries << [
             uri: "hubitat://context",
             name: "context",
             title: "Live Context (JSON)",
-            description: "JSON twin of the context summary: currentMode, hsmStatus (when available), modes, rooms[] with deviceIds, and one compact record per MCP-visible device (id, label, room, capabilities, attribute values projected through the default context attribute set). Served from one bulk hub read: attribute values are strings (no units, no native number typing); devices the bulk read does not cover are read one by one up to a cap of 20 and the rest carry metadataUnavailable: true. Device records truncate on very large inventories (truncated: true + note). hub_list_devices format='context' is the paginated/filtered form and differs: per-page native reads with unit suffixes.",
+            description: "JSON twin of the context summary: currentMode, hsmStatus (when available), modes, rooms[] with deviceIds, and one compact record per MCP-visible device (id, label, room, capabilities, attribute values projected through the default context attribute set, as strings). Device records truncate on very large inventories (truncated: true + note); hub_list_devices is the filtered, paged form.",
             mimeType: "application/json"
         ]
     }
@@ -3683,7 +3989,9 @@ def _mrtrEnsureCleanupScheduled(boolean reset = false) {
     }
 }
 
-def runMrtrCleanup() {
+def runMrtrCleanup() { _loadGuardTimed { _runMrtrCleanupBody() } }
+
+def _runMrtrCleanupBody() {
     List cleanup = []
     synchronized (WRITE_RESERVATION_LOCK) {
         Map hint = _mrtrCleanupScheduleLocked()
@@ -4465,7 +4773,9 @@ private Map _mrtrScheduleSlice(String stateId, Map rec, Map claim, Map execution
 // The mapped HTTP request only schedules this ephemeral worker. The worker owns
 // the already-claimed generation and stores the ordinary MRTR continuation or
 // terminal result for the next requestState round; it exposes no second protocol.
-def runMrtrSlice(Map job = [:]) {
+def runMrtrSlice(Map job = [:]) { _loadGuardTimed { _runMrtrSliceBody(job) } }
+
+def _runMrtrSliceBody(Map job = [:]) {
     String stateId = job?.stateId?.toString()
     String claimId = job?.claimId?.toString()
     def generationRaw = job?.generation
@@ -4614,7 +4924,9 @@ private void _mrtrScheduleAutoContinue(String stateId, Map rec) {
         "Server-side continuation of ${rec.leafTool} is not scheduled; the checkpoint waits for a client requestState until it expires")
 }
 
-def runMrtrAutoContinue(Map job = [:]) {
+def runMrtrAutoContinue(Map job = [:]) { _loadGuardTimed { _runMrtrAutoContinueBody(job) } }
+
+def _runMrtrAutoContinueBody(Map job = [:]) {
     String stateId = job?.stateId?.toString()
     def generationRaw = job?.generation
     Integer generation = (generationRaw instanceof Number) ? generationRaw.intValue() : null
@@ -5024,6 +5336,104 @@ private String _accessTokenRedactedMarker() { return "***redacted (access token)
 // A client token never sees another token, whatever the redaction setting says.
 private boolean _redactsAccessTokens() { settings.redactAccessTokens == true || callerClient != null }
 
+// Hide passwords and credentials (default ON) governs what reads return; a client token always has
+// them hidden, and File Manager snapshots drop secret settings whatever it says.
+private boolean _redactsCredentials() { settings.redactCredentials != false || callerClient != null }
+
+private String _appConfigRedactedMarker() { return "***redacted (password)***" }
+
+// A masked read passed back as a value would store the marker as the credential.
+private boolean _isRedactionMarker(value) { value instanceof CharSequence && value.toString() == _appConfigRedactedMarker() }
+
+private boolean _appConfigMasksSetting(name, type, value) { _redactsCredentials() && _appConfigIsSecretSetting(name, type, value) }
+
+// Whether a setting/input value must be redacted. A null or empty value hides nothing. The hub's
+// own password type always redacts. Otherwise a credential-shaped name redacts, unless the value
+// is a Boolean or the input type cannot hold free text (a "usePassword" toggle, a "tokenDevice"
+// picker). Number types stay in scope on purpose: a numeric PIN/passcode is still a secret.
+private boolean _appConfigIsSecretSetting(name, type, value) {
+    if (_appConfigEmptyValue(value)) return false
+    String t = type?.toString()
+    if (t == "password") return true
+    if (value instanceof Boolean) return false
+    if (t && (t in ["bool", "boolean", "enum", "mode", "time", "date", "button", "href", "hub", "icon", "color"] ||
+              t.startsWith("capability") || t.startsWith("device"))) return false
+    return _appConfigSecretName(name)
+}
+
+private boolean _appConfigEmptyValue(value) {
+    if (value == null) return true
+    if (value instanceof CharSequence && value.toString().isEmpty()) return true
+    (value instanceof Collection || value instanceof Map) && value.isEmpty()
+}
+
+// Credential-shaped setting names. The name is split into lowercase words at camelCase, acronym,
+// digit, and punctuation boundaries ("HPMPassword" -> hpm|password, "api_key2" -> api|key), and
+// each word is tested on its own, so substrings inside unrelated words do not match: "bypass",
+// "passThrough", "compass", "tokenizer", "secretary" are not secrets. A hit is ignored when the
+// next word marks metadata ABOUT the secret ("passwordSet", "tokenCount", "tokenExpiry").
+private boolean _appConfigSecretName(name) {
+    String raw = name?.toString()
+    if (!raw) return false
+    // OAuth access tokens are governed by the redactAccessTokens setting, which deliberately leaves
+    // them readable by default so the AI can read endpoint URLs.
+    if (raw ==~ /(?i)access_?token/) return false
+    // Cheap prefilter: a large app has 500-1000 keys and almost none can match.
+    String lower = raw.toLowerCase()
+    if (!(lower.contains("pass") || lower.contains("pwd") || lower.contains("secret") || lower.contains("token") ||
+          lower.contains("key") || lower.contains("credential") || lower.contains("psk") || lower.contains("pin") || lower.contains("code"))) return false
+    String spaced = raw.replaceAll(/([a-z0-9])([A-Z])/, '$1 $2').replaceAll(/([A-Z]+)([A-Z][a-z])/, '$1 $2')
+    List words = spaced.toLowerCase().split(/[^a-z]+/).findAll { part -> part }
+    Set metadata = ["count", "counter", "cnt", "expiry", "expires", "expire", "expired", "expiration", "time",
+                    "timestamp", "date", "length", "len", "type", "enabled", "enable", "set", "required", "url",
+                    "uri", "endpoint", "timeout", "interval", "mode", "policy", "hint", "label", "name"] as Set
+    Set keyQualifiers = ["api", "access", "private", "auth", "client", "secret", "encryption", "signing", "shared"] as Set
+    Set pinQualifiers = ["lock", "user", "access", "pass", "disarm", "arm", "alarm", "security", "unlock", "auth", "entry", "keypad", "door",
+                         "master", "admin", "guest", "installer", "duress", "gate", "garage", "hsm", "panel", "safe", "vault"] as Set
+    Set hardwarePins = ["led", "gpio", "relay", "io", "digital", "analog", "data", "output", "input", "sensor", "pwm", "signal", "button",
+                        "power", "reset", "enable", "interrupt", "irq", "clock", "clk", "sda", "scl", "tx", "rx", "servo", "motor", "trigger", "echo"] as Set
+    // A credential word anywhere in the name ("keypadInputPin", "alarmResetCode") outranks a hardware word,
+    // except a board word right before the pin ("doorLedPin") or a status or location word before the code
+    // ("lockErrorCode", "lockZipCode").
+    boolean qualified = words.any { it in pinQualifiers }
+    Set boardPins = ["led", "gpio", "relay", "pwm", "servo", "motor", "sda", "scl", "clk", "clock", "irq", "analog", "digital", "tx", "rx", "io"] as Set
+    Set statusCodes = ["status", "error", "result", "response", "reason", "fault", "event", "state", "zip", "postal", "country", "area"] as Set
+    for (int idx = 0; idx < words.size(); idx++) {
+        String w = words[idx]
+        String prev = idx > 0 ? words[idx - 1] : null
+        String next = idx + 1 < words.size() ? words[idx + 1] : null
+        boolean hit = w.contains("password") || w.contains("passwd") || w.contains("passphrase") ||
+            w.contains("passcode") || w.contains("pwd") || w.contains("apikey") || w.contains("privatekey") ||
+            w.contains("accesskey") || (w.contains("secret") && !w.startsWith("secretar")) ||
+            w.endsWith("token") || w.endsWith("tokens") || w.startsWith("credential") || w == "psk" ||
+            // "pass" alone is a password only as the final word ("mqttPass") or split from its
+            // own suffix ("passWord"); "passThrough", "passMode", and "byPass" are not.
+            (w == "pass" && prev != "by" && (next == null || next in ["word", "phrase", "code", "key"])) ||
+            (keyQualifiers.contains(w) && (next == "key" || next == "keys")) ||
+            // A PIN, and a code with a credential word or right after "pin" ("userCodes"), within the
+            // exceptions above; with no credential word any hardware word frees a pin ("ledPin").
+            (w in ["pin", "pins", "pincode", "pincodes"] && (qualified ? !(prev in boardPins) : !(prev in hardwarePins))) ||
+            (w in ["code", "codes"] && !(prev in statusCodes) && (qualified || prev in ["pin", "pins"])) ||
+            // One-word forms: "userpin", "alarmcode", "HSMPIN".
+            _appConfigQualifiedSuffix(w, pinQualifiers)
+        if (!hit) continue
+        // A metadata word right after the hit ("passwordSet", "tokenCount"); for the two-word
+        // "api key" form the metadata word follows "key".
+        boolean twoWords = ((next == "key" || next == "keys") && keyQualifiers.contains(w)) || (w in ["pin", "pins"] && next in ["code", "codes"])
+        String after = twoWords ? (idx + 2 < words.size() ? words[idx + 2] : null) : next
+        if (after != null && metadata.contains(after)) continue
+        return true
+    }
+    return false
+}
+
+private boolean _appConfigQualifiedSuffix(String word, Set qualifiers) {
+    for (suffix in ["pincodes", "pincode", "pins", "pin", "codes", "code"]) {
+        if (word.length() > suffix.length() && word.endsWith(suffix) && word.substring(0, word.length() - suffix.length()) in qualifiers) return true
+    }
+    return false
+}
+
 // redactAccessTokens (Advanced page). Covers the three shapes a token reaches a tool result in:
 // an access_token= URL parameter (app page paragraphs), an accessToken/access_token map key
 // (app settings and state) or the clientTokens map of per-client tokens, and that same key
@@ -5095,7 +5505,7 @@ def _responseTooLargeEnvelope(String toolName, int actualBytes, int limitBytes) 
 def _responseTooLargeSuggestion(String toolName) {
     switch (toolName) {
         case "hub_list_devices":
-            return "Narrow with filter/labelFilter/capabilityFilter, project fields=['id','label',...], pass a smaller limit, or page with offset+limit. format='ids' is the cheapest shape."
+            return "Narrow with a filter (labelFilter, capabilityFilter, roomFilter, stateFilter), project fields=['id','label',...], or page with cursor and a smaller limit. format='ids' is the cheapest shape."
         case "hub_list_apps":
             return "For scope='instances': set includeHidden=false (the default), narrow via filter (builtin / user / disabled / parents / children), or pass cursor to page through the apps list."
         case "hub_get_app_config":
@@ -5401,12 +5811,12 @@ def getGatewayConfig() {
             tools: ["hub_get_logs", "hub_delete_logs", "hub_set_log_level"],
             summaries: [
                 hub_get_logs: "Read Logs page tabs or the MCP log. Args: mode (one tab or a list: past default, devices, apps, cloudCalls, locationEvents, hubEvents, scheduledJobs, runningJobs, hubActions, mcp, status), level, deviceId|appId, pattern/patterns, since/until, sortBy, limit, cursor, pageSize (50 per tab when several are listed)",
-                hub_delete_logs: "Clear the MCP log, or delete one scheduled job like the Logs page's Delete button; past logs have no delete, only the reboot's log purge: hub_reboot(confirm=true, purgeLogs=true). Args: mode (mcp|scheduledJobs), jobId, confirm",
+                hub_delete_logs: "Clear the MCP log, delete one scheduled job like the Logs page's Delete button, or reset the hub's app runtime statistics (the per-app load limiter's busy counter); past logs have no delete, only the reboot's log purge: hub_reboot(confirm=true, purgeLogs=true). Args: mode (mcp|scheduledJobs|appRuntimeStats), jobId, confirm",
                 hub_set_log_level: "Set minimum log level threshold. Args: level (debug/info/warn/error)"
             ],
             searchHints: [
                 hub_get_logs: "errors warnings trace syslog recent device app regex time window since until performance stats slow cpu busy hog state size cloud calls location events mode hsm hub events reboot low memory scheduled jobs cron timer recurring running hub actions mcp internal status",
-                hub_delete_logs: "wipe reset clear mcp log remove cancel unschedule scheduled job timer",
+                hub_delete_logs: "wipe reset clear mcp log remove cancel unschedule scheduled job timer app runtime stats busy excessive hub load limiter",
                 hub_set_log_level: "verbosity debug trace quiet"
             ]
         ],
@@ -5558,7 +5968,7 @@ def getGatewayConfig() {
             description: "Read-only device inspection: list devices with current states; inspect one device in summary, configuration, or sectioned details mode; read or block-poll an attribute; read device/location event history; search Hubitat's compatible-device catalog; and read Hub Mesh (hub-to-hub device/variable sharing between Hubitat hubs on the LAN). All operations are read-only; device commands, updates, and Hub Mesh writes live in hub_manage_devices.",
             tools: ["hub_list_devices", "hub_get_device", "hub_get_device_attribute", "hub_list_device_events", "hub_get_compatible_devices", "hub_get_hub_mesh"],
             summaries: [
-                hub_list_devices: "List devices with current states; format='context' = plain-text house snapshot (mode + one line per device). Args: detailed?, filter (enabled/disabled/stale:N/virtual), labelFilter?, capabilityFilter?, roomFilter?, onlyOn?, changedSince?, attributeNames?, format (summary/detailed/ids/context), fields?, limit?, cursor?",
+                hub_list_devices: "List devices with current states from the hub's Devices page; format='context' = plain-text house snapshot (mode + one line per device). Args: scope? (authorized/all/owned), format? (summary/detailed/ids/context), labelFilter?, capabilityFilter?, roomFilter?, disabled?, staleHours?, changedSince?, stateFilter?, attributeNames?, fields?, limit?, cursor?",
                 hub_get_device: "Inspect one device. Args: deviceId, mode? (summary/configuration/details), sections? (details mode), fields? (configuration/details field selector), cursor? (continue one oversized scalar). Configuration mode discovers editable fields, saved preferences, driver identity, and read status before an update.",
                 hub_get_device_attribute: "Read one attribute's value, or block-poll one OR several devices (deviceIds + mode any/all) until it reaches expectedValue/expectedValues. Args: deviceId | deviceIds (max 20), mode? (any/all), attribute, expectedValue?, expectedValues?, timeoutMs?, pollIntervalMs?, comparator?, stableForMs?",
                 hub_list_device_events: "Recent device events, a time-windowed history (hoursBack, max 168), an absolute bookmark (since -- events after an exact timestamp; round-trip a returned date) with an optional end (until), per-app events (appId), or location and hub events (mode/HSM/hub-variable, reboots/low memory; omit deviceId/appId). Args: deviceId?, appId?, hoursBack?, since?, until?, attribute?, limit?",
@@ -5566,7 +5976,7 @@ def getGatewayConfig() {
                 hub_get_hub_mesh: "Read Hub Mesh (hub-to-hub device/variable sharing on the LAN): enabled state, peer hubs, shared/linked devices + hub variables, sync interval, mode-following hub. Args: include_token?"
             ],
             searchHints: [
-                hub_list_devices: "show all devices switches lights sensors locks state inventory enumerate context summary snapshot overview house whats on right now changed since room",
+                hub_list_devices: "show all devices switches lights sensors locks state inventory enumerate context summary snapshot overview house whats on right now changed since room stale disabled virtual owned",
                 hub_get_device: "device detail capabilities attributes commands info inspect one configuration editable fields preferences driver identity saved settings",
                 hub_get_device_attribute: "read attribute value poll wait until threshold sensor verify state changed inclusion compare numeric range debounce stable multiple devices deviceIds any all converge across",
                 hub_list_device_events: "device history events timeline recent location mode hsm variable activity hub reboot restart low memory lowMemory startup app rule automation emitted since bookmark timestamp after new events change watch why caused produced by triggered button command source provenance",
@@ -5619,14 +6029,14 @@ def getGatewayConfig() {
                 hub_call_device_command: "Send one device command, or batch up to 20 mixed commands in one call (commands cannot be combined with waitFor). Args: deviceId, command, parameters?, waitFor? | commands: [{deviceId, command, parameters?}]",
                 hub_call_device_swap: "Swap a device: apps/rules using from_device_id run on to_device_id's hardware afterwards (the hub exchanges the two identities). Args: from_device_id, to_device_id, confirm",
                 hub_call_device_replace: "Replace a dead device's hardware while KEEPING its id + all app/rule references (re-points to new_device_id; list_options=true reads compatible candidates). Args: old_device_id, new_device_id?, list_options?, confirm",
-                hub_update_device: "Update applicable device identity, configuration, driver, history, dashboard/mesh, retry, or assistant fields after hub_get_device(mode='configuration'). Args: deviceId plus one or more editable properties; confirm is required for high-impact fields.",
+                hub_update_device: "Change a device's Device Info fields, driver preferences, assistants or enabled state after hub_get_device(mode='configuration'). Args: deviceId, fields?, preferences?, confirm (for requiresConfirmation fields)",
                 hub_create_device: "Create a device from a driver-type id (hub_list_drivers include='all'); for LAN/integration/software drivers, NOT radio hardware (pair those). Args: deviceTypeId, label?, confirm",
-                hub_list_devices: "List devices with current states; format='context' = plain-text house snapshot. Args: detailed?, filter, labelFilter?, capabilityFilter?, roomFilter?, onlyOn?, changedSince?, attributeNames?, format, fields?, limit?, cursor?",
+                hub_list_devices: "List devices with current states from the hub's Devices page; format='context' = plain-text house snapshot. Args: scope?, format?, labelFilter?, capabilityFilter?, roomFilter?, disabled?, staleHours?, changedSince?, stateFilter?, attributeNames?, fields?, limit?, cursor?",
                 hub_get_device: "Inspect one device. Args: deviceId, mode? (summary/configuration/details), sections? (details mode), fields? (configuration/details field selector), cursor? (continue one oversized scalar). Configuration mode discovers editable fields and preference definitions/current values before an update.",
                 hub_get_device_attribute: "Read one attribute's value, or block-poll one OR several devices (deviceIds + mode any/all) until it reaches expectedValue/expectedValues. Args: deviceId | deviceIds (max 20), mode? (any/all), attribute, expectedValue?, expectedValues?, timeoutMs?, pollIntervalMs?, comparator?, stableForMs?",
                 hub_list_device_events: "Recent device events, a time-windowed history, an absolute bookmark (since) with an optional end (until), per-app events (appId), or location and hub events (reboots, low memory). Args: deviceId?, appId?, hoursBack?, since?, until?, attribute?, limit?",
                 hub_get_hub_mesh: "Read Hub Mesh (hub-to-hub device/variable sharing on the LAN): enabled state, peer hubs, shared/linked devices + hub variables, sync interval, mode-following hub. Args: include_token?",
-                hub_update_hub_mesh: "Change Hub Mesh settings (enable/disable needs a hub reboot; per-device sharing is hub_update_device meshEnabled). Args: enabled?, full_refresh_interval? (0/120/300/3600), mode_hub_id? ('none'=local modes), peer_hub_id?+peer_token?"
+                hub_update_hub_mesh: "Change Hub Mesh settings (enable/disable needs a hub reboot; per-device sharing is hub_update_device fields.meshEnabled). Args: enabled?, full_refresh_interval? (0/120/300/3600), mode_hub_id? ('none'=local modes), peer_hub_id?+peer_token?"
             ],
             searchHints: [
                 hub_call_device_command: "send command control turn on off set level dim lock unlock device run batch multiple several devices mixed commands ad hoc one call",
@@ -5634,7 +6044,7 @@ def getGatewayConfig() {
                 hub_call_device_replace: "replace device hardware failed dead broken re-point preserve keep id references rules dashboard compatible replacement candidates getReplacementOptions",
                 hub_update_device: "rename relabel move room device edit configuration preferences driver type zigbee history limits dashboard mesh retry homekit alexa google assistant tags",
                 hub_create_device: "create add device from driver type instantiate lan integration cloud software component install new deviceTypeId driverId",
-                hub_list_devices: "show all devices switches lights sensors locks state inventory context summary snapshot overview house whats on right now changed since room",
+                hub_list_devices: "show all devices switches lights sensors locks state inventory context summary snapshot overview house whats on right now changed since room stale disabled virtual owned",
                 hub_get_device: "device detail capabilities attributes commands info inspect one configuration editable fields preferences driver identity saved settings",
                 hub_get_device_attribute: "read attribute value poll wait until threshold sensor verify state changed compare numeric range debounce stable multiple devices deviceIds any all converge across",
                 hub_list_device_events: "device history events timeline recent location mode hsm variable activity hub reboot restart low memory lowMemory startup app rule automation emitted since bookmark timestamp after new events change watch why caused produced by triggered button command source provenance",
@@ -6479,6 +6889,12 @@ def _isDeviceReplaceOptionsOnlyCall(toolName, args) {
 
 // bpsChecked: the key was already validated for this slice's initial call (continuations).
 def executeTool(toolName, args, boolean bpsChecked = false) {
+    // Leaf tools run inside the load-limiter retry once; gateways re-enter here per sub-tool.
+    if (!loadLimiterRetryActive && !getGatewayConfig().containsKey(toolName)) {
+        loadLimiterRetryActive = true
+        try { return _executeToolWithLoadLimiterRetry(toolName, args, bpsChecked) }
+        finally { loadLimiterRetryActive = false }
+    }
     // opToken is GONE (replaced by standard MCP requestState continuation). A client
     // still sending one is running the removed idempotent-replay protocol and would
     // otherwise lose its duplicate-commit protection silently -- fail loud instead.
@@ -6577,23 +6993,7 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
     }
     switch (toolName) {
         // Device Tools
-        case "hub_list_devices":
-            // filter='virtual' routes to the MCP-managed virtual-device listing (a distinct
-            // population -- this app's child devices -- with a richer driver-namespace shape).
-            // That handler evaluates none of the state filters or the context format, so
-            // reject the combination rather than silently dropping the arguments. onlyOn and
-            // roomFilter compare by their documented no-op values (false / empty string are
-            // no-ops everywhere, so they must not become errors only here).
-            if (args.filter == "virtual") {
-                // Malformed values must be a validation refusal on this route too, not silently carried
-                // past the guard (a non-Boolean onlyOn would otherwise slip through).
-                _validateListDeviceStateArgTypes(args.roomFilter, args.onlyOn, args.changedSince, args.attributeNames, args.format)
-                if (args.format == "context" || args.roomFilter || args.onlyOn == true || args.changedSince != null || args.attributeNames != null) {
-                    throw new IllegalArgumentException("filter='virtual' lists MCP-managed virtual devices and does not support format='context', roomFilter, onlyOn, changedSince, or attributeNames.")
-                }
-                return toolListVirtualDevices(args)
-            }
-            return toolListDevices(args.detailed, args.offset ?: 0, args.limit ?: 0, args.filter, args.labelFilter, args.capabilityFilter, args.format, args.get("fields"), args.cursor, args.scope, args.roomFilter, args.onlyOn, args.changedSince, args.attributeNames, args.__reqT0)
+        case "hub_list_devices": return toolListDevices(args)
         case "hub_get_device": return toolGetDevice(args.deviceId, args.mode ?: "summary", args.sections, args.get("fields"), args.cursor)
         case "hub_call_device_command": return toolSendCommand(args.deviceId, args.command, args.parameters, args.waitFor, args.commands, args.__reqT0)
         case "hub_call_device_swap": return toolCallDeviceSwap(args)
@@ -6792,12 +7192,12 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
         case "hub_delete_visual_rule": return toolDeleteVisualRule(args)
 
         // Dashboard CRUD -- Easy (classic /dashboard/* endpoints) + legacy Hubitat® Dashboards; impl in McpDashboardsLib
-        case "hub_list_dashboards": return toolListDashboards(args)
-        case "hub_get_dashboard": return toolGetDashboard(args)
-        case "hub_create_dashboard": return toolCreateDashboard(args)
-        case "hub_update_dashboard": return toolUpdateDashboard(args)
+        case "hub_list_dashboards": return _dashboardPublic(toolListDashboards(args))
+        case "hub_get_dashboard": return _dashboardPublic(toolGetDashboard(args))
+        case "hub_create_dashboard": return _dashboardPublic(toolCreateDashboard(args))
+        case "hub_update_dashboard": return _dashboardPublic(toolUpdateDashboard(args))
         case "hub_delete_dashboard": return toolDeleteDashboard(args)
-        case "hub_clone_dashboard": return toolCloneDashboard(args)
+        case "hub_clone_dashboard": return _dashboardPublic(toolCloneDashboard(args))
 
         // Tool Guide
         case "hub_get_tool_guide": return toolGetToolGuide(args.section, args.cursor, [platform_api_search: args.platform_api_search, platform_api_page: args.platform_api_page])
@@ -7501,46 +7901,6 @@ def _firmwareAtLeast(fw, String target) {
 def hubReadTimeoutSec() { 30 }
 def hubWriteTimeoutSec() { 420 }
 
-// /hub2/devicesList nests child devices under their parent's `children`, and wraps each record
-// as {key, data:{id,name,...}, children:[...]}. Retain identity plus the per-node activity, room,
-// disabled and currentStates fields (present on 2.5.1.181+; each is copied only when the node
-// carries the key, so absence stays distinguishable from an explicit null). currentStates rows
-// are {key, value} -- string values, no units or types -- as the Devices page consumes them.
-// `name` there is the user-facing label (the driver name is `secondaryName`).
-private List _flattenHub2DeviceTree(nodes, List acc = null) {
-    // A non-List at the TOP level means the contract moved -- return null so the caller raises it,
-    // rather than an empty list that would read as "this hub has no devices". Nested `children`
-    // legitimately arrive absent, so those recurse into the accumulator.
-    if (!(nodes instanceof List)) return acc
-    if (acc == null) acc = []
-    // A node that is not a Map is contract drift. Skipping it would hand back a SHORTER inventory
-    // that reads as authoritative -- and since an empty inventory now means "this hub has no
-    // devices", devices:[null] would read as an empty hub. Fail the whole read instead; the caller
-    // reports "shape" and callers of THAT keep their existing behaviour for an unreadable source.
-    boolean malformed = false
-    nodes.each { node ->
-        if (!(node instanceof Map)) { malformed = true; return }
-        def data = node.data
-        // A node without a data.id is the same drift as a non-map node: skipping it would return
-        // a SHORTER list that still reads as authoritative (the live tree carries an id on every
-        // node, container or leaf).
-        if (!(data instanceof Map) || data.id == null) { malformed = true; return }
-        def record = [id: data.id, label: data.name]
-        ['lastActivity', 'roomId', 'roomName', 'disabled', 'currentStates'].each { key -> if (data.containsKey(key)) record.put(key, data.get(key)) }
-        acc << record
-        // Propagate the child frame's verdict: it returns null when IT saw a malformed node, and
-        // discarding that let a bad node nested under a valid parent produce a short list that
-        // still read as authoritative -- the exact failure the top-level check exists to stop.
-        // An absent `children` is not malformed: the recursion returns the accumulator unchanged.
-        if (_flattenHub2DeviceTree(node.children, acc) == null) malformed = true
-    }
-    if (malformed) {
-        mcpLog("warn", "devices", "_flattenHub2DeviceTree: /hub2/devicesList carried a node that is not a map or has no data.id -- treating the inventory as unreadable rather than returning a short list")
-        return null
-    }
-    return acc
-}
-
 def _parseSinceArg(since) {
     if (since instanceof Number) {
         return new Date(since.toLong())
@@ -7553,10 +7913,8 @@ def _parseSinceArg(since) {
     if (s.endsWith("Z")) s = s.substring(0, s.length() - 1) + "+0000"
     def formats = [
         "yyyy-MM-dd'T'HH:mm:ss.SSSZ",   // canonical round-trip: 2026-06-23T10:00:00.000-0600
-        "yyyy-MM-dd'T'HH:mm:ssZ",       // no millis, offset:    2026-06-23T10:00:00-0600
-        // Colon-bearing offsets (2026-06-23T10:00:00-06:00) -- the XXX form
-        // formatLastActivity emits, so a lastActivity value round-trips into
-        // changedSince on a non-UTC hub.
+        "yyyy-MM-dd'T'HH:mm:ssZ",       // no millis, offset:    2026-06-23T10:00:00-0600 (the Devices page's lastActivity)
+        // Colon-bearing offsets (2026-06-23T10:00:00-06:00).
         "yyyy-MM-dd'T'HH:mm:ss.SSSXXX",
         "yyyy-MM-dd'T'HH:mm:ssXXX",
     ]
@@ -7770,8 +8128,7 @@ private String _redactSecretsInPath(String path) {
  * routes 404 (/app/updateOAuth, /device/updateLabel, /device/setShowOnHome) while WILDCARD routes
  * MASK it by absorbing the junk into their path-parameter. The query map also URL-encodes, so
  * pre-encoding a value double-encodes it. RETHROW CONTRACT: a degrading catch must rethrow
- * IllegalStateException before falling back (see _radioGetSafe and the showOnHome /
- * setDefaultCurrentState / create-label legs in McpDevicesLib) or the guard becomes the silent
+ * IllegalStateException before falling back (see _radioGetSafe) or the guard becomes the silent
  * 404 it exists to end.
  */
 private _hubRequest(String method, String path, Map opts = [:]) {
@@ -8862,8 +9219,8 @@ void _publishUploadedItemBackup(String key, Map entry, String protectedKey = nul
 }
 
 // Backups are evicted only when the byte budget is exceeded; an app, driver or library key
-// is otherwise replaced in place by that item's next baseline. The published key,
-// protectedKey (an active restore target) and each item's newest backup are never evicted.
+// is otherwise replaced in place by that item's next baseline. Only the published key and
+// protectedKey (an active restore target) are never evicted.
 void _publishItemBackup(String key, Map entry, String protectedKey = null) {
     synchronized (ITEM_BACKUP_MANIFESTS) {
         // previous must survive the removals below: it is what finds the files no entry references any more.
@@ -8887,24 +9244,21 @@ void _publishItemBackup(String key, Map entry, String protectedKey = null) {
     }
 }
 
-// Keys to evict while indexed bytes exceed the backup budget, oldest first across all items.
-// keepKeys and each item's newest backup (same type and id; a pre-restore undo counts for
-// its item) are never chosen. Pending entries are left to the pending purge.
+// Keys to evict while indexed bytes exceed the backup budget, oldest first across all items
+// and kinds. Only keepKeys are never chosen, so an item's only
+// backup goes when it is the oldest. When the kept entries alone exceed the budget no eviction
+// can reach it, so nothing else goes for them. Pending entries are left to the pending purge.
 List _itemBackupRetentionVictims(Map manifest, Collection keepKeys) {
     long budget = _itemBackupByteBudget()
     long used = 0L
     manifest.each { k, v -> if (!v?.deletePending) used += _itemBackupEntryBytes(v) }
     List victims = []
     if (used <= budget) return victims
-    Closure stamp = { k -> def t = manifest[k]?.timestamp; t instanceof Number ? (t as Long) : 0L }
-    Map newest = [:]
-    manifest.each { k, v ->
-        if (v?.deletePending) return
-        String item = "${v?.type}:${v?.ruleId != null ? v.ruleId : v?.id}".toString()
-        if (!newest.containsKey(item) || stamp(k) > stamp(newest.get(item))) newest.put(item, k)
-    }
     Set kept = new HashSet(keepKeys)
-    kept.addAll(newest.values())
+    long keptBytes = 0L
+    kept.each { k -> if (manifest[k] && !manifest[k].deletePending) keptBytes += _itemBackupEntryBytes(manifest[k]) }
+    if (keptBytes > budget) return victims
+    Closure stamp = { k -> def t = manifest[k]?.timestamp; t instanceof Number ? (t as Long) : 0L }
     List candidates = manifest.keySet().findAll { !kept.contains(it) && !manifest[it]?.deletePending }
         .sort { a, b -> stamp(a) <=> stamp(b) }
     for (k in candidates) {
@@ -8958,7 +9312,7 @@ Map _itemBackupBudgetUsage(Map manifest) {
 // The eviction rule every backup answers with: the retentionNote / backupRetentionNote and
 // retentionPolicy fields, and the tail of restore and undo hints.
 String _itemBackupRetentionNote() {
-    return "Backups are removed only when all MCP backups together exceed the ${_itemBackupBudgetMb()} MB storage budget, oldest first; an item's newest backup is never removed, so the budget can stay exceeded once every item is down to one."
+    return "Backups are removed only when all MCP backups together exceed the ${_itemBackupBudgetMb()} MB storage budget, oldest first across every item and kind; only the backup being taken and an active restore target are never removed. When those alone exceed the budget nothing is removed, and the backups stay over it until a later backup's removal reaches them, oldest first."
 }
 
 /** Remove manifest records that point at a File Manager file after that file is deleted. */
@@ -9190,7 +9544,9 @@ private void _scheduleDebugLogHistory(Map buffer) {
     }
 }
 
-def runDebugLogHistoryFetch(Map job = [:]) {
+def runDebugLogHistoryFetch(Map job = [:]) { _loadGuardTimed { _runDebugLogHistoryFetchBody(job) } }
+
+def _runDebugLogHistoryFetchBody(Map job = [:]) {
     def buffer = initDebugLogs()
     synchronized (buffer) {
         if (job.appId != buffer.appId || job.generation != buffer.generation ||
@@ -10403,17 +10759,22 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
     def compiledReadError = null   // a thrown/bad-200 compiled-state read, surfaced if the HTML path also fails
     boolean useRuleBuilder = (source != "configPage")
     boolean useConfigPage = (source != "ruleBuilderJson")
-    // Only built-in apps are read. A user or community app's state can carry Rule Machine's keys
-    // without being a rule, and its default page runs its own code, which can drop a wizard's pending
-    // input (Hubitat Package Manager clears a pending install there).
+    // Only a built-in app's page is read. A
+    // user or community app's state can carry Rule Machine's keys without being a rule, and its
+    // default page runs its own code, which can drop a wizard's pending input (Hubitat Package
+    // Manager clears a pending install there).
     def installed = null
+    boolean identified = true
     try { installed = getAppByAppId(appId as Long) }
     catch (Exception lookup) {
-        useRuleBuilder = false; useConfigPage = false
-        checkErrors << "app ${appId} was not read: it could not be identified (${lookup.message ?: lookup.toString()}), and a user or community app is not read as a rule".toString()
+        // The compiled state runs no page code, so it is still read; the page is not.
+        identified = false
+        useConfigPage = false
+        checkErrors << "app ${appId}'s page was not read: the app could not be identified (${lookup.message ?: lookup.toString()}), and a user or community app's page runs its own code".toString()
     }
+    if (identified && installed == null) throw new IllegalArgumentException("App ${appId} not found; list installed apps with hub_list_apps")
     def namespace = installed?.appType?.namespace?.toString()
-    if (namespace && namespace != "hubitat") {
+    if (identified && namespace != "hubitat") {
         useRuleBuilder = false; useConfigPage = false
         label = installed.label?.toString()
         ruleFormat = "classic-app"
@@ -10610,7 +10971,8 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
     // predicate is included only when the compiled state carried one. The dual-path cost is one
     // extra localhost GET, not response size — the empty arrays are a few bytes.
     def result = [
-        ok: !sourcesUsed.isEmpty() && issues.isEmpty() && broken != true && validationErrors.isEmpty(),
+        // An app that could not be identified may be a user app whose state only looks like a rule's.
+        ok: identified && !sourcesUsed.isEmpty() && issues.isEmpty() && broken != true && validationErrors.isEmpty(),
         // unreadable: NEITHER source could be read -- a "couldn't check" verdict, not
         // a "checked and broken" one (ok stays false; there is no positive evidence
         // either way). Callers gating committed work on ok should treat unreadable
@@ -11028,7 +11390,7 @@ private Map _rmForceDeleteApp(Integer appId) {
 
 
 def currentVersion() {
-    return "5.1.0"
+    return "5.1.4"
 }
 
 
@@ -11595,7 +11957,7 @@ Poll install progress with `statusOnly=true` (`status` is IDLE when none is runn
 
 For replace/add every id is validated against the full hub device list (discover ids via `hub_list_devices(scope='all')`, each carries an `mcpAuthorized` flag) -- one unknown id rejects the whole batch and nothing is written; `remove` does not validate (removing an absent/since-deleted id is a no-op). Refuses to empty the scope unless `allowEmpty:true`.
 
-If the hub's device inventory is incomplete (its device tree could not be read, or it disagrees with the picker feed), an id it lacks is reported as "could not validate" instead of unknown. Nothing is written, so retry later. An empty scope still leaves MCP-managed virtual devices reachable. On success the response carries `selectedDevices: {mode, authorizedDeviceIds, authorizedCount, added, removed}`.
+If the hub's Devices page cannot be read while validating a `replace` or `add`, the call returns an error and nothing is written; retry later. An empty scope still leaves MCP-managed virtual devices reachable. On success the response carries `selectedDevices: {mode, authorizedDeviceIds, authorizedCount, added, removed}`.
 
 **`enableLocalAccess` / `enableCloudAccess`** -- allow requests over the LAN endpoint / the Hubitat cloud endpoint (both ON by default). A disabled endpoint answers HTTP 403 to every request, even with a valid token; turning it back on restores access with the same token and URL. A call cannot turn off the connection it arrived on (that would lock the caller out) -- switch it off from the other connection or the app page on the hub. `hub_get_info` reports both as `localAccessEnabled` / `cloudAccessEnabled`.
 
@@ -11632,14 +11994,14 @@ PATCH-like write over Hub Mesh's hub-level settings; every parameter optional, v
 - `mode_hub_id` → `/device/followModes/<hubId|none>`; a peer `hubId` from `hub_get_hub_mesh` `peers[]`, or `'none'` for local modes.
 - `peer_hub_id` + `peer_token` (TOGETHER) → `POST /device/setHubMeshToken`; stores that peer's mesh token here, needed when the peer has UI login security. Read the token on the PEER via its own `hub_get_hub_mesh(include_token=true)`. An all-digits `peer_hub_id` is sent as a JSON number, matching the hub UI's wire format.
 
-Peer hubs are auto-discovered on the LAN — there is no "add peer" write; enabling mesh on both hubs is what makes them peers. Per-DEVICE sharing is `hub_update_device` (`meshEnabled`), not this tool; `meshFullSync` there applies to a LINKED device (with Hub Mesh refresh enabled), keeping the local proxy synced on the periodic refresh.
+Peer hubs are auto-discovered on the LAN — there is no "add peer" write; enabling mesh on both hubs is what makes them peers. Per-DEVICE sharing is `hub_update_device` (`fields.meshEnabled`), not this tool; `fields.meshFullSync` there applies to a LINKED device (with Hub Mesh refresh enabled), keeping the local proxy synced on the periodic refresh.
 
 ### Per-device and per-variable Hub Mesh linking & sharing
 
 The hub-LEVEL settings above are `hub_update_hub_mesh`; the per-entity share/link operations are folded into the device and variable tools (no dedicated tools):
 
-- **Share a device** into the mesh: `hub_update_device(deviceId, meshEnabled=true|false)`. Its full reference is `hub_get_tool_guide(section='update_device')`.
-- **Link a device** a peer shares: `hub_create_device(mesh_source_hub_id, mesh_source_device_id, confirm=true)` — pair from `hub_get_hub_mesh` `availableLinkedDevices[]`. On the resulting LINKED device, `hub_update_device(meshFullSync=true)` (requires Hub Mesh refresh enabled) keeps the local proxy synced on the periodic refresh.
+- **Share a device** into the mesh: `hub_update_device(deviceId, fields={meshEnabled: true|false}, confirm=true)`. Its full reference is `hub_get_tool_guide(section='update_device')`.
+- **Link a device** a peer shares: `hub_create_device(mesh_source_hub_id, mesh_source_device_id, confirm=true)` — pair from `hub_get_hub_mesh` `availableLinkedDevices[]`. On the resulting LINKED device, `hub_update_device(fields={meshFullSync: true}, confirm=true)` (requires Hub Mesh refresh enabled) keeps the local proxy synced on the periodic refresh.
 - **Unlink a device**: `hub_delete_device(deviceId, confirm=true)` — removes only the local proxy; warns on `appsUsing`, and distinctly when it could not check.
 - **Share a variable**: `hub_set_variable(name, mesh_shared=true|false)` (hub variables only).
 - **Link a variable** a peer shares: `hub_create_variable(mesh_source_hub_id, mesh_source_name, confirm=true)` — pair from `hub_get_hub_mesh` `availableLinkedHubVariables[]`. The variable references are in `hub_get_tool_guide(section='variables')`.
@@ -11667,7 +12029,7 @@ Deploys every declared library bundle + app from the manifest at `ref`, saving t
 
 ### hub_update_mcp_settings — bypassDeviceAllowlist (DANGEROUS escape hatch)
 
-`bypassDeviceAllowlist` (bool, default OFF) removes the device-selection boundary when enabled. Device reads, commands, configuration writes, inventory, health checks, dependent lookups, swaps and replacements use native hub endpoints. With bypass OFF, access is limited to selected devices plus MCP-owned children. With bypass ON, these operations can reach any existing device; the Read/Write masters, confirmations and operation-specific eligibility checks still apply. MCP-owned virtual inventory remains ownership-scoped. Hub logs, including device-filtered logs, remain readable regardless of device selection or bypass; the Read master still applies. Explicit scope=all inventory and existing administrative force-delete operations retain their documented broader scope. Its effect is independent of Developer Mode. On firmware older than 2.5.0, native device operations use the MCP app's Hub Security credentials when Hub Security is enabled. On 2.5.0 and later no credentials are involved -- an app's loopback requests are exempt from the hub login. Native attribute discovery contains reported current states, including their available types and values; unset or cleared attributes can be absent. An explicit missing-attribute read returns null with neverReported, and polling may time out instead of rejecting an unknown name. A command with waitFor can therefore execute before a mistyped attribute times out. Supported-command and argument validation still run before command execution. Attribute discovery is reported-state only on EVERY path (selected devices included): `attributes` in list/detail reads and `declaredAttributes` in details mode carry current states, and an attribute the driver declares but has never set is absent, not unsupported (`attributeCoverage.declarationsComplete: false` says so in-band). Attribute values keep the driver-declared type: an attribute whose native record carries `dataType: NUMBER` is a JSON number, every other value is a string, and the type is stable per attribute; the `hubitat://context` and `hubitat://context-summary` resources are served from one bulk hub read and carry string values without unit suffixes. Whole-population reads -- the two context resources and every `hub_list_devices` filter -- come from that single bulk read, never one native read per device; only a device the bulk read does not cover costs a per-device read (capped at 20 for the resources, with the rest reported as state unavailable). One unreadable device no longer fails `hub_list_devices`: it is listed with `metadataUnavailable: true`, excluded from any active filter, named in `metadataUnavailableIds`, and the response carries `partial: true`; a bypass inventory whose id set could not be vouched for is returned with `idsComplete: false` instead of an error. Swap and replace both verify a bypass-only id against native metadata before any native request. The legacy custom-rule engine keeps its own selection-only device references; bypass does not extend to it.
+`bypassDeviceAllowlist` (bool, default OFF) removes the device-selection boundary when enabled. Device reads, commands, configuration writes, inventory, health checks, dependent lookups, swaps and replacements use native hub endpoints. With bypass OFF, access is limited to selected devices plus MCP-owned children. With bypass ON, these operations can reach any existing device; the Read/Write masters, confirmations and operation-specific eligibility checks still apply. MCP-owned virtual inventory remains ownership-scoped. Hub logs, including device-filtered logs, remain readable regardless of device selection or bypass; the Read master still applies. Explicit scope=all inventory and existing administrative force-delete operations retain their documented broader scope. Its effect is independent of Developer Mode. On firmware older than 2.5.0, native device operations use the MCP app's Hub Security credentials when Hub Security is enabled. On 2.5.0 and later no credentials are involved -- an app's loopback requests are exempt from the hub login. Native attribute discovery contains reported current states, including their available types and values; unset or cleared attributes can be absent. An explicit missing-attribute read returns null with neverReported, and polling may time out instead of rejecting an unknown name. A command with waitFor can therefore execute before a mistyped attribute times out. Supported-command and argument validation still run before command execution. Attribute discovery is reported-state only on EVERY path (selected devices included): `attributes` in list/detail reads and `declaredAttributes` in details mode carry current states, and an attribute the driver declares but has never set is absent, not unsupported (`attributeCoverage.declarationsComplete: false` says so in-band). Attribute values keep the driver-declared type: an attribute whose native record carries `dataType: NUMBER` is a JSON number, every other value is a string, and the type is stable per attribute; the `hubitat://context` and `hubitat://context-summary` resources are served from one bulk hub read and carry string values without unit suffixes. Whole-population reads -- the two context resources and every `hub_list_devices` filter -- come from that single bulk read, never one native read per device; there is no per-device fallback, so a device the Devices page does not list is absent from those results. A Devices-page read that fails returns a structured retry error from `hub_list_devices` (no per-device fallback). In `format='detailed'`, a listed device whose own detail read fails stays in the list with `metadataUnavailable: true` and the response carries `partial: true`. Swap and replace both verify a bypass-only id against native metadata before any native request. The legacy custom-rule engine keeps its own selection-only device references; bypass does not extend to it.
 
 **selectedDevices** is the MCP device-access scope. Pass {"mode":"replace"|"add"|"remove", "ids":[<device id strings>], "allowEmpty":<bool>} -- or a bare array as shorthand for replace ({"selectedDevices":["42","108"]} == {mode:"replace", ids:["42","108"]}). 'replace' sets the authorized set to exactly ids; 'add' unions ids with the current set (safest for "grant one device" -- no need to re-enumerate the whole list); 'remove' subtracts ids. For replace/add every id is validated against the full hub device list (discover ids via hub_list_devices(scope='all'), each carries an mcpAuthorized flag) -- one unknown id rejects the whole batch and nothing is written; 'remove' does not validate (removing an absent/since-deleted id is a no-op). Refuses to empty the scope unless allowEmpty:true.
 
@@ -11725,51 +12087,37 @@ MCP-managed virtual devices:
 **action="delete" response shape:**
 `{success, deviceId, deviceNetworkId, deviceLabel, message}`
 
-**Virtual inventory (`hub_list_devices(filter='virtual')`):** returns `{devices, count, total, message}` plus pagination fields. Each device is `{id, name, label, deviceNetworkId, driverNamespace, driverType, typeName, capabilities, commands, currentStates}`. `currentStates` is an attribute-to-value map, while create returns `attributes` as a list of `{name, value}`. `driverNamespace` is the namespace saved at create time, or the native driver namespace when none was saved. A `warnings` entry appears when native driver identity is unavailable.
+**Virtual inventory (`hub_list_devices(scope='owned')`):** the devices this app created, in the ordinary `hub_list_devices` record shape (`mcpManaged: true`). `format='detailed'` adds `driverNamespace`: the namespace saved at create time, or the native driver namespace when none was saved. Create returns `attributes` as a list of `{name, value}`.
 
 ''',
 
         update_device: '''## Device inspection and updates
 
-Call `hub_get_device(deviceId=..., mode="configuration")` before an update. It reports the fields that are applicable and writable for this device, declared preference types/options/ranges/defaults and current saved values, driver identity, and source/read status. A saved false, zero, empty string or null is distinct from an unset value; a driver default does not prove the setting was saved. Use `mode="details"` with optional `sections` for wider inspection.
+Call `hub_get_device(deviceId=..., mode="configuration")` before an update. `editableFields` has one entry per `fields` name: its `name`, `type`, `minimum`/`maximum` for integers, `options` (or an `optionsReference` lookup) where the page offers choices, the current `value`, `writable` with a `reason` when this device does not offer it, and `requiresConfirmation` when it needs confirm=true. An unset field and one saved as null both read `value: null`. `preferences` lists the driver's declared preferences with type, options, range, default and saved value; `valueStatus` tells `stored` from `unset`, and a driver default does not prove the setting was saved. `deviceInfo` carries the driver identity; `preferenceRead` and `deviceInfoRead` give each read's status. Use `mode="details"` with optional `sections` for wider inspection.
 
-Details mode does not inline event or log history; it points to the read tools for them. Password values are redacted. Missing or unrecognized native data is reported as partial or unavailable. It never proves the device has no settings. `driverSource` gives a ready hub_get_source call when a user driver resolves to exactly one driver. Otherwise it gives the hub_list_drivers lookup and the reason. Built-in driver source is not available. Driver source can show more declarations, but it never shows the device's saved preference values. Every mode is read-only (it is also in hub_read_devices), and device authorization still applies.
+Details mode does not inline event or log history; it points to the read tools for them. Password values are redacted unless Hide passwords and credentials is off. Missing or unrecognized native data is reported as partial or unavailable. It never proves the device has no settings. `driverSource` gives a ready hub_get_source call when a user driver resolves to exactly one driver. Otherwise it gives the hub_list_drivers lookup and the reason. Built-in driver source is not available. Driver source can show more declarations, but it never shows the device's saved preference values. Every mode is read-only (it is also in hub_read_devices), and device authorization still applies.
 
 For smaller expanded reads, pass `fields=[]` to discover `availableFields`, then select exact names. Configuration selection applies to preference names, editable property names and device-info keys. Details selection applies to section keys; attributes also accepts an individual attribute name. Commands and jobs use the row indices returned by `availableFields`, so duplicate or unnamed rows remain selectable. Omitting `fields` retains the full selected sections.
 Examples: `fields=["txtEnable"]` in configuration mode, or `sections=["state"], fields=["lastRefresh"]` in details mode.
 
 If even one selected value exceeds the response budget, the tool returns `contentFormat="json-fragment"`, a `content` string (`contentText` for ChatGPT) and `nextCursor`. Repeat the same read with that cursor, concatenate the fragments in order, then parse the joined JSON. Pages retain the original redacted snapshot despite later telemetry changes. Continue within five minutes with the same device, mode, sections and fields. Expiry, eviction or a server reload requires restarting without cursor. At most eight snapshots and 2,097,152 characters of serialized JSON are retained in memory; select fewer fields if the budget is exceeded. Device authorization is checked on every page.
 
-Every update requires the Write master and applicable tool permissions. When mandatory best-practice acknowledgment is enabled, put `bestPracticeKey` inside the gateway's `args` alongside the patch.
+`hub_update_device(deviceId, fields={...}, preferences={...}, confirm?)` saves the way the device page does, one save per page section, then reads the device back once and reports each field in `changes`, `unchanged` (it already had the requested value) or `errors`. Put `bestPracticeKey` beside them when mandatory best-practice acknowledgment is enabled. The whole request is checked before anything is written; a field the device does not offer (configuration reports `writable:false` with a `reason`) is refused.
 
-| Properties | Behavior |
-|------------|----------|
-| `label`, `name`, `deviceNetworkId` | Device identity; network-ID changes require confirmation and backup. |
-| `dataValues`, `preferences` | Data-section values and declared driver preferences. Inspect configuration first. |
-| `room`, `enabled`, `showOnHome`, `defaultCurrentState`, `tags` | Room, availability, Home visibility, Status-column attribute, and replacement tag set. |
-| `deviceTypeId`, `zigbeeId` | Driver and radio identity where applicable; confirmation and backup required. |
-| `notes`, `defaultIcon` | Device note and icon override; empty string clears. |
-| `maxEvents`, `maxStates`, `spammyThreshold` | Native history limits (1-2000) and event-alert threshold (100-2000). |
-| `dashboardIds`, `meshEnabled`, `meshFullSync` | Applicable dashboard/mesh assignments; confirmation and backup required. |
-| `retryEnabled` | Command retry where the native device exposes it. |
-| `homeKitEnabled`, `amazonAlexaEnabled`, `googleHomeEnabled` | Supported and installed assistant assignments; confirmation and backup required. |
+- **Device Info save** (one request for all of these): `label`, `name`, `deviceNetworkId`, `room` (text matches a name, else an id; a number is an id; `""` clears), `tags` (replaces the set; `[]` clears), `notes`, `defaultIcon` (`""` clears), `maxEvents`/`maxStates` (1-2000), `spammyThreshold` (100-2000), `deviceTypeId`, `zigbeeId`, `dashboardIds` (the legacy Hubitat Dashboards that list this device; replaces the set; an Easy Dashboard picks its devices with `hub_update_dashboard` `deviceIds`), `meshEnabled`, `meshFullSync`. The hub rebuilds the device from this save, so every current value is sent with the change.
+- **Preferences save** (one request): `preferences`, `showOnHome`, `defaultCurrentState` (`""` selects None), `retryEnabled`. It runs the driver's `updated()`, as the page's Save Preferences does; settings that are not named keep their values.
+- `homeKitEnabled`, `amazonAlexaEnabled`, `googleHomeEnabled` go to the assistant integrations; a refusal names the integration's reason. `enabled` enables or disables the device. `dataValues` sets Data entries through the driver's `updateDataValue`.
 
-Omitted properties are preserved. The complete patch is validated before writes begin. A runtime partial failure reports per-property successes and errors; inspect the result before retrying.
+`requiresConfirmation` fields (driver, network and Zigbee IDs, dashboards, Hub Mesh, assistants) need `confirm=true` and a backup under 24 hours old.
 
-**Preferences format:**
-`{"pollInterval": {"type": "number", "value": 30}, "debugLogging": {"type": "bool", "value": true}}`
-
-Use the preference's declared type and constraints from configuration mode; bool and boolean declarations are supported. Unknown names are refused. Omit preferences to preserve them. Clearing an optional preference requires an explicit entry such as `{"debugLogging":{"clear":true}}`; null, empty strings, whitespace and empty arrays are rejected. Do not combine clear with value. Required preferences cannot be cleared. Read values and driver defaults do not constitute a write request. An unreadable schema/readback is reported separately from an unknown name or a value that did not persist. Room names use case-insensitive exact matching. `tags` replaces the full tag set; an empty array clears it.
-An empty `room` string removes the room assignment. A preference save re-sends the device's current Home visibility, Status-column attribute and command-retry values, so those stay unchanged unless the patch sets them.
-
-If an unset enum reports `multiple: null`, check `driverSource` or metadata captured before clearing, then supply `multiple: true` or `multiple: false` alongside `value` when restoring it. For example, `{"colors":{"value":["red"],"multiple":true}}` restores a declared multi-select enum; do not guess its selection cardinality.
+**Preferences format:** a value of the declared type, e.g. `{"pollInterval": 30, "debugLogging": true}`; `{"type": ..., "value": ...}` is also accepted when the type matches. Unknown names are refused. A multi-select enum takes a list. Clearing an optional preference needs `{"clear": true}`; null, blank strings and empty lists are refused, and required preferences cannot be cleared. If an unset enum reports `multiple: null`, check `driverSource` or metadata read before clearing and send `{"value": [...], "multiple": true}` (or `false`); its selection cardinality is never guessed.
 
 ### Hub Mesh: sharing, linking, and unlinking devices
 
 Hub Mesh shares devices between Hubitat hubs on the same LAN (not the Z-Wave/Zigbee radio mesh). Three device operations, split across tools:
 
-- **Share / unshare** one of THIS hub's devices into the mesh: `hub_update_device(deviceId, meshEnabled=true|false)`. No dedicated tool — it is a device property. (`meshFullSync` is NOT a share flag: it applies to a LINKED device, below.)
-- **Link** a device a PEER hub shares onto this hub: `hub_create_device(mesh_source_hub_id, mesh_source_device_id, confirm=true)` — the pair comes from `hub_get_hub_mesh` `availableLinkedDevices[]` (`hubId` + `deviceId`). The result carries the new local `deviceId` (resolved by a `localLinkedDevices` diff). On that resulting linked device, `hub_update_device(meshFullSync=true)` (requires Hub Mesh refresh enabled) keeps the local proxy synced on the periodic refresh. Linking a device already linked here returns `success` with `alreadyLinked:true` (no fresh link is issued). The `createLinked` GET returns 200 with an empty body even when nothing actually links, so the tool reads mesh state back and keys on the source: if the device links (it drops out of `availableLinkedDevices[]` or its row flips `linkedLocally:true`) you get `success` with the new id; if it stays present with `linkedLocally:false` (a confirmed silent no-op) you get a `success:false` FAILURE, NOT a soft warning; only an unreadable mesh list is a warn-not-fail. A no-op is usually transient — Hub Mesh takes time to re-establish a peer connection after that peer reboots or updates and a link briefly no-ops during that window before clearing itself — so wait and retry. If it persists, confirm the peer is online in `hub_get_hub_mesh` `peers[]` (`offline:false`, `warning:null`) and that this hub holds its mesh token (store it with `hub_update_hub_mesh(peer_hub_id, peer_token)`, read from the peer's OWN `hub_get_hub_mesh(include_token=true)`).
+- **Share / unshare** one of THIS hub's devices into the mesh: `hub_update_device(deviceId, fields={meshEnabled: true|false}, confirm=true)`. No dedicated tool — it is a device property. (`meshFullSync` is NOT a share flag: it applies to a LINKED device, below.)
+- **Link** a device a PEER hub shares onto this hub: `hub_create_device(mesh_source_hub_id, mesh_source_device_id, confirm=true)` — the pair comes from `hub_get_hub_mesh` `availableLinkedDevices[]` (`hubId` + `deviceId`). The result carries the new local `deviceId` (resolved by a `localLinkedDevices` diff). On that resulting linked device, `hub_update_device(fields={meshFullSync: true}, confirm=true)` (requires Hub Mesh refresh enabled) keeps the local proxy synced on the periodic refresh. Linking a device already linked here returns `success` with `alreadyLinked:true` (no fresh link is issued). The `createLinked` GET returns 200 with an empty body even when nothing actually links, so the tool reads mesh state back and keys on the source: if the device links (it drops out of `availableLinkedDevices[]` or its row flips `linkedLocally:true`) you get `success` with the new id; if it stays present with `linkedLocally:false` (a confirmed silent no-op) you get a `success:false` FAILURE, NOT a soft warning; only an unreadable mesh list is a warn-not-fail. A no-op is usually transient — Hub Mesh takes time to re-establish a peer connection after that peer reboots or updates and a link briefly no-ops during that window before clearing itself — so wait and retry. If it persists, confirm the peer is online in `hub_get_hub_mesh` `peers[]` (`offline:false`, `warning:null`) and that this hub holds its mesh token (store it with `hub_update_hub_mesh(peer_hub_id, peer_token)`, read from the peer's OWN `hub_get_hub_mesh(include_token=true)`).
 - **Unlink** a linked device: `hub_delete_device(deviceId, confirm=true)`. This removes ONLY the local proxy; the source device on the peer hub is untouched. The tool warns when the linked device is in use by local apps (`appsUsing`), which will break.
 
 Read the current mesh state (shared/linked/available lists, per-device `appsUsing`) with `hub_get_hub_mesh`; the hub-level mesh settings are in `hub_update_hub_mesh`.
@@ -11898,7 +12246,7 @@ Duplicates an existing MCP custom-engine rule into a new, independent rule with 
 - Rapid source-code edits preserve the original for one hour. Rule edits take a fresh pre-edit snapshot as described below.
 
 ### Backup retention
-- There is no count limit: backups are removed only when all MCP backups together exceed the storage budget, oldest first across every item and kind of backup. An item's newest backup is never removed, and neither are the backup just taken and an active restore target; the budget can therefore stay exceeded once every item is down to one backup.
+- There is no count limit: backups are removed only when all MCP backups together exceed the storage budget, oldest first across every item and kind of backup. Only the backup being taken and an active restore target are never removed; nothing else is protected, so an item's only backup goes when it is the oldest. When the backup being taken and an active restore target alone exceed the budget, nothing else is removed and the backups stay over the budget; a later backup's removal then goes oldest first and can take the oversized backup with the rest.
 - The budget is the Advanced setting "Backup storage budget (MB)" (`backupBudgetMb`): default 10, at least 1, at most 1000000 (1 TB). The Advanced page takes any number and the server clamps it to that range. With Developer Mode on, hub_update_mcp_settings also sets it and refuses a value that is not a whole number in that range.
 - Where each response says it:
   - Rule Machine writes and deletes: the `backup` object carries `retentionNote`, and the restoreHint ends with that note.
@@ -11990,14 +12338,9 @@ Use after hub_list_files to fetch a named file (config, backup, exported rule/ap
 - For a set commanded repeatedly, a group or scene beats both: one device to command and the hub fans out. `commands` is for the ad-hoc set that was never defined in advance.
 
 **hub_list_devices:**
-- Use detailed=false for initial discovery
-- Inventory counts: count is the number returned on this page; total is the matching count before pagination; unfilteredTotal, when present, is the count in the requested device scope before filters or pagination (not necessarily the whole hub).
-- With detailed=true, paginate: 20-30 devices per request
-- Make tool calls sequentially, not in parallel
-- Server-side label/capability filtering: use labelFilter (substring) and capabilityFilter (exact capability name) instead of fetching all devices and filtering client-side
-- format='ids' returns a flat integer array (cheapest for "which devices exist" queries)
-- fields=[...] projects named fields only: currentStates and attributes are the expensive ones (per-device hub reads) -- project those out to save hub CPU; capabilities and commands are in-memory and cheap. id is always included regardless of projection. Unknown field names throw.
-- A page can end early with budgetLimited:true (on a client without request-to-request continuation, when its per-device reads reach the request time budget). The result then carries hasMore:true, nextOffset and nextCursor at the first device not returned. Repeat the call from there with the other arguments unchanged: pass nextCursor as cursor if the call used a cursor, otherwise nextOffset as offset.
+- One read of the hub's Devices page serves every filter, summary, ids and context call; only `format='detailed'` (or `fields` naming `attributes`/`commands`) reads each listed device, so page those with `limit` 20-30.
+- count is the number returned on this page; total is the matching count before paging; unfilteredTotal, when present, is the scope's count before filters.
+- Filter on the hub (labelFilter, capabilityFilter, roomFilter, stateFilter, disabled, staleHours, changedSince) instead of fetching everything. Make tool calls sequentially.
 
 **hub_list_device_events:**
 - Default: most-recent events for a device (deviceId + limit)
@@ -12013,7 +12356,7 @@ Use after hub_list_files to fetch a named file (config, backup, exported rule/ap
 
 **Cursor pagination.** List tools that take `cursor` return the whole list when it is omitted, subject to the guard; `hub_list_backups` (scope=source) is the exception and always returns one page, with `hasMore: true` and `nextCursor` when more backups follow. Pass `cursor: ""` for the first page, then pass each returned `nextCursor` until it is absent. A malformed or out-of-range cursor is rejected as a validation error. Page sizes:
 - 25: `hub_list_hpm_packages`.
-- 50: `hub_list_apps` (pages the filtered set), `hub_list_drivers`, `hub_list_libraries`, `hub_list_bundles`, `hub_list_rules`, `hub_get_custom_rule` (list mode), `hub_list_captured_states`, `hub_list_backups` (scope=source, newest first), and `hub_list_devices`. For `hub_list_devices`, 50 applies when `limit` is unset (virtual filter included); the cursor is an alternative to `offset`, and the two cannot be combined.
+- 50: `hub_list_apps` (pages the filtered set), `hub_list_drivers`, `hub_list_libraries`, `hub_list_bundles`, `hub_list_rules`, `hub_get_custom_rule` (list mode), `hub_list_captured_states`, `hub_list_backups` (scope=source, newest first), and `hub_list_devices` in `format='context'` when `limit` is unset (the other formats are unpaged until a `cursor` or a positive `limit` is given).
 - 100: `hub_list_variables` (hubVariables; ruleVariables stay whole), `hub_list_files`, `hub_list_rooms`, `hub_list_device_dependents` (appsUsing), `hub_get_logs` (50 per tab when several are listed), `hub_get_memory_history`, and `hub_get_device_health` (staleDevices).
 - `hub_get_device` and `hub_get_tool_guide` page oversized responses automatically.
 
@@ -12034,8 +12377,8 @@ Use after hub_list_files to fetch a named file (config, backup, exported rule/ap
 - radio='matter' also returns `wifiCredentials`: the networks the hub sees, the selected and stored SSID, and whether a password is stored (never the password).
 
 ### hub_get_device_health (device-staleness check + LAN/WAN network probes)
-- Stale checks cover selected devices plus MCP-owned children with bypass OFF, and all native hub devices with bypass ON. Use hub_list_devices(filter='virtual') for an ownership-scoped child inventory.
-- Health reads activity from one native device-tree request. An explicit null activity is reported as never; missing or invalid activity metadata is reported as unavailable with metadataUnavailable: true, and counted as unknown.
+- Stale checks cover selected devices plus MCP-owned children with bypass OFF, and all native hub devices with bypass ON. Use hub_list_devices(scope='owned') for an ownership-scoped child inventory.
+- Health reads activity from one read of the hub's Devices page (the same read hub_list_devices uses). A null activity is reported as never; an unparseable activity, or an allowed device missing from the page, is reported as unavailable with metadataUnavailable: true, and counted as unknown.
 - pingHosts/tracerouteHost/speedtest are independent read-only network probes, runnable in any combination; each param documents its own mechanics and result location.
 - pingHosts: each entry is sent through hubitat.helper.NetworkUtils.ping() and reported under pingResults with reachable/rttAvg/packetLoss. Hostnames are not resolved -- pass IPs only.
 - tracerouteHost: hostnames are rejected -- pass an IP (dotted-quad).
@@ -12084,24 +12427,17 @@ Issue-type routing: `issueType` picks the GitHub issue template behind `submitUr
 
 ### hub_list_devices
 
-**Response shapes & general behaviour.** Summary mode returns `currentStates`; detailed mode replaces that with `capabilities`, `attributes` (the device's REPORTED current states -- a declared-but-never-set attribute is absent, not unsupported), and `commands`. Attribute values keep the driver-declared type: `dataType: NUMBER` attributes are JSON numbers, everything else is a string, stable per attribute. `scope='all'` lists every hub device (not just MCP-authorized ones), each tagged with an `mcpAuthorized` flag (true/false). To count a parent's children, group the response by `parentDeviceId`.
+**Source.** A call whose scope is not empty reads the hub's Devices page once (an empty `authorized`/`owned` scope answers without a read): labels, room, driver, protocol, disabled flag, lastActivity and current states (string values, no units) for every device, plus the capability feed when capabilities are needed. `format='detailed'`, or `fields` naming `attributes`/`commands`, adds one read per listed device (typed values with units, commands with arguments, `driverNamespace`); such a page can end early with `budgetLimited: true` and a `nextCursor`, and a device whose read fails is listed with `metadataUnavailable: true` and `partial: true`.
 
-**format='context' (the house-snapshot primitive).** One call answers "what's in this house and what state is it in": the `summary` field is a self-contained plain-text block -- a header (`Mode:`, `HSM:` when available, `Devices: N of M`) plus one line per device (`- Label (id, room) - Cap1, Cap2; attr=value, ...`). Attribute values carry the reported unit directly appended with no separator (`temperature=72.5°F`, `battery=87%`) -- parse on `=` accordingly -- and come from native fullJson state for each returned device. Filters that depend on device metadata or state read all candidates before pagination from ONE bulk hub read (never one native read per device). A device whose native metadata cannot be read is still listed with `metadataUnavailable: true`, is excluded from any active filter, is named in `metadataUnavailableIds`, and the response carries `partial: true` -- so one broken device never hides the rest. The default attribute set: switch/level/motion/contact/presence/lock/temperature/humidity/illuminance/battery/power/energy/thermostat fields/speed/position/valve/water/smoke. Page size defaults to 50 (set `limit` to change); `nextCursor` is always emitted when more devices remain, and the header repeats it. Structured fields (`mode`, `hsmStatus`, `count`, `total`, filter echoes) ride alongside the text. Combine with the filters below for scoped snapshots ("what's on in the Kitchen" = `roomFilter` + `onlyOn`). Ignores `fields`/`detailed`; not available with `scope='all'`.
+**scope.** `authorized` (default): selected devices plus this app's children, or every device with the allowlist bypass on. `all`: every hub device as `{id, label, name, driver, room, protocol, disabled, mcpAuthorized}` with `mcpAuthorizedCount`/`unauthorizedCount`; formats summary and ids only, and no state filters. `owned`: the virtual devices this app created.
 
-- **attributeNames** -- format='context' only (rejected on every other format rather than silently ignored): replaces the default per-line attribute set with the named attributes, in caller order. An EMPTY array means the default set, not "no attributes" (same convention as `fields`). When an explicit projection matches no attribute on any returned line, the response carries `attributeNamesMatchedNoAttributes: true` -- the typo-vs-absence diagnostic (attribute names are camelCase, e.g. `temperature`, not `temp`).
+**Summary record.** `{id, label, name, driver, room, disabled, deviceNetworkId, lastActivity, currentStates}` plus `protocol` (zigbee/zwave/matter/network/bluetooth/virtual), `parentDeviceId` on child devices, `mcpManaged`, `linked` (Hub Mesh) and `tags` when they apply. `label` is the display name; group by `parentDeviceId` to count a parent's children.
 
-**Filter ordering.** Server-side filtering via the `filter` / `labelFilter` / `capabilityFilter` / `roomFilter` / `onlyOn` / `changedSince` params is all applied *before* pagination (each is documented on its own parameter). Effective order: `filter` -> `labelFilter` -> `capabilityFilter` -> `roomFilter` -> `onlyOn` -> `changedSince` -> pagination.
+**Filters** apply before paging, in this order: scope, `disabled` (true = only disabled, false = only enabled), `labelFilter` (label substring), `capabilityFilter` (exact capability name), `roomFilter` (exact room name), `stateFilter` (`{"switch":"on"}`: every named attribute must read that value; a credential-named attribute is refused while Hide passwords and credentials is on), `staleHours` (no activity for that long; never-active devices count as stale), `changedSince` (active at or after epoch ms or ISO-8601 with an offset; a returned `lastActivity` round-trips). A device whose page entry carries no usable value for a filtered field is excluded and named in `metadataUnavailableIds` with `partial: true`; a record missing such a field carries `metadataUnavailable: true`. A zero match carries `capabilityFilterMatchedKnownCapability` or `roomFilterMatchedKnownRoom` to tell a typo from an empty result. If the capability feed cannot be read or lists no device the response carries `capabilitiesUnavailable: true` and capabilityFilter matches nothing.
 
-- **filter** -- `stale:<hours>` example: `stale:24` = no activity in the last 24 hours; never-reported devices count as stale. `virtual` returns a *different* population and shape from the other filters, including driver namespace/type; it is not combinable with `roomFilter`/`onlyOn`/`changedSince`/`attributeNames` or `format='context'` (rejected rather than silently ignored).
-- **labelFilter** -- applied after `filter`, before pagination.
-- **capabilityFilter** -- applied after `labelFilter`, before pagination. When `count=0`, the response includes `capabilityFilterMatchedKnownCapability` to distinguish "no devices have this capability" from a typo.
-- **roomFilter** -- case-insensitive EXACT match on the device's assigned room name. When the filtered total is 0, the response includes `roomFilterMatchedKnownRoom` to distinguish "room exists but matched nothing after earlier filters" from a typo. The diagnostic checks MCP-VISIBLE devices only -- a real hub room whose devices are all outside this app's authorized list reads `false`; list every hub room via hub_list_rooms.
-- **onlyOn** -- `true` keeps only devices whose `switch` attribute currently reads `on`. `false` is a no-op (it does NOT mean "only off"). Devices without a switch attribute are excluded when active.
-- **changedSince** -- keeps devices with `lastActivity` at/after the timestamp; the inverse of `filter='stale:<hours>'`. Accepts epoch milliseconds or ISO-8601 with a numeric offset in either spelling (`-0600` or `-06:00`; trailing `Z` accepted) -- offset-less (`2026-06-23T10:00:00`) and date-only forms are REJECTED. Same forms as hub_list_device_events' `since` (the two share one parser, so both accept either offset spelling), and a returned `lastActivity` value round-trips directly. Epoch-ms input echoes back as canonical ISO (the echo is always a string). Devices with no readable lastActivity are excluded (they can't prove they changed). Change-watching loop: snapshot a `lastActivity` (or the echoed `changedSince`), act, then pass it back to see exactly what changed.
-- **format** -- `'detailed'` is the same as `detailed=true`; `detailed=true` overrides `format='summary'`.
-- **fields** -- valid names: `id`, `name`, `label`, `room`, `disabled`, `deviceNetworkId`, `lastActivity`, `parentDeviceId`, `mcpManaged`, `currentStates`, `capabilities`, `attributes`, `commands`. Omitted or empty = all default fields for the active format. Ignored when `format='ids'`. `id` is always included regardless of projection (use `format='ids'` for id-only results). Including `capabilities`, `attributes`, or `commands` auto-promotes the response to detailed mode (those fields require detailed-mode device introspection).
-- **cursor** -- `nextCursor` is returned alongside `nextOffset`.
-- **scope** -- `'all'` returns EVERY device on the hub, each tagged `mcpAuthorized` true/false. Use it to find a device that exists on the hub but can't be controlled -- `mcpAuthorized` reflects current effective access: selection plus MCP-owned children when bypass is off, every device when bypass is on. With bypass off, `mcpAuthorized=false` means selection is required before ordinary device access. `scope='all'` records are lightweight (id/label/capabilities/mcpAuthorized only; no attributes/commands/currentStates) and support format `'summary'` or `'ids'`; `capabilityFilter` / `labelFilter` / pagination still apply. Three honesty flags ride both shapes: `capabilitiesPartial` + `capabilitiesNote` when capabilities could not be established for every record (an empty list may mean unknown); `capabilitiesUnavailableIds` (plus `capabilitiesUnavailable: true` on the summary record) naming authorized devices whose native capability read failed; and `idsComplete: false` (present only then) when the record SET itself could not be vouched for -- the hub's device tree could not be read, answered empty, or disagreed with the picker feed -- so branch on that field, not on the note's wording.
+**Projection.** `fields` picks record fields (`id` always kept): id, label, name, driver, room, roomId, disabled, deviceNetworkId, lastActivity, protocol, parentDeviceId, mcpManaged, linked, tags, notes, source, currentStates, capabilities, attributes, commands. `attributeNames` picks the attributes in `currentStates` and context lines; the default set is switch, level, motion, contact, presence, lock, temperature, humidity, illuminance, battery, power, energy, thermostatMode, thermostatOperatingState, heatingSetpoint, coolingSetpoint, speed, position, valve, water and smoke. An explicit set that matches nothing in context returns `attributeNamesMatchedNoAttributes: true`.
+
+**format='ids'** returns `{deviceIds, count, total}`. **format='context'** returns `summary`: `Mode:`, `HSM:` when available, `Devices: N of M` (with the next cursor when more remain), then `- Label (id, room) - Cap1, Cap2; attr=value` lines; it pages at 50 unless `limit` is set. A cursor past the end (the result shrank between pages) returns an empty last page.
 
 ### hub_get_device
 
@@ -12113,7 +12449,7 @@ Only query devices the user has mentioned or that are relevant to their request.
 
 Get a device attribute's current value, or block-poll until it reaches an expected value. Polls one device, or several at once via deviceIds.
 
-One-shot read by default (deviceId + attribute). Provide expectedValue and/or expectedValues to block-poll until currentValue matches, returning immediately on match or when timeoutMs elapses.
+One-shot read by default (deviceId + attribute). Provide expectedValue and/or expectedValues to block-poll until currentValue matches, returning immediately on match or when timeoutMs elapses. A credential-named attribute (lockCodes, a PIN or code) reads as the redaction marker while Hide passwords and credentials is on, and a poll or `hub_call_device_command` `waitFor` on one is refused, since a match would confirm a guess.
 
 A single round-trip that replaces N client-side reads + sleeps (verify a command took effect, wait for a sensor threshold, detect Z-Wave inclusion finished). comparator controls the match: eq (default, in-set), ne (not in-set), gt/gte/lt/lte (numeric threshold via expectedValue), between (numeric inclusive range via expectedValues [low, high]). stableForMs requires the condition to hold continuously for that many ms before converging (debounce). For MULTI-DEVICE convergence pass deviceIds (a list, mutually exclusive with deviceId, max 20) instead of deviceId: the same condition is applied to every device and mode controls the aggregate -- "all" (default) converges when every device matches, "any" on the first to match; the result is a compact per-device array (not full device objects) plus convergedCount. Poll mode BLOCKS up to timeoutMs (default 5000ms, max 60000ms) and queues concurrent MCP requests; prefer event-driven flows where possible. First read fires immediately; subsequent reads are spaced by pollIntervalMs.
 
@@ -12172,7 +12508,7 @@ A single tool can also be switched off under **Advanced: Per-tool Overrides**. A
   - On a Rule Machine rule a paragraph holding a disabled action or trigger reads `{text, disabled: [...]}`, listing the text of each disabled row it holds. On selectActions (Button Rule: selectActionsX) a disabled action's `disable<N>` control reads 'Enable Action', and the control named `<N>.0.<bool>` carries that action's text; N is the action index, not the row position. The button toggles: never replay a click whose response was lost. hub_set_app_disabled disables the whole app.
   - `pageNote` appears when the hub rendered another page than `pageName`: the app reaches that page only through its link, so open it in a form workflow.
   - `appType.system` and `appType.menu` are the fields hub_list_apps(scope='types') gives for every type at once.
-  - `includeSettings=true` adds the raw settings map: 500-1000 app-encoded keys on large apps (Room Lighting stores per-device scene levels as `dm~<deviceId>~<scene>`). Secrets read `***redacted (password)***`: every setting the hub types as a password, on any page, and free-text settings with credential-shaped names (password, pass, secret, token, API key, credential, ...). OAuth accessToken settings follow the Hide access tokens setting. Page inputs are redacted the same way. When the setting types cannot be read the map is withheld and `settingsNote` says why.
+  - `includeSettings=true` adds the raw settings map: 500-1000 app-encoded keys on large apps (Room Lighting stores per-device scene levels as `dm~<deviceId>~<scene>`). Secrets read `***redacted (password)***`: every setting the hub types as a password, on any page, and free-text settings with credential-shaped names (password, pass, secret, token, API key, credential, PIN, lock or alarm code, ...). OAuth accessToken settings follow the Hide access tokens setting. Page inputs are redacted the same way. With Hide passwords and credentials turned off in the MCP app's settings they read as stored. When the setting types cannot be read the map is withheld and `settingsNote` says why.
   - A type='mode' input's `value` is its stored setting. Day Lights uses ten of them for per-mode levels, gated by `useModeOverrides`; most apps use one as an "only during these modes" restriction.
   - **Mode gating in the built-in apps.** The hub has no "modes in use by" list, so read each app; resolve mode IDs with hub_list_modes.
     - **Notifier** — `modes` (mode ids) on `moreOptions`; restricts.
@@ -12455,7 +12791,7 @@ Read-only; each entry carries id, name, and `type` ('easy' or 'legacy'). Easy en
 
 ### hub_get_dashboard
 
-Read-only. For an Easy Dashboard: tiles, navigation, devices, and PINs. For a legacy dashboard: its authorized `deviceIds` plus a nested `layout` object (see "Legacy layout shape" below). Read before the wholesale `hub_update_dashboard` and pass its output straight back. A read that partly fails returns `partial: true` with a note — the missing fields are unavailable, not defaulted.
+Read-only. For an Easy Dashboard: tiles, navigation, devices, and PINs (read `***redacted (password)***` while Hide passwords and credentials is on; passing that back to `hub_update_dashboard` keeps the stored PIN). For a legacy dashboard: its authorized `deviceIds` plus a nested `layout` object (see "Legacy layout shape" below). Read before the wholesale `hub_update_dashboard` and pass its output straight back. A read that partly fails returns `partial: true` with a note — the missing fields are unavailable, not defaulted.
 
 ### hub_create_dashboard
 
@@ -12538,7 +12874,7 @@ Reference for the room tools (hub_list_rooms, hub_get_room, hub_create_room, hub
 
 ### hub_get_room
 
-A device the MCP server cannot reach is returned with `accessible=false` and no `currentStates` (label "(device not accessible via MCP)").
+The devices and their states come from one read of the hub's Devices page, the same source as hub_list_devices; if the page cannot be read the call returns an error. A device not selected for MCP access is returned with `accessible=false` and no `currentStates` (label "(device not accessible via MCP)"); a reachable device the page does not list is returned with `metadataUnavailable=true` (label "(device not on the hub's Devices page)"). For a paged or filtered list of a room's devices use hub_list_devices(roomFilter=<room name>).
 
 ### hub_create_room
 
@@ -12554,6 +12890,7 @@ Renaming a room preserves device assignments, but may require updating automatio
 The cloud relay can end a request while the hub keeps working; a modern client continues the call by itself. Each slow-operation response (`in_progress`, `continuation_limit`, `too_many_writes_in_flight`, `slow_read_timeout`) says what to do next.
 
 - Make writes one at a time and split a large Rule Machine change batch; parallel writes are refused once the hub's write cap is full.
+- The hub's per-app load limiter refuses an app's calls ("generates excessive hub load") once this app's busy time plus that of the app or device it calls (its own a second time when it calls itself) passes uptime x the hub's threshold. The server watches its own busy time and resets the hub's app runtime statistics before that point. When a call is refused anyway and the automatic reset is on, the statistics are reset and, once the reset answers, a refused read or retry-safe write is repeated once unless half the request's time budget is spent; any other write is not repeated, because it may have run some steps first -- check its target before calling it again. A device command the limiter drops can still report success, so the early reset is what protects device commands; read the device back to confirm. The reset clears the Logs > App Stats tab for every app, not only this one, and restarts every app's limiter count; Device Stats are not touched. The guard watches only this app's own total, so a busy app or device it calls can still trip the limiter first. The automatic reset can be turned off under Advanced settings ("Reset the hub's app runtime statistics automatically", default on) and only runs while the Write master is on. To reset the statistics by hand, use hub_delete_logs(mode='appRuntimeStats', confirm=true); it returns this app's App Stats row before and after.
 - A write that fails with no result body, or whose response is lost, may still be running on the hub or may already have finished. Wait about 15 seconds. A continuation write from a 2026-07-28 client shows in `recentWrites` in `hub_get_info`, and an identical repeat while it is still active joins it instead of running it twice. Every other write leaves started and finished records in `hub_get_logs(mode="mcp", component="write")`, each carrying the JSON-RPC id you sent and the outcome (completed, failed, partial, accepted or unknown). A missing record does not prove the write never ran: read the target before repeating it, because repeating a finished write performs it again.
 '''
     ]

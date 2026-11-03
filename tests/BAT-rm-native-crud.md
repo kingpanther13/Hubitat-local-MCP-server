@@ -1878,7 +1878,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: `hub_get_rule_health` does NOT reject either app. The Basic Rule returns `ruleFormat: "basic-rule"` and the Button Controller `ruleFormat: "button-controller"`, both with `broken: null` (no compiled boolean for non-RM classic apps), `source: "configPage"`, and the generic classic-app checks present (`configPageError`, `multipleFlagPoison` — the same multi-flag-poison failure mode RM has). Both `hub_set_native_app` create responses also carry a `health` block. SAFETY: only BAT-prefixed apps are touched.
+**Expected**: `hub_get_rule_health` does NOT reject either app. The Basic Rule returns `ruleFormat: "basic-rule"` and the Button Controller `ruleFormat: "button-controller"`, both with `broken: null` (no compiled boolean for non-RM classic apps), `source: "configPage"`, and the generic classic-app checks present (`configPageError`, `multipleFlagPoison` — the same multi-flag-poison failure mode RM has). SAFETY: only BAT-prefixed apps are touched.
 
 ## Section 6: RM recreation bundle (T460–T464)
 

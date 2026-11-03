@@ -784,6 +784,17 @@ class NativeFormsSpec extends ToolSpecBase {
         !fields.find { it.name == 'zipCode' }.containsKey('redacted')
     }
 
+    def 'with Hide passwords and credentials off, a stored password reads as stored'() {
+        given:
+        settingsMap.redactCredentials = false
+        when:
+        def field = open().fields.find { it.name == 'credential' }
+        then:
+        field.value == 'private-password'
+        field.value_source == 'stored'
+        !field.containsKey('redacted')
+    }
+
     @Unroll
     def 'an accessToken input reads #shown when the toggle is #toggle and the caller is #caller'() {
         given:
@@ -964,7 +975,8 @@ class NativeFormsSpec extends ToolSpecBase {
         thrown(IllegalArgumentException)
         calls.empty
         where:
-        step << [[kind: 'open', page: '../settings'], [kind: 'open', url: '/anything'], [kind: 'submit', fields: [:]], [kind: 'invoke', method: 'updated']]
+        step << [[kind: 'open', page: '../settings'], [kind: 'open', url: '/anything'], [kind: 'submit', fields: [:]], [kind: 'invoke', method: 'updated'],
+                 [kind: 'submit', expect_page: 'edit', fields: [text: '***redacted (password)***']]]
     }
 
     def 'sequential explicit opens reuse one caller workflow beyond eight apps'() {
