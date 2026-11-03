@@ -178,30 +178,36 @@ private void _nfWalk(Object node, Map fields, Map controls, List messages, List 
             _nfControl(controls, [name: name, kind: 'button', title: _nfText(node.title), stateAttribute: node.state, disabled: _nfTrue(node.disabled),
                                   submit_on_change: _nfTrue(node.submitOnChange)])
         } else {
-            boolean device = type == 'capability' || type.startsWith('capability.') || type.startsWith('device.')
-            boolean supported = type in ['text', 'textarea', 'password', 'enum', 'mode', 'bool', 'number', 'decimal', 'time', 'email', 'phone'] || device
+            boolean device = _nrIsDeviceType(type)
+            // A download-text input only offers its content for download; the page posts nothing for it.
+            boolean supported = type != 'download-text'
+            // Picking a menu option saves it and submits the page at once.
             Map field = [name: name, title: _nfText(node.title), type: type, multiple: _nfTrue(node.multiple), required: _nfTrue(node.required),
-                         submit_on_change: _nfTrue(node.submitOnChange), supported: supported, device: device, disabled: _nfTrue(node.disabled)]
-            ['range', 'min', 'max', 'step', 'description'].each { key -> if (node.containsKey(key)) field[key] = node[key] }
-            def stored = model.settings instanceof Map ? model.settings.get(name) : null
-            boolean exists = model.settings instanceof Map && model.settings.containsKey(name)
-            def current = exists ? stored : node.defaultValue
-            if (device && current instanceof Map) current = current.keySet().collect { it.toString() }
-            if (device && !field.multiple && current instanceof List) current = current ? current[0] : null
-            if (type == 'password') field.has_value = current != null && current != ''
-            // With Hide passwords and credentials off, a stored password reads back as stored.
-            if (type != 'password' || (exists && !_redactsCredentials())) { field.value = current; field.value_source = exists ? 'stored' : 'default' }
-            // The page default the browser posts for an input with no stored value; a password's default is never posted.
-            if (!exists && type != 'password' && current != null && current != '' && !(current instanceof Collection && current.isEmpty())) field.default_value = current
-            field.present = exists && current != null && current != '' && (!(current instanceof Collection) || !current.empty)
-            field.options = _nfOptions(type == 'mode' ? model.modeMap : node.options)
-            if (device) {
-                field.capability = type
-                field.ignore = (node.ignoreDevices instanceof List ? node.ignoreDevices : (node.ignoreDevices?.toString()?.tokenize(',') ?: [])).collect { it.toString() }
+                         submit_on_change: type == 'menu' || _nfTrue(node.submitOnChange), supported: supported, device: device, disabled: _nfTrue(node.disabled)]
+            if (!supported) {
+                field.filename = node.filename
+                field.value = node.filecontent
+            } else {
+                ['range', 'min', 'max', 'step', 'description'].each { key -> if (node.containsKey(key)) field[key] = node[key] }
+                def stored = model.settings instanceof Map ? model.settings.get(name) : null
+                boolean exists = model.settings instanceof Map && model.settings.containsKey(name)
+                def current = exists ? stored : node.defaultValue
+                if (device && current instanceof Map) current = current.keySet().collect { it.toString() }
+                if (device && !field.multiple && current instanceof List) current = current ? current[0] : null
+                if (type == 'password') field.has_value = current != null && current != ''
+                // With Hide passwords and credentials off, a stored password reads back as stored.
+                if (type != 'password' || (exists && !_redactsCredentials())) { field.value = current; field.value_source = exists ? 'stored' : 'default' }
+                // The page default the browser posts for an input with no stored value; a password's default is never posted.
+                if (!exists && type != 'password' && current != null && current != '' && !(current instanceof Collection && current.isEmpty())) field.default_value = current
+                field.present = exists && current != null && current != '' && (!(current instanceof Collection) || !current.empty)
+                field.options = _nfOptions(type == 'mode' ? model.modeMap : node.options)
+                if (device) {
+                    field.capability = type
+                    field.ignore = (node.ignoreDevices instanceof List ? node.ignoreDevices : (node.ignoreDevices?.toString()?.tokenize(',') ?: [])).collect { it.toString() }
+                }
             }
             if (fields.containsKey(name) && fields[name] != field) throw new IllegalStateException('Native form contains ambiguous fields')
             fields.put(name, field)
-            if (!supported) unsupported << "Input type: ${type}"
         }
     } else if (node.element == 'app' && node.namespace == 'hubitat' && node.appName instanceof String && node.appName && node.name && node.appId?.toString() == model.app?.id?.toString()) {
         _nfControl(controls, [name: node.name.toString(), value: node.appName, kind: 'create_child', title: _nfText(node.title)])
@@ -311,8 +317,9 @@ private String _nfValue(Map field, Object value) {
     List values = value instanceof List ? value : [value]
     if (field.device) return values.collect { it.toString() }.join(',')
     if (field.multiple) return groovy.json.JsonOutput.toJson(values.collect { it.toString() })
-    // The classic browser removes markup from visible scalar inputs and escapes any remaining '<'.
-    if (!(field.type in ['bool', 'enum', 'mode'])) {
+    // The classic browser removes markup from visible scalar inputs and escapes any remaining '<'; selects
+    // and the hidden inputs behind menu and file-text post their value as is.
+    if (!(field.type in ['bool', 'enum', 'mode', 'menu', 'file-text'])) {
         String text = value.toString(), prior = null
         while (text != prior) { prior = text; text = text.replaceAll(/(?is)<!--.*?-->|<script\b[^>]*>.*?<\/script\s*>|<style\b[^>]*>.*?<\/style\s*>|<\/?[a-z](?:[^"'>]|"[^"]*"|'[^']*')*>/, '') }
         return text.replace('<', '&lt;')

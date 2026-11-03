@@ -169,6 +169,34 @@ class NativeRuntimeSpec extends ToolSpecBase {
         calls.empty
     }
 
+    def 'native dates validate as calendar yyyy-MM-dd and may be cleared'() {
+        expect:
+        script._nrValidateInput([name: 'atDate1', type: 'date', multiple: false], '2026-11-10') == null
+        script._nrValidateInput([name: 'atDate1', type: 'date', multiple: false], '', true) == null
+
+        when:
+        script._nrValidateInput([name: 'atDate1', type: 'date', multiple: false], value)
+        then:
+        def error = thrown(IllegalArgumentException)
+        error.message == 'Date required as yyyy-MM-dd for atDate1'
+
+        where:
+        value << ['2026-02-30', '2026-11-10T15:35', '10 Nov 2026', 20261110]
+    }
+
+    def 'setting rows take the type the page declares, with device ids checked for every device picker'() {
+        expect:
+        ['date', 'email', 'phone', 'hub', 'icon', 'file-text', 'menu', 'some-future-type'].each { type ->
+            script._nrCheckSettingRow([name: 'x', type: type, value: 'v'])
+        }
+        script._nrCheckSettingRow([name: 'x', type: 'device.VirtualSwitch', value: ['7']]) == null
+
+        when:
+        script._nrCheckSettingRow([name: 'x', type: 'device.VirtualSwitch', value: ['abc']])
+        then:
+        thrown(IllegalArgumentException)
+    }
+
     def 'native exported time settings compare with their persisted local clocks'() {
         given:
         sharedLocation.timeZone = TimeZone.getTimeZone('America/New_York')

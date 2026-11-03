@@ -81,21 +81,18 @@ private Object _nrComparableSetting(String type, Object value) {
     value.toString()
 }
 
-// A device picker among native setting types. The editor also renders device.* pickers; those are
-// read through the form model and never written as rule settings.
-boolean _nrIsDeviceType(String type) { type == 'capability' || type?.startsWith('capability.') == true }
+// A device picker: the page declares capability, capability.* or device.* and posts device ids.
+boolean _nrIsDeviceType(String type) { type == 'capability' || type?.startsWith('capability.') == true || type?.startsWith('device.') == true }
 
-// One native setting row: name, type and a non-null scalar value (a list only for enum, mode or
-// device pickers) with positive device ids. Callers add their own rules about the name.
+// One native setting row: name, type and a non-null scalar or list value, with positive device ids
+// for a device picker. The type is the one the page declares; callers check it against the page.
 private void _nrCheckSettingRow(Object row) {
-    if (!(row instanceof Map) || !(row.name instanceof String) || !row.name || !(row.type instanceof String) || !row.containsKey('value') || row.keySet().any { !(it in ['name', 'type', 'value']) }) {
+    if (!(row instanceof Map) || !(row.name instanceof String) || !row.name || !(row.type instanceof String) || !row.type.trim() || !row.containsKey('value') || row.keySet().any { !(it in ['name', 'type', 'value']) }) {
         throw new IllegalArgumentException('Each setting requires name, type and value')
     }
     boolean device = _nrIsDeviceType(row.type)
-    if (!(row.type in ['text', 'textarea', 'password', 'enum', 'mode', 'bool', 'number', 'decimal', 'time']) && !device) throw new IllegalArgumentException('Unsupported native setting type')
     if (row.value == null) throw new IllegalArgumentException('Null setting values are unsupported; they do not reliably clear native settings')
     if (row.value instanceof List) {
-        if (!device && !(row.type in ['enum', 'mode'])) throw new IllegalArgumentException('Lists require enum, mode or capability type')
         if (row.value.any { !(it instanceof String || it instanceof Number || it instanceof Boolean) }) throw new IllegalArgumentException('Setting lists require scalar values')
     } else if (!(row.value instanceof String || row.value instanceof Number || row.value instanceof Boolean)) {
         throw new IllegalArgumentException('Unsupported native setting value')
@@ -215,6 +212,13 @@ private void _nrValidateScalar(Map field, Object value, boolean allowClear = fal
         catch (Exception ignored) { throw new IllegalArgumentException("Invalid native time for ${field.name}") }
     }
     if (field.type in ['number', 'decimal'] && !(allowClear && value.toString() == '') && !value.toString().isBigDecimal()) throw new IllegalArgumentException("Numeric value required for ${field.name}")
+    // A date input yields only a calendar date as yyyy-MM-dd, or nothing.
+    if (field.type == 'date' && !(allowClear && value == '')) {
+        boolean valid = value instanceof String && value ==~ /\d{4}-\d{2}-\d{2}/
+        try { valid = valid && Date.parse('yyyy-MM-dd', value).format('yyyy-MM-dd') == value }
+        catch (Exception ignored) { valid = false }
+        if (!valid) throw new IllegalArgumentException("Date required as yyyy-MM-dd for ${field.name}")
+    }
 }
 
 private void _nrValidateInput(Map field, Object value, boolean allowClear = false) {
@@ -223,9 +227,9 @@ private void _nrValidateInput(Map field, Object value, boolean allowClear = fals
     List values = value instanceof List ? value : [value]
     if (values.any { !(it instanceof String || it instanceof Number || it instanceof Boolean) }) throw new IllegalArgumentException("Scalar values are required for ${field.name}")
     if (field.required && (!values || values.any { it.toString() == '' })) throw new IllegalArgumentException("Required field: ${field.name}")
-    boolean device = _nrIsDeviceType(field.type) || field.type.startsWith('device.')
+    boolean device = _nrIsDeviceType(field.type)
     List options = device ? _nrDeviceChoices(field).collect { it.id.toString() } : (field.containsKey('option_keys') ? field.option_keys : _nrChoiceKeys(field.options))
-    if ((device || field.type in ['enum', 'mode']) && options == null) throw new IllegalArgumentException("Native choices are unavailable for ${field.name}")
+    if ((device || field.type in ['enum', 'mode', 'menu']) && options == null) throw new IllegalArgumentException("Native choices are unavailable for ${field.name}")
     if (options != null && values.any { !(allowClear && it.toString() == '') && !(it.toString() in options) }) throw new IllegalArgumentException("Invalid native choice for ${field.name}")
     _nrValidateScalar(field, value, allowClear)
     if (field.type in ['number', 'decimal'] && !(allowClear && value.toString() == '')) {

@@ -129,6 +129,72 @@ class NativeFormsSpec extends ToolSpecBase {
         !calls[2].body.containsKey('settings[credential]')
     }
 
+    def 'every type the page declares is a field; the page treats menu, file-text and download-text specially'() {
+        given:
+        model.configPage.sections[0].input += [
+            [element: 'input', name: 'onDate', type: 'date'],
+            [element: 'input', name: 'mail', type: 'email'],
+            [element: 'input', name: 'phone', type: 'phone'],
+            [element: 'input', name: 'hubPick', type: 'hub'],
+            [element: 'input', name: 'pick', type: 'menu', options: [['x': 'Ex'], ['y': 'Why']]],
+            [element: 'input', name: 'import', type: 'file-text'],
+            [element: 'input', name: 'export', type: 'download-text', title: 'Download', filename: 'rule.json', filecontent: '{"a":1}']
+        ]
+        when:
+        def opened = open()
+        then:
+        opened.success
+        opened.unsupported.every { !it.startsWith('Input type') }
+        ['onDate', 'mail', 'phone', 'hubPick', 'pick', 'import'].every { name -> opened.fields.find { it.name == name }.supported }
+        opened.fields.find { it.name == 'pick' }.submit_on_change
+        opened.fields.find { it.name == 'export' }.with { !supported && filename == 'rule.json' && value == '{"a":1}' }
+
+        when:
+        calls.clear()
+        def result = submit([onDate: '2026-11-10', mail: 'a@b.c', phone: '555', hubPick: 'Main', import: '<x>keep</x>'])
+        then:
+        result.success
+        calls*.path == ['/installedapp/update/json']
+        calls[0].body['settings[onDate]'] == '2026-11-10'
+        calls[0].body['onDate.type'] == 'date'
+        calls[0].body['settings[mail]'] == 'a@b.c'
+        calls[0].body['settings[hubPick]'] == 'Main'
+        calls[0].body['settings[import]'] == '<x>keep</x>'
+        !calls[0].body.containsKey('settings[export]')
+
+        when:
+        assert open().success
+        calls.clear()
+        result = submit([pick: 'y'])
+        then:
+        result.success
+        calls[0].body['settings[pick]'] == 'y'
+    }
+
+    @Unroll
+    def 'native #type value #value is refused before the request'() {
+        given:
+        model.configPage.sections[0].input += [
+            [element: 'input', name: 'onDate', type: 'date'],
+            [element: 'input', name: 'pick', type: 'menu', options: [['x': 'Ex']]],
+            [element: 'input', name: 'export', type: 'download-text', filename: 'rule.json', filecontent: 'data']
+        ]
+        assert open().success
+        calls.clear()
+        when:
+        def result = submit([(name): value])
+        then:
+        !result.success
+        calls.empty
+        where:
+        type            | name     | value
+        'date'          | 'onDate' | '2026-13-01'
+        'date'          | 'onDate' | '10/11/2026'
+        'date'          | 'onDate' | 20261110
+        'menu'          | 'pick'   | 'z'
+        'download-text' | 'export' | 'other'
+    }
+
     @Unroll
     def 'invalid field patch #fields is rejected before mutation'() {
         given:
@@ -237,7 +303,7 @@ class NativeFormsSpec extends ToolSpecBase {
         model.configPage.sections[0].input += [
             [element: 'href', title: 'External', url: 'https://example.invalid/setup'],
             [element: 'paragraph', title: '<script>custom()</script><button onclick="custom()">Custom</button>'],
-            [element: 'input', name: 'upload', type: 'file']
+            [element: 'input', name: 'export', type: 'download-text', title: 'Download', filename: 'rule.json', filecontent: '{"a":1}']
         ]
         when:
         def opened = open()
@@ -247,7 +313,7 @@ class NativeFormsSpec extends ToolSpecBase {
         opened.success
         opened.unsupported.any { it.contains('browser') }
         opened.unsupported.contains('Custom browser script')
-        opened.fields.find { it.name == 'upload' }.supported == false
+        opened.fields.find { it.name == 'export' }.supported == false
         !result.success
         !result.partial
         calls.empty
