@@ -375,9 +375,8 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         result.childApps[0].id == 101
         result.childApps[0].label == 'Sub Rule'
 
-        and: 'appType summary carries built-in flag and the declared menu tab (#5/#6)'
-        result.app.appType.system == true
-        result.app.appType.menu == 'Automations'
+        and: 'appType carries the type's namespace and name, built-in flag and declared menu tab, and nothing else (#5/#6, #575)'
+        result.app.appType == [namespace: 'hubitat', name: 'Rule Machine', system: true, menu: 'Automations']
 
         and: 'endpoint field present for debugging'
         result.endpoint == '/installedapp/configure/json/35'
