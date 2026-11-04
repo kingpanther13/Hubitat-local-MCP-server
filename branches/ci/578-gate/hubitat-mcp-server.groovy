@@ -21060,11 +21060,11 @@ private Map _rmRestoreViaNativeImport(Map snapshot, Integer savedId, boolean exi
     }
     Integer hint = exists ? savedId : null
     Integer seed = null
+    String seedFailure = null
     if (hint == null) {
         try {
             def parentId = _discoverParentAppId(snapshot?.appType ?: "rule_machine")
             def kids = _appClonerSnapshotChildren(parentId)
-            if (kids?.isError) throw new IllegalStateException(kids.error?.toString())
             hint = (kids?.ids ?: []).collect { it.toString() }.find { it.isInteger() }?.toInteger()
             if (hint == null) {
                 _requireUnprotectedAppMutation(parentId, "restore a child app under")
@@ -21073,9 +21073,10 @@ private Map _rmRestoreViaNativeImport(Map snapshot, Integer savedId, boolean exi
             }
         } catch (Exception e) {
             mcpLog("warn", "rm-native", "Restore of app ${savedId}: finding or creating a Rule Machine rule to seed the import failed (${e.message})")
+            seedFailure = e.message
             hint = null
         }
-        if (hint == null) return [fallback: "no Rule Machine rule was found or could be created to seed the App Cloner import"]
+        if (hint == null) return [fallback: (seedFailure ? "the App Cloner import could not be seeded: ${seedFailure}" : "no Rule Machine rule was found or could be created to seed the App Cloner import").toString()]
     }
     if (exists) {
         try { _requireUnprotectedAppDeletion(savedId) } catch (IllegalArgumentException protExc) {
