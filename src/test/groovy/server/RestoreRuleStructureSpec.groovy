@@ -1039,13 +1039,14 @@ class RestoreRuleStructureSpec extends ToolSpecBase {
         List raws = []
         script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 -> raws << path; [status: 302, location: "/installedapp/configure/60"] }
 
-        when:
-        def out
-        try { out = script._rmRestoreFromBackup([fileName: "f.json"], nativeSnapshot(), false) } catch (Exception refused) { out = [refused: refused.message] }
+        when: 'a native-edit backup, whose restore needs the exact copy and never falls back to a settings replay'
+        def out = script._rmRestoreFromBackup([fileName: "f.json"], nativeSnapshot(captureFormat: 'native-rule-edit-v1'), false)
 
-        then: 'the App Cloner import never starts from an empty seed, and nothing is created under a protected parent'
+        then: 'each row is refused before any child is created or any import starts'
+        out.success == false
+        out.error == 'Exact native recovery is unavailable: no Rule Machine rule was found or could be created to seed the App Cloner import'
+        raws.every { !it.contains('/createchild/') }
         rec.imports.isEmpty()
-        !parentProtected || raws.every { !it.contains('/createchild/') }
 
         where:
         parentReadable | parentProtected
