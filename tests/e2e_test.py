@@ -9050,6 +9050,15 @@ def updated() {}
         deleted = self.client.call_tool("hub_delete_native_app", {"appId": app_id, "force": True, "confirm": True})
         assert deleted.get("success") is True, deleted
         self._untrack_native_app(app_id)
+
+        def rule_ids() -> set[str]:
+            ids, cursor = set(), ""
+            while cursor is not None:
+                page = self.client.call_tool("hub_list_apps", {"scope": "instances", "cursor": cursor})
+                ids |= {str(a["id"]) for a in page.get("apps") or [] if a.get("type") == "Rule-5.1"}
+                cursor = page.get("nextCursor")
+            return ids
+        before = rule_ids()
         restored = self._rm_restore(deleted["backup"]["backupKey"])
         copy_id = restored.get("ruleId")
         if copy_id:
@@ -9057,6 +9066,8 @@ def updated() {}
         try:
             assert restored.get("success") is True and restored.get("restoredVia") == "nativeImport" \
                 and str(copy_id) != str(app_id), restored
+            # The copy is the only new rule: when no other rule could seed the import, its temporary seed is gone.
+            assert rule_ids() - before == {str(copy_id)}, f"the restore left a rule other than its copy {copy_id}"
             doc = self._native_rule_document(copy_id)
             assert len(doc["triggers"]) == 1 and [r["value"]["method"] for r in doc["actions"]] == ["getLogMsg"], doc
             assert self._rm_values(copy_id)["logmsg." + str(doc["actions"][0]["id"])] == "deleted-rule marker"
