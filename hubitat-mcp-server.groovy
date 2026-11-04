@@ -5171,20 +5171,15 @@ private void _mrtrCleanupRecord(Map rec) {
 }
 
 // Copy tool results without JSON round-tripping so serializer failures remain
-// observable at the guarded boundary below. Any Map stored under a `backup` key
-// is public backup metadata; strip its internal brokenBefore wording signal at
-// every nesting depth (bulk/patch results contain per-item backup maps too).
-private def _publicToolResultValue(value, boolean backupMetadata = false) {
+// observable at the guarded boundary below.
+private def _publicToolResultValue(value) {
     if (value instanceof Map) {
         def copy = new LinkedHashMap()
-        (value as Map).each { key, child ->
-            if (backupMetadata && key?.toString() == "brokenBefore") return
-            copy.put(key, _publicToolResultValue(child, key?.toString() == "backup"))
-        }
+        (value as Map).each { key, child -> copy.put(key, _publicToolResultValue(child)) }
         return copy
     }
     if (value instanceof List) {
-        return (value as List).collect { child -> _publicToolResultValue(child, false) }
+        return (value as List).collect { child -> _publicToolResultValue(child) }
     }
     return value
 }

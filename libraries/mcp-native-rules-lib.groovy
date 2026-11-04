@@ -1720,7 +1720,7 @@ private Map _rmDecodeRuleExport(Integer ruleId, Object raw) {
 Map _rmBackupRuleSnapshot(Integer ruleId, String reason, boolean requireNativeExport = false, String protectedKey = null, String activePage = null) {
     // Strict edit capture never renders the editor before its recovery point is saved.
     def built = requireNativeExport ? _rmBuildNativeEditSnapshot(ruleId, reason, _rmCaptureRuleExport(ruleId)) : _rmBuildRuleSnapshot(ruleId, reason, activePage)
-    return _withBackupLock("rule ${ruleId} snapshot (${reason})") { _rmWriteRuleSnapshotLocked(ruleId, reason, built.snapshot as Map, built.config as Map, protectedKey) }
+    return _withBackupLock("rule ${ruleId} snapshot (${reason})") { _rmWriteRuleSnapshotLocked(ruleId, reason, built.snapshot as Map, protectedKey) }
 }
 
 // Password-typed and credential-named settings never reach a File Manager snapshot: their values are
@@ -1778,7 +1778,7 @@ private Map _rmBuildNativeEditSnapshot(Integer ruleId, String reason, String cap
         nativeExport: nativeExport, configJson: config,
         statusJson: [appSettings: settingRows, appState: data.state.collect { key, value -> [name: key, value: value] }]]
     if (redacted) snapshot.redactedSettings = redacted.toList().sort()
-    [snapshot: snapshot, config: config]
+    [snapshot: snapshot]
 }
 
 // activePage: the page a form workflow is on. Its render is read instead of the app's default page,
@@ -1938,10 +1938,10 @@ private Map _rmBuildRuleSnapshot(Integer ruleId, String reason, String activePag
     }
     if (redacted) snapshot.redactedSettings = redacted.toList().sort()
 
-    return [snapshot: snapshot, config: config]
+    return [snapshot: snapshot]
 }
 
-private Map _rmWriteRuleSnapshotLocked(Integer ruleId, String reason, Map snapshot, Map config, String protectedKey = null) {
+private Map _rmWriteRuleSnapshotLocked(Integer ruleId, String reason, Map snapshot, String protectedKey = null) {
     def ts = new Date(now()).format("yyyyMMdd-HHmmss-SSS")
     String namePrefix = "mcp-rm-backup-${ruleId}-"
     String nameExt = ".json"
@@ -1988,14 +1988,7 @@ private Map _rmWriteRuleSnapshotLocked(Integer ruleId, String reason, Map snapsh
     _publishUploadedItemBackup(backupKey, entry, protectedKey)
 
     mcpLog("info", "rm-native", "Backed up rule ${ruleId} (${reason}) to ${fileName} (${jsonBytes.length} bytes)")
-    // brokenBefore: the rule's pre-write broken state, derived from the config this snapshot
-    // already fetched (no extra hub read). A mutation that needs to know whether IT caused a
-    // post-write break (vs the rule being broken beforehand) reads this off the returned backup to
-    // steer its error wording, then STRIPS it -- it is a transient internal signal, never surfaced
-    // to the caller and deliberately kept off the persisted manifest `entry` (not part of the
-    // durable backup record). null when no config was readable (VRB-only snapshot).
     return [backupKey: backupKey,
-            brokenBefore: (config == null ? null : _rmConfigHasBrokenMarkers(config)),
             baselineReused: false,
             rollbackScope: "Restoring this baseline returns rule ${ruleId} to its state at ${formatTimestamp(snapshot.timestamp as Long)}."] +
         entry + [retentionNote: _itemBackupRetentionNote()]
@@ -2056,42 +2049,6 @@ private Map _rmReadLocalVarsMap(Integer appId) {
     }
     return [ok: true, vars: (raw instanceof Map) ? raw : [:], live: live]
 }
-
-// Add a local variable to a Rule Machine 5.1 rule.
-//
-// RM 5.1's variable wizard lives on selectActions. The flow:
-// 1. Click `moreVar` button (state=moreVar) → opens wizard, exposes
-// `hbVar` text input ("Name the local variable")
-// 2. Write hbVar=<name> → exposes `varType` enum
-// 3. Write varType=<Number|Decimal|String|Boolean|DateTime> → exposes
-// `varValue` input (typed per varType)
-// 4. Write varValue=<initial> → AUTO-COMMITS; the variable is added to
-// state.allLocalVars and the wizard fields disappear, ready for
-// the next variable. No explicit commit button.
-//
-// Verified live via probe on rule 1348:
-// state.allLocalVars = {myCounter: {type:'integer', value:42}}
-//
-// Spec:
-// {name: <varName>, type: 'Number'|'Decimal'|'String'|'Boolean'|'DateTime',
-// value: <initial>}
-//
-// Returns [success, name, type, value, settingsApplied, settingsSkipped].
-private boolean _rmConfigHasBrokenMarkers(config) {
-    if (!(config instanceof Map)) return false
-    def sections = config?.configPage?.sections ?: []
-    def texts = (sections as List).collectMany { sect ->
-        def fromBody = (sect?.body ?: [])
-            .findAll { b -> b instanceof Map && (b.element == "paragraph" || b.element == "href") }
-            .collect { it.description?.toString() ?: "" }
-        def fromParagraphs = (sect?.paragraphs ?: []).collect { it?.toString() ?: "" }
-        fromBody + fromParagraphs
-    }
-    return texts.any { text ->
-        ["**Broken Trigger**", "**Broken Action**", "**Broken Condition**"].any { text.contains(it) }
-    }
-}
-
 
 Set _rmCollectPageInputNames(Integer appId, String pageName, Map cache = null) {
     def cfg = _rmFetchConfigJson(appId, pageName, cache)
@@ -2890,16 +2847,20 @@ private boolean _rmReusableBackupFileMatches(Map entry, Integer ruleId) {
 
 
 Map _rmBackupBeforeEdit(Integer ruleId, String reason, String activePage = null) {
-    def reused = _withBackupLock("rule ${ruleId} baseline (${reason})") { _rmBackupBeforeEditLocked(ruleId, reason, activePage) }
+    def reused = _withBackupLock("rule ${ruleId} baseline (${reason})") { _rmBackupBeforeEditLocked(ruleId, reason) }
     return reused ?: _rmBackupRuleSnapshot(ruleId, reason, false, null, activePage)
 }
 
 
-private Map _rmBackupBeforeEditLocked(Integer ruleId, String reason, String activePage = null) {
+private Map _rmBackupBeforeEditLocked(Integer ruleId, String reason) {
     if (_effectiveBackupSetting('backupEveryRuleWrite') == 'true') return null
 
     def mfst = _itemBackupManifest()
     def recent = _rmRecentRuleBackup(mfst, ruleId, now())
+    // Checked before any manifest repair or unlink, so the refusal's "Nothing was changed" holds.
+    if (recent != null && getAppByAppId(ruleId as Long) == null) {
+        throw new IllegalArgumentException("No rule/app with id ${ruleId} exists on this hub. Nothing was changed. Use hub_list_rules for valid ids. See hub_get_tool_guide(section='builtin_app_tools_crud').")
+    }
 
     if (recent != null && !_rmReusableBackupFileMatches(recent.value as Map, ruleId)) {
         def staleFile = recent.value?.fileName?.toString()
@@ -2913,26 +2874,8 @@ private Map _rmBackupBeforeEditLocked(Integer ruleId, String reason, String acti
         // Repair only a validated handle: trimming to protect a handle that is then
         // discarded would evict one live rollback point for nothing.
         _repairItemBackupRetention(mfst, recent.key.toString(), recent.value as Map)
-        def config = null
-        try {
-            config = activePage ? _rmFetchConfigJson(ruleId, activePage) : _rmFetchConfigJson(ruleId)
-        } catch (Exception e) {
-            def vrbFallback = null
-            try { vrbFallback = _vrbDetect(ruleId) } catch (Exception ignored) { }
-            if (vrbFallback == null) {
-                if (e.message?.contains("404")) {
-                    throw new IllegalArgumentException("No rule/app with id ${ruleId} exists on this hub (configure/json returned 404). Nothing was changed. Use hub_list_rules for valid ids. See hub_get_tool_guide(section='builtin_app_tools_crud').")
-                }
-                // The persisted snapshot above is already identity-checked and is
-                // sufficient for rollback. A transient configure/json failure only
-                // makes the brokenBefore wording diagnostic unavailable; it must not
-                // turn a valid edit into an invalid-params refusal.
-                mcpLog("warn", "rm-native", "Could not read rule ${ruleId} before reusing backup '${recent.key}' (${e.message ?: e}); continuing without the internal brokenBefore diagnostic")
-            }
-        }
         mcpLog("info", "rm-native", "Reusing recent backup ${recent.key} for rule ${ruleId} (${reason}); restoring it reverts every edit since ${formatTimestamp(recent.value.timestamp as Long)}")
         return [backupKey: recent.key,
-                brokenBefore: (config == null ? null : _rmConfigHasBrokenMarkers(config)),
                 baselineReused: true,
                 rollbackScope: "Restoring this baseline reverts every edit to rule ${ruleId} since ${formatTimestamp(recent.value.timestamp as Long)}."] +
             new LinkedHashMap(recent.value as Map)

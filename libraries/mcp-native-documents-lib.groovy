@@ -86,10 +86,7 @@ private List _ndPageIssues(Object node) {
     def issues = []
     if (node instanceof List) node.each { child -> issues.addAll(_ndPageIssues(child)) }
     else if (node instanceof Map) {
-        if ((node.type ?: node.element) in ['paragraph', 'href']) {
-            def description = node.description?.toString() ?: ''
-            if (description =~ /(?is)<span\b[^>]*color\s*:\s*red[^>]*>[^<]*\*\*Broken [^*]+\*\*/) issues << 'Native editor reports a broken condition, trigger or action'
-        }
+        // A broken row is read from the rule's state (_ndRuleHealth), not from the rendered page.
         if (node.error || node.errors) issues << 'Native editor returned an error'
         ['sections', 'body', 'children'].each { key -> if (node.get(key) != null) issues.addAll(_ndPageIssues(node.get(key))) }
     }
@@ -430,6 +427,12 @@ private Map _ndApply(Long id, List changes, boolean created) {
         Map renderedState = _nrState(id) + (health instanceof Map ? health : [:])
         def structuralIssues = _ndStructuralIssues(renderedState, _nrHandle(id).getSetting('useST') == true)
         structuralIssues.addAll(_nmValidateStructure(id, renderedState).structuralIssues ?: [])
+        // A simple conditional action whose condition renders nothing raises no broken flag, so each such row is checked.
+        Map renderedActions = renderedState.actions instanceof Map ? renderedState.actions : [:]
+        (renderedState.actionList instanceof List ? renderedState.actionList : []).collect { it.toString() }.each { actionId ->
+            def row = _nmEntry(renderedActions, actionId)
+            if (row instanceof Map && row.cond && !_nmActionLabel(id, actionId)) structuralIssues << "Native action ${actionId} is broken: its condition renders nothing".toString()
+        }
         if (structuralIssues) throw new IllegalStateException(structuralIssues.join('; '))
         if (!(health instanceof Map) || health.broken != false) return [success: false, partial: true, rule_id: id, created: created, results: outcomes, broken: health instanceof Map ? health.broken : null, error: 'Native rule health is broken or unverified', note: _ndFailureNote(true, created)]
         def done = hubInternalPostFormRaw('/installedapp/update/json', 'id=' + id.toString() + '&_action_update=Done&_cancellable=true')

@@ -78,7 +78,7 @@ class NativeRuleRecoveryExportSpec extends ToolSpecBase {
         given:
         script.metaClass._nrHandle = { Long id -> [exportAppData: { List ids -> '{}' }] }
         script.metaClass._rmBuildNativeEditSnapshot = { Integer id, String reason, String captured -> throw new AssertionError('unexpected snapshot construction') }
-        script.metaClass._rmWriteRuleSnapshotLocked = { Integer id, String reason, Map snapshot, Map config, String protectedKey -> throw new AssertionError('unexpected upload') }
+        script.metaClass._rmWriteRuleSnapshotLocked = { Integer id, String reason, Map snapshot, String protectedKey -> throw new AssertionError('unexpected upload') }
         when:
         script._rmBackupRuleSnapshot(42, 'pre-document-update', true)
         then:
@@ -102,13 +102,13 @@ class NativeRuleRecoveryExportSpec extends ToolSpecBase {
         script.metaClass.deleteHubFile = { String name -> events << 'delete' }
         script.metaClass._publishUploadedItemBackup = { String key, Map entry, String protectedKey -> events << ['publish', protectedKey] }
         when:
-        def result = script._rmWriteRuleSnapshotLocked(42, 'pre-document-update', built.snapshot, built.config, 'source-key')
+        def result = script._rmWriteRuleSnapshotLocked(42, 'pre-document-update', built.snapshot, 'source-key')
         then:
         result.backupKey
         events == ['upload', 'read', ['publish', 'source-key']]
         when:
         corrupt = true
-        script._rmWriteRuleSnapshotLocked(42, 'pre-document-update', built.snapshot, built.config)
+        script._rmWriteRuleSnapshotLocked(42, 'pre-document-update', built.snapshot)
         then:
         thrown(IllegalArgumentException)
         events[-3..-1] == ['upload', 'read', 'delete']

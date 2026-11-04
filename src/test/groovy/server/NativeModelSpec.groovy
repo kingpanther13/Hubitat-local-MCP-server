@@ -850,7 +850,7 @@ class NativeModelSpec extends ToolSpecBase {
             // The native input renderer consumes the prior operation's Done flag.
             nativeState.remove('capabDone')
             if (nativeState.hasAll == true) {
-                nativeState.capabsfalse['1'] = reject ? 'BROKEN' : compiledLabel
+                nativeState.capabsfalse['1'] = compiledLabel
                 // Native string membership checks can append a String beside an Integer ID.
                 nativeState.predCapabs = nativeState.predCapabs + ['1']
                 nativeState.capabDone = true
@@ -874,16 +874,24 @@ class NativeModelSpec extends ToolSpecBase {
         settings.state_1.value == (reject ? 'on' : 'off')
         if (reject) {
             assert edited.rolledBack
-            assert edited.compiledLabel == 'BROKEN'
+            assert edited.compiledLabel == compiledLabel
             assert nativeState.isPredicate == false
             assert !settings.containsKey('rDev_1')
         } else assert settings.rDev_1.value == ['7']
         where:
         reject | compiledLabel
         false  | 'Switch A off'
-        true   | 'Switch A off'
-        // A device that has no current value yet: RM renders it as null inside its value span.
+        true   | 'BROKEN'
+        // A device that has no current value yet: RM renders it as null inside its value span, styled
+        // inline on 2.5.2 firmware and classed on 2.5.3.
         false  | "Switch A(<span style='color:black'>null</span>) is off"
+        false  | "Switch A(<span class='text-color'>null</span>) is off"
+        false  | "Counter <span class='text-color'>(null)</span> is > 5"
+        // A status span is not a value span: its marker still refuses the row, and RM's own type-mismatch
+        // label is kept as text rather than stripped away.
+        true   | "Switch A off <span class='text-hubitat-danger'>*BROKEN*</span>"
+        false  | "<span class='text-hubitat-danger'>Mismatched attribute value(power: NUMBER) and type(70: STRING)</span>"
+        false  | "<span style='color:red'>Mismatched attribute value(power: NUMBER) and type(70: STRING)</span>"
     }
 
     def 'trigger deletion uses native delete callback and verifies setting cleanup'() {
@@ -1545,12 +1553,14 @@ class NativeModelSpec extends ToolSpecBase {
         nativeRule.appButtonHandler = { String name ->
             if (name == 'actionCancel') nativeState.actionCancel = true
         }
+        // Rule Machine only ever raises the flag while labelling; it never clears it there.
         nativeRule.thisActionLabel = { Object actionId ->
             rowChecks++
-            nativeState.broken = settings.get('ruleAct.1').value.isEmpty()
+            boolean empty = settings.get('ruleAct.1').value.isEmpty()
+            if (empty && raisesFlag) nativeState.broken = true
             nativeState.nestedLabel = ['temporary label scope']
             nativeState.actLabelIndent = 'changed by label render'
-            nativeState.broken ? "<span style='color:red'>**Broken Action**</span>" : 'Run Actions: target'
+            empty ? brokenLabel : 'Run Actions: target'
         }
         nativeRule.broken = { ->
             pageValidations++
@@ -1575,7 +1585,15 @@ class NativeModelSpec extends ToolSpecBase {
         pageValidations == 1
         if (unhealthyAfterRestore) assert result.cleanupError.contains('health was not restored')
         where:
-        unhealthyAfterRestore << [false, true]
+        // Rule Machine's state flag decides, whatever the firmware's markup around the label; a simple conditional
+        // action whose condition renders nothing draws only a Broken Condition status span and raises no flag.
+        unhealthyAfterRestore | brokenLabel                                                                                 | raisesFlag
+        false                 | "<span style='color:red'>**Broken Action**</span>"                                          | true
+        true                  | "<span style='color:red'>**Broken Action**</span>"                                          | true
+        false                 | "<span class='text-hubitat-danger'>**Broken Action**</span>"                                | true
+        false                 | 'Run Actions: '                                                                             | true
+        false                 | "IF (<span class='text-hubitat-danger'>**Broken Condition**</span>) Run Actions: target"    | false
+        false                 | "IF (<span style='color:red'>**Broken Condition**</span>) Run Actions: target"              | false
     }
 
     def 'rejected dependent fields recover stale broken health through native validation rather than a state flag patch'() {
@@ -1635,7 +1653,9 @@ class NativeModelSpec extends ToolSpecBase {
     }
 
     def 'successful row label validation preserves formatting context and avoids a complete native page render'() {
-        given:
+        given: 'a rule that may already be broken elsewhere; the label check clears the flag for this row and restores it'
+        if (brokenBefore != null) nativeState.broken = brokenBefore
+        List flagAtLabel = []
         List stack = ['existing block']
         nativeState.nestedLabel = stack
         nativeState.actLabelIndent = '\t'
@@ -1646,6 +1666,7 @@ class NativeModelSpec extends ToolSpecBase {
             nativeState.actionList = ['1']
         }
         nativeRule.thisActionLabel = { Object actionId ->
+            flagAtLabel << nativeState.broken
             nativeState.nestedLabel.pop()
             nativeState.inIf = false
             nativeState.actLabelIndent = ''
@@ -1658,9 +1679,14 @@ class NativeModelSpec extends ToolSpecBase {
         def result = script._nmUpsertAction(42L, [type: 'messageActs', subtype: 'getLogMsg', fields: [[name: 'logmsg.#', type: 'text', value: 'valid']]])
         then:
         result.success
+        flagAtLabel == [false]
+        nativeState.broken == brokenBefore
+        nativeState.containsKey('broken') == (brokenBefore != null)
         nativeState.nestedLabel == ['existing block']
         nativeState.actLabelIndent == '\t'
         nativeState.inIf
+        where:
+        brokenBefore << [null, false, true]
     }
 
 

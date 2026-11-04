@@ -258,15 +258,22 @@ private void _nmRefreshHealth(Long ruleId, Map baseline) {
     if (validated != (baseline.broken == true) || health.broken != validated) throw new IllegalStateException('Native row health was not restored after cancellation')
 }
 
+// Rule Machine sets state.broken when an action's label method, or a condition in its IF or wait expression, renders
+// nothing. A simple conditional action whose condition renders nothing only draws a **Broken Condition** status span,
+// so that span is checked too. The flag is cleared first so only this row can raise it, then restored.
 private boolean _nmActionLabel(Long ruleId, String id) {
     Map before = _nrState(ruleId)
-    List keys = ['actLabelIndent', 'nestedLabel', 'inIf', 'inRepeat']
+    List keys = ['actLabelIndent', 'nestedLabel', 'inIf', 'inRepeat', 'broken']
     Map format = before.findAll { key, value -> key in keys }
     if (format.nestedLabel instanceof List) format.put('nestedLabel', new ArrayList(format.nestedLabel))
     def label
-    try { label = _nrHandle(ruleId).thisActionLabel(id) }
-    finally { _nrStatePatch(ruleId, format, keys.findAll { !format.containsKey(it) }) }
-    label instanceof String && label.trim() && !(label =~ /(?is)<span\b[^>]*color\s*:\s*red[^>]*>[^<]*\*\*Broken [^*]+\*\*/)
+    boolean broken
+    try {
+        _nrStatePatch(ruleId, [broken: false])
+        label = _nrHandle(ruleId).thisActionLabel(id)
+        broken = _nrState(ruleId).broken == true
+    } finally { _nrStatePatch(ruleId, format, keys.findAll { !format.containsKey(it) }) }
+    label instanceof String && label.trim() && !broken && !(label =~ /<span\b[^>]*>\s*\*\*Broken [^*]+\*\*\s*<\/span>/).find()
 }
 
 private Map _nmRejectEdit(Long ruleId, String id, Map baseline, Map savedSettings, List keys, Map entries, Closure cancel, Map failure) {
@@ -378,8 +385,9 @@ Map _nmUpsertCondition(Long ruleId, boolean trigger, Map row) {
         def label = _nmEntry(after.get(collection) instanceof Map ? after.get(collection) : [:], id)
         Map echoed = _nrSettings(ruleId, settings.collect { it.name })
         boolean persisted = settings.every { echoed.get(it.name)?.type?.toString() == it.type && _nrComparableSetting(it.type, echoed.get(it.name)?.value) == _nrComparableSetting(it.type, it.value) }
-        // RM shows a device's current value in the label; a device with no value yet shows null there.
-        String bare = label instanceof String ? label.replaceAll(/\(?<span style='color:black'>\(?[^<]*\)?<\/span>\)?/, '') : null
+        // With "Display current values" on, RM shows each device's value in a span after it (inline black on 2.5.2,
+        // classed on 2.5.3); a device with no value yet shows null there. Only that value span is removed.
+        String bare = label instanceof String ? label.replaceAll(/\(?<span (?:style='color:black'|class='text-color')>\(?[^<]*\)?<\/span>\)?/, '') : null
         boolean compiled = bare?.trim() && !bare.contains('null') && !bare.contains('BROKEN')
         if (!(compiled && persisted && membership)) return _nmRejectCondition(ruleId, trigger, editing, id, baseline, savedSettings, settings, render,
             [error: compiled ? 'Native input persistence failed' : 'Native row did not compile a valid label', compiledLabel: label?.toString()])
