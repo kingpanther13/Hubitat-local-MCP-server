@@ -21059,15 +21059,21 @@ private Map _rmRestoreViaNativeImport(Map snapshot, Integer savedId, boolean exi
         return [fallback: "device(s) ${deadDevices.join(', ')} named by the App Cloner export no longer exist".toString()]
     }
     Integer hint = exists ? savedId : null
+    Integer seed = null
     if (hint == null) {
         try {
-            def kids = _appClonerSnapshotChildren(_discoverParentAppId(snapshot?.appType ?: "rule_machine"))
+            def parentId = _discoverParentAppId(snapshot?.appType ?: "rule_machine")
+            def kids = _appClonerSnapshotChildren(parentId)
             hint = (kids?.ids ?: []).collect { it.toString() }.find { it.isInteger() }?.toInteger()
+            if (hint == null) {
+                String seedType = (_appTypeRegistry()[snapshot?.appType ?: "rule_machine"]?.appName ?: "Rule-5.1").toString()
+                seed = hint = _rmCreateChildApp(parentId as Integer, "hubitat", seedType)
+            }
         } catch (Exception e) {
-            mcpLog("warn", "rm-native", "Restore of app ${savedId}: finding a Rule Machine rule to seed the import failed (${e.message})")
+            mcpLog("warn", "rm-native", "Restore of app ${savedId}: finding or creating a Rule Machine rule to seed the import failed (${e.message})")
             hint = null
         }
-        if (hint == null) return [fallback: "no Rule Machine rule was found to seed the App Cloner import"]
+        if (hint == null) return [fallback: "no Rule Machine rule was found or could be created to seed the App Cloner import"]
     }
     if (exists) {
         try { _requireUnprotectedAppDeletion(savedId) } catch (IllegalArgumentException protExc) {
@@ -21081,6 +21087,11 @@ private Map _rmRestoreViaNativeImport(Map snapshot, Integer savedId, boolean exi
     } catch (Exception impExc) {
         mcpLog("error", "rm-native", "Restore of app ${savedId}: the App Cloner import threw (${impExc.message})")
         imp = [success: false, clonerAppId: -1, error: impExc.message ?: impExc.toString()]
+    } finally {
+        if (seed != null) {
+            try { _rmForceDeleteApp(seed) }
+            catch (Exception seedExc) { mcpLog("warn", "rm-native", "Restore of app ${savedId}: the empty seed rule ${seed} could not be deleted (${seedExc.message}); delete it with hub_delete_native_app") }
+        }
     }
     Integer newId = imp?.newAppId as Integer
     if (newId == null) {
@@ -24402,6 +24413,9 @@ private Map _rmBackupBeforeEditLocked(Integer ruleId, String reason) {
     if (_effectiveBackupSetting('backupEveryRuleWrite') == 'true') return null
     def mfst = _itemBackupManifest()
     def recent = _rmRecentRuleBackup(mfst, ruleId, now())
+    if (recent != null && getAppByAppId(ruleId as Long) == null) {
+        throw new IllegalArgumentException("No rule/app with id ${ruleId} exists on this hub. Nothing was changed. Use hub_list_rules for valid ids. See hub_get_tool_guide(section='builtin_app_tools_crud').")
+    }
     if (recent != null && !_rmReusableBackupFileMatches(recent.value as Map, ruleId)) {
         def staleFile = recent.value?.fileName?.toString()
         mcpLog("warn", "rm-native", "Recent backup ${recent.key} for rule ${ruleId} is missing or does not match its manifest; discarding the stale handle and taking a fresh baseline")
@@ -24411,9 +24425,6 @@ private Map _rmBackupBeforeEditLocked(Integer ruleId, String reason) {
     }
     if (recent != null) {
         _repairItemBackupRetention(mfst, recent.key.toString(), recent.value as Map)
-        if (getAppByAppId(ruleId as Long) == null) {
-            throw new IllegalArgumentException("No rule/app with id ${ruleId} exists on this hub. Nothing was changed. Use hub_list_rules for valid ids. See hub_get_tool_guide(section='builtin_app_tools_crud').")
-        }
         mcpLog("info", "rm-native", "Reusing recent backup ${recent.key} for rule ${ruleId} (${reason}); restoring it reverts every edit since ${formatTimestamp(recent.value.timestamp as Long)}")
         return [backupKey: recent.key,
                 baselineReused: true,
