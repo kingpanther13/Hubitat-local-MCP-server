@@ -522,6 +522,43 @@ class HandleGatewaySpec extends ToolSpecBase {
         !reached
     }
 
+    def "a gateway refuses anything beside tool and args, so a misplaced lock never saves unlocked"() {
+        given:
+        settingsMap.useGateways = true
+        settingsMap.enableWrite = true
+        def posts = []
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 -> posts << path; [success: true] }
+
+        when:
+        script.executeTool('hub_manage_code', [tool: 'hub_update_driver', args: [driverId: '5', source: 's', confirm: true], expectedVersion: 3])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains('Unknown hub_manage_code argument: expectedVersion')
+        e.message.contains('Valid arguments: tool, args')
+        posts.isEmpty()
+    }
+
+    def "hub_update_device's refusal of a top-level field says where device fields go"() {
+        when:
+        script._rejectUnknownArgs('hub_update_device', [deviceId: '5', room: 'Den'])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains('Unknown hub_update_device argument: room')
+        e.message.contains('device fields go in fields and driver preferences in preferences')
+    }
+
+    def "a gateway's own arguments and the exempt keys pass the envelope check; the frozen custom-rule gateway is left alone"() {
+        when:
+        script._rejectUnknownArgs('hub_manage_code', [tool: 'hub_update_driver', args: [:], bestPracticeKey: 'k', __reqT0: 1L])
+        script._rejectUnknownArgs('hub_manage_code', [:])
+        script._rejectUnknownArgs('hub_manage_custom_rules', [tool: 'hub_list_custom_rules', args: [:], stray: 1])
+
+        then:
+        noExceptionThrown()
+    }
+
     @spock.lang.Unroll
     def "dispatch: every tool refuses an unknown argument (useGateways=#useGateways)"() {
         given:

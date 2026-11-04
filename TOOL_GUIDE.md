@@ -290,13 +290,13 @@ The radio firmware-flash `action` values (the bullet above summarizes these as "
 
 ### hub_update_app / hub_update_driver / hub_update_library — expectedVersion (optimistic lock)
 
-`expectedVersion` is checked before saving: the call reads the code's current version and, if it differs, posts nothing and returns `conflict:true` with `expectedVersion`, `currentVersion` and a `note`. Re-read the source, then retry with the new version. It must be a whole number: 2.9, strings and an explicit null are refused. If the current version cannot be read, the call is refused before saving.
+`expectedVersion` is checked before saving: the call reads the code's current version and, if it differs, posts nothing and returns `conflict:true` with `expectedVersion`, `currentVersion` and a `note`. Re-read the source, then retry with the new version. It must be a whole number: 2.9, strings and an explicit null are refused. If the current version cannot be read, a locked call or a self-update is refused before saving; a plain save with no lock can still use a recent backup's version, which the hub refuses if it is stale.
 
 Every save carries the version, and the hub refuses one that is no longer current. So a save beaten by another save after the check also comes back `conflict:true`, and without `expectedVersion` the save uses the version this call read and fails the same way. Nothing is re-posted: re-read, reapply your change, and save again.
 
 Overlapping saves of one item can instead fail with a collision answer: `java.sql.SQLException: Failed to update device type` for a driver, or an error that is only the compile path (`./appTargetDir/user_app_<namespace>_<name>_<id>.groovy`) for an app. These carry `retryable:true` (bulk entries too) and the source was not rejected. Wait a moment, re-read, then retry, and send saves of one item one at a time. Every other failure keeps the syntax-error note.
 
-Every tool rejects arguments outside its schema, so a misspelled lock fails instead of being dropped.
+Every tool except the frozen custom-rule tools rejects arguments outside its schema, and a gateway rejects anything beside `tool` and `args`, so a misspelled or misplaced lock fails instead of being dropped.
 
 Use it when a read-modify-write spans turns, or when another agent may edit the same code. The source backup is still taken on a conflict. It is not taken in importUrl mode (the item's history lives where that URL is published); inline source and sourceFile updates keep it.
 

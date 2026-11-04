@@ -448,6 +448,9 @@ private Map _legacyDashboardFormPost(String appId, Map fields) {
 // classic form wire. The layout starts empty; tiles are added via hub_update_dashboard.
 private Map _createLegacyDashboard(Map args) {
     def name = args.name.toString().trim()
+    if (args.version != null) {
+        throw new IllegalArgumentException("version applies only to Easy Dashboards. Omit it for a legacy dashboard.")
+    }
     if (args.options != null) {
         throw new IllegalArgumentException("options applies only to Easy Dashboards. A legacy dashboard's look lives in its layout -- create it first, then pass setOptions/addTiles to hub_update_dashboard.")
     }

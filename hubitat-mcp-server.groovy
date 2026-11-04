@@ -6862,23 +6862,25 @@ def requiredParamsByTool() {
 
 // The frozen legacy tools keep their undeclared arguments (hub_create_custom_rule's localVariables).
 private boolean _argCheckFrozen(String name) {
-    return name.endsWith("_custom_rule") || name in ["hub_list_captured_states", "hub_delete_captured_state"]
+    return name.endsWith("_custom_rule") || name in ["hub_manage_custom_rules", "hub_list_captured_states", "hub_delete_captured_state"]
 }
 
 // A tool refuses arguments outside its schema's properties, before any side effect, in gateway and
 // flat mode alike (both reach executeTool), so a misspelled guard such as expectedVersion fails
-// instead of being silently dropped. Gateway names have no entry: they re-enter here per sub-tool
-// with the leaf's arguments, and a direct write tool's opaque args object is a declared property.
+// instead of being silently dropped. A gateway takes only tool and args: it re-enters here per
+// sub-tool with the leaf's arguments, so a lock beside them would otherwise never reach the leaf.
+// A direct write tool's opaque args object is a declared property.
 // Exempt: bestPracticeKey (every write tool takes it for the mandatory guide gate) and the server's
 // own double-underscore keys (the __reqT0 budget clock).
 def _rejectUnknownArgs(toolName, args) {
     def allowed = _toolCatalogIndexes().argNames[toolName as String]
+    if (allowed == null && getGatewayConfig().containsKey(toolName as String) && !_argCheckFrozen(toolName as String)) allowed = ["tool", "args"]
     if (allowed == null || !(args instanceof Map)) return
     def unknown = (args as Map).keySet().collect { it as String }.findAll {
         !allowed.contains(it) && it != "bestPracticeKey" && !it.startsWith("__")
     }
     if (!unknown) return
-    throw new IllegalArgumentException("Unknown ${_externalToolName(toolName as String)} argument${unknown.size() == 1 ? '' : 's'}: ${unknown.sort().join(', ')}. Nothing was changed. ${allowed ? "Valid arguments: ${allowed.join(', ')}." : 'This tool takes no arguments.'}")
+    throw new IllegalArgumentException("Unknown ${_externalToolName(toolName as String)} argument${unknown.size() == 1 ? '' : 's'}: ${unknown.sort().join(', ')}. Nothing was changed. ${allowed ? "Valid arguments: ${allowed.join(', ')}." : 'This tool takes no arguments.'}${toolName == 'hub_update_device' ? ' Note: device fields go in fields and driver preferences in preferences.' : ''}")
 }
 
 // hub_call_device_replace(list_options: true) short-circuits to a candidate READ before any
@@ -11779,13 +11781,13 @@ The radio firmware-flash `action` values (the bullet above summarizes these as "
 
 ### hub_update_app / hub_update_driver / hub_update_library — expectedVersion (optimistic lock)
 
-`expectedVersion` is checked before saving: the call reads the code's current version and, if it differs, posts nothing and returns `conflict:true` with `expectedVersion`, `currentVersion` and a `note`. Re-read the source, then retry with the new version. It must be a whole number: 2.9, strings and an explicit null are refused. If the current version cannot be read, the call is refused before saving.
+`expectedVersion` is checked before saving: the call reads the code's current version and, if it differs, posts nothing and returns `conflict:true` with `expectedVersion`, `currentVersion` and a `note`. Re-read the source, then retry with the new version. It must be a whole number: 2.9, strings and an explicit null are refused. If the current version cannot be read, a locked call or a self-update is refused before saving; a plain save with no lock can still use a recent backup's version, which the hub refuses if it is stale.
 
 Every save carries the version, and the hub refuses one that is no longer current. So a save beaten by another save after the check also comes back `conflict:true`, and without `expectedVersion` the save uses the version this call read and fails the same way. Nothing is re-posted: re-read, reapply your change, and save again.
 
 Overlapping saves of one item can instead fail with a collision answer: `java.sql.SQLException: Failed to update device type` for a driver, or an error that is only the compile path (`./appTargetDir/user_app_<namespace>_<name>_<id>.groovy`) for an app. These carry `retryable:true` (bulk entries too) and the source was not rejected. Wait a moment, re-read, then retry, and send saves of one item one at a time. Every other failure keeps the syntax-error note.
 
-Every tool rejects arguments outside its schema, so a misspelled lock fails instead of being dropped.
+Every tool except the frozen custom-rule tools rejects arguments outside its schema, and a gateway rejects anything beside `tool` and `args`, so a misspelled or misplaced lock fails instead of being dropped.
 
 Use it when a read-modify-write spans turns, or when another agent may edit the same code. The source backup is still taken on a conflict. It is not taken in importUrl mode (the item's history lives where that URL is published); inline source and sourceFile updates keep it.
 

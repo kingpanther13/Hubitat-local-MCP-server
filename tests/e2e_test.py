@@ -10658,7 +10658,8 @@ def updated() {}
             source_v2 = source_v1.replace("UPDATE-LEG-MARKER-V1", "UPDATE-LEG-MARKER-V2")
             updated = self.client.call_tool("hub_manage_code", {
                 "tool": "hub_update_app",
-                "args": {"appId": code_app_id, "source": source_v2, "confirm": True},
+                "args": {"appId": code_app_id, "source": source_v2,
+                         "expectedVersion": version_before, "confirm": True},
             })
             assert updated.get("success") is True, f"hub_update_app round-trip failed: {updated}"
             assert updated.get("previousVersion") is not None, \
@@ -11133,7 +11134,8 @@ def updated() {}
             # reissues a transport-lost write.
             updated = self._write_once(
                 "hub_manage_code", "hub_update_driver",
-                {"driverId": driver_id, "source": source_v2, "confirm": True},
+                {"driverId": driver_id, "source": source_v2,
+                 "expectedVersion": version_before, "confirm": True},
                 "driver code round-trip")
             assert updated.get("success") is True, f"hub_update_driver round-trip failed: {updated}"
             assert updated.get("previousVersion") is not None, \

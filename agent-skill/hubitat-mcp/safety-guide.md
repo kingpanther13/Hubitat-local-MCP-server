@@ -115,13 +115,13 @@ ALL destructive write tools (`confirm`+backup tier) require these steps in order
 - Warn about namespace conflicts with existing libraries (`#include namespace.LibraryName` references must match exactly)
 
 #### hub_update_app / hub_update_driver
-- Source is auto-backed up before update (1-hour protection window preserves original)
+- Source is auto-backed up before update in every mode except `importUrl`, whose history lives at its URL (1-hour protection window preserves original); `backup:false` skips it
 - Pass the version you read as `expectedVersion`, a whole number: if someone else changed the code since, the call returns `conflict:true` and writes nothing. A save with no `expectedVersion` also fails if another save lands first; nothing is re-posted, so re-read and save again
 - Overlapping saves of one item can come back as a collision with `retryable:true`: `java.sql.SQLException: Failed to update device type` for a driver, or an error that is only the compile path (`./appTargetDir/user_app_...groovy`) for an app. Wait, re-read and retry; save one item at a time
 - Supports four modes: `source` (direct), `sourceFile` (from File Manager), `importUrl` (hub fetches the URL), `resave` (recompile)
 
 #### hub_update_library
-- Source is auto-backed up before update (1-hour protection window preserves original); backup failure aborts the update
+- Source is auto-backed up before update in every mode except `importUrl`, whose history lives at its URL (1-hour protection window preserves original); `backup:false` skips it; backup failure aborts the update
 - Pass the version you read as `expectedVersion`, a whole number: if someone else changed the code since, the call returns `conflict:true` and writes nothing. A save with no `expectedVersion` also fails if another save lands first; nothing is re-posted, so re-read and save again
 - Supports four modes: `source` (direct), `sourceFile` (from File Manager), `importUrl` (hub fetches the URL), `resave` (recompile)
 
