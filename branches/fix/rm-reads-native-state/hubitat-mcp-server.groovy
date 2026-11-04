@@ -21064,8 +21064,10 @@ private Map _rmRestoreViaNativeImport(Map snapshot, Integer savedId, boolean exi
         try {
             def parentId = _discoverParentAppId(snapshot?.appType ?: "rule_machine")
             def kids = _appClonerSnapshotChildren(parentId)
+            if (kids?.isError) throw new IllegalStateException(kids.error?.toString())
             hint = (kids?.ids ?: []).collect { it.toString() }.find { it.isInteger() }?.toInteger()
             if (hint == null) {
+                _requireUnprotectedAppMutation(parentId, "restore a child app under")
                 String seedType = (_appTypeRegistry()[snapshot?.appType ?: "rule_machine"]?.appName ?: "Rule-5.1").toString()
                 seed = hint = _rmCreateChildApp(parentId as Integer, "hubitat", seedType)
             }
@@ -26200,6 +26202,11 @@ private Map _ndApply(Long id, List changes, boolean created) {
         Map renderedState = _nrState(id) + (health instanceof Map ? health : [:])
         def structuralIssues = _ndStructuralIssues(renderedState, _nrHandle(id).getSetting('useST') == true)
         structuralIssues.addAll(_nmValidateStructure(id, renderedState).structuralIssues ?: [])
+        Map renderedActions = renderedState.actions instanceof Map ? renderedState.actions : [:]
+        (renderedState.actionList instanceof List ? renderedState.actionList : []).collect { it.toString() }.each { actionId ->
+            def row = _nmEntry(renderedActions, actionId)
+            if (row instanceof Map && row.cond && !_nmActionLabel(id, actionId)) structuralIssues << "Native action ${actionId} is broken: its condition renders nothing".toString()
+        }
         if (structuralIssues) throw new IllegalStateException(structuralIssues.join('; '))
         if (!(health instanceof Map) || health.broken != false) return [success: false, partial: true, rule_id: id, created: created, results: outcomes, broken: health instanceof Map ? health.broken : null, error: 'Native rule health is broken or unverified', note: _ndFailureNote(true, created)]
         def done = hubInternalPostFormRaw('/installedapp/update/json', 'id=' + id.toString() + '&_action_update=Done&_cancellable=true')
