@@ -3777,6 +3777,9 @@ private void _mrtrValidateAccess(outerToolName, leafToolName, Map outerArgs, boo
     // executeTool gate alone would see no caller until runMrtrSlice restores it.
     String clientDenial = _clientToolDenial(leaf, leafArgs)
     if (clientDenial != null) throw new IllegalArgumentException(clientDenial)
+    // The clone and import slices never reach executeTool, so its argument check runs here too.
+    if (outer != leaf) _rejectUnknownArgs(outer, outerArgs)
+    _rejectUnknownArgs(leaf, leafArgs)
     if (checkKey && !readLeaf && settings.enableMandatoryBPS != false) {
         String bpsSection = _bpsSectionForTool(leaf)
         def bpsKey = hubBpsKeyFromArgs(leafArgs)

@@ -134,7 +134,7 @@ def test_restore_scenario_keeps_response_and_exact_source_assertions(defect):
 
 def test_lost_conflict_response_propagates_and_cleans_up_without_replay():
     def fault(client, tool, args, result):
-        if tool == "hub_update_app" and "expectedVersion" in args:
+        if tool == "hub_update_app" and result.get("conflict"):
             raise et.RelayLostResponseError("504 conflict response lost")
 
     client = AppCodeClient(fault)

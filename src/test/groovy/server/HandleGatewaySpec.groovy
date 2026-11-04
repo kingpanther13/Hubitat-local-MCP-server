@@ -539,6 +539,33 @@ class HandleGatewaySpec extends ToolSpecBase {
         posts.isEmpty()
     }
 
+    def "the MRTR access check refuses unknown arguments on the leaf and the gateway before anything is reserved"() {
+        given:
+        settingsMap.enableWrite = true
+        String gateway = script.getGatewayConfig().find { it.value.tools.contains('hub_clone_native_app') }.key
+
+        when: 'a misspelled clone argument through the flat tool'
+        script._mrtrValidateAccess('hub_clone_native_app', 'hub_clone_native_app', [appId: 5, stageDisbled: true])
+
+        then:
+        def flat = thrown(IllegalArgumentException)
+        flat.message.contains('Unknown hub_clone_native_app argument: stageDisbled')
+
+        when: 'the same inside a gateway'
+        script._mrtrValidateAccess(gateway, 'hub_clone_native_app', [tool: 'hub_clone_native_app', args: [appId: 5, stageDisbled: true]])
+
+        then:
+        def inner = thrown(IllegalArgumentException)
+        inner.message.contains('Unknown hub_clone_native_app argument: stageDisbled')
+
+        when: 'a key beside the gateway envelope'
+        script._mrtrValidateAccess(gateway, 'hub_clone_native_app', [tool: 'hub_clone_native_app', args: [appId: 5], stageDisabled: true])
+
+        then:
+        def beside = thrown(IllegalArgumentException)
+        beside.message.contains('argument: stageDisabled')
+    }
+
     def "hub_update_device's refusal of a top-level field says where device fields go"() {
         when:
         script._rejectUnknownArgs('hub_update_device', [deviceId: '5', room: 'Den'])
