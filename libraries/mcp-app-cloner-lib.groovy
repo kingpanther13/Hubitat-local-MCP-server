@@ -1182,6 +1182,13 @@ private String _rmLabelName(label) {
     (label?.toString() ?: '').replaceAll(/(?:\s*<span\b[^>]*>\s*(?:\*BROKEN\*|\((?:Not Installed|Stopped|Paused|Required Expression false|Repeating)\))\s*<\/span>)+\s*$/, '')
 }
 
+// The live label is the restored name itself, or that name followed only by RM's status spans; the name is the
+// boundary, so a span the user put at the end of the name (even one reading "(Stopped)") is never taken for status.
+private boolean _rmLabelCarriesName(label, String name) {
+    String live = label?.toString() ?: ''
+    live == name || (live.startsWith(name) && _rmLabelName(live.substring(name.length())).trim().isEmpty())
+}
+
 private String _rmRestoredRuleName(List plan, Map identity) {
     def name = plan.find { it.name == 'origLabel' }?.value
     if (name != null) return name.toString()
@@ -1268,7 +1275,7 @@ private Map _rmRestoreNativeEdit(Map snapshot, String sourceBackupKey) {
         if (_rmNativeComparable(actualLocals) != _rmNativeComparable(_rmNativeLocalSignature(expectedState))) throw new IllegalStateException('Native local variables differ from recovery')
         if (_rmNativeComparable(_rmNativeSettingsSignature(_rmUnredactedSettings(id, redacted))) != _rmNativeComparable(_rmNativeSettingsSignature(data.appSettings))) throw new IllegalStateException('Native rebuild changed restored settings')
         if ((actual.stopped == true) != (expectedState.stopped == true) || (actual.paused == true) != (expectedState.paused == true) ||
-            _rmLabelName(_nrHandle(id).label) != restoredName) throw new IllegalStateException('Native label or lifecycle state differs from recovery')
+            !_rmLabelCarriesName(_nrHandle(id).label, restoredName)) throw new IllegalStateException('Native label or lifecycle state differs from recovery')
         Map restored = [success: true, type: 'rm-rule', ruleId: id, originalRuleId: id, restoredVia: 'nativeStateReplay', backup: undo,
          stateVerified: true, settingsVerified: true, localVariablesVerified: true, broken: rebuilt.broken, stopped: rebuilt.stopped, paused: rebuilt.paused,
          eventSubscriptions: rebuilt.eventSubscriptions, scheduledJobs: rebuilt.scheduledJobs]

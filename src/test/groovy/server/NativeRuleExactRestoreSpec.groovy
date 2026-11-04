@@ -397,6 +397,17 @@ class NativeRuleExactRestoreSpec extends ToolSpecBase {
         statusSpan << ["<span style='color:red'>", "<span class='text-hubitat-danger'>"]
     }
 
+    def "a rule whose own name ends in a status-like span restores it while RM appends its own status span"() {
+        given:
+        stoppedSnapshot("Porch <span class='my-tag'>(Stopped)</span> (Stopped)", "Porch <span class='my-tag'>(Stopped)</span>")
+        child.statusSpan = "<span class='text-hubitat-danger'>"
+        when:
+        def result = restore()
+        then:
+        result.success
+        child.label == "Porch <span class='my-tag'>(Stopped)</span> <span class='text-hubitat-danger'>(Stopped)</span>"
+    }
+
     def 'a restore whose rebuilt rule carries a different name still fails verification'() {
         given:
         stoppedSnapshot('Original (Stopped)')
