@@ -1161,9 +1161,10 @@ private void _rmNativeRestoreFlags(Long id, Map savedState) {
 // RM's fixAppLabel derives the label from origLabel plus HTML status spans ((Stopped), (Paused),
 // *BROKEN*, ...), sometimes well after the state changes; the user only ever sets origLabel. A
 // snapshot may hold those spans, HTML-stripped to plain text. Compare and restore the name only:
-// the lifecycle state the spans display is verified on its own. Firmware styles or classes the spans.
+// the lifecycle state the spans display is verified on its own. Only trailing status spans go, styled or classed;
+// a span the user put in the name stays.
 private String _rmLabelName(label) {
-    (label?.toString() ?: '').replaceAll(/\s*<span\b[^>]*>[^<]*<\/span>/, '')
+    (label?.toString() ?: '').replaceAll(/(?:\s*<span\b[^>]*>\s*(?:\*BROKEN\*|\((?:Not Installed|Stopped|Paused|Required Expression false|Repeating)\))\s*<\/span>)+\s*$/, '')
 }
 
 private String _rmRestoredRuleName(List plan, Map identity) {

@@ -2524,12 +2524,64 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
 
         when:
         def para = script.toolGetAppConfig([appId: 35]).page.sections[0].paragraphs[0]
+        def text = para instanceof Map ? para.text : para
 
         then:
-        disabled ? para.disabled == ["Notify Pushover: 'Fixed mismatch'"] : (para instanceof String && !para.contains('<span'))
+        (para instanceof Map ? para.disabled : null) == listed
+        text.contains("Notify Pushover: 'Fixed mismatch'") && !text.contains('<span')
 
         where:
-        disabled << [['2'], []]
+        disabled | listed
+        ['2']    | ["Notify Pushover: 'Fixed mismatch'"]
+        []       | null
+    }
+
+    def "italic HTML in a live action's own text is not a disabled row"() {
+        given:
+        settingsMap.enableRead = true
+        String paragraph = "\tLog: '<span style='font-size:20px'><i>Alert</i></span> live'\n" +
+            "\t<span class='text-hubitat-danger'><i>Log: 'to disable'\n</i></span>"
+        hubGet.register('/installedapp/configure/json/35') { params -> rmActionsPageJson(paragraph) }
+        script.metaClass._nrState = { Long id -> [disabledActions: ['2'], disabledTriggers: []] }
+
+        expect:
+        script.toolGetAppConfig([appId: 35]).page.sections[0].paragraphs[0].disabled == ["Log: 'to disable'"]
+    }
+
+    def "a disabled trigger is listed from the trigger table, without the Disabled Trigger legend"() {
+        given:
+        settingsMap.enableRead = true
+        String table = "<table><tr><th>Trigger Events<span class='text-hubitat-danger'>           <i>Disabled Trigger</i></span></th></tr>" +
+            "<tr><td><span class='text-hubitat-danger'><i>Switch A turns on</i></span></td></tr><tr><td>Switch B turns off</td></tr></table>"
+        hubGet.register('/installedapp/configure/json/35/selectTriggers') { params -> rmActionsPageJson(table, 'selectTriggers') }
+        script.metaClass._nrState = { Long id -> [disabledActions: [], disabledTriggers: ['1']] }
+
+        expect:
+        script.toolGetAppConfig([appId: 35, pageName: 'selectTriggers']).page.sections[0].paragraphs[0].disabled == ['Switch A turns on']
+    }
+
+    def "disabled rows fall back to the page when the rule state cannot be read or the rule is not a 5.1 rule"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/35') { params ->
+            def json = new groovy.json.JsonSlurper().parseText(rmActionsPageJson(RM_ACTIONS_PARAGRAPH))
+            json.app.name = appName
+            groovy.json.JsonOutput.toJson(json)
+        }
+        int stateReads = 0
+        script.metaClass._nrState = { Long id -> stateReads++; throw new IllegalStateException('Native state is unavailable') }
+
+        when:
+        def para = script.toolGetAppConfig([appId: 35]).page.sections[0].paragraphs[0]
+
+        then:
+        para.disabled == ["Notify Pushover: 'Fixed mismatch'"]
+        stateReads == reads
+
+        where:
+        appName    | reads
+        'Rule-5.1' | 1
+        'Rule-5.0' | 0
     }
 
     def "a Rule Machine main page's action link lists the disabled rows its summary holds"() {

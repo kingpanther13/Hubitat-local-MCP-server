@@ -1183,6 +1183,18 @@ class NativeDocumentsSpec extends ToolSpecBase {
         passed.success
     }
 
+    def 'a broken marker on the rendered page does not block Done while the rule state reports healthy'() {
+        given:
+        def child = new NativeDocumentDiagnosticChild(events, lifecycle, true)
+        child.raisesFlag = false
+        script.metaClass._nrHandle = { Long id -> child }
+        when:
+        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [logChange()], confirm: true])
+        then:
+        result.success
+        events.any { it instanceof Map && it.path == '/installedapp/update/json' }
+    }
+
     def 'Done preserves an existing stopped and paused native rule using verified toggles'() {
         given:
         lifecycle.stopped = true
@@ -1423,11 +1435,12 @@ class NativeDocumentChild {
 
 class NativeDocumentDiagnosticChild extends NativeDocumentChild {
     boolean diagnostic
+    boolean raisesFlag = true
     NativeDocumentDiagnosticChild(List events, Map lifecycle, boolean diagnostic) { super(events, lifecycle); this.diagnostic = diagnostic }
     // Rendering a broken rule sets Rule Machine's broken flag; the page marker's markup varies by firmware.
     Object selectActions(Map params) {
         events << 'selectActions'
-        if (diagnostic) lifecycle.broken = true
+        if (diagnostic && raisesFlag) lifecycle.broken = true
         [name: 'selectActions', sections: [[input: [[name: 'logmsg.1', value: '**Broken Condition**']], body: [[type: 'paragraph', description: diagnostic ? "<span class='text-hubitat-danger'>**Broken Condition**</span>" : 'Log: **Broken Condition**']]]]]
     }
 }

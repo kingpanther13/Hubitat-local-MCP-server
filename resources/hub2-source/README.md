@@ -224,14 +224,16 @@ per-action; `<N>` is the action index unless noted.
   `text-color` for a condition's current-value span) — on both the `mainPage` actions
   paragraph and the `selectActions` row (`data-stateAttribute='doAct'` div); a live
   action is plain text. The table header's legend uses
-  the same markup around the literal `Disabled Action` / `Disabled Actions`
-  (pluralized by count); `*BROKEN*` is a status span but not italic. Clicking `disable<N>`
+  the same markup around the literal `Disabled Action(s)`, and the trigger table's around
+  `Disabled Trigger(s)` (pluralized by count); `*BROKEN*` is a status span but not italic. Clicking `disable<N>`
   via `/installedapp/btn` (no `stateAttribute`) TOGGLES it (live-verified; a second
   click re-enables, and a click on a nonexistent `disable<N>` still reports
   success). A `hub_set_rule(operation:'form')` control is what clicks it; `hub_get_app_config`
-  lists rows only while RM's state lists a disabled one, taking each row's text from its span: on a
-  Rule Machine rule, a paragraph that holds disabled rows is returned as
-  `{text, disabled: [<row text>...]}` (the `Disabled Action(s)` legend is excluded).
+  lists rows only while RM's state lists a disabled one (or, when that state cannot be read, from the
+  page alone), taking each row's text from RM's own red or danger-classed italic span, so italic HTML
+  in a user's action text does not count: on a Rule Machine rule, a paragraph that holds disabled rows
+  is returned as `{text, disabled: [<row text>...]}` (the `Disabled Action(s)` / `Disabled Trigger(s)`
+  legends are excluded).
 - **String `*contains*` comparator** — for a STRING-typed variable or a
   free-valued Custom Attribute, the comparator field (`RelrDev_<N>` on the
   condition wizard, `ReltDev<N>` on the trigger row) offers `=`, `≠` (the

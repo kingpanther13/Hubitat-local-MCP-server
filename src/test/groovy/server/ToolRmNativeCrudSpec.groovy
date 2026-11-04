@@ -834,6 +834,24 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         !second.containsKey('retention')
     }
 
+    def "a reused baseline refuses a rule that no longer exists, without rendering its page"() {
+        given:
+        def (clock, files, deleted) = editBackupRule504("gone", false)
+        script._rmBackupBeforeEdit(504, "pre-native-form")
+        clock[0] += 1000L
+        hubGet.calls.clear()
+        script.metaClass.getAppByAppId = { id -> null }
+
+        when:
+        script._rmBackupBeforeEdit(504, "pre-native-form")
+
+        then:
+        def refused = thrown(IllegalArgumentException)
+        refused.message.contains('No rule/app with id 504')
+        !hubGet.calls*.path.any { it.startsWith('/installedapp/configure/json') }
+        files.size() == 1
+    }
+
     def "hub_list_backups surfaces rm-rule entries with rule-specific metadata alongside app/driver entries"() {
         given:
         enableReadOnly()

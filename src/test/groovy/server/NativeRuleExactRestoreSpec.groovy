@@ -384,6 +384,19 @@ class NativeRuleExactRestoreSpec extends ToolSpecBase {
         statusSpan << ["<span style='color:red'>", "<span class='text-hubitat-danger'>"]
     }
 
+    def 'a rule whose own name holds a span restores that name while RM re-derives the status span'() {
+        given:
+        stoppedSnapshot('Porch lights (Stopped)', '<span style="color:green">Porch</span> lights')
+        child.statusSpan = statusSpan
+        when:
+        def result = restore()
+        then:
+        result.success
+        child.label == "<span style=\"color:green\">Porch</span> lights ${statusSpan}(Stopped)</span>"
+        where:
+        statusSpan << ["<span style='color:red'>", "<span class='text-hubitat-danger'>"]
+    }
+
     def 'a restore whose rebuilt rule carries a different name still fails verification'() {
         given:
         stoppedSnapshot('Original (Stopped)')
@@ -395,10 +408,10 @@ class NativeRuleExactRestoreSpec extends ToolSpecBase {
         result.error.contains('Native label or lifecycle state differs from recovery')
     }
 
-    private void stoppedSnapshot(String capturedLabel) {
+    private void stoppedSnapshot(String capturedLabel, String origLabel = 'Original') {
         def source = new JsonSlurper().parseText(snapshot.nativeExport)
         source.appReplacements['42'].appLabel = capturedLabel
-        source.appData['42'].appSettings << [name: 'origLabel', type: 'text', value: 'Original']
+        source.appData['42'].appSettings << [name: 'origLabel', type: 'text', value: origLabel]
         snapshot.nativeExport = JsonOutput.toJson(source)
         child.decorates = true
     }

@@ -11280,6 +11280,13 @@ def updated() {}
                 f"selectActions should list exactly the disabled action, as its edit control names it: {paragraphs_of(rows)}"
             for legacy in ("disabledActions", "disabledActionsNote"):
                 assert legacy not in main and legacy not in rows, f"{legacy} still returned"
+
+            # (e) A disabled trigger is listed from the trigger table without its "Disabled Trigger" legend.
+            trigger = self._rm_ids(self._set_rule(app_id, [self._rm_switch_trigger(self._ensure_perm_fixture("switch_a"), "on")]))[0]
+            self._native_form_control(app_id, "selectTriggers", f"disableT{trigger}")
+            triggers = disabled_rows(read("selectTriggers"))
+            assert len(triggers) == 1 and "turns on" in triggers[0], \
+                f"selectTriggers should list exactly the disabled trigger, not its legend: {triggers}"
         finally:
             self._delete_native(app_id)
 

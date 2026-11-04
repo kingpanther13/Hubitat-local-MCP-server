@@ -555,14 +555,15 @@ def toolGetAppConfig(args) {
 
     boolean isRmRule = _rmIsRuleAppType((appTypeRaw instanceof Map ? appTypeRaw.name : null)?.toString()) ||
         _rmIsRuleAppType(parsed.app.name?.toString())
-    // RM keeps which rows are disabled in its state; the page only italicises them. Unreadable state leaves the page as the only marker.
+    // RM keeps which rows are disabled in its state; the page only italicises them. Other rule versions, or unreadable
+    // state, leave the page as the only marker.
     boolean rmHasDisabled = isRmRule
-    if (isRmRule) {
+    if (isRmRule && [appTypeRaw instanceof Map ? appTypeRaw.name : null, parsed.app.name].any { it?.toString() in ['Rule-5.1', 'Button Rule-5.1'] }) {
         try {
             Map rmState = _nrState(appIdStr as Long)
             rmHasDisabled = [rmState.disabledActions, rmState.disabledTriggers].any { it instanceof Collection && !it.isEmpty() }
         } catch (Exception unreadable) {
-            mcpLog("debug", "hub-admin", "hub_get_app_config app ${appIdStr}: rule state unreadable, disabled rows read from the page: ${unreadable.message}")
+            mcpLog("warn", "hub-admin", "hub_get_app_config app ${appIdStr}: rule state unreadable (${unreadable.class.simpleName}: ${unreadable.message}); disabled rows read from the page")
         }
     }
     // Inputs and controls read as hub_set_native_app / hub_set_rule(operation:'form') return them, with the
@@ -707,16 +708,17 @@ def toolGetAppConfig(args) {
     return result
 }
 
-// Rule Machine wraps each disabled action or trigger row, and its "Disabled Action" legend, in an italic
-// span (red inline style or a danger class, by firmware); it uses that span for nothing else. One paragraph,
-// or the summary under a rule's action link, can hold the whole block.
+// Rule Machine wraps each disabled action or trigger row, and its "Disabled Action" / "Disabled Trigger" legend,
+// in an italic span that is red inline (2.5.2) or danger-classed (2.5.3); only those openers match, so italic HTML in
+// a user's own action text is not a disabled row. The page never strikes a disabled action through, so do not key
+// on <strike>. One paragraph, or the summary under a rule's action link, can hold the whole block.
 private List _appConfigDisabledRows(Object html) {
     List disabled = []
     if (!html) return disabled
-    def rows = html.toString() =~ /(?is)<span\b[^>]*>\s*<i>(.*?)<\/i>\s*<\/span>/
+    def rows = html.toString() =~ /(?is)<span\s+(?:style=['"]\s*color:\s*red;?\s*['"]|class=['"]text-hubitat-danger['"])\s*>\s*<i>(.*?)<\/i>\s*<\/span>/
     while (rows.find()) {
         String row = stripAppConfigHtml(rows.group(1))?.trim()
-        if (row && !(row ==~ /(?i)Disabled Actions?/)) disabled << row
+        if (row && !(row ==~ /(?i)Disabled (?:Action|Trigger)s?/)) disabled << row
     }
     return disabled
 }

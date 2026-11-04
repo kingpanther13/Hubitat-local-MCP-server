@@ -1720,7 +1720,7 @@ private Map _rmDecodeRuleExport(Integer ruleId, Object raw) {
 Map _rmBackupRuleSnapshot(Integer ruleId, String reason, boolean requireNativeExport = false, String protectedKey = null, String activePage = null) {
     // Strict edit capture never renders the editor before its recovery point is saved.
     def built = requireNativeExport ? _rmBuildNativeEditSnapshot(ruleId, reason, _rmCaptureRuleExport(ruleId)) : _rmBuildRuleSnapshot(ruleId, reason, activePage)
-    return _withBackupLock("rule ${ruleId} snapshot (${reason})") { _rmWriteRuleSnapshotLocked(ruleId, reason, built.snapshot as Map, built.config as Map, protectedKey) }
+    return _withBackupLock("rule ${ruleId} snapshot (${reason})") { _rmWriteRuleSnapshotLocked(ruleId, reason, built.snapshot as Map, protectedKey) }
 }
 
 // Password-typed and credential-named settings never reach a File Manager snapshot: their values are
@@ -1778,7 +1778,7 @@ private Map _rmBuildNativeEditSnapshot(Integer ruleId, String reason, String cap
         nativeExport: nativeExport, configJson: config,
         statusJson: [appSettings: settingRows, appState: data.state.collect { key, value -> [name: key, value: value] }]]
     if (redacted) snapshot.redactedSettings = redacted.toList().sort()
-    [snapshot: snapshot, config: config]
+    [snapshot: snapshot]
 }
 
 // activePage: the page a form workflow is on. Its render is read instead of the app's default page,
@@ -1938,10 +1938,10 @@ private Map _rmBuildRuleSnapshot(Integer ruleId, String reason, String activePag
     }
     if (redacted) snapshot.redactedSettings = redacted.toList().sort()
 
-    return [snapshot: snapshot, config: config]
+    return [snapshot: snapshot]
 }
 
-private Map _rmWriteRuleSnapshotLocked(Integer ruleId, String reason, Map snapshot, Map config, String protectedKey = null) {
+private Map _rmWriteRuleSnapshotLocked(Integer ruleId, String reason, Map snapshot, String protectedKey = null) {
     def ts = new Date(now()).format("yyyyMMdd-HHmmss-SSS")
     String namePrefix = "mcp-rm-backup-${ruleId}-"
     String nameExt = ".json"
@@ -2049,28 +2049,6 @@ private Map _rmReadLocalVarsMap(Integer appId) {
     }
     return [ok: true, vars: (raw instanceof Map) ? raw : [:], live: live]
 }
-
-// Add a local variable to a Rule Machine 5.1 rule.
-//
-// RM 5.1's variable wizard lives on selectActions. The flow:
-// 1. Click `moreVar` button (state=moreVar) → opens wizard, exposes
-// `hbVar` text input ("Name the local variable")
-// 2. Write hbVar=<name> → exposes `varType` enum
-// 3. Write varType=<Number|Decimal|String|Boolean|DateTime> → exposes
-// `varValue` input (typed per varType)
-// 4. Write varValue=<initial> → AUTO-COMMITS; the variable is added to
-// state.allLocalVars and the wizard fields disappear, ready for
-// the next variable. No explicit commit button.
-//
-// Verified live via probe on rule 1348:
-// state.allLocalVars = {myCounter: {type:'integer', value:42}}
-//
-// Spec:
-// {name: <varName>, type: 'Number'|'Decimal'|'String'|'Boolean'|'DateTime',
-// value: <initial>}
-//
-// Returns [success, name, type, value, settingsApplied, settingsSkipped].
-
 
 Set _rmCollectPageInputNames(Integer appId, String pageName, Map cache = null) {
     def cfg = _rmFetchConfigJson(appId, pageName, cache)
