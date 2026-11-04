@@ -1002,6 +1002,30 @@ class RestoreRuleStructureSpec extends ToolSpecBase {
         !out.note.contains("was deleted")
     }
 
+    def "a deleted rule that was the parent's only rule restores from an empty seed rule, which is then removed"() {
+        given:
+        def rec = nativeStubs()
+        hubGet.register('/installedapp/configure/json/100') { params -> throw new RuntimeException("404") }
+        hubGet.register('/hub2/appsList') { params -> '{"apps":[]}' }
+        atomicStateMap.parentAppIds = [rule_machine: 21]
+        hubGet.register('/installedapp/configure/json/21') { params -> '{"app":{"id":21},"configPage":{"sections":[]},"settings":{},"childApps":[]}' }
+        List created = []
+        List seedDeletes = []
+        script.metaClass._rmCreateChildApp = { Integer parentId, String ns, String appName -> created << [parentId, appName]; 60 }
+        script.metaClass._rmForceDeleteApp = { Integer appId -> seedDeletes << appId; [status: 302] }
+
+        when:
+        def out = script._rmRestoreFromBackup([fileName: "f.json"], nativeSnapshot(), false)
+
+        then:
+        out.success == true
+        out.restoredVia == "nativeImport"
+        out.ruleId == 200
+        created == [[21, 'Rule-5.1']]
+        rec.imports[0].parentHintAppId == 60
+        seedDeletes == [60]
+    }
+
     def "a deleted rule whose copy failed staging is told not to retry, never to delete the missing rule"() {
         given:
         def rec = nativeStubs(importResult: [success: false, newAppId: 200, error: "could not disable 200"])

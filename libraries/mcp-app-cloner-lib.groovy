@@ -879,15 +879,23 @@ private Map _rmRestoreViaNativeImport(Map snapshot, Integer savedId, boolean exi
         return [fallback: "device(s) ${deadDevices.join(', ')} named by the App Cloner export no longer exist".toString()]
     }
     Integer hint = exists ? savedId : null
+    // The cloner opens from an existing rule under the parent. When the deleted rule was the only one, an empty
+    // rule is created as that seed and removed once the import has run.
+    Integer seed = null
     if (hint == null) {
         try {
-            def kids = _appClonerSnapshotChildren(_discoverParentAppId(snapshot?.appType ?: "rule_machine"))
+            def parentId = _discoverParentAppId(snapshot?.appType ?: "rule_machine")
+            def kids = _appClonerSnapshotChildren(parentId)
             hint = (kids?.ids ?: []).collect { it.toString() }.find { it.isInteger() }?.toInteger()
+            if (hint == null) {
+                String seedType = (_appTypeRegistry()[snapshot?.appType ?: "rule_machine"]?.appName ?: "Rule-5.1").toString()
+                seed = hint = _rmCreateChildApp(parentId as Integer, "hubitat", seedType)
+            }
         } catch (Exception e) {
-            mcpLog("warn", "rm-native", "Restore of app ${savedId}: finding a Rule Machine rule to seed the import failed (${e.message})")
+            mcpLog("warn", "rm-native", "Restore of app ${savedId}: finding or creating a Rule Machine rule to seed the import failed (${e.message})")
             hint = null
         }
-        if (hint == null) return [fallback: "no Rule Machine rule was found to seed the App Cloner import"]
+        if (hint == null) return [fallback: "no Rule Machine rule was found or could be created to seed the App Cloner import"]
     }
     // The old rule is deleted after the import, so its protection is checked before anything is created.
     if (exists) {
@@ -902,6 +910,11 @@ private Map _rmRestoreViaNativeImport(Map snapshot, Integer savedId, boolean exi
     } catch (Exception impExc) {
         mcpLog("error", "rm-native", "Restore of app ${savedId}: the App Cloner import threw (${impExc.message})")
         imp = [success: false, clonerAppId: -1, error: impExc.message ?: impExc.toString()]
+    } finally {
+        if (seed != null) {
+            try { _rmForceDeleteApp(seed) }
+            catch (Exception seedExc) { mcpLog("warn", "rm-native", "Restore of app ${savedId}: the empty seed rule ${seed} could not be deleted (${seedExc.message}); delete it with hub_delete_native_app") }
+        }
     }
     Integer newId = imp?.newAppId as Integer
     if (newId == null) {

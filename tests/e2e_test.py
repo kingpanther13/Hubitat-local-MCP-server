@@ -8548,6 +8548,14 @@ def updated() {}
             after = self._rm_update(app_id, [native_delete("condition", unused)])["document"]
             for section in ("conditions", "actions", "expressions"):
                 assert after[section] == before[section], section
+            # Once a conditional action's device is deleted its condition renders "**Broken Condition**"; an edit
+            # of that action is refused and leaves the rule as it was.
+            gone_id, gone_dni, _ = self._rm_disposable_switch("CondGone")
+            gone = self._rm_ids(self._rm_update(app_id, [self._rm_switch_condition(gone_id)]))[0]
+            gated = self._rm_ids(self._rm_update(app_id, [native_log("gated by a deleted device", condition=gone)]))[0]
+            self._rm_delete_device(gone_dni)
+            assert "Broken Condition" in self._rm_page(app_id), "deleting the device did not break its condition"
+            self._rm_refuse_all(app_id, [[native_log("gated edit", id=gated, condition=gone)]])
         finally:
             self._delete_native(app_id)
 

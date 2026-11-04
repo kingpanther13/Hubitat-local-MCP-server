@@ -2857,6 +2857,10 @@ private Map _rmBackupBeforeEditLocked(Integer ruleId, String reason) {
 
     def mfst = _itemBackupManifest()
     def recent = _rmRecentRuleBackup(mfst, ruleId, now())
+    // Checked before any manifest repair or unlink, so the refusal's "Nothing was changed" holds.
+    if (recent != null && getAppByAppId(ruleId as Long) == null) {
+        throw new IllegalArgumentException("No rule/app with id ${ruleId} exists on this hub. Nothing was changed. Use hub_list_rules for valid ids. See hub_get_tool_guide(section='builtin_app_tools_crud').")
+    }
 
     if (recent != null && !_rmReusableBackupFileMatches(recent.value as Map, ruleId)) {
         def staleFile = recent.value?.fileName?.toString()
@@ -2870,9 +2874,6 @@ private Map _rmBackupBeforeEditLocked(Integer ruleId, String reason) {
         // Repair only a validated handle: trimming to protect a handle that is then
         // discarded would evict one live rollback point for nothing.
         _repairItemBackupRetention(mfst, recent.key.toString(), recent.value as Map)
-        if (getAppByAppId(ruleId as Long) == null) {
-            throw new IllegalArgumentException("No rule/app with id ${ruleId} exists on this hub. Nothing was changed. Use hub_list_rules for valid ids. See hub_get_tool_guide(section='builtin_app_tools_crud').")
-        }
         mcpLog("info", "rm-native", "Reusing recent backup ${recent.key} for rule ${ruleId} (${reason}); restoring it reverts every edit since ${formatTimestamp(recent.value.timestamp as Long)}")
         return [backupKey: recent.key,
                 baselineReused: true,
