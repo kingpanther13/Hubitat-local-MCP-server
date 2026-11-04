@@ -499,7 +499,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
         result.success == !brokenEditor
         result.rule_id == 42L
         events.take(3) == ['action', 'selectTriggers', 'selectActionsX']
-        events.contains('selectActions') == !brokenEditor
+        events.contains('selectActions')
         events.any { it instanceof Map && it.path == '/installedapp/update/json' } == !brokenEditor
         !events.contains('mainPage')
         !events.contains('initState')
@@ -1163,21 +1163,57 @@ class NativeDocumentsSpec extends ToolSpecBase {
         !events.any { it instanceof Map }
     }
 
-    def 'native red broken diagnostic blocks Done but a user text marker does not'() {
+    def "Rule Machine's broken flag blocks Done, and a user's text that reads like its marker does not"() {
         given:
         script.metaClass._nrHandle = { Long id -> new NativeDocumentDiagnosticChild(events, lifecycle, true) }
         when:
         def failed = script.toolUpdateRuleDocument([rule_id: 42, changes: [logChange()], confirm: true])
         then:
         !failed.success
-        failed.error.contains('broken condition')
+        failed.partial
+        failed.broken == true
+        failed.error.contains('health is broken')
         !events.any { it instanceof Map }
         when:
         events.clear()
+        lifecycle.broken = false
         script.metaClass._nrHandle = { Long id -> new NativeDocumentDiagnosticChild(events, lifecycle, false) }
         def passed = script.toolUpdateRuleDocument([rule_id: 42, changes: [logChange()], confirm: true])
         then:
         passed.success
+    }
+
+    def 'an unrelated edit does not report success while an existing conditional action is broken'() {
+        given: 'action 1 is gated by condition 4, whose label RM can no longer draw'
+        nativeState.actions['1'] = [method: 'getLogMsg', cond: 4]
+        script.metaClass._nrStatePatch = { Long id, Map put, List remove = [] -> remove.each { nativeState.remove(it) }; nativeState.putAll(put); [:] }
+        script.metaClass._nrHandle = { Long id -> new NativeDocumentConditionalChild(events, lifecycle, conditionLabel) }
+        when:
+        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [logChange()], confirm: true])
+        then:
+        result.success == !refused
+        if (refused) {
+            assert result.partial
+            assert result.error.contains('Native action 1 is broken')
+            assert !events.any { it instanceof Map }
+        }
+        where:
+        conditionLabel                                                                     | refused
+        "IF (<span class='text-hubitat-danger'>**Broken Condition**</span>) Log: 'gated'"  | true
+        "IF (<span style='color:red'>**Broken Condition**</span>) Log: 'gated'"            | true
+        "IF (Switch is on) Log: '**Broken Condition** typed by the user'"                  | false
+    }
+
+    def 'a broken marker on the rendered page does not block Done while the rule state reports healthy'() {
+        given:
+        def child = new NativeDocumentDiagnosticChild(events, lifecycle, true)
+        child.raisesFlag = false
+        script.metaClass._nrHandle = { Long id -> child }
+        when:
+        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [logChange()], confirm: true])
+        then:
+        result.success
+        events.any { it instanceof Map && it.path == '/installedapp/update/json' }
     }
 
     def 'Done preserves an existing stopped and paused native rule using verified toggles'() {
@@ -1420,11 +1456,20 @@ class NativeDocumentChild {
 
 class NativeDocumentDiagnosticChild extends NativeDocumentChild {
     boolean diagnostic
+    boolean raisesFlag = true
     NativeDocumentDiagnosticChild(List events, Map lifecycle, boolean diagnostic) { super(events, lifecycle); this.diagnostic = diagnostic }
+    // Rendering a broken rule sets Rule Machine's broken flag; the page marker's markup varies by firmware.
     Object selectActions(Map params) {
         events << 'selectActions'
-        [name: 'selectActions', sections: [[input: [[name: 'logmsg.1', value: '**Broken Condition**']], body: [[type: 'paragraph', description: diagnostic ? '<span style=color:red>**Broken Condition**</span>' : 'Log: **Broken Condition**']]]]]
+        if (diagnostic && raisesFlag) lifecycle.broken = true
+        [name: 'selectActions', sections: [[input: [[name: 'logmsg.1', value: '**Broken Condition**']], body: [[type: 'paragraph', description: diagnostic ? "<span class='text-hubitat-danger'>**Broken Condition**</span>" : 'Log: **Broken Condition**']]]]]
     }
+}
+
+class NativeDocumentConditionalChild extends NativeDocumentChild {
+    String conditionLabel
+    NativeDocumentConditionalChild(List events, Map lifecycle, String conditionLabel) { super(events, lifecycle); this.conditionLabel = conditionLabel }
+    Object thisActionLabel(Object actionId) { actionId.toString() == '1' ? conditionLabel : "Log: 'row ${actionId}'" }
 }
 
 class NativeDocumentButtonChild extends NativeDocumentChild {
@@ -1441,6 +1486,7 @@ class NativeDocumentButtonChild extends NativeDocumentChild {
     Object selectActionsX() {
         events << 'selectActionsX'
         if (nativeState.actNdx == null && !nativeState.actions && !nativeState.actionList) nativeState.actNdx = 1
+        if (brokenEditor) lifecycle.broken = true
         [name: 'selectActionsX', sections: [[body: brokenEditor ? [[type: 'paragraph', description: '<span style="color:red">**Broken Action**</span>']] : []]]]
     }
 }

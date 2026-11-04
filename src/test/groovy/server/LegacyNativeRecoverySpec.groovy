@@ -78,7 +78,9 @@ class LegacyNativeRecoverySpec extends ToolSpecBase {
         child.label == installedLabel
         child.typed.origLabel.value == 'Original'
         where:
-        installedLabel << ['Original', "Original<span style='color:red'> (Required Expression false)</span>"]
+        installedLabel << ['Original', "Original<span style='color:red'> (Required Expression false)</span>",
+            "Original <span class='text-hubitat-danger'>(Required Expression false)</span>",
+            "Original <span class='text-hubitat-danger'>(Required Expression false)</span> <span class='text-hubitat-warning'>(Repeating)</span>"]
     }
 
     def 'a legacy snapshot of a rule with no subscriptions adapts with an empty subscription list'() {

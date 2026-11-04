@@ -6380,10 +6380,11 @@ def updated() {}
             named = config.get("settings") or {}
             assert named.get("apiKey") == "***redacted (password)***" and named.get("disarmPin") == "***redacted (password)***", \
                 f"includeSettings returned credential-named values in clear: {named}"
-            # Page inputs read the stored values (the page JSON carries only code defaults), masked the same way.
-            page = self._app_config_input_values(config)
-            assert page.get("doorLedPin") == "13" and page.get("p") == "***redacted (password)***" and \
-                page.get("apiKey") == "***redacted (password)***", f"page inputs did not read the stored values: {page}"
+            # Page inputs read the stored values (the page JSON carries only code defaults), masked as the form
+            # engine masks them: a password input carries no value, a credential-named one the marker.
+            inputs = {i.get("name"): i for s in (config.get("page") or {}).get("sections", []) for i in s.get("inputs", [])}
+            assert inputs.get("doorLedPin", {}).get("value") == "13" and inputs.get("apiKey", {}).get("value") == "***redacted (password)***" and \
+                inputs["p"].get("redacted") is True and "value" not in inputs["p"], f"page inputs did not read the stored values: {inputs}"
             # A board pin and a status code next to a credential word are not credentials.
             assert named.get("doorLedPin") == "13" and named.get("lockErrorCode") == "E42", \
                 f"includeSettings hid a board pin or status code: {named}"
@@ -6602,6 +6603,9 @@ def updated() {}
             form = self._native_app_form(defaults, {"kind": "open"})
             assert self._native_app_field(form, "label").get("value") == renamed, f"the rename did not hold: {form['fields']}"
             assert self._native_app_field(form, "mode[mode]").get("value") == [mode_id], f"the mode restriction did not hold: {form['fields']}"
+            read = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config", "args": {"appId": defaults}})
+            assert [m.get("value") for m in (read.get("app") or {}).get("restrictedModes") or []] == [mode_id], \
+                f"hub_get_app_config should report the mode restriction: {read.get('app')}"
             # The hub does not store a label posted together with mode[mode]; the update posts the label again
             # on its own, so both land.
             together = "Deadman Test Target Form Defaults Together"
@@ -6627,6 +6631,91 @@ def updated() {}
                         print(f"  [WARN] form fixture cleanup: delete code {code_id} reported failure: {gone}")
                 except (McpError, McpToolError, requests.HTTPError) as exc:
                     print(f"  [WARN] form fixture cleanup: delete code {code_id} failed: {exc}")
+
+    FORM_TYPES_APP: ClassVar[str] = """definition(name: "Deadman Test Target Form Types", namespace: "mcptest",
+    author: "ci", description: "Throwaway app code with one input of each special type", category: "Utility",
+    iconUrl: "", iconX2Url: "")
+
+preferences {
+    page(name: "mainPage", title: "Types", install: true, uninstall: true) {
+        section {
+            input "onDate", "date", title: "Date"
+            input "mail", "email", title: "Email"
+            input "pick", "menu", title: "Menu", options: ["x": "Ex", "y": "Why"], defaultValue: "x"
+            input "importText", "file-text", title: "Import"
+            input "exportText", "download-text", title: "Export", filename: "export.json", filecontent: '{"export":1}'
+            input "notes", "textarea", title: "Notes", pattern: "[0-9]+"
+            href "both", title: "Docs", page: "otherPage", url: "https://example.com/docs"
+        }
+    }
+    page(name: "otherPage", title: "Other")
+}
+
+def otherPage() { dynamicPage(name: "otherPage", title: "Other") { section { paragraph "other" } } }
+def installed() {}
+def updated() {}
+"""
+
+    @test("native_apps")
+    def test_set_native_app_page_declared_input_types(self) -> None:
+        # Every input type the page declares is a form field written as the page posts it; a menu is never
+        # filled from its default; navigation runs the page's form checks; a link with a url reads as one (#575).
+        code = instance = None
+        try:
+            created = self.client.call_tool("hub_manage_code", {"tool": "hub_create_app", "args": {"source": self.FORM_TYPES_APP, "confirm": True}})
+            assert created.get("appId"), f"creating the throwaway app code failed: {created}"
+            code = created["appId"]
+            inst = self.client.call_tool("hub_manage_code", {"tool": "hub_create_app", "args": {"codeAppId": code, "confirm": True}})
+            assert inst.get("instanceAppId"), f"creating the throwaway app instance failed: {inst}"
+            instance = inst["instanceAppId"]
+            stored = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config", "args": {"appId": instance, "includeSettings": True}})
+            assert not (stored.get("settings") or {}).get("pick"), f"the install stored the menu's default: {stored.get('settings')}"
+            form = self._native_app_form(instance, {"kind": "open"})
+            fields = {f["name"]: f for f in form.get("fields", [])}
+            assert all(fields[n].get("supported") is True for n in ("onDate", "mail", "pick", "importText", "notes")), fields
+            export = fields["exportText"]
+            assert export.get("supported") is False and export.get("filename") == "export.json" and export.get("value") == '{"export":1}', export
+            assert fields["pick"].get("submit_on_change") is True and fields["pick"].get("value") in (None, ""), fields["pick"]
+            written = self._native_app("update", {"fields": {"onDate": "2026-11-10", "mail": "a@example.com", "pick": "y",
+                                                             "importText": "<b>kept</b>", "notes": "abc"}}, instance)
+            assert written.get("success") is True, f"writing the declared types failed: {written}"
+            values = {f["name"]: f.get("value") for f in self._native_app_form(instance, {"kind": "open"}).get("fields", [])}
+            assert values["onDate"] == "2026-11-10" and values["pick"] == "y" and values["importText"] == "<b>kept</b>" and values["notes"] == "abc", values
+            for refused_fields in ({"onDate": "10/11/2026"}, {"exportText": "other"}):
+                try:
+                    refused = self._native_app("update", {"fields": refused_fields}, instance)
+                except McpToolError as exc:
+                    refused = _tool_error_payload(exc)
+                assert refused.get("success") is False, f"{refused_fields} should be refused: {refused}"
+            # A field submit saves an invalid email as the browser does; navigating is refused until it is fixed.
+            # The textarea's pattern is not checked: the page renders none on a textarea.
+            form = self._native_app_form(instance, {"kind": "open"})
+            form = self._native_app_form(instance, self._rm_step(form, {"mail": "not-an-email"}))
+            done = self._rm_control(form, name="_action_update")
+            try:
+                blocked = self._native_app("form", {"steps": [self._rm_step(form, None, done)]}, instance)
+            except McpToolError as exc:
+                blocked = _tool_error_payload(exc)
+            assert blocked.get("success") is False and "mail: 'not-an-email' is not a valid email address" in str(blocked.get("error")) \
+                and "notes" not in str(blocked.get("error")), f"Done should be refused for the stored email only: {blocked}"
+            fixed = self._native_app("update", {"fields": {"mail": "b@example.com"}}, instance)
+            assert fixed.get("success") is True, f"Done with a valid email should go through: {fixed}"
+            read = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config", "args": {"appId": instance}})
+            inputs = {i["name"]: i for sect in (read.get("page") or {}).get("sections", []) for i in sect.get("inputs", [])}
+            assert inputs["exportText"].get("filename") == "export.json" and inputs["mail"].get("value") == "b@example.com", inputs
+            assert (read.get("page") or {}).get("hrefs") == [{"url": "https://example.com/docs", "title": "Docs"}], read.get("page")
+        finally:
+            if instance:
+                try:
+                    self.client.call_tool("hub_manage_native_rules_and_apps", {"tool": "hub_delete_native_app", "args": {
+                        "appId": instance, "force": True, "confirm": True}})
+                except (McpError, McpToolError, requests.HTTPError) as exc:
+                    print(f"  [WARN] form types cleanup: delete instance {instance} failed: {exc}")
+            if code:
+                try:
+                    self.client.call_tool("hub_manage_code", {"tool": "hub_delete_item", "args": {"type": "app", "item_id": code, "confirm": True}})
+                except (McpError, McpToolError, requests.HTTPError) as exc:
+                    print(f"  [WARN] form types cleanup: delete code {code} failed: {exc}")
 
     @test("native_apps")
     def test_button_rule_create_via_controller(self) -> None:
@@ -7163,6 +7252,30 @@ def updated() {}
         finally:
             if not deleted_inline:
                 self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_dated_certain_time_trigger(self) -> None:
+        # The trigger page declares atDate# as a date input; it is written and read back as one (#575).
+        day = (datetime.now(UTC) + timedelta(days=30)).strftime("%Y-%m-%d")
+        capability = "Certain Time (and optional date)"
+
+        def certain_time(date_value: str) -> list:
+            return [native_field("time#", "enum", "A specific time"), native_field("atTime#", "time", f"{day}T15:35:00.000-0500"),
+                    native_field("date#", "bool", True), native_field("atDate#", "date", date_value)]
+
+        app_id, created = self._rm_rule("DatedTrigger", [native_change("trigger", capability=capability, fields=certain_time(day)),
+                                                         native_log("dated trigger")])
+        try:
+            trigger_id = next(iter(created["triggers"]))
+            setting = self._rm_settings(app_id)[f"atDate{trigger_id}"]
+            assert setting.get("type") == "date" and setting.get("value") == day, setting
+            assert self._rm_health(app_id)["scheduledJobCount"] >= 1, "the dated trigger has no schedule"
+            before = self._rm_snapshot(app_id)
+            error = self._rm_refuse(app_id, [native_change("trigger", id=trigger_id, capability=capability, fields=certain_time("2026-02-30"))])
+            assert "yyyy-MM-dd" in error, error
+            assert self._rm_snapshot(app_id) == before
+        finally:
+            self._delete_native(app_id)
 
     @test("native_apps")
     def test_set_rule_failloud_wrong_trigger_shape(self) -> None:
@@ -8373,6 +8486,15 @@ def updated() {}
             assert "temperature of" in self._rm_page(app_id).lower()
             self._rm_refuse_all(app_id, [[native_change("condition", id=condition, capability="Temperature", fields=[
                 *fields(temp_a, ">", -2, relative_to=temp_b), native_field("state_#", "decimal", 70)])]])
+            # With "Display current values" on, RM prints each device's value in its condition label; a
+            # sensor with no reading yet (the Omni fixture never reports energy) shows null there and compiles.
+            self._rm_form(app_id, self._rm_step(self._rm_open(app_id), fields={"dValues": True}))
+            omni = self._ensure_perm_fixture("omni")
+            energy = self._rm_ids(self._rm_update(app_id, [native_change("condition", capability="Energy meter", fields=[
+                native_field("rDev_#", "capability.energyMeter", [str(omni)]), native_field("RelrDev_#", "enum", ">"),
+                native_field("state_#", "decimal", 70)])]))[0]
+            label = str(self._native_rule_document(app_id)["conditions"][energy])
+            assert "null" in label, f"the Omni fixture reported an energy value, so the no-reading label was not exercised: {label}"
         finally:
             self._delete_native(app_id)
 
@@ -8426,6 +8548,18 @@ def updated() {}
             after = self._rm_update(app_id, [native_delete("condition", unused)])["document"]
             for section in ("conditions", "actions", "expressions"):
                 assert after[section] == before[section], section
+            # Once a conditional action's device is deleted its condition renders "**Broken Condition**"; an edit
+            # of that action is refused and leaves the rule as it was.
+            gone_id, gone_dni, _ = self._rm_disposable_switch("CondGone")
+            gone = self._rm_ids(self._rm_update(app_id, [self._rm_switch_condition(gone_id)]))[0]
+            gated = self._rm_ids(self._rm_update(app_id, [native_log("gated by a deleted device", condition=gone)]))[0]
+            self._rm_delete_device(gone_dni)
+            assert "Broken Condition" in self._rm_page(app_id), "deleting the device did not break its condition"
+            self._rm_refuse_all(app_id, [[native_log("gated edit", id=gated, condition=gone)]])
+            # An unrelated edit does not report success while that conditional action is broken.
+            unrelated = self._rm_call({"operation": "update", "rule_id": int(app_id),
+                                       "args": {"changes": [native_log("unrelated")]}, "confirm": True})
+            assert unrelated.get("success") is False and f"Native action {gated} is broken" in str(unrelated.get("error")), unrelated
         finally:
             self._delete_native(app_id)
 
@@ -8916,6 +9050,15 @@ def updated() {}
         deleted = self.client.call_tool("hub_delete_native_app", {"appId": app_id, "force": True, "confirm": True})
         assert deleted.get("success") is True, deleted
         self._untrack_native_app(app_id)
+
+        def rule_ids() -> set[str]:
+            ids, cursor = set(), ""
+            while cursor is not None:
+                page = self.client.call_tool("hub_list_apps", {"scope": "instances", "cursor": cursor})
+                ids |= {str(a["id"]) for a in page.get("apps") or [] if a.get("type") == "Rule-5.1"}
+                cursor = page.get("nextCursor")
+            return ids
+        before = rule_ids()
         restored = self._rm_restore(deleted["backup"]["backupKey"])
         copy_id = restored.get("ruleId")
         if copy_id:
@@ -8923,6 +9066,8 @@ def updated() {}
         try:
             assert restored.get("success") is True and restored.get("restoredVia") == "nativeImport" \
                 and str(copy_id) != str(app_id), restored
+            # The copy is the only new rule: when no other rule could seed the import, its temporary seed is gone.
+            assert rule_ids() - before == {str(copy_id)}, f"the restore left a rule other than its copy {copy_id}"
             doc = self._native_rule_document(copy_id)
             assert len(doc["triggers"]) == 1 and [r["value"]["method"] for r in doc["actions"]] == ["getLogMsg"], doc
             assert self._rm_values(copy_id)["logmsg." + str(doc["actions"][0]["id"])] == "deleted-rule marker"
@@ -11075,7 +11220,7 @@ def updated() {}
 
     @test("installed_app_reads")
     def test_get_app_config_summary_mode(self) -> None:
-        # summary:true returns the thin identity payload WITHOUT the rendered config
+        # summary:true returns the thin identity record (/installedapp/json) WITHOUT the rendered config
         # page -- the cheap existence/identity probe for installed apps. Pin it on a
         # throwaway RM rule so the identity fields are deterministic. The same rule then
         # carries the disabled-action checks (three actions, index 2 removed, so the rows
@@ -11093,6 +11238,13 @@ def updated() {}
             label_blob = " ".join(str(ident.get(k) or "") for k in ("label", "name", "type"))
             assert PREFIX in label_blob, \
                 f"summary identity carries no recognizable name/label for the fixture rule: {result}"
+            assert (ident.get("type"), ident.get("namespace")) == ("Rule-5.1", "hubitat"), \
+                f"summary must name the app type and its namespace (#575): {result}"
+            try:
+                missing = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config", "args": {"appId": "999999999", "summary": True}})
+            except McpToolError as exc:
+                missing = _tool_error_payload(exc)
+            assert missing.get("success") is False and "not found" in str(missing.get("error")), f"an unknown id should read as not found: {missing}"
             # The point of summary mode: no rendered config page rides along.
             assert not result.get("page") and not result.get("configPage"), \
                 f"summary:true must omit the rendered config page: {sorted(result.keys())}"
@@ -11131,6 +11283,10 @@ def updated() {}
             assert len(rm_types) == 1, f"expected exactly one built-in 'Rule Machine' app type: {rm_types}"
             assert str(rm_types[0].get("id")) == str(parent_row["appTypeId"]), \
                 f"Rule Machine appTypeId {parent_row['appTypeId']} != its scope='types' id {rm_types[0].get('id')}"
+            parent_summary = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config", "args": {"appId": str(parent_row["id"]), "summary": True}})
+            assert (parent_summary.get("type"), parent_summary.get("namespace")) == ("Rule Machine", "hubitat"), \
+                f"the Rule Machine parent's summary should name its type and namespace (#575): {parent_summary}"
 
             self._set_rule(app_id, [{"part": "delete", "value": {"part": "action", "id": self._native_rule_document(app_id)["actions"][1]["id"]}}], strict=True)
 
@@ -11146,8 +11302,13 @@ def updated() {}
                 return [p for sect in ((res.get("page") or {}).get("sections") or [])
                         for p in (sect.get("paragraphs") or [])]
 
+            def hrefs_of(res: dict) -> list:
+                return (res.get("page") or {}).get("hrefs") or []
+
             def disabled_rows(res: dict) -> list:
-                return [row for p in paragraphs_of(res) if isinstance(p, dict) for row in (p.get("disabled") or [])]
+                # A paragraph or the summary under a link (the main page's action link) can hold the rows.
+                holders = [p for p in paragraphs_of(res) if isinstance(p, dict)] + hrefs_of(res)
+                return [row for holder in holders for row in (holder.get("disabled") or [])]
 
             def buttons_of(res: dict) -> dict:
                 return {c.get("name"): c for c in (res.get("controls") or []) if c.get("kind") == "button"}
@@ -11173,8 +11334,8 @@ def updated() {}
             marked = disabled_rows(main)
             assert marked == ["Log: 'disabled-mark three'"], \
                 f"expected exactly the third action listed as disabled: {paragraphs_of(main)}"
-            assert not any("[DISABLED]" in str(p) or "<span" in str(p) for p in paragraphs_of(main)), \
-                f"a text mark or HTML leaked into paragraphs: {paragraphs_of(main)}"
+            assert not any("[DISABLED]" in str(p) or "<span" in str(p) for p in paragraphs_of(main) + hrefs_of(main)), \
+                f"a text mark or HTML leaked into paragraphs or links: {paragraphs_of(main)}"
 
             # (d) selectActions: which action is disabled and the control that re-enables it.
             rows = read("selectActions")
@@ -11187,6 +11348,13 @@ def updated() {}
                 f"selectActions should list exactly the disabled action, as its edit control names it: {paragraphs_of(rows)}"
             for legacy in ("disabledActions", "disabledActionsNote"):
                 assert legacy not in main and legacy not in rows, f"{legacy} still returned"
+
+            # (e) A disabled trigger is listed from the trigger table without its "Disabled Trigger" legend.
+            trigger = self._rm_ids(self._set_rule(app_id, [self._rm_switch_trigger(self._ensure_perm_fixture("switch_a"), "on")]))[0]
+            self._native_form_control(app_id, "selectTriggers", f"disableT{trigger}")
+            triggers = disabled_rows(read("selectTriggers"))
+            assert len(triggers) == 1 and "turns on" in triggers[0], \
+                f"selectTriggers should list exactly the disabled trigger, not its legend: {triggers}"
         finally:
             self._delete_native(app_id)
 

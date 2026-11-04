@@ -129,6 +129,143 @@ class NativeFormsSpec extends ToolSpecBase {
         !calls[2].body.containsKey('settings[credential]')
     }
 
+    def 'every type the page declares is a field; the page treats menu, file-text and download-text specially'() {
+        given:
+        model.configPage.sections[0].input += [
+            [element: 'input', name: 'onDate', type: 'date'],
+            [element: 'input', name: 'mail', type: 'email'],
+            [element: 'input', name: 'phone', type: 'phone'],
+            [element: 'input', name: 'hubPick', type: 'hub'],
+            [element: 'input', name: 'pick', type: 'menu', options: [['x': 'Ex'], ['y': 'Why']]],
+            [element: 'input', name: 'import', type: 'file-text'],
+            [element: 'input', name: 'export', type: 'download-text', title: 'Download', filename: 'rule.json', filecontent: '{"a":1}']
+        ]
+        when:
+        def opened = open()
+        then:
+        opened.success
+        opened.unsupported.every { !it.startsWith('Input type') }
+        ['onDate', 'mail', 'phone', 'hubPick', 'pick', 'import'].every { name -> opened.fields.find { it.name == name }.supported }
+        opened.fields.find { it.name == 'pick' }.submit_on_change
+        def exportField = opened.fields.find { it.name == 'export' }
+        !exportField.supported
+        exportField.filename == 'rule.json'
+        exportField.value == '{"a":1}'
+
+        when:
+        calls.clear()
+        def result = submit([onDate: '2026-11-10', mail: 'a@b.c', phone: '555', hubPick: 'Main', import: '<x>keep</x>'])
+        then:
+        result.success
+        calls*.path == ['/installedapp/update/json']
+        calls[0].body['settings[onDate]'] == '2026-11-10'
+        calls[0].body['onDate.type'] == 'date'
+        calls[0].body['settings[mail]'] == 'a@b.c'
+        calls[0].body['settings[hubPick]'] == 'Main'
+        calls[0].body['settings[import]'] == '<x>keep</x>'
+        !calls[0].body.containsKey('settings[export]')
+
+        when:
+        assert open().success
+        calls.clear()
+        result = submit([pick: 'y'])
+        then:
+        result.success
+        calls[0].body['settings[pick]'] == 'y'
+    }
+
+    def 'navigation runs the page form checks on posted and stored values; a plain submit does not'() {
+        given:
+        model.settings.mail = 'not-an-email'
+        model.configPage.sections[0].input += [
+            [element: 'input', name: 'mail', type: 'email'],
+            [element: 'input', name: 'zip', type: 'text', pattern: '[0-9]{5}'],
+            [element: 'input', name: 'pick', type: 'menu', required: true, options: [['x': 'Ex']]],
+            [element: 'input', name: 'import', type: 'file-text', required: true]
+        ]
+        assert open().success
+        calls.clear()
+
+        when: 'a field submit saves a value the page would not navigate with, as the browser does'
+        def saved = submit([zip: 'abc'])
+        then:
+        saved.success
+        calls*.path == ['/installedapp/update/json']
+
+        when: 'Done is refused for the posted pattern miss and the stored email; hidden menu and file-text inputs are not checked'
+        assert open().success
+        calls.clear()
+        def done = submit([zip: 'abc'], '_action_update|Done|')
+        then:
+        !done.success
+        done.error.contains("zip: 'abc' does not match the required format")
+        done.error.contains("mail: 'not-an-email' is not a valid email address")
+        !done.error.contains('pick') && !done.error.contains('import')
+        calls.empty
+
+        when: 'valid values navigate'
+        model.settings.mail = 'a@example.com'
+        assert open().success
+        calls.clear()
+        def fixed = submit([zip: '12345'], '_action_update|Done|')
+        then:
+        fixed.success
+        calls.find { it.path == '/installedapp/update/json' }.body._action_update == 'Done'
+    }
+
+    def 'navigation re-checks stored values whatever the redaction setting, keeps only the verdict, and ignores a textarea pattern'() {
+        given:
+        settingsMap.redactCredentials = redact
+        model.settings.count = 11
+        model.settings.alarmCodeMail = 'stored-secret'
+        model.settings.notes = 'abc'
+        model.configPage.sections[0].input += [
+            [element: 'input', name: 'alarmCodeMail', type: 'email'],
+            [element: 'input', name: 'notes', type: 'textarea', pattern: '[0-9]+']
+        ]
+        assert open().success
+        def cached = JsonOutput.toJson(cachedContexts())
+        calls.clear()
+
+        when:
+        def done = submit([:], '_action_update|Done|')
+
+        then:
+        !done.success
+        done.error.contains('count: 11 is above the maximum 10')
+        done.error.contains('alarmCodeMail: the stored value fails the page check')
+        !done.error.contains('stored-secret') && !done.error.contains('notes')
+        !cached.contains('stored-secret') && !cached.contains('"abc"')
+        calls.empty
+
+        where:
+        redact << [true, false]
+    }
+
+    @Unroll
+    def 'native #type value #value is refused before the request'() {
+        given:
+        model.configPage.sections[0].input += [
+            [element: 'input', name: 'onDate', type: 'date'],
+            [element: 'input', name: 'pick', type: 'menu', options: [['x': 'Ex']]],
+            [element: 'input', name: 'export', type: 'download-text', filename: 'rule.json', filecontent: 'data']
+        ]
+        assert open().success
+        calls.clear()
+        when:
+        def result = submit([(name): value])
+        then:
+        !result.success
+        calls.empty
+        where:
+        type            | name     | value
+        'date'          | 'onDate' | '2026-13-01'
+        'date'          | 'onDate' | '10/11/2026'
+        'date'          | 'onDate' | 20261110
+        'menu'          | 'pick'   | 'z'
+        'download-text' | 'export' | 'other'
+    }
+
     @Unroll
     def 'invalid field patch #fields is rejected before mutation'() {
         given:
@@ -237,7 +374,7 @@ class NativeFormsSpec extends ToolSpecBase {
         model.configPage.sections[0].input += [
             [element: 'href', title: 'External', url: 'https://example.invalid/setup'],
             [element: 'paragraph', title: '<script>custom()</script><button onclick="custom()">Custom</button>'],
-            [element: 'input', name: 'upload', type: 'file']
+            [element: 'input', name: 'export', type: 'download-text', title: 'Download', filename: 'rule.json', filecontent: '{"a":1}']
         ]
         when:
         def opened = open()
@@ -247,7 +384,7 @@ class NativeFormsSpec extends ToolSpecBase {
         opened.success
         opened.unsupported.any { it.contains('browser') }
         opened.unsupported.contains('Custom browser script')
-        opened.fields.find { it.name == 'upload' }.supported == false
+        opened.fields.find { it.name == 'export' }.supported == false
         !result.success
         !result.partial
         calls.empty
@@ -515,6 +652,8 @@ class NativeFormsSpec extends ToolSpecBase {
         model.configPage.sections[0].input << [element: 'input', name: 'lockedNumber', type: 'number', defaultValue: 4, disabled: true]
         model.configPage.sections[0].input << [element: 'input', name: 'tint', type: 'color', defaultValue: '#ff0000']
         model.configPage.sections[0].input << [element: 'input', name: 'staleChoice', type: 'enum', options: ['a', 'b'], defaultValue: 'z']
+        model.configPage.sections[0].input << [element: 'input', name: 'flagged', type: 'capability.switch', defaultValue: true]
+        model.configPage.sections[0].input << [element: 'input', name: 'pickOne', type: 'menu', options: [['x': 'Ex']], defaultValue: 'x']
         def opened = open()
         calls.clear()
         when:
@@ -529,9 +668,11 @@ class NativeFormsSpec extends ToolSpecBase {
         !body.containsKey('settings[secret]')
         !body.containsKey('settings[storedNumber]')
         !body.containsKey('settings[lockedNumber]')
-        !body.containsKey('settings[tint]')
+        body['settings[tint]'] == '#ff0000'
+        body['tint.type'] == 'color'
         !body.containsKey('settings[staleChoice]')
-        result.defaults_posted as Set == ['defaultChoice', 'luxOff'] as Set
+        !body.containsKey('settings[flagged]') && !body.containsKey('settings[pickOne]')
+        result.defaults_posted as Set == ['defaultChoice', 'luxOff', 'tint'] as Set
         result.defaults_not_posted*.name == ['staleChoice']
         result.defaults_not_posted[0].reason.contains('staleChoice')
         when: 'a supplied value wins over the default'

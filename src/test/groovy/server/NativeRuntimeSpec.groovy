@@ -169,6 +169,48 @@ class NativeRuntimeSpec extends ToolSpecBase {
         calls.empty
     }
 
+    def 'native dates validate as calendar yyyy-MM-dd and may be cleared'() {
+        expect:
+        script._nrValidateInput([name: 'atDate1', type: 'date', multiple: false], '2026-11-10') == null
+        script._nrValidateInput([name: 'atDate1', type: 'date', multiple: false], '', true) == null
+
+        when:
+        script._nrValidateInput([name: 'atDate1', type: 'date', multiple: false], value)
+        then:
+        def error = thrown(IllegalArgumentException)
+        error.message == 'Date required as yyyy-MM-dd for atDate1'
+
+        where:
+        value << ['2026-02-30', '2026-11-10T15:35', '10 Nov 2026', 20261110]
+    }
+
+    def 'a device.* picker compares as device ids, as capability pickers do'() {
+        expect:
+        script._nrComparableSetting('device.VirtualSwitch', ['7', '12']) == script._nrComparableSetting('device.VirtualSwitch', [12, 7])
+    }
+
+    def 'a change carrying an impossible date is refused when the change is checked, before any write'() {
+        when:
+        script._ndValidateFields([[name: 'atDate#', type: 'date', value: '2026-02-30']], [], 'selector')
+        then:
+        def error = thrown(IllegalArgumentException)
+        error.message == 'Date required as yyyy-MM-dd for atDate#'
+        calls.empty
+    }
+
+    def 'setting rows take the type the page declares, with device ids checked for every device picker'() {
+        expect:
+        ['date', 'email', 'phone', 'hub', 'icon', 'file-text', 'menu', 'some-future-type'].each { type ->
+            script._nrCheckSettingRow([name: 'x', type: type, value: 'v'])
+        }
+        script._nrCheckSettingRow([name: 'x', type: 'device.VirtualSwitch', value: ['7']]) == null
+
+        when:
+        script._nrCheckSettingRow([name: 'x', type: 'device.VirtualSwitch', value: ['abc']])
+        then:
+        thrown(IllegalArgumentException)
+    }
+
     def 'native exported time settings compare with their persisted local clocks'() {
         given:
         sharedLocation.timeZone = TimeZone.getTimeZone('America/New_York')
@@ -195,7 +237,7 @@ class NativeRuntimeSpec extends ToolSpecBase {
     def 'all settings validate before the first update'() {
         when:
         script._nrWriteSettings(42L, [[name: 'good', type: 'text', value: 'x'],
-                [name: 'device', type: 'device.custom', value: [1]]])
+                [name: 'device', type: 'device.custom', value: ['not-an-id']]])
         then:
         thrown(IllegalArgumentException)
         calls.empty

@@ -372,13 +372,40 @@ class NativeRuleExactRestoreSpec extends ToolSpecBase {
     def 'a stopped rule restores its name while RM re-derives the Stopped label decoration'() {
         given: 'a snapshot whose label carries the decoration HTML-stripped, as captured from a stopped rule'
         stoppedSnapshot('Original (Stopped)')
+        child.statusSpan = statusSpan
         when:
         def result = restore()
         then:
         result.success
         result.restoredVia == 'nativeStateReplay'
         child.backing.stopped
-        child.label == "Original <span style='color:red'>(Stopped)</span>"
+        child.label == "Original ${statusSpan}(Stopped)</span>"
+        where: 'firmware 2.5.2 styles the status span inline; 2.5.3 classes it'
+        statusSpan << ["<span style='color:red'>", "<span class='text-hubitat-danger'>"]
+    }
+
+    def 'a rule whose own name holds a span restores that name while RM re-derives the status span'() {
+        given:
+        stoppedSnapshot('Porch lights (Stopped)', '<span style="color:green">Porch</span> lights')
+        child.statusSpan = statusSpan
+        when:
+        def result = restore()
+        then:
+        result.success
+        child.label == "<span style=\"color:green\">Porch</span> lights ${statusSpan}(Stopped)</span>"
+        where:
+        statusSpan << ["<span style='color:red'>", "<span class='text-hubitat-danger'>"]
+    }
+
+    def "a rule whose own name ends in a status-like span restores it while RM appends its own status span"() {
+        given:
+        stoppedSnapshot("Porch <span class='my-tag'>(Stopped)</span> (Stopped)", "Porch <span class='my-tag'>(Stopped)</span>")
+        child.statusSpan = "<span class='text-hubitat-danger'>"
+        when:
+        def result = restore()
+        then:
+        result.success
+        child.label == "Porch <span class='my-tag'>(Stopped)</span> <span class='text-hubitat-danger'>(Stopped)</span>"
     }
 
     def 'a restore whose rebuilt rule carries a different name still fails verification'() {
@@ -392,10 +419,10 @@ class NativeRuleExactRestoreSpec extends ToolSpecBase {
         result.error.contains('Native label or lifecycle state differs from recovery')
     }
 
-    private void stoppedSnapshot(String capturedLabel) {
+    private void stoppedSnapshot(String capturedLabel, String origLabel = 'Original') {
         def source = new JsonSlurper().parseText(snapshot.nativeExport)
         source.appReplacements['42'].appLabel = capturedLabel
-        source.appData['42'].appSettings << [name: 'origLabel', type: 'text', value: 'Original']
+        source.appData['42'].appSettings << [name: 'origLabel', type: 'text', value: origLabel]
         snapshot.nativeExport = JsonOutput.toJson(source)
         child.decorates = true
     }
@@ -619,6 +646,7 @@ class RestoreNativeChild {
     boolean traceLabel
     boolean decorates
     String relabelTo
+    String statusSpan = "<span style='color:red'>"
     List events
 
     RestoreNativeChild(List events) { this.events = events }
@@ -641,7 +669,7 @@ class RestoreNativeChild {
         if (name == 'pausRule') backing.paused = backing.paused != true
         if (name == 'updateRule') { backing.stopped = false; backing.runtimeCursor = 'reset by native update' }
         // RM's fixAppLabel: the name, plus a status span derived from the stopped state.
-        if (decorates) label = (relabelTo ?: typed.origLabel?.value ?: label) + (backing.stopped ? " <span style='color:red'>(Stopped)</span>" : '')
+        if (decorates) label = (relabelTo ?: typed.origLabel?.value ?: label) + (backing.stopped ? " ${statusSpan}(Stopped)</span>" : '')
     }
     Map getAllLocalVars() { backing.findAll { key, value -> key.startsWith('lv_') }.collectEntries { key, value -> [(key.substring(3)): value] } }
 }

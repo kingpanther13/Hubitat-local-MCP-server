@@ -178,30 +178,46 @@ private void _nfWalk(Object node, Map fields, Map controls, List messages, List 
             _nfControl(controls, [name: name, kind: 'button', title: _nfText(node.title), stateAttribute: node.state, disabled: _nfTrue(node.disabled),
                                   submit_on_change: _nfTrue(node.submitOnChange)])
         } else {
-            boolean device = type == 'capability' || type.startsWith('capability.') || type.startsWith('device.')
-            boolean supported = type in ['text', 'textarea', 'password', 'enum', 'mode', 'bool', 'number', 'decimal', 'time', 'email', 'phone'] || device
+            boolean device = _nrIsDeviceType(type)
+            // A download-text input only offers its content for download; the page posts nothing for it.
+            boolean supported = type != 'download-text'
+            // Picking a menu option saves it and submits the page at once.
             Map field = [name: name, title: _nfText(node.title), type: type, multiple: _nfTrue(node.multiple), required: _nfTrue(node.required),
-                         submit_on_change: _nfTrue(node.submitOnChange), supported: supported, device: device, disabled: _nfTrue(node.disabled)]
-            ['range', 'min', 'max', 'step', 'description'].each { key -> if (node.containsKey(key)) field[key] = node[key] }
-            def stored = model.settings instanceof Map ? model.settings.get(name) : null
-            boolean exists = model.settings instanceof Map && model.settings.containsKey(name)
-            def current = exists ? stored : node.defaultValue
-            if (device && current instanceof Map) current = current.keySet().collect { it.toString() }
-            if (device && !field.multiple && current instanceof List) current = current ? current[0] : null
-            if (type == 'password') field.has_value = current != null && current != ''
-            // With Hide passwords and credentials off, a stored password reads back as stored.
-            if (type != 'password' || (exists && !_redactsCredentials())) { field.value = current; field.value_source = exists ? 'stored' : 'default' }
-            // The page default the browser posts for an input with no stored value; a password's default is never posted.
-            if (!exists && type != 'password' && current != null && current != '' && !(current instanceof Collection && current.isEmpty())) field.default_value = current
-            field.present = exists && current != null && current != '' && (!(current instanceof Collection) || !current.empty)
-            field.options = _nfOptions(type == 'mode' ? model.modeMap : node.options)
-            if (device) {
-                field.capability = type
-                field.ignore = (node.ignoreDevices instanceof List ? node.ignoreDevices : (node.ignoreDevices?.toString()?.tokenize(',') ?: [])).collect { it.toString() }
+                         submit_on_change: type == 'menu' || _nfTrue(node.submitOnChange), supported: supported, device: device, disabled: _nfTrue(node.disabled)]
+            if (!supported) {
+                field.filename = node.filename
+                field.value = node.filecontent
+            } else {
+                ['range', 'min', 'max', 'step', 'pattern', 'description'].each { key -> if (node.containsKey(key)) field[key] = node[key] }
+                def stored = model.settings instanceof Map ? model.settings.get(name) : null
+                boolean exists = model.settings instanceof Map && model.settings.containsKey(name)
+                // A device picker and a menu show only their stored value; the page never fills them from defaultValue.
+                def current = exists ? stored : ((device || type == 'menu') ? null : node.defaultValue)
+                if (device && current instanceof Map) current = current.keySet().collect { it.toString() }
+                if (device && !field.multiple && current instanceof List) current = current ? current[0] : null
+                if (type == 'password') field.has_value = current != null && current != ''
+                // With Hide passwords and credentials off, a stored password reads back as stored.
+                if (type != 'password' || (exists && !_redactsCredentials())) { field.value = current; field.value_source = exists ? 'stored' : 'default' }
+                // The page default the browser posts for an input with no stored value; a password's default is never posted.
+                if (!exists && type != 'password' && current != null && current != '' && !(current instanceof Collection && current.isEmpty())) field.default_value = current
+                field.present = exists && current != null && current != '' && (!(current instanceof Collection) || !current.empty)
+                // The browser checks every stored value again on each navigation. Only the verdict is kept with
+                // the form: a secret's verdict does not repeat its value, and any verdict is bounded.
+                if (field.present && !device) {
+                    Map checks = [:], storedValue = [:]
+                    checks.put(name, [type: type, range: field.range, pattern: node.pattern])
+                    storedValue.put(name, current)
+                    List problems = _uiNavigationViolations(checks, storedValue)
+                    if (problems) field.nav_problem = _appConfigIsSecretSetting(name, type, current) ? 'the stored value fails the page check' : problems[0].problem.toString().take(200)
+                }
+                field.options = _nfOptions(type == 'mode' ? model.modeMap : node.options)
+                if (device) {
+                    field.capability = type
+                    field.ignore = (node.ignoreDevices instanceof List ? node.ignoreDevices : (node.ignoreDevices?.toString()?.tokenize(',') ?: [])).collect { it.toString() }
+                }
             }
             if (fields.containsKey(name) && fields[name] != field) throw new IllegalStateException('Native form contains ambiguous fields')
             fields.put(name, field)
-            if (!supported) unsupported << "Input type: ${type}"
         }
     } else if (node.element == 'app' && node.namespace == 'hubitat' && node.appName instanceof String && node.appName && node.name && node.appId?.toString() == model.app?.id?.toString()) {
         _nfControl(controls, [name: node.name.toString(), value: node.appName, kind: 'create_child', title: _nfText(node.title)])
@@ -254,7 +270,6 @@ private Map _nfContext(Long id, Map model, String from = null) {
     if (model.paramsForPage instanceof Map) envelope.paramsForPage = _nfEncode(groovy.json.JsonOutput.toJson(model.paramsForPage))
     Map context = [app_id: id, page: [name: page.name ?: '', title: _nfText(page.title)], fields: fields, controls: controls, messages: messages.unique(),
                    unsupported: unsupported.unique(), envelope: envelope, expires: now() + 300000L]
-    if (fields.size() > 256 || controls.size() > 256) throw new IllegalStateException('Native form exceeds 256 fields or controls')
     context
 }
 
@@ -267,12 +282,13 @@ private String _nfReloadPath(Long id, Map context) {
 }
 
 private void _nfCache(String key, Map context) {
+    if (context.get('fields').size() > 256 || context.controls.size() > 256) throw new IllegalStateException('Native form exceeds 256 fields or controls')
     // Retain only execution descriptors. Titles, messages, values and option labels stay in the current response,
     // except the app's label, which a mode[mode] submit posts again.
     Map cached = [app_id: context.app_id, page: [name: context.page.name], envelope: context.envelope, expires: context.expires,
                   fields: [:], controls: [:], backup: context.backup]
     context.get('fields').each { name, field ->
-        Map descriptor = field.findAll { k, v -> k in ['name', 'type', 'multiple', 'required', 'supported', 'device', 'disabled', 'present', 'capability', 'ignore', 'range', 'min', 'max', 'step', 'default_value', 'app_field', 'sidecars', 'hub_default'] }
+        Map descriptor = field.findAll { k, v -> k in ['name', 'type', 'multiple', 'required', 'supported', 'device', 'disabled', 'present', 'capability', 'ignore', 'range', 'min', 'max', 'step', 'pattern', 'default_value', 'app_field', 'sidecars', 'hub_default', 'nav_problem'] }
         descriptor.option_keys = field.options == null ? null : field.options*.value
         if (field.app_field && name == 'label') descriptor.value = field.value
         cached.get('fields').put(name, descriptor)
@@ -311,8 +327,9 @@ private String _nfValue(Map field, Object value) {
     List values = value instanceof List ? value : [value]
     if (field.device) return values.collect { it.toString() }.join(',')
     if (field.multiple) return groovy.json.JsonOutput.toJson(values.collect { it.toString() })
-    // The classic browser removes markup from visible scalar inputs and escapes any remaining '<'.
-    if (!(field.type in ['bool', 'enum', 'mode'])) {
+    // The classic browser removes markup from visible scalar inputs and escapes any remaining '<'; selects
+    // and the hidden inputs behind menu and file-text post their value as is.
+    if (!(field.type in ['bool', 'enum', 'mode', 'menu', 'file-text'])) {
         String text = value.toString(), prior = null
         while (text != prior) { prior = text; text = text.replaceAll(/(?is)<!--.*?-->|<script\b[^>]*>.*?<\/script\s*>|<style\b[^>]*>.*?<\/style\s*>|<\/?[a-z](?:[^"'>]|"[^"]*"|'[^']*')*>/, '') }
         return text.replace('<', '&lt;')
@@ -323,7 +340,7 @@ private String _nfValue(Map field, Object value) {
 private Map _nfPublic(Map context, List optionsFor) {
     List fields = context.get('fields').values().collect { field ->
         Map result = [:] + field
-        ['device', 'ignore', 'capability', 'present', 'default_value', 'app_field', 'sidecars', 'hub_default'].each { result.remove(it) }
+        ['device', 'ignore', 'capability', 'present', 'default_value', 'app_field', 'sidecars', 'hub_default', 'nav_problem'].each { result.remove(it) }
         if (field.type == 'password' && _redactsCredentials()) result.redacted = true
         // The whole-result pass keys on a setting's name, and here the token sits under value.
         else if (field.name ==~ /(?i)access_?token/ && result.value instanceof CharSequence && result.value && _redactsAccessTokens()) result.value = _accessTokenRedactedMarker()
@@ -412,11 +429,22 @@ private Map _nfPrepare(Long id, Map context, Map supplied, String activate, Stri
         if (control.kind == 'button' && !control.submit_on_change && supplied) throw new IllegalArgumentException('Submit fields separately before a button that reloads the native page')
         if (control.kind == 'button' && !control.submit_on_change) reloadPath = _nfReloadPath(id, context)
         if (control.kind in ['href', 'navigation'] && control.value != 'Cancel') {
-            List missing = context.get('fields').values().findAll { field ->
+            // The page validates the whole form before it navigates: what this submit posts, required inputs
+            // left empty, and the stored values, whose verdict was taken when the page was read.
+            Map schema = [:], values = [:]
+            List stored = []
+            context.get('fields').each { name, field ->
                 String key = _nfWire(field, '').keySet().first()
-                field.required && !field.disabled && !(body.containsKey(key) ? !(body[key] in ['', '[]']) : field.present)
-            }*.name
-            if (missing) throw new IllegalArgumentException("Complete required native fields before navigating: ${missing.join(', ')}")
+                if (!body.containsKey(key) && field.present) {
+                    if (field.nav_problem && !field.disabled) stored << [name: name, problem: field.nav_problem]
+                    return
+                }
+                schema.put(name, [type: field.type, required: field.required, range: field.range, pattern: field.pattern, disabled: field.disabled])
+                values.put(name, body.containsKey(key) ? body[key] : null)
+            }
+            List problems = _uiNavigationViolations(schema, values) + stored
+            if (problems && problems.every { it.problem == 'required but empty' }) throw new IllegalArgumentException("Complete required native fields before navigating: ${problems*.name.join(', ')}")
+            if (problems) throw new IllegalArgumentException("Fix native fields before navigating: ${problems.collect { "${it.name}: ${it.problem}" }.join('; ')}")
         }
     }
     [body: body, control: control, reload: reloadPath, defaults: defaults, rejected: rejected, envelope: context.envelope, relabel: relabel]

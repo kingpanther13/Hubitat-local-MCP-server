@@ -1002,6 +1002,57 @@ class RestoreRuleStructureSpec extends ToolSpecBase {
         !out.note.contains("was deleted")
     }
 
+    def "a deleted rule that was the parent's only rule restores from an empty seed rule, which is then removed"() {
+        given:
+        def rec = nativeStubs()
+        hubGet.register('/installedapp/configure/json/100') { params -> throw new RuntimeException("404") }
+        hubGet.register('/hub2/appsList') { params -> '{"apps":[]}' }
+        atomicStateMap.parentAppIds = [rule_machine: 21]
+        hubGet.register('/installedapp/configure/json/21') { params -> '{"app":{"id":21},"configPage":{"sections":[]},"settings":{},"childApps":[]}' }
+        List raws = []
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
+            raws << path
+            path.contains('/createchild/') ? [status: 302, location: "/installedapp/configure/60"] : [status: 302]
+        }
+
+        when:
+        def out = script._rmRestoreFromBackup([fileName: "f.json"], nativeSnapshot(), false)
+
+        then:
+        out.success == true
+        out.restoredVia == "nativeImport"
+        out.ruleId == 200
+        raws.findAll { it.contains('/createchild/') || it.contains('/forcedelete/') } ==
+            ['/installedapp/createchild/hubitat/Rule-5.1/parent/21', '/installedapp/forcedelete/60/quiet']
+        rec.imports[0].parentHintAppId == 60
+    }
+
+    def "no seed rule is created when the parent cannot be read or is protected"() {
+        given:
+        def rec = nativeStubs()
+        hubGet.register('/installedapp/configure/json/100') { params -> throw new RuntimeException("404") }
+        hubGet.register('/hub2/appsList') { params -> '{"apps":[]}' }
+        atomicStateMap.parentAppIds = [rule_machine: 21]
+        if (parentReadable) hubGet.register('/installedapp/configure/json/21') { params -> '{"app":{"id":21},"configPage":{"sections":[]},"settings":{},"childApps":[]}' }
+        else hubGet.register('/installedapp/configure/json/21') { params -> throw new RuntimeException("parent unreadable") }
+        if (parentProtected) atomicStateMap.protectedAppsPolicy = [ids: ['21']]
+        List raws = []
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 -> raws << path; [status: 302, location: "/installedapp/configure/60"] }
+
+        when: 'the deleted rule restores through the App Cloner import'
+        def out = script._rmRestoreViaNativeImport(nativeSnapshot(), 100, false, "f.json")
+
+        then: 'each row falls back before any child is created or any import starts'
+        out == [fallback: 'no Rule Machine rule was found or could be created to seed the App Cloner import']
+        raws.every { !it.contains('/createchild/') }
+        rec.imports.isEmpty()
+
+        where:
+        parentReadable | parentProtected
+        false          | false
+        true           | true
+    }
+
     def "a deleted rule whose copy failed staging is told not to retry, never to delete the missing rule"() {
         given:
         def rec = nativeStubs(importResult: [success: false, newAppId: 200, error: "could not disable 200"])

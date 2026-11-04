@@ -176,3 +176,21 @@ The lane sets `E2E_MRTR_ACTION_COUNT=36` and `E2E_WRITE_CAP_VARIABLE_COUNT=120` 
 continuation and write-cap proofs outlast one HTTP leg on a fast hub, and the watchdog-dependent
 tests, `test_endpoint_access_toggles_block_their_own_transport` and
 `test_bps_refusal_is_error_logged_at_error_and_debug_thresholds`, skip.
+
+## Manual beta lane
+
+In Actions, select **Hub E2E (ephemeral beta test hub)** and choose **Run workflow**.
+This separate workflow requests the beta test channel for both hub kinds.
+The provider must support the requested channel before it can be used.
+To test a PR branch, choose that branch in **Run workflow** (or use its name
+with `--ref` below). The branch must contain this workflow; update older PR
+branches from main first. One dispatch runs both beta jobs, JVM and OS.
+
+```sh
+gh workflow run hub-e2e-ephemeral-beta.yml --ref main
+```
+
+The beta workflow has only a `workflow_dispatch` trigger and uses its own
+concurrency group. Pushes and pull requests continue to run the existing stable
+lane. The request script rejects beta outside manual dispatch. The normal PR
+verdicts and required gates are unchanged.

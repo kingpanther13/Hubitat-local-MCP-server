@@ -47,8 +47,8 @@ private Map _vrbFetchGraph(Integer appId) {
     if (parsed.validationIssues != null) out.validationIssues = parsed.validationIssues
     if (parsed.referencedDeviceIds != null) out.referencedDeviceIds = parsed.referencedDeviceIds
     if (parsed.ruleApps instanceof List) {
-        // The hub decorates these labels with the same HTML it uses on the apps list
-        // ("<span style='color:red'>*BROKEN*</span>"); strip it like every other label read.
+        // The hub decorates these labels with the same status span it uses on the apps list
+        // (a "*BROKEN*" span, styled or classed by firmware); strip it like every other label read.
         out.ruleApps = parsed.ruleApps.collect { app ->
             (app instanceof Map && app.label != null) ? (app + [label: stripAppConfigHtml(app.label)]) : app
         }

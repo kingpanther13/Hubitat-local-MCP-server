@@ -493,6 +493,9 @@ def toolGetAppConfig(args) {
         }
         def summaryResult = [:]
         summaryResult.putAll(summaryParsed)
+        // The record names the app's type but not its namespace; the installed app itself carries both.
+        try { summaryResult.namespace = getAppByAppId(appIdStr as Long)?.appType?.namespace?.toString() }
+        catch (Exception lookup) { mcpLog("warn", "hub-admin", "hub_get_app_config app ${appIdStr}: type namespace unreadable: ${lookup.message}") }
         summaryResult.success = true
         summaryResult.endpoint = summaryPath
         return summaryResult
@@ -544,82 +547,95 @@ def toolGetAppConfig(args) {
         id: parsed.app.id,
         label: stripAppConfigHtml(parsed.app.trueLabel ?: parsed.app.label),
         name: parsed.app.name,
-        appType: appTypeRaw instanceof Map ? [system: appTypeRaw.system == true, menu: appTypeRaw.menu] : null,
+        appType: appTypeRaw instanceof Map ? [namespace: appTypeRaw.namespace, name: appTypeRaw.name, system: appTypeRaw.system == true, menu: appTypeRaw.menu] : null,
         disabled: parsed.app.disabled == true,
         parentAppId: parsed.app.parentAppId,
         installed: parsed.app.installed == true
     ]
 
-    // Secret values never reach the response: a page input is redacted by its own type or by a
-    // credential-shaped name. The includeSettings map below covers every page, since a multi-page
-    // app (HPM keeps hpmPassword on prefSettings) declares passwords on pages this fetch never renders.
-    def redactedPw = _appConfigRedactedMarker()
-    def passwordInputNames = [] as Set
     boolean isRmRule = _rmIsRuleAppType((appTypeRaw instanceof Map ? appTypeRaw.name : null)?.toString()) ||
         _rmIsRuleAppType(parsed.app.name?.toString())
+    // RM keeps which rows are disabled in its state; the page only italicises them. Other rule versions, or unreadable
+    // state, leave the page as the only marker.
+    boolean rmHasDisabled = isRmRule
+    if (isRmRule && [appTypeRaw instanceof Map ? appTypeRaw.name : null, parsed.app.name].any { it?.toString() in ['Rule-5.1', 'Button Rule-5.1'] }) {
+        try {
+            Map rmState = _nrState(appIdStr as Long)
+            rmHasDisabled = [rmState.disabledActions, rmState.disabledTriggers].any { it instanceof Collection && !it.isEmpty() }
+        } catch (Exception unreadable) {
+            mcpLog("warn", "hub-admin", "hub_get_app_config app ${appIdStr}: rule state unreadable (${unreadable.class.simpleName}: ${unreadable.message}); disabled rows read from the page")
+        }
+    }
+    // Inputs and controls read as hub_set_native_app / hub_set_rule(operation:'form') return them, with the
+    // same redaction: a page input is redacted by its own type or by a credential-shaped name.
+    Map formFields = null
+    Map form = null
+    String formError = null
+    try {
+        form = _nfPublic(_nfContext(appIdStr as Long, parsed as Map), [])
+        formFields = form.get('fields').collectEntries { [(it.name): it] }
+    } catch (IllegalStateException unmodelled) {
+        mcpLog("warn", "hub-admin", "hub_get_app_config app ${appIdStr}: page form unreadable: ${unmodelled.message}")
+        formError = unmodelled.message
+    } catch (Exception unexpected) {
+        mcpLogError("hub-admin", "hub_get_app_config app ${appIdStr}: page form read failed", unexpected)
+        formError = "${unexpected.class.simpleName}: ${unexpected.message}".toString()
+    }
+    def passwordInputNames = [] as Set
     def sections = []
+    def pageHrefs = []
     for (s in parsed.configPage.sections) {
         if (!(s instanceof Map)) continue
-        def section = [
-            title: stripAppConfigHtml(s.title),
-            inputs: []
-        ]
-        for (i in (s.input ?: [])) {
-            if (!(i instanceof Map)) continue
-            def input = [
-                name: i.name,
-                type: i.type,
-                title: stripAppConfigHtml(i.title)
-            ]
-            if (i.multiple == true) input.multiple = true
-            if (i.required == true) input.required = true
-            def desc = stripAppConfigHtml(i.description)
-            if (desc && desc != "Click to set") input.description = desc
-            if (i.options) input.options = stripOptionsHtml(i.options)
-            // A device input's defaultValue true only flags a selection (its label is in the description);
-            // a bool's true is its value.
-            if (i.defaultValue != null && (i.defaultValue != true || i.type == "bool")) input.value = i.defaultValue
-            else if (i.value != null && (i.value != true || i.type == "bool")) input.value = i.value
-            // The page's defaultValue is the code default; a stored value lives in settings, as the form engine
-            // reads it.
-            String inputType = i.type?.toString() ?: ""
-            if (!inputType.startsWith("capability") && !inputType.startsWith("device.") && parsed.settings instanceof Map && parsed.settings[i.name] != null) input.value = parsed.settings[i.name]
-            if (i.type == "password" && i.name) passwordInputNames << i.name.toString()
-            if (input.containsKey("value") && _appConfigMasksSetting(i.name, i.type, input.value)) input.value = redactedPw
-            // An accessToken input stores its token under "value", which the whole-result pass (keyed on
-            // the setting NAME) cannot see, so its rule applies here: the toggle, or a client caller.
-            else if (input.containsKey("value") && _redactsAccessTokens() && input.value instanceof CharSequence &&
-                     i.name?.toString() ==~ /(?i)access_?token/) input.value = _accessTokenRedactedMarker()
-            section.inputs << input
-        }
+        def section = [title: stripAppConfigHtml(s.title), inputs: []]
         def paragraphs = []
-        for (b in (s.body ?: [])) {
+        def components = []
+        // The page renders a section from its body. Each input also appears in the section's input list,
+        // which is read too, once per name, for a page whose body leaves an input out.
+        List elements = (s.body instanceof List ? s.body : []) + (s.input instanceof List ? s.input.findAll { it instanceof Map && (it.element ?: 'input') == 'input' } : [])
+        Set seen = [] as Set
+        for (b in elements) {
             if (!(b instanceof Map)) continue
-            def rawHtml = (b.description ?: b.title)?.toString()
-            def text = stripAppConfigHtml(rawHtml)
-            if (!text || text == "Click to set") continue
-            // Rule Machine wraps each disabled action or trigger row, and its "Disabled Action" legend, in a
-            // red italic span. The page never strikes a disabled action through; that span is its only marker,
-            // so do not key on <strike>. One paragraph can hold a rule's whole action block.
-            List disabled = []
-            if (isRmRule) {
-                def rows = rawHtml =~ /(?is)<span\s+style=['"]\s*color:\s*red;?\s*['"]\s*>\s*<i>(.*?)<\/i>\s*<\/span>/
-                while (rows.find()) {
-                    String row = stripAppConfigHtml(rows.group(1))?.trim()
-                    if (row && !(row ==~ /(?i)Disabled Actions?/)) disabled << row
-                }
+            String element = b.element?.toString() ?: 'input'
+            if (element == 'input' && b.name && b.type != 'button') {
+                if (!seen.add(b.name.toString())) continue
+                if (b.type == 'password') passwordInputNames << b.name.toString()
+                section.inputs << _appConfigInput(b, formFields?.get(b.name.toString()), parsed.settings)
+            } else if (element in ['label', 'mode']) {
+                Map appField = formFields?.get(element == 'mode' ? 'mode[mode]' : 'label')
+                if (appField) section.inputs << appField
+            } else if (element == 'component' && b.name) {
+                components << [name: b.name, title: stripAppConfigHtml(b.title), description: stripAppConfigHtml(b.description)].findAll { k, v -> v }
+            } else if (element == 'href' && (b.page || b.url)) {
+                // A link to an external page or a sub-page, with the summary the page prints under it. The page
+                // renders the external link whenever it has a url.
+                Map link = b.url ? [url: b.url.toString()] : [page: b.page.toString()]
+                link.title = _uiPlainTitle(b.title)
+                def description = _appConfigShownText(b.description)
+                if (description) link.description = description
+                List disabled = rmHasDisabled ? _appConfigDisabledRows(b.description) : []
+                if (disabled) link.disabled = disabled
+                pageHrefs << link
+            } else if (element == 'paragraph') {
+                def rawHtml = (b.description ?: b.title)?.toString()
+                def text = _appConfigShownText(rawHtml)
+                if (!text) continue
+                List disabled = rmHasDisabled ? _appConfigDisabledRows(rawHtml) : []
+                paragraphs << (disabled ? [text: text, disabled: disabled] : text)
             }
-            paragraphs << (disabled ? [text: text, disabled: disabled] : text)
         }
         if (paragraphs) section.paragraphs = paragraphs
+        if (components) section.components = components
         sections << section
     }
 
-    def children = []
-    for (c in (parsed.childApps ?: [])) {
-        if (!(c instanceof Map)) continue
-        children << [id: c.id, label: stripAppConfigHtml(c.label ?: c.name), name: c.name]
+    def children = (parsed.childApps instanceof List ? parsed.childApps : []).findAll { it instanceof Map }.collect { c ->
+        [id: c.id, label: stripAppConfigHtml(c.label ?: c.name), name: c.name]
     }
+    def childDevices = (parsed.childDevices instanceof List ? parsed.childDevices : []).findAll { it instanceof Map }.collect { d ->
+        [id: d.id, name: stripAppConfigHtml(d.label ?: d.name)]
+    }
+    Map modeNames = parsed.modeMap instanceof Map ? parsed.modeMap : [:]
+    appObj.restrictedModes = _nfAppValue(parsed as Map, true).collect { id -> [value: id, label: modeNames.get(id)?.toString()] }
 
     def result = [
         success: true,
@@ -632,21 +648,22 @@ def toolGetAppConfig(args) {
             sections: sections
         ],
         childApps: children,
+        childDevices: childDevices,
         endpoint: path
     ]
     if (parsed.configPage.error) result.configPageError = parsed.configPage.error
-    def pageHrefs = _rmPageHrefs(parsed.configPage as Map)
     if (pageHrefs) result.page.hrefs = pageHrefs
     if (pageName && parsed.configPage.name != null && parsed.configPage.name.toString() != pageName) {
         String formTool = isRmRule ? "hub_set_rule" : "hub_set_native_app"
         result.pageNote = "The hub rendered '${parsed.configPage.name}' instead of '${pageName}'; this app reaches that page only through its own link: open it with ${formTool}(operation:'form') and activate the href.".toString()
     }
-    // The controls hub_set_native_app / hub_set_rule(operation:'form') would offer on this page.
-    try {
-        result.controls = _nfPublic(_nfContext(appIdStr as Long, parsed as Map), []).controls
-    } catch (Exception unreadable) {
-        mcpLog("warn", "hub-admin", "hub_get_app_config app ${appIdStr}: page controls unreadable: ${unreadable.message}")
-        result.controlsError = unreadable.message
+    if (form != null) {
+        result.controls = form.get('controls')
+        // The page parts a form workflow cannot drive, such as another app's create button.
+        if (form.get('unsupported')) result.unsupported = form.get('unsupported')
+    } else {
+        result.formError = formError
+        result.note = _appConfigNote("Input values and controls are withheld: ${formError}. Read the stored values with includeSettings=true")
     }
 
     int settingsCount = (parsed.settings instanceof Map) ? parsed.settings.size() : 0
@@ -673,6 +690,7 @@ def toolGetAppConfig(args) {
                 mcpLog("warn", "hub-admin", "hub_get_app_config: statusJson for app ${appIdStr} types none of ${untyped}; raw settings withheld")
                 result.settingsNote = "Raw settings withheld: /installedapp/statusJson/${appIdStr} carries no type for ${untyped.take(5).join(', ')}${untyped.size() > 5 ? " and ${untyped.size() - 5} more" : ''}, so a password among them could not be told apart. Retry; the config page above is unaffected.".toString()
             } else {
+                def redactedPw = _appConfigRedactedMarker()
                 def redacted = [:]
                 rawSettings.each { k, v ->
                     String key = k?.toString()
@@ -688,6 +706,41 @@ def toolGetAppConfig(args) {
     }
 
     return result
+}
+
+// Rule Machine wraps each disabled action or trigger row, and its "Disabled Action" / "Disabled Trigger" legend,
+// in an italic span that is red inline (2.5.2) or danger-classed (2.5.3); only those openers match, so italic HTML in
+// a user's own action text is not a disabled row. The page never strikes a disabled action through, so do not key
+// on <strike>. One paragraph, or the summary under a rule's action link, can hold the whole block.
+private List _appConfigDisabledRows(Object html) {
+    List disabled = []
+    if (!html) return disabled
+    def rows = html.toString() =~ /(?is)<span\s+(?:style=['"]\s*color:\s*red;?\s*['"]|class=['"]text-hubitat-danger['"])\s*>\s*<i>(.*?)<\/i>\s*<\/span>/
+    while (rows.find()) {
+        String row = stripAppConfigHtml(rows.group(1))?.trim()
+        if (row && !(row ==~ /(?i)Disabled (?:Action|Trigger)s?/)) disabled << row
+    }
+    return disabled
+}
+
+// The page's text without HTML, or null for the placeholder it prints under an input or link that holds nothing.
+private String _appConfigShownText(Object html) {
+    String text = stripAppConfigHtml(html)
+    return (text && !(text in ["Click to set", "Click to show"])) ? text : null
+}
+
+// One page input: the form engine's field, with a device picker's selected labels and HTML-free
+// description. When the form engine has no field for it (the page could not be modelled), only the
+// input's identity, never its value.
+private Map _appConfigInput(Map element, Map field, Object storedSettings) {
+    if (field == null) return [name: element.name, type: element.type, title: stripAppConfigHtml(element.title)]
+    Map input = [:] + field
+    def description = _appConfigShownText(field.description)
+    if (description) input.description = description
+    else input.remove('description')
+    def stored = storedSettings instanceof Map ? storedSettings.get(field.name) : null
+    if (_nrIsDeviceType(field.type?.toString()) && stored instanceof Map) input.selected = stored.collect { id, label -> [value: id.toString(), label: stripAppConfigHtml(label)] }
+    return input
 }
 
 // name -> input type for every setting of an installed app, from statusJson appSettings.
@@ -861,7 +914,8 @@ private Map _submitAppDoneForm(Integer instanceId, String pageName, boolean requ
             if (i instanceof Map && i.name) {
                 def nm = i.name.toString()
                 if (i.value != null) pageValues.put(nm, i.value)
-                else if (i.defaultValue != null) pageValues.put(nm, i.defaultValue)
+                // A menu and a device picker show only their stored value; the page never fills them from defaultValue.
+                else if (i.defaultValue != null && i.type != "menu" && !_isDevicePickerType(i.type)) pageValues.put(nm, i.defaultValue)
             }
         }
     }
@@ -3188,14 +3242,14 @@ A transport drop can lose the response while the hub still commits this write; v
         // Hub Admin App Configuration Read (grouped with installed-apps peers)
         [
             name: "hub_get_app_config",
-            description: """Read an installed classic app's page as the Hubitat UI renders it: the app's identity, the page's sections with each input's current value, and its child apps. The pages it links to are listed in page.hrefs. controls lists the page's buttons and links with the control_id that hub_set_native_app or hub_set_rule(operation:'form') activates, and pageNote says when the hub rendered another page than pageName. Secret values are redacted unless Hide passwords and credentials is off (always for a per-client token).""",
+            description: """Read an installed classic app's page as the Hubitat UI renders it: the app's identity, the page's sections with each input as hub_set_native_app(operation:'form') returns it, and its child apps and devices. The pages it links to are listed in page.hrefs. controls lists the page's buttons and links with the control_id that hub_set_native_app or hub_set_rule(operation:'form') activates, and pageNote says when the hub rendered another page than pageName. Secret values are redacted unless Hide passwords and credentials is off (always for a per-client token).""",
             inputSchema: [
                 type: "object",
                 properties: [
                     appId: [type: "string", description: "Installed-app ID (decimal). From hub_list_apps (scope='instances'), hub_list_rules, or the numeric id in the Hubitat UI URL (/installedapp/configure/<id>)."],
                     pageName: [type: "string", description: "The page to read instead of the default page: a page.hrefs[].page name from a page of this app already read."],
                     includeSettings: [type: "boolean", description: "Include the raw app-internal settings key-value map (default false). Set true only for power-user inspection.", default: false],
-                    summary: [type: "boolean", description: "Fast identity-only read: returns the thin app record (id, name, type, disabled, user), no config page; pageName/includeSettings ignored.", default: false]
+                    summary: [type: "boolean", description: "Fast identity-only read: returns the thin app record (id, name, type, disabled, user) and the type's namespace, no config page; pageName/includeSettings ignored.", default: false]
                 ],
                 required: ["appId"]
             ]
