@@ -1183,6 +1183,27 @@ class NativeDocumentsSpec extends ToolSpecBase {
         passed.success
     }
 
+    def 'an unrelated edit does not report success while an existing conditional action is broken'() {
+        given: 'action 1 is gated by condition 4, whose label RM can no longer draw'
+        nativeState.actions['1'] = [method: 'getLogMsg', cond: 4]
+        script.metaClass._nrStatePatch = { Long id, Map put, List remove = [] -> remove.each { nativeState.remove(it) }; nativeState.putAll(put); [:] }
+        script.metaClass._nrHandle = { Long id -> new NativeDocumentConditionalChild(events, lifecycle, conditionLabel) }
+        when:
+        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [logChange()], confirm: true])
+        then:
+        result.success == !refused
+        if (refused) {
+            assert result.partial
+            assert result.error.contains('Native action 1 is broken')
+            assert !events.any { it instanceof Map }
+        }
+        where:
+        conditionLabel                                                                     | refused
+        "IF (<span class='text-hubitat-danger'>**Broken Condition**</span>) Log: 'gated'"  | true
+        "IF (<span style='color:red'>**Broken Condition**</span>) Log: 'gated'"            | true
+        "IF (Switch is on) Log: '**Broken Condition** typed by the user'"                  | false
+    }
+
     def 'a broken marker on the rendered page does not block Done while the rule state reports healthy'() {
         given:
         def child = new NativeDocumentDiagnosticChild(events, lifecycle, true)
@@ -1443,6 +1464,12 @@ class NativeDocumentDiagnosticChild extends NativeDocumentChild {
         if (diagnostic && raisesFlag) lifecycle.broken = true
         [name: 'selectActions', sections: [[input: [[name: 'logmsg.1', value: '**Broken Condition**']], body: [[type: 'paragraph', description: diagnostic ? "<span class='text-hubitat-danger'>**Broken Condition**</span>" : 'Log: **Broken Condition**']]]]]
     }
+}
+
+class NativeDocumentConditionalChild extends NativeDocumentChild {
+    String conditionLabel
+    NativeDocumentConditionalChild(List events, Map lifecycle, String conditionLabel) { super(events, lifecycle); this.conditionLabel = conditionLabel }
+    Object thisActionLabel(Object actionId) { actionId.toString() == '1' ? conditionLabel : "Log: 'row ${actionId}'" }
 }
 
 class NativeDocumentButtonChild extends NativeDocumentChild {

@@ -212,7 +212,7 @@ class HandleToolsCallSpec extends ToolSpecBase {
             preferences: preferenceValues,
             data: ['fields': 'literal data value', 'custom:data-key': 0]
         ]
-        def canonicalBackup = [backupKey: 'device_42']
+        def canonicalBackup = [backupKey: 'device_42', brokenBefore: [broken: true]]
         def canonicalResult = [success: true, fields: fields, backup: canonicalBackup]
         script.metaClass.toolGetHubInfo = { a -> canonicalResult }
 
@@ -226,7 +226,7 @@ class HandleToolsCallSpec extends ToolSpecBase {
         inner.fields.preferences['getClass'] == [value: 'driver supplied']
         inner.fields.preferences['custom.preference-name'] == [value: false]
         inner.fields.data == ['fields': 'literal data value', 'custom:data-key': 0]
-        inner.backup == [backupKey: 'device_42']
+        inner.backup == [backupKey: 'device_42', brokenBefore: [broken: true]]
 
         and: 'the structural copy leaves the canonical result and its nested maps untouched'
         canonicalResult.fields.is(fields)

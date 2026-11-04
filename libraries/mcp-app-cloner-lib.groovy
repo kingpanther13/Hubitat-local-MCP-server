@@ -886,8 +886,10 @@ private Map _rmRestoreViaNativeImport(Map snapshot, Integer savedId, boolean exi
         try {
             def parentId = _discoverParentAppId(snapshot?.appType ?: "rule_machine")
             def kids = _appClonerSnapshotChildren(parentId)
+            if (kids?.isError) throw new IllegalStateException(kids.error?.toString())
             hint = (kids?.ids ?: []).collect { it.toString() }.find { it.isInteger() }?.toInteger()
             if (hint == null) {
+                _requireUnprotectedAppMutation(parentId, "restore a child app under")
                 String seedType = (_appTypeRegistry()[snapshot?.appType ?: "rule_machine"]?.appName ?: "Rule-5.1").toString()
                 seed = hint = _rmCreateChildApp(parentId as Integer, "hubitat", seedType)
             }
