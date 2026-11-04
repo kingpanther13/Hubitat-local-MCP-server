@@ -16841,12 +16841,12 @@ def toolGetAppConfig(args) {
     boolean isRmRule = _rmIsRuleAppType((appTypeRaw instanceof Map ? appTypeRaw.name : null)?.toString()) ||
         _rmIsRuleAppType(parsed.app.name?.toString())
     boolean rmHasDisabled = isRmRule
-    if (isRmRule) {
+    if (isRmRule && [appTypeRaw instanceof Map ? appTypeRaw.name : null, parsed.app.name].any { it?.toString() in ['Rule-5.1', 'Button Rule-5.1'] }) {
         try {
             Map rmState = _nrState(appIdStr as Long)
             rmHasDisabled = [rmState.disabledActions, rmState.disabledTriggers].any { it instanceof Collection && !it.isEmpty() }
         } catch (Exception unreadable) {
-            mcpLog("debug", "hub-admin", "hub_get_app_config app ${appIdStr}: rule state unreadable, disabled rows read from the page: ${unreadable.message}")
+            mcpLog("warn", "hub-admin", "hub_get_app_config app ${appIdStr}: rule state unreadable (${unreadable.class.simpleName}: ${unreadable.message}); disabled rows read from the page")
         }
     }
     Map formFields = null
@@ -16976,10 +16976,10 @@ def toolGetAppConfig(args) {
 private List _appConfigDisabledRows(Object html) {
     List disabled = []
     if (!html) return disabled
-    def rows = html.toString() =~ /(?is)<span\b[^>]*>\s*<i>(.*?)<\/i>\s*<\/span>/
+    def rows = html.toString() =~ /(?is)<span\s+(?:style=['"]\s*color:\s*red;?\s*['"]|class=['"]text-hubitat-danger['"])\s*>\s*<i>(.*?)<\/i>\s*<\/span>/
     while (rows.find()) {
         String row = stripAppConfigHtml(rows.group(1))?.trim()
-        if (row && !(row ==~ /(?i)Disabled Actions?/)) disabled << row
+        if (row && !(row ==~ /(?i)Disabled (?:Action|Trigger)s?/)) disabled << row
     }
     return disabled
 }
@@ -21306,7 +21306,7 @@ private void _rmNativeRestoreFlags(Long id, Map savedState) {
     if ((live.paused == true) != (savedState.paused == true)) _nrHandle(id).appButtonHandler('pausRule')
 }
 private String _rmLabelName(label) {
-    (label?.toString() ?: '').replaceAll(/\s*<span\b[^>]*>[^<]*<\/span>/, '')
+    (label?.toString() ?: '').replaceAll(/(?:\s*<span\b[^>]*>\s*(?:\*BROKEN\*|\((?:Not Installed|Stopped|Paused|Required Expression false|Repeating)\))\s*<\/span>)+\s*$/, '')
 }
 private String _rmRestoredRuleName(List plan, Map identity) {
     def name = plan.find { it.name == 'origLabel' }?.value
@@ -23487,7 +23487,7 @@ private Map _rmDecodeRuleExport(Integer ruleId, Object raw) {
 }
 Map _rmBackupRuleSnapshot(Integer ruleId, String reason, boolean requireNativeExport = false, String protectedKey = null, String activePage = null) {
     def built = requireNativeExport ? _rmBuildNativeEditSnapshot(ruleId, reason, _rmCaptureRuleExport(ruleId)) : _rmBuildRuleSnapshot(ruleId, reason, activePage)
-    return _withBackupLock("rule ${ruleId} snapshot (${reason})") { _rmWriteRuleSnapshotLocked(ruleId, reason, built.snapshot as Map, built.config as Map, protectedKey) }
+    return _withBackupLock("rule ${ruleId} snapshot (${reason})") { _rmWriteRuleSnapshotLocked(ruleId, reason, built.snapshot as Map, protectedKey) }
 }
 private Set _rmRedactSnapshotPasswords(Map config, Map status) {
     Set names = [] as Set
@@ -23539,7 +23539,7 @@ private Map _rmBuildNativeEditSnapshot(Integer ruleId, String reason, String cap
         nativeExport: nativeExport, configJson: config,
         statusJson: [appSettings: settingRows, appState: data.state.collect { key, value -> [name: key, value: value] }]]
     if (redacted) snapshot.redactedSettings = redacted.toList().sort()
-    [snapshot: snapshot, config: config]
+    [snapshot: snapshot]
 }
 private Map _rmBuildRuleSnapshot(Integer ruleId, String reason, String activePage = null) {
     def config
@@ -23643,9 +23643,9 @@ private Map _rmBuildRuleSnapshot(Integer ruleId, String reason, String activePag
         }
     }
     if (redacted) snapshot.redactedSettings = redacted.toList().sort()
-    return [snapshot: snapshot, config: config]
+    return [snapshot: snapshot]
 }
-private Map _rmWriteRuleSnapshotLocked(Integer ruleId, String reason, Map snapshot, Map config, String protectedKey = null) {
+private Map _rmWriteRuleSnapshotLocked(Integer ruleId, String reason, Map snapshot, String protectedKey = null) {
     def ts = new Date(now()).format("yyyyMMdd-HHmmss-SSS")
     String namePrefix = "mcp-rm-backup-${ruleId}-"
     String nameExt = ".json"
@@ -25390,7 +25390,7 @@ private boolean _nmActionLabel(Long ruleId, String id) {
         label = _nrHandle(ruleId).thisActionLabel(id)
         broken = _nrState(ruleId).broken == true
     } finally { _nrStatePatch(ruleId, format, keys.findAll { !format.containsKey(it) }) }
-    label instanceof String && label.trim() && !broken
+    label instanceof String && label.trim() && !broken && !(label =~ /<span\b[^>]*>\s*\*\*Broken [^*]+\*\*\s*<\/span>/).find()
 }
 private Map _nmRejectEdit(Long ruleId, String id, Map baseline, Map savedSettings, List keys, Map entries, Closure cancel, Map failure) {
     String cleanupError = null
@@ -25496,7 +25496,7 @@ Map _nmUpsertCondition(Long ruleId, boolean trigger, Map row) {
         def label = _nmEntry(after.get(collection) instanceof Map ? after.get(collection) : [:], id)
         Map echoed = _nrSettings(ruleId, settings.collect { it.name })
         boolean persisted = settings.every { echoed.get(it.name)?.type?.toString() == it.type && _nrComparableSetting(it.type, echoed.get(it.name)?.value) == _nrComparableSetting(it.type, it.value) }
-        String bare = label instanceof String ? label.replaceAll(/\(?<span\b[^>]*>\(?(?![^<]*(?i:broken))[^<]*\)?<\/span>\)?/, '') : null
+        String bare = label instanceof String ? label.replaceAll(/\(?<span (?:style='color:black'|class='text-color')>\(?[^<]*\)?<\/span>\)?/, '') : null
         boolean compiled = bare?.trim() && !bare.contains('null') && !bare.contains('BROKEN')
         if (!(compiled && persisted && membership)) return _nmRejectCondition(ruleId, trigger, editing, id, baseline, savedSettings, settings, render,
             [error: compiled ? 'Native input persistence failed' : 'Native row did not compile a valid label', compiledLabel: label?.toString()])
