@@ -367,8 +367,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
     // an expectedVersion, the update uses a version read in this call (the
     // resave fetch or a backup taken just now), else the code list row or
     // {@code /app/ajax/code}; the cached backup version is the last resort,
-    // safe because the hub refuses a stale version and the save retries once
-    // at the version the hub reports. These tests pin both ends.
+    // safe because the hub refuses a stale version. These tests pin both ends.
 
     def "hub_update_app uses the fresh version from the hub, not the stale backup-manifest cache (v0.4.6)"() {
         given: 'a recent cached backup whose manifest carries a stale version=5'

@@ -101,11 +101,6 @@ private Set _mcpAuthorizedIds(List children) {
     return _bypassEnabled() ? null : _selectedAndChildIds(children)
 }
 
-private List _listDevicesArgNames() {
-    ["scope", "format", "labelFilter", "capabilityFilter", "roomFilter", "disabled", "staleHours",
-     "changedSince", "stateFilter", "attributeNames", "fields", "limit", "cursor"]
-}
-
 private List _listDeviceFieldNames() {
     ["id", "label", "name", "driver", "room", "roomId", "disabled", "deviceNetworkId", "lastActivity", "protocol",
      "parentDeviceId", "mcpManaged", "linked", "tags", "notes", "source", "currentStates", "capabilities", "attributes", "commands"]
@@ -113,9 +108,6 @@ private List _listDeviceFieldNames() {
 
 // Every argument check, before any hub read. Returns the normalized options.
 private Map _listDevicesOptions(Map args) {
-    List known = _listDevicesArgNames()
-    def unknown = args.keySet().findAll { !it.toString().startsWith("__") && !(it in known) }
-    if (unknown) throw new IllegalArgumentException("Unknown argument: ${unknown.join(', ')}. Valid arguments: ${known.join(', ')}")
     if (args.scope != null && !(args.scope in ["authorized", "all", "owned"])) {
         throw new IllegalArgumentException("scope must be one of: authorized, all, owned (got: '${args.scope}')")
     }
@@ -3447,8 +3439,6 @@ private Map _resolveDeviceRoom(String room, boolean byId = false) {
 def toolUpdateDevice(args) {
     def deviceId = _canonicalDeviceIdArg(args.deviceId)
     if (deviceId == null) throw new IllegalArgumentException("deviceId is required")
-    def unknown = args.keySet().findAll { !(it in ['deviceId', 'fields', 'preferences', 'confirm', 'bestPracticeKey']) }
-    if (unknown) throw new IllegalArgumentException("Unknown argument ${unknown.join(', ')}; device fields go in fields and driver preferences in preferences")
     def fieldsArg = args.get('fields')
     if (fieldsArg != null && !(fieldsArg instanceof Map)) throw new IllegalArgumentException("fields must be an object keyed by editable field name")
     if (args.preferences != null && !(args.preferences instanceof Map)) throw new IllegalArgumentException("preferences must be an object keyed by declared preference name")
@@ -4848,6 +4838,7 @@ If no exact device match: suggest similar devices and get user confirmation befo
                         ]
                     ],
                     parameters: [type: "array", description: "Ordered command arguments as an array of strings, in the order the command declares them, e.g. [\"75\"] for setLevel[[FLAT_TRIM]] or [\"#FF0000\"] for setColor[[/FLAT_TRIM]].", items: [type: "string"]],
+                    includeState: [type: "boolean", description: "false skips the state read-back after the command. Default true."],
                     waitFor: [type: "object", description: "Optional: after firing the command, block-poll an attribute for an expected value; check waitFor.converged to confirm the resulting state.[[FLAT_TRIM]] The native `state` snapshot is read after dispatch and any poll. Without waitFor it is an immediate read that may show the prior or resulting value.[[/FLAT_TRIM]]", properties: [
                         attribute: [type: "string", description: "Attribute to poll until it converges, e.g. \"switch\". NOT checked before the command fires (native metadata lists reported attributes only): a name the device never reports times out with neverReported after the command has already executed."],
                         expectedValue: [type: "string", description: "Awaited value: eq/ne in-set, or gt/gte/lt/lte numeric threshold."],

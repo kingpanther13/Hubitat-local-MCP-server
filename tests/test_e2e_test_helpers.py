@@ -2378,6 +2378,10 @@ def test_driver_lifecycle_uses_logical_write_helper_for_create():
                 return next(reads)
             if (name, tool) == ("hub_manage_code", "hub_update_driver"):
                 args = arguments["args"]
+                if "updates" in args:
+                    return {"success": False, "updates": [{
+                        "driverId": args["updates"][0]["driverId"], "success": False,
+                        "error": "Unknown updates[] argument: expectedVerison.", "note": "Correct the key."}]}
                 if "expectedVerison" in args:
                     raise et.McpToolError(tool, "Unknown hub_update_driver argument: expectedVerison")
                 if "expectedVersion" in args:

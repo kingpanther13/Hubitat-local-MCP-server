@@ -159,8 +159,6 @@ private List _nameFiltered(List rows, filter) {
 }
 
 def toolListHubDrivers(args) {
-    def unknown = ((args ?: [:]).keySet() - ["include", "cursor", "nameFilter"]).sort()
-    if (unknown) throw new IllegalArgumentException("hub_list_drivers does not take ${unknown.join(', ')}. Valid arguments: include, nameFilter, cursor.")
     def cursor = args?.cursor
     def include = (args?.include ?: "user").toString().toLowerCase()
     if (!(include in ["user", "all"])) throw new IllegalArgumentException("include must be 'user' or 'all' (got '${args.include}').")
@@ -1563,13 +1561,10 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args, Map packa
     }
     if (noBackupReason) mcpLog("info", "hub-admin", "Pre-update source backup skipped for ${type} ID ${itemId}: ${noBackupReason}")
 
-    // The save carries a version and the hub refuses it atomically, with no write, when the item
-    // has moved on. A caller's expectedVersion is sent as-is (no read here); otherwise use the
-    // version this call already read (resave's fetch, or a backup taken just now -- a reused
-    // backup's version may be up to an hour old), and only then read the item's list row, with
-    // the full ajax/code fetch as the last resort.
-    def sentVersion = expectedVersion
-    if (sentVersion == null) sentVersion = freshVersion
+    // The current version: the one this call already read (resave's fetch, or a backup taken just
+    // now -- a reused backup's may be up to an hour old), else the item's list row, else the full
+    // ajax/code fetch.
+    def sentVersion = freshVersion
     if (sentVersion == null && itemBackup?.fresh == true) sentVersion = itemBackup.version
     if (sentVersion == null) sentVersion = _itemRowVersion(type, itemId)
     if (sentVersion == null) {
@@ -1579,11 +1574,17 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args, Map packa
         } catch (Exception vErr) {
             mcpLog("warn", "hub-admin", "Could not read the current version of ${type} ID ${itemId}: ${vErr.message}")
         }
-        // Last resort, safe because the hub refuses a stale version and the save retries once.
-        if (sentVersion == null) sentVersion = itemBackup?.version
+        // Nothing readable: a reused backup's version still serves a plain save, which the hub refuses
+        // if it is stale. Not a lock, which needs a current read, nor a self save, whose confirmation
+        // waits for the version to pass this one and would take a stale one as already landed.
+        if (sentVersion == null && expectedVersion == null && !isSelfUpdate) sentVersion = itemBackup?.version
     }
     if (sentVersion == null) {
         throw new IllegalArgumentException("Could not determine current version for ${type} ID ${itemId}. The ${type} may not exist.")
+    }
+    // A stale lock is refused here, before the hub spends a compile on a save it would refuse.
+    if (expectedVersion != null && sentVersion.toString() != expectedVersion.toString()) {
+        return _versionConflictResult(type, idParam, itemId, expectedVersion, sentVersion)
     }
 
     // Self-update detection: when the MCP server updates its OWN app code, a SUCCESS reloads the app
@@ -1601,14 +1602,6 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args, Map packa
     try {
         def parsed = _postItemSave(type, itemIdInt, sourceCode, sentVersion, isSelfUpdate, itemId)
         def stale = _staleVersionRejection(parsed)
-        // Without a caller lock the version only had to be current; retry once at the version the
-        // hub reported, so a lock-free update keeps last-writer-wins.
-        if (stale != null && expectedVersion == null && stale.currentVersion != null) {
-            mcpLog("info", "hub-admin", "${type} ID ${itemId}: version ${sentVersion} was stale, retrying the save at the hub's version ${stale.currentVersion}")
-            sentVersion = stale.currentVersion
-            parsed = _postItemSave(type, itemIdInt, sourceCode, sentVersion, isSelfUpdate, itemId)
-            stale = _staleVersionRejection(parsed)
-        }
         sourceCode = null
         if (stale != null) return _versionConflictResult(type, idParam, itemId, sentVersion, stale.currentVersion)
 
@@ -1785,7 +1778,7 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args, Map packa
                 note: "Check the Groovy source code for syntax errors or compilation issues.",
                 lastBackup: formatTimestamp(state.lastBackupTimestamp)
             ]
-            if (_isConcurrentSaveRefusal(errorMsg)) {
+            if (_isConcurrentSaveRefusal(type, errorMsg)) {
                 out.note = _concurrentSaveNote(type)
                 out.retryable = true
             }
@@ -1823,18 +1816,17 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args, Map packa
 
 // An explicit expectedVersion as an Integer, or null when the caller sent none. Rejected before
 // any side effect: an explicit null (a templated arg would otherwise read as "no lock" and let the
-// write through) and anything that does not coerce to an integer.
+// write through) and anything but a whole number (2.9 must not truncate into a matching lock).
 private Integer _expectedVersionArg(args) {
     if (!(args instanceof Map) || !args.containsKey('expectedVersion')) return null
-    if (args.expectedVersion == null) {
+    def version = args.expectedVersion
+    if (version == null) {
         throw new IllegalArgumentException("expectedVersion was supplied as null. Omit the field entirely to skip the optimistic-lock check, or pass an integer.")
     }
-    try {
-        return args.expectedVersion as Integer
-    } catch (NumberFormatException | ClassCastException coerceErr) {
-        // No args.expectedVersion?.class here: the sandbox rejects .class on arbitrary inputs.
-        throw new IllegalArgumentException("expectedVersion must be an integer (got '${args.expectedVersion}'): ${coerceErr.message}")
+    if (!(version instanceof Integer || version instanceof Long) || version < 0 || version > 2147483647L) {
+        throw new IllegalArgumentException("expectedVersion must be an integer (got '${version}'): pass the version number hub_get_source returned, unchanged.")
     }
+    return version as Integer
 }
 
 // POST /app|driver/saveOrUpdateJson: a non-null id updates that code class in place, and the hub
@@ -1866,25 +1858,32 @@ private Map _staleVersionRejection(parsed) {
     return [currentVersion: m.find() ? (m.group(1) as Integer) : null]
 }
 
-// A database refusal of the save ("java.sql.SQLException: Failed to update device type") comes from
-// another save of the same item landing at the same moment, not from the source, so it is retryable.
-private boolean _isConcurrentSaveRefusal(msg) {
-    return msg != null && (msg.toString() =~ /SQLException/).find()
+// Overlapping saves of one item get exactly one of these answers, not a verdict on the source, so
+// they are retryable: a driver's is this database error, an app's is nothing but its compile path.
+// Anything else, such as a compile error naming SQLException, keeps the normal note.
+private boolean _isConcurrentSaveRefusal(String type, msg) {
+    String text = msg?.toString()?.trim()
+    if (!text) return false
+    if (type == "driver") return text == "java.sql.SQLException: Failed to update device type"
+    return type == "app" && text ==~ /\.\/appTargetDir\/user_app_.+_\d+\.groovy/
 }
 
 private String _concurrentSaveNote(String type) {
-    return "The hub's database refused the save, which happens when another save of this ${type} runs at the same moment; the source itself was not rejected. Wait a moment, re-read the ${type} (its version may have changed), then retry. Send saves of the same ${type} one at a time.".toString()
+    return "This is the hub's answer when another save of this ${type} runs at the same moment; the source itself was not rejected. Wait a moment, re-read the ${type} (its version may have changed), then retry. Send saves of the same ${type} one at a time. See ${_codeGuidePointer()}.".toString()
 }
+
+private String _codeGuidePointer() { "hub_get_tool_guide(section='hub_admin_write_code')" }
 
 private Map _versionConflictResult(String type, String idParam, itemId, sentVersion, currentVersion) {
     String hubSide = currentVersion != null ? "hub has ${currentVersion}" : "the hub reports a different version"
-    mcpLog("warn", "hub-admin", "${type} update ID ${itemId} refused by the hub: version ${sentVersion} is stale (${hubSide}); nothing was written")
+    mcpLog("warn", "hub-admin", "${type} update ID ${itemId} refused: version ${sentVersion} is stale (${hubSide}); nothing was written")
     def out = [
         success: false,
         error: "Optimistic-lock conflict: expected ${type} version ${sentVersion} but ${hubSide}. Nothing was written. Re-read the source and retry with the new expectedVersion.".toString(),
         (idParam): itemId,
         expectedVersion: sentVersion,
         conflict: true,
+        note: "Another save changed this ${type}. Read it again with hub_get_source, reapply your change to that source, and pass its version as expectedVersion. See ${_codeGuidePointer()}.".toString(),
         lastBackup: formatTimestamp(state.lastBackupTimestamp)
     ]
     if (currentVersion != null) out.currentVersion = currentVersion
@@ -2084,7 +2083,7 @@ def toolUpdateDriverCode(args) {
         }
 
         // Bulk mode: apply each update in sequence, continue on per-item errors
-        def bulkEntryKeys = ["driverId", "sourceFile", "source", "importUrl", "resave", "backup", "expectedVersion"]
+        List bulkEntryKeys = _toolCatalogIndexes().updateEntryArgs.hub_update_driver
         def itemResults = []
         def allSucceeded = true
         for (int idx = 0; idx < args.updates.size(); idx++) {
@@ -2104,7 +2103,7 @@ def toolUpdateDriverCode(args) {
             // A misspelled lock must not fall through to a lock-free save of this entry.
             def unknownKeys = item.keySet().collect { it as String }.findAll { !(it in bulkEntryKeys) }
             if (unknownKeys) {
-                itemResults << [driverId: item.driverId.toString(), success: false, error: "Unknown updates[] argument${unknownKeys.size() == 1 ? '' : 's'}: ${unknownKeys.sort().join(', ')}. Nothing was changed for this driver. Valid arguments: ${bulkEntryKeys.join(', ')}."]
+                itemResults << [driverId: item.driverId.toString(), success: false, error: "Unknown updates[] argument${unknownKeys.size() == 1 ? '' : 's'}: ${unknownKeys.sort().join(', ')}. Nothing was changed for this driver. Valid arguments: ${bulkEntryKeys.join(', ')}.", note: "Correct or remove the key and send this entry again. See ${_codeGuidePointer()}.".toString()]
                 allSucceeded = false
                 continue
             }
@@ -2126,6 +2125,7 @@ def toolUpdateDriverCode(args) {
                 } else {
                     entry.error = r.error ?: "Update failed"
                     if (r.note) entry.note = r.note
+                    if (r.retryable) entry.retryable = true
                     if (r.lastBackup) entry.lastBackup = r.lastBackup
                     if (r.conflict) {
                         entry.conflict = true
@@ -2578,11 +2578,9 @@ def toolUpdateLibraryCode(args) {
             return unavailable + [libraryId: libraryId]
         }
     }
-    // Same version rule as app and driver code: the hub refuses a stale save version atomically.
-    // Send the caller's expectedVersion, else the version this call read (resave's fetch or a
+    // Same version rule as app and driver code: the version this call read (resave's fetch or a
     // backup taken just now), else read it; a reused backup's version may be up to an hour old.
-    def sentVersion = expectedVersion
-    if (sentVersion == null) sentVersion = freshVersion
+    def sentVersion = freshVersion
     if (sentVersion == null && backupEntry?.fresh == true) sentVersion = backupEntry.version
     def versionFetchError = null
     if (sentVersion == null) {
@@ -2594,39 +2592,32 @@ def toolUpdateLibraryCode(args) {
             versionFetchError = vErr.message ?: vErr.toString()
             mcpLog("warn", "hub-admin", "Could not read the current version of library ID ${libraryId}: ${versionFetchError}")
         }
-        // Last resort, safe because the hub refuses a stale version and the save retries once.
-        if (sentVersion == null) sentVersion = backupEntry?.version
+        // Nothing readable: a reused backup's version still serves a plain save, which the hub refuses
+        // if it is stale; a lock needs a current read.
+        if (sentVersion == null && expectedVersion == null) sentVersion = backupEntry?.version
     }
     if (sentVersion == null) {
-        throw new IllegalArgumentException("Could not determine current version for library ID ${libraryId} -- version fetch failed (${versionFetchError ?: 'unknown'}) and no backup has a version. Check that the library exists.")
+        throw new IllegalArgumentException("Could not determine current version for library ID ${libraryId} -- version fetch failed (${versionFetchError ?: 'unknown'}) and no usable backup has a version. Check that the library exists.")
+    }
+    if (expectedVersion != null && sentVersion.toString() != expectedVersion.toString()) {
+        return _versionConflictResult("library", "libraryId", libraryId, expectedVersion, sentVersion)
     }
 
     mcpLog("info", "hub-admin", "Updating library ID: ${libraryId} (version: ${sentVersion}, mode: ${sourceMode}, sourceLength: ${sourceCode.length()})")
     try {
         def result = _postLibrarySave(libraryId, sourceCode, sentVersion)
         def stale = _staleVersionRejection(result)
-        if (stale != null && expectedVersion == null && stale.currentVersion != null) {
-            mcpLog("info", "hub-admin", "library ID ${libraryId}: version ${sentVersion} was stale, retrying the save at the hub's version ${stale.currentVersion}")
-            sentVersion = stale.currentVersion
-            result = _postLibrarySave(libraryId, sourceCode, sentVersion)
-            stale = _staleVersionRejection(result)
-        }
         if (stale != null) return _versionConflictResult("library", "libraryId", libraryId, sentVersion, stale.currentVersion)
 
         if (result?.success == false) {
             def msg = result?.message ?: "Hub returned failure"
             mcpLog("warn", "hub-admin", "Library update failed: ${msg}")
-            def out = [
+            return [
                 success: false,
                 error: "Library update failed: ${msg}",
                 libraryId: libraryId,
                 note: "Check the Groovy source code for syntax errors or compilation issues."
             ]
-            if (_isConcurrentSaveRefusal(msg)) {
-                out.note = _concurrentSaveNote("library")
-                out.retryable = true
-            }
-            return out
         }
 
         mcpLog("info", "hub-admin", "Library ID ${libraryId} updated successfully (mode: ${sourceMode})")

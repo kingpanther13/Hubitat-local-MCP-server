@@ -192,8 +192,8 @@ class MrtrDriverBudgetSpec extends ToolSpecBase {
         saves*.source == [items[0].source, items[2].source]
         saves*.version == [1, 2]
 
-        and: 'the conflicting entry reached the hub once at its own version and was not retried'
-        refused*.version == [999]
+        and: 'the conflicting entry never reached the hub'
+        refused.isEmpty()
     }
 
     @Unroll

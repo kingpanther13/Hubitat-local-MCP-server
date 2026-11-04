@@ -2397,7 +2397,7 @@ class TestRunner:
         self.rule_engine_variable_names.add(name)
         try:
             self.client.call_tool("hub_manage_variables", {
-                "tool": "hub_set_variable", "args": {"name": name, "type": var_type, "value": value},
+                "tool": "hub_set_variable", "args": {"name": name, "value": value},
             })
         except (McpError, McpToolError, requests.HTTPError) as exc:
             if "504" not in str(exc):
@@ -3056,6 +3056,11 @@ class TestRunner:
         # Removed arguments are refused, not silently ignored.
         self._expect_tool_refusal("hub_list_devices", {"detailed": True}, "detailed")
         self._expect_tool_refusal("hub_list_devices", {"offset": 1, "limit": 2}, "offset")
+        # Every tool refuses an argument outside its schema, not only the strict ones.
+        self._expect_tool_refusal("hub_read_rooms", {"tool": "hub_list_rooms", "args": {"bogusArg": 1}},
+                                  "Unknown hub_list_rooms argument: bogusArg")
+        self._expect_tool_refusal("hub_get_info", {"expectedVerison": 3},
+                                  "Unknown hub_get_info argument: expectedVerison")
 
     @test("devices")
     def test_list_devices_changed_since(self) -> None:
@@ -3751,8 +3756,9 @@ class TestRunner:
             try:
                 # The snapshot reports the state at read time, so wait until the lock has set the code,
                 # then take the snapshot from a second (idempotent) setCode.
-                self.client.call_tool("hub_call_device_command", {
+                unsnapped = self.client.call_tool("hub_call_device_command", {
                     "deviceId": lock_id, "command": "setCode", "parameters": ["1", "4321", "Guest"], "includeState": False})
+                assert "state" not in unsnapped, f"includeState=false must skip the read-back: {unsnapped}"
                 for _ in range(20):
                     attrs = {a.get("name"): a.get("value")
                              for a in self.client.call_tool("hub_get_device", {"deviceId": lock_id}).get("attributes", [])}
@@ -4452,7 +4458,7 @@ class TestRunner:
             self.client.call_tool("hub_update_device", {"deviceId": dev_id, "showOnHome": False})
             raise AssertionError("hub_update_device accepted a top-level field")
         except (McpToolError, McpError) as exc:
-            assert "Unknown argument" in str(exc), f"Top-level field refusal was not explicit: {exc}"
+            assert "Unknown hub_update_device argument: showOnHome" in str(exc), f"Top-level field refusal was not explicit: {exc}"
 
     @test("devices")
     def test_update_device_room_assign_and_unassign(self) -> None:
@@ -4627,7 +4633,7 @@ class TestRunner:
             all("virtual switch" in str(d.get("name")).lower() for d in narrowed.get("drivers") or []), \
             f"nameFilter did not narrow the driver catalog: {narrowed.get('drivers')}"
         self._expect_tool_refusal("hub_read_apps_code", {"tool": "hub_list_drivers", "args": {"include": "all", "limit": 5}},
-                                  "does not take limit")
+                                  "Unknown hub_list_drivers argument: limit")
         # Missing confirm must be refused before anything is created.
         try:
             self.client.call_tool("hub_manage_devices", {
@@ -10600,7 +10606,7 @@ def updated() {}
             self._untrack_native_app(app_id)
 
     # -----------------------------------------------------------------------
-    # GROUP 4d: app_code_update -- app lifecycle and library source updates.
+    # GROUP 4d: app_code_update -- app lifecycle and app source updates.
     #
     # test_update_app_code_lifecycle: one throwaway code class for update/error/conflict/OAuth:
     # a real round-trip edit (success + version advance + source landed), the
@@ -11183,6 +11189,17 @@ def updated() {}
             except (McpToolError, McpError) as exc:
                 assert "expectedVerison" in str(exc), \
                     f"unknown-argument refusal does not name the argument: {exc}"
+
+            # Leg 5: a bulk entry with an unknown key is refused alone, and nothing is saved for it.
+            bulk = self.client.call_tool("hub_manage_code", {
+                "tool": "hub_update_driver",
+                "args": {"updates": [{"driverId": driver_id, "source": source_v3,
+                                      "expectedVerison": version_before}], "confirm": True},
+            })
+            entry = (bulk.get("updates") or [{}])[0]
+            assert bulk.get("success") is False and entry.get("success") is False \
+                and "expectedVerison" in str(entry.get("error")) and entry.get("note"), \
+                f"bulk unknown key was not refused with a note: {bulk}"
 
             # One re-read proves the refused legs wrote nothing: still V2, no broken or
             # V3 marker, version unchanged since the round-trip edit.
@@ -13757,7 +13774,7 @@ def updated() {}
         the app runtime statistics needs confirm and leaves the server app's total at 0."""
         # A refusal writes a validation-error line, so the log holds at least one entry to clear.
         self._expect_tool_refusal("hub_read_diagnostics", {"tool": "hub_get_logs", "args": {"mode": "mcp", "source": "x"}},
-                                  "Unknown parameter for hub_get_logs: source")
+                                  "Unknown hub_get_logs argument: source")
         before = self.client.call_tool("hub_read_diagnostics", {"tool": "hub_get_logs", "args": {"mode": "mcp", "limit": 0}})
         assert before.get("entries"), f"MCP log before the clear must hold the refusal's line: {before}"
         # Past logs are not this tool's to delete: the refusal names hub_reboot instead of rebooting.

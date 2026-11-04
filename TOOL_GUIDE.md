@@ -112,6 +112,11 @@ If you are calling one of these tools, you must read its section for that sectio
 - hub_update_dashboard -> dashboards
 - hub_delete_file -> file_manager
 - hub_write_file -> file_manager
+- hub_create_app -> hub_admin_write_code
+- hub_update_app -> hub_admin_write_code
+- hub_update_driver -> hub_admin_write_code
+- hub_update_library -> hub_admin_write_code
+- hub_update_package -> hub_admin_write_code
 - hub_call_destructive_ops -> hub_admin_write_destructive
 - hub_delete_device -> hub_admin_write_destructive
 - hub_delete_item -> hub_admin_write_destructive
@@ -285,7 +290,13 @@ The radio firmware-flash `action` values (the bullet above summarizes these as "
 
 ### hub_update_app / hub_update_driver / hub_update_library — expectedVersion (optimistic lock)
 
-`expectedVersion` rides the save, and the hub checks it atomically: if the code has moved on, the hub refuses the save, nothing is written, and the result is `conflict:true` with `expectedVersion` and, when the hub reports it, `currentVersion`. Re-read the source, then retry with the new version. Stringified integers are coerced; an explicit null is rejected. Without it, the save uses the version this call read and retries once at the hub's version if another save landed first (last writer wins). These tools reject arguments outside their schema, so a misspelled lock fails instead of being dropped.
+`expectedVersion` is checked before saving: the call reads the code's current version and, if it differs, posts nothing and returns `conflict:true` with `expectedVersion`, `currentVersion` and a `note`. Re-read the source, then retry with the new version. It must be a whole number: 2.9, strings and an explicit null are refused. If the current version cannot be read, the call is refused before saving.
+
+Every save carries the version, and the hub refuses one that is no longer current. So a save beaten by another save after the check also comes back `conflict:true`, and without `expectedVersion` the save uses the version this call read and fails the same way. Nothing is re-posted: re-read, reapply your change, and save again.
+
+Overlapping saves of one item can instead fail with a collision answer: `java.sql.SQLException: Failed to update device type` for a driver, or an error that is only the compile path (`./appTargetDir/user_app_<namespace>_<name>_<id>.groovy`) for an app. These carry `retryable:true` (bulk entries too) and the source was not rejected. Wait a moment, re-read, then retry, and send saves of one item one at a time. Every other failure keeps the syntax-error note.
+
+Every tool rejects arguments outside its schema, so a misspelled lock fails instead of being dropped.
 
 Use it when a read-modify-write spans turns, or when another agent may edit the same code. The source backup is still taken on a conflict. It is not taken in importUrl mode (the item's history lives where that URL is published); inline source and sourceFile updates keep it.
 

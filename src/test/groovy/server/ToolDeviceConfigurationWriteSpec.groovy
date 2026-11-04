@@ -271,7 +271,6 @@ class ToolDeviceConfigurationWriteSpec extends ToolSpecBase {
 
         where:
         args                                                      | fragment
-        [label: 'Old top-level shape']                            | 'Unknown argument label'
         [:]                                                       | 'Nothing to update'
         [fields: [:], preferences: [:]]                           | 'Nothing to update'
         [fields: 'label']                                         | 'fields must be an object'

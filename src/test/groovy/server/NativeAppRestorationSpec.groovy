@@ -84,8 +84,7 @@ class NativeAppRestorationSpec extends ToolSpecBase {
         where:
         request << ['addTrigger', 'addAction', 'patches', 'walkStep', 'buttonRule', 'settings', 'button', 'pageName', 'stateAttribute', 'guide'].collectMany { key ->
             [[operation: 'create', args: [app_type: 'notifier', name: 'Rejected shell', (key): [:]], confirm: true],
-             [operation: 'update', app_id: 42, args: [fields: [a: 1], (key): [:]], confirm: true],
-             [appId: 42, confirm: true, (key): [:]]]
+             [operation: 'update', app_id: 42, args: [fields: [a: 1], (key): [:]], confirm: true]]
         }
     }
 

@@ -1312,10 +1312,11 @@ def helperMethod() { return "ok" }
                                     fileName: 'mcp-backup-library-42.groovy', sourceLength: 10]]
     }
 
-    def "hub_update_library sends expectedVersion as the save version without reading the library"() {
-        given: 'a reused backup, so nothing else in this call reads the library'
+    def "hub_update_library checks expectedVersion against a current read, not a reused backup"() {
+        given: 'a reused backup at v1, and the library at v7'
         enableWrite()
         recentLibraryBackup(1)
+        hubGet.register('/library/list/single/data/42') { params -> SAMPLE_RESPONSE_JSON.replace('"version":1', '"version":7') }
         def posts = []
         script.metaClass.hubInternalPostJson = versionCheckingLibrarySave([version: 7], posts)
 
@@ -1324,18 +1325,18 @@ def helperMethod() { return "ok" }
 
         then:
         posts*.version == [7]
-        !hubGet.calls.any { it.path.startsWith('/library/') }
         result.success == true
         result.previousVersion == 7
         result.newVersion == 8
     }
 
     @spock.lang.Unroll
-    def "hub_update_library with a stale expectedVersion returns the hub's conflict without retrying (useGateways=#useGateways)"() {
+    def "hub_update_library with a stale expectedVersion returns the conflict before posting (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
         recentLibraryBackup(1)
+        hubGet.register('/library/list/single/data/42') { params -> SAMPLE_RESPONSE_JSON.replace('"version":1', '"version":9') }
         def posts = []
         script.metaClass.hubInternalPostJson = versionCheckingLibrarySave([version: 9], posts)
 
@@ -1343,7 +1344,7 @@ def helperMethod() { return "ok" }
         def response = mcpDriver.callTool('hub_update_library', [libraryId: '42', source: SAMPLE_SOURCE, expectedVersion: 7, confirm: true])
 
         then:
-        posts*.version == [7]
+        posts.isEmpty()
         response.error == null
         !response.result.isError
         def inner = mcpDriver.parseInner(response)
@@ -1353,12 +1354,13 @@ def helperMethod() { return "ok" }
         inner.currentVersion == 9
         inner.libraryId == '42'
         inner.error.contains('retry with the new expectedVersion')
+        inner.note.contains("section='hub_admin_write_code'")
 
         where:
         useGateways << [true, false]
     }
 
-    def "hub_update_library without expectedVersion retries a stale save once at the hub's version"() {
+    def "hub_update_library without expectedVersion returns a refused stale save as a failure and never re-posts"() {
         given: 'the resave read sees v3, but another save lands before ours'
         enableWrite()
         recentLibraryBackup(1)
@@ -1370,10 +1372,10 @@ def helperMethod() { return "ok" }
         def result = script.toolUpdateLibraryCode([libraryId: '42', resave: true, confirm: true])
 
         then:
-        posts*.version == [3, 4]
-        result.success == true
-        result.previousVersion == 4
-        result.newVersion == 5
+        posts*.version == [3]
+        result.success == false
+        result.conflict == true
+        result.currentVersion == 4
     }
 
     def "hub_update_library uses the version of a backup taken in this call with no second read"() {
@@ -1629,7 +1631,7 @@ def helperMethod() { return "ok" }
         result.note.contains('syntax errors')
     }
 
-    def "hub_update_library maps the hub's database refusal of a colliding save to a retryable note"() {
+    def "hub_update_library has no collision answer: a database message keeps the normal note"() {
         given:
         enableWrite()
         hubGet.register('/library/list/single/data/42') { params -> SAMPLE_RESPONSE_JSON }
@@ -1643,9 +1645,8 @@ def helperMethod() { return "ok" }
 
         then:
         result.success == false
-        result.retryable == true
-        result.note.contains('retry')
-        !result.note.contains('syntax')
+        !result.containsKey('retryable')
+        result.note.contains('syntax')
     }
 
     @spock.lang.Unroll

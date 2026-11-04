@@ -6841,37 +6841,44 @@ private Map _toolCatalogIndexes() {
     def cached = _toolMetadataGet("catalogIndexes")
     if (cached != null) return cached as Map
     def required = [:]
-    def strict = [:]
+    def argNames = [:]
+    def updateEntryArgs = [:]
     def names = [] as Set
     getAllToolDefinitions().each { tool ->
         String name = tool.name as String
         names << name
         def req = tool?.inputSchema?.required
         if (req instanceof List && !req.isEmpty()) required.put(name, req.collect { it as String })
-        if (tool?.inputSchema?.additionalProperties == false) {
-            strict.put(name, ((tool.inputSchema.properties ?: [:]) as Map).keySet().collect { it as String })
-        }
+        if (!_argCheckFrozen(name)) argNames.put(name, ((tool?.inputSchema?.properties ?: [:]) as Map).keySet().collect { it as String })
+        def entryProps = tool?.inputSchema?.properties?.updates?.items?.properties
+        if (entryProps instanceof Map) updateEntryArgs.put(name, entryProps.keySet().collect { it as String })
     }
-    return _toolMetadataPut("catalogIndexes", [required: required, strict: strict, names: names]) as Map
+    return _toolMetadataPut("catalogIndexes", [required: required, argNames: argNames, updateEntryArgs: updateEntryArgs, names: names]) as Map
 }
 
 def requiredParamsByTool() {
     return _toolCatalogIndexes().required
 }
 
-// A tool whose inputSchema declares additionalProperties:false refuses arguments outside its
-// properties, before any side effect, in gateway and flat mode alike (both reach executeTool), so
-// a misspelled guard such as expectedVersion fails instead of being silently dropped. Exempt:
-// bestPracticeKey (every write tool takes it for the mandatory guide gate) and the server's own
-// double-underscore keys (the __reqT0 budget clock).
+// The frozen legacy tools keep their undeclared arguments (hub_create_custom_rule's localVariables).
+private boolean _argCheckFrozen(String name) {
+    return name.endsWith("_custom_rule") || name in ["hub_list_captured_states", "hub_delete_captured_state"]
+}
+
+// A tool refuses arguments outside its schema's properties, before any side effect, in gateway and
+// flat mode alike (both reach executeTool), so a misspelled guard such as expectedVersion fails
+// instead of being silently dropped. Gateway names have no entry: they re-enter here per sub-tool
+// with the leaf's arguments, and a direct write tool's opaque args object is a declared property.
+// Exempt: bestPracticeKey (every write tool takes it for the mandatory guide gate) and the server's
+// own double-underscore keys (the __reqT0 budget clock).
 def _rejectUnknownArgs(toolName, args) {
-    def allowed = _toolCatalogIndexes().strict[toolName as String]
+    def allowed = _toolCatalogIndexes().argNames[toolName as String]
     if (allowed == null || !(args instanceof Map)) return
     def unknown = (args as Map).keySet().collect { it as String }.findAll {
         !allowed.contains(it) && it != "bestPracticeKey" && !it.startsWith("__")
     }
     if (!unknown) return
-    throw new IllegalArgumentException("Unknown ${_externalToolName(toolName as String)} argument${unknown.size() == 1 ? '' : 's'}: ${unknown.sort().join(', ')}. Nothing was changed. Valid arguments: ${allowed.join(', ')}.")
+    throw new IllegalArgumentException("Unknown ${_externalToolName(toolName as String)} argument${unknown.size() == 1 ? '' : 's'}: ${unknown.sort().join(', ')}. Nothing was changed. ${allowed ? "Valid arguments: ${allowed.join(', ')}." : 'This tool takes no arguments.'}")
 }
 
 // hub_call_device_replace(list_options: true) short-circuits to a candidate READ before any
@@ -6990,7 +6997,7 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
         // Device Tools
         case "hub_list_devices": return toolListDevices(args)
         case "hub_get_device": return toolGetDevice(args.deviceId, args.mode ?: "summary", args.sections, args.get("fields"), args.cursor)
-        case "hub_call_device_command": return toolSendCommand(args.deviceId, args.command, args.parameters, args.waitFor, args.commands, args.__reqT0)
+        case "hub_call_device_command": return toolSendCommand(args.deviceId, args.command, args.parameters, args.waitFor, args.commands, args.__reqT0, args.includeState != false)
         case "hub_call_device_swap": return toolCallDeviceSwap(args)
         case "hub_call_device_replace": return toolCallDeviceReplace(args)
         case "hub_list_device_events":
@@ -11504,6 +11511,7 @@ def _guideSectionForTool(toolName) {
               'hub_create_device']) return 'hub_admin_write_devices'
     if (t in ['hub_delete_device', 'hub_delete_room', 'hub_delete_item', 'hub_reboot', 'hub_shutdown',
               'hub_update_firmware', 'hub_call_destructive_ops']) return 'hub_admin_write_destructive'
+    if (t in ['hub_update_app', 'hub_update_driver', 'hub_update_library', 'hub_create_app', 'hub_update_package']) return 'hub_admin_write_code'
     if (t == 'hub_get_device_attribute') return 'device_authorization'
     if (t == 'hub_report_issue') return 'performance_diagnostics'
     return null
@@ -11593,6 +11601,11 @@ If you are calling one of these tools, you must read its section for that sectio
 - hub_update_dashboard -> dashboards
 - hub_delete_file -> file_manager
 - hub_write_file -> file_manager
+- hub_create_app -> hub_admin_write_code
+- hub_update_app -> hub_admin_write_code
+- hub_update_driver -> hub_admin_write_code
+- hub_update_library -> hub_admin_write_code
+- hub_update_package -> hub_admin_write_code
 - hub_call_destructive_ops -> hub_admin_write_destructive
 - hub_delete_device -> hub_admin_write_destructive
 - hub_delete_item -> hub_admin_write_destructive
@@ -11766,7 +11779,13 @@ The radio firmware-flash `action` values (the bullet above summarizes these as "
 
 ### hub_update_app / hub_update_driver / hub_update_library — expectedVersion (optimistic lock)
 
-`expectedVersion` rides the save, and the hub checks it atomically: if the code has moved on, the hub refuses the save, nothing is written, and the result is `conflict:true` with `expectedVersion` and, when the hub reports it, `currentVersion`. Re-read the source, then retry with the new version. Stringified integers are coerced; an explicit null is rejected. Without it, the save uses the version this call read and retries once at the hub's version if another save landed first (last writer wins). These tools reject arguments outside their schema, so a misspelled lock fails instead of being dropped.
+`expectedVersion` is checked before saving: the call reads the code's current version and, if it differs, posts nothing and returns `conflict:true` with `expectedVersion`, `currentVersion` and a `note`. Re-read the source, then retry with the new version. It must be a whole number: 2.9, strings and an explicit null are refused. If the current version cannot be read, the call is refused before saving.
+
+Every save carries the version, and the hub refuses one that is no longer current. So a save beaten by another save after the check also comes back `conflict:true`, and without `expectedVersion` the save uses the version this call read and fails the same way. Nothing is re-posted: re-read, reapply your change, and save again.
+
+Overlapping saves of one item can instead fail with a collision answer: `java.sql.SQLException: Failed to update device type` for a driver, or an error that is only the compile path (`./appTargetDir/user_app_<namespace>_<name>_<id>.groovy`) for an app. These carry `retryable:true` (bulk entries too) and the source was not rejected. Wait a moment, re-read, then retry, and send saves of one item one at a time. Every other failure keeps the syntax-error note.
+
+Every tool rejects arguments outside its schema, so a misspelled lock fails instead of being dropped.
 
 Use it when a read-modify-write spans turns, or when another agent may edit the same code. The source backup is still taken on a conflict. It is not taken in importUrl mode (the item's history lives where that URL is published); inline source and sourceFile updates keep it.
 

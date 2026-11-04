@@ -412,16 +412,21 @@ class HandleGatewaySpec extends ToolSpecBase {
         !ex.message.contains('sentinel_param')
     }
 
-    // -------- strict arguments: additionalProperties:false, enforced centrally in executeTool --------
+    // -------- strict arguments: every tool's schema properties, enforced centrally in executeTool --------
 
-    def "the catalog index records the property names of every tool that declares additionalProperties false"() {
+    def "the catalog index records every tool's property names, except the frozen custom-rule tools"() {
         when:
-        Map strict = script._toolCatalogIndexes().strict
+        Map indexes = script._toolCatalogIndexes()
+        Map argNames = indexes.argNames
+        def frozen = { String n -> n.endsWith('_custom_rule') || n in ['hub_list_captured_states', 'hub_delete_captured_state'] }
 
         then:
-        ['hub_update_app', 'hub_update_driver', 'hub_update_library', 'hub_set_rule', 'hub_set_native_app'].every { strict.containsKey(it) }
-        strict.hub_update_library.containsAll(['libraryId', 'source', 'expectedVersion', 'confirm'])
-        strict.keySet() == script.getAllToolDefinitions().findAll { it.inputSchema?.additionalProperties == false }*.name as Set
+        argNames.hub_update_library.containsAll(['libraryId', 'source', 'expectedVersion', 'confirm'])
+        argNames.hub_list_modes == []
+        argNames.keySet() == script.getAllToolDefinitions()*.name.findAll { !frozen(it) } as Set
+
+        and: "the bulk entry keys come from the schema's updates.items.properties"
+        indexes.updateEntryArgs.hub_update_driver == ['driverId', 'sourceFile', 'source', 'importUrl', 'resave', 'backup', 'expectedVersion']
     }
 
     def "_rejectUnknownArgs names the unknown keys, lists the valid ones, and exempts server keys and bestPracticeKey"() {
@@ -439,11 +444,67 @@ class HandleGatewaySpec extends ToolSpecBase {
         then:
         notThrown(IllegalArgumentException)
 
-        when: 'a tool without additionalProperties:false keeps accepting extras'
-        script._rejectUnknownArgs('hub_get_room', [roomId: '1', whatever: true])
+        when: 'a tool without additionalProperties:false is checked the same way'
+        script._rejectUnknownArgs('hub_get_room', [room: '1', whatever: true])
+
+        then:
+        def lenient = thrown(IllegalArgumentException)
+        lenient.message.contains('Unknown hub_get_room argument: whatever')
+
+        when: 'a tool with no properties says so'
+        script._rejectUnknownArgs('hub_list_modes', [whatever: true])
+
+        then:
+        def none = thrown(IllegalArgumentException)
+        none.message.contains('This tool takes no arguments.')
+
+        when: "a direct write tool's opaque args object carries the guide key"
+        script._rejectUnknownArgs('hub_create_backup', [confirm: true, args: [bestPracticeKey: 'k']])
 
         then:
         notThrown(IllegalArgumentException)
+
+        when: 'a gateway name is not checked: its sub-tool is, on re-entry'
+        script._rejectUnknownArgs('hub_manage_code', [tool: 'hub_update_library', args: [:], __reqT0: 1L])
+
+        then:
+        notThrown(IllegalArgumentException)
+    }
+
+    @spock.lang.Unroll
+    def "the frozen #name keeps undeclared arguments"() {
+        when:
+        script._rejectUnknownArgs(name, [localVariables: [:], whatever: true])
+
+        then:
+        notThrown(IllegalArgumentException)
+
+        where:
+        name << ['hub_create_custom_rule', 'hub_update_custom_rule', 'hub_get_custom_rule', 'hub_delete_custom_rule',
+                 'hub_test_custom_rule', 'hub_export_custom_rule', 'hub_import_custom_rule', 'hub_clone_custom_rule',
+                 'hub_manage_custom_rules', 'hub_list_captured_states', 'hub_delete_captured_state']
+    }
+
+    def "hub_call_device_command passes includeState through dispatch, default on"() {
+        given:
+        settingsMap.enableWrite = true
+        def seen = []
+        script.metaClass.toolSendCommand = { a, b, c, d, e, f, g -> seen << g; [success: true] }
+
+        when:
+        script.executeTool('hub_call_device_command', [deviceId: '5', command: 'on', includeState: false])
+        script.executeTool('hub_call_device_command', [deviceId: '5', command: 'on', includeState: true])
+        script.executeTool('hub_call_device_command', [deviceId: '5', command: 'on'])
+
+        then:
+        seen == [false, true, true]
+
+        when: 'a misspelled waitFor is refused instead of skipping the wait'
+        script.executeTool('hub_call_device_command', [deviceId: '5', command: 'on', waitFr: [attribute: 'switch', value: 'on']])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains('Unknown hub_call_device_command argument: waitFr')
     }
 
     def "a gateway call to a strict tool with an unknown argument throws before the handler runs"() {
@@ -462,7 +523,7 @@ class HandleGatewaySpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "dispatch: a strict tool refuses an unknown argument and a non-strict tool ignores one (useGateways=#useGateways)"() {
+    def "dispatch: every tool refuses an unknown argument (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableWrite = true
@@ -477,13 +538,12 @@ class HandleGatewaySpec extends ToolSpecBase {
         mcpDriver.parseInner(strict).error.contains('Unknown hub_update_library argument: bogus')
         !reached
 
-        when: 'a tool without additionalProperties:false still receives the extra key'
-        script.metaClass.toolInstallLibrary = { Map a -> [success: true, received: a.keySet().sort()] }
+        when: 'a tool without additionalProperties:false refuses it too'
         def lenient = mcpDriver.callTool('hub_create_library', [source: 's', bogus: 1, confirm: true])
 
         then:
-        !lenient.result.isError
-        mcpDriver.parseInner(lenient).received.contains('bogus')
+        lenient.result.isError == true
+        mcpDriver.parseInner(lenient).error.contains('Unknown hub_create_library argument: bogus')
 
         when: 'the mandatory guide key is accepted on a strict tool'
         settingsMap.enableMandatoryBPS = true

@@ -602,7 +602,6 @@ private void _ndValidateSchema(Object value, Map schema, String path, boolean co
 }
 
 Map toolSetRule(Map request) {
-    if (request.keySet().any { !(it in ['operation', 'rule_id', 'args', 'confirm', 'bestPracticeKey']) }) throw new IllegalArgumentException('Unknown hub_set_rule property')
     if (request.containsKey('confirm') && !(request.confirm instanceof Boolean)) throw new IllegalArgumentException('confirm must be boolean')
     if (request.containsKey('rule_id')) _ndValidateSchema(request.rule_id, [type: 'integer', minimum: 1], 'rule_id', true)
     if (request.containsKey('args') && !(request.args instanceof Map)) throw new IllegalArgumentException('args must be an object')
