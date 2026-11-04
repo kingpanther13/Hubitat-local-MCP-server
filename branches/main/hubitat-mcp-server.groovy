@@ -16840,6 +16840,15 @@ def toolGetAppConfig(args) {
     ]
     boolean isRmRule = _rmIsRuleAppType((appTypeRaw instanceof Map ? appTypeRaw.name : null)?.toString()) ||
         _rmIsRuleAppType(parsed.app.name?.toString())
+    boolean rmHasDisabled = isRmRule
+    if (isRmRule && [appTypeRaw instanceof Map ? appTypeRaw.name : null, parsed.app.name].any { it?.toString() in ['Rule-5.1', 'Button Rule-5.1'] }) {
+        try {
+            Map rmState = _nrState(appIdStr as Long)
+            rmHasDisabled = [rmState.disabledActions, rmState.disabledTriggers].any { it instanceof Collection && !it.isEmpty() }
+        } catch (Exception unreadable) {
+            mcpLog("warn", "hub-admin", "hub_get_app_config app ${appIdStr}: rule state unreadable (${unreadable.class.simpleName}: ${unreadable.message}); disabled rows read from the page")
+        }
+    }
     Map formFields = null
     Map form = null
     String formError = null
@@ -16880,14 +16889,14 @@ def toolGetAppConfig(args) {
                 link.title = _uiPlainTitle(b.title)
                 def description = _appConfigShownText(b.description)
                 if (description) link.description = description
-                List disabled = isRmRule ? _appConfigDisabledRows(b.description) : []
+                List disabled = rmHasDisabled ? _appConfigDisabledRows(b.description) : []
                 if (disabled) link.disabled = disabled
                 pageHrefs << link
             } else if (element == 'paragraph') {
                 def rawHtml = (b.description ?: b.title)?.toString()
                 def text = _appConfigShownText(rawHtml)
                 if (!text) continue
-                List disabled = isRmRule ? _appConfigDisabledRows(rawHtml) : []
+                List disabled = rmHasDisabled ? _appConfigDisabledRows(rawHtml) : []
                 paragraphs << (disabled ? [text: text, disabled: disabled] : text)
             }
         }
@@ -16967,10 +16976,10 @@ def toolGetAppConfig(args) {
 private List _appConfigDisabledRows(Object html) {
     List disabled = []
     if (!html) return disabled
-    def rows = html.toString() =~ /(?is)<span\s+style=['"]\s*color:\s*red;?\s*['"]\s*>\s*<i>(.*?)<\/i>\s*<\/span>/
+    def rows = html.toString() =~ /(?is)<span\s+(?:style=['"]\s*color:\s*red;?\s*['"]|class=['"]text-hubitat-danger['"])\s*>\s*<i>(.*?)<\/i>\s*<\/span>/
     while (rows.find()) {
         String row = stripAppConfigHtml(rows.group(1))?.trim()
-        if (row && !(row ==~ /(?i)Disabled Actions?/)) disabled << row
+        if (row && !(row ==~ /(?i)Disabled (?:Action|Trigger)s?/)) disabled << row
     }
     return disabled
 }
@@ -21050,15 +21059,23 @@ private Map _rmRestoreViaNativeImport(Map snapshot, Integer savedId, boolean exi
         return [fallback: "device(s) ${deadDevices.join(', ')} named by the App Cloner export no longer exist".toString()]
     }
     Integer hint = exists ? savedId : null
+    Integer seed = null
     if (hint == null) {
         try {
-            def kids = _appClonerSnapshotChildren(_discoverParentAppId(snapshot?.appType ?: "rule_machine"))
+            def parentId = _discoverParentAppId(snapshot?.appType ?: "rule_machine")
+            def kids = _appClonerSnapshotChildren(parentId)
+            if (kids?.isError) throw new IllegalStateException(kids.error?.toString())
             hint = (kids?.ids ?: []).collect { it.toString() }.find { it.isInteger() }?.toInteger()
+            if (hint == null) {
+                _requireUnprotectedAppMutation(parentId, "restore a child app under")
+                String seedType = (_appTypeRegistry()[snapshot?.appType ?: "rule_machine"]?.appName ?: "Rule-5.1").toString()
+                seed = hint = _rmCreateChildApp(parentId as Integer, "hubitat", seedType)
+            }
         } catch (Exception e) {
-            mcpLog("warn", "rm-native", "Restore of app ${savedId}: finding a Rule Machine rule to seed the import failed (${e.message})")
+            mcpLog("warn", "rm-native", "Restore of app ${savedId}: finding or creating a Rule Machine rule to seed the import failed (${e.message})")
             hint = null
         }
-        if (hint == null) return [fallback: "no Rule Machine rule was found to seed the App Cloner import"]
+        if (hint == null) return [fallback: "no Rule Machine rule was found or could be created to seed the App Cloner import"]
     }
     if (exists) {
         try { _requireUnprotectedAppDeletion(savedId) } catch (IllegalArgumentException protExc) {
@@ -21072,6 +21089,11 @@ private Map _rmRestoreViaNativeImport(Map snapshot, Integer savedId, boolean exi
     } catch (Exception impExc) {
         mcpLog("error", "rm-native", "Restore of app ${savedId}: the App Cloner import threw (${impExc.message})")
         imp = [success: false, clonerAppId: -1, error: impExc.message ?: impExc.toString()]
+    } finally {
+        if (seed != null) {
+            try { _rmForceDeleteApp(seed) }
+            catch (Exception seedExc) { mcpLog("warn", "rm-native", "Restore of app ${savedId}: the empty seed rule ${seed} could not be deleted (${seedExc.message}); delete it with hub_delete_native_app") }
+        }
     }
     Integer newId = imp?.newAppId as Integer
     if (newId == null) {
@@ -21297,7 +21319,11 @@ private void _rmNativeRestoreFlags(Long id, Map savedState) {
     if ((live.paused == true) != (savedState.paused == true)) _nrHandle(id).appButtonHandler('pausRule')
 }
 private String _rmLabelName(label) {
-    (label?.toString() ?: '').replaceAll(/\s*<span style='color:[a-z]+'>[^<]*<\/span>/, '')
+    (label?.toString() ?: '').replaceAll(/(?:\s*<span\b[^>]*>\s*(?:\*BROKEN\*|\((?:Not Installed|Stopped|Paused|Required Expression false|Repeating)\))\s*<\/span>)+\s*$/, '')
+}
+private boolean _rmLabelCarriesName(label, String name) {
+    String live = label?.toString() ?: ''
+    live == name || (live.startsWith(name) && _rmLabelName(live.substring(name.length())).trim().isEmpty())
 }
 private String _rmRestoredRuleName(List plan, Map identity) {
     def name = plan.find { it.name == 'origLabel' }?.value
@@ -21383,7 +21409,7 @@ private Map _rmRestoreNativeEdit(Map snapshot, String sourceBackupKey) {
         if (_rmNativeComparable(actualLocals) != _rmNativeComparable(_rmNativeLocalSignature(expectedState))) throw new IllegalStateException('Native local variables differ from recovery')
         if (_rmNativeComparable(_rmNativeSettingsSignature(_rmUnredactedSettings(id, redacted))) != _rmNativeComparable(_rmNativeSettingsSignature(data.appSettings))) throw new IllegalStateException('Native rebuild changed restored settings')
         if ((actual.stopped == true) != (expectedState.stopped == true) || (actual.paused == true) != (expectedState.paused == true) ||
-            _rmLabelName(_nrHandle(id).label) != restoredName) throw new IllegalStateException('Native label or lifecycle state differs from recovery')
+            !_rmLabelCarriesName(_nrHandle(id).label, restoredName)) throw new IllegalStateException('Native label or lifecycle state differs from recovery')
         Map restored = [success: true, type: 'rm-rule', ruleId: id, originalRuleId: id, restoredVia: 'nativeStateReplay', backup: undo,
          stateVerified: true, settingsVerified: true, localVariablesVerified: true, broken: rebuilt.broken, stopped: rebuilt.stopped, paused: rebuilt.paused,
          eventSubscriptions: rebuilt.eventSubscriptions, scheduledJobs: rebuilt.scheduledJobs]
@@ -23478,7 +23504,7 @@ private Map _rmDecodeRuleExport(Integer ruleId, Object raw) {
 }
 Map _rmBackupRuleSnapshot(Integer ruleId, String reason, boolean requireNativeExport = false, String protectedKey = null, String activePage = null) {
     def built = requireNativeExport ? _rmBuildNativeEditSnapshot(ruleId, reason, _rmCaptureRuleExport(ruleId)) : _rmBuildRuleSnapshot(ruleId, reason, activePage)
-    return _withBackupLock("rule ${ruleId} snapshot (${reason})") { _rmWriteRuleSnapshotLocked(ruleId, reason, built.snapshot as Map, built.config as Map, protectedKey) }
+    return _withBackupLock("rule ${ruleId} snapshot (${reason})") { _rmWriteRuleSnapshotLocked(ruleId, reason, built.snapshot as Map, protectedKey) }
 }
 private Set _rmRedactSnapshotPasswords(Map config, Map status) {
     Set names = [] as Set
@@ -23530,7 +23556,7 @@ private Map _rmBuildNativeEditSnapshot(Integer ruleId, String reason, String cap
         nativeExport: nativeExport, configJson: config,
         statusJson: [appSettings: settingRows, appState: data.state.collect { key, value -> [name: key, value: value] }]]
     if (redacted) snapshot.redactedSettings = redacted.toList().sort()
-    [snapshot: snapshot, config: config]
+    [snapshot: snapshot]
 }
 private Map _rmBuildRuleSnapshot(Integer ruleId, String reason, String activePage = null) {
     def config
@@ -23634,9 +23660,9 @@ private Map _rmBuildRuleSnapshot(Integer ruleId, String reason, String activePag
         }
     }
     if (redacted) snapshot.redactedSettings = redacted.toList().sort()
-    return [snapshot: snapshot, config: config]
+    return [snapshot: snapshot]
 }
-private Map _rmWriteRuleSnapshotLocked(Integer ruleId, String reason, Map snapshot, Map config, String protectedKey = null) {
+private Map _rmWriteRuleSnapshotLocked(Integer ruleId, String reason, Map snapshot, String protectedKey = null) {
     def ts = new Date(now()).format("yyyyMMdd-HHmmss-SSS")
     String namePrefix = "mcp-rm-backup-${ruleId}-"
     String nameExt = ".json"
@@ -23681,7 +23707,6 @@ private Map _rmWriteRuleSnapshotLocked(Integer ruleId, String reason, Map snapsh
     _publishUploadedItemBackup(backupKey, entry, protectedKey)
     mcpLog("info", "rm-native", "Backed up rule ${ruleId} (${reason}) to ${fileName} (${jsonBytes.length} bytes)")
     return [backupKey: backupKey,
-            brokenBefore: (config == null ? null : _rmConfigHasBrokenMarkers(config)),
             baselineReused: false,
             rollbackScope: "Restoring this baseline returns rule ${ruleId} to its state at ${formatTimestamp(snapshot.timestamp as Long)}."] +
         entry + [retentionNote: _itemBackupRetentionNote()]
@@ -23722,20 +23747,6 @@ private Map _rmReadLocalVarsMap(Integer appId) {
         if (n?.startsWith("lv_") && e.value instanceof Map) live.put(n.substring(3), e.value)
     }
     return [ok: true, vars: (raw instanceof Map) ? raw : [:], live: live]
-}
-private boolean _rmConfigHasBrokenMarkers(config) {
-    if (!(config instanceof Map)) return false
-    def sections = config?.configPage?.sections ?: []
-    def texts = (sections as List).collectMany { sect ->
-        def fromBody = (sect?.body ?: [])
-            .findAll { b -> b instanceof Map && (b.element == "paragraph" || b.element == "href") }
-            .collect { it.description?.toString() ?: "" }
-        def fromParagraphs = (sect?.paragraphs ?: []).collect { it?.toString() ?: "" }
-        fromBody + fromParagraphs
-    }
-    return texts.any { text ->
-        ["**Broken Trigger**", "**Broken Action**", "**Broken Condition**"].any { text.contains(it) }
-    }
 }
 Set _rmCollectPageInputNames(Integer appId, String pageName, Map cache = null) {
     def cfg = _rmFetchConfigJson(appId, pageName, cache)
@@ -24401,13 +24412,16 @@ private boolean _rmReusableBackupFileMatches(Map entry, Integer ruleId) {
     }
 }
 Map _rmBackupBeforeEdit(Integer ruleId, String reason, String activePage = null) {
-    def reused = _withBackupLock("rule ${ruleId} baseline (${reason})") { _rmBackupBeforeEditLocked(ruleId, reason, activePage) }
+    def reused = _withBackupLock("rule ${ruleId} baseline (${reason})") { _rmBackupBeforeEditLocked(ruleId, reason) }
     return reused ?: _rmBackupRuleSnapshot(ruleId, reason, false, null, activePage)
 }
-private Map _rmBackupBeforeEditLocked(Integer ruleId, String reason, String activePage = null) {
+private Map _rmBackupBeforeEditLocked(Integer ruleId, String reason) {
     if (_effectiveBackupSetting('backupEveryRuleWrite') == 'true') return null
     def mfst = _itemBackupManifest()
     def recent = _rmRecentRuleBackup(mfst, ruleId, now())
+    if (recent != null && getAppByAppId(ruleId as Long) == null) {
+        throw new IllegalArgumentException("No rule/app with id ${ruleId} exists on this hub. Nothing was changed. Use hub_list_rules for valid ids. See hub_get_tool_guide(section='builtin_app_tools_crud').")
+    }
     if (recent != null && !_rmReusableBackupFileMatches(recent.value as Map, ruleId)) {
         def staleFile = recent.value?.fileName?.toString()
         mcpLog("warn", "rm-native", "Recent backup ${recent.key} for rule ${ruleId} is missing or does not match its manifest; discarding the stale handle and taking a fresh baseline")
@@ -24417,22 +24431,8 @@ private Map _rmBackupBeforeEditLocked(Integer ruleId, String reason, String acti
     }
     if (recent != null) {
         _repairItemBackupRetention(mfst, recent.key.toString(), recent.value as Map)
-        def config = null
-        try {
-            config = activePage ? _rmFetchConfigJson(ruleId, activePage) : _rmFetchConfigJson(ruleId)
-        } catch (Exception e) {
-            def vrbFallback = null
-            try { vrbFallback = _vrbDetect(ruleId) } catch (Exception ignored) { }
-            if (vrbFallback == null) {
-                if (e.message?.contains("404")) {
-                    throw new IllegalArgumentException("No rule/app with id ${ruleId} exists on this hub (configure/json returned 404). Nothing was changed. Use hub_list_rules for valid ids. See hub_get_tool_guide(section='builtin_app_tools_crud').")
-                }
-                mcpLog("warn", "rm-native", "Could not read rule ${ruleId} before reusing backup '${recent.key}' (${e.message ?: e}); continuing without the internal brokenBefore diagnostic")
-            }
-        }
         mcpLog("info", "rm-native", "Reusing recent backup ${recent.key} for rule ${ruleId} (${reason}); restoring it reverts every edit since ${formatTimestamp(recent.value.timestamp as Long)}")
         return [backupKey: recent.key,
-                brokenBefore: (config == null ? null : _rmConfigHasBrokenMarkers(config)),
                 baselineReused: true,
                 rollbackScope: "Restoring this baseline reverts every edit to rule ${ruleId} since ${formatTimestamp(recent.value.timestamp as Long)}."] +
             new LinkedHashMap(recent.value as Map)
@@ -25397,13 +25397,17 @@ private void _nmRefreshHealth(Long ruleId, Map baseline) {
 }
 private boolean _nmActionLabel(Long ruleId, String id) {
     Map before = _nrState(ruleId)
-    List keys = ['actLabelIndent', 'nestedLabel', 'inIf', 'inRepeat']
+    List keys = ['actLabelIndent', 'nestedLabel', 'inIf', 'inRepeat', 'broken']
     Map format = before.findAll { key, value -> key in keys }
     if (format.nestedLabel instanceof List) format.put('nestedLabel', new ArrayList(format.nestedLabel))
     def label
-    try { label = _nrHandle(ruleId).thisActionLabel(id) }
-    finally { _nrStatePatch(ruleId, format, keys.findAll { !format.containsKey(it) }) }
-    label instanceof String && label.trim() && !(label =~ /(?is)<span\b[^>]*color\s*:\s*red[^>]*>[^<]*\*\*Broken [^*]+\*\*/)
+    boolean broken
+    try {
+        _nrStatePatch(ruleId, [broken: false])
+        label = _nrHandle(ruleId).thisActionLabel(id)
+        broken = _nrState(ruleId).broken == true
+    } finally { _nrStatePatch(ruleId, format, keys.findAll { !format.containsKey(it) }) }
+    label instanceof String && label.trim() && !broken && !(label =~ /<span\b[^>]*>\s*\*\*Broken [^*]+\*\*\s*<\/span>/).find()
 }
 private Map _nmRejectEdit(Long ruleId, String id, Map baseline, Map savedSettings, List keys, Map entries, Closure cancel, Map failure) {
     String cleanupError = null
@@ -25509,7 +25513,7 @@ Map _nmUpsertCondition(Long ruleId, boolean trigger, Map row) {
         def label = _nmEntry(after.get(collection) instanceof Map ? after.get(collection) : [:], id)
         Map echoed = _nrSettings(ruleId, settings.collect { it.name })
         boolean persisted = settings.every { echoed.get(it.name)?.type?.toString() == it.type && _nrComparableSetting(it.type, echoed.get(it.name)?.value) == _nrComparableSetting(it.type, it.value) }
-        String bare = label instanceof String ? label.replaceAll(/\(?<span style='color:black'>\(?[^<]*\)?<\/span>\)?/, '') : null
+        String bare = label instanceof String ? label.replaceAll(/\(?<span (?:style='color:black'|class='text-color')>\(?[^<]*\)?<\/span>\)?/, '') : null
         boolean compiled = bare?.trim() && !bare.contains('null') && !bare.contains('BROKEN')
         if (!(compiled && persisted && membership)) return _nmRejectCondition(ruleId, trigger, editing, id, baseline, savedSettings, settings, render,
             [error: compiled ? 'Native input persistence failed' : 'Native row did not compile a valid label', compiledLabel: label?.toString()])
@@ -25892,10 +25896,6 @@ private List _ndPageIssues(Object node) {
     def issues = []
     if (node instanceof List) node.each { child -> issues.addAll(_ndPageIssues(child)) }
     else if (node instanceof Map) {
-        if ((node.type ?: node.element) in ['paragraph', 'href']) {
-            def description = node.description?.toString() ?: ''
-            if (description =~ /(?is)<span\b[^>]*color\s*:\s*red[^>]*>[^<]*\*\*Broken [^*]+\*\*/) issues << 'Native editor reports a broken condition, trigger or action'
-        }
         if (node.error || node.errors) issues << 'Native editor returned an error'
         ['sections', 'body', 'children'].each { key -> if (node.get(key) != null) issues.addAll(_ndPageIssues(node.get(key))) }
     }
@@ -26206,6 +26206,11 @@ private Map _ndApply(Long id, List changes, boolean created) {
         Map renderedState = _nrState(id) + (health instanceof Map ? health : [:])
         def structuralIssues = _ndStructuralIssues(renderedState, _nrHandle(id).getSetting('useST') == true)
         structuralIssues.addAll(_nmValidateStructure(id, renderedState).structuralIssues ?: [])
+        Map renderedActions = renderedState.actions instanceof Map ? renderedState.actions : [:]
+        (renderedState.actionList instanceof List ? renderedState.actionList : []).collect { it.toString() }.each { actionId ->
+            def row = _nmEntry(renderedActions, actionId)
+            if (row instanceof Map && row.cond && !_nmActionLabel(id, actionId)) structuralIssues << "Native action ${actionId} is broken: its condition renders nothing".toString()
+        }
         if (structuralIssues) throw new IllegalStateException(structuralIssues.join('; '))
         if (!(health instanceof Map) || health.broken != false) return [success: false, partial: true, rule_id: id, created: created, results: outcomes, broken: health instanceof Map ? health.broken : null, error: 'Native rule health is broken or unverified', note: _ndFailureNote(true, created)]
         def done = hubInternalPostFormRaw('/installedapp/update/json', 'id=' + id.toString() + '&_action_update=Done&_cancellable=true')
@@ -30661,17 +30666,14 @@ private void _mrtrCleanupRecord(Map rec) {
         _cleanupError("mrtr", "Could not clean temporary appCloner ${clonerId}: ${_cleanupFailureDetail(e)}")
     }
 }
-private def _publicToolResultValue(value, boolean backupMetadata = false) {
+private def _publicToolResultValue(value) {
     if (value instanceof Map) {
         def copy = new LinkedHashMap()
-        (value as Map).each { key, child ->
-            if (backupMetadata && key?.toString() == "brokenBefore") return
-            copy.put(key, _publicToolResultValue(child, key?.toString() == "backup"))
-        }
+        (value as Map).each { key, child -> copy.put(key, _publicToolResultValue(child)) }
         return copy
     }
     if (value instanceof List) {
-        return (value as List).collect { child -> _publicToolResultValue(child, false) }
+        return (value as List).collect { child -> _publicToolResultValue(child) }
     }
     return value
 }
