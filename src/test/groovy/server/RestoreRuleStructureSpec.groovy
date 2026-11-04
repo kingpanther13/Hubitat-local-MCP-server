@@ -1009,10 +1009,11 @@ class RestoreRuleStructureSpec extends ToolSpecBase {
         hubGet.register('/hub2/appsList') { params -> '{"apps":[]}' }
         atomicStateMap.parentAppIds = [rule_machine: 21]
         hubGet.register('/installedapp/configure/json/21') { params -> '{"app":{"id":21},"configPage":{"sections":[]},"settings":{},"childApps":[]}' }
-        List created = []
-        List seedDeletes = []
-        script.metaClass._rmCreateChildApp = { Integer parentId, String ns, String appName -> created << [parentId, appName]; 60 }
-        script.metaClass._rmForceDeleteApp = { Integer appId -> seedDeletes << appId; [status: 302] }
+        List raws = []
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
+            raws << path
+            path.contains('/createchild/') ? [status: 302, location: "/installedapp/configure/60"] : [status: 302]
+        }
 
         when:
         def out = script._rmRestoreFromBackup([fileName: "f.json"], nativeSnapshot(), false)
@@ -1021,9 +1022,9 @@ class RestoreRuleStructureSpec extends ToolSpecBase {
         out.success == true
         out.restoredVia == "nativeImport"
         out.ruleId == 200
-        created == [[21, 'Rule-5.1']]
+        raws.findAll { it.contains('/createchild/') || it.contains('/forcedelete/') } ==
+            ['/installedapp/createchild/hubitat/Rule-5.1/parent/21', '/installedapp/forcedelete/60/quiet']
         rec.imports[0].parentHintAppId == 60
-        seedDeletes == [60]
     }
 
     def "a deleted rule whose copy failed staging is told not to retry, never to delete the missing rule"() {
