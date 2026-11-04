@@ -1676,6 +1676,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v5.1.6** - ci: add manual JVM and OS beta lanes; fix: read Rule Machine status from its state instead of its status-span markup. PRs: [#577](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/577), [#578](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/578)
 - **v5.1.5** - fix: native tools take input types from the page; hub_get_app_config reads inputs as form fields. PRs: [#576](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/576)
 - **v5.1.4** - fix: Rule Machine edits and restores keep a blank time setting; load-limiter and PR Guard follow-ups. PRs: [#573](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/573)
 - **v5.1.3** - build(deps): bump gradle/actions from 6.4.0 to 6.4.1 in the github-actions group ([#571](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/571), @app/dependabot); fix: the server resets the hub's app runtime statistics itself before the per-app load limiter trips. PRs: [#571](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/571), [#570](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/570)
