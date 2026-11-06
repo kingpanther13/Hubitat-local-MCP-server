@@ -686,8 +686,6 @@ class ToolManageLogsSpec extends ToolSpecBase {
         'scheduledJobs'  | [pageSize: '20']                || 'pageSize must be a whole number from 1 to 100'
         'scheduledJobs'  | [pageSize: 20.5]                || 'pageSize must be a whole number from 1 to 100'
         'mcp'            | [pageSize: 20]                  || 'do not apply'
-        'past'           | [source: 'Lock']                || 'Unknown parameter for hub_get_logs: source'
-        'devices'        | [type: 'app', includeCloudCalls: true] || 'Unknown parameters for hub_get_logs: type, includeCloudCalls'
         'past'           | [limit: 'abc']                  || 'limit must be a whole number'
         'past'           | [limit: -1]                     || 'limit must be a whole number'
         'scheduledJobs'  | [pageSize: 4294967301L]         || 'pageSize must be a whole number from 1 to 100'
@@ -695,6 +693,15 @@ class ToolManageLogsSpec extends ToolSpecBase {
         'past'           | [since: '2026-13-01T00:00:00Z'] || 'no such date and time'
         'past'           | [since: '30']                   || "Cannot read since='30' as a time"
         'past'           | [until: 30]                     || "Cannot read until='30' as a time"
+    }
+
+    def "via dispatch: a hub_get_logs filter from an older catalog is refused, not ignored"() {
+        when:
+        script.executeTool('hub_get_logs', [mode: 'devices', type: 'app', includeCloudCalls: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('Unknown hub_get_logs arguments: includeCloudCalls, type')
     }
 
     def "hub_list_device_events returns location events when deviceId is omitted (reads /logs/eventsJson)"() {

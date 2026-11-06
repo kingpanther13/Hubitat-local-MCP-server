@@ -112,6 +112,11 @@ If you are calling one of these tools, you must read its section for that sectio
 - hub_update_dashboard -> dashboards
 - hub_delete_file -> file_manager
 - hub_write_file -> file_manager
+- hub_create_app -> hub_admin_write_code
+- hub_update_app -> hub_admin_write_code
+- hub_update_driver -> hub_admin_write_code
+- hub_update_library -> hub_admin_write_code
+- hub_update_package -> hub_admin_write_code
 - hub_call_destructive_ops -> hub_admin_write_destructive
 - hub_delete_device -> hub_admin_write_destructive
 - hub_delete_item -> hub_admin_write_destructive
@@ -264,7 +269,7 @@ The radio firmware-flash `action` values (the bullet above summarizes these as "
 - **Self-update guard rationale:** the tool refuses to overwrite the MCP server's own app source or OAuth unless Developer Mode is on because a bad self-update bricks the MCP loop — the server app's own OAuth backs the live `/mcp` token.
 - **A self-update does not wait for the compile.** The save POST is given 20 s; the hub finishes the compile on its own (a 2.6 MB parent takes minutes, past the platform's 300 s request cap). The result then carries `status: "saving"` with `assumed: true`, and `hub_get_info.lastSelfDeploy` settles it: `status` disappears and `confirmedVersion` appears once the App Code version passes `startedVersion`; a record still saving after 20 minutes becomes `success: false`. Do not resend the update while it is saving.
 - **`backup`** (default true): the current source is backed up to File Manager before the save (`hub_list_backups` scope=source). Pass `backup: false` to skip it. `importUrl` mode never takes one: the item's history lives where that URL is published. Same on hub_update_driver and hub_update_library.
-- **`triggerUpdated`:** OPTIONAL post-save lifecycle refresh. Set it to the running instance appId to fire `updated()` so subscriptions/schedules re-initialize. UI Save does NOT fire `updated()`, so this is opt-in only.
+- **`triggerUpdated`:** OPTIONAL post-save lifecycle refresh. Set it to the running instance appId to fire `updated()` so subscriptions, schedules and atomicState re-initialize. UI Save does NOT fire `updated()`, so this is opt-in only. It submits the instance's mainPage Done form, re-sending every input from its live settings; if those cannot be read the submit is refused so device selections are not cleared. A protected instance requires Developer Mode. On a refusal or failure the new code stays deployed: `success:true, partial:true, updatedFired:false` plus `repairHints`.
 - **`oauth` param shape:** `{enabled (bool, default true), client_id?, client_secret?, refresh_secret? (bool, regenerate the secret)}`. Omit `client_id`/`client_secret` to preserve current values; if they are unreadable the tool refuses (`success:false`) rather than blanking them. Resulting credentials return under `result.oauth`.
 - **OAuth leg:** works alone (no source mode needed) or together with a source update. If the source saved but the OAuth leg failed, the result is `success:false, partial:true`. The app's source must declare OAuth (an `oauth` block in `definition` plus `mappings`) before OAuth can be enabled.
 
@@ -283,13 +288,19 @@ The radio firmware-flash `action` values (the bullet above summarizes these as "
 - hub_create_driver bulk mode: `installs=[{source|sourceFile|importUrl}, ...]`, which cannot be combined with the single-item fields. Items run in order and continue past failures. Each item reports its own `driverId`, `success` and `error`, and the top-level `success` is true only when every item succeeded. If the call stops at the time budget, it returns `status:"in_progress"` with `installsRemaining`; send only those again.
 
 
-### hub_update_app / hub_update_driver — expectedVersion (optimistic-lock guard)
+### hub_update_app / hub_update_driver / hub_update_library — expectedVersion (optimistic lock)
 
-`expectedVersion` aborts the write with `conflict:true` on a version mismatch. Stringified integers are coerced; an explicit null is rejected. In bulk driver updates, put `expectedVersion` inside each `updates[]` entry.
+`expectedVersion` is checked before saving: the call reads the code's current version and, if it differs, posts nothing and returns `conflict:true` with `expectedVersion`, `currentVersion` and a `note`. Re-read the source, then retry with the new version. It must be a whole number: 2.9, strings and an explicit null are refused. If the current version cannot be read, a locked call or a self-update is refused before saving; a plain save with no lock can still use a recent backup's version, which the hub refuses if it is stale.
 
-Use it when a read-modify-write spans turns, or when another agent may edit the same code. A conflict result echoes `expectedVersion` and `currentVersion`: re-read the source, then retry with the new version. The source backup is still taken on a conflict. It is not taken in importUrl mode (the item's history lives where that URL is published); inline source and sourceFile updates keep it.
+Every save carries the version, and the hub refuses one that is no longer current. So a save beaten by another save after the check also comes back `conflict:true`, and without `expectedVersion` the save uses the version this call read and fails the same way. Nothing is re-posted: re-read, reapply your change, and save again.
 
-hub_update_driver bulk mode: `updates=[{driverId, sourceFile|source|importUrl|resave, expectedVersion?}, ...]`. It cannot be combined with the single-driver fields, including a top-level `expectedVersion`. Items run in order and continue past failures. A lock mismatch on one item gives `conflict:true` with both versions, and a thrown error gives `error` plus `errorClass`. The top-level `success` is true only when every item succeeded. If the call stops at the time budget, it returns `status:"in_progress"` with `updatesRemaining`; send only those again, in the same order.
+Overlapping saves of one item can instead fail with a collision answer: `java.sql.SQLException: Failed to update device type` for a driver, or an error that is only the compile path (`./appTargetDir/user_app_<namespace>_<name>_<id>.groovy`) for an app. These carry `retryable:true` (bulk entries too) and the source was not rejected. Wait a moment, re-read, then retry, and send saves of one item one at a time. Every other failure keeps the syntax-error note.
+
+Every tool except the frozen custom-rule tools rejects arguments outside its schema, and a gateway rejects anything beside `tool` and `args`, so a misspelled or misplaced lock fails instead of being dropped.
+
+Use it when a read-modify-write spans turns, or when another agent may edit the same code. The source backup is still taken on a conflict. It is not taken in importUrl mode (the item's history lives where that URL is published); inline source and sourceFile updates keep it.
+
+hub_update_driver bulk mode: `updates=[{driverId, sourceFile|source|importUrl|resave, expectedVersion?}, ...]`. It cannot be combined with the single-driver fields, including a top-level `expectedVersion`. Items run in order and continue past failures. A lock mismatch on one item gives that item `conflict:true`, and a thrown error gives `error` plus `errorClass`. The top-level `success` is true only when every item succeeded. If the call stops at the time budget, it returns `status:"in_progress"` with `updatesRemaining`; send only those again, in the same order.
 
 ### hub_update_app / hub_update_driver / hub_update_library — source modes and large sources
 

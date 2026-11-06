@@ -2397,7 +2397,7 @@ class TestRunner:
         self.rule_engine_variable_names.add(name)
         try:
             self.client.call_tool("hub_manage_variables", {
-                "tool": "hub_set_variable", "args": {"name": name, "type": var_type, "value": value},
+                "tool": "hub_set_variable", "args": {"name": name, "value": value},
             })
         except (McpError, McpToolError, requests.HTTPError) as exc:
             if "504" not in str(exc):
@@ -3056,6 +3056,11 @@ class TestRunner:
         # Removed arguments are refused, not silently ignored.
         self._expect_tool_refusal("hub_list_devices", {"detailed": True}, "detailed")
         self._expect_tool_refusal("hub_list_devices", {"offset": 1, "limit": 2}, "offset")
+        # Every tool refuses an argument outside its schema, not only the strict ones.
+        self._expect_tool_refusal("hub_read_rooms", {"tool": "hub_list_rooms", "args": {"bogusArg": 1}},
+                                  "Unknown hub_list_rooms argument: bogusArg")
+        self._expect_tool_refusal("hub_get_info", {"expectedVerison": 3},
+                                  "Unknown hub_get_info argument: expectedVerison")
 
     @test("devices")
     def test_list_devices_changed_since(self) -> None:
@@ -3751,8 +3756,9 @@ class TestRunner:
             try:
                 # The snapshot reports the state at read time, so wait until the lock has set the code,
                 # then take the snapshot from a second (idempotent) setCode.
-                self.client.call_tool("hub_call_device_command", {
+                unsnapped = self.client.call_tool("hub_call_device_command", {
                     "deviceId": lock_id, "command": "setCode", "parameters": ["1", "4321", "Guest"], "includeState": False})
+                assert "state" not in unsnapped, f"includeState=false must skip the read-back: {unsnapped}"
                 for _ in range(20):
                     attrs = {a.get("name"): a.get("value")
                              for a in self.client.call_tool("hub_get_device", {"deviceId": lock_id}).get("attributes", [])}
@@ -4452,7 +4458,7 @@ class TestRunner:
             self.client.call_tool("hub_update_device", {"deviceId": dev_id, "showOnHome": False})
             raise AssertionError("hub_update_device accepted a top-level field")
         except (McpToolError, McpError) as exc:
-            assert "Unknown argument" in str(exc), f"Top-level field refusal was not explicit: {exc}"
+            assert "Unknown hub_update_device argument: showOnHome" in str(exc), f"Top-level field refusal was not explicit: {exc}"
 
     @test("devices")
     def test_update_device_room_assign_and_unassign(self) -> None:
@@ -4627,7 +4633,7 @@ class TestRunner:
             all("virtual switch" in str(d.get("name")).lower() for d in narrowed.get("drivers") or []), \
             f"nameFilter did not narrow the driver catalog: {narrowed.get('drivers')}"
         self._expect_tool_refusal("hub_read_apps_code", {"tool": "hub_list_drivers", "args": {"include": "all", "limit": 5}},
-                                  "does not take limit")
+                                  "Unknown hub_list_drivers argument: limit")
         # Missing confirm must be refused before anything is created.
         try:
             self.client.call_tool("hub_manage_devices", {
@@ -10600,13 +10606,13 @@ def updated() {}
             self._untrack_native_app(app_id)
 
     # -----------------------------------------------------------------------
-    # GROUP 4d: app_code_update -- app lifecycle and library source updates.
+    # GROUP 4d: app_code_update -- app lifecycle and app source updates.
     #
     # test_update_app_code_lifecycle: one throwaway code class for update/error/conflict/OAuth:
     # a real round-trip edit (success + version advance + source landed), the
     # hub's verbatim compile error on broken Groovy (not our generic fallback),
-    # the client-side expectedVersion optimistic lock (refused, no write), a
-    # OAuth fold (asserted as a hard success -- it covers /app/updateOAuth reached with a
+    # the expectedVersion optimistic lock (the hub refuses a stale version, no write),
+    # the strict-argument refusal of a misspelled lock, the OAuth fold (asserted as a hard success -- it covers /app/updateOAuth reached with a
     # query MAP, which only a live hub can prove: the old embedded-querystring form 404s
     # that exact route).
     #
@@ -10652,7 +10658,8 @@ def updated() {}
             source_v2 = source_v1.replace("UPDATE-LEG-MARKER-V1", "UPDATE-LEG-MARKER-V2")
             updated = self.client.call_tool("hub_manage_code", {
                 "tool": "hub_update_app",
-                "args": {"appId": code_app_id, "source": source_v2, "confirm": True},
+                "args": {"appId": code_app_id, "source": source_v2,
+                         "expectedVersion": version_before, "confirm": True},
             })
             assert updated.get("success") is True, f"hub_update_app round-trip failed: {updated}"
             assert updated.get("previousVersion") is not None, \
@@ -10686,18 +10693,36 @@ def updated() {}
                 f"error text is not the hub's compiler output: {err!r}"
 
             print("    [PHASE] APP_CODE_UPDATE version conflict")
-            # Leg 3: optimistic lock -- a stale expectedVersion must be refused client-side
-            # with conflict:true, before anything is written.
+            # Leg 3: optimistic lock -- the pre-edit version is now stale. The save carries it
+            # and the hub refuses it atomically: conflict:true, nothing written, no retry.
             source_v3 = source_v2.replace("UPDATE-LEG-MARKER-V2", "UPDATE-LEG-MARKER-V3")
             conflicted = self.client.call_tool("hub_manage_code", {
                 "tool": "hub_update_app",
                 "args": {"appId": code_app_id, "source": source_v3,
-                         "expectedVersion": 99999, "confirm": True},
+                         "expectedVersion": version_before, "confirm": True},
             })
             assert conflicted.get("success") is False, \
                 f"stale expectedVersion was accepted: {conflicted}"
             assert conflicted.get("conflict") is True, \
                 f"conflict flag missing on optimistic-lock refusal: {conflicted}"
+            assert conflicted.get("expectedVersion") == version_before, \
+                f"conflict does not echo the stale version: {conflicted}"
+            if conflicted.get("currentVersion") is not None:
+                assert int(conflicted["currentVersion"]) == version_after, \
+                    f"conflict reports the wrong current version: {conflicted}"
+
+            # Leg 3b: strict arguments -- a misspelled lock is refused before any write
+            # instead of being dropped (which would let the save through unguarded).
+            try:
+                self.client.call_tool("hub_manage_code", {
+                    "tool": "hub_update_app",
+                    "args": {"appId": code_app_id, "source": source_v3,
+                             "expectedVerison": version_before, "confirm": True},
+                })
+                raise AssertionError("hub_update_app accepted an unknown argument")
+            except (McpToolError, McpError) as exc:
+                assert "expectedVerison" in str(exc), \
+                    f"unknown-argument refusal does not name the argument: {exc}"
 
             # One re-read proves NEITHER refused leg wrote anything: still V2, no V3 marker,
             # version unchanged since the round-trip edit.
@@ -10738,7 +10763,7 @@ def updated() {}
             assert ob.get("enabled") is True, "OAuth reported success but not enabled"
             assert ob.get("clientId"), "OAuth enabled but no clientId returned"
 
-            print(f"    APP_CODE_UPDATE ok -- v{version_before}->v{version_after}; compile error + lock conflict both refused with no write; OAuth leg checked")
+            print(f"    APP_CODE_UPDATE ok -- v{version_before}->v{version_after}; compile error, lock conflict and unknown argument all refused with no write; OAuth leg checked")
         finally:
             if code_app_id:
                 try:
@@ -11071,7 +11096,8 @@ def updated() {}
     # GROUP 4e: driver_code_update (1 test) -- the hub_update_driver code-deploy
     # path (POST /driver/saveOrUpdateJson), mirroring the app leg above: one
     # throwaway driver code class, a round-trip edit (success + version advance +
-    # source landed) and the hub's verbatim compile error on broken Groovy.
+    # source landed), the hub's verbatim compile error on broken Groovy, a stale
+    # expectedVersion refused by the hub, and an unknown argument refused.
     # -----------------------------------------------------------------------
 
     @test("driver_code_update")
@@ -11108,7 +11134,8 @@ def updated() {}
             # reissues a transport-lost write.
             updated = self._write_once(
                 "hub_manage_code", "hub_update_driver",
-                {"driverId": driver_id, "source": source_v2, "confirm": True},
+                {"driverId": driver_id, "source": source_v2,
+                 "expectedVersion": version_before, "confirm": True},
                 "driver code round-trip")
             assert updated.get("success") is True, f"hub_update_driver round-trip failed: {updated}"
             assert updated.get("previousVersion") is not None, \
@@ -11140,19 +11167,56 @@ def updated() {}
             assert "unable to resolve" in err.lower() or "ClassThatDoesNotExistBatE2eDrv" in err, \
                 f"error text is not the hub's compiler output: {err!r}"
 
-            # One re-read proves the refused leg wrote nothing: still V2, no broken
-            # marker, version unchanged since the round-trip edit.
+            # Leg 3: optimistic lock -- the pre-edit version is stale; the hub refuses the
+            # save that carries it, writing nothing.
+            source_v3 = source_v2.replace("DRIVER-LEG-MARKER-V2", "DRIVER-LEG-MARKER-V3")
+            conflicted = self.client.call_tool("hub_manage_code", {
+                "tool": "hub_update_driver",
+                "args": {"driverId": driver_id, "source": source_v3,
+                         "expectedVersion": version_before, "confirm": True},
+            })
+            assert conflicted.get("success") is False and conflicted.get("conflict") is True, \
+                f"stale driver expectedVersion was not refused as a conflict: {conflicted}"
+            assert conflicted.get("expectedVersion") == version_before, \
+                f"driver conflict does not echo the stale version: {conflicted}"
+
+            # Leg 4: strict arguments -- an unknown argument is refused before any write.
+            try:
+                self.client.call_tool("hub_manage_code", {
+                    "tool": "hub_update_driver",
+                    "args": {"driverId": driver_id, "source": source_v3,
+                             "expectedVerison": version_before, "confirm": True},
+                })
+                raise AssertionError("hub_update_driver accepted an unknown argument")
+            except (McpToolError, McpError) as exc:
+                assert "expectedVerison" in str(exc), \
+                    f"unknown-argument refusal does not name the argument: {exc}"
+
+            # Leg 5: a bulk entry with an unknown key is refused alone, and nothing is saved for it.
+            bulk = self.client.call_tool("hub_manage_code", {
+                "tool": "hub_update_driver",
+                "args": {"updates": [{"driverId": driver_id, "source": source_v3,
+                                      "expectedVerison": version_before}], "confirm": True},
+            })
+            entry = (bulk.get("updates") or [{}])[0]
+            assert bulk.get("success") is False and entry.get("success") is False \
+                and "expectedVerison" in str(entry.get("error")) and entry.get("note"), \
+                f"bulk unknown key was not refused with a note: {bulk}"
+
+            # One re-read proves the refused legs wrote nothing: still V2, no broken or
+            # V3 marker, version unchanged since the round-trip edit.
             final = self.client.call_tool("hub_read_apps_code", {
                 "tool": "hub_get_source",
                 "args": {"type": "driver", "id": driver_id},
             })
             final_src = final.get("source") or ""
-            assert "DRIVER-LEG-MARKER-V2" in final_src and "ClassThatDoesNotExistBatE2eDrv" not in final_src, \
+            assert "DRIVER-LEG-MARKER-V2" in final_src and "ClassThatDoesNotExistBatE2eDrv" not in final_src \
+                and "DRIVER-LEG-MARKER-V3" not in final_src, \
                 f"a refused driver update mutated the stored source: {final}"
             assert int(final["version"]) == version_after, \
                 f"a refused driver update advanced the version ({version_after} -> {final.get('version')})"
 
-            print(f"    DRIVER_CODE_UPDATE ok -- v{version_before}->v{version_after}; compile error refused with the hub's verbatim text")
+            print(f"    DRIVER_CODE_UPDATE ok -- v{version_before}->v{version_after}; compile error, lock conflict and unknown argument refused with no write")
         finally:
             if driver_id:
                 try:
@@ -13712,7 +13776,7 @@ def updated() {}
         the app runtime statistics needs confirm and leaves the server app's total at 0."""
         # A refusal writes a validation-error line, so the log holds at least one entry to clear.
         self._expect_tool_refusal("hub_read_diagnostics", {"tool": "hub_get_logs", "args": {"mode": "mcp", "source": "x"}},
-                                  "Unknown parameter for hub_get_logs: source")
+                                  "Unknown hub_get_logs argument: source")
         before = self.client.call_tool("hub_read_diagnostics", {"tool": "hub_get_logs", "args": {"mode": "mcp", "limit": 0}})
         assert before.get("entries"), f"MCP log before the clear must hold the refusal's line: {before}"
         # Past logs are not this tool's to delete: the refusal names hub_reboot instead of rebooting.

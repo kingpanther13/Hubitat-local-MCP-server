@@ -521,17 +521,12 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         received == args.args + [rule_id: args.rule_id, confirm: true]
     }
 
-    def "non-gateway caller passing a stray `tool` arg does NOT route the suggestion to the wrong tool"() {
-        // Defends against the would-be bug where a direct (non-gateway) caller with a
-        // stray args.tool='hub_export_native_app' on hub_list_devices would get an hub_export_native_app
-        // suggestion ("use saveAs=..."), nonsensical for hub_list_devices.
+    def "non-gateway caller passing a stray `tool` arg is refused under its own tool name"() {
+        // Defends against the would-be bug where a direct (non-gateway) caller with a stray
+        // args.tool='hub_export_native_app' on hub_list_devices is answered as hub_export_native_app.
         given:
-        // Force hub_list_devices to blow the cap. The leaf itself refuses unknown arguments, so it is
-        // stubbed: the stray arg must reach the size guard, which is what this pins.
-        def padding = 'x' * 80
-        script.metaClass.toolListDevices = { Map listArgs ->
-            [devices: (0..<2000).collect { i -> [id: i.toString(), label: "Device-${i}-${padding}"] }]
-        }
+        boolean reached = false
+        script.metaClass.toolListDevices = { Map listArgs -> reached = true; [devices: []] }
         mcpDriver.pushBody([
             jsonrpc: '2.0', id: 201, method: 'tools/call',
             params: [name: 'hub_list_devices', arguments: [tool: 'hub_export_native_app']]
@@ -542,10 +537,9 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
 
         then:
         def inner = new groovy.json.JsonSlurper().parseText(mcpDriver.parseResponseJson().result.content[0].text)
-        inner.response_too_large == true
-        inner.tool == 'hub_list_devices'                       // NOT hub_export_native_app
-        inner.suggestion.contains('filter')                // hub_list_devices guidance
-        !inner.suggestion.contains('saveAs')               // not hub_export_native_app guidance
+        inner.tool == 'hub_list_devices'
+        inner.error.contains('Unknown hub_list_devices argument: tool')
+        !reached
     }
 
     def "tools/call passes small results through unchanged (size guard does not perturb normal traffic)"() {
@@ -647,7 +641,7 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         settingsMap.mcpLogLevel = 'error'
         seedDebugLogHistory([entries: [], config: [logLevel: 'error', maxEntries: 100]])
         script.metaClass.toolListRooms = { ignored -> payload }
-        def leafArgs = [filter: 'ARGUMENT-SECRET']
+        def leafArgs = [cursor: 'ARGUMENT-SECRET']
         mcpDriver.pushBody([
             jsonrpc: '2.0', id: 103, method: 'tools/call',
             params: viaGateway

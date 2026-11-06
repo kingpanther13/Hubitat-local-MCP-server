@@ -8,6 +8,9 @@ pytest.importorskip("requests")
 
 import e2e_test as et
 
+UPDATE_APP_ARGS = {"appId", "source", "sourceFile", "importUrl", "resave", "backup",
+                   "expectedVersion", "triggerUpdated", "oauth", "confirm"}
+
 
 class AppCodeClient:
     def __init__(self, fault=None):
@@ -33,10 +36,16 @@ class AppCodeClient:
         elif tool == "hub_update_app":
             app_id = str(args["appId"])
             app = self.apps[app_id]
+            unknown = sorted(set(args) - UPDATE_APP_ARGS)
+            if unknown:
+                # The server refuses arguments outside the strict schema as a validation error.
+                raise et.McpToolError(tool, f"Unknown hub_update_app argument: {', '.join(unknown)}")
             if "oauth" in args:
                 result = {"oauth": {"success": True, "enabled": True, "clientId": "fixture"}}
-            elif "expectedVersion" in args:
-                result = {"success": False, "conflict": True}
+            elif "expectedVersion" in args and args["expectedVersion"] != app["version"]:
+                # The hub refuses a stale save version with no write.
+                result = {"success": False, "conflict": True,
+                          "expectedVersion": args["expectedVersion"], "currentVersion": app["version"]}
             elif "ClassThatDoesNotExistBatE2e" in args["source"]:
                 result = {"success": False, "error": "unable to resolve class ClassThatDoesNotExistBatE2e"}
             else:
@@ -76,7 +85,7 @@ def runner_for(client):
 
 
 @pytest.mark.parametrize("method,restore_count,update_count", [
-    ("test_update_app_code_lifecycle", 0, 4),
+    ("test_update_app_code_lifecycle", 0, 5),
     ("test_app_code_backup_restore_lifecycle", 4, 1),
 ])
 def test_app_lifecycle_scenarios_are_independent_and_clean_up(method, restore_count, update_count):
@@ -125,7 +134,7 @@ def test_restore_scenario_keeps_response_and_exact_source_assertions(defect):
 
 def test_lost_conflict_response_propagates_and_cleans_up_without_replay():
     def fault(client, tool, args, result):
-        if tool == "hub_update_app" and "expectedVersion" in args:
+        if tool == "hub_update_app" and result.get("conflict"):
             raise et.RelayLostResponseError("504 conflict response lost")
 
     client = AppCodeClient(fault)

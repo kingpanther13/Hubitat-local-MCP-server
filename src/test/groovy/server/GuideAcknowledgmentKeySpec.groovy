@@ -118,7 +118,7 @@ class GuideAcknowledgmentKeySpec extends ToolSpecBase {
 
         where:
         parent              | subs
-        'hub_admin_write'   | ['hub_admin_write_destructive', 'hub_admin_write_radios', 'hub_admin_write_devices']
+        'hub_admin_write'   | ['hub_admin_write_destructive', 'hub_admin_write_radios', 'hub_admin_write_devices', 'hub_admin_write_code']
         'builtin_app_tools' | ['builtin_app_tools_rules', 'builtin_app_tools_crud']
     }
 
@@ -127,7 +127,7 @@ class GuideAcknowledgmentKeySpec extends ToolSpecBase {
         script.toolGetToolGuide(section).content == rawBody(section)
 
         where:
-        section << ['tool_access', 'performance', 'performance_overview', 'rooms', 'hub_admin_write_code',
+        section << ['tool_access', 'performance', 'performance_overview', 'rooms',
                     'device_authorization']
     }
 
@@ -177,7 +177,7 @@ class GuideAcknowledgmentKeySpec extends ToolSpecBase {
 
         expect:
         served == script.hubBpsGuideKey('builtin_app_tools_crud')
-        script.executeTool('hub_clone_native_app', [appId: 42, name: 'Copy', confirm: true,
+        script.executeTool('hub_clone_native_app', [sourceAppId: 42, confirm: true,
                                                   bestPracticeKey: served]).stubbed == true
     }
 

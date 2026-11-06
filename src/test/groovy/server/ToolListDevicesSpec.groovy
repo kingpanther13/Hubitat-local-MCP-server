@@ -679,10 +679,6 @@ class ToolListDevicesSpec extends ToolSpecBase {
 
         where:
         label                              | args                                       || expected
-        'the removed detailed argument'    | [detailed: true]                           || 'Unknown argument: detailed'
-        'the removed offset argument'      | [offset: 5]                                || 'Unknown argument: offset'
-        'the removed filter argument'      | [filter: 'virtual']                        || 'Unknown argument: filter'
-        'the removed onlyOn argument'      | [onlyOn: true]                             || 'Unknown argument: onlyOn'
         'an unknown scope'                 | [scope: 'bogus']                           || 'scope must be one of'
         'an unknown format'                | [format: 'xml']                            || 'summary, detailed, ids, context'
         'a non-string labelFilter'         | [labelFilter: ['a']]                       || 'labelFilter must be a string'
@@ -940,6 +936,24 @@ class ToolListDevicesSpec extends ToolSpecBase {
 
         then:
         response.result.isError == true
-        mcpDriver.parseInner(response).error.contains('Unknown argument: onlyOn')
+        mcpDriver.parseInner(response).error.contains('Unknown hub_list_devices argument: onlyOn')
+    }
+
+    @Unroll
+    def "via dispatch: the removed #name argument is refused before any hub read"() {
+        when:
+        script.executeTool('hub_list_devices', [(name): value])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("Unknown hub_list_devices argument: ${name}")
+        hubGet.calls.isEmpty()
+
+        where:
+        name       | value
+        'detailed' | true
+        'offset'   | 5
+        'filter'   | 'virtual'
+        'onlyOn'   | true
     }
 }

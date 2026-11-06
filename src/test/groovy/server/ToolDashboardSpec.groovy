@@ -1167,6 +1167,15 @@ class ToolDashboardSpec extends ToolSpecBase {
 
     // ---------- create legacy ----------
 
+    def "a legacy dashboard refuses version, which only an Easy Dashboard takes"() {
+        when:
+        script.toolCreateDashboard([name: 'Patio', type: 'legacy', version: '2.0'])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains('version applies only to Easy Dashboards')
+    }
+
     def "create legacy refuses a protected parent before creating or configuring a dashboard"() {
         given:
         enableWrite()

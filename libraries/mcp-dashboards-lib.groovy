@@ -448,6 +448,9 @@ private Map _legacyDashboardFormPost(String appId, Map fields) {
 // classic form wire. The layout starts empty; tiles are added via hub_update_dashboard.
 private Map _createLegacyDashboard(Map args) {
     def name = args.name.toString().trim()
+    if (args.version != null) {
+        throw new IllegalArgumentException("version applies only to Easy Dashboards. Omit it for a legacy dashboard.")
+    }
     if (args.options != null) {
         throw new IllegalArgumentException("options applies only to Easy Dashboards. A legacy dashboard's look lives in its layout -- create it first, then pass setOptions/addTiles to hub_update_dashboard.")
     }
@@ -1128,6 +1131,7 @@ def _getAllToolDefinitions_partDashboards() {
                     name: [type: "string", description: "Display name."],
                     type: [type: "string", enum: ["easy", "legacy"], description: "Dashboard kind: 'easy' (default) or 'legacy' Hubitat® Dashboard."],
                     deviceIds: [type: "array", description: "Device ids. Required (>=1, runtime-enforced) for an Easy Dashboard; for a legacy dashboard these are its authorized devices (optional).", items: [type: "string"]],
+                    version: [type: "string", description: "Easy-only: dashboard version sent on create. Default 2.0."],
                     options: [type: "object", description: "Easy-only optional config; see hub_get_tool_guide(section='dashboards'). Rejected for type='legacy'."]
                 ],
                 required: ["name"]

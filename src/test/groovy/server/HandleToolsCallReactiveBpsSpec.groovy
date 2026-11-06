@@ -317,4 +317,22 @@ class HandleToolsCallReactiveBpsSpec extends ToolSpecBase {
         script._reactiveBpsWarning('hub_call_device_command', [:], "Missing required parameter: command") == null
         script._reactiveBpsWarning('hub_clone_native_app', [:], "Gateway arg 'args' was a String but not valid JSON.") == null
     }
+
+    def "_applyReactiveBpsWarning adds no second pointer when the note or a bulk entry already cites the guide"() {
+        given:
+        def conflict = [success: false, error: 'Optimistic-lock conflict', note: "Re-read it. See hub_get_tool_guide(section='hub_admin_write_code')."]
+        def bulk = [success: false, message: '0 of 1 driver(s) updated successfully.',
+                    updates: [[driverId: '1', success: false, error: 'conflict', note: "See hub_get_tool_guide(section='hub_admin_write_code')."]]]
+        def plain = [success: false, error: 'Optimistic-lock conflict']
+
+        when:
+        script._applyReactiveBpsWarning('hub_update_driver', [:], conflict)
+        script._applyReactiveBpsWarning('hub_update_driver', [:], bulk)
+        script._applyReactiveBpsWarning('hub_update_driver', [:], plain)
+
+        then:
+        !conflict.containsKey('bp_warning')
+        !bulk.containsKey('bp_warning')
+        plain.bp_warning.contains('hub_admin_write_code')
+    }
 }

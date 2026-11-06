@@ -177,7 +177,7 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
         settingsMap.enableDeveloperMode = developerMode
         settingsMap.enableMandatoryBPS = false
         settingsMap.useGateways = gateway
-        def args = [appId: 42, disabled: true, confirm: true]
+        def args = [appId: 42, disabled: true]
 
         when:
         script.executeTool(gateway ? 'hub_manage_native_rules_and_apps' : 'hub_set_app_disabled',
@@ -228,7 +228,7 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
         hubGet.register('/dashboard/update') { writes << '/dashboard/update'; '{"success":true}' }
         hubGet.register('/dashboard/delete') { writes << '/dashboard/delete'; '{"success":true}' }
         def leaf = "hub_${operation}_dashboard".toString()
-        def args = [dashboardId: '42', name: 'Changed', deviceIds: ['1'], confirm: true]
+        def args = operation == 'update' ? [dashboardId: '42', name: 'Changed', deviceIds: ['1']] : [dashboardId: '42', confirm: true]
 
         when:
         script.executeTool(gateway ? 'hub_manage_dashboards' : leaf,

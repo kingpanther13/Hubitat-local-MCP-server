@@ -582,7 +582,7 @@ class LoadLimiterGuardSpec extends ToolSpecBase {
         given:
         hubGet.register(RESET) { p -> 'ok' }
         int calls = 0
-        script.metaClass.toolSendCommand = { a, b, c, d, e, f ->
+        script.metaClass.toolSendCommand = { a, b, c, d, e, f, g ->
             calls++
             [success: false, error: 'App 1 generates excessive hub load']
         }
@@ -600,7 +600,7 @@ class LoadLimiterGuardSpec extends ToolSpecBase {
         given:
         hubGet.register(RESET) { p -> 'ok' }
         int calls = 0
-        script.metaClass.toolSendCommand = { a, b, c, d, e, f ->
+        script.metaClass.toolSendCommand = { a, b, c, d, e, f, g ->
             calls++
             throw new RuntimeException('App 1 generates excessive hub load')
         }
@@ -1050,7 +1050,7 @@ class LoadLimiterGuardSpec extends ToolSpecBase {
         given:
         settingsMap.autoResetAppRuntimeStats = false
         int calls = 0
-        script.metaClass.toolSendCommand = { a, b, c, d, e, f ->
+        script.metaClass.toolSendCommand = { a, b, c, d, e, f, g ->
             calls++
             [success: false, error: 'App 1 generates excessive hub load']
         }

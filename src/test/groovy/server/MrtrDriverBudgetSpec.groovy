@@ -9,6 +9,7 @@ import support.ToolSpecBase
 class MrtrDriverBudgetSpec extends ToolSpecBase {
     private final AtomicLong clock = new AtomicLong(1234567890000L)
     private final List<Map> saves = []
+    private final List<Map> refused = []
     private final Map<String, Integer> versions = ['55': 1]
     private Closure itemElapsed = { int index -> index == 1 ? 120001L : 10L }
 
@@ -30,14 +31,16 @@ class MrtrDriverBudgetSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             assert path == '/driver/saveOrUpdateJson'
             Map payload = new JsonSlurper().parseText(body) as Map
+            // The hub refuses a stale save version and writes nothing.
+            if (payload.id != null && payload.version != versions[payload.id.toString()]) {
+                refused << payload
+                return [success: false, message: "Version does not match, attempting to update version ${payload.version}, current version is ${versions[payload.id.toString()]}".toString()]
+            }
             saves << payload
             clock.addAndGet(itemElapsed.call(saves.size()) as Long)
             if (payload.source == 'reject') return [success: false, message: 'compile refused']
             String id = payload.id == null ? (9000 + saves.size()).toString() : payload.id.toString()
-            if (payload.id != null) {
-                assert payload.version == versions[id]
-                versions[id] = versions[id] + 1
-            }
+            if (payload.id != null) versions[id] = versions[id] + 1
             [success: true, id: id, version: versions[id] ?: 1]
         }
         RUN_IN_MILLIS_OVERRIDE.set({ List call ->
@@ -188,6 +191,9 @@ class MrtrDriverBudgetSpec extends ToolSpecBase {
         terminal.updates[1].currentVersion == 2
         saves*.source == [items[0].source, items[2].source]
         saves*.version == [1, 2]
+
+        and: 'the conflicting entry never reached the hub'
+        refused.isEmpty()
     }
 
     @Unroll

@@ -363,11 +363,11 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
     // had no visibility into the 1-hour cache and no way to force a
     // refresh short of waiting it out.
     //
-    // The fix inside toolUpdateAppCode (the optimistic-locking refresh
-    // block) fetches the version fresh from {@code /app/ajax/code} for
-    // source/sourceFile modes (resave mode already gets it for free from
-    // its own fetch), then falls back to the cached backup version only
-    // if the fresh fetch fails. These two tests pin both branches.
+    // The fix: a reused backup's version is never trusted on its own. Without
+    // an expectedVersion, the update uses a version read in this call (the
+    // resave fetch or a backup taken just now), else the code list row or
+    // {@code /app/ajax/code}; the cached backup version is the last resort,
+    // safe because the hub refuses a stale version. These tests pin both ends.
 
     def "hub_update_app uses the fresh version from the hub, not the stale backup-manifest cache (v0.4.6)"() {
         given: 'a recent cached backup whose manifest carries a stale version=5'

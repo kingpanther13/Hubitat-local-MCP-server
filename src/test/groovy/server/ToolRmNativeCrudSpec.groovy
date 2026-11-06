@@ -3609,7 +3609,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_set_native_app', [appId: 100, settings: [origLabel: 'x'], confirm: true])
         then:
         response.result.isError == true
-        mcpDriver.parseInner(response).error.contains('Unknown hub_set_native_app property; use operation, app_id, args and confirm')
+        mcpDriver.parseInner(response).error.contains('Unknown hub_set_native_app arguments: appId, settings. Nothing was changed. Valid arguments: operation, app_id, args, confirm, bestPracticeKey.')
         where:
         useGateways << [true, false]
     }
@@ -4411,7 +4411,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         where:
         label                         | request                                                                                       | message
-        'retired appId parameter'     | [appId: 100, settings: [a: 1], confirm: true]                                                 | 'Unknown hub_set_native_app property'
         'args without an operation'   | [args: [fields: [a: 1]]]                                                                      | 'Choose an operation'
         'unknown operation'           | [operation: 'walk']                                                                           | 'Unknown native app operation'
         'unknown args key'            | [operation: 'create', args: [app_type: 'notifier', name: 'n', walkStep: [:]], confirm: true]  | 'Unknown args property'

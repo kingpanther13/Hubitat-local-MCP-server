@@ -411,4 +411,215 @@ class HandleGatewaySpec extends ToolSpecBase {
         ex.message.contains('room')
         !ex.message.contains('sentinel_param')
     }
+
+    // -------- strict arguments: every tool's schema properties, enforced centrally in executeTool --------
+
+    def "the catalog index records every tool's property names, except the frozen custom-rule tools"() {
+        when:
+        Map indexes = script._toolCatalogIndexes()
+        Map argNames = indexes.argNames
+        def frozen = { String n -> n.endsWith('_custom_rule') || n in ['hub_list_captured_states', 'hub_delete_captured_state'] }
+
+        then:
+        argNames.hub_update_library.containsAll(['libraryId', 'source', 'expectedVersion', 'confirm'])
+        argNames.hub_list_modes == []
+        argNames.keySet() == script.getAllToolDefinitions()*.name.findAll { !frozen(it) } as Set
+
+        and: "the bulk entry keys come from the schema's updates.items.properties"
+        indexes.updateEntryArgs.hub_update_driver == ['driverId', 'sourceFile', 'source', 'importUrl', 'resave', 'backup', 'expectedVersion']
+    }
+
+    def "_rejectUnknownArgs names the unknown keys, lists the valid ones, and exempts server keys and bestPracticeKey"() {
+        when:
+        script._rejectUnknownArgs('hub_update_library', [libraryId: '42', source: 's', zeta: 1, alpha: 2, confirm: true])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.startsWith('Unknown hub_update_library arguments: alpha, zeta. Nothing was changed. Valid arguments: libraryId, ')
+        e.message.contains('expectedVersion')
+
+        when: 'the budget clock, any double-underscore key and the guide key ride along'
+        script._rejectUnknownArgs('hub_update_library', [libraryId: '42', __reqT0: 1L, __future: true, bestPracticeKey: 'k'])
+
+        then:
+        notThrown(IllegalArgumentException)
+
+        when: 'a tool without additionalProperties:false is checked the same way'
+        script._rejectUnknownArgs('hub_get_room', [room: '1', whatever: true])
+
+        then:
+        def lenient = thrown(IllegalArgumentException)
+        lenient.message.contains('Unknown hub_get_room argument: whatever')
+
+        when: 'a tool with no properties says so'
+        script._rejectUnknownArgs('hub_list_modes', [whatever: true])
+
+        then:
+        def none = thrown(IllegalArgumentException)
+        none.message.contains('This tool takes no arguments.')
+
+        when: "a direct write tool's opaque args object carries the guide key"
+        script._rejectUnknownArgs('hub_create_backup', [confirm: true, args: [bestPracticeKey: 'k']])
+
+        then:
+        notThrown(IllegalArgumentException)
+
+        when: 'a gateway name is not checked: its sub-tool is, on re-entry'
+        script._rejectUnknownArgs('hub_manage_code', [tool: 'hub_update_library', args: [:], __reqT0: 1L])
+
+        then:
+        notThrown(IllegalArgumentException)
+    }
+
+    @spock.lang.Unroll
+    def "the frozen #name keeps undeclared arguments"() {
+        when:
+        script._rejectUnknownArgs(name, [localVariables: [:], whatever: true])
+
+        then:
+        notThrown(IllegalArgumentException)
+
+        where:
+        name << ['hub_create_custom_rule', 'hub_update_custom_rule', 'hub_get_custom_rule', 'hub_delete_custom_rule',
+                 'hub_test_custom_rule', 'hub_export_custom_rule', 'hub_import_custom_rule', 'hub_clone_custom_rule',
+                 'hub_manage_custom_rules', 'hub_list_captured_states', 'hub_delete_captured_state']
+    }
+
+    def "hub_call_device_command passes includeState through dispatch, default on"() {
+        given:
+        settingsMap.enableWrite = true
+        def seen = []
+        script.metaClass.toolSendCommand = { a, b, c, d, e, f, g -> seen << g; [success: true] }
+
+        when:
+        script.executeTool('hub_call_device_command', [deviceId: '5', command: 'on', includeState: false])
+        script.executeTool('hub_call_device_command', [deviceId: '5', command: 'on', includeState: true])
+        script.executeTool('hub_call_device_command', [deviceId: '5', command: 'on'])
+
+        then:
+        seen == [false, true, true]
+
+        when: 'a misspelled waitFor is refused instead of skipping the wait'
+        script.executeTool('hub_call_device_command', [deviceId: '5', command: 'on', waitFr: [attribute: 'switch', value: 'on']])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains('Unknown hub_call_device_command argument: waitFr')
+    }
+
+    def "a gateway call to a strict tool with an unknown argument throws before the handler runs"() {
+        given:
+        settingsMap.enableWrite = true
+        boolean reached = false
+        script.metaClass.toolUpdateLibraryCode = { Map a -> reached = true; [success: true] }
+
+        when:
+        script.handleGateway('hub_manage_code', 'hub_update_library', [libraryId: '42', source: 's', expectedVerison: 3, confirm: true])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains('Unknown hub_update_library argument: expectedVerison')
+        !reached
+    }
+
+    def "a gateway refuses anything beside tool and args, so a misplaced lock never saves unlocked"() {
+        given:
+        settingsMap.useGateways = true
+        settingsMap.enableWrite = true
+        def posts = []
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 -> posts << path; [success: true] }
+
+        when:
+        script.executeTool('hub_manage_code', [tool: 'hub_update_driver', args: [driverId: '5', source: 's', confirm: true], expectedVersion: 3])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains('Unknown hub_manage_code argument: expectedVersion')
+        e.message.contains('Valid arguments: tool, args')
+        posts.isEmpty()
+    }
+
+    def "the MRTR access check refuses unknown arguments on the leaf and the gateway before anything is reserved"() {
+        given:
+        settingsMap.enableWrite = true
+        String gateway = script.getGatewayConfig().find { it.value.tools.contains('hub_clone_native_app') }.key
+
+        when: 'a misspelled clone argument through the flat tool'
+        script._mrtrValidateAccess('hub_clone_native_app', 'hub_clone_native_app', [appId: 5, stageDisbled: true])
+
+        then:
+        def flat = thrown(IllegalArgumentException)
+        flat.message.contains('Unknown hub_clone_native_app argument: stageDisbled')
+
+        when: 'the same inside a gateway'
+        script._mrtrValidateAccess(gateway, 'hub_clone_native_app', [tool: 'hub_clone_native_app', args: [appId: 5, stageDisbled: true]])
+
+        then:
+        def inner = thrown(IllegalArgumentException)
+        inner.message.contains('Unknown hub_clone_native_app argument: stageDisbled')
+
+        when: 'a key beside the gateway envelope'
+        script._mrtrValidateAccess(gateway, 'hub_clone_native_app', [tool: 'hub_clone_native_app', args: [appId: 5], stageDisabled: true])
+
+        then:
+        def beside = thrown(IllegalArgumentException)
+        beside.message.contains('argument: stageDisabled')
+    }
+
+    def "hub_update_device's refusal of a top-level field says where device fields go"() {
+        when:
+        script._rejectUnknownArgs('hub_update_device', [deviceId: '5', room: 'Den'])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains('Unknown hub_update_device argument: room')
+        e.message.contains('device fields go in fields and driver preferences in preferences')
+    }
+
+    def "a gateway's own arguments and the exempt keys pass the envelope check; the frozen custom-rule gateway is left alone"() {
+        when:
+        script._rejectUnknownArgs('hub_manage_code', [tool: 'hub_update_driver', args: [:], bestPracticeKey: 'k', __reqT0: 1L])
+        script._rejectUnknownArgs('hub_manage_code', [:])
+        script._rejectUnknownArgs('hub_manage_custom_rules', [tool: 'hub_list_custom_rules', args: [:], stray: 1])
+
+        then:
+        noExceptionThrown()
+    }
+
+    @spock.lang.Unroll
+    def "dispatch: every tool refuses an unknown argument (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableWrite = true
+        boolean reached = false
+        script.metaClass.toolUpdateLibraryCode = { Map a -> reached = true; [success: true, received: a.keySet().sort()] }
+
+        when:
+        def strict = mcpDriver.callTool('hub_update_library', [libraryId: '42', source: 's', bogus: 1, confirm: true])
+
+        then:
+        strict.result.isError == true
+        mcpDriver.parseInner(strict).error.contains('Unknown hub_update_library argument: bogus')
+        !reached
+
+        when: 'a tool without additionalProperties:false refuses it too'
+        def lenient = mcpDriver.callTool('hub_create_library', [source: 's', bogus: 1, confirm: true])
+
+        then:
+        lenient.result.isError == true
+        mcpDriver.parseInner(lenient).error.contains('Unknown hub_create_library argument: bogus')
+
+        when: 'the mandatory guide key is accepted on a strict tool'
+        settingsMap.enableMandatoryBPS = true
+        def keyed = mcpDriver.callTool('hub_update_library', [libraryId: '42', source: 's', confirm: true,
+            bestPracticeKey: script.hubBpsGuideKey(script._bpsSectionForTool('hub_update_library'))])
+
+        then:
+        !keyed.result.isError
+        reached
+        mcpDriver.parseInner(keyed).received.contains('bestPracticeKey')
+
+        where:
+        useGateways << [true, false]
+    }
 }

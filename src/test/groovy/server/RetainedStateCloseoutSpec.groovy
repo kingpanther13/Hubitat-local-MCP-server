@@ -201,8 +201,10 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
         def firstResult = first.get(10, TimeUnit.SECONDS)
         def secondResult = second.get(10, TimeUnit.SECONDS)
 
-        then:
-        firstResult == secondResult
+        then: 'the second call reuses the first baseline, and only the first is marked as read just now'
+        firstResult.fresh == true
+        !secondResult.containsKey('fresh')
+        firstResult - [fresh: true] == secondResult
         files.size() == 1
 
         cleanup:

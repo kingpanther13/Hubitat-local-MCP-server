@@ -486,7 +486,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         result.count == 1
     }
 
-    def "hub_list_drivers refuses an argument it does not take, and an unknown include: #label"() {
+    def "hub_list_drivers refuses an unknown include: #label"() {
         when:
         script.toolListHubDrivers(args)
 
@@ -496,7 +496,6 @@ class ToolAppsDriversSpec extends ToolSpecBase {
 
         where:
         label            | args                           || expected
-        'unknown key'    | [include: 'all', limit: 10]    || 'does not take limit'
         'unknown include'| [include: 'everything']        || "include must be 'user' or 'all'"
     }
 

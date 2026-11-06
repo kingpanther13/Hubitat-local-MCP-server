@@ -755,12 +755,6 @@ private TimeZone _hubTimeZone() {
 def toolGetHubLogs(args) {
     Map modeArgs = _logsModeArgs()
     List allModeArgs = modeArgs.values().flatten().unique()
-    // Internal request keys start with "__". Any other unknown key is refused, so a filter a client
-    // still sends from an older catalog (source, type) is never silently ignored.
-    List unknown = args.keySet()*.toString().findAll(this.&_logsUnknownArg.curry(allModeArgs))
-    if (unknown) {
-        throw new IllegalArgumentException("Unknown parameter${unknown.size() == 1 ? '' : 's'} for hub_get_logs: ${unknown.join(', ')}. Search a row's name and text with pattern, and scope with deviceId or appId.")
-    }
     List modes = args.mode instanceof List ? args.mode*.toString().unique() : [args.mode == null ? "past" : args.mode.toString()]
     if (!modes) throw new IllegalArgumentException("mode must name at least one tab")
     for (m in modes) {
@@ -894,10 +888,6 @@ def toolGetHubLogs(args) {
 // Method references over small, fixed-size lists only; see the note above _snapshotFetchedAt.
 private boolean _argPresent(Map args, key) {
     return args[key] != null
-}
-
-private boolean _logsUnknownArg(List allowed, String key) {
-    return !(key in allowed) && key != "mode" && !key.startsWith("__")
 }
 
 private boolean _logsHasFetchSnapshot(r) {

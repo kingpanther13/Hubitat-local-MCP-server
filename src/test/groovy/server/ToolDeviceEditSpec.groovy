@@ -247,7 +247,7 @@ class ToolDeviceEditSpec extends ToolSpecBase {
 
         where:
         [useGateways, row] << [[true, false], [
-            [[label: 'Old top-level shape'], 'Unknown argument label'],
+            [[label: 'Old top-level shape'], 'Unknown hub_update_device argument: label'],
             [[:], 'Nothing to update'],
             [[fields: [deviceTypeId: 12]], 'SAFETY CHECK FAILED']
         ]].combinations()
