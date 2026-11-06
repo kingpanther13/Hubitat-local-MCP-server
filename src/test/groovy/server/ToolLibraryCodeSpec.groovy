@@ -1376,6 +1376,8 @@ def helperMethod() { return "ok" }
         result.success == false
         result.conflict == true
         result.currentVersion == 4
+        !result.containsKey('expectedVersion')
+        result.error.contains('Another save of this library landed while this one was being sent')
     }
 
     def "hub_update_library uses the version of a backup taken in this call with no second read"() {

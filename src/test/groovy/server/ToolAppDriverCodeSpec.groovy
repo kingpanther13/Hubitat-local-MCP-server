@@ -4456,7 +4456,9 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         posts*.version == [4]
         result.success == false
         result.conflict == true
-        result.expectedVersion == 4
+        !result.containsKey('expectedVersion')
+        result.error.contains('Another save of this app landed while this one was being sent')
+        !result.error.contains('expected app version')
         result.currentVersion == 5
         result.note.contains("section='hub_admin_write_code'")
     }
@@ -4479,7 +4481,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         then:
         posts == 1
         result.conflict == true
-        result.expectedVersion == 4
+        !result.containsKey('expectedVersion')
         !result.containsKey('currentVersion')
         result.error.contains('the hub reports a different version')
     }

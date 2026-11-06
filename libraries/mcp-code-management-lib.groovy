@@ -1603,7 +1603,7 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args, Map packa
         def parsed = _postItemSave(type, itemIdInt, sourceCode, sentVersion, isSelfUpdate, itemId)
         def stale = _staleVersionRejection(parsed)
         sourceCode = null
-        if (stale != null) return _versionConflictResult(type, idParam, itemId, sentVersion, stale.currentVersion)
+        if (stale != null) return _versionConflictResult(type, idParam, itemId, sentVersion, stale.currentVersion, expectedVersion != null)
 
         def success = false
         def errorMsg = null
@@ -1874,18 +1874,23 @@ private String _concurrentSaveNote(String type) {
 
 private String _codeGuidePointer() { "hub_get_tool_guide(section='hub_admin_write_code')" }
 
-private Map _versionConflictResult(String type, String idParam, itemId, sentVersion, currentVersion) {
+// callerLocked: the caller sent expectedVersion. Without it the version is the one this call read,
+// so the answer says another save landed first rather than echoing a lock the caller never sent.
+private Map _versionConflictResult(String type, String idParam, itemId, sentVersion, currentVersion, boolean callerLocked = true) {
     String hubSide = currentVersion != null ? "hub has ${currentVersion}" : "the hub reports a different version"
     mcpLog("warn", "hub-admin", "${type} update ID ${itemId} refused: version ${sentVersion} is stale (${hubSide}); nothing was written")
+    String error = callerLocked ?
+        "Optimistic-lock conflict: expected ${type} version ${sentVersion} but ${hubSide}. Nothing was written. Re-read the source and retry with the new expectedVersion." :
+        "Another save of this ${type} landed while this one was being sent, so the hub refused it (${hubSide}). Nothing was written. Re-read the source and send your change again."
     def out = [
         success: false,
-        error: "Optimistic-lock conflict: expected ${type} version ${sentVersion} but ${hubSide}. Nothing was written. Re-read the source and retry with the new expectedVersion.".toString(),
+        error: error.toString(),
         (idParam): itemId,
-        expectedVersion: sentVersion,
         conflict: true,
         note: "Another save changed this ${type}. Read it again with hub_get_source, reapply your change to that source, and pass its version as expectedVersion. See ${_codeGuidePointer()}.".toString(),
         lastBackup: formatTimestamp(state.lastBackupTimestamp)
     ]
+    if (callerLocked) out.expectedVersion = sentVersion
     if (currentVersion != null) out.currentVersion = currentVersion
     return out
 }
@@ -2129,8 +2134,8 @@ def toolUpdateDriverCode(args) {
                     if (r.lastBackup) entry.lastBackup = r.lastBackup
                     if (r.conflict) {
                         entry.conflict = true
-                        entry.expectedVersion = r.expectedVersion
-                        entry.currentVersion = r.currentVersion
+                        if (r.containsKey('expectedVersion')) entry.expectedVersion = r.expectedVersion
+                        if (r.currentVersion != null) entry.currentVersion = r.currentVersion
                     }
                     allSucceeded = false
                 }
@@ -2607,7 +2612,7 @@ def toolUpdateLibraryCode(args) {
     try {
         def result = _postLibrarySave(libraryId, sourceCode, sentVersion)
         def stale = _staleVersionRejection(result)
-        if (stale != null) return _versionConflictResult("library", "libraryId", libraryId, sentVersion, stale.currentVersion)
+        if (stale != null) return _versionConflictResult("library", "libraryId", libraryId, sentVersion, stale.currentVersion, expectedVersion != null)
 
         if (result?.success == false) {
             def msg = result?.message ?: "Hub returned failure"

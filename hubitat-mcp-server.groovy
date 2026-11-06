@@ -11545,8 +11545,25 @@ def _reactiveBpsWarning(toolName, args, errorText) {
 // No-op when a hint was already attached -- keeps the warning idempotent across retries.
 def _applyReactiveBpsWarning(toolName, args, result) {
     if (!(result instanceof Map) || result.containsKey('bp_warning')) return
+    if (_resultCitesGuide(result)) return
     def w = _reactiveBpsWarning(toolName, args, (result.error ?: result.note ?: '').toString())
     if (w) result.bp_warning = w
+}
+
+// A result already points at the guide when its error or note does, or when an entry of a bulk
+// result does; a second pointer from bp_warning would only repeat it.
+private boolean _resultCitesGuide(Map result) {
+    if (_entryCitesGuide(result)) return true
+    for (v in result.values()) {
+        if (!(v instanceof List)) continue
+        for (entry in v) { if (_entryCitesGuide(entry)) return true }
+    }
+    return false
+}
+
+private boolean _entryCitesGuide(entry) {
+    if (!(entry instanceof Map)) return false
+    return entry.error?.toString()?.contains('get_tool_guide') || entry.note?.toString()?.contains('get_tool_guide')
 }
 
 def getToolGuideSections() {
