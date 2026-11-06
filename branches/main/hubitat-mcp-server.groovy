@@ -435,6 +435,9 @@ private Map _legacyDashboardFormPost(String appId, Map fields) {
 }
 private Map _createLegacyDashboard(Map args) {
     def name = args.name.toString().trim()
+    if (args.version != null) {
+        throw new IllegalArgumentException("version applies only to Easy Dashboards. Omit it for a legacy dashboard.")
+    }
     if (args.options != null) {
         throw new IllegalArgumentException("options applies only to Easy Dashboards. A legacy dashboard's look lives in its layout -- create it first, then pass setOptions/addTiles to hub_update_dashboard.")
     }
@@ -1022,6 +1025,7 @@ def _getAllToolDefinitions_partDashboards() {
                     name: [type: "string", description: "Display name."],
                     type: [type: "string", enum: ["easy", "legacy"], description: "Dashboard kind: 'easy' (default) or 'legacy' Hubitat® Dashboard."],
                     deviceIds: [type: "array", description: "Device ids. Required (>=1, runtime-enforced) for an Easy Dashboard; for a legacy dashboard these are its authorized devices (optional).", items: [type: "string"]],
+                    version: [type: "string", description: "Easy-only: dashboard version sent on create. Default 2.0."],
                     options: [type: "object", description: "Easy-only optional config; see hub_get_tool_guide(section='dashboards'). Rejected for type='legacy'."]
                 ],
                 required: ["name"]
@@ -6451,10 +6455,6 @@ private TimeZone _hubTimeZone() {
 def toolGetHubLogs(args) {
     Map modeArgs = _logsModeArgs()
     List allModeArgs = modeArgs.values().flatten().unique()
-    List unknown = args.keySet()*.toString().findAll(this.&_logsUnknownArg.curry(allModeArgs))
-    if (unknown) {
-        throw new IllegalArgumentException("Unknown parameter${unknown.size() == 1 ? '' : 's'} for hub_get_logs: ${unknown.join(', ')}. Search a row's name and text with pattern, and scope with deviceId or appId.")
-    }
     List modes = args.mode instanceof List ? args.mode*.toString().unique() : [args.mode == null ? "past" : args.mode.toString()]
     if (!modes) throw new IllegalArgumentException("mode must name at least one tab")
     for (m in modes) {
@@ -6575,9 +6575,6 @@ def toolGetHubLogs(args) {
 }
 private boolean _argPresent(Map args, key) {
     return args[key] != null
-}
-private boolean _logsUnknownArg(List allowed, String key) {
-    return !(key in allowed) && key != "mode" && !key.startsWith("__")
 }
 private boolean _logsHasFetchSnapshot(r) {
     return r.snapshot instanceof Map && r.snapshot.background != null
@@ -9999,18 +9996,11 @@ private Set _selectedAndChildIds(List children) {
 private Set _mcpAuthorizedIds(List children) {
     return _bypassEnabled() ? null : _selectedAndChildIds(children)
 }
-private List _listDevicesArgNames() {
-    ["scope", "format", "labelFilter", "capabilityFilter", "roomFilter", "disabled", "staleHours",
-     "changedSince", "stateFilter", "attributeNames", "fields", "limit", "cursor"]
-}
 private List _listDeviceFieldNames() {
     ["id", "label", "name", "driver", "room", "roomId", "disabled", "deviceNetworkId", "lastActivity", "protocol",
      "parentDeviceId", "mcpManaged", "linked", "tags", "notes", "source", "currentStates", "capabilities", "attributes", "commands"]
 }
 private Map _listDevicesOptions(Map args) {
-    List known = _listDevicesArgNames()
-    def unknown = args.keySet().findAll { !it.toString().startsWith("__") && !(it in known) }
-    if (unknown) throw new IllegalArgumentException("Unknown argument: ${unknown.join(', ')}. Valid arguments: ${known.join(', ')}")
     if (args.scope != null && !(args.scope in ["authorized", "all", "owned"])) {
         throw new IllegalArgumentException("scope must be one of: authorized, all, owned (got: '${args.scope}')")
     }
@@ -12670,8 +12660,6 @@ private Map _resolveDeviceRoom(String room, boolean byId = false) {
 def toolUpdateDevice(args) {
     def deviceId = _canonicalDeviceIdArg(args.deviceId)
     if (deviceId == null) throw new IllegalArgumentException("deviceId is required")
-    def unknown = args.keySet().findAll { !(it in ['deviceId', 'fields', 'preferences', 'confirm', 'bestPracticeKey']) }
-    if (unknown) throw new IllegalArgumentException("Unknown argument ${unknown.join(', ')}; device fields go in fields and driver preferences in preferences")
     def fieldsArg = args.get('fields')
     if (fieldsArg != null && !(fieldsArg instanceof Map)) throw new IllegalArgumentException("fields must be an object keyed by editable field name")
     if (args.preferences != null && !(args.preferences instanceof Map)) throw new IllegalArgumentException("preferences must be an object keyed by declared preference name")
@@ -13841,6 +13829,7 @@ If no exact device match: suggest similar devices and get user confirmation befo
                         ]
                     ],
                     parameters: [type: "array", description: "Ordered command arguments as an array of strings, in the order the command declares them, e.g. [\"75\"] for setLevel[[FLAT_TRIM]] or [\"#FF0000\"] for setColor[[/FLAT_TRIM]].", items: [type: "string"]],
+                    includeState: [type: "boolean", description: "false skips the state read-back after the command. Default true."],
                     waitFor: [type: "object", description: "Optional: after firing the command, block-poll an attribute for an expected value; check waitFor.converged to confirm the resulting state.[[FLAT_TRIM]] The native `state` snapshot is read after dispatch and any poll. Without waitFor it is an immediate read that may show the prior or resulting value.[[/FLAT_TRIM]]", properties: [
                         attribute: [type: "string", description: "Attribute to poll until it converges, e.g. \"switch\". NOT checked before the command fires (native metadata lists reported attributes only): a name the device never reports times out with neverReported after the command has already executed."],
                         expectedValue: [type: "string", description: "Awaited value: eq/ne in-set, or gt/gte/lt/lte numeric threshold."],
@@ -16510,8 +16499,6 @@ private List _nameFiltered(List rows, filter) {
     return rows.findAll { it instanceof Map && (stripAppConfigHtml(it.name) ?: "").toLowerCase().contains(f) }
 }
 def toolListHubDrivers(args) {
-    def unknown = ((args ?: [:]).keySet() - ["include", "cursor", "nameFilter"]).sort()
-    if (unknown) throw new IllegalArgumentException("hub_list_drivers does not take ${unknown.join(', ')}. Valid arguments: include, nameFilter, cursor.")
     def cursor = args?.cursor
     def include = (args?.include ?: "user").toString().toLowerCase()
     if (!(include in ["user", "all"])) throw new IllegalArgumentException("include must be 'user' or 'all' (got '${args.include}').")
@@ -17570,9 +17557,7 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args, Map packa
     if (modesSet > 1) {
         throw new IllegalArgumentException("Provide exactly one of 'source', 'sourceFile', 'importUrl', or 'resave'")
     }
-    if (args.containsKey('expectedVersion') && args.expectedVersion == null) {
-        throw new IllegalArgumentException("expectedVersion was supplied as null. Omit the field entirely to skip the optimistic-lock check, or pass an integer.")
-    }
+    Integer expectedVersion = _expectedVersionArg(args)
     def itemIdInt
     try {
         itemIdInt = itemId as Integer
@@ -17650,70 +17635,34 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args, Map packa
         }
     }
     if (noBackupReason) mcpLog("info", "hub-admin", "Pre-update source backup skipped for ${type} ID ${itemId}: ${noBackupReason}")
-    def currentVersion = freshVersion
-    if (currentVersion == null) currentVersion = _itemRowVersion(type, itemId)
-    if (currentVersion == null) {
+    def sentVersion = freshVersion
+    if (sentVersion == null && itemBackup?.fresh == true) sentVersion = itemBackup.version
+    if (sentVersion == null) sentVersion = _itemRowVersion(type, itemId)
+    if (sentVersion == null) {
         try {
             def versionResponse = hubInternalGet(ajaxPath, [id: itemId])
-            if (versionResponse) {
-                def versionParsed = new groovy.json.JsonSlurper().parseText(versionResponse)
-                currentVersion = versionParsed.version
-            }
+            if (versionResponse) sentVersion = new groovy.json.JsonSlurper().parseText(versionResponse).version
         } catch (Exception vErr) {
-            mcpLog("warn", "hub-admin", "Could not fetch fresh version for ${type} ID ${itemId}, falling back to backup version: ${vErr.message}")
+            mcpLog("warn", "hub-admin", "Could not read the current version of ${type} ID ${itemId}: ${vErr.message}")
         }
-        if (currentVersion == null) currentVersion = itemBackup?.version
+        if (sentVersion == null && expectedVersion == null && !isSelfUpdate) sentVersion = itemBackup?.version
     }
-    if (currentVersion == null) {
+    if (sentVersion == null) {
         throw new IllegalArgumentException("Could not determine current version for ${type} ID ${itemId}. The ${type} may not exist.")
     }
-    if (args.containsKey('expectedVersion')) {
-        def expectedVersionInt
-        try {
-            expectedVersionInt = args.expectedVersion as Integer
-        } catch (NumberFormatException | ClassCastException coerceErr) {
-            throw new IllegalArgumentException("expectedVersion must be an integer (got '${args.expectedVersion}'): ${coerceErr.message}")
-        }
-        def currentVersionInt
-        try {
-            currentVersionInt = currentVersion as Integer
-        } catch (NumberFormatException | ClassCastException currErr) {
-            mcpLog("error", "hub-admin", "Hub returned non-integer version for ${type} ${itemId}: ${currentVersion}; aborting optimistic-lock evaluation to avoid an unguarded write")
-            throw new IllegalArgumentException("Cannot evaluate expectedVersion: hub returned a non-integer current version (${currentVersion}). Update aborted to avoid an unguarded write.")
-        }
-        if (expectedVersionInt != currentVersionInt) {
-            mcpLog("warn", "hub-admin", "${type} update ID ${itemId} aborted: expectedVersion=${expectedVersionInt} but currentVersion=${currentVersionInt} (concurrent edit detected)")
-            return [
-                success: false,
-                error: "Optimistic-lock conflict: expected ${type} version ${expectedVersionInt} but hub has ${currentVersionInt}. Re-read the source and retry with the new expectedVersion.",
-                (idParam): itemId,
-                expectedVersion: expectedVersionInt,
-                currentVersion: currentVersionInt,
-                conflict: true,
-                lastBackup: formatTimestamp(state.lastBackupTimestamp)
-            ]
-        }
+    if (expectedVersion != null && sentVersion.toString() != expectedVersion.toString()) {
+        return _versionConflictResult(type, idParam, itemId, expectedVersion, sentVersion)
     }
     if (type == "app" && selfClassIdUnavailable && sourceCode.length() > 500000) {
         mcpLog("warn", "hub-admin", "hub_update_app: large app-source update to id ${itemId} but the self app-class lookup returned null -- if this IS the MCP server, #237 self-deploy error capture is disabled for this deploy.")
     }
-    mcpLog("info", "hub-admin", "Updating ${type} ID: ${itemId} (version: ${currentVersion}, mode: ${sourceMode}, sourceLength: ${sourceCode.length()})")
+    mcpLog("info", "hub-admin", "Updating ${type} ID: ${itemId} (version: ${sentVersion}, mode: ${sourceMode}, sourceLength: ${sourceCode.length()})")
     int sourceLen = sourceCode.length()
     try {
-        def saveBody = groovy.json.JsonOutput.toJson([id: itemIdInt, source: sourceCode, version: currentVersion])
-        def parsed = null
-        if (isSelfUpdate) {
-            try {
-                parsed = hubInternalPostJson(savePath, saveBody, _selfSaveRequestTimeoutSec())
-            } catch (Exception postErr) {
-                if (!(postErr.toString() =~ /(?i)time.?out/)) throw postErr
-                mcpLog("info", "hub-admin", "Self save POST for ${type} ID ${itemId} gave no answer within ${_selfSaveRequestTimeoutSec()}s; the hub keeps compiling -- confirming by version")
-            }
-            saveBody = null
-            sourceCode = null
-        } else {
-            parsed = hubInternalPostJson(savePath, saveBody)
-        }
+        def parsed = _postItemSave(type, itemIdInt, sourceCode, sentVersion, isSelfUpdate, itemId)
+        def stale = _staleVersionRejection(parsed)
+        sourceCode = null
+        if (stale != null) return _versionConflictResult(type, idParam, itemId, sentVersion, stale.currentVersion, expectedVersion != null)
         def success = false
         def errorMsg = null
         if (parsed instanceof Map) {
@@ -17748,7 +17697,7 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args, Map packa
                 if (success && parsed == null) {
                     stash.assumed = true
                     stash.status = "saving"
-                    stash.startedVersion = currentVersion
+                    stash.startedVersion = sentVersion
                     stash.appId = itemId.toString()
                 }
                 atomicState.lastSelfDeploy = stash
@@ -17758,7 +17707,7 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args, Map packa
         }
         Map landed = null
         if (success && isSelfUpdate && parsed == null) {
-            landed = _awaitSelfSave(type, itemId, currentVersion,
+            landed = _awaitSelfSave(type, itemId, sentVersion,
                 packageWorkerContext != null ? _packageSelfSaveWaitMs() : _selfSaveWaitMs())
             if (landed != null) _settleSelfDeploy(landed.version)
         }
@@ -17768,7 +17717,7 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args, Map packa
                 success: true,
                 message: "${type.capitalize()} code updated successfully",
                 (idParam): itemId,
-                previousVersion: currentVersion,
+                previousVersion: sentVersion,
                 sourceMode: sourceMode,
                 sourceLength: sourceLen,
                 lastBackup: formatTimestamp(state.lastBackupTimestamp)
@@ -17780,7 +17729,7 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args, Map packa
                 } else {
                     successResult.assumed = true
                     successResult.status = "saving"
-                    successResult.note = "The hub accepted the save and is still compiling it. Poll hub_get_info.lastSelfDeploy: status disappears and confirmedVersion appears once the App Code version passes ${currentVersion}; a record still saving after 20 minutes turns into a failure."
+                    successResult.note = "The hub accepted the save and is still compiling it. Poll hub_get_info.lastSelfDeploy: status disappears and confirmedVersion appears once the App Code version passes ${sentVersion}; a record still saving after 20 minutes turns into a failure."
                 }
             }
             def modeNote = null
@@ -17840,13 +17789,18 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args, Map packa
             }
             return successResult
         } else {
-            return [
+            def out = [
                 success: false,
                 error: errorMsg ?: "Update failed - the hub returned an error",
                 (idParam): itemId,
                 note: "Check the Groovy source code for syntax errors or compilation issues.",
                 lastBackup: formatTimestamp(state.lastBackupTimestamp)
             ]
+            if (_isConcurrentSaveRefusal(type, errorMsg)) {
+                out.note = _concurrentSaveNote(type)
+                out.retryable = true
+            }
+            return out
         }
     } catch (Exception e) {
         mcpLogError("hub-admin", "${type} update failed", e)
@@ -17876,6 +17830,64 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args, Map packa
             lastBackup: formatTimestamp(state.lastBackupTimestamp)
         ]
     }
+}
+private Integer _expectedVersionArg(args) {
+    if (!(args instanceof Map) || !args.containsKey('expectedVersion')) return null
+    def version = args.expectedVersion
+    if (version == null) {
+        throw new IllegalArgumentException("expectedVersion was supplied as null. Omit the field entirely to skip the optimistic-lock check, or pass an integer.")
+    }
+    if (!(version instanceof Integer || version instanceof Long) || version < 0 || version > 2147483647L) {
+        throw new IllegalArgumentException("expectedVersion must be an integer (got '${version}'): pass the version number hub_get_source returned, unchanged.")
+    }
+    return version as Integer
+}
+private _postItemSave(String type, Integer itemIdInt, String sourceCode, version, boolean isSelfUpdate, itemId) {
+    String savePath = type == "app" ? "/app/saveOrUpdateJson" : "/driver/saveOrUpdateJson"
+    String saveBody = groovy.json.JsonOutput.toJson([id: itemIdInt, source: sourceCode, version: version])
+    if (!isSelfUpdate) return hubInternalPostJson(savePath, saveBody)
+    try {
+        return hubInternalPostJson(savePath, saveBody, _selfSaveRequestTimeoutSec())
+    } catch (Exception postErr) {
+        if (!(postErr.toString() =~ /(?i)time.?out/)) throw postErr
+        mcpLog("info", "hub-admin", "Self save POST for ${type} ID ${itemId} gave no answer within ${_selfSaveRequestTimeoutSec()}s; the hub keeps compiling -- confirming by version")
+        return null
+    }
+}
+private Map _staleVersionRejection(parsed) {
+    if (!(parsed instanceof Map) || parsed.success == true) return null
+    String msg = (parsed.message ?: parsed.errorMessage)?.toString()
+    if (!msg || !(msg =~ /(?i)version does not match/)) return null
+    def m = msg =~ /(?i)current version is (\d+)/
+    return [currentVersion: m.find() ? (m.group(1) as Integer) : null]
+}
+private boolean _isConcurrentSaveRefusal(String type, msg) {
+    String text = msg?.toString()?.trim()
+    if (!text) return false
+    if (type == "driver") return text == "java.sql.SQLException: Failed to update device type"
+    return type == "app" && text ==~ /\.\/appTargetDir\/user_app_.+_\d+\.groovy/
+}
+private String _concurrentSaveNote(String type) {
+    return "This is the hub's answer when another save of this ${type} runs at the same moment; the source itself was not rejected. Wait a moment, re-read the ${type} (its version may have changed), then retry. Send saves of the same ${type} one at a time. See ${_codeGuidePointer()}.".toString()
+}
+private String _codeGuidePointer() { "hub_get_tool_guide(section='hub_admin_write_code')" }
+private Map _versionConflictResult(String type, String idParam, itemId, sentVersion, currentVersion, boolean callerLocked = true) {
+    String hubSide = currentVersion != null ? "hub has ${currentVersion}" : "the hub reports a different version"
+    mcpLog("warn", "hub-admin", "${type} update ID ${itemId} refused: version ${sentVersion} is stale (${hubSide}); nothing was written")
+    String error = callerLocked ?
+        "Optimistic-lock conflict: expected ${type} version ${sentVersion} but ${hubSide}. Nothing was written. Re-read the source and retry with the new expectedVersion." :
+        "Another save of this ${type} landed while this one was being sent, so the hub refused it (${hubSide}). Nothing was written. Re-read the source and send your change again."
+    def out = [
+        success: false,
+        error: error.toString(),
+        (idParam): itemId,
+        conflict: true,
+        note: "Another save changed this ${type}. Read it again with hub_get_source, reapply your change to that source, and pass its version as expectedVersion. See ${_codeGuidePointer()}.".toString(),
+        lastBackup: formatTimestamp(state.lastBackupTimestamp)
+    ]
+    if (callerLocked) out.expectedVersion = sentVersion
+    if (currentVersion != null) out.currentVersion = currentVersion
+    return out
 }
 private Map _validatedPackageWorkerContext(packageWorkerContext) {
     if (!(packageWorkerContext instanceof Map) || packageWorkerContext.requestId == null ||
@@ -18016,6 +18028,7 @@ def toolUpdateDriverCode(args) {
         if (args.updates.isEmpty()) {
             throw new IllegalArgumentException("'updates' array must not be empty.")
         }
+        List bulkEntryKeys = _toolCatalogIndexes().updateEntryArgs.hub_update_driver
         def itemResults = []
         def allSucceeded = true
         for (int idx = 0; idx < args.updates.size(); idx++) {
@@ -18028,6 +18041,12 @@ def toolUpdateDriverCode(args) {
             def item = args.updates[idx]
             if (!(item instanceof Map) || !item.driverId) {
                 itemResults << [driverId: item?.driverId?.toString() ?: "item[${idx}]", success: false, error: "Each updates entry must have a 'driverId' field."]
+                allSucceeded = false
+                continue
+            }
+            def unknownKeys = item.keySet().collect { it as String }.findAll { !(it in bulkEntryKeys) }
+            if (unknownKeys) {
+                itemResults << [driverId: item.driverId.toString(), success: false, error: "Unknown updates[] argument${unknownKeys.size() == 1 ? '' : 's'}: ${unknownKeys.sort().join(', ')}. Nothing was changed for this driver. Valid arguments: ${bulkEntryKeys.join(', ')}.", note: "Correct or remove the key and send this entry again. See ${_codeGuidePointer()}.".toString()]
                 allSucceeded = false
                 continue
             }
@@ -18047,11 +18066,12 @@ def toolUpdateDriverCode(args) {
                 } else {
                     entry.error = r.error ?: "Update failed"
                     if (r.note) entry.note = r.note
+                    if (r.retryable) entry.retryable = true
                     if (r.lastBackup) entry.lastBackup = r.lastBackup
                     if (r.conflict) {
                         entry.conflict = true
-                        entry.expectedVersion = r.expectedVersion
-                        entry.currentVersion = r.currentVersion
+                        if (r.containsKey('expectedVersion')) entry.expectedVersion = r.expectedVersion
+                        if (r.currentVersion != null) entry.currentVersion = r.currentVersion
                     }
                     allSucceeded = false
                 }
@@ -18182,7 +18202,7 @@ private Map _backupLibrarySourceLocked(String libraryId) {
     ]
     _publishUploadedItemBackup(key, entry)
     mcpLog("info", "hub-admin", "Backed up library ID ${libraryId} source to File Manager: ${fileName} (version ${libData.version}, ${backupSource.length()} chars)")
-    return entry
+    return entry + [fresh: true]
 }
 def toolGetLibrarySource(args) {
     def libraryId = args.libraryId
@@ -18377,6 +18397,7 @@ def toolUpdateLibraryCode(args) {
     def libraryId = args.libraryId
     if (!libraryId) throw new IllegalArgumentException("libraryId is required")
     if (!libraryId.toString().isInteger() || libraryId.toString().toInteger() <= 0) throw new IllegalArgumentException("libraryId must be a positive integer (got: '${libraryId}')")
+    Integer expectedVersion = _expectedVersionArg(args)
     def sourceCode = null
     def sourceMode = null
     def freshVersion = null
@@ -18420,8 +18441,6 @@ def toolUpdateLibraryCode(args) {
     } else {
         throw new IllegalArgumentException("One of 'source', 'sourceFile', 'importUrl', or 'resave' is required")
     }
-    def backupFileName = null
-    def existingEntry = null
     def backupEntry = null
     def noBackupReason = null
     if (sourceMode == "importUrl") noBackupReason = "the source came from a URL, so its history lives where that URL is published"
@@ -18430,50 +18449,38 @@ def toolUpdateLibraryCode(args) {
         mcpLog("info", "hub-admin", "Pre-update source backup skipped for library ${libraryId}: ${noBackupReason}")
     } else {
         try {
-            _withBackupLock("update library ${libraryId}") {
-                existingEntry = _reusableItemBackup(_itemBackupManifest(), "library_${libraryId}".toString(), "Library")
-                if (existingEntry != null) {
-                    backupFileName = existingEntry.fileName
-                } else {
-                    backupEntry = backupLibrarySource(libraryId.toString())
-                    backupFileName = backupEntry.fileName
-                }
-            }
+            backupEntry = backupLibrarySource(libraryId.toString())
         } catch (Exception backupErr) {
             Map unavailable = _itemBackupIndexUnavailableResult(backupErr)
             if (unavailable == null) throw backupErr
             return unavailable + [libraryId: libraryId]
         }
     }
-    def skipBackup = backupEntry == null
+    def sentVersion = freshVersion
+    if (sentVersion == null && backupEntry?.fresh == true) sentVersion = backupEntry.version
     def versionFetchError = null
-    if (skipBackup) {
-        if (freshVersion == null) {
-            try {
-                def versionText = hubInternalGet("/library/list/single/data/${libraryId}")
-                if (versionText) {
-                    def versionParsed = new groovy.json.JsonSlurper().parseText(versionText)
-                    if (versionParsed instanceof List && !versionParsed.isEmpty()) {
-                        freshVersion = versionParsed[0]?.version
-                    }
-                }
-            } catch (Exception vErr) {
-                versionFetchError = vErr.message ?: vErr.toString()
-                mcpLog("warn", "hub-admin", "Could not fetch fresh version for library ID ${libraryId}, falling back to backup version: ${versionFetchError}")
-            }
-            if (freshVersion == null) freshVersion = existingEntry?.version
+    if (sentVersion == null) {
+        try {
+            def versionText = hubInternalGet("/library/list/single/data/${libraryId}")
+            def versionParsed = versionText ? new groovy.json.JsonSlurper().parseText(versionText) : null
+            if (versionParsed instanceof List && !versionParsed.isEmpty()) sentVersion = versionParsed[0]?.version
+        } catch (Exception vErr) {
+            versionFetchError = vErr.message ?: vErr.toString()
+            mcpLog("warn", "hub-admin", "Could not read the current version of library ID ${libraryId}: ${versionFetchError}")
         }
-    } else if (freshVersion == null) {
-        freshVersion = backupEntry.version
+        if (sentVersion == null && expectedVersion == null) sentVersion = backupEntry?.version
     }
-    if (freshVersion == null) {
-        throw new IllegalArgumentException("Could not determine current version for library ID ${libraryId} -- version fetch failed (${versionFetchError ?: 'unknown'}) and cached backup has no version. Check that the library exists.")
+    if (sentVersion == null) {
+        throw new IllegalArgumentException("Could not determine current version for library ID ${libraryId} -- version fetch failed (${versionFetchError ?: 'unknown'}) and no usable backup has a version. Check that the library exists.")
     }
-    def currentVersion = freshVersion
-    mcpLog("info", "hub-admin", "Updating library ID: ${libraryId} (version: ${currentVersion}, mode: ${sourceMode}, sourceLength: ${sourceCode.length()})")
+    if (expectedVersion != null && sentVersion.toString() != expectedVersion.toString()) {
+        return _versionConflictResult("library", "libraryId", libraryId, expectedVersion, sentVersion)
+    }
+    mcpLog("info", "hub-admin", "Updating library ID: ${libraryId} (version: ${sentVersion}, mode: ${sourceMode}, sourceLength: ${sourceCode.length()})")
     try {
-        def body = groovy.json.JsonOutput.toJson([id: libraryId as Integer, source: sourceCode, version: currentVersion as Integer])
-        def result = hubInternalPostJson("/library/saveOrUpdateJson", body)
+        def result = _postLibrarySave(libraryId, sourceCode, sentVersion)
+        def stale = _staleVersionRejection(result)
+        if (stale != null) return _versionConflictResult("library", "libraryId", libraryId, sentVersion, stale.currentVersion, expectedVersion != null)
         if (result?.success == false) {
             def msg = result?.message ?: "Hub returned failure"
             mcpLog("warn", "hub-admin", "Library update failed: ${msg}")
@@ -18489,7 +18496,7 @@ def toolUpdateLibraryCode(args) {
             success: true,
             message: "Library code updated successfully",
             libraryId: libraryId,
-            previousVersion: currentVersion,
+            previousVersion: sentVersion,
             newVersion: result?.version,
             sourceMode: sourceMode,
             sourceLength: sourceCode.length(),
@@ -18503,6 +18510,10 @@ def toolUpdateLibraryCode(args) {
         mcpLogError("hub-admin", "Library update failed", e)
         return [success: false, error: "Library update failed: ${e.message}"]
     }
+}
+private _postLibrarySave(libraryId, String sourceCode, version) {
+    def body = groovy.json.JsonOutput.toJson([id: libraryId as Integer, source: sourceCode, version: version as Integer])
+    return hubInternalPostJson("/library/saveOrUpdateJson", body)
 }
 def toolDeleteLibrary(args) {
     requireDestructiveConfirm(args.confirm)
@@ -18877,6 +18888,7 @@ A transport drop can lose the response while the hub still commits this write; v
 """,
             inputSchema: [
                 type: "object",
+                additionalProperties: false,
                 properties: [
                     appId: [type: "string", description: "The app ID (Apps Code id) to update"],
                     source: [type: "string", description: "Inline Groovy source (stubs only)."],
@@ -18884,10 +18896,11 @@ A transport drop can lose the response while the hub still commits this write; v
                     importUrl: [type: "string", description: "URL the hub fetches directly (http/https)."],
                     resave: [type: "boolean", description: "Re-save the current source without changes.[[FLAT_TRIM]] Runs entirely on-hub.[[/FLAT_TRIM]]"],
                     backup: [type: "boolean", description: "false: no pre-save backup.[[FLAT_TRIM]] Default true: the current source goes to File Manager first (hub_list_backups scope=source). Never taken in importUrl mode: the URL's publisher keeps the history.[[/FLAT_TRIM]]"],
-                    expectedVersion: [type: "integer", description: "OPTIONAL optimistic-lock guard; aborts with conflict:true on mismatch.[[FLAT_TRIM]] Stringified integers coerced; explicit null rejected.[[/FLAT_TRIM]]"],
-                    triggerUpdated: [type: "integer", description: "OPTIONAL: running instance appId to refresh via updated() after saving code; re-initializes subscriptions, schedules and atomicState. Protected targets require Developer Mode. Submits mainPage's Done form, RE-SENDING EVERY input from live settings. If live settings cannot be read, refuses the submit to avoid clearing device selections. On refusal/failure, saved code remains deployed: success:true, partial:true, updatedFired:false and repairHints. Omit for the hub editor's normal Save behavior (no lifecycle refresh)."],
+                    expectedVersion: [type: "integer", description: "OPTIONAL lock: saves only if the code is still at this version, else conflict:true, no write."],
+                    triggerUpdated: [type: "integer", description: "OPTIONAL: running instance appId to refresh via updated() after saving, by re-submitting its mainPage Done form from live settings.[[FLAT_TRIM]] Protected targets require Developer Mode; unreadable live settings refuse the submit; on refusal/failure the code stays deployed (success:true, partial:true, updatedFired:false, repairHints). Omit for the editor's plain Save.[[/FLAT_TRIM]]"],
                     oauth: [type: "object", description: "OPTIONAL: enable/configure OAuth on this app (apps only); e.g. {enabled:true}. Full shape: hub_get_tool_guide(section='hub_admin_write_code')."],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."],
+                    bestPracticeKey: [type: "string"]
                 ],
                 required: ["appId", "confirm"]
             ]
@@ -18905,6 +18918,7 @@ MCP 2026-07-28 clients automatically continue this slow write and can replay its
 """,
             inputSchema: [
                 type: "object",
+                additionalProperties: false,
                 properties: [
                     driverId: [type: "string", description: "The driver ID to update (single-driver mode). Omit when using 'updates' array."],
                     source: [type: "string", description: "Inline Groovy source (stubs only)."],
@@ -18912,12 +18926,13 @@ MCP 2026-07-28 clients automatically continue this slow write and can replay its
                     importUrl: [type: "string", description: "URL the hub fetches directly (http/https)."],
                     resave: [type: "boolean", description: "Re-save the current source without changes.[[FLAT_TRIM]] Runs entirely on-hub.[[/FLAT_TRIM]]"],
                     backup: [type: "boolean", description: "false: no pre-save backup.[[FLAT_TRIM]] Default true: the current source goes to File Manager first (hub_list_backups scope=source). Never taken in importUrl mode: the URL's publisher keeps the history.[[/FLAT_TRIM]]"],
-                    expectedVersion: [type: "integer", description: "Optional optimistic-lock guard; aborts with conflict:true on mismatch.[[FLAT_TRIM]] In bulk mode, put it inside each updates[] entry.[[/FLAT_TRIM]]"],
+                    expectedVersion: [type: "integer", description: "OPTIONAL lock: saves only if the code is still at this version, else conflict:true, no write.[[FLAT_TRIM]] Bulk: inside each updates[] entry.[[/FLAT_TRIM]]"],
                     updates: [
                         type: "array",
                         description: "Bulk mode: one round-trip for many drivers. Each entry {driverId, sourceFile|source|importUrl|resave, optional expectedVersion}; cannot mix with single-driver fields; continue-on-error.",
                         items: [
                             type: "object",
+                            additionalProperties: false,
                             properties: [
                                 driverId: [type: "string", description: "The driver ID to update"],
                                 sourceFile: [type: "string", description: "File Manager filename (preferred)."],
@@ -18925,12 +18940,13 @@ MCP 2026-07-28 clients automatically continue this slow write and can replay its
                                 importUrl: [type: "string", description: "URL the hub fetches directly."],
                                 resave: [type: "boolean", description: "Re-save without changes."],
                                 backup: [type: "boolean"],
-                                expectedVersion: [type: "integer", description: "OPTIONAL optimistic-lock guard for this item only."]
+                                expectedVersion: [type: "integer", description: "OPTIONAL lock for this item only."]
                             ],
                             required: ["driverId"]
                         ]
                     ],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."],
+                    bestPracticeKey: [type: "string"]
                 ],
                 required: ["confirm"]
             ]
@@ -18993,6 +19009,7 @@ A transport drop can lose the response while the hub still commits this write; v
 """,
             inputSchema: [
                 type: "object",
+                additionalProperties: false,
                 properties: [
                     libraryId: [type: "string", description: "The library ID to update"],
                     source: [type: "string", description: "Inline source (stubs only)."],
@@ -19000,7 +19017,9 @@ A transport drop can lose the response while the hub still commits this write; v
                     importUrl: [type: "string", description: "URL the hub fetches directly (http/https)."],
                     resave: [type: "boolean", description: "Re-save the current source without changes.[[FLAT_TRIM]] Runs entirely on-hub.[[/FLAT_TRIM]]"],
                     backup: [type: "boolean", description: "false: no pre-save backup.[[FLAT_TRIM]] Default true: the current source goes to File Manager first (hub_list_backups scope=source). Never taken in importUrl mode: the URL's publisher keeps the history.[[/FLAT_TRIM]]"],
+                    expectedVersion: [type: "integer", description: "OPTIONAL lock: saves only if the code is still at this version, else conflict:true, no write."],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."],
+                    bestPracticeKey: [type: "string"]
                 ],
                 required: ["libraryId", "confirm"]
             ]
@@ -24450,7 +24469,6 @@ private Map _naOperationSchema(String operation) {
     throw new IllegalArgumentException('Unknown native app operation; use create, update or form')
 }
 Map toolSetNativeApp(Map request) {
-    if (request.keySet().any { !(it in ['operation', 'app_id', 'args', 'confirm', 'bestPracticeKey']) }) throw new IllegalArgumentException('Unknown hub_set_native_app property; use operation, app_id, args and confirm')
     if (request.containsKey('confirm') && !(request.confirm instanceof Boolean)) throw new IllegalArgumentException('confirm must be boolean')
     if (request.containsKey('app_id')) _ndValidateSchema(request.app_id, [type: 'integer', minimum: 1], 'app_id', true)
     if (request.containsKey('args') && !(request.args instanceof Map)) throw new IllegalArgumentException('args must be an object')
@@ -26367,7 +26385,6 @@ private void _ndValidateSchema(Object value, Map schema, String path, boolean co
     } else if (schema.minimum != null && value < schema.minimum) throw new IllegalArgumentException("Invalid ${path}")
 }
 Map toolSetRule(Map request) {
-    if (request.keySet().any { !(it in ['operation', 'rule_id', 'args', 'confirm', 'bestPracticeKey']) }) throw new IllegalArgumentException('Unknown hub_set_rule property')
     if (request.containsKey('confirm') && !(request.confirm instanceof Boolean)) throw new IllegalArgumentException('confirm must be boolean')
     if (request.containsKey('rule_id')) _ndValidateSchema(request.rule_id, [type: 'integer', minimum: 1], 'rule_id', true)
     if (request.containsKey('args') && !(request.args instanceof Map)) throw new IllegalArgumentException('args must be an object')
@@ -29560,6 +29577,8 @@ private void _mrtrValidateAccess(outerToolName, leafToolName, Map outerArgs, boo
     }
     String clientDenial = _clientToolDenial(leaf, leafArgs)
     if (clientDenial != null) throw new IllegalArgumentException(clientDenial)
+    if (outer != leaf) _rejectUnknownArgs(outer, outerArgs)
+    _rejectUnknownArgs(leaf, leafArgs)
     if (checkKey && !readLeaf && settings.enableMandatoryBPS != false) {
         String bpsSection = _bpsSectionForTool(leaf)
         def bpsKey = hubBpsKeyFromArgs(leafArgs)
@@ -31877,17 +31896,35 @@ private Map _toolCatalogIndexes() {
     def cached = _toolMetadataGet("catalogIndexes")
     if (cached != null) return cached as Map
     def required = [:]
+    def argNames = [:]
+    def updateEntryArgs = [:]
     def names = [] as Set
     getAllToolDefinitions().each { tool ->
         String name = tool.name as String
         names << name
         def req = tool?.inputSchema?.required
         if (req instanceof List && !req.isEmpty()) required.put(name, req.collect { it as String })
+        if (!_argCheckFrozen(name)) argNames.put(name, ((tool?.inputSchema?.properties ?: [:]) as Map).keySet().collect { it as String })
+        def entryProps = tool?.inputSchema?.properties?.updates?.items?.properties
+        if (entryProps instanceof Map) updateEntryArgs.put(name, entryProps.keySet().collect { it as String })
     }
-    return _toolMetadataPut("catalogIndexes", [required: required, names: names]) as Map
+    return _toolMetadataPut("catalogIndexes", [required: required, argNames: argNames, updateEntryArgs: updateEntryArgs, names: names]) as Map
 }
 def requiredParamsByTool() {
     return _toolCatalogIndexes().required
+}
+private boolean _argCheckFrozen(String name) {
+    return name.endsWith("_custom_rule") || name in ["hub_manage_custom_rules", "hub_list_captured_states", "hub_delete_captured_state"]
+}
+def _rejectUnknownArgs(toolName, args) {
+    def allowed = _toolCatalogIndexes().argNames[toolName as String]
+    if (allowed == null && getGatewayConfig().containsKey(toolName as String) && !_argCheckFrozen(toolName as String)) allowed = ["tool", "args"]
+    if (allowed == null || !(args instanceof Map)) return
+    def unknown = (args as Map).keySet().collect { it as String }.findAll {
+        !allowed.contains(it) && it != "bestPracticeKey" && !it.startsWith("__")
+    }
+    if (!unknown) return
+    throw new IllegalArgumentException("Unknown ${_externalToolName(toolName as String)} argument${unknown.size() == 1 ? '' : 's'}: ${unknown.sort().join(', ')}. Nothing was changed. ${allowed ? "Valid arguments: ${allowed.join(', ')}." : 'This tool takes no arguments.'}${toolName == 'hub_update_device' ? ' Note: device fields go in fields and driver preferences in preferences.' : ''}")
 }
 def _isDeviceReplaceOptionsOnlyCall(toolName, args) {
     return toolName == 'hub_call_device_replace' && (args instanceof Map) && args.list_options == true
@@ -31950,13 +31987,14 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
             throw new IllegalArgumentException("${toolName} is not available in read-only mode. The Custom Rule Engine toggle is OFF. Turn it ON in MCP Rule Server settings to use create/delete/export/import/clone operations. NOTE: the custom MCP rule engine is legacy -- for new rule work prefer hub_manage_native_rules_and_apps.")
         }
     }
+    _rejectUnknownArgs(toolName, args)
     if (deviceReadContext != null && _mrtrSnapshotReadTools().contains(toolName?.toString())) {
         return _deviceReadSnapshot(toolName.toString(), args as Map, deviceReadContext)
     }
     switch (toolName) {
         case "hub_list_devices": return toolListDevices(args)
         case "hub_get_device": return toolGetDevice(args.deviceId, args.mode ?: "summary", args.sections, args.get("fields"), args.cursor)
-        case "hub_call_device_command": return toolSendCommand(args.deviceId, args.command, args.parameters, args.waitFor, args.commands, args.__reqT0)
+        case "hub_call_device_command": return toolSendCommand(args.deviceId, args.command, args.parameters, args.waitFor, args.commands, args.__reqT0, args.includeState != false)
         case "hub_call_device_swap": return toolCallDeviceSwap(args)
         case "hub_call_device_replace": return toolCallDeviceReplace(args)
         case "hub_list_device_events":
@@ -33337,7 +33375,7 @@ private Map _backupItemSourceLocked(String type, String id) {
     ]
     _publishUploadedItemBackup(key.toString(), entry)
     mcpLog("info", "hub-admin", "Backed up ${type} ID ${id} source code to File Manager: ${fileName} (version ${parsed.version}, ${parsed.source.length()} chars)")
-    return entry
+    return entry + [fresh: true]
 }
 String _stateOwnerKey() { app?.id?.toString() ?: "unidentified" }
 def _withBackupLock(String what, Closure work) {
@@ -34939,6 +34977,7 @@ def _guideSectionForTool(toolName) {
               'hub_create_device']) return 'hub_admin_write_devices'
     if (t in ['hub_delete_device', 'hub_delete_room', 'hub_delete_item', 'hub_reboot', 'hub_shutdown',
               'hub_update_firmware', 'hub_call_destructive_ops']) return 'hub_admin_write_destructive'
+    if (t in ['hub_update_app', 'hub_update_driver', 'hub_update_library', 'hub_create_app', 'hub_update_package']) return 'hub_admin_write_code'
     if (t == 'hub_get_device_attribute') return 'device_authorization'
     if (t == 'hub_report_issue') return 'performance_diagnostics'
     return null
@@ -34954,8 +34993,21 @@ def _reactiveBpsWarning(toolName, args, errorText) {
 }
 def _applyReactiveBpsWarning(toolName, args, result) {
     if (!(result instanceof Map) || result.containsKey('bp_warning')) return
+    if (_resultCitesGuide(result)) return
     def w = _reactiveBpsWarning(toolName, args, (result.error ?: result.note ?: '').toString())
     if (w) result.bp_warning = w
+}
+private boolean _resultCitesGuide(Map result) {
+    if (_entryCitesGuide(result)) return true
+    for (v in result.values()) {
+        if (!(v instanceof List)) continue
+        for (entry in v) { if (_entryCitesGuide(entry)) return true }
+    }
+    return false
+}
+private boolean _entryCitesGuide(entry) {
+    if (!(entry instanceof Map)) return false
+    return entry.error?.toString()?.contains('get_tool_guide') || entry.note?.toString()?.contains('get_tool_guide')
 }
 def getToolGuideSections() {
     return [
@@ -35013,6 +35065,11 @@ If you are calling one of these tools, you must read its section for that sectio
 - hub_update_dashboard -> dashboards
 - hub_delete_file -> file_manager
 - hub_write_file -> file_manager
+- hub_create_app -> hub_admin_write_code
+- hub_update_app -> hub_admin_write_code
+- hub_update_driver -> hub_admin_write_code
+- hub_update_library -> hub_admin_write_code
+- hub_update_package -> hub_admin_write_code
 - hub_call_destructive_ops -> hub_admin_write_destructive
 - hub_delete_device -> hub_admin_write_destructive
 - hub_delete_item -> hub_admin_write_destructive
@@ -35164,7 +35221,7 @@ The radio firmware-flash `action` values (the bullet above summarizes these as "
 - **Self-update guard rationale:** the tool refuses to overwrite the MCP server's own app source or OAuth unless Developer Mode is on because a bad self-update bricks the MCP loop — the server app's own OAuth backs the live `/mcp` token.
 - **A self-update does not wait for the compile.** The save POST is given 20 s; the hub finishes the compile on its own (a 2.6 MB parent takes minutes, past the platform's 300 s request cap). The result then carries `status: "saving"` with `assumed: true`, and `hub_get_info.lastSelfDeploy` settles it: `status` disappears and `confirmedVersion` appears once the App Code version passes `startedVersion`; a record still saving after 20 minutes becomes `success: false`. Do not resend the update while it is saving.
 - **`backup`** (default true): the current source is backed up to File Manager before the save (`hub_list_backups` scope=source). Pass `backup: false` to skip it. `importUrl` mode never takes one: the item's history lives where that URL is published. Same on hub_update_driver and hub_update_library.
-- **`triggerUpdated`:** OPTIONAL post-save lifecycle refresh. Set it to the running instance appId to fire `updated()` so subscriptions/schedules re-initialize. UI Save does NOT fire `updated()`, so this is opt-in only.
+- **`triggerUpdated`:** OPTIONAL post-save lifecycle refresh. Set it to the running instance appId to fire `updated()` so subscriptions, schedules and atomicState re-initialize. UI Save does NOT fire `updated()`, so this is opt-in only. It submits the instance's mainPage Done form, re-sending every input from its live settings; if those cannot be read the submit is refused so device selections are not cleared. A protected instance requires Developer Mode. On a refusal or failure the new code stays deployed: `success:true, partial:true, updatedFired:false` plus `repairHints`.
 - **`oauth` param shape:** `{enabled (bool, default true), client_id?, client_secret?, refresh_secret? (bool, regenerate the secret)}`. Omit `client_id`/`client_secret` to preserve current values; if they are unreadable the tool refuses (`success:false`) rather than blanking them. Resulting credentials return under `result.oauth`.
 - **OAuth leg:** works alone (no source mode needed) or together with a source update. If the source saved but the OAuth leg failed, the result is `success:false, partial:true`. The app's source must declare OAuth (an `oauth` block in `definition` plus `mappings`) before OAuth can be enabled.
 
@@ -35183,13 +35240,19 @@ The radio firmware-flash `action` values (the bullet above summarizes these as "
 - hub_create_driver bulk mode: `installs=[{source|sourceFile|importUrl}, ...]`, which cannot be combined with the single-item fields. Items run in order and continue past failures. Each item reports its own `driverId`, `success` and `error`, and the top-level `success` is true only when every item succeeded. If the call stops at the time budget, it returns `status:"in_progress"` with `installsRemaining`; send only those again.
 
 
-### hub_update_app / hub_update_driver — expectedVersion (optimistic-lock guard)
+### hub_update_app / hub_update_driver / hub_update_library — expectedVersion (optimistic lock)
 
-`expectedVersion` aborts the write with `conflict:true` on a version mismatch. Stringified integers are coerced; an explicit null is rejected. In bulk driver updates, put `expectedVersion` inside each `updates[]` entry.
+`expectedVersion` is checked before saving: the call reads the code's current version and, if it differs, posts nothing and returns `conflict:true` with `expectedVersion`, `currentVersion` and a `note`. Re-read the source, then retry with the new version. It must be a whole number: 2.9, strings and an explicit null are refused. If the current version cannot be read, a locked call or a self-update is refused before saving; a plain save with no lock can still use a recent backup's version, which the hub refuses if it is stale.
 
-Use it when a read-modify-write spans turns, or when another agent may edit the same code. A conflict result echoes `expectedVersion` and `currentVersion`: re-read the source, then retry with the new version. The source backup is still taken on a conflict. It is not taken in importUrl mode (the item's history lives where that URL is published); inline source and sourceFile updates keep it.
+Every save carries the version, and the hub refuses one that is no longer current. So a save beaten by another save after the check also comes back `conflict:true`, and without `expectedVersion` the save uses the version this call read and fails the same way. Nothing is re-posted: re-read, reapply your change, and save again.
 
-hub_update_driver bulk mode: `updates=[{driverId, sourceFile|source|importUrl|resave, expectedVersion?}, ...]`. It cannot be combined with the single-driver fields, including a top-level `expectedVersion`. Items run in order and continue past failures. A lock mismatch on one item gives `conflict:true` with both versions, and a thrown error gives `error` plus `errorClass`. The top-level `success` is true only when every item succeeded. If the call stops at the time budget, it returns `status:"in_progress"` with `updatesRemaining`; send only those again, in the same order.
+Overlapping saves of one item can instead fail with a collision answer: `java.sql.SQLException: Failed to update device type` for a driver, or an error that is only the compile path (`./appTargetDir/user_app_<namespace>_<name>_<id>.groovy`) for an app. These carry `retryable:true` (bulk entries too) and the source was not rejected. Wait a moment, re-read, then retry, and send saves of one item one at a time. Every other failure keeps the syntax-error note.
+
+Every tool except the frozen custom-rule tools rejects arguments outside its schema, and a gateway rejects anything beside `tool` and `args`, so a misspelled or misplaced lock fails instead of being dropped.
+
+Use it when a read-modify-write spans turns, or when another agent may edit the same code. The source backup is still taken on a conflict. It is not taken in importUrl mode (the item's history lives where that URL is published); inline source and sourceFile updates keep it.
+
+hub_update_driver bulk mode: `updates=[{driverId, sourceFile|source|importUrl|resave, expectedVersion?}, ...]`. It cannot be combined with the single-driver fields, including a top-level `expectedVersion`. Items run in order and continue past failures. A lock mismatch on one item gives that item `conflict:true`, and a thrown error gives `error` plus `errorClass`. The top-level `success` is true only when every item succeeded. If the call stops at the time budget, it returns `status:"in_progress"` with `updatesRemaining`; send only those again, in the same order.
 
 ### hub_update_app / hub_update_driver / hub_update_library — source modes and large sources
 
