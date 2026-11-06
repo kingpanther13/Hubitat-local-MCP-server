@@ -1676,6 +1676,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v5.1.7** - feat: send expectedVersion with code saves and reject unknown tool arguments. PRs: [#574](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/574)
 - **v5.1.6** - ci: add manual JVM and OS beta lanes; fix: read Rule Machine status from its state instead of its status-span markup. PRs: [#577](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/577), [#578](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/578)
 - **v5.1.5** - fix: native tools take input types from the page; hub_get_app_config reads inputs as form fields. PRs: [#576](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/576)
 - **v5.1.4** - fix: Rule Machine edits and restores keep a blank time setting; load-limiter and PR Guard follow-ups. PRs: [#573](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/573)
