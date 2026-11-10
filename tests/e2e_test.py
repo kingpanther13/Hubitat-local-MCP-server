@@ -1917,7 +1917,7 @@ class TestRunner:
         if any(d.get("name") == name and d.get("namespace") == "mcptest" for d in listed["drivers"]):
             return
         source = (Path(__file__).resolve().parent / "fixtures" / self.PERM_FIXTURE_DRIVERS[name]).read_text(encoding="utf-8")
-        created = self.client.call_tool("hub_manage_code", {"tool": "hub_create_driver", "args": {"source": source, "confirm": True}})
+        created = self.client.call_tool("hub_manage_code", {"tool": "hub_create_item", "args": {"type": "driver", "source": source, "confirm": True}})
         assert created.get("success") is True and created.get("driverId"), f"installing the '{name}' fixture driver failed: {created}"
         # The type-id cache predates the driver; the next lookup reloads the catalog.
         self._driver_type_ids.clear()
@@ -6365,11 +6365,10 @@ def updated() {}
         code_id = instance_id = None
         leftover_ids: list = []
         try:
-            created = self.client.call_tool("hub_manage_code", {"tool": "hub_create_app", "args": {
-                "source": self.PASSWORD_SNAPSHOT_APP.replace("SECRET_VALUE", secret), "confirm": True}})
+            created = self.client.call_tool("hub_manage_code", {"tool": "hub_create_item", "args": {"type": "app", "source": self.PASSWORD_SNAPSHOT_APP.replace("SECRET_VALUE", secret), "confirm": True}})
             code_id = created.get("appId")
             assert code_id, f"creating the password app code failed: {created}"
-            inst = self.client.call_tool("hub_manage_code", {"tool": "hub_create_app", "args": {"codeAppId": code_id, "confirm": True}})
+            inst = self.client.call_tool("hub_manage_code", {"tool": "hub_create_item", "args": {"type": "app", "codeAppId": code_id, "confirm": True}})
             instance_id = inst.get("instanceAppId")
             assert inst.get("committed") is True and instance_id, f"creating the password app instance failed: {inst}"
             api_key, pin = "ak-e2e-5d1f", "pin-9731"
@@ -6556,10 +6555,10 @@ def updated() {}
         instances: list = []
         try:
             for source in (self.FORM_WIZARD_APP, self.FORM_DEFAULTS_APP):
-                created = self.client.call_tool("hub_manage_code", {"tool": "hub_create_app", "args": {"source": source, "confirm": True}})
+                created = self.client.call_tool("hub_manage_code", {"tool": "hub_create_item", "args": {"type": "app", "source": source, "confirm": True}})
                 assert created.get("appId"), f"creating the throwaway app code failed: {created}"
                 codes.append(created["appId"])
-                inst = self.client.call_tool("hub_manage_code", {"tool": "hub_create_app", "args": {"codeAppId": created["appId"], "confirm": True}})
+                inst = self.client.call_tool("hub_manage_code", {"tool": "hub_create_item", "args": {"type": "app", "codeAppId": created["appId"], "confirm": True}})
                 assert inst.get("instanceAppId"), f"creating the throwaway app instance failed: {inst}"
                 instances.append(inst["instanceAppId"])
             wizard, defaults = instances
@@ -6668,10 +6667,10 @@ def updated() {}
         # filled from its default; navigation runs the page's form checks; a link with a url reads as one (#575).
         code = instance = None
         try:
-            created = self.client.call_tool("hub_manage_code", {"tool": "hub_create_app", "args": {"source": self.FORM_TYPES_APP, "confirm": True}})
+            created = self.client.call_tool("hub_manage_code", {"tool": "hub_create_item", "args": {"type": "app", "source": self.FORM_TYPES_APP, "confirm": True}})
             assert created.get("appId"), f"creating the throwaway app code failed: {created}"
             code = created["appId"]
-            inst = self.client.call_tool("hub_manage_code", {"tool": "hub_create_app", "args": {"codeAppId": code, "confirm": True}})
+            inst = self.client.call_tool("hub_manage_code", {"tool": "hub_create_item", "args": {"type": "app", "codeAppId": code, "confirm": True}})
             assert inst.get("instanceAppId"), f"creating the throwaway app instance failed: {inst}"
             instance = inst["instanceAppId"]
             stored = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config", "args": {"appId": instance, "includeSettings": True}})
@@ -6719,7 +6718,7 @@ def updated() {}
                     print(f"  [WARN] form types cleanup: delete instance {instance} failed: {exc}")
             if code:
                 try:
-                    self.client.call_tool("hub_manage_code", {"tool": "hub_delete_item", "args": {"type": "app", "item_id": code, "confirm": True}})
+                    self.client.call_tool("hub_manage_code", {"tool": "hub_delete_item", "args": {"type": "app", "id": code, "confirm": True}})
                 except (McpError, McpToolError, requests.HTTPError) as exc:
                     print(f"  [WARN] form types cleanup: delete code {code} failed: {exc}")
 
@@ -8613,12 +8612,12 @@ def updated() {}
         code = next((a for a in listed("types") if str(a.get("name") or "") == name and a.get("namespace") == "mcptest"), None)
         if code is None:
             source = (Path(__file__).resolve().parent / "fixtures" / "e2e-wizard-walk-app.groovy").read_text(encoding="utf-8")
-            created = self.client.call_tool("hub_manage_code", {"tool": "hub_create_app", "args": {"source": source, "confirm": True}})
+            created = self.client.call_tool("hub_manage_code", {"tool": "hub_create_item", "args": {"type": "app", "source": source, "confirm": True}})
             assert created.get("success") is True and created.get("appId"), f"installing the wizard fixture's code failed: {created}"
             code_id = int(created["appId"])
         else:
             code_id = int(code["id"])
-        inst = self.client.call_tool("hub_manage_code", {"tool": "hub_create_app", "args": {"codeAppId": code_id, "confirm": True}})
+        inst = self.client.call_tool("hub_manage_code", {"tool": "hub_create_item", "args": {"type": "app", "codeAppId": code_id, "confirm": True}})
         assert inst.get("success") is True and inst.get("instanceAppId"), f"creating the wizard fixture failed: {inst}"
         print(f"    [PERM FIXTURE] installed {name} -- reused by later runs")
         return int(inst["instanceAppId"])
@@ -10626,6 +10625,20 @@ def updated() {}
     # instance's configured settings instead of re-applying the code's defaults.
     # -----------------------------------------------------------------------
 
+    @staticmethod
+    def _assert_create_response_shape(created: dict) -> None:
+        assert created.get("version") is not None, f"code create carries no version: {created}"
+        assert "verified" not in created and "verifyError" not in created, \
+            f"code create still reports the removed verification fields: {created}"
+
+    def _assert_code_call_refused(self, tool: str, args: dict, named: str) -> None:
+        try:
+            result = self.client.call_tool("hub_manage_code", {"tool": tool, "args": args})
+        except (McpToolError, McpError) as exc:
+            assert named in str(exc), f"{tool} refusal does not name {named}: {exc}"
+            return
+        raise AssertionError(f"{tool} accepted {named} and returned: {result}")
+
     @test("app_code_update")
     def test_update_app_code_lifecycle(self) -> None:
         # Throwaway Apps Code class (code only, never installed as an instance). The name
@@ -10637,11 +10650,12 @@ def updated() {}
         code_app_id = None
         try:
             created = self.client.call_tool("hub_manage_code", {
-                "tool": "hub_create_app",
-                "args": {"source": source_v1, "confirm": True},
+                "tool": "hub_create_item",
+                "args": {"type": "app", "source": source_v1, "confirm": True},
             })
             code_app_id = created.get("appId")
-            assert code_app_id, f"hub_create_app(source) did not return an appId (code class): {created}"
+            assert code_app_id, f"hub_create_item(type=app, source) did not return an appId (code class): {created}"
+            self._assert_create_response_shape(created)
 
             before = self.client.call_tool("hub_read_apps_code", {
                 "tool": "hub_get_source",
@@ -10763,6 +10777,21 @@ def updated() {}
             assert ob.get("enabled") is True, "OAuth reported success but not enabled"
             assert ob.get("clientId"), "OAuth enabled but no clientId returned"
 
+            # Create and delete refuse a misspelled or misplaced argument before any write, and
+            # the app delete does not report success for an id that does not exist.
+            self._assert_code_call_refused("hub_create_item", {
+                "type": "app", "source": source_v1, "sourcefile": "x.groovy", "confirm": True}, "sourcefile")
+            self._assert_code_call_refused("hub_create_item", {
+                "type": "app", "installs": [{"source": source_v1}], "confirm": True}, "installs")
+            self._assert_code_call_refused("hub_delete_item", {
+                "type": "app", "id": code_app_id, "item_id": code_app_id, "confirm": True}, "item_id")
+            missing = self.client.call_tool("hub_manage_code", {
+                "tool": "hub_delete_item",
+                "args": {"type": "app", "id": "2147483000", "confirm": True},
+            })
+            assert missing.get("success") is False and "does not exist" in str(missing.get("error")), \
+                f"deleting an app id that does not exist was not refused: {missing}"
+
             print(f"    APP_CODE_UPDATE ok -- v{version_before}->v{version_after}; compile error, lock conflict and unknown argument all refused with no write; OAuth leg checked")
         finally:
             if code_app_id:
@@ -10785,11 +10814,11 @@ def updated() {}
         code_app_id = None
         try:
             created = self.client.call_tool("hub_manage_code", {
-                "tool": "hub_create_app",
-                "args": {"source": source_v1, "confirm": True},
+                "tool": "hub_create_item",
+                "args": {"type": "app", "source": source_v1, "confirm": True},
             })
             code_app_id = created.get("appId")
-            assert code_app_id, f"hub_create_app(source) did not return an appId (code class): {created}"
+            assert code_app_id, f"hub_create_item(type=app, source) did not return an appId (code class): {created}"
 
             before = self.client.call_tool("hub_read_apps_code", {
                 "tool": "hub_get_source",
@@ -10966,16 +10995,16 @@ def updated() {}
         instance_app_id = None
         try:
             created = self.client.call_tool("hub_manage_code", {
-                "tool": "hub_create_app",
-                "args": {"source": source_v1, "confirm": True},
+                "tool": "hub_create_item",
+                "args": {"type": "app", "source": source_v1, "confirm": True},
             })
             code_app_id = created.get("appId")
-            assert code_app_id, f"hub_create_app(source) did not return an appId (code class): {created}"
+            assert code_app_id, f"hub_create_item(type=app, source) did not return an appId (code class): {created}"
 
             # A committed instance is required: triggerUpdated fires updated() on a RUNNING app.
             installed = self.client.call_tool("hub_manage_code", {
-                "tool": "hub_create_app",
-                "args": {"codeAppId": code_app_id, "confirm": True},
+                "tool": "hub_create_item",
+                "args": {"type": "app", "codeAppId": code_app_id, "confirm": True},
             })
             instance_app_id = installed.get("instanceAppId")
             assert installed.get("committed") is True, \
@@ -11111,12 +11140,13 @@ def updated() {}
         driver_id = None
         try:
             created = self._write_once(
-                "hub_manage_code", "hub_create_driver",
-                {"source": source_v1, "confirm": True},
+                "hub_manage_code", "hub_create_item",
+                {"type": "driver", "source": source_v1, "confirm": True},
                 "driver code create")
             driver_id = created.get("driverId")
             assert created.get("success") is True and driver_id, \
-                f"hub_create_driver(source) failed or returned no driverId: {created}"
+                f"hub_create_item(type=driver, source) failed or returned no driverId: {created}"
+            self._assert_create_response_shape(created)
 
             before = self.client.call_tool("hub_read_apps_code", {
                 "tool": "hub_get_source",
@@ -11202,6 +11232,10 @@ def updated() {}
             assert bulk.get("success") is False and entry.get("success") is False \
                 and "expectedVerison" in str(entry.get("error")) and entry.get("note"), \
                 f"bulk unknown key was not refused with a note: {bulk}"
+
+            # A codeAppId is for apps only; the type check fires before any side effect.
+            self._assert_code_call_refused("hub_create_item", {
+                "type": "driver", "codeAppId": 1, "confirm": True}, "codeAppId")
 
             # One re-read proves the refused legs wrote nothing: still V2, no broken or
             # V3 marker, version unchanged since the round-trip edit.

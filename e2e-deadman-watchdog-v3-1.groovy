@@ -1145,7 +1145,7 @@ def adminGetSource(args) {
     return result
 }
 
-// hub_create_library: copied from toolInstallLibrary (hubitat-mcp-server.groovy).
+// hub_create_library: copied from _createCodeItem (libraries/mcp-code-management-lib.groovy).
 // POST /library/saveOrUpdateJson {id:null, source, version:null}. Adapted to hubPostJson.
 def adminCreateLibrary(args) {
     requireConfirm(args)
@@ -1266,8 +1266,8 @@ def adminUpdateLibrary(args) {
     }
 }
 
-// hub_delete_item: copied from toolDeleteItem / _deleteItemViaEndpoint / toolDeleteLibrary
-// (hubitat-mcp-server.groovy). GET delete endpoints; library uses JSON success.
+// hub_delete_item: copied from toolDeleteItem
+// (libraries/mcp-code-management-lib.groovy). GET delete endpoints; library uses JSON success.
 def adminDeleteItem(args) {
     requireConfirm(args)
     def type = args.type

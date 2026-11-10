@@ -8,7 +8,7 @@
 
 **Dedicated test-hub prompt:** "Create a disposable test device, inspect its preferences and configuration, and verify boolean, numeric, text and enum changes using an independent native read. Restore each original value and verify restoration, then remove only the device and driver you created. Leave every existing device and automation unchanged."
 
-Updated for the installed-apps + Rule Machine interop + native CRUD + library management + HPM package state architecture, then the issue #105 PR1A hub_ rename + consolidation, then the PR1B read/write split, then the issue #259 item #9 Easy Dashboard CRUD (13 flat core + 23 gateways = 36 on tools/list, 115 total distinct tools).
+Updated for the installed-apps + Rule Machine interop + native CRUD + library management + HPM package state architecture, then the issue #105 PR1A hub_ rename + consolidation, then the PR1B read/write split, then the issue #259 item #9 Easy Dashboard CRUD (13 flat core + 23 gateways = 36 on tools/list, 113 total distinct tools).
 
 Comprehensive test scenarios for the Hubitat MCP Rule Server. Modeled after ha-mcp's BAT framework.
 
@@ -2698,8 +2698,7 @@ These operations are too destructive for automated testing. Test manually with e
 | Link a peer hub's shared device / variable | `hub_create_device` / `hub_create_variable` (mesh_source_*) | hub_manage_devices | Creates a local proxy; needs the peer's mesh token if it has UI login security |
 | Unlink a Hub Mesh linked device | `hub_delete_device` | hub_manage_destructive_ops | Removes only the local link; the peer's source device is untouched |
 | Unlink a Hub Mesh linked variable | `hub_delete_variable` (decorated `"<var> on <peer>"` name) | hub_manage_variables | Removes only the local mirror; peer source untouched; `force` only if a real local app uses it (`inUseByApps`) |
-| Install app | `hub_create_app` | hub_manage_code | Modifies hub code |
-| Install driver | `hub_create_driver` | hub_manage_code | Modifies hub code |
+| Install app, driver or library | `hub_create_item` (type: app\|driver\|library) | hub_manage_code | Modifies hub code |
 | Update app code | `hub_update_app` | hub_manage_code | Modifies production code |
 | Update driver code | `hub_update_driver` | hub_manage_code | Modifies production code |
 | Delete app/driver/library | `hub_delete_item` (type: app\|driver\|library) | hub_manage_code | Permanent code removal |
@@ -2752,7 +2751,7 @@ These operations are too destructive for automated testing. Test manually with e
 | 9. Stress | T120-T122 | Many calls, rapid cycles, pagination |
 | 10. NL Discovery | T200-T301 | Conversational prompts — no tool names |
 | 12. Developer Mode | T219-T226, T660-T663, T667 | Self-administration: hub_update_mcp_settings (incl. selectedDevices device-access scope) + hub_delete_variable |
-| 13. Driver Code Lifecycle | T400-T406 | hub_create_driver (single + bulk), hub_update_driver (bulk), delete |
+| 13. Driver Code Lifecycle | T400-T406 | hub_create_item type=driver (single + bulk), hub_update_driver (bulk), delete |
 | 14. Library Management | T500-T508 | Library CRUD: install, update, delete, hub_get_source |
 
 ### Architecture (post installed-apps + RM interop + Developer Mode + PR1B read/write split)
@@ -2768,13 +2767,13 @@ With Developer Mode on, `hub_update_package` joins the flat core tools, so a Dev
 
 **8 read gateways**: `hub_read_apps_code` (10), `hub_read_devices` (6), `hub_read_diagnostics` (6), `hub_read_files` (2), `hub_read_rooms` (2), `hub_read_rules` (6), `hub_read_variables` (3), `hub_read_dashboards` (2)
 
-**15 manage gateways**: `hub_manage_backup` (4), `hub_manage_code` (10), `hub_manage_custom_rules` (8), `hub_manage_dashboards` (6), `hub_manage_destructive_ops` (4), `hub_manage_devices` (11), `hub_manage_diagnostics` (7), `hub_manage_files` (4), `hub_manage_logs` (3), `hub_manage_mcp` (1), `hub_manage_native_rules_and_apps` (12), `hub_manage_radio` (6), `hub_manage_rooms` (5), `hub_manage_rule_machine` (11), `hub_manage_variables` (8)
+**15 manage gateways**: `hub_manage_backup` (4), `hub_manage_code` (8), `hub_manage_custom_rules` (8), `hub_manage_dashboards` (6), `hub_manage_destructive_ops` (4), `hub_manage_devices` (11), `hub_manage_diagnostics` (7), `hub_manage_files` (4), `hub_manage_logs` (3), `hub_manage_mcp` (1), `hub_manage_native_rules_and_apps` (12), `hub_manage_radio` (6), `hub_manage_rooms` (5), `hub_manage_rule_machine` (11), `hub_manage_variables` (8)
 
 **13 flat core tools**: `hub_manage_virtual_device`, `hub_get_tool_guide`, `hub_report_issue`, `hub_search_tools`, `hub_get_info`, `hub_list_modes`, `hub_manage_mode`, `hub_set_mode_manager`, `hub_get_hsm_status`, `hub_set_hsm`, `hub_set_system_settings`, `hub_update_firmware`, `hub_create_backup`
 
 ### Tool Coverage (non-destructive tools only)
 
-All 115 distinct tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
+All 113 distinct tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
 
 Sections 1-9 each target a specific tool — named in the test's title and **Expected** criteria while the `test_prompt` stays goal-first (see Prompt style above). Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist. Section 11 covers the built-in app integration tools.
 
@@ -3334,7 +3333,7 @@ These tests exercise the universal **Read** and **Write** master toggles and the
 
 All tests below require the Write master enabled and a recent backup. Tests are excluded from the auto-exercise sweep (destructive to hub code). Test artifacts use the `BAT_` name prefix per BAT convention so they can be identified and cleaned up independently.
 
-### T400 — hub_create_driver via sourceFile (File Manager path)
+### T400 — hub_create_item (type=driver) via sourceFile (File Manager path)
 
 ```json
 {
@@ -3344,25 +3343,24 @@ All tests below require the Write master enabled and a recent backup. Tests are 
 }
 ```
 
-**Expected**: Tool resolves the file from File Manager, POSTs to `/driver/save`, fetches the new driver back to verify it compiled, and returns `success: true` with `driverId` set and `sourceMode: 'sourceFile'`. No inline source was sent in the install call -- the source came from File Manager.
+**Expected**: Tool resolves the file from File Manager, POSTs to `/driver/saveOrUpdateJson`, and returns `success: true` with `driverId` and `version` set and `sourceMode: 'sourceFile'`. No inline source was sent in the install call -- the source came from File Manager.
 
-### T401 — hub_create_driver compile failure detected (post-install verification)
+### T401 — hub_create_item (type=driver) compile failure reported by the save
 
 ```json
 {
-  "setup_prompt": "the Write master enabled, recent backup exists. This test intentionally installs broken Groovy source. The hub refuses it with its compile error; older firmware also left a stub slot in an error state -- if a driver ID comes back, note it for cleanup.",
-  "test_prompt": "Install a driver whose source is deliberately broken Groovy — literally 'this is not valid groovy {{ }}' — confirming the install. Report what happens.",
-  "teardown_prompt": "Delete the error-state driver slot created in this test using hub_delete_item (type=driver) with the driverId returned and confirm=true."
+  "setup_prompt": "the Write master enabled, recent backup exists. This test intentionally installs broken Groovy source. The hub refuses it with its compile error, so nothing is created.",
+  "test_prompt": "Install a driver whose source is deliberately broken Groovy — literally 'this is not valid groovy {{ }}' — confirming the install. Report what happens."
 }
 ```
 
-**Expected**: Tool returns `success: false` with the hub's compile error message. On current firmware no driver is created; where an older firmware leaves an error-state stub, the response carries its ID. AI reports the error and does not claim success.
+**Expected**: Tool returns `success: false` with the hub's compile error message and a null `driverId`; no driver is created. AI reports the error and does not claim success.
 
 ### T402 — hub_update_driver bulk mode (happy path)
 
 ```json
 {
-  "setup_prompt": "the Write master enabled, recent backup exists. Install two minimal BAT_ driver stubs via hub_create_driver: (1) source='metadata { definition(name: \"BAT_BulkUpdate1\", namespace: \"bat\", author: \"test\") { } }' and (2) source='metadata { definition(name: \"BAT_BulkUpdate2\", namespace: \"bat\", author: \"test\") { } }'. Note both driverIds. Write updated source for each to File Manager with a version comment appended: hub_write_file(fileName='bat-bulk-1.groovy', content='...updated source...') and similarly for bat-bulk-2.groovy.",
+  "setup_prompt": "the Write master enabled, recent backup exists. Install two minimal BAT_ driver stubs via hub_create_item (type=driver): (1) source='metadata { definition(name: \"BAT_BulkUpdate1\", namespace: \"bat\", author: \"test\") { } }' and (2) source='metadata { definition(name: \"BAT_BulkUpdate2\", namespace: \"bat\", author: \"test\") { } }'. Note both driverIds. Write updated source for each to File Manager with a version comment appended: hub_write_file(fileName='bat-bulk-1.groovy', content='...updated source...') and similarly for bat-bulk-2.groovy.",
   "test_prompt": "Update both drivers in a single call — driver <id1> from the File Manager file 'bat-bulk-1.groovy' and driver <id2> from 'bat-bulk-2.groovy' — confirming the update.",
   "teardown_prompt": "Delete both BAT_ drivers using hub_delete_item (type=driver) with confirm=true for each driverId. Also delete the File Manager files bat-bulk-1.groovy and bat-bulk-2.groovy using hub_delete_file."
 }
@@ -3380,7 +3378,7 @@ All tests below require the Write master enabled and a recent backup. Tests are 
 
 **Expected**: Tool throws `IllegalArgumentException` (JSON-RPC -32602) with a message containing 'bulk mode' and 'driverId'. No update is performed.
 
-### T404 — hub_create_driver bulk mode (happy path)
+### T404 — hub_create_item (type=driver) bulk mode (happy path)
 
 ```json
 {
@@ -3392,7 +3390,7 @@ All tests below require the Write master enabled and a recent backup. Tests are 
 
 **Expected**: Tool installs both drivers in a single call, resolving each from File Manager. Returns `success: true` with `installs` array containing two entries, each with `success: true`, a non-null `driverId`, and `sourceMode: 'sourceFile'`. `message` says "All 2 driver(s) installed successfully." No inline source was passed in the call.
 
-### T405 — hub_create_driver bulk mode partial failure
+### T405 — hub_create_item (type=driver) bulk mode partial failure
 
 ```json
 {
@@ -3404,11 +3402,11 @@ All tests below require the Write master enabled and a recent backup. Tests are 
 
 **Expected**: Tool attempts both installs. First item succeeds (driverId returned, success: true). Second item fails because the file is absent (success: false, error contains 'not found in File Manager'). Top-level `success: false` with `message` containing '1 of 2'. Continue-on-error: first driver still installed despite second failure.
 
-### T406 — hub_create_driver bulk mode rejects mixed single+bulk args
+### T406 — hub_create_item (type=driver) bulk mode rejects mixed single+bulk args
 
 ```json
 {
-  "test_prompt": "Call hub_create_driver with both sourceFile='x.groovy' AND installs=[{sourceFile: 'f.groovy'}] and confirm=true."
+  "test_prompt": "Call hub_create_item with type='driver' and both sourceFile='x.groovy' AND installs=[{sourceFile: 'f.groovy'}] and confirm=true."
 }
 ```
 
@@ -3418,7 +3416,7 @@ All tests below require the Write master enabled and a recent backup. Tests are 
 
 ## Section 14: Library Management Tests
 
-Write tools (`hub_create_library`, `hub_update_library`, `hub_delete_item` with type=library) live in the `hub_manage_code` gateway and require the Write master + confirm + a hub backup within the last 24 hours. `hub_get_source` with type=library (read-only) lives in the `hub_read_apps_code` gateway and requires the Read master only. Tests use the `BAT_` prefix and clean up after themselves.
+Write tools (`hub_create_item` with type=library, `hub_update_library`, `hub_delete_item` with type=library) live in the `hub_manage_code` gateway and require the Write master + confirm + a hub backup within the last 24 hours. `hub_get_source` with type=library (read-only) lives in the `hub_read_apps_code` gateway and requires the Read master only. Tests use the `BAT_` prefix and clean up after themselves.
 
 **Pre-flight (manual one-time):**
 1. Enable **the Read master** and **the Write master** in MCP Rule Server settings.
@@ -3430,14 +3428,14 @@ Write tools (`hub_create_library`, `hub_update_library`, `hub_delete_item` with 
 
 ```json
 {
-  "setup_prompt": "Check Hubitat web UI (FOR DEVELOPERS > Libraries code) for an installed library ID, or install a test library first using hub_create_library.",
+  "setup_prompt": "Check Hubitat web UI (FOR DEVELOPERS > Libraries code) for an installed library ID, or install a test library first using hub_create_item (type=library).",
   "test_prompt": "Show me the source code of the first Groovy library installed on the hub."
 }
 ```
 
 **Expected**: AI calls `hub_read_apps_code(tool='hub_get_source', args={type:'library', id:'<id>'})`. Result includes `success: true`, `source` (non-empty string), `version`, `name`, `namespace`, `totalLength`. If total length exceeds 64KB, `sourceFile` and `sourceFileHint` fields are present.
 
-### T501 — hub_create_library installs new library from inline source
+### T501 — hub_create_item (type=library) installs new library from inline source
 
 ```json
 {
@@ -3447,13 +3445,13 @@ Write tools (`hub_create_library`, `hub_update_library`, `hub_delete_item` with 
 }
 ```
 
-**Expected**: AI calls `hub_manage_code(tool='hub_create_library', args={source:'library(...) { } def batHelper() { return "bat_ok" }', confirm:true})`. Result: `{success:true, libraryId:'<id>', version:<positive integer>, sourceMode:'source', message:'Library installed successfully'}`. No `verifyWarning` or `verifyError` field if verification succeeds. `verified: true`.
+**Expected**: AI calls `hub_manage_code(tool='hub_create_item', args={type:'library', source:'library(...) { } def batHelper() { return "bat_ok" }', confirm:true})`. Result: `{success:true, libraryId:'<id>', version:<positive integer>, sourceMode:'source', message:'Library installed successfully'}`.
 
 ### T502 — hub_update_library updates existing library source
 
 ```json
 {
-  "setup_prompt": "the Write master enabled, recent backup exists. Use hub_create_library to create a library named 'BATTestLibUpdate', namespace='bat_test', with method `v1Method()` returning 'v1'.",
+  "setup_prompt": "the Write master enabled, recent backup exists. Use hub_create_item (type=library) to create a library named 'BATTestLibUpdate', namespace='bat_test', with method `v1Method()` returning 'v1'.",
   "test_prompt": "Update the BATTestLibUpdate library to add a `v2Method()` that returns 'v2', supplying the full updated source inline.",
   "teardown_prompt": "Delete BATTestLibUpdate library."
 }
@@ -3485,7 +3483,7 @@ Write tools (`hub_create_library`, `hub_update_library`, `hub_delete_item` with 
 
 **Expected**: AI calls `hub_manage_code(tool='hub_delete_item', args={type:'library', id:'<id>', confirm:true})`. Result: `{success:true, backupFile:'mcp-backup-library-<id>[-<uuid>].groovy', restoreHint:...}`. Backup file appears in `hub_list_backups`. Subsequent `hub_get_source` (type=library) for the same ID returns `success:false` with "not found".
 
-### T505 — hub_create_library refuses without confirm flag
+### T505 — hub_create_item (type=library) refuses without confirm flag
 
 ```json
 {

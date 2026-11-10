@@ -1,6 +1,6 @@
 ---
 name: hubitat-mcp-server
-description: Guide for developing and maintaining the Hubitat MCP Rule Server — a Groovy-based MCP server running natively on Hubitat Elevation hubs, exposing 115 tools (36 on tools/list via category gateway proxy) for device control, virtual device management, room management, rule automation, hub admin, file management, app/driver/library management, installed-app visibility, Rule Machine interoperability, native rule CRUD, Easy and legacy Hubitat® Dashboard CRUD, HPM package state introspection, and Developer Mode self-administration.
+description: Guide for developing and maintaining the Hubitat MCP Rule Server — a Groovy-based MCP server running natively on Hubitat Elevation hubs, exposing 113 tools (36 on tools/list via category gateway proxy) for device control, virtual device management, room management, rule automation, hub admin, file management, app/driver/library management, installed-app visibility, Rule Machine interoperability, native rule CRUD, Easy and legacy Hubitat® Dashboard CRUD, HPM package state introspection, and Developer Mode self-administration.
 license: MIT
 ---
 
@@ -93,12 +93,12 @@ New code should be placed in the appropriate section. New sections should follow
 
 ### Category Gateway Proxy (v0.8.0+)
 
-The server uses a **category gateway proxy** pattern to reduce the MCP `tools/list` from 115 items to 36. This keeps frequently-used tools immediately accessible while organizing lesser-used tools behind domain-named gateways. Gateways come in two flavors: `hub_read_<noun>` gateways whose every sub-tool is read-only, and `hub_manage_<noun>` gateways that contain at least one write (mixed read+write or write-only). A tool MAY appear in more than one gateway (multi-membership) — reads are listed in BOTH their mixed `manage_` gateway AND a pure-read `read_` gateway.
+The server uses a **category gateway proxy** pattern to reduce the MCP `tools/list` from 113 items to 36. This keeps frequently-used tools immediately accessible while organizing lesser-used tools behind domain-named gateways. Gateways come in two flavors: `hub_read_<noun>` gateways whose every sub-tool is read-only, and `hub_manage_<noun>` gateways that contain at least one write (mixed read+write or write-only). A tool MAY appear in more than one gateway (multi-membership) — reads are listed in BOTH their mixed `manage_` gateway AND a pure-read `read_` gateway.
 
 **Architecture:**
 - `getGatewayConfig()` — defines 23 gateways, each with a description, tools list, and summaries map
 - `getToolDefinitions()` — returns 13 core tools + 23 gateway tool definitions (client-visible)
-- `getAllToolDefinitions()` — returns all 115 tool definitions (used internally by gateway catalog and `executeTool()` dispatch)
+- `getAllToolDefinitions()` — returns all 113 tool definitions (used internally by gateway catalog and `executeTool()` dispatch)
 - `handleGateway(gatewayName, toolName, toolArgs)` — catalog mode (no args → full schemas) or execute mode (tool + args → dispatch)
 
 **Gateway calling convention:**
@@ -127,7 +127,7 @@ Manage gateways (`hub_manage_*`, contain at least one write):
 | `hub_manage_rooms` | 5 | Room CRUD |
 | `hub_manage_destructive_ops` | 4 | Hub reboot, shutdown, device deletion, and destructive ops by target via `hub_call_destructive_ops` (radio reset/wipe + firmware, network disconnect, cloud-controller disable/enable) (write) |
 | `hub_manage_backup` | 4 | Backup management — list code + whole-hub DB backups (+ auto-backup schedule), get code-backup source, restore (apps/drivers/rule snapshots), delete whole-hub DB backups (write) |
-| `hub_manage_code` | 10 | Install/update apps+drivers+libraries, install/delete/export HPM-style bundles, delete item (app/driver/library) (write) |
+| `hub_manage_code` | 8 | Install/update apps+drivers+libraries, install/delete/export HPM-style bundles, delete item (app/driver/library) (write) |
 | `hub_manage_devices` | 11 | Device command/swap/replace/create/update (writes, incl. Hub Mesh device link/unlink) + list/get devices, attributes, events, Hub Mesh (reads) |
 | `hub_manage_logs` | 3 | Logs page and MCP log read, delete (MCP log clear or one scheduled job), MCP log level |
 | `hub_manage_diagnostics` | 7 | Diagnostics, state capture/delete, radio details (zwave/zigbee), memory history, metrics, GC |
@@ -364,8 +364,8 @@ All three:
 |--------|---------|
 | `currentVersion()` | Single source of truth for version string |
 | `buildRuleExport(ruleData)` | Build portable rule export map (used by export and delete backup) |
-| `toolInstallItem(type, args)` | Shared install logic for apps and drivers |
-| `toolDeleteItem(type, idParam, deletePath, args)` | Shared delete logic for apps and drivers |
+| `toolCreateItem(args)` | Shared create logic for app, driver and library code |
+| `toolDeleteItem(args)` | Shared delete logic for app, driver and library code |
 | `hubInternalPostJson(path, jsonBody, isRetry?)` | POST to hub internal API with JSON body (used by library endpoints); returns parsed Map/List or null |
 | `updateRuleFromParent(data)` | Child app method — handles all rule updates including enable/disable via `enabled=true/false` |
 | `shouldRetryWithFreshCookie(e, isRetry)` | Hub Security auth retry detection |

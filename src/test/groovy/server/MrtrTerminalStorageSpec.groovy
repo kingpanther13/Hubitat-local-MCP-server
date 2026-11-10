@@ -172,7 +172,7 @@ class MrtrTerminalStorageSpec extends ToolSpecBase {
             installs: [[name: 'one', success: true]],
             anyPartial: true
         ]
-        Map rec = claimedRecord('hub_create_driver', 'hub_create_driver', originalArgs,
+        Map rec = claimedRecord('hub_create_item', 'hub_create_item', originalArgs,
             'claim-terminal-capped', 4, [
                 rounds: (script._mrtrMaxContinuationSlices() as Integer) - 1,
                 aggregate: prior,
@@ -206,9 +206,9 @@ class MrtrTerminalStorageSpec extends ToolSpecBase {
         !terminal.containsKey('nextArguments')
         !terminal.containsKey('checkpoint')
         terminal.terminalResult == outcome.result
-        terminal.outerTool == 'hub_create_driver'
-        terminal.leafTool == 'hub_create_driver'
-        terminal.argDigest == script._mrtrBinding('hub_create_driver', 'hub_create_driver', originalArgs).argDigest
+        terminal.outerTool == 'hub_create_item'
+        terminal.leafTool == 'hub_create_item'
+        terminal.argDigest == script._mrtrBinding('hub_create_item', 'hub_create_item', originalArgs).argDigest
     }
 
     def "loading a legacy terminal compacts only that record and saves the representative bytes"() {
@@ -240,7 +240,7 @@ class MrtrTerminalStorageSpec extends ToolSpecBase {
         ]
         Map active = [
             schemaVersion: 1, status: 'active',
-            outerTool: 'hub_create_driver', leafTool: 'hub_create_driver', argDigest: 'active-binding',
+            outerTool: 'hub_create_item', leafTool: 'hub_create_item', argDigest: 'active-binding',
             startedAt: at - 2000L, updatedAt: at, expiresAt: at + 60000L,
             rounds: 2, generation: 2, claimId: 'active-claim', claimedGeneration: 2,
             aggregate: [kind: 'driver_installs', installs: [[name: 'one', success: true]]],

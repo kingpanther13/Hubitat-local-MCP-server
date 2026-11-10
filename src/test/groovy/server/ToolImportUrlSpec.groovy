@@ -336,9 +336,9 @@ class ToolImportUrlSpec extends ToolSpecBase {
         backups == 1
     }
 
-    // -------- importUrl integration: hub_create_app --------
+    // -------- importUrl integration: hub_create_item (type=app) --------
 
-    def "hub_create_app with importUrl fetches via httpGet and POSTs to /app/saveOrUpdateJson"() {
+    def "hub_create_item (type=app) with importUrl fetches via httpGet and POSTs to /app/saveOrUpdateJson"() {
         given:
         enableWrite()
         stubHttpGet(200, 'definition(name: "FromUrl")')
@@ -369,9 +369,9 @@ class ToolImportUrlSpec extends ToolSpecBase {
         result.note?.contains('hub-side fetch')  // pins the "no agent transcript" semantic, not just the substring
     }
 
-    // -------- importUrl integration: hub_create_library --------
+    // -------- importUrl integration: hub_create_item (type=library) --------
 
-    def "hub_create_library with importUrl fetches the URL and posts to library/saveOrUpdateJson"() {
+    def "hub_create_item (type=library) with importUrl fetches the URL and posts to library/saveOrUpdateJson"() {
         given:
         enableWrite()
         stubHttpGet(200, 'library(name: "Lib")')
@@ -400,7 +400,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
     // All install/update tools enforce: exactly one of source / sourceFile /
     // importUrl / resave (resave is install-irrelevant). modesSet count > 1 throws.
 
-    def "hub_create_app rejects multiple source modes together"() {
+    def "hub_create_item (type=app) rejects multiple source modes together"() {
         given:
         enableWrite()
 
@@ -416,7 +416,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         ex.message.contains('exactly one')
     }
 
-    def "hub_create_library rejects multiple source modes together"() {
+    def "hub_create_item (type=library) rejects multiple source modes together"() {
         given:
         enableWrite()
 
@@ -434,7 +434,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
 
     // -------- installAsUserApp --------
 
-    def "hub_create_app with installAsUserApp creates the instance then commits the install (Done)"() {
+    def "hub_create_item (type=app) with installAsUserApp creates the instance then commits the install (Done)"() {
         given:
         enableWrite()
         def capturedPath = null
@@ -467,7 +467,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         result.scheduledJobCount == 1
     }
 
-    def "hub_create_app installAsUserApp uses the instance's actual first-page name in the Done commit"() {
+    def "hub_create_item (type=app) installAsUserApp uses the instance's actual first-page name in the Done commit"() {
         given:
         enableWrite()
         script.metaClass.hubInternalGetRaw = { String path, Map query = null, int timeout = 30, boolean isRetry = false ->
@@ -487,7 +487,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         commit.doneBody.currentPage == 'p'
     }
 
-    def "hub_create_app installAsUserApp reports an uncommitted shell when the Done POST fails"() {
+    def "hub_create_item (type=app) installAsUserApp reports an uncommitted shell when the Done POST fails"() {
         given:
         enableWrite()
         script.metaClass.hubInternalGetRaw = { String path, Map query = null, int timeout = 30, boolean isRetry = false ->
@@ -506,7 +506,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         result.error.contains('7777')
     }
 
-    def "hub_create_app installAsUserApp keeps the shell and points at its settings when the page refuses the install Done"() {
+    def "hub_create_item (type=app) installAsUserApp keeps the shell and points at its settings when the page refuses the install Done"() {
         given: "a first page with a required device input nothing can fill at create time"
         enableWrite()
         script.metaClass.hubInternalGetRaw = { String path, Map query = null, int timeout = 30, boolean isRetry = false ->
@@ -529,7 +529,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         !result.error.contains("delete")
     }
 
-    def "hub_create_app installAsUserApp rejects a shell that 200s the Done but reads app.installed=false"() {
+    def "hub_create_item (type=app) installAsUserApp rejects a shell that 200s the Done but reads app.installed=false"() {
         given:
         enableWrite()
         script.metaClass.hubInternalGetRaw = { String path, Map query = null, int timeout = 30, boolean isRetry = false ->
@@ -550,7 +550,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         result.error.contains('shell')
     }
 
-    def "hub_create_app installAsUserApp still reports committed when the post-commit statusJson read fails (zero counts)"() {
+    def "hub_create_item (type=app) installAsUserApp still reports committed when the post-commit statusJson read fails (zero counts)"() {
         given:
         enableWrite()
         script.metaClass.hubInternalGetRaw = { String path, Map query = null, int timeout = 30, boolean isRetry = false ->
@@ -571,7 +571,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         result.eventSubscriptionCount == 0
     }
 
-    def "hub_create_app installAsUserApp falls back to the config page name when the create redirect omits the page segment"() {
+    def "hub_create_item (type=app) installAsUserApp falls back to the config page name when the create redirect omits the page segment"() {
         given:
         enableWrite()
         // Location with NO trailing page segment -> firstPage parses to null -> page resolves from configPage.name.
@@ -590,7 +590,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         commit.doneBody.currentPage == 'mainPage'
     }
 
-    def "hub_create_app installAsUserApp submits each input's value in the Done body (bool as true/false, not empty)"() {
+    def "hub_create_item (type=app) installAsUserApp submits each input's value in the Done body (bool as true/false, not empty)"() {
         given:
         enableWrite()
         script.metaClass.hubInternalGetRaw = { String path, Map query = null, int timeout = 30, boolean isRetry = false ->
@@ -624,7 +624,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         commit.doneBody.appTypeName == ''
     }
 
-    def "hub_create_app with installAsUserApp returns success=false when hub returns non-302"() {
+    def "hub_create_item (type=app) with installAsUserApp returns success=false when hub returns non-302"() {
         given:
         enableWrite()
         script.metaClass.hubInternalGetRaw = { String path, Map query = null, int timeout = 30, boolean isRetry = false ->
@@ -642,7 +642,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_create_app installAsUserApp returns status-aware error for status #status"() {
+    def "hub_create_item (type=app) installAsUserApp returns status-aware error for status #status"() {
         // Pins the status-aware error hints so a 401 auth-expired case doesn't get
         // misread as "codeAppId wrong" the way a generic non-302 message would.
         given:
@@ -667,7 +667,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         200    | 'without redirect'
     }
 
-    def "hub_create_app rejects installAsUserApp combined with importUrl"() {
+    def "hub_create_item (type=app) rejects installAsUserApp combined with importUrl"() {
         given:
         enableWrite()
 
@@ -1302,7 +1302,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
     // -------- installAsUserApp validation edge cases --------
 
     @spock.lang.Unroll
-    def "hub_create_app installAsUserApp rejects invalid value (#value)"() {
+    def "hub_create_item (type=app) installAsUserApp rejects invalid value (#value)"() {
         given:
         enableWrite()
 
@@ -1317,7 +1317,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         value << [0, -5, 'not-a-number']
     }
 
-    def "hub_create_app installAsUserApp coerces stringified integer"() {
+    def "hub_create_item (type=app) installAsUserApp coerces stringified integer"() {
         given:
         enableWrite()
         script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean r = false ->
@@ -1368,9 +1368,9 @@ class ToolImportUrlSpec extends ToolSpecBase {
         value << [0, -1, 'abc']
     }
 
-    // -------- per-tool importUrl smoke (hub_create_driver / hub_update_driver / hub_update_library) --------
+    // -------- per-tool importUrl smoke (hub_create_item (type=driver) / hub_update_driver / hub_update_library) --------
 
-    def "hub_create_driver with importUrl fetches via httpGet and POSTs to /driver/saveOrUpdateJson"() {
+    def "hub_create_item (type=driver) with importUrl fetches via httpGet and POSTs to /driver/saveOrUpdateJson"() {
         given:
         enableWrite()
         stubHttpGet(200, 'metadata { definition (name: "FromUrl") {} }')
@@ -1437,7 +1437,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
 
     // -------- bulk-mode importUrl per-item forwarding --------
 
-    def "hub_create_driver bulk: per-item importUrl is forwarded and fetched"() {
+    def "hub_create_item (type=driver) bulk: per-item importUrl is forwarded and fetched"() {
         given:
         enableWrite()
         stubHttpGet(200, 'driver-from-url')
@@ -1493,7 +1493,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
     // -------- JSON-RPC dispatch envelope (isError validation result on mutex, success on happy path) --------
 
     @spock.lang.Unroll
-    def "hub_create_app installAsUserApp via dispatch returns success envelope (useGateways=#useGateways)"() {
+    def "hub_create_item (type=app) installAsUserApp via dispatch returns success envelope (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -1503,7 +1503,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         stubInstallCommit()
 
         when:
-        def response = mcpDriver.callTool('hub_create_app', [codeAppId: 310, confirm: true])
+        def response = mcpDriver.callTool('hub_create_item', [type: 'app', codeAppId: 310, confirm: true])
 
         then:
         response.error == null
@@ -1518,13 +1518,13 @@ class ToolImportUrlSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_create_app installAsUserApp + importUrl via dispatch returns isError validation result (useGateways=#useGateways)"() {
+    def "hub_create_item (type=app) installAsUserApp + importUrl via dispatch returns isError validation result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
 
         when:
-        def response = mcpDriver.callTool('hub_create_app', [
+        def response = mcpDriver.callTool('hub_create_item', [type: 'app',
             codeAppId: 310,
             importUrl: 'https://example.com/x.groovy',
             confirm: true

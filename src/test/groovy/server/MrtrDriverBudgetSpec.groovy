@@ -72,10 +72,10 @@ class MrtrDriverBudgetSpec extends ToolSpecBase {
     def "driver #field keeps exact suffix and ordered results through #route"() {
         given:
         settingsMap.useGateways = gateway
-        String leaf = field == 'installs' ? 'hub_create_driver' : 'hub_update_driver'
+        String leaf = field == 'installs' ? 'hub_create_item' : 'hub_update_driver'
         String outer = gateway ? 'hub_manage_code' : leaf
         def items = specs(field)
-        def edit = [confirm: true, (field): items]
+        def edit = [confirm: true, (field): items] + (field == 'installs' ? [type: 'driver'] : [:])
         def args = gateway ? [tool: leaf, args: edit] : edit
 
         when: 'the first request runs the first item and pauses at the worker target'
@@ -127,14 +127,14 @@ class MrtrDriverBudgetSpec extends ToolSpecBase {
     def "a failed first driver #field item remains failed after a clean resumed slice"() {
         given:
         settingsMap.useGateways = false
-        String leaf = field == 'installs' ? 'hub_create_driver' : 'hub_update_driver'
+        String leaf = field == 'installs' ? 'hub_create_item' : 'hub_update_driver'
         def items = specs(field)
         items[0].source = 'reject'
         if (field == 'updates') {
             items[1].expectedVersion = 1
             items[2].expectedVersion = 2
         }
-        def args = [confirm: true, (field): items]
+        def args = [confirm: true, (field): items] + (field == 'installs' ? [type: 'driver'] : [:])
 
         when:
         def paused = modernCall(leaf, args)
@@ -201,10 +201,10 @@ class MrtrDriverBudgetSpec extends ToolSpecBase {
         given:
         settingsMap.useGateways = false
         itemElapsed = { int index -> 120001L }
-        String leaf = field == 'installs' ? 'hub_create_driver' : 'hub_update_driver'
+        String leaf = field == 'installs' ? 'hub_create_item' : 'hub_update_driver'
         String remainingField = field + 'Remaining'
         def items = specs(field, 10)
-        def args = [confirm: true, (field): items]
+        def args = [confirm: true, (field): items] + (field == 'installs' ? [type: 'driver'] : [:])
 
         when: 'the first request is slice one; seven continuations reach the cap'
         Map response = modernCall(leaf, args)
@@ -227,7 +227,7 @@ class MrtrDriverBudgetSpec extends ToolSpecBase {
         script._activeWrites().isEmpty()
 
         when:
-        def followup = [confirm: true, (field): terminal[remainingField]]
+        def followup = [confirm: true, (field): terminal[remainingField]] + (field == 'installs' ? [type: 'driver'] : [:])
         String nextId = modernCall(leaf, followup).result.requestState
         def finished = modernCall(leaf, followup, nextId)
 

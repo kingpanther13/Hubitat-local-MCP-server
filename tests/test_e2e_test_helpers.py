@@ -2372,7 +2372,9 @@ def test_driver_lifecycle_uses_logical_write_helper_for_create():
         def call_tool(self, name, arguments):
             direct_calls.append((name, arguments))
             tool = arguments.get("tool")
-            if (name, tool) == ("hub_manage_code", "hub_create_driver"):
+            if (name, tool) == ("hub_manage_code", "hub_create_item"):
+                if "codeAppId" in arguments["args"]:
+                    raise et.McpToolError(tool, "codeAppId applies to type='app' only")
                 raise AssertionError("driver creation must use the logical write helper")
             if (name, tool) == ("hub_read_apps_code", "hub_get_source"):
                 return next(reads)
@@ -2400,8 +2402,8 @@ def test_driver_lifecycle_uses_logical_write_helper_for_create():
 
     def write_once(gateway, tool, args, label):
         write_calls.append((gateway, tool, args, label))
-        if tool == "hub_create_driver":
-            return {"success": True, "driverId": 77}
+        if tool == "hub_create_item":
+            return {"success": True, "driverId": 77, "version": 1}
         if tool == "hub_update_driver":
             return {"success": True, "previousVersion": 1}
         raise AssertionError(f"unexpected logical write: {tool}")
@@ -2411,11 +2413,12 @@ def test_driver_lifecycle_uses_logical_write_helper_for_create():
     et.TestRunner.test_update_driver_code_lifecycle(runner)
 
     assert [(gateway, tool, label) for gateway, tool, _args, label in write_calls] == [
-        ("hub_manage_code", "hub_create_driver", "driver code create"),
+        ("hub_manage_code", "hub_create_item", "driver code create"),
         ("hub_manage_code", "hub_update_driver", "driver code round-trip"),
     ]
     create_args = write_calls[0][2]
     assert create_args["confirm"] is True
+    assert create_args["type"] == "driver"
     assert "DRIVER-LEG-MARKER-V1" in create_args["source"]
 
 

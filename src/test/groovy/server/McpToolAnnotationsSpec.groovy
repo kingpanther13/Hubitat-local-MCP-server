@@ -132,9 +132,9 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_call_zwave', 'hub_call_zigbee', 'hub_call_matter', 'hub_call_destructive_ops',
             'hub_manage_virtual_device', 'hub_update_device', 'hub_create_device',
             'hub_create_room', 'hub_delete_room', 'hub_update_room',
-            'hub_create_app', 'hub_create_driver', 'hub_update_app', 'hub_update_driver',
+            'hub_create_item', 'hub_update_app', 'hub_update_driver',
             'hub_delete_item',
-            'hub_create_library', 'hub_update_library', 'hub_install_bundle',
+            'hub_update_library', 'hub_install_bundle',
             'hub_delete_bundle', 'hub_export_bundle',
             'hub_restore_backup', 'hub_delete_backup',
             'hub_write_file', 'hub_delete_file',
@@ -355,7 +355,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_set_system_settings',
             'hub_create_device',
             'hub_create_room',
-            'hub_create_app', 'hub_create_driver', 'hub_create_library',
+            'hub_create_item',
             'hub_call_rule', 'hub_set_rule', 'hub_set_native_app',
             'hub_clone_native_app', 'hub_import_native_app', 'hub_delete_native_app',
             'hub_set_visual_rule',
@@ -373,7 +373,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         expect:
         script.getOpenWorldToolNames() == [
             'hub_get_info', 'hub_update_firmware', 'hub_update_package', 'hub_install_bundle',
-            'hub_create_app', 'hub_create_driver', 'hub_create_library',
+            'hub_create_item',
             'hub_update_app', 'hub_update_driver', 'hub_update_library',
             'hub_get_device_health', 'hub_restore_backup', 'hub_call_zwave'
         ] as Set
@@ -428,13 +428,13 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         // read-only.
         def readOnly = ['hub_list_rooms', 'hub_get_metrics'] as Set
         def idem = ['hub_list_rooms', 'hub_delete_room'] as Set
-        def open = ['hub_create_app'] as Set
+        def open = ['hub_create_item'] as Set
         def readLeaf = script.annotationsForLeaf('hub_list_rooms', readOnly, null, idem, open)
         def carveOut = script.annotationsForLeaf('hub_get_metrics', readOnly, null, idem, open)
         def idemWrite = script.annotationsForLeaf('hub_delete_room', readOnly, null, idem, open)
-        def openCreate = script.annotationsForLeaf('hub_create_app', readOnly, null, idem, open)
+        def openCreate = script.annotationsForLeaf('hub_create_item', readOnly, null, idem, open)
         def gwAllIdem = script.annotationsForGateway(['hub_list_rooms', 'hub_delete_room'], readOnly, idem, open)
-        def gwMixed = script.annotationsForGateway(['hub_list_rooms', 'hub_create_app'], readOnly, idem, open)
+        def gwMixed = script.annotationsForGateway(['hub_list_rooms', 'hub_create_item'], readOnly, idem, open)
         def gwCarve = script.annotationsForGateway(['hub_list_rooms', 'hub_get_metrics'], readOnly, idem, open)
 
         then: 'membership in the complete idempotent surface drives the hint'
@@ -531,9 +531,9 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_call_zwave', 'hub_call_zigbee', 'hub_call_matter', 'hub_call_destructive_ops',
             'hub_manage_virtual_device', 'hub_update_device', 'hub_create_device',
             'hub_create_room', 'hub_delete_room', 'hub_update_room',
-            'hub_create_app', 'hub_create_driver', 'hub_update_app', 'hub_update_driver',
+            'hub_create_item', 'hub_update_app', 'hub_update_driver',
             'hub_delete_item',
-            'hub_create_library', 'hub_update_library', 'hub_install_bundle',
+            'hub_update_library', 'hub_install_bundle',
             'hub_delete_bundle', 'hub_export_bundle',
             'hub_restore_backup', 'hub_delete_backup',
             'hub_write_file', 'hub_delete_file',
@@ -568,7 +568,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         names.size() == (names as Set).size()
 
         and: 'no chunk dropped — the full surface is present (bump on intentional add/remove)'
-        names.size() == 115
+        names.size() == 113
 
         and: 'sentinels from the first and last chunks survive the concatenation chain'
         names.contains('hub_list_devices')   // first chunk

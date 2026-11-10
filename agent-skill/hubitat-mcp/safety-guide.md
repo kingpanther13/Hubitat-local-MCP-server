@@ -106,13 +106,11 @@ ALL destructive write tools (`confirm`+backup tier) require these steps in order
 - List affected devices to the user before proceeding
 - Dashboard layouts referencing the room may be affected
 
-#### hub_create_app / hub_create_driver
+#### hub_create_item
 - Verify source code looks reasonable before installing
-- Warn about namespace conflicts with existing apps/drivers
-
-#### hub_create_library
-- Verify source includes a valid `library()` definition block before installing
-- Warn about namespace conflicts with existing libraries (`#include namespace.LibraryName` references must match exactly)
+- Warn about namespace conflicts with existing apps, drivers or libraries (`#include namespace.LibraryName` references must match exactly)
+- For `type=library`, verify source includes a valid `library()` definition block; the hub does not compile-check a library until an app or driver includes it
+- An unverified or failed-request result has an unknown outcome: check the list tool before retrying, because a second save creates a duplicate at a new id
 
 #### hub_update_app / hub_update_driver
 - Source is auto-backed up before update in every mode except `importUrl`, whose history lives at its URL (1-hour protection window preserves original); `backup:false` skips it

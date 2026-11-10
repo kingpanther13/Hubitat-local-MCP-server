@@ -1162,7 +1162,7 @@ private Map _createCodeItem(String type, args) {
             "The hub compiles the source on save. Fix the reported issue -- a Groovy compile error, or a required definition() field (apps need a non-empty iconUrl and iconX2Url) -- and retry."
         def failure = _codeCreateFailure(type, "${label} installation failed: ${hubMsg}".toString(), note)
         if (_isConcurrentSaveRefusal(type, hubMsg)) {
-            failure.note = _concurrentSaveNote(type)
+            failure.note = "This is the hub's answer when other saves run at the same moment; the source itself was not rejected and nothing was created. Wait a moment, then retry. See ${_codeGuidePointer()}.".toString()
             failure.retryable = true
         }
         return failure
@@ -1204,6 +1204,7 @@ private Map _createDriversBulk(args) {
         throw new IllegalArgumentException("'installs' array must not be empty.")
     }
 
+    List bulkEntryKeys = _toolCatalogIndexes().installEntryArgs.hub_create_item
     def itemResults = []
     def allSucceeded = true
     for (int idx = 0; idx < args.installs.size(); idx++) {
@@ -1217,6 +1218,12 @@ private Map _createDriversBulk(args) {
         def item = args.installs[idx]
         if (!(item instanceof Map) || (item.source == null && item.sourceFile == null && item.importUrl == null)) {
             itemResults << [driverId: null, success: false, error: "Each installs entry must have a 'source', 'sourceFile', or 'importUrl' field."]
+            allSucceeded = false
+            continue
+        }
+        def unknownKeys = item.keySet().collect { it as String }.findAll { !(it in bulkEntryKeys) }
+        if (unknownKeys) {
+            itemResults << [driverId: null, success: false, error: "Unknown installs[] argument${unknownKeys.size() == 1 ? '' : 's'}: ${unknownKeys.sort().join(', ')}. Nothing was installed for this entry. Valid arguments: ${bulkEntryKeys.join(', ')}.".toString(), note: "Correct or remove the key and send this entry again. See ${_codeGuidePointer()}.".toString()]
             allSucceeded = false
             continue
         }
@@ -1269,9 +1276,9 @@ def toolCreateItem(args) {
         if (args.source || args.sourceFile || args.importUrl) {
             throw new IllegalArgumentException(
                 "codeAppId is mutually exclusive with source/sourceFile/importUrl. " +
-                "Use two calls: (1) hub_create_app(source|sourceFile|importUrl, confirm:true) " +
+                "Use two calls: (1) hub_create_item(type:'app', source|sourceFile|importUrl, confirm:true) " +
                 "to install the code, then " +
-                "(2) hub_create_app(codeAppId:<codeAppId>, confirm:true) " +
+                "(2) hub_create_item(type:'app', codeAppId:<codeAppId>, confirm:true) " +
                 "to create the running instance."
             )
         }
@@ -2152,7 +2159,7 @@ def toolDeleteItem(args) {
             lastBackup: formatTimestamp(state.lastBackupTimestamp),
             backupFile: backupEntry?.fileName,
             backupRetentionNote: backupEntry ? _itemBackupRetentionNote() : null,
-            restoreHint: backupEntry ? "To restore: use '${[app: 'hub_create_app', driver: 'hub_create_driver', library: 'hub_create_library'][type]}' with the backup source, or download ${backupEntry.fileName} from Hubitat > Settings > File Manager and re-install manually. ${_itemBackupRetentionNote()}".toString() : null
+            restoreHint: backupEntry ? "To restore: use 'hub_create_item' (type='${type}') with the backup source, or download ${backupEntry.fileName} from Hubitat > Settings > File Manager and re-install manually. ${_itemBackupRetentionNote()}".toString() : null
         ]
         if (!backupSucceeded) result.backupWarning = "Pre-delete backup could not be created. The source code may be permanently lost."
         return result
@@ -2703,7 +2710,7 @@ def _getAllToolDefinitions_partCodeManagement() {
                 type: "object",
                 properties: [
                     type: [type: "string", enum: ["app", "driver", "library"], description: "What kind of code to read."],
-                    id: [type: "string", description: "App/driver/library ID (positive integer), from hub_list_apps / hub_list_drivers / hub_list_libraries respectively (library id is also in a hub_create_library response or the Hubitat Libraries code page)."],
+                    id: [type: "string", description: "App/driver/library ID (positive integer), from hub_list_apps / hub_list_drivers / hub_list_libraries respectively (library id is also in a hub_create_item response or the Hubitat Libraries code page)."],
                     offset: [type: "integer", description: "Char offset to start reading from. Default: 0"],
                     length: [type: "integer", description: "Max chars (default 30000, max 64000)."]
                 ],
@@ -2712,54 +2719,32 @@ def _getAllToolDefinitions_partCodeManagement() {
         ],
         // Hub Admin App/Driver Management Write Tools
         [
-            name: "hub_create_app",
-            description: """⚠️ Install new app. Show code to user and get confirmation first.
+            name: "hub_create_item",
+            description: """⚠️ Install app, driver or library code, or instantiate installed app code. Show the code to the user and get confirmation first.
 
-Supply the code via exactly one of source / sourceFile / importUrl (mutually exclusive; see each param).
+Set type, then supply the code via exactly one of source / sourceFile / importUrl (see each param). For >1 driver use bulk mode (installs).
 
+The hub compiles apps and drivers on save and returns success=false with its error; libraries are not compile-checked until an app or driver #includes them. Library source needs a library() block with name/namespace/author/description.
+
+App code runs only once instantiated, a second call: hub_create_item(type:'app', codeAppId:<appId>, confirm:true).
+
+Requires Write master + confirm + backup <24h. Returns the new id and version.
 [[FLAT_TRIM]]
-After the code installs, create a running instance with a SECOND call: hub_create_app(codeAppId: <newAppId>, confirm: true).
-[[/FLAT_TRIM]]
-
-The hub compiles on save and returns success=false with its error. Requires Write master + confirm + backup <24h. Returns the new app ID.
-[[FLAT_TRIM]]
-A transport drop can lose the response while the hub still commits this write; verify current hub state before retrying. See hub_get_tool_guide(section='slow_ops').
-[[/FLAT_TRIM]]
-""",
-            inputSchema: [
-                type: "object",
-                additionalProperties: false,
-                properties: [
-                    source: [type: "string", description: "Inline Groovy source (stubs only)."],
-                    sourceFile: [type: "string", description: "File Manager filename (write it first via hub_write_file), e.g. my-app.groovy."],
-                    importUrl: [type: "string", description: "URL the hub fetches directly (http/https)."],
-                    codeAppId: [type: "integer", description: "Second-step mode: instantiate already-installed code (codeAppId from a prior call) and commit the install; not combinable with source/sourceFile/importUrl."],
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."],
-                ],
-                required: ["confirm"]
-            ]
-        ],
-        [
-            name: "hub_create_driver",
-            description: """⚠️ Install new driver. Show code to user and get confirmation first.
-
-Supply the code via exactly one of source / sourceFile / importUrl (mutually exclusive; see each param). For >1 driver use BULK mode (the installs param).
-
-The hub compiles on save and returns success=false with its error. Requires Write master + confirm + backup <24h. Returns new driver ID(s).
-[[FLAT_TRIM]]
-MCP 2026-07-28 clients automatically continue this slow write and can replay its retained terminal response. Older clients can still lose the response on a transport drop; verify current hub state before retrying. See hub_get_tool_guide(section='slow_ops').
+For type=driver, MCP 2026-07-28 clients automatically continue this slow write and can replay its retained terminal response. Other types and older clients can still lose the response on a transport drop; check the list tool before retrying. See hub_get_tool_guide(section='slow_ops').
 [[/FLAT_TRIM]]
 """,
             inputSchema: [
                 type: "object",
                 additionalProperties: false,
                 properties: [
+                    type: [type: "string", enum: ["app", "driver", "library"], description: "What kind of code to install."],
                     source: [type: "string", description: "Inline Groovy source (stubs only)."],
                     sourceFile: [type: "string", description: "File Manager filename (write it first via hub_write_file), e.g. my-code.groovy."],
                     importUrl: [type: "string", description: "URL the hub fetches directly (http/https)."],
+                    codeAppId: [type: "integer", description: "type=app only, second step: instantiate already-installed code (the appId from a prior call) and commit the install; not combinable with source/sourceFile/importUrl."],
                     installs: [
                         type: "array",
-                        description: "Bulk mode: one round-trip for many drivers. Each entry {source|sourceFile|importUrl}; cannot mix with single-driver fields; continue-on-error.",
+                        description: "type=driver only, bulk mode: one round-trip for many drivers. Each entry {source|sourceFile|importUrl}; cannot mix with single-item fields; continue-on-error.",
                         items: [
                             type: "object",
                             additionalProperties: false,
@@ -2771,8 +2756,9 @@ MCP 2026-07-28 clients automatically continue this slow write and can replay its
                         ]
                     ],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."],
+                    bestPracticeKey: [type: "string"]
                 ],
-                required: ["confirm"]
+                required: ["type", "confirm"]
             ]
         ],
         [
@@ -2872,40 +2858,18 @@ For type=driver, MCP 2026-07-28 clients automatically continue this slow write a
                 properties: [
                     type: [type: "string", enum: ["app", "driver", "library"], description: "What to delete."],
                     id: [type: "string", description: "App/driver/library code ID (positive integer), from hub_list_apps(scope='types') / hub_list_drivers / hub_list_libraries respectively."],
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."],
+                    bestPracticeKey: [type: "string"]
                 ],
                 required: ["type", "id", "confirm"]
             ]
         ],
         // Hub Admin Library Management Tools
         [
-            name: "hub_create_library",
-            description: """⚠️ Install new Groovy library code. Libraries are #include'd by drivers/apps. Show code to user and get confirmation first.
-
-Provide exactly one of source / sourceFile / importUrl (see each param).
-
-Source must include a library() block with name/namespace/author/description (all required). The hub does NOT compile-check libraries at install -- syntax errors surface only when an app/driver #includes it. Requires Write master + confirm + backup <24h. Returns new libraryId.
-[[FLAT_TRIM]]
-A transport drop can lose the response while the hub still commits this write; verify current hub state before retrying. See hub_get_tool_guide(section='slow_ops').
-[[/FLAT_TRIM]]
-""",
-            inputSchema: [
-                type: "object",
-                additionalProperties: false,
-                properties: [
-                    source: [type: "string", description: "Inline source (stubs only)."],
-                    sourceFile: [type: "string", description: "File Manager filename (write it first via hub_write_file), e.g. my-code.groovy."],
-                    importUrl: [type: "string", description: "URL the hub fetches directly (http/https)."],
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."],
-                ],
-                required: ["confirm"]
-            ]
-        ],
-        [
             name: "hub_update_library",
             description: """⚠️ CRITICAL: Modify existing library code. Read current source first, explain changes, get confirmation.
 
-Supply the new code via exactly one of source / sourceFile / importUrl, or resave to recompile in place (see each param). Not compile-checked at save (see hub_create_library).
+Supply the new code via exactly one of source / sourceFile / importUrl, or resave to recompile in place (see each param). Not compile-checked at save (see hub_create_item).
 
 Auto-backs up before modifying. Requires Write master + confirm + backup <24h.
 [[FLAT_TRIM]]
@@ -2986,7 +2950,7 @@ def _openWorldToolNames_partCodeManagement() {
     // Tools in this library that reach BEYOND the hub to the open internet (MCP
     // openWorldHint) -- contributed to the app's getOpenWorldToolNames() aggregator.
     return [
-        "hub_create_app", "hub_create_driver", "hub_create_library", "hub_update_app", "hub_update_driver", "hub_update_library"
+        "hub_create_item", "hub_update_app", "hub_update_driver", "hub_update_library"
     ]
 }
 
@@ -2999,11 +2963,9 @@ def _toolDisplayMeta_partCodeManagement() {
         hub_list_drivers: [title: "List Drivers", summary: "List all installed drivers."],
         hub_list_libraries: [title: "List Libraries", summary: "List installed Groovy libraries."],
         hub_get_source: [title: "Get Source Code", summary: "Read Groovy source for an app, driver, or library."],
-        hub_create_app: [title: "Install App", summary: "Install a new app from source, a File Manager file, or a URL, or instantiate installed app code."],
-        hub_create_driver: [title: "Install Driver", summary: "Install one or more drivers from source, File Manager files, or a URL."],
+        hub_create_item: [title: "Create Code Item", summary: "Install an app, driver, or library from source, a file, or a URL, or instantiate installed app code."],
         hub_update_app: [title: "Update App Code", summary: "Modify an existing app's source code, or enable/configure its OAuth (client id/secret)."],
         hub_update_driver: [title: "Update Driver Code", summary: "Modify an existing driver's source code."],
-        hub_create_library: [title: "Install Library", summary: "Install a new Groovy library."],
         hub_update_library: [title: "Update Library Code", summary: "Modify an existing library's source code."],
         hub_delete_item: [title: "Delete Code Item", summary: "Permanently delete an app, driver, or library (auto-backs up first)."],
         hub_list_device_dependents: [title: "List Device Dependents", summary: "Find all apps that reference a device."],

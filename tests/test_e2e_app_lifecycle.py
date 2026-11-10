@@ -10,6 +10,7 @@ import e2e_test as et
 
 UPDATE_APP_ARGS = {"appId", "source", "sourceFile", "importUrl", "resave", "backup",
                    "expectedVersion", "triggerUpdated", "oauth", "confirm"}
+CREATE_ITEM_ARGS = {"type", "source", "sourceFile", "importUrl", "codeAppId", "installs", "confirm"}
 
 
 class AppCodeClient:
@@ -26,11 +27,14 @@ class AppCodeClient:
         tool, args = arguments["tool"], arguments["args"]
         self.calls.append((tool, deepcopy(args)))
         self.counts[tool] = self.counts.get(tool, 0) + 1
-        if tool == "hub_create_app":
+        if tool == "hub_create_item":
+            unknown = sorted(set(args) - CREATE_ITEM_ARGS)
+            if unknown or args.get("installs") is not None:
+                raise et.McpToolError(tool, f"Refused arguments: {unknown or ['installs']}")
             app_id = str(len(self.created) + 1)
             self.apps[app_id] = {"success": True, "version": 1, "source": args["source"]}
             self.created.append(app_id)
-            result = {"appId": app_id}
+            result = {"appId": app_id, "version": 1}
         elif tool == "hub_get_source":
             result = deepcopy(self.apps[str(args["id"])])
         elif tool == "hub_update_app":
@@ -66,9 +70,14 @@ class AppCodeClient:
             result = {"source": self.backups[args["backupKey"]]}
         elif tool == "hub_delete_item":
             app_id = str(args["id"])
-            self.deleted.append(app_id)
-            del self.apps[app_id]
-            result = {"success": True}
+            if "item_id" in args:
+                raise et.McpToolError(tool, "Unknown hub_delete_item argument: item_id")
+            if app_id not in self.apps:
+                result = {"success": False, "error": f"App {app_id} does not exist"}
+            else:
+                self.deleted.append(app_id)
+                del self.apps[app_id]
+                result = {"success": True}
         else:
             raise AssertionError(f"unexpected tool {tool}")
         if self.fault:
@@ -182,6 +191,6 @@ def test_restore_scenario_uses_only_one_fresh_fixture_rerun(persistent):
     assert settles == [name]
     assert client.created == client.deleted == ["1", "2"]
     assert client.apps == {}
-    sources = [args["source"] for tool, args in client.calls if tool == "hub_create_app"]
+    sources = [args["source"] for tool, args in client.calls if tool == "hub_create_item"]
     assert sources[0] != sources[1]
     assert client.counts["hub_restore_backup"] == (4 if persistent else 6)

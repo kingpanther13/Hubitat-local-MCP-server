@@ -112,7 +112,7 @@ If you are calling one of these tools, you must read its section for that sectio
 - hub_update_dashboard -> dashboards
 - hub_delete_file -> file_manager
 - hub_write_file -> file_manager
-- hub_create_app -> hub_admin_write_code
+- hub_create_item -> hub_admin_write_code
 - hub_update_app -> hub_admin_write_code
 - hub_update_driver -> hub_admin_write_code
 - hub_update_library -> hub_admin_write_code
@@ -273,19 +273,21 @@ The radio firmware-flash `action` values (the bullet above summarizes these as "
 - **`oauth` param shape:** `{enabled (bool, default true), client_id?, client_secret?, refresh_secret? (bool, regenerate the secret)}`. Omit `client_id`/`client_secret` to preserve current values; if they are unreadable the tool refuses (`success:false`) rather than blanking them. Resulting credentials return under `result.oauth`.
 - **OAuth leg:** works alone (no source mode needed) or together with a source update. If the source saved but the OAuth leg failed, the result is `success:false, partial:true`. The app's source must declare OAuth (an `oauth` block in `definition` plus `mappings`) before OAuth can be enabled.
 
-### hub_create_app (install new app code, then instantiate a running instance)
+### hub_create_item (install app, driver or library code, or instantiate installed app code)
 
-**codeAppId second-step mode** (pass the `codeAppId` from a prior code-install `hub_create_app` call to instantiate already-installed code AND commit the install; mutually exclusive with the code-install args):
+**codeAppId second-step mode** (`type='app'` only; pass the `appId` from a prior code-install call as `codeAppId` to instantiate already-installed code AND commit the install; mutually exclusive with the code-install args):
 - Submits the config page's Done, firing `installed()`/`initialize()` so the instance's schedules and event subscriptions register.
 - Works for apps whose first page installs with defaults.
 - A required first-page input with no default blocks the auto-Done (same behavior as the Hubitat UI) -- in that case the install cannot be auto-committed.
 
-**Code-install mode (hub_create_app and hub_create_driver):**
+**Code-install mode:**
 - Supply exactly one of `source`, `sourceFile` or `importUrl`. For large source, write it once with hub_write_file and pass the filename as `sourceFile`, so a retry does not re-send the whole source.
-- `success:true` carries the new id and `version`.
+- Library source needs a `library()` block with name, namespace, author and description. The hub compiles apps and drivers on save; it does not compile-check a library until an app or driver #includes it.
+- `success:true` carries the new `appId`, `driverId` or `libraryId` and `version`.
 - `success:false` with the hub's error (for example a compile error): nothing was saved. Fix the source and retry. A refusal carrying `retryable:true` came from a colliding save, not the source; retry it after a moment.
 - `success:false` saying the install is unverified, or that the request failed: the outcome is unknown. Check hub_list_apps(scope='types'), hub_list_drivers or hub_list_libraries before retrying, because saving the same definition again creates a duplicate at a new id.
-- hub_create_driver bulk mode: `installs=[{source|sourceFile|importUrl}, ...]`, which cannot be combined with the single-item fields. Items run in order and continue past failures. Each item reports its own `driverId`, `success` and `error`, and the top-level `success` is true only when every item succeeded. If the call stops at the time budget, it returns `status:"in_progress"` with `installsRemaining`; send only those again.
+- Bulk mode (`type='driver'` only): `installs=[{source|sourceFile|importUrl}, ...]`, which cannot be combined with the single-item fields. Items run in order and continue past failures. Each item reports its own `driverId`, `success`, `version` and `error`, and the top-level `success` is true only when every item succeeded. If the call stops at the time budget, it returns `status:"in_progress"` with `installsRemaining`; send only those again.
+- Slow writes: for `type='driver'`, MCP 2026-07-28 clients automatically continue this write and can replay its retained terminal response. Other types and older clients can lose the response on a transport drop while the hub still commits the write, so check the list tool before retrying. See the slow_ops section.
 
 
 ### hub_update_app / hub_update_driver / hub_update_library — expectedVersion (optimistic lock)

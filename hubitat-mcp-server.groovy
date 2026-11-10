@@ -3384,7 +3384,7 @@ def _budgetAwareTools() {
 def _mrtrWriteTools() {
     return ["hub_set_native_app", "hub_set_rule", "hub_call_rule",
             "hub_clone_native_app", "hub_import_native_app",
-            "hub_create_driver", "hub_update_driver", "hub_delete_item",
+            "hub_create_item", "hub_update_driver", "hub_delete_item",
             "hub_manage_virtual_device", "hub_update_device",
             "hub_restore_backup", "hub_create_backup"] as Set
 }
@@ -3420,7 +3420,7 @@ def _mrtrReadContinuationActive() {
 
 private Set _mrtrDetachedWorkerTools() {
     return ["hub_set_native_app", "hub_set_rule",
-            "hub_create_driver", "hub_update_driver", "hub_delete_item",
+            "hub_create_item", "hub_update_driver", "hub_delete_item",
             "hub_manage_virtual_device", "hub_update_device", "hub_restore_backup", "hub_create_backup"] as Set
 }
 
@@ -3444,6 +3444,8 @@ def _mrtrEligibleCall(outerToolName, leafToolName, args) {
     // live relay-failure evidence and detached-worker coverage; app deletion can
     // target this server and library deletion has different verification semantics.
     if (leaf == "hub_delete_item") return leafArgs.type?.toString() == "driver"
+    // Only driver creation has continuation today.
+    if (leaf == "hub_create_item") return leafArgs.type?.toString() == "driver"
     // Only a rule snapshot restore: a hub DB restore reboots the hub, and an app code restore can
     // recompile this server under its own worker.
     if (leaf == "hub_restore_backup") {
@@ -4427,7 +4429,7 @@ private Map _mrtrContinuation(String leafTool, Map executionArgs, result, Map re
         retryIds.addAll(result.remainingRuleIds)
         nextLeaf.ruleId = retryIds.unique()
         kind = "call_rule"
-    } else if (leafTool == "hub_create_driver" && result.status == "in_progress" &&
+    } else if (leafTool == "hub_create_item" && result.status == "in_progress" &&
             result.installsRemaining instanceof List && !result.installsRemaining.isEmpty()) {
         nextLeaf.installs = result.installsRemaining
         kind = "driver_installs"
@@ -5777,26 +5779,22 @@ def getGatewayConfig() {
         ],
         hub_manage_code: [
             description: "Install, update, and delete hub apps, drivers, libraries, and code bundles (install/delete/export). All operations modify hub code and require Write master. Read-only counterparts (hub_get_source, list_*) live in the hub_read_apps_code gateway.",
-            tools: ["hub_create_app", "hub_create_driver", "hub_update_app", "hub_update_driver", "hub_delete_item", "hub_create_library", "hub_update_library", "hub_install_bundle", "hub_delete_bundle", "hub_export_bundle"],
+            tools: ["hub_create_item", "hub_update_app", "hub_update_driver", "hub_delete_item", "hub_update_library", "hub_install_bundle", "hub_delete_bundle", "hub_export_bundle"],
             summaries: [
-                hub_create_app: "Install new app code (source|sourceFile|importUrl), OR with codeAppId=<id> create a running instance from already-installed code (mutually exclusive). To save context prefer importUrl (hub fetches the source itself) or hub_write_file + sourceFile; inline source for stubs only. confirm=true",
-                hub_create_driver: "Install new driver. To save context prefer importUrl (hub fetches the source) or hub_write_file + sourceFile; inline source for stubs only. For 1: source|sourceFile|importUrl. For >1: USE BULK (single round-trip: installs=[{source|sourceFile|importUrl},...]). confirm=true",
+                hub_create_item: "Install app, driver or library code, OR with type=app + codeAppId=<id> create a running instance from installed app code. Args: type (app|driver|library), source|sourceFile|importUrl, confirm=true. To save context prefer importUrl (hub fetches the source itself) or hub_write_file + sourceFile; inline source for stubs only. For >1 driver USE BULK (single round-trip: type=driver, installs=[{source|sourceFile|importUrl},...])",
                 hub_update_app: "Modify existing app code (CRITICAL), and/or enable OAuth on it. To save context prefer importUrl (hub fetches the source itself) or hub_write_file + sourceFile over inline source. Args: appId, source|sourceFile|importUrl|resave, oauth ({enabled,client_id?,client_secret?,refresh_secret?} -- enable/configure OAuth, returns the clientId/secret), confirm=true",
                 hub_update_driver: "Modify existing driver code (CRITICAL). For 1 driver: driverId+source|sourceFile|importUrl|resave. For >1 drivers: USE BULK (single round-trip: updates=[{driverId,sourceFile|importUrl},...]). To save context prefer importUrl (hub fetches) or hub_write_file + sourceFile over inline. confirm=true",
                 hub_delete_item: "Permanently delete an app/driver/library (DESTRUCTIVE, auto-backs up). Args: type (app|driver|library), id, confirm=true",
-                hub_create_library: "Install new Groovy library (#include namespace.Name). To save context prefer importUrl (hub fetches the source) or hub_write_file + sourceFile; inline source for stubs only. Args: source|sourceFile|importUrl, confirm=true",
                 hub_update_library: "Modify existing library code. To save context prefer importUrl (hub fetches) or hub_write_file + sourceFile over inline. Args: libraryId, source|sourceFile|importUrl|resave, confirm=true",
                 hub_install_bundle: "Install a code bundle (.zip) from a URL the way HPM does (hub fetches+unpacks into Libraries/Apps/Drivers Code). Args: importUrl (zip), installer?, confirm=true",
                 hub_delete_bundle: "Delete an installed code bundle container by id (DESTRUCTIVE; verifies via re-list). Code it delivered may remain in Code -- delete separately. Args: bundleId (from hub_list_bundles), confirm=true",
                 hub_export_bundle: "Export an installed bundle's .zip to the File Manager (downloadable at /local/<file>). Args: bundleId (from hub_list_bundles), saveAs?"
             ],
             searchHints: [
-                hub_create_app: "add new application integration groovy",
-                hub_create_driver: "add new device handler type groovy",
+                hub_create_item: "add new install application integration device handler type driver groovy library shared include namespace",
                 hub_update_app: "modify change edit application groovy push deploy oauth enable client id secret access token endpoint",
                 hub_update_driver: "modify change edit device handler type groovy push deploy",
                 hub_delete_item: "remove uninstall application integration device handler driver type groovy library shared",
-                hub_create_library: "add new shared groovy library include namespace",
                 hub_update_library: "modify change edit groovy library shared code push deploy",
                 hub_install_bundle: "install bundle zip package hpm hubitat package manager uploadZipFromUrl library delivery deploy code",
                 hub_delete_bundle: "delete remove uninstall bundle container bundle manager code zip package by id",
@@ -6846,6 +6844,7 @@ private Map _toolCatalogIndexes() {
     def required = [:]
     def argNames = [:]
     def updateEntryArgs = [:]
+    def installEntryArgs = [:]
     def names = [] as Set
     getAllToolDefinitions().each { tool ->
         String name = tool.name as String
@@ -6855,8 +6854,11 @@ private Map _toolCatalogIndexes() {
         if (!_argCheckFrozen(name)) argNames.put(name, ((tool?.inputSchema?.properties ?: [:]) as Map).keySet().collect { it as String })
         def entryProps = tool?.inputSchema?.properties?.updates?.items?.properties
         if (entryProps instanceof Map) updateEntryArgs.put(name, entryProps.keySet().collect { it as String })
+        def installProps = tool?.inputSchema?.properties?.installs?.items?.properties
+        if (installProps instanceof Map) installEntryArgs.put(name, installProps.keySet().collect { it as String })
     }
-    return _toolMetadataPut("catalogIndexes", [required: required, argNames: argNames, updateEntryArgs: updateEntryArgs, names: names]) as Map
+    return _toolMetadataPut("catalogIndexes", [required: required, argNames: argNames, updateEntryArgs: updateEntryArgs,
+                                               installEntryArgs: installEntryArgs, names: names]) as Map
 }
 
 def requiredParamsByTool() {
@@ -7145,14 +7147,12 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
 
         // Hub Admin App/Driver Management
         case "hub_get_source": return toolGetSource(args)
-        case "hub_create_app": return toolCreateItem(args + [type: "app"])
-        case "hub_create_driver": return toolCreateItem(args + [type: "driver"])
+        case "hub_create_item": return toolCreateItem(args)
         case "hub_update_app": return toolUpdateAppCode(args)
         case "hub_update_driver": return toolUpdateDriverCode(args)
         case "hub_delete_item": return toolDeleteItem(args)
 
         // Hub Admin Library Management
-        case "hub_create_library": return toolCreateItem(args + [type: "library"])
         case "hub_update_library": return toolUpdateLibraryCode(args)
         case "hub_install_bundle": return toolInstallBundle(args)
         case "hub_list_bundles": return toolListBundles(args)
@@ -11516,7 +11516,7 @@ def _guideSectionForTool(toolName) {
               'hub_create_device']) return 'hub_admin_write_devices'
     if (t in ['hub_delete_device', 'hub_delete_room', 'hub_delete_item', 'hub_reboot', 'hub_shutdown',
               'hub_update_firmware', 'hub_call_destructive_ops']) return 'hub_admin_write_destructive'
-    if (t in ['hub_update_app', 'hub_update_driver', 'hub_update_library', 'hub_create_app', 'hub_update_package']) return 'hub_admin_write_code'
+    if (t in ['hub_update_app', 'hub_update_driver', 'hub_update_library', 'hub_create_item', 'hub_update_package']) return 'hub_admin_write_code'
     if (t == 'hub_get_device_attribute') return 'device_authorization'
     if (t == 'hub_report_issue') return 'performance_diagnostics'
     return null
@@ -11623,7 +11623,7 @@ If you are calling one of these tools, you must read its section for that sectio
 - hub_update_dashboard -> dashboards
 - hub_delete_file -> file_manager
 - hub_write_file -> file_manager
-- hub_create_app -> hub_admin_write_code
+- hub_create_item -> hub_admin_write_code
 - hub_update_app -> hub_admin_write_code
 - hub_update_driver -> hub_admin_write_code
 - hub_update_library -> hub_admin_write_code
@@ -11784,19 +11784,21 @@ The radio firmware-flash `action` values (the bullet above summarizes these as "
 - **`oauth` param shape:** `{enabled (bool, default true), client_id?, client_secret?, refresh_secret? (bool, regenerate the secret)}`. Omit `client_id`/`client_secret` to preserve current values; if they are unreadable the tool refuses (`success:false`) rather than blanking them. Resulting credentials return under `result.oauth`.
 - **OAuth leg:** works alone (no source mode needed) or together with a source update. If the source saved but the OAuth leg failed, the result is `success:false, partial:true`. The app's source must declare OAuth (an `oauth` block in `definition` plus `mappings`) before OAuth can be enabled.
 
-### hub_create_app (install new app code, then instantiate a running instance)
+### hub_create_item (install app, driver or library code, or instantiate installed app code)
 
-**codeAppId second-step mode** (pass the `codeAppId` from a prior code-install `hub_create_app` call to instantiate already-installed code AND commit the install; mutually exclusive with the code-install args):
+**codeAppId second-step mode** (`type='app'` only; pass the `appId` from a prior code-install call as `codeAppId` to instantiate already-installed code AND commit the install; mutually exclusive with the code-install args):
 - Submits the config page's Done, firing `installed()`/`initialize()` so the instance's schedules and event subscriptions register.
 - Works for apps whose first page installs with defaults.
 - A required first-page input with no default blocks the auto-Done (same behavior as the Hubitat UI) -- in that case the install cannot be auto-committed.
 
-**Code-install mode (hub_create_app and hub_create_driver):**
+**Code-install mode:**
 - Supply exactly one of `source`, `sourceFile` or `importUrl`. For large source, write it once with hub_write_file and pass the filename as `sourceFile`, so a retry does not re-send the whole source.
-- `success:true` carries the new id and `version`.
+- Library source needs a `library()` block with name, namespace, author and description. The hub compiles apps and drivers on save; it does not compile-check a library until an app or driver #includes it.
+- `success:true` carries the new `appId`, `driverId` or `libraryId` and `version`.
 - `success:false` with the hub's error (for example a compile error): nothing was saved. Fix the source and retry. A refusal carrying `retryable:true` came from a colliding save, not the source; retry it after a moment.
 - `success:false` saying the install is unverified, or that the request failed: the outcome is unknown. Check hub_list_apps(scope='types'), hub_list_drivers or hub_list_libraries before retrying, because saving the same definition again creates a duplicate at a new id.
-- hub_create_driver bulk mode: `installs=[{source|sourceFile|importUrl}, ...]`, which cannot be combined with the single-item fields. Items run in order and continue past failures. Each item reports its own `driverId`, `success` and `error`, and the top-level `success` is true only when every item succeeded. If the call stops at the time budget, it returns `status:"in_progress"` with `installsRemaining`; send only those again.
+- Bulk mode (`type='driver'` only): `installs=[{source|sourceFile|importUrl}, ...]`, which cannot be combined with the single-item fields. Items run in order and continue past failures. Each item reports its own `driverId`, `success`, `version` and `error`, and the top-level `success` is true only when every item succeeded. If the call stops at the time budget, it returns `status:"in_progress"` with `installsRemaining`; send only those again.
+- Slow writes: for `type='driver'`, MCP 2026-07-28 clients automatically continue this write and can replay its retained terminal response. Other types and older clients can lose the response on a transport drop while the hub still commits the write, so check the list tool before retrying. See the slow_ops section.
 
 
 ### hub_update_app / hub_update_driver / hub_update_library — expectedVersion (optimistic lock)
@@ -12952,7 +12954,7 @@ def getToolGuideSubSections() {
                                      "hub_set_zigbee", "hub_call_matter"],
             hub_admin_write_devices: ["hub_call_device_command", "hub_call_device_swap",
                                       "hub_call_device_replace", "hub_create_device"],
-            hub_admin_write_code: ["hub_update_app", "hub_create_app", "hub_update_package"],
+            hub_admin_write_code: ["hub_update_app", "hub_create_item", "hub_update_package"],
             hub_admin_write_system: ["hub_get_info", "hub_list_modes", "hub_manage_mode",
                                      "hub_set_mode_manager", "hub_get_hsm_status",
                                      "hub_set_system_settings", "hub_update_mcp_settings",
