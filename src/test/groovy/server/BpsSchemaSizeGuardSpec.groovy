@@ -21,7 +21,8 @@ class BpsSchemaSizeGuardSpec extends ToolSpecBase {
         }*.name
 
         then:
-        offenders as Set == ['hub_set_rule', 'hub_set_native_app', 'hub_create_item', 'hub_update_app', 'hub_update_driver', 'hub_update_library', 'hub_delete_item'] as Set
+        offenders as Set == ['hub_set_rule', 'hub_set_native_app', 'hub_create_app', 'hub_create_driver', 'hub_create_library',
+                             'hub_update_app', 'hub_update_driver', 'hub_update_library', 'hub_delete_item'] as Set
     }
 
     // Issue #518: a client that drops undeclared top-level arguments loses the key on a direct

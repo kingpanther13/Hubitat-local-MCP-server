@@ -1,6 +1,6 @@
 # Hubitat MCP Server
 
-A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub. Instead of running a separate Node.js server on another machine, this runs natively on the hub itself — with a built-in rule engine and 113 MCP tools (36 on `tools/list` via category gateways).
+A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub. Instead of running a separate Node.js server on another machine, this runs natively on the hub itself — with a built-in rule engine and 115 MCP tools (36 on `tools/list` via category gateways).
 
 > **BETA SOFTWARE**: This project is ~99% AI-generated ("vibe coded") using Claude. It's a work in progress — contributions and [bug reports](https://github.com/kingpanther13/Hubitat-local-MCP-server/issues) are welcome!
 
@@ -24,7 +24,7 @@ This app lets AI assistants like Claude control your Hubitat smart home through 
 
 > "What's the hub's health status?"
 
-Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub. The server exposes 113 tools total — 13 core tools are always visible, while the rest are organized behind 23 domain-named gateways to keep the tool list manageable. If your client handles long tool lists well, you can disable the gateways via the **Consolidate tools behind category gateways** setting and every tool is exposed individually instead. (Counts here describe the shipped catalog; the runtime count on `tools/list` varies based on enabled settings.)
+Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub. The server exposes 115 tools total — 13 core tools are always visible, while the rest are organized behind 23 domain-named gateways to keep the tool list manageable. If your client handles long tool lists well, you can disable the gateways via the **Consolidate tools behind category gateways** setting and every tool is exposed individually instead. (Counts here describe the shipped catalog; the runtime count on `tools/list` varies based on enabled settings.)
 
 ## Requirements
 
@@ -255,9 +255,9 @@ For free remote access without a Hubitat Cloud subscription:
 
 ## Features
 
-### MCP Tools (113 total — 36 on tools/list)
+### MCP Tools (115 total — 36 on tools/list)
 
-The server has 113 tools total. To keep the MCP `tools/list` manageable, **13 core tools** are always visible and the remaining tools are organized behind **23 domain-named gateways** (8 read-only `hub_read_*` gateways + 15 write-bearing `hub_manage_*` gateways). The AI sees 36 items on `tools/list` (13 + 23 gateways). A tool may appear under more than one gateway — read tools inside a mixed `hub_manage_*` gateway are also surfaced in a pure-read `hub_read_*` gateway. Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
+The server has 115 tools total. To keep the MCP `tools/list` manageable, **13 core tools** are always visible and the remaining tools are organized behind **23 domain-named gateways** (8 read-only `hub_read_*` gateways + 15 write-bearing `hub_manage_*` gateways). The AI sees 36 items on `tools/list` (13 + 23 gateways). A tool may appear under more than one gateway — read tools inside a mixed `hub_manage_*` gateway are also surfaced in a pure-read `hub_read_*` gateway. Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
 
 #### Core Tools (13) — Always visible on tools/list
 
@@ -498,14 +498,16 @@ All operations are disruptive. These tools are gated by the Write master (ON by 
 </details>
 
 <details>
-<summary><b>hub_manage_code</b> (8) — Install, update, delete apps/drivers/libraries/bundles</summary>
+<summary><b>hub_manage_code</b> (10) — Install, update, delete apps/drivers/libraries/bundles</summary>
 
 | Tool | Description |
 |------|-------------|
-| `hub_create_item` | Install app, driver or library code (`type`) from inline `source`, a File Manager `sourceFile`, or an `importUrl`; `type=app` with `codeAppId` instantiates installed app code; `type=driver` also takes bulk `installs=[{sourceFile},...]`. The hub compiles apps and drivers on save and returns its error. |
+| `hub_create_app` | Install new app from Groovy source or File Manager file (`source` or `sourceFile`). Verifies install succeeded. |
+| `hub_create_driver` | Install new driver from Groovy source or File Manager file (`source` or `sourceFile`). Bulk mode: `installs=[{sourceFile},...]`. Verifies each install succeeded. |
 | `hub_update_app` | Modify existing app code (source, sourceFile, or resave), and/or enable OAuth on it |
 | `hub_update_driver` | Modify existing driver code (single-driver or bulk `updates` array) |
 | `hub_delete_item` | Permanently delete an app, driver, or library (`type`: "app", "driver", "library"; auto-backs up first) |
+| `hub_create_library` | Install new Groovy library (#include namespace.Name) |
 | `hub_update_library` | Modify existing library code |
 | `hub_install_bundle` | Install a code bundle (.zip) from a URL the HPM way — unpacks into Libraries/Apps/Drivers Code |
 | `hub_delete_bundle` | Delete an installed code bundle by id (the container; delivered code may remain in Code) |
@@ -1277,7 +1279,7 @@ For easier bug reporting:
   > 4. Cache results in `state` to reduce API calls
 
 - [ ] **Install/uninstall packages via HPM** — `Difficulty: 4 | Effort: L`
-  > *Partially feasible.* HPM has no programmatic API — it's purely UI-driven. **Bypass approach**: fetch the package manifest JSON, download each app/driver source, and install via existing `hub_create_item` tool. However, packages installed this way won't appear in HPM's "Installed" list, creating a fragmented experience. Uninstall requires removing running app instances (not just code) via poorly documented `/installedapp/` endpoints.
+  > *Partially feasible.* HPM has no programmatic API — it's purely UI-driven. **Bypass approach**: fetch the package manifest JSON, download each app/driver source, and install via existing `hub_create_app`/`hub_create_driver` tools. However, packages installed this way won't appear in HPM's "Installed" list, creating a fragmented experience. Uninstall requires removing running app instances (not just code) via poorly documented `/installedapp/` endpoints.
   >
   > **Implementation plan:**
   > 1. Create `install_package` MCP tool using the bypass approach

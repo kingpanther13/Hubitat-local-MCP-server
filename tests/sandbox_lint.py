@@ -1718,7 +1718,7 @@ _ATTRIBUTION_SELF_TEST_TOOLS = {
 }
 _ATTRIBUTION_SELF_TEST_MEMBERS = {
     "hub_manage_backup": {"hub_restore_backup", "hub_list_backups"},
-    "hub_manage_code": {"hub_create_item"},
+    "hub_manage_code": {"hub_create_app"},
     "hub_read_apps_code": {"hub_list_backups"},
 }
 

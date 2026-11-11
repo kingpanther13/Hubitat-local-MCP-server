@@ -60,7 +60,7 @@ private _listSourceItemBackups(args) {
             storageBudget: _itemBackupBudgetUsage(manifest),
             retentionPolicy: _itemBackupRetentionNote(),
             storage: "Backups are stored as .groovy files in the hub's File Manager. You can access them at http://<HUB_IP>/local/<filename> or via Hubitat > Settings > File Manager.",
-            howToRestore: "Use 'hub_get_backup' to retrieve source code, then 'hub_restore_backup' to restore (apps/drivers). For deleted apps, drivers or libraries, use 'hub_create_item' with the backup source."
+            howToRestore: "Use 'hub_get_backup' to retrieve source code, then 'hub_restore_backup' to restore (apps/drivers). For deleted apps or drivers, use 'hub_create_app' or 'hub_create_driver' with the backup source. For deleted libraries, use 'hub_create_library' with the backup source."
         ]
     }
 
@@ -296,11 +296,11 @@ private Map _toolRestoreSourceBackup(args) {
 
         // Library restores don't ride this path -- the version fetch + pre-restore backup here
         // are wired to /app|driver/ajax/code, which has no library twin.
-        // Direct the caller to use hub_create_item or hub_update_library with the backup source.
+        // Direct the caller to use hub_create_library or hub_update_library with the backup source.
         if (entry.type == "library") {
             return [
                 success: false,
-                error: "Library backups cannot be restored via hub_restore_backup -- use hub_create_item(type='library') or hub_update_library with the backup source from '${entry.fileName}' instead.",
+                error: "Library backups cannot be restored via hub_restore_backup -- use hub_create_library or hub_update_library with the backup source from '${entry.fileName}' instead.",
                 backupKey: args.backupKey,
                 type: "library",
                 backupFile: entry.fileName,

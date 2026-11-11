@@ -425,9 +425,8 @@ class HandleGatewaySpec extends ToolSpecBase {
         argNames.hub_list_modes == []
         argNames.keySet() == script.getAllToolDefinitions()*.name.findAll { !frozen(it) } as Set
 
-        and: "the bulk entry keys come from the schema's updates.items.properties and installs.items.properties"
+        and: "the bulk entry keys come from the schema's updates.items.properties"
         indexes.updateEntryArgs.hub_update_driver == ['driverId', 'sourceFile', 'source', 'importUrl', 'resave', 'backup', 'expectedVersion']
-        indexes.installEntryArgs.hub_create_item == ['sourceFile', 'source', 'importUrl']
     }
 
     def "_rejectUnknownArgs names the unknown keys, lists the valid ones, and exempts server keys and bestPracticeKey"() {
@@ -604,11 +603,11 @@ class HandleGatewaySpec extends ToolSpecBase {
         !reached
 
         when: 'a tool without additionalProperties:false refuses it too'
-        def lenient = mcpDriver.callTool('hub_install_bundle', [importUrl: 'https://example.com/b.zip', bogus: 1, confirm: true])
+        def lenient = mcpDriver.callTool('hub_create_library', [source: 's', bogus: 1, confirm: true])
 
         then:
         lenient.result.isError == true
-        mcpDriver.parseInner(lenient).error.contains('Unknown hub_install_bundle argument: bogus')
+        mcpDriver.parseInner(lenient).error.contains('Unknown hub_create_library argument: bogus')
 
         when: 'the mandatory guide key is accepted on a strict tool'
         settingsMap.enableMandatoryBPS = true

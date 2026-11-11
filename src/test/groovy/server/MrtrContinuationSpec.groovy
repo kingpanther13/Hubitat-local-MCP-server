@@ -1192,8 +1192,8 @@ class MrtrContinuationSpec extends ToolSpecBase {
         settingsMap.enableWrite = true
         settingsMap.useGateways = true
         def dispatched = []
-        script.metaClass.toolCreateItem = { Map actual ->
-            dispatched << [leaf: 'hub_create_item', arguments: new LinkedHashMap(actual)]
+        script.metaClass.toolCreateDriver = { Map actual ->
+            dispatched << [leaf: 'hub_create_driver', arguments: new LinkedHashMap(actual)]
             [success: true]
         }
         script.metaClass.toolUpdateDriverCode = { Map actual ->
@@ -1219,7 +1219,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
 
         where:
         leaf                | leafArgs
-        'hub_create_item'   | [type: 'driver', source: 'metadata { }', confirm: true]
+        'hub_create_driver' | [source: 'metadata { }', confirm: true]
         'hub_update_driver' | [driverId: '55', source: 'metadata { }', confirm: true]
         'hub_delete_item'   | [type: 'driver', id: '55', confirm: true]
     }
@@ -1246,35 +1246,6 @@ class MrtrContinuationSpec extends ToolSpecBase {
         mcpDriver.parseInner(response).success == true
         dispatched == [args.args]
         runInMillisCalls.isEmpty()
-
-        where:
-        itemType << ['app', 'library']
-    }
-
-    def "modern hub_create_item keeps #itemType creation on the synchronous path"() {
-        given:
-        settingsMap.enableWrite = true
-        settingsMap.useGateways = true
-        def dispatched = []
-        script.metaClass.toolCreateItem = { Map actual ->
-            dispatched << new LinkedHashMap(actual)
-            [success: true, itemType: actual.type]
-        }
-        def args = [tool: 'hub_create_item', args: [
-            type: itemType, source: 'code', confirm: true
-        ]]
-
-        when:
-        def response = modernCall('hub_manage_code', args)
-
-        then: 'only driver creation has continuation'
-        response.error == null
-        response.result.resultType == 'complete'
-        mcpDriver.parseInner(response).success == true
-        dispatched == [args.args]
-        runInMillisCalls.isEmpty()
-        !script._mrtrEligibleCall('hub_manage_code', 'hub_create_item', args)
-        script._mrtrEligibleCall('hub_manage_code', 'hub_create_item', [tool: 'hub_create_item', args: [type: 'driver', source: 'code', confirm: true]])
 
         where:
         itemType << ['app', 'library']
@@ -1372,8 +1343,8 @@ class MrtrContinuationSpec extends ToolSpecBase {
         runInMillisCalls[0][0..1] == [50, 'runMrtrSlice']
 
         when: 'another slow code write arrives while the worker is queued'
-        def capped = modernCall(gateway, [tool: 'hub_create_item', args: [
-            type: 'driver', source: 'metadata { }', confirm: true
+        def capped = modernCall(gateway, [tool: 'hub_create_driver', args: [
+            source: 'metadata { }', confirm: true
         ]])
         def cappedInner = mcpDriver.parseInner(capped)
 

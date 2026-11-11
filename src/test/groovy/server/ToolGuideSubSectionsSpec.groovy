@@ -105,7 +105,7 @@ class ToolGuideSubSectionsSpec extends ToolSpecBase {
         'hub_admin_write_destructive'   | '### Destructive Write Tools - Pre-Flight Checklist'          | '### hub_call_zwave'
         'hub_admin_write_radios'        | '### hub_call_zwave'                                          | '### hub_create_device'
         'hub_admin_write_devices'       | '### hub_call_device_command'                                 | '### hub_set_zwave'
-        'hub_admin_write_code'          | '### hub_create_item'                                         | '### hub_update_firmware'
+        'hub_admin_write_code'          | '### hub_create_app'                                          | '### hub_update_firmware'
         'hub_admin_write_system'        | '### hub_set_system_settings'                                 | '### hub_update_package'
         'performance_overview'          | '## Performance Tips'                                         | '### hub_get_radio_details'
         'performance_devices'           | '### hub_list_devices'                                        | '### hub_get_metrics'

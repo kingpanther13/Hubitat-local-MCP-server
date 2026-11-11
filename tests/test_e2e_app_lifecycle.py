@@ -10,7 +10,7 @@ import e2e_test as et
 
 UPDATE_APP_ARGS = {"appId", "source", "sourceFile", "importUrl", "resave", "backup",
                    "expectedVersion", "triggerUpdated", "oauth", "confirm"}
-CREATE_ITEM_ARGS = {"type", "source", "sourceFile", "importUrl", "codeAppId", "installs", "confirm"}
+CREATE_APP_ARGS = {"source", "sourceFile", "importUrl", "codeAppId", "confirm"}
 
 
 class AppCodeClient:
@@ -27,10 +27,10 @@ class AppCodeClient:
         tool, args = arguments["tool"], arguments["args"]
         self.calls.append((tool, deepcopy(args)))
         self.counts[tool] = self.counts.get(tool, 0) + 1
-        if tool == "hub_create_item":
-            unknown = sorted(set(args) - CREATE_ITEM_ARGS)
-            if unknown or args.get("installs") is not None:
-                raise et.McpToolError(tool, f"Refused arguments: {unknown or ['installs']}")
+        if tool == "hub_create_app":
+            unknown = sorted(set(args) - CREATE_APP_ARGS)
+            if unknown:
+                raise et.McpToolError(tool, f"Unknown hub_create_app arguments: {', '.join(unknown)}")
             app_id = str(len(self.created) + 1)
             self.apps[app_id] = {"success": True, "version": 1, "source": args["source"]}
             self.created.append(app_id)
@@ -191,6 +191,6 @@ def test_restore_scenario_uses_only_one_fresh_fixture_rerun(persistent):
     assert settles == [name]
     assert client.created == client.deleted == ["1", "2"]
     assert client.apps == {}
-    sources = [args["source"] for tool, args in client.calls if tool == "hub_create_item"]
+    sources = [args["source"] for tool, args in client.calls if tool == "hub_create_app"]
     assert sources[0] != sources[1]
     assert client.counts["hub_restore_backup"] == (4 if persistent else 6)
