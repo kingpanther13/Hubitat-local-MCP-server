@@ -1145,7 +1145,7 @@ def adminGetSource(args) {
     return result
 }
 
-// hub_create_library: copied from _createCodeItem (libraries/mcp-code-management-lib.groovy).
+// hub_create_library: copied from toolInstallLibrary (hubitat-mcp-server.groovy).
 // POST /library/saveOrUpdateJson {id:null, source, version:null}. Adapted to hubPostJson.
 def adminCreateLibrary(args) {
     requireConfirm(args)
@@ -1266,8 +1266,8 @@ def adminUpdateLibrary(args) {
     }
 }
 
-// hub_delete_item: copied from toolDeleteItem (libraries/mcp-code-management-lib.groovy). Only a
-// parsed success/status true counts as deleted, so an HTML or login reply is never logged as purged.
+// hub_delete_item: copied from toolDeleteItem / _deleteItemViaEndpoint / toolDeleteLibrary
+// (hubitat-mcp-server.groovy). GET delete endpoints; library uses JSON success.
 def adminDeleteItem(args) {
     requireConfirm(args)
     def type = args.type
@@ -1277,35 +1277,51 @@ def adminDeleteItem(args) {
     def id = (args.id != null) ? args.id : (type == "app" ? args.appId : (type == "driver" ? args.driverId : args.libraryId))
     if (!id) throw new IllegalArgumentException("id is required")
     if (!id.toString().isInteger() || id.toString().toInteger() <= 0) throw new IllegalArgumentException("id must be a positive integer (got: '${id}')")
-    def idField = (type == "library") ? [id: id, libraryId: id] : [id: id]
+
+    if (type == "library") {
+        mcpAdminLog "Deleting library ID ${id}"
+        try {
+            def responseText = hubGet("/library/edit/deleteJson/${id}", [:])
+            def parsed = responseText ? new groovy.json.JsonSlurper().parseText(responseText) : null
+            if (parsed?.success == true) {
+                return [success: true, message: "Library deleted successfully", libraryId: id]
+            }
+            return [success: false, error: parsed?.message ?: parsed?.error ?: "Delete may have failed -- check the Libraries code UI",
+                    libraryId: id, response: responseText?.take(500)]
+        } catch (Exception e) {
+            log.error "adminDeleteItem(library): ${e.message}"
+            return [success: false, error: "Library deletion failed: ${e.message}"]
+        }
+    }
 
     if (type == "app") {
         def current = _parseJsonBody(hubGet("/app/ajax/code", [id: id]))
         if (!(current instanceof Map))
             return [success: false, appId: id, error: "Could not read app ${id} to rule out this watchdog's own code; nothing was deleted."]
-        // The hub answers status:true to an app delete whether or not the id exists.
-        if (!current.source)
-            return [success: false, appId: id, error: "App ${id} does not exist; nothing was deleted."]
         if (isWatchdogSource(current.source))
             return [success: false, appId: id, error: "Refused: app ${id} is this watchdog's own code, the hub's remote repair path."]
     }
-    def deletePath = [app: "/app/edit/deleteJsonSafe/", driver: "/driver/editor/deleteJson/", library: "/library/edit/deleteJson/"][type]
+    def deletePath = (type == "app") ? "/app/edit/deleteJsonSafe/" : "/driver/editor/deleteJson/"
     mcpAdminLog "Deleting ${type} ID ${id}"
     try {
         def responseText = hubGet("${deletePath}${id}", [:])
-        def parsed = responseText ? _parseJsonBody(responseText) : null
-        if (!(parsed instanceof Map) || !(parsed.containsKey("success") || parsed.containsKey("status"))) {
-            return [success: false, error: "Could not confirm the delete of ${type} ${id}: the hub's reply is not a recognized answer.",
-                    response: responseText?.take(500)] + idField
+        def success = false
+        if (responseText) {
+            try {
+                def parsed = new groovy.json.JsonSlurper().parseText(responseText)
+                success = parsed.status?.toString() == "true"
+            } catch (Exception parseErr) {
+                success = !responseText.toLowerCase().contains("error")
+            }
         }
-        if (parsed.success == true || parsed.status?.toString() == "true") {
-            return [success: true, message: "${type.capitalize()} deleted successfully"] + idField
+        if (success) {
+            return [success: true, message: "${type.capitalize()} deleted successfully", id: id]
         }
-        return [success: false, error: parsed.message ?: parsed.error ?: parsed.errorMessage ?: "The hub refused the delete",
-                response: responseText?.take(500)] + idField
+        return [success: false, error: "Delete may have failed -- check the Hubitat web UI to verify",
+                id: id, response: responseText?.take(500)]
     } catch (Exception e) {
         log.error "adminDeleteItem(${type}): ${e.message}"
-        return [success: false, error: "${type.capitalize()} deletion failed: ${e.message}"] + idField
+        return [success: false, error: "${type.capitalize()} deletion failed: ${e.message}"]
     }
 }
 

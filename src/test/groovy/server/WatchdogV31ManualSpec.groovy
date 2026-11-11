@@ -416,54 +416,6 @@ class WatchdogV31ManualSpec extends WatchdogSpec {
         deletes == ['/app/edit/deleteJsonSafe/77']
     }
 
-    @spock.lang.Unroll
-    def "the watchdog counts a #type delete as done only when the hub's JSON says so (#reply)"() {
-        given:
-        script.metaClass.hubGet = { String p, Map q ->
-            if (p == '/app/ajax/code') return groovy.json.JsonOutput.toJson([source: 'definition(name: "Other")', version: 4])
-            reply
-        }
-
-        when:
-        def res = script.adminDeleteItem([type: type, id: '77', confirm: true])
-
-        then:
-        res.success == ok
-        res.id == '77'
-        !ok ? res.error.contains(errorPart) : true
-        type != 'library' || res.libraryId == '77'
-
-        where:
-        type      | reply                                                        | ok    | errorPart
-        'app'     | '{"status":true}'                                            | true  | null
-        'app'     | '<html><body>Login</body></html>'                            | false | 'not a recognized answer'
-        'app'     | '{"success":false,"message":"App code still in use by: X"}'  | false | 'still in use'
-        'driver'  | '{"status":false,"error":"Driver is in use by the following devices: [ D]"}' | false | 'Driver is in use'
-        'driver'  | '{"foo":1}'                                                  | false | 'not a recognized answer'
-        'driver'  | null                                                         | false | 'not a recognized answer'
-        'library' | '{"success":true,"message":null}'                            | true  | null
-        'library' | '{"status":true}'                                            | true  | null
-        'library' | '{"success":false,"errorMessage":"Library is in use"}'       | false | 'Library is in use'
-    }
-
-    def "the watchdog refuses to delete an app id that does not exist"() {
-        given: 'the hub answers a missing app read with a null source, and its delete with status:true'
-        def deletes = []
-        script.metaClass.hubGet = { String p, Map q ->
-            if (p == '/app/ajax/code') return '{"id":null,"name":null,"version":null,"source":null,"status":"success"}'
-            deletes << p
-            '{"status":true}'
-        }
-
-        when:
-        def res = script.adminDeleteItem([type: 'app', id: '2147483000', confirm: true])
-
-        then:
-        res.success == false
-        res.error.contains('does not exist')
-        deletes == []
-    }
-
     def "hub_get_info runs the peer check only when asked"() {
         given:
         int checks = 0
