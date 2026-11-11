@@ -2926,14 +2926,14 @@ class TestRunner:
         missing = []
         for _ in range(2):
             try:
-                self.client.call_tool("hub_read_rooms", {"tool": "hub_get_room", "args": {}}, flat=True)
-                raise AssertionError("gateway accepted a missing required room")
+                self.client.call_tool("hub_read_files", {"tool": "hub_read_file", "args": {}}, flat=True)
+                raise AssertionError("gateway accepted a missing required fileName")
             except McpError as exc:
                 missing.append(str(exc))
-        assert all("Missing required parameter" in msg and "room" in msg for msg in missing), missing
+        assert all("Missing required parameter" in msg and "fileName" in msg for msg in missing), missing
         assert all("FLAT_TRIM" not in msg for msg in missing), missing
-        found = self.client.call_tool("hub_search_tools", {"query": "get room", "maxResults": 10}, flat=True)
-        assert any(row.get("tool") == "hub_get_room" for row in found.get("results", [])), found
+        found = self.client.call_tool("hub_search_tools", {"query": "read file", "maxResults": 10}, flat=True)
+        assert any(row.get("tool") == "hub_read_file" for row in found.get("results", [])), found
 
     @test("infrastructure")
     def test_search_tools_counts_distinct_not_gateway_rows(self) -> None:
@@ -4542,7 +4542,7 @@ class TestRunner:
 
             # Independent read-back through the ROOM surface: the device really is in the room.
             got = self.client.call_tool("hub_manage_rooms", {
-                "tool": "hub_get_room", "args": {"room": room_id}})
+                "tool": "hub_list_rooms", "args": {"id": room_id}})
             assert any(str(d.get("id")) == str(dev_id) for d in (got.get("devices") or [])), \
                 f"room '{room_name}' does not list device {dev_id} after the assign: {got}"
 
@@ -4555,7 +4555,7 @@ class TestRunner:
                 c.get("property") == "room" and c.get("newValue") == room_name for c in (by_id.get("changes") or [])), \
                 f"room assign by id did not read back as '{room_name}': {by_id}"
             got = self.client.call_tool("hub_manage_rooms", {
-                "tool": "hub_get_room", "args": {"room": room_id}})
+                "tool": "hub_list_rooms", "args": {"id": room_id}})
             assert any(str(d.get("id")) == str(dev_id) for d in (got.get("devices") or [])), \
                 f"room '{room_name}' does not list device {dev_id} after the assign by id: {got}"
 
@@ -13974,32 +13974,33 @@ def updated() {}
         assert result is not None, "hub_list_rooms returned None"
 
     @test("system_tools")
-    def test_manage_rooms_create_get_rename_delete(self) -> None:
-        """Issue #209: validate the FULL McpRoomsLib-backed Rooms flow live.
+    def test_manage_rooms_create_read_update_delete(self) -> None:
+        """Validate the full McpRoomsLib-backed Rooms flow live.
 
-        Room create/get/update/delete impls now live in the McpRoomsLib #include
-        library; this exercises all five room tools (create, get, update/rename, list,
-        delete) against the real hub through the deployed app, including the
-        device-assignment path (create WITH a device -> hub_get_room renders it ->
-        hub_delete_room unassigns it). The Spock suite covers the logic in isolation;
-        this proves the extracted library actually runs end-to-end. Self-cleaning;
-        cleanup()'s room sweep reclaims a strand if this crashes mid-way.
+        Exercises all four room tools against the real hub through the deployed app:
+        create WITH a device (the id comes back from the hub's save answer),
+        hub_list_rooms(id) renders it, hub_update_room renames, then replaces the device
+        list wholesale (empty, then the device again), hub_list_rooms reflects each change,
+        and hub_delete_room unassigns the device. The device's original room is restored
+        in the finally. cleanup()'s room sweep reclaims a strand if this crashes mid-way.
         """
         dev_id = self.get_first_device_id()
         name = f"{PREFIX}RoomLib"
         renamed = f"{PREFIX}RoomLib2"
         room_id = None
+        before = self.client.call_tool("hub_manage_devices", {
+            "tool": "hub_get_device", "args": {"deviceId": dev_id}})
+        original_room = (before.get("room") or before.get("roomName")) if isinstance(before, dict) else None
         try:
             # Self-heal: a doubly-crashed prior run could leave BAT_E2E_RoomLib/RoomLib2 behind,
             # which would make hub_create_room/hub_update_room fail on the duplicate-name guard.
-            # Delete any pre-existing same-named rooms first (mirrors get_test_switch_id reuse).
             pre = self.client.call_tool("hub_manage_rooms", {"tool": "hub_list_rooms"})
             for r in (pre.get("rooms", []) if isinstance(pre, dict) else []):
                 if r.get("name") in (name, renamed):
                     try:
                         self.client.call_tool("hub_manage_rooms", {
                             "tool": "hub_delete_room",
-                            "args": {"room": str(r.get("id")), "confirm": True},
+                            "args": {"id": str(r.get("id")), "confirm": True},
                         })
                     except Exception as exc:
                         print(f"  [WARN] rooms flow pre-sweep: delete {r.get('id')} failed: {exc}")
@@ -14016,73 +14017,94 @@ def updated() {}
             assert room.get("deviceCount") == 1, \
                 f"hub_create_room did not assign the device at creation (deviceCount={room.get('deviceCount')!r}): {created}"
 
-            # hub_get_room (singular read): must return the room WITH the assigned device.
-            got = self.client.call_tool("hub_manage_rooms", {
-                "tool": "hub_get_room",
-                "args": {"room": room_id},
-            })
-            assert str(got.get("id")) == room_id, f"hub_get_room returned wrong room: {got}"
-            assert got.get("name") == name, f"hub_get_room name mismatch: {got}"
-            got_devices = got.get("devices") or []
-            assert any(str(d.get("id")) == dev_id for d in got_devices), \
-                f"hub_get_room did not list the assigned device {dev_id}: {got}"
+            # hub_list_rooms(id): the room WITH the assigned device, and the hub agrees on the id.
+            got = self.client.call_tool("hub_manage_rooms", {"tool": "hub_list_rooms", "args": {"id": room_id}})
+            assert str(got.get("id")) == room_id, f"hub_list_rooms(id) returned wrong room: {got}"
+            assert got.get("name") == name, f"hub_list_rooms(id) name mismatch: {got}"
+            assert any(str(d.get("id")) == dev_id for d in (got.get("devices") or [])), \
+                f"hub_list_rooms(id) did not list the assigned device {dev_id}: {got}"
 
-            # hub_get_room also resolves by NAME (not just id).
-            got_by_name = self.client.call_tool("hub_manage_rooms", {
-                "tool": "hub_get_room",
-                "args": {"room": name},
-            })
-            assert str(got_by_name.get("id")) == room_id, \
-                f"hub_get_room by name did not resolve to the same room: {got_by_name}"
-
-            # hub_update_room (rename).
+            # hub_update_room: rename only; the device list stays.
             renamed_res = self.client.call_tool("hub_manage_rooms", {
                 "tool": "hub_update_room",
-                "args": {"room": room_id, "newName": renamed, "confirm": True},
+                "args": {"id": room_id, "name": renamed, "confirm": True},
             })
             assert renamed_res.get("success") is True, f"hub_update_room did not succeed: {renamed_res}"
             assert (renamed_res.get("room") or {}).get("name") == renamed, \
                 f"hub_update_room did not apply the new name: {renamed_res}"
-
-            # hub_list_rooms must reflect the rename.
+            assert (renamed_res.get("room") or {}).get("previousName") == name, \
+                f"hub_update_room did not report previousName: {renamed_res}"
             listed = self.client.call_tool("hub_manage_rooms", {"tool": "hub_list_rooms"})
-            rooms = listed.get("rooms", []) if isinstance(listed, dict) else []
-            assert any(str(r.get("id")) == room_id and r.get("name") == renamed for r in rooms), \
-                f"renamed room {room_id} not found as '{renamed}' in hub_list_rooms: {rooms}"
+            row = next((r for r in (listed.get("rooms", []) if isinstance(listed, dict) else [])
+                        if str(r.get("id")) == room_id), None)
+            assert row and row.get("name") == renamed and row.get("deviceIds") == [dev_id], \
+                f"renamed room {room_id} not listed as '{renamed}' with its device: {row}"
+
+            # hub_update_room(deviceIds): the list is wholesale -- [] empties the room...
+            emptied = self.client.call_tool("hub_manage_rooms", {
+                "tool": "hub_update_room",
+                "args": {"id": room_id, "deviceIds": [], "confirm": True},
+            })
+            er = emptied.get("room") or {}
+            assert emptied.get("success") is True and er.get("deviceCount") == 0 and er.get("unassignedDeviceIds") == [dev_id], \
+                f"hub_update_room(deviceIds=[]) did not empty the room: {emptied}"
+            got = self.client.call_tool("hub_manage_rooms", {"tool": "hub_list_rooms", "args": {"id": room_id}})
+            assert got.get("deviceCount") == 0 and got.get("name") == renamed, \
+                f"room {room_id} still lists devices (or lost its name) after deviceIds=[]: {got}"
+
+            # ...and a list with the device puts it back.
+            refilled = self.client.call_tool("hub_manage_rooms", {
+                "tool": "hub_update_room",
+                "args": {"id": room_id, "deviceIds": [dev_id], "confirm": True},
+            })
+            assert refilled.get("success") is True and (refilled.get("room") or {}).get("deviceIds") == [dev_id], \
+                f"hub_update_room(deviceIds=[dev]) did not succeed: {refilled}"
+            got = self.client.call_tool("hub_manage_rooms", {"tool": "hub_list_rooms", "args": {"id": room_id}})
+            assert any(str(d.get("id")) == dev_id for d in (got.get("devices") or [])), \
+                f"hub_list_rooms(id) does not list device {dev_id} after deviceIds=[dev]: {got}"
 
             # hub_delete_room (unassigns the device, does NOT delete the device).
             deleted = self.client.call_tool("hub_manage_rooms", {
                 "tool": "hub_delete_room",
-                "args": {"room": room_id, "confirm": True},
+                "args": {"id": room_id, "confirm": True},
             })
             assert deleted.get("success") is True, f"hub_delete_room did not succeed: {deleted}"
             assert deleted.get("devicesUnassigned") == 1, \
                 f"hub_delete_room did not report the device unassigned: {deleted}"
+            after = self.client.call_tool("hub_manage_rooms", {"tool": "hub_list_rooms"})
+            assert not any(str(r.get("id")) == room_id for r in (after.get("rooms", []) if isinstance(after, dict) else [])), \
+                f"room {room_id} is still listed after hub_delete_room: {after}"
             room_id = None  # deleted cleanly; skip the finally sweep
-            print(f"    ROOMS_LIB_FLOW create+get+rename+delete OK ({renamed}, dev {dev_id})")
+            print(f"    ROOMS_LIB_FLOW create+read+rename+devices+delete OK ({renamed}, dev {dev_id})")
         finally:
             if room_id:
                 try:
                     self.client.call_tool("hub_manage_rooms", {
                         "tool": "hub_delete_room",
-                        "args": {"room": room_id, "confirm": True},
+                        "args": {"id": room_id, "confirm": True},
                     })
                 except Exception as exc:
                     print(f"  [WARN] rooms flow cleanup: delete {room_id} failed: {exc}")
+            if original_room:
+                try:
+                    self.client.call_tool("hub_update_device", {"deviceId": dev_id, "fields": {"room": str(original_room)}})
+                except Exception as exc:
+                    print(f"  [WARN] rooms flow cleanup: restoring device {dev_id} to '{original_room}' failed: {exc}")
 
     @test("system_tools")
     def test_manage_rooms_error_contracts(self) -> None:
-        """Issue #209: validate the McpRoomsLib tools' error/validation contracts live.
+        """Validate the McpRoomsLib tools' error/validation contracts live.
 
         The round-trip proves the happy paths; this proves the failure modes traverse
-        the MCP transport correctly on a real hub: not-found lookup, the duplicate-name
-        and rename-collision guards, and the confirm safety gate on the destructive room
-        writes (create + delete). These are unit-covered in ToolRoomsSpec; here we confirm
-        the same contracts end-to-end. Self-cleaning (finally + Layer-6 sweep).
+        the MCP transport correctly on a real hub: unknown room id on read and update,
+        cursor with id, a non-numeric device id, the duplicate-name and rename-collision
+        guards, and the confirm safety gate on the destructive room writes (create +
+        delete). These are unit-covered in ToolRoomsSpec; here we confirm the same
+        contracts end-to-end. Self-cleaning (finally + Layer-6 sweep).
         """
         name_a = f"{PREFIX}RoomErrA"
         name_b = f"{PREFIX}RoomErrB"
-        ghost = f"{PREFIX}RoomGhostNope"
+        ghost_id = "999999999"
         created_ids = []
         try:
             # Pre-sweep same-named strands from a doubly-crashed prior run.
@@ -14092,24 +14114,17 @@ def updated() {}
                     try:
                         self.client.call_tool("hub_manage_rooms", {
                             "tool": "hub_delete_room",
-                            "args": {"room": str(r.get("id")), "confirm": True},
+                            "args": {"id": str(r.get("id")), "confirm": True},
                         })
                     except Exception:
                         pass
 
-            # 1) hub_get_room on a non-existent room -> -32602 (McpError).
+            # 1) hub_list_rooms(id) on a room id that does not exist -> refused, naming the id.
             try:
-                self.client.call_tool("hub_manage_rooms", {
-                    "tool": "hub_get_room", "args": {"room": ghost},
-                })
-                assert False, "hub_get_room on a non-existent room should have raised"
+                self.client.call_tool("hub_manage_rooms", {"tool": "hub_list_rooms", "args": {"id": ghost_id}})
+                assert False, "hub_list_rooms(id) on a non-existent room should have raised"
             except McpError as e:
-                # Both are valid "the room isn't there" errors: "not found" when other rooms
-                # exist, "no rooms configured" when the hub has none (the e2e hub often has zero).
-                msg = str(e).lower()
-                assert "not found" in msg or "no rooms configured" in msg, (
-                    f"hub_get_room error was not a not-found: {e}"
-                )
+                assert "no room has id" in str(e).lower(), f"hub_list_rooms(id) error was not a not-found: {e}"
 
             # 2) confirm safety gate: hub_create_room without confirm -> refused, no room created.
             # `confirm` is a REQUIRED schema param (the convention for every destructive tool), so a
@@ -14164,20 +14179,38 @@ def updated() {}
             try:
                 self.client.call_tool("hub_manage_rooms", {
                     "tool": "hub_update_room",
-                    "args": {"room": id_b, "newName": name_a, "confirm": True},
+                    "args": {"id": id_b, "name": name_a, "confirm": True},
                 })
                 assert False, "renaming roomB to roomA's name should have raised"
             except McpError as e:
                 assert "already exists" in str(e).lower(), f"collision-rename error unexpected: {e}"
 
-            # 5) confirm safety gate on delete: hub_delete_room without confirm -> refused, room survives.
+            # 5) update validation before any write: unknown room id, non-numeric device id, cursor with id.
+            for args, needle in (
+                ({"id": ghost_id, "name": f"{PREFIX}RoomGhost", "confirm": True}, "no room has id"),
+                ({"id": id_b, "deviceIds": ["abc"], "confirm": True}, "deviceids must be numeric"),
+            ):
+                try:
+                    self.client.call_tool("hub_manage_rooms", {"tool": "hub_update_room", "args": args})
+                    assert False, f"hub_update_room({args}) should have raised"
+                except McpError as e:
+                    assert needle in str(e).lower(), f"hub_update_room({args}) error unexpected: {e}"
+            try:
+                self.client.call_tool("hub_manage_rooms", {"tool": "hub_list_rooms", "args": {"id": id_b, "cursor": ""}})
+                assert False, "hub_list_rooms(id, cursor) should have raised"
+            except McpError as e:
+                assert "cursor" in str(e).lower(), f"hub_list_rooms(id, cursor) error unexpected: {e}"
+            survivor = self.client.call_tool("hub_manage_rooms", {"tool": "hub_list_rooms", "args": {"id": id_b}})
+            assert survivor.get("name") == name_b, f"roomB changed after refused updates: {survivor}"
+
+            # 6) confirm safety gate on delete: hub_delete_room without confirm -> refused, room survives.
             # Same refusal shape as the create gate above: a missing REQUIRED confirm comes back as an
             # isError result (raised by call_tool) or a -32602 -- accept either; room must survive.
             del_refused = False
             del_detail = None
             try:
                 del_detail = self.client.call_tool("hub_manage_rooms", {
-                    "tool": "hub_delete_room", "args": {"room": id_a},
+                    "tool": "hub_delete_room", "args": {"id": id_a},
                 })
                 blob = (del_detail if isinstance(del_detail, str) else json.dumps(del_detail)).lower()
                 del_refused = (isinstance(del_detail, dict) and bool(del_detail.get("isError"))) \
@@ -14193,13 +14226,13 @@ def updated() {}
                 for r in (still.get("rooms", []) if isinstance(still, dict) else [])
             ), "roomA must survive a no-confirm delete attempt"
 
-            print("    ROOMS_LIB_ERRORS not-found + confirm-gate + duplicate + collision OK")
+            print("    ROOMS_LIB_ERRORS not-found + validation + confirm-gate + duplicate + collision OK")
         finally:
             for rid in created_ids:
                 try:
                     self.client.call_tool("hub_manage_rooms", {
                         "tool": "hub_delete_room",
-                        "args": {"room": rid, "confirm": True},
+                        "args": {"id": rid, "confirm": True},
                     })
                 except Exception as exc:
                     print(f"  [WARN] rooms error-contract cleanup: delete {rid} failed: {exc}")
@@ -16189,12 +16222,12 @@ def updated() {}
 
     @test("best_practice_gating")
     def test_reactive_bps_gateway_destructive_links_to_hub_admin_write(self) -> None:
-        """Gateway-routed destructive sub-tool: hub_delete_room via hub_manage_rooms with a bogus room
+        """Gateway-routed destructive sub-tool: hub_delete_room via hub_manage_rooms with a bogus room id
         (confirm:true clears the self-citing SAFETY-CHECK; backup stamped in main()) -> hub_admin_write."""
         self._set_bps(enableMandatoryBPS=False)
         try:
             self.client.call_tool("hub_manage_rooms", {
-                "tool": "hub_delete_room", "args": {"room": "BAT_E2E_no_such_room", "confirm": True}})
+                "tool": "hub_delete_room", "args": {"id": "999999999", "confirm": True}})
             raise AssertionError("deleting a bogus room should have errored")
         except McpError as e:
             msg = str(e)
@@ -17605,7 +17638,7 @@ def updated() {}
                             print(f"  Sweep: deleting room '{rname}' (id={rid})")
                             self.client.call_tool("hub_manage_rooms", {
                                 "tool": "hub_delete_room",
-                                "args": {"room": rid, "confirm": True},
+                                "args": {"id": rid, "confirm": True},
                             })
                         except Exception as exc:
                             print(f"  [WARN] Room sweep delete failed for '{rname}': {exc}")

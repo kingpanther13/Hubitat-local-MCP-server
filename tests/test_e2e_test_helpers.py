@@ -214,13 +214,14 @@ def test_metadata_mode_switch_is_registered_and_restores_without_catalog(monkeyp
         if tool == "hub_read_rooms":
             if not gateway:
                 raise et.McpError("Gateway is disabled - useGateways is OFF")
-            if args["tool"] == "hub_get_room":
-                missing += 1
-                raise et.McpError("Missing required parameter for hub_get_room: room")
             return _raw_tool_body({"rooms": []})
+        if tool == "hub_read_files":
+            assert gateway and args["tool"] == "hub_read_file"
+            missing += 1
+            raise et.McpError("Missing required parameter for hub_read_file: fileName")
         assert tool == "hub_search_tools" and gateway
         searches += 1
-        return _raw_tool_body({"results": [{"tool": "hub_get_room"}]})
+        return _raw_tool_body({"results": [{"tool": "hub_read_file"}]})
 
     monkeypatch.setattr(client, "_send", send)
     monkeypatch.setattr(et.time, "sleep", lambda _seconds: None)

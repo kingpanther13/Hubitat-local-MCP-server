@@ -23,7 +23,7 @@ class HandleGatewaySpec extends ToolSpecBase {
         result.gateway == 'hub_manage_rooms'
         result.mode == 'catalog'
         result.tools instanceof List
-        result.tools*.name == ['hub_list_rooms', 'hub_get_room', 'hub_create_room', 'hub_delete_room', 'hub_update_room']
+        result.tools*.name == ['hub_list_rooms', 'hub_create_room', 'hub_delete_room', 'hub_update_room']
         result.tools.every { it.description && it.inputSchema }
         result.tools.every { !it.containsKey('outputSchema') }
     }
@@ -85,17 +85,17 @@ class HandleGatewaySpec extends ToolSpecBase {
 
     def "missing required param throws isError validation result with the full param list (same shape as flat; #319)"() {
         when:
-        // hub_get_room requires `room`; omit it. The pre-check throws (not a soft return)
+        // hub_read_file requires `fileName`; omit it. The pre-check throws (not a soft return)
         // so a missing-arg error has the SAME shape gateway and flat (both -> isError validation result).
-        script.handleGateway('hub_manage_rooms', 'hub_get_room', [:])
+        script.handleGateway('hub_manage_files', 'hub_read_file', [:])
 
         then: 'thrown IllegalArgumentException -> handleToolsCall maps it to isError validation result'
         def e = thrown(IllegalArgumentException)
         // Singular form (W-missingRequired-singular): a regression dropping the count-aware
         // ternary would emit "parameters" for 1 missing arg.
-        e.message.contains('Missing required parameter for hub_get_room:')
+        e.message.contains('Missing required parameter for hub_read_file:')
         !e.message.contains('Missing required parameters')
-        e.message.contains('room')
+        e.message.contains('fileName')
         // The full param list rides in the message (no content lost vs the old field).
         e.message.contains('All parameters:')
     }
@@ -107,18 +107,18 @@ class HandleGatewaySpec extends ToolSpecBase {
         // richer (lists every param), never poorer -- no information is dropped.
         when: 'flat: executeTool by leaf name -> the handler throws its own message'
         def flatEx = null
-        try { script.executeTool('hub_get_room', [:]) } catch (Exception ex) { flatEx = ex }
+        try { script.executeTool('hub_read_file', [:]) } catch (Exception ex) { flatEx = ex }
 
         and: 'gateway: handleGateway to the same sub-tool -> the pre-check throws (all params)'
         def gwEx = null
-        try { script.handleGateway('hub_manage_rooms', 'hub_get_room', [:]) } catch (Exception ex) { gwEx = ex }
+        try { script.handleGateway('hub_manage_files', 'hub_read_file', [:]) } catch (Exception ex) { gwEx = ex }
 
         then: 'both throw IllegalArgumentException (same JSON-RPC isError validation result category)'
         flatEx instanceof IllegalArgumentException
         gwEx instanceof IllegalArgumentException
 
         and: 'the gateway still names the missing param -- no information lost, plus the full list'
-        gwEx.message.contains('room')
+        gwEx.message.contains('fileName')
         gwEx.message.contains('All parameters:')
     }
 
@@ -241,15 +241,15 @@ class HandleGatewaySpec extends ToolSpecBase {
     }
 
     def "JSON-encoded string args containing fields is parsed and fields are accessible to the tool"() {
-        given: 'hub_get_room calls getRooms() -- stub it with a known room'
+        given: 'hub_list_rooms calls getRooms() -- stub it with a known room'
         script.metaClass.getRooms = { ->
             [[id: 42, name: 'Office', deviceIds: []]]
         }
 
-        when: 'args is a JSON string encoding {"room":"Office"}'
-        def result = script.handleGateway('hub_manage_rooms', 'hub_get_room', '{"room":"Office"}')
+        when: 'args is a JSON string encoding {"id":"42"}'
+        def result = script.handleGateway('hub_manage_rooms', 'hub_list_rooms', '{"id":"42"}')
 
-        then: 'string was parsed; the room parameter reached the tool; correct room returned'
+        then: 'string was parsed; the id parameter reached the tool; correct room returned'
         !result.isError
         result.name == 'Office'
     }
@@ -310,23 +310,23 @@ class HandleGatewaySpec extends ToolSpecBase {
     // The class cache must preserve required-parameter validation without durable catalog metadata.
 
     def "memo stays outside persisted state after the first gateway call; a repeat call throws the identical missing-param error"() {
-        when: 'first call with a missing required param (hub_get_room requires room)'
+        when: 'first call with a missing required param (hub_read_file requires fileName)'
         def firstEx = null
-        try { script.handleGateway('hub_manage_rooms', 'hub_get_room', [:]) } catch (Exception e) { firstEx = e }
+        try { script.handleGateway('hub_manage_files', 'hub_read_file', [:]) } catch (Exception e) { firstEx = e }
 
         then: 'thrown missing-param error AND the memo remains outside persisted state'
         firstEx instanceof IllegalArgumentException
-        firstEx.message.contains('Missing required parameter for hub_get_room:')
-        firstEx.message.contains('room')
+        firstEx.message.contains('Missing required parameter for hub_read_file:')
+        firstEx.message.contains('fileName')
         script.requiredParamsByTool() instanceof Map
         !atomicStateMap.containsKey('requiredParamsByTool')
-        script.requiredParamsByTool()['hub_get_room'] == ['room']
+        script.requiredParamsByTool()['hub_read_file'] == ['fileName']
         // omission contract: a no-required-param tool is absent from the map
         !script.requiredParamsByTool().containsKey('hub_list_rooms')
 
         when: 'a second identical call now served from the cached memo'
         def secondEx = null
-        try { script.handleGateway('hub_manage_rooms', 'hub_get_room', [:]) } catch (Exception e) { secondEx = e }
+        try { script.handleGateway('hub_manage_files', 'hub_read_file', [:]) } catch (Exception e) { secondEx = e }
 
         then: 'identical error message -- the memo read is behavior-preserving'
         secondEx.message == firstEx.message
@@ -338,11 +338,11 @@ class HandleGatewaySpec extends ToolSpecBase {
 
         when: 'run the flat strip path first (mutates fresh def copies in place), then a gateway missing-param call'
         script.getToolDefinitions()
-        script.handleGateway('hub_manage_rooms', 'hub_get_room', [:])
+        script.handleGateway('hub_manage_files', 'hub_read_file', [:])
 
         then: 'the thrown param list is fully intact -- no marker leakage'
         def e = thrown(IllegalArgumentException)
-        e.message.contains('room')
+        e.message.contains('fileName')
         !e.message.contains('FLAT_TRIM')
     }
 
@@ -362,53 +362,53 @@ class HandleGatewaySpec extends ToolSpecBase {
     // Retired persisted indexes must never override the current compiled tool definitions.
 
     def "compiled required parameters supersede a same-version persisted memo"() {
-        given: 'an old build persisted a different required list for hub_get_room'
+        given: 'an old build persisted a different required list for hub_read_file'
         // Retired metadata is ignored even when currentVersion() has not changed.
-        atomicStateMap.requiredParamsByTool = ['hub_get_room': ['legacy_param']]
+        atomicStateMap.requiredParamsByTool = ['hub_read_file': ['legacy_param']]
         atomicStateMap.requiredParamsByToolFingerprint = 'stale-fingerprint-from-an-older-same-version-build'
 
         when: 'a gateway call omits everything'
         Exception ex = null
-        try { script.handleGateway('hub_manage_rooms', 'hub_get_room', [:]) } catch (Exception e) { ex = e }
+        try { script.handleGateway('hub_manage_files', 'hub_read_file', [:]) } catch (Exception e) { ex = e }
 
         then: 'the compiled catalog supersedes the persisted memo -- rejection names the LIVE required param, never the stale one'
         ex instanceof IllegalArgumentException
-        ex.message.contains('room')
+        ex.message.contains('fileName')
         !ex.message.contains('legacy_param')
 
         and: 'the live required parameters are used'
-        script.requiredParamsByTool()['hub_get_room'] == ['room']
+        script.requiredParamsByTool()['hub_read_file'] == ['fileName']
     }
 
     def "retired persisted requirements cannot reject a now-optional parameter"() {
         given: 'a stale memo lists an extra requirement removed from the compiled catalog'
         // Supplying the current requirements must reach dispatch without extra_param.
         script.metaClass.getRooms = { [[id: 7, name: 'Kitchen', deviceIds: []]] }
-        atomicStateMap.requiredParamsByTool = ['hub_get_room': ['room', 'extra_param']]
+        atomicStateMap.requiredParamsByTool = ['hub_list_rooms': ['extra_param']]
         atomicStateMap.requiredParamsByToolFingerprint = 'stale-fingerprint'
 
-        when: 'supply only the live-required param, omitting the stale extra'
-        def result = script.handleGateway('hub_manage_rooms', 'hub_get_room', [room: 'Kitchen'])
+        when: 'call a tool with no live required params, omitting the stale extra'
+        def result = script.handleGateway('hub_manage_rooms', 'hub_list_rooms', [id: '7'])
 
         then: 'the pre-check passes (no missing-param throw) -- dispatch reached the impl and returned the room'
         notThrown(IllegalArgumentException)
         result.name == 'Kitchen'
 
-        and: 'the in-memory memo has the live shape'
-        script.requiredParamsByTool()['hub_get_room'] == ['room']
+        and: 'the in-memory memo has the live shape: no required params'
+        !script.requiredParamsByTool().containsKey('hub_list_rooms')
     }
 
     def "retired persisted metadata is ignored even if it claims a matching fingerprint"() {
         given:
-        atomicStateMap.requiredParamsByTool = ['hub_get_room': ['sentinel_param']]
+        atomicStateMap.requiredParamsByTool = ['hub_read_file': ['sentinel_param']]
         atomicStateMap.requiredParamsByToolFingerprint = 'claimed-current'
 
         when:
-        script.handleGateway('hub_manage_rooms', 'hub_get_room', [:])
+        script.handleGateway('hub_manage_files', 'hub_read_file', [:])
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('room')
+        ex.message.contains('fileName')
         !ex.message.contains('sentinel_param')
     }
 
@@ -445,11 +445,11 @@ class HandleGatewaySpec extends ToolSpecBase {
         notThrown(IllegalArgumentException)
 
         when: 'a tool without additionalProperties:false is checked the same way'
-        script._rejectUnknownArgs('hub_get_room', [room: '1', whatever: true])
+        script._rejectUnknownArgs('hub_list_rooms', [id: '1', whatever: true])
 
         then:
         def lenient = thrown(IllegalArgumentException)
-        lenient.message.contains('Unknown hub_get_room argument: whatever')
+        lenient.message.contains('Unknown hub_list_rooms argument: whatever')
 
         when: 'a tool with no properties says so'
         script._rejectUnknownArgs('hub_list_modes', [whatever: true])
