@@ -567,6 +567,34 @@ class ToolImportUrlSpec extends ToolSpecBase {
         result.eventSubscriptionCount == 0
     }
 
+    def "hub_create_app installAsUserApp reads statusJson only after the Done, never before it"() {
+        given: 'a shell created a moment ago has no stored settings to read'
+        enableWrite()
+        script.metaClass.hubInternalGetRaw = { String path, Map query = null, int timeout = 30, boolean isRetry = false ->
+            [status: 302, location: '/installedapp/configure/4747/mainPage', data: '']
+        }
+        def commit = stubInstallCommit()
+        def order = []
+        def get = script.metaClass.getMetaMethod('hubInternalGet', [String, Map, int, boolean] as Class[])
+        script.metaClass.hubInternalGet = { String path, Map q = null, int t = 30, boolean r = false ->
+            order << (path.contains('statusJson') ? 'status' : path.contains('configure/json') ? 'config' : path)
+            get.invoke(delegate, path, q, t, r)
+        }
+        def post = script.metaClass.getMetaMethod('hubInternalPostForm', [String, Map, int, boolean] as Class[])
+        script.metaClass.hubInternalPostForm = { String path, Map body, int t = 420, boolean r = false ->
+            order << 'done'
+            post.invoke(delegate, path, body, t, r)
+        }
+
+        when:
+        def result = script.toolCreateApp([codeAppId: 312, confirm: true])
+
+        then:
+        result.success == true
+        order == ['config', 'done', 'config', 'status']
+        commit.statusPaths.size() == 1
+    }
+
     def "hub_create_app installAsUserApp falls back to the config page name when the create redirect omits the page segment"() {
         given:
         enableWrite()

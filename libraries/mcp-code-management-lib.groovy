@@ -895,8 +895,9 @@ private Map _createUserAppInstance(Integer codeAppId) {
 // than guess". The triggerUpdated refresh passes true: its whole job is a no-op re-submit, and if
 // the live settings cannot be read there is nothing to gain and a device wipe to lose. The install
 // commit passes false -- a fresh shell HAS no configured values, so the page defaults are correct
-// and refusing would block the install for no benefit.
-private Map _submitAppDoneForm(Integer instanceId, String pageName, boolean requireLiveSettings = false) {
+// and refusing would block the install for no benefit. It also passes readLiveSettings=false: a
+// shell created a moment ago has no stored settings, so the statusJson read would return nothing.
+private Map _submitAppDoneForm(Integer instanceId, String pageName, boolean requireLiveSettings = false, boolean readLiveSettings = true) {
     def cfg = _rmFetchConfigJson(instanceId, pageName)
     def page = pageName ?: (cfg?.configPage?.name?.toString()) ?: "mainPage"
     def schema = _rmCollectInputSchema(cfg?.configPage)
@@ -921,7 +922,7 @@ private Map _submitAppDoneForm(Integer instanceId, String pageName, boolean requ
     }
     def liveSettings = [:]
     boolean liveSettingsUnavailable = false
-    try {
+    if (readLiveSettings) try {
         liveSettings = _rmLiveSettingsFromStatus(_rmFetchStatusJson(instanceId)) ?: [:]
     } catch (Exception statusErr) {
         // A dropped statusJson read must not silently degrade into "re-apply defaults".
@@ -1032,10 +1033,9 @@ def _settingShapeName(v) {
 }
 
 private Map _commitUserAppInstall(Integer instanceId, String pageName) {
-    // requireLiveSettings=false: a fresh shell has no configured values to protect, so the page
-    // defaults ARE correct and refusing over an unreadable statusJson would block the install for
-    // nothing. The degradation still has to be VISIBLE, so it rides out as a note below.
-    def submit = _submitAppDoneForm(instanceId, pageName, false)
+    // A shell created a moment ago has no configured values to protect or read, so the Done body
+    // is built from the page alone.
+    def submit = _submitAppDoneForm(instanceId, pageName, false, false)
     if (submit.uiBlocked) {
         return [
             success: false,
@@ -1091,9 +1091,6 @@ private Map _commitUserAppInstall(Integer instanceId, String pageName) {
     }
     if (post == null) {
         notes << "The post-commit statusJson read failed, so scheduledJobCount/eventSubscriptionCount are reported as 0 rather than measured -- they are not evidence that initialize() registered nothing."
-    }
-    if (submit?.liveSettingsUnavailable) {
-        notes << "The instance's live settings could not be read before the Done submit, so the form carried this page's defaults. Harmless on a fresh install (there was nothing configured yet), but re-check the instance if it was pre-seeded."
     }
     if (submit?.shapeRejections) {
         notes << "${submit.shapeRejections} setting(s) had a shape that cannot be form-encoded and fell back to the page default; see the hub log for their names."
