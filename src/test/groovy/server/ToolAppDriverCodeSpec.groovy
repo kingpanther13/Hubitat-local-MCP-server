@@ -782,6 +782,27 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         ex.message.contains('not found in File Manager')
     }
 
+    def "a sourceFile the hub throws for is reported as not found in File Manager, on create and update"() {
+        given:
+        enableWrite()
+        script.metaClass.downloadHubFile = { String fileName -> throw new RuntimeException(fileName) }
+        def posted = false
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 -> posted = true; [:] }
+
+        when:
+        def response = mcpDriver.callTool(tool, args + [sourceFile: 'missing.groovy', confirm: true])
+
+        then:
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains("Source file 'missing.groovy' not found in File Manager")
+        !posted
+
+        where:
+        tool                | args
+        'hub_create_app'    | [:]
+        'hub_update_driver' | [driverId: '55', backup: false]
+    }
+
     @spock.lang.Unroll
     def "hub_create_app via dispatch returns isError validation result envelope when sourceFile is absent (useGateways=#useGateways)"() {
         given:

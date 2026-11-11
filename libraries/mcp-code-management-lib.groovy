@@ -779,42 +779,44 @@ def toolGetSource(args) {
     return toolGetItemSource(type, idParam, args + [(idParam): id])
 }
 
+private String _appInstanceCreateHint(Integer codeAppId, status) {
+    switch (status) {
+        case 401:
+        case 403:
+            return "Hub Security authentication failed (status ${status}). Verify MCP credentials and Hub Security state.".toString()
+        case 404:
+            return "codeAppId ${codeAppId} does not exist in Apps Code.".toString()
+        case 500:
+            return "Hub returned a server error (status 500). codeAppId ${codeAppId} may not exist in Apps Code (check hub_list_apps(scope='types')), or its code may be in a compile-error state (inspect via hub_get_source(type='app')).".toString()
+        case 200:
+            return "Hub returned the configure page without redirect (status 200). codeAppId ${codeAppId} may be a driver/library, or an already-instantiated app.".toString()
+        default:
+            return "Hub returned unexpected status ${status}. The codeAppId may not exist or may not be a user app.".toString()
+    }
+}
+
 private Map _createUserAppInstance(Integer codeAppId) {
     def result
     try {
         result = hubInternalGetRaw("/installedapp/create/${codeAppId}")
     } catch (Exception e) {
         mcpLog("error", "hub-admin", "_createUserAppInstance(${codeAppId}): ${e.toString()}")
+        // The hub answers an unknown code id with a 500, which the client raises as an exception.
+        def statusMatch = (e.toString() =~ /status code:?\s*(\d{3})/)
+        Integer thrownStatus = statusMatch.find() ? (statusMatch.group(1) as Integer) : null
         return [
             success: false,
-            error: "User app instantiation failed: ${e.toString()}",
-            codeAppId: codeAppId
+            error: thrownStatus != null ? _appInstanceCreateHint(codeAppId, thrownStatus) : "User app instantiation failed: ${e.message ?: e.toString()}".toString(),
+            codeAppId: codeAppId,
+            status: thrownStatus
         ]
     }
     if (result?.status != 302 || !result.location) {
         def status = result?.status
-        def hint
-        switch (status) {
-            case 401:
-            case 403:
-                hint = "Hub Security authentication failed (status ${status}). Verify MCP credentials and Hub Security state."
-                break
-            case 404:
-                hint = "codeAppId ${codeAppId} does not exist in Apps Code."
-                break
-            case 500:
-                hint = "Hub returned a server error (status 500). Code ${codeAppId} may be in a compile-error state -- inspect via hub_get_source(type='app')."
-                break
-            case 200:
-                hint = "Hub returned the configure page without redirect (status 200). codeAppId ${codeAppId} may be a driver/library, or an already-instantiated app."
-                break
-            default:
-                hint = "Hub returned unexpected status ${status}. The codeAppId may not exist or may not be a user app."
-        }
         mcpLog("warn", "hub-admin", "_createUserAppInstance(${codeAppId}): non-302 (status=${status})")
         return [
             success: false,
-            error: hint,
+            error: _appInstanceCreateHint(codeAppId, status),
             codeAppId: codeAppId,
             status: status,
             hubResponse: result?.data?.toString()?.take(500)
@@ -1109,7 +1111,10 @@ private Map _resolveCodeSource(args) {
     }
     if (args.sourceFile) {
         mcpLog("info", "hub-admin", "Reading code source from File Manager: ${args.sourceFile}")
-        def bytes = downloadHubFile(args.sourceFile)
+        def bytes = null
+        // The hub throws for a missing file rather than returning null.
+        try { bytes = downloadHubFile(args.sourceFile) }
+        catch (Exception e) { mcpLog("warn", "hub-admin", "Reading ${args.sourceFile} from File Manager failed: ${e.message}") }
         if (bytes == null) throw new IllegalArgumentException("Source file '${args.sourceFile}' not found in File Manager")
         String code = new String(bytes, "UTF-8")
         mcpLog("info", "hub-admin", "Read ${code.length()} chars from ${args.sourceFile}")
@@ -2801,7 +2806,7 @@ def _getAllToolDefinitions_partCodeManagement() {
                 type: "object",
                 properties: [
                     type: [type: "string", enum: ["app", "driver", "library"], description: "What kind of code to read."],
-                    id: [type: "string", description: "App/driver/library ID (positive integer), from hub_list_apps / hub_list_drivers / hub_list_libraries respectively (library id is also in a hub_create_library response or the Hubitat Libraries code page)."],
+                    id: [type: "string", description: "App/driver/library ID (positive integer), from hub_list_apps(scope='types') / hub_list_drivers / hub_list_libraries respectively (library id is also in a hub_create_library response or the Hubitat Libraries code page)."],
                     offset: [type: "integer", description: "Char offset to start reading from. Default: 0"],
                     length: [type: "integer", description: "Max chars (default 30000, max 64000)."]
                 ],

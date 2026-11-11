@@ -366,7 +366,7 @@ All three:
 | `buildRuleExport(ruleData)` | Build portable rule export map (used by export and delete backup) |
 | `toolInstallItem(type, args)` | Shared install logic for apps and drivers |
 | `toolDeleteItem(type, idParam, deletePath, args)` | Shared delete logic for apps and drivers |
-| `hubInternalPostJson(path, jsonBody, isRetry?)` | POST to hub internal API with JSON body (used by library endpoints); returns parsed Map/List or null |
+| `hubInternalPostJson(path, jsonBody, timeout?, isRetry?, query?)` | POST to hub internal API with a JSON body (code saves, device preferences and other JSON endpoints); returns the parsed Map/List, `[_unparseable: true, message]` for a non-JSON body, or null for an empty one |
 | `updateRuleFromParent(data)` | Child app method — handles all rule updates including enable/disable via `enabled=true/false` |
 | `shouldRetryWithFreshCookie(e, isRetry)` | Hub Security auth retry detection |
 | `clampPercent(value)` | Clamp integer to 0-100 range (in rule.groovy) |

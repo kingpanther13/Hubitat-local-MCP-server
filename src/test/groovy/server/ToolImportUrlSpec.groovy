@@ -663,6 +663,23 @@ class ToolImportUrlSpec extends ToolSpecBase {
         200    | 'without redirect'
     }
 
+    def "hub_create_app with a codeAppId the hub answers with a thrown 500 returns a clean hint, not the exception text"() {
+        given:
+        enableWrite()
+        script.metaClass.hubInternalGetRaw = { String path, Map query = null, int timeout = 30, boolean isRetry = false ->
+            throw new RuntimeException('groovyx.net.http.HttpResponseException: status code: 500, reason phrase: Server Error')
+        }
+
+        when:
+        def result = script.toolCreateApp([codeAppId: 99999, confirm: true])
+
+        then:
+        result.success == false
+        result.status == 500
+        result.error.contains("hub_list_apps(scope='types')")
+        !result.error.contains('Exception')
+    }
+
     def "hub_create_app rejects installAsUserApp combined with importUrl"() {
         given:
         enableWrite()
